@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_sandbox.workflow.validation import (
+from evander.workflow.validation import (
     derive_workflow_output_schemas,
     validate_workflow_binding_diagnostics,
     validate_workflow_graph,

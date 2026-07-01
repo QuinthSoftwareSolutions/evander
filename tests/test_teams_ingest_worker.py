@@ -8,15 +8,15 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directories import DirectoryService
-from agent_sandbox.messaging.targets import (
+from evander.config import GatewayConfig
+from evander.directories import DirectoryService
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.models import SessionManifest, TeamsMessageEnvelope, ToolName
-from agent_sandbox.messaging.teams_ingest import build_teams_ingest_worker
-from agent_sandbox.orchestration.host_polling import HostWakeSleeper, wake_socket_path_for_lock
+from evander.models import SessionManifest, TeamsMessageEnvelope, ToolName
+from evander.messaging.teams_ingest import build_teams_ingest_worker
+from evander.orchestration.host_polling import HostWakeSleeper, wake_socket_path_for_lock
 
 
 def ensure_directory(worker, directory_path: str) -> None:
@@ -37,7 +37,7 @@ def patch_worker_httpx_client(
 ) -> None:
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.messaging.teams_ingest.httpx.Client",
+        "evander.messaging.teams_ingest.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
 
@@ -729,7 +729,7 @@ def test_teams_ingest_worker_skips_unresolved_direct_message_sender_email(
             return httpx.Response(200, json={"value": []}, request=request)
         raise AssertionError(f"Unexpected path: {request.url.path}")
 
-    caplog.set_level(logging.WARNING, logger="agent_sandbox.messaging.teams_ingest")
+    caplog.set_level(logging.WARNING, logger="evander.messaging.teams_ingest")
     patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
     monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
     config = GatewayConfig.model_validate(
@@ -1026,7 +1026,7 @@ def test_teams_ingest_worker_uses_delegated_token_provider(
 
     patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
     monkeypatch.setattr(
-        "agent_sandbox.messaging.teams_ingest._build_delegated_teams_token_provider",
+        "evander.messaging.teams_ingest._build_delegated_teams_token_provider",
         lambda config: lambda: "delegated-token",
     )
     config = GatewayConfig.model_validate(
@@ -1072,7 +1072,7 @@ def test_teams_ingest_worker_ignores_graph_echo_of_agent_status_post(
                             "createdDateTime": "2026-03-30T11:02:00Z",
                             "body": {"content": "status", "contentType": "text"},
                             "from": {
-                                "application": {"id": "bot-app", "displayName": "Agent Sandbox"}
+                                "application": {"id": "bot-app", "displayName": "Evander"}
                             },
                         }
                     ]

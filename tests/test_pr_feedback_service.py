@@ -4,8 +4,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_sandbox.pr_feedback import FeedbackEnvelope, PrFeedbackStore
-from agent_sandbox.services import PrFeedbackService
+from evander.pr_feedback import FeedbackEnvelope, PrFeedbackStore
+from evander.services import PrFeedbackService
 
 
 class _InMemoryFeedbackRepo:

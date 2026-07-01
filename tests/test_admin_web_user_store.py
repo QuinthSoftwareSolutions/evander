@@ -4,7 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from agent_sandbox.admin.web.user_store import AdminWebUserStore
+from evander.admin.web.user_store import AdminWebUserStore
 
 
 def _admin_web_user_store(tmp_path: Path) -> AdminWebUserStore:

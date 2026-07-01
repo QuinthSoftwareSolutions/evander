@@ -1,6 +1,7 @@
 export type AdminView =
   | "workflow"
   | "agents"
+  | "addons"
   | "skills"
   | "vms"
   | "issues"
@@ -11,6 +12,53 @@ export type AdminView =
   | "workers";
 
 export type AdminWebUserRole = "admin" | "regular";
+
+export type AdminAddonLoaderConfig = {
+  modules: string[];
+  enabled_entry_points: boolean;
+  enabled_addon_ids: string[] | null;
+};
+
+export type AdminAddonStatus = {
+  candidate_key: string;
+  addon_id: string | null;
+  display_name: string;
+  source: string;
+  source_type: "module" | "entry_point" | string;
+  entry_point_name: string | null;
+  enabled: boolean;
+  loaded: boolean;
+  pending_enable: boolean;
+  pending_disable: boolean;
+  restart_required: boolean;
+  configurable: boolean;
+  has_admin_ui: boolean;
+  has_admin_api: boolean;
+  has_mcp_tools: boolean;
+  has_workflow_providers: boolean;
+  workflow_node_types: string[];
+  referenced_workflow_node_types: string[];
+  load_error: string | null;
+  required_restart_services: string[];
+};
+
+export type AdminAddonState = {
+  addon_loader: AdminAddonLoaderConfig;
+  worker_addon_loader: AdminAddonLoaderConfig;
+  explicit_enabled_addon_ids: string[];
+  loaded_addon_ids: string[];
+  addons: AdminAddonStatus[];
+  revision: string;
+  restart_required: boolean;
+  required_restart_services: string[];
+  catalog_error: string | null;
+  workflow_reference_error: string | null;
+  config_mismatch: boolean;
+  config_paths: {
+    host: string;
+    trigger_orchestrator: string;
+  };
+};
 
 export type AdminWebGroupRecord = {
   group_id: string;

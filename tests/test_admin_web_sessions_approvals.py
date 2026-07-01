@@ -10,20 +10,20 @@ import pytest
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.web.app import create_app
-from agent_sandbox.admin.web.shared import AdminWebAuth, AdminWebConfig
-from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
-from agent_sandbox.messaging.targets import (
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.web.app import create_app
+from evander.admin.web.shared import AdminWebAuth, AdminWebConfig
+from evander.admin.web.sessions_approvals import session_approval_routes
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.execution.container_worker_client import ContainerWorkerClientError
-from agent_sandbox.execution.container_worker_repository import (
+from evander.execution.container_worker_client import ContainerWorkerClientError
+from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
 )
-from agent_sandbox.models import (
+from evander.models import (
     ApprovalNotificationDeliveryRecord,
     ApprovalNotificationDeliveryStatus,
     ApprovalNotificationStatus,
@@ -334,9 +334,9 @@ def test_admin_web_rejects_invalid_approval_decisions(tmp_path: Path) -> None:
 def test_admin_web_uses_authenticated_identity_for_approval_decision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "operator")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -663,7 +663,7 @@ def test_admin_web_sessions_catalog_uses_model_pricing_catalog_models(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    monkeypatch.setenv("EVANDER_MODEL_PRICING_PATH", str(catalog_path))
     service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
 
@@ -683,7 +683,7 @@ def test_admin_web_sessions_catalog_returns_empty_model_options_when_pricing_cat
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv(
-        "AGENT_SANDBOX_MODEL_PRICING_PATH",
+        "EVANDER_MODEL_PRICING_PATH",
         str(tmp_path / "runtime" / "missing-pricing.json"),
     )
     service = build_admin_runtime(write_config(tmp_path))
@@ -714,7 +714,7 @@ def test_admin_web_exposes_runtime_image_payloads_for_session_list_and_detail(
             expires_at=datetime.now(UTC) + timedelta(hours=2),
             metadata={
                 "libvirt_vm_template": {
-                    "image_ref": "/var/lib/libvirt/images/agent-sandbox/dotnet-agent.qcow2",
+                    "image_ref": "/var/lib/libvirt/images/evander/dotnet-agent.qcow2",
                     "template_alias": "dotnet",
                 }
             },
@@ -818,7 +818,7 @@ def test_admin_web_exposes_runtime_image_payloads_for_session_list_and_detail(
     }
     assert (
         detail_response.json()["summary_json"]["metadata"]["libvirt_vm_template"]["image_ref"]
-        == "/var/lib/libvirt/images/agent-sandbox/dotnet-agent.qcow2"
+        == "/var/lib/libvirt/images/evander/dotnet-agent.qcow2"
     )
     assert container_detail_response.status_code == 200
     assert container_detail_response.json()["session"]["runtime_image"] == {

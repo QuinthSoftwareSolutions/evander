@@ -2,18 +2,18 @@
 - name: Assert worker MSSQL configuration is complete
   ansible.builtin.assert:
     that:
-      - agent_sandbox_worker_mssql_accept_eula | bool
-      - agent_sandbox_worker_use_apt_proxy | bool
-      - (agent_sandbox_worker_apt_proxy_url | default('') | string | length) > 0
-      - (agent_sandbox_worker_mssql_admin_password | default('') | string | length) > 0
-      - (agent_sandbox_worker_mssql_port | int) > 0
-      - (agent_sandbox_worker_mssql_port | int) <= 65535
+      - evander_worker_mssql_accept_eula | bool
+      - evander_worker_use_apt_proxy | bool
+      - (evander_worker_apt_proxy_url | default('') | string | length) > 0
+      - (evander_worker_mssql_admin_password | default('') | string | length) > 0
+      - (evander_worker_mssql_port | int) > 0
+      - (evander_worker_mssql_port | int) <= 65535
     fail_msg: >-
-      Enable agent_sandbox_worker_mssql_accept_eula, keep the worker apt proxy
-      enabled, and set agent_sandbox_worker_mssql_admin_password from Vault
+      Enable evander_worker_mssql_accept_eula, keep the worker apt proxy
+      enabled, and set evander_worker_mssql_admin_password from Vault
       before enabling worker MSSQL provisioning.
     success_msg: Worker MSSQL configuration is complete.
-  when: agent_sandbox_worker_mssql_enabled | bool
+  when: evander_worker_mssql_enabled | bool
 
 - name: Install worker MSSQL apt prerequisites
   ansible.builtin.apt:
@@ -23,54 +23,54 @@
       - gnupg
     state: present
     update_cache: true
-  when: agent_sandbox_worker_mssql_enabled | bool
+  when: evander_worker_mssql_enabled | bool
 
 - name: Ensure apt keyring directory exists
   ansible.builtin.file:
-    path: "{{ agent_sandbox_worker_mssql_apt_key_path | dirname }}"
+    path: "{{ evander_worker_mssql_apt_key_path | dirname }}"
     state: directory
     owner: root
     group: root
     mode: "0755"
-  when: agent_sandbox_worker_mssql_enabled | bool
+  when: evander_worker_mssql_enabled | bool
 
 - name: Install Microsoft apt signing key
   ansible.builtin.get_url:
-    url: "{{ agent_sandbox_worker_mssql_apt_key_url }}"
-    dest: "{{ agent_sandbox_worker_mssql_apt_key_path }}"
+    url: "{{ evander_worker_mssql_apt_key_url }}"
+    dest: "{{ evander_worker_mssql_apt_key_path }}"
     owner: root
     group: root
     mode: "0644"
-  environment: "{{ agent_sandbox_worker_mssql_package_proxy_environment }}"
-  when: agent_sandbox_worker_mssql_enabled | bool
+  environment: "{{ evander_worker_mssql_package_proxy_environment }}"
+  when: evander_worker_mssql_enabled | bool
 
 - name: Add Microsoft SQL Server apt repository
   ansible.builtin.apt_repository:
-    repo: "{{ agent_sandbox_worker_mssql_server_repo }}"
+    repo: "{{ evander_worker_mssql_server_repo }}"
     filename: microsoft-mssql-server
     state: present
     update_cache: true
-  when: agent_sandbox_worker_mssql_enabled | bool
+  when: evander_worker_mssql_enabled | bool
 
 - name: Add Microsoft SQL tools apt repository
   ansible.builtin.apt_repository:
-    repo: "{{ agent_sandbox_worker_mssql_tools_repo }}"
+    repo: "{{ evander_worker_mssql_tools_repo }}"
     filename: microsoft-prod
     state: present
     update_cache: true
-  when: agent_sandbox_worker_mssql_enabled | bool
+  when: evander_worker_mssql_enabled | bool
 
 - name: Install SQL Server engine
   ansible.builtin.apt:
-    name: "{{ agent_sandbox_worker_mssql_server_package }}"
+    name: "{{ evander_worker_mssql_server_package }}"
     state: present
-  when: agent_sandbox_worker_mssql_enabled | bool
+  when: evander_worker_mssql_enabled | bool
 
 - name: Check whether SQL Server has been initialized
   ansible.builtin.stat:
     path: /var/opt/mssql/data/master.mdf
-  register: agent_sandbox_worker_mssql_master_database
-  when: agent_sandbox_worker_mssql_enabled | bool
+  register: evander_worker_mssql_master_database
+  when: evander_worker_mssql_enabled | bool
 
 - name: Run initial SQL Server setup
   ansible.builtin.command:
@@ -80,20 +80,20 @@
       - setup
   environment:
     ACCEPT_EULA: "Y"
-    MSSQL_PID: "{{ agent_sandbox_worker_mssql_pid }}"
-    MSSQL_SA_PASSWORD: "{{ agent_sandbox_worker_mssql_admin_password }}"
+    MSSQL_PID: "{{ evander_worker_mssql_pid }}"
+    MSSQL_SA_PASSWORD: "{{ evander_worker_mssql_admin_password }}"
   no_log: true
   when:
-    - agent_sandbox_worker_mssql_enabled | bool
-    - not agent_sandbox_worker_mssql_master_database.stat.exists
+    - evander_worker_mssql_enabled | bool
+    - not evander_worker_mssql_master_database.stat.exists
 
 - name: Stop SQL Server before reconciling SA password
   ansible.builtin.systemd:
     name: mssql-server.service
     state: stopped
   when:
-    - agent_sandbox_worker_mssql_enabled | bool
-    - agent_sandbox_worker_mssql_master_database.stat.exists
+    - evander_worker_mssql_enabled | bool
+    - evander_worker_mssql_master_database.stat.exists
 
 - name: Reconcile SQL Server SA password
   ansible.builtin.command:
@@ -101,12 +101,12 @@
       - /opt/mssql/bin/mssql-conf
       - set-sa-password
   environment:
-    MSSQL_SA_PASSWORD: "{{ agent_sandbox_worker_mssql_admin_password }}"
+    MSSQL_SA_PASSWORD: "{{ evander_worker_mssql_admin_password }}"
   no_log: true
   changed_when: false
   when:
-    - agent_sandbox_worker_mssql_enabled | bool
-    - agent_sandbox_worker_mssql_master_database.stat.exists
+    - evander_worker_mssql_enabled | bool
+    - evander_worker_mssql_master_database.stat.exists
 
 - name: Configure SQL Server TCP port
   ansible.builtin.command:
@@ -114,25 +114,25 @@
       - /opt/mssql/bin/mssql-conf
       - set
       - network.tcpport
-      - "{{ agent_sandbox_worker_mssql_port }}"
-  register: agent_sandbox_worker_mssql_tcpport
-  changed_when: "'SQL Server needs to be restarted' in (agent_sandbox_worker_mssql_tcpport.stdout | default(''))"
-  when: agent_sandbox_worker_mssql_enabled | bool
+      - "{{ evander_worker_mssql_port }}"
+  register: evander_worker_mssql_tcpport
+  changed_when: "'SQL Server needs to be restarted' in (evander_worker_mssql_tcpport.stdout | default(''))"
+  when: evander_worker_mssql_enabled | bool
 
 - name: Start SQL Server
   ansible.builtin.systemd:
     name: mssql-server.service
     enabled: true
-    state: "{{ 'restarted' if agent_sandbox_worker_mssql_tcpport.changed | default(false) else 'started' }}"
-  when: agent_sandbox_worker_mssql_enabled | bool
+    state: "{{ 'restarted' if evander_worker_mssql_tcpport.changed | default(false) else 'started' }}"
+  when: evander_worker_mssql_enabled | bool
 
 - name: Install SQL Server client tools
   ansible.builtin.apt:
-    name: "{{ agent_sandbox_worker_mssql_tools_packages }}"
+    name: "{{ evander_worker_mssql_tools_packages }}"
     state: present
   environment:
     ACCEPT_EULA: "Y"
-  when: agent_sandbox_worker_mssql_enabled | bool
+  when: evander_worker_mssql_enabled | bool
 
 - name: Allow local SQL Server health checks
   ansible.builtin.command:
@@ -145,15 +145,15 @@
       - -p
       - tcp
       - --dport
-      - "{{ agent_sandbox_worker_mssql_port }}"
+      - "{{ evander_worker_mssql_port }}"
       - -j
       - ACCEPT
-  register: agent_sandbox_worker_mssql_loopback_rule
+  register: evander_worker_mssql_loopback_rule
   failed_when: false
   changed_when: false
   when:
-    - agent_sandbox_worker_mssql_enabled | bool
-    - agent_sandbox_worker_mssql_manage_iptables | bool
+    - evander_worker_mssql_enabled | bool
+    - evander_worker_mssql_manage_iptables | bool
 
 - name: Insert local SQL Server health-check firewall rule
   ansible.builtin.command:
@@ -167,13 +167,13 @@
       - -p
       - tcp
       - --dport
-      - "{{ agent_sandbox_worker_mssql_port }}"
+      - "{{ evander_worker_mssql_port }}"
       - -j
       - ACCEPT
   when:
-    - agent_sandbox_worker_mssql_enabled | bool
-    - agent_sandbox_worker_mssql_manage_iptables | bool
-    - agent_sandbox_worker_mssql_loopback_rule.rc != 0
+    - evander_worker_mssql_enabled | bool
+    - evander_worker_mssql_manage_iptables | bool
+    - evander_worker_mssql_loopback_rule.rc != 0
 
 - name: Allow Docker bridge SQL Server access
   ansible.builtin.command:
@@ -184,17 +184,17 @@
       - -p
       - tcp
       - --dport
-      - "{{ agent_sandbox_worker_mssql_port }}"
+      - "{{ evander_worker_mssql_port }}"
       - -s
-      - "{{ agent_sandbox_worker_mssql_allowed_source_cidr }}"
+      - "{{ evander_worker_mssql_allowed_source_cidr }}"
       - -j
       - ACCEPT
-  register: agent_sandbox_worker_mssql_docker_rule
+  register: evander_worker_mssql_docker_rule
   failed_when: false
   changed_when: false
   when:
-    - agent_sandbox_worker_mssql_enabled | bool
-    - agent_sandbox_worker_mssql_manage_iptables | bool
+    - evander_worker_mssql_enabled | bool
+    - evander_worker_mssql_manage_iptables | bool
 
 - name: Insert Docker bridge SQL Server firewall rule
   ansible.builtin.command:
@@ -206,15 +206,15 @@
       - -p
       - tcp
       - --dport
-      - "{{ agent_sandbox_worker_mssql_port }}"
+      - "{{ evander_worker_mssql_port }}"
       - -s
-      - "{{ agent_sandbox_worker_mssql_allowed_source_cidr }}"
+      - "{{ evander_worker_mssql_allowed_source_cidr }}"
       - -j
       - ACCEPT
   when:
-    - agent_sandbox_worker_mssql_enabled | bool
-    - agent_sandbox_worker_mssql_manage_iptables | bool
-    - agent_sandbox_worker_mssql_docker_rule.rc != 0
+    - evander_worker_mssql_enabled | bool
+    - evander_worker_mssql_manage_iptables | bool
+    - evander_worker_mssql_docker_rule.rc != 0
 
 - name: Check default SQL Server deny firewall rule
   ansible.builtin.command:
@@ -225,15 +225,15 @@
       - -p
       - tcp
       - --dport
-      - "{{ agent_sandbox_worker_mssql_port }}"
+      - "{{ evander_worker_mssql_port }}"
       - -j
       - DROP
-  register: agent_sandbox_worker_mssql_drop_rule
+  register: evander_worker_mssql_drop_rule
   failed_when: false
   changed_when: false
   when:
-    - agent_sandbox_worker_mssql_enabled | bool
-    - agent_sandbox_worker_mssql_manage_iptables | bool
+    - evander_worker_mssql_enabled | bool
+    - evander_worker_mssql_manage_iptables | bool
 
 - name: Insert default SQL Server deny firewall rule
   ansible.builtin.command:
@@ -244,28 +244,28 @@
       - -p
       - tcp
       - --dport
-      - "{{ agent_sandbox_worker_mssql_port }}"
+      - "{{ evander_worker_mssql_port }}"
       - -j
       - DROP
   when:
-    - agent_sandbox_worker_mssql_enabled | bool
-    - agent_sandbox_worker_mssql_manage_iptables | bool
-    - agent_sandbox_worker_mssql_drop_rule.rc != 0
+    - evander_worker_mssql_enabled | bool
+    - evander_worker_mssql_manage_iptables | bool
+    - evander_worker_mssql_drop_rule.rc != 0
 
 - name: Verify SQL Server admin connectivity
   ansible.builtin.command:
     argv:
-      - "{{ agent_sandbox_worker_mssql_sqlcmd_path }}"
+      - "{{ evander_worker_mssql_sqlcmd_path }}"
       - -S
-      - "{{ agent_sandbox_worker_mssql_admin_host }},{{ agent_sandbox_worker_mssql_port }}"
+      - "{{ evander_worker_mssql_admin_host }},{{ evander_worker_mssql_port }}"
       - -U
-      - "{{ agent_sandbox_worker_mssql_admin_user }}"
+      - "{{ evander_worker_mssql_admin_user }}"
       - -C
       - -b
       - -Q
       - "SELECT 1"
   environment:
-    SQLCMDPASSWORD: "{{ agent_sandbox_worker_mssql_admin_password }}"
+    SQLCMDPASSWORD: "{{ evander_worker_mssql_admin_password }}"
   no_log: true
   changed_when: false
-  when: agent_sandbox_worker_mssql_enabled | bool
+  when: evander_worker_mssql_enabled | bool

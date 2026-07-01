@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.orchestration import kernels
-from agent_sandbox.orchestration.host_polling import (
+from evander.orchestration import kernels
+from evander.orchestration.host_polling import (
     HostWakeNotifier,
     HostWakeSleeper,
     wake_socket_path_for_lock,
 )
-from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
+from evander.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 
 
 class _FakeLock:
@@ -202,7 +202,7 @@ def test_host_wake_notifier_noops_when_receiver_is_missing(tmp_path: Path) -> No
 
 
 def test_kernel_module_has_no_platform_specific_imports() -> None:
-    source = Path("src/agent_sandbox/orchestration/kernels.py").read_text(encoding="utf-8")
+    source = Path("src/evander/orchestration/kernels.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     imported: set[str] = set()
     for node in ast.walk(tree):
@@ -211,9 +211,9 @@ def test_kernel_module_has_no_platform_specific_imports() -> None:
         if isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
     forbidden_prefixes = (
-        "agent_sandbox.admin.composition",
-        "agent_sandbox.platform_integrations",
-        "agent_sandbox.provider_config",
+        "evander.admin.composition",
+        "evander.platform_integrations",
+        "evander.provider_config",
     )
     assert all(
         not any(name.startswith(prefix) for prefix in forbidden_prefixes) for name in imported

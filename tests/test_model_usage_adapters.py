@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
-from agent_sandbox.model_usage.adapters import (
+from evander.model_usage.adapters import (
     MappingModelUsageExtractor,
     ModelUsageExtractionRequest,
 )
-from agent_sandbox.model_usage.models import ModelUsageCorrelationContext
+from evander.model_usage.models import ModelUsageCorrelationContext
 
 
 def test_mapping_model_usage_extractor_normalizes_provider_neutral_usage() -> None:

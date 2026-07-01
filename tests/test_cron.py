@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from agent_sandbox.cron import (
+from evander.cron import (
     cron_min_interval_seconds,
     latest_cron_time_on_or_before,
     next_cron_time,

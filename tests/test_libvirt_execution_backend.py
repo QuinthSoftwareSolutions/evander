@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
-from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
-from agent_sandbox.execution.libvirt_backend import LibvirtVmExecutionBackend
-from agent_sandbox.models import VmActionResult, VmSummary
+from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
+from evander.execution.libvirt_backend import LibvirtVmExecutionBackend
+from evander.models import VmActionResult, VmSummary
 
 
 @dataclass

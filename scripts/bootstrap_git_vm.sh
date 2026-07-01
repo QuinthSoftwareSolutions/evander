@@ -14,11 +14,11 @@ Arguments:
 
 Environment:
   SSH_KEY_PATH                    Private key matching the guest authorized key.
-  AGENT_SANDBOX_GIT_HOST          Host SSH endpoint for guest Git access.
-  AGENT_SANDBOX_GIT_USER          Host user that owns the bare remotes.
-  AGENT_SANDBOX_GIT_ROOT          Host directory containing bare remotes.
-  AGENT_SANDBOX_GIT_SSH_ALIAS     Guest SSH host alias. Default: agent-sandbox-git-host
-  AGENT_SANDBOX_GIT_ALLOWED_FROM  Source CIDR allowed in the host authorized_keys entry.
+  EVANDER_GIT_HOST          Host SSH endpoint for guest Git access.
+  EVANDER_GIT_USER          Host user that owns the bare remotes.
+  EVANDER_GIT_ROOT          Host directory containing bare remotes.
+  EVANDER_GIT_SSH_ALIAS     Guest SSH host alias. Default: evander-git-host
+  EVANDER_GIT_ALLOWED_FROM  Source CIDR allowed in the host authorized_keys entry.
   Values can also come from root directory-scoped issue setup config.
 EOF
 }
@@ -51,11 +51,11 @@ fi
 
 load_issue_setup_config
 
-GIT_HOST="${AGENT_SANDBOX_GIT_HOST:-192.168.250.1}"
-GIT_USER="${AGENT_SANDBOX_GIT_USER:-${CALLER_USER}}"
-GIT_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
-GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
-GIT_ALLOWED_FROM="${AGENT_SANDBOX_GIT_ALLOWED_FROM:-192.168.250.0/24}"
+GIT_HOST="${EVANDER_GIT_HOST:-192.168.250.1}"
+GIT_USER="${EVANDER_GIT_USER:-${CALLER_USER}}"
+GIT_ROOT="${EVANDER_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
+GIT_SSH_ALIAS="${EVANDER_GIT_SSH_ALIAS:-evander-git-host}"
+GIT_ALLOWED_FROM="${EVANDER_GIT_ALLOWED_FROM:-192.168.250.0/24}"
 WRAPPER_PATH="${ROOT_DIR}/scripts/git_ssh_command_wrapper.sh"
 AUTHORIZED_KEYS_PATH="${CALLER_HOME}/.ssh/authorized_keys"
 SSH_OPTS=(
@@ -95,12 +95,12 @@ set -euo pipefail
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 
-KEY_PATH="$HOME/.ssh/agent-sandbox-git"
+KEY_PATH="$HOME/.ssh/evander-git"
 CONFIG_PATH="$HOME/.ssh/config"
 KNOWN_HOSTS_PATH="$HOME/.ssh/known_hosts"
 
 if [[ ! -f "${KEY_PATH}" ]]; then
-  ssh-keygen -q -t ed25519 -N "" -C "agent-sandbox-git@${VM_NAME}" -f "${KEY_PATH}"
+  ssh-keygen -q -t ed25519 -N "" -C "evander-git@${VM_NAME}" -f "${KEY_PATH}"
 fi
 
 touch "${CONFIG_PATH}" "${KNOWN_HOSTS_PATH}"
@@ -112,8 +112,8 @@ import sys
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8") if path.exists() else ""
-begin = "# BEGIN agent-sandbox git host"
-end = "# END agent-sandbox git host"
+begin = "# BEGIN evander git host"
+end = "# END evander git host"
 while begin in text and end in text:
     start = text.index(begin)
     stop = text.index(end, start) + len(end)
@@ -124,14 +124,14 @@ path.write_text(text, encoding="utf-8")
 PY
 
 cat >> "${CONFIG_PATH}" <<CONFIG
-# BEGIN agent-sandbox git host
+# BEGIN evander git host
 Host ${GIT_SSH_ALIAS}
   HostName ${GIT_HOST}
   User ${GIT_USER}
-  IdentityFile ~/.ssh/agent-sandbox-git
+  IdentityFile ~/.ssh/evander-git
   IdentitiesOnly yes
   StrictHostKeyChecking accept-new
-# END agent-sandbox git host
+# END evander git host
 CONFIG
 
 ssh-keyscan -H "${GIT_HOST}" >> "${KNOWN_HOSTS_PATH}" 2>/dev/null || true

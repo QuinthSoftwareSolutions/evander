@@ -81,8 +81,8 @@ echo "Bootstrapping .NET into ${VM_USER}@${VM_IP}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
-  mkdir -p ~/toolchains/dotnet ~/.dotnet-cli ~/.dotnet ~/.nuget/packages ~/.agent-sandbox
-  chmod 700 ~/.agent-sandbox
+  mkdir -p ~/toolchains/dotnet ~/.dotnet-cli ~/.dotnet ~/.nuget/packages ~/.evander
+  chmod 700 ~/.evander
   rm -rf ~/toolchains/dotnet/*
 "
 

@@ -6,13 +6,13 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.tool_visibility import (
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.tool_visibility import (
     ToolVisibilityBindingState,
     ToolVisibilityManifestState,
 )
-from agent_sandbox.admin.web.app import create_app
-from agent_sandbox.models import SessionManifest, ToolName
+from evander.admin.web.app import create_app
+from evander.models import SessionManifest, ToolName
 
 
 def write_config(tmp_path: Path) -> Path:

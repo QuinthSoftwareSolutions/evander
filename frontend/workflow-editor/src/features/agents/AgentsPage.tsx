@@ -3,6 +3,19 @@ import type { ReactNode } from "react";
 
 import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import {
+  DisableIcon,
+  DestroyIcon,
+  EditIcon,
+  EnableIcon,
+  KillIcon,
+  PowerIcon,
+  ResumeIcon,
+  SkillIcon,
+  SteeringIcon,
+  StartIcon,
+  StopIcon,
+} from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import { OptionMultiSelectEditor, StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
@@ -976,119 +989,6 @@ function promptQueueSummaryText(summary: AgentPromptQueueSummary): string {
     return `${summary.record_count} queued`;
   }
   return `${summary.record_count} records / ${summary.coalesced_count} prompts`;
-}
-
-function AgentIcon({ children, viewBox = "0 0 24 24" }: { children: ReactNode; viewBox?: string }) {
-  return (
-    <svg aria-hidden="true" viewBox={viewBox} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      {children}
-    </svg>
-  );
-}
-
-function StartIcon() {
-  return (
-    <AgentIcon>
-      <path d="M8 6.5v11l8-5.5z" fill="currentColor" stroke="none" />
-    </AgentIcon>
-  );
-}
-
-function StopIcon() {
-  return (
-    <AgentIcon>
-      <rect x="7.5" y="7.5" width="9" height="9" rx="1.5" fill="currentColor" stroke="none" />
-    </AgentIcon>
-  );
-}
-
-function PowerIcon() {
-  return (
-    <AgentIcon>
-      <path d="M12 3.5v7" />
-      <path d="M7.2 6.8a8 8 0 1 0 9.6 0" />
-    </AgentIcon>
-  );
-}
-
-function ResumeIcon() {
-  return (
-    <AgentIcon>
-      <path d="M7.5 7.5H4.5v-3" />
-      <path d="M4.7 11a7.5 7.5 0 1 1 2.2 6.1" />
-    </AgentIcon>
-  );
-}
-
-function EnableIcon() {
-  return (
-    <AgentIcon>
-      <circle cx="12" cy="12" r="8" />
-      <path d="m8.8 12.2 2.1 2.1 4.5-4.8" />
-    </AgentIcon>
-  );
-}
-
-function DisableIcon() {
-  return (
-    <AgentIcon>
-      <circle cx="12" cy="12" r="8" />
-      <path d="M8.2 15.8 15.8 8.2" />
-    </AgentIcon>
-  );
-}
-
-function KillIcon() {
-  return (
-    <AgentIcon>
-      <path d="M9 4.8h6l4.2 4.2v6L15 19.2H9L4.8 15v-6z" />
-      <path d="m9.4 9.4 5.2 5.2" />
-      <path d="m14.6 9.4-5.2 5.2" />
-    </AgentIcon>
-  );
-}
-
-function DestroyIcon() {
-  return (
-    <AgentIcon>
-      <path d="M5.5 7.5h13" />
-      <path d="M9 7.5v-2h6v2" />
-      <path d="M8.5 10.5v6" />
-      <path d="M12 10.5v6" />
-      <path d="M15.5 10.5v6" />
-      <path d="M7.5 7.5v10.2a1.3 1.3 0 0 0 1.3 1.3h6.4a1.3 1.3 0 0 0 1.3-1.3V7.5" />
-    </AgentIcon>
-  );
-}
-
-function EditIcon() {
-  return (
-    <AgentIcon>
-      <path d="M5 19h4.2L18.4 9.8a2.1 2.1 0 0 0-3-3L6.2 16H5z" />
-      <path d="m13.9 8.3 1.8 1.8" />
-    </AgentIcon>
-  );
-}
-
-function SkillIcon() {
-  return (
-    <AgentIcon>
-      <path d="M6.5 5.5h8.2L18 8.8v9.7H6.5z" />
-      <path d="M14.7 5.5v3.3H18" />
-      <path d="M9 12h6" />
-      <path d="M9 15h4" />
-    </AgentIcon>
-  );
-}
-
-function SteeringIcon() {
-  return (
-    <AgentIcon>
-      <path d="M5.5 6.5h13v8h-5.4L9.2 18v-3.5H5.5z" />
-      <path d="M8.5 9.5h7" />
-      <path d="M8.5 12h4.5" />
-    </AgentIcon>
-  );
 }
 
 export function AgentsPage() {

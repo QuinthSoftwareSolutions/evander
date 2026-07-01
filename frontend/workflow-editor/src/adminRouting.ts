@@ -3,6 +3,7 @@ export type BuiltinAdminTab =
   | "agents"
   | "approvals"
   | "artifacts"
+  | "addons"
   | "skills"
   | "vms"
   | "issues"
@@ -52,6 +53,7 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "agents", label: "Agents", shortLabel: "Agents", description: "Active and historical execution targets." },
   { key: "approvals", label: "Approvals", shortLabel: "Approvals", description: "Review guarded approval requests and queued decisions." },
   { key: "artifacts", label: "Artifacts", shortLabel: "Artifacts", description: "Resolve and download durable agent artifact archives." },
+  { key: "addons", label: "Add-ons", shortLabel: "Add-ons", description: "Enable, disable, and inspect runtime add-ons." },
   { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library." },
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and issue records." },

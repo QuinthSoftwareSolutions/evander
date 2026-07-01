@@ -5,15 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.execution import ExecutionSpec, ExecutionStatusKind
-from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
-from agent_sandbox.execution.container_worker_client import ContainerWorkerClientError
-from agent_sandbox.execution.container_worker_repository import (
+from evander.config import GatewayConfig
+from evander.execution import ExecutionSpec, ExecutionStatusKind
+from evander.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
+from evander.execution.container_worker_client import ContainerWorkerClientError
+from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
 )
-from agent_sandbox.worker.models import (
+from evander.worker.models import (
     WorkerFileWriteRecord,
     WorkerFileWriteRequest,
     WorkerJobRecord,

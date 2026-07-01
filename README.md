@@ -1,6 +1,6 @@
-# Agent Sandbox
+# Evander
 
-`agent-sandbox` is a host-side control plane for running autonomous AI agents inside disposable libvirt VMs while exposing only narrow, audited capabilities through MCP.
+`evander` is a host-side control plane for running autonomous AI agents inside disposable libvirt VMs while exposing only narrow, audited capabilities through MCP.
 
 ## What This Scaffold Includes
 
@@ -99,7 +99,7 @@ Directory-scoped config is rooted at `root`:
 4. Start the MCP gateway:
 
    ```bash
-   agent-sandbox-gateway --runtime-dir runtime
+   evander-gateway --runtime-dir runtime
    ```
 
 5. Create the libvirt network and firewall policy:
@@ -116,16 +116,16 @@ Directory-scoped config is rooted at `root`:
    ```bash
    export OPENAI_API_KEY=...
    export DISCORD_BOT_TOKEN=...
-   agent-sandbox-gateway --runtime-dir runtime
-   agent-sandbox-openai-relay --runtime-dir runtime
+   evander-gateway --runtime-dir runtime
+   evander-openai-relay --runtime-dir runtime
    ```
 
    Optional DIDWW/OpenAI Realtime phone calls require Asterisk with a DIDWW PJSIP
-   trunk plus `agent-sandbox-didww-sip-bridge --runtime-dir runtime`. The bridge
+   trunk plus `evander-didww-sip-bridge --runtime-dir runtime`. The bridge
    keeps SIP, RTP, and OpenAI credentials on the host and is only reached by the
    gateway through `phone_call_backend=openai_realtime_didww`.
    When `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS=true`, the same bridge also
-   listens for inbound `Stasis(agent_sandbox_didww,inbound:<did-or-route-id>)`
+   listens for inbound `Stasis(evander_didww,inbound:<did-or-route-id>)`
    events and provisions fixed routes through the gateway using
    `VOICE_MEDIA_CONTROLLER_TOKEN`. After the inbound call reaches a terminal
    bridge state, it syncs the sanitized result back to the gateway so the
@@ -146,10 +146,10 @@ Directory-scoped config is rooted at `root`:
    [docs/libvirt-vm-template-operations.md](docs/libvirt-vm-template-operations.md).
 
    By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes host-side OpenAI-compatible and Anthropic-compatible relay base URLs on `http://192.168.250.1:11434`. Override with `SSH_PUBLIC_KEY_FILE=...`, `SSH_PRIVATE_KEY_PATH=...`, `LLM_BASE_URL=...`, or `ANTHROPIC_BASE_URL=...` if needed.
-   It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
+   It also creates a shared host NuGet cache under `/var/lib/libvirt/images/evander/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/evander/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
-   New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; provider-specific config is written later by `bootstrap_codex_vm.sh`, `bootstrap_claude_vm.sh`, or `bootstrap_copilot_vm.sh`. The `agent` user is the unprivileged runtime user; `agent-admin` is the host-control SSH user for privileged setup, resume, and root-owned log access. Cloud-init asks Ubuntu to install `ripgrep`, and provider bootstraps also seed a host `rg` binary into `~/bin/rg` so existing VMs can be repaired without guest internet.
-   Host-side guest SSH commands cache guest host keys in `~/.ssh/agent-sandbox-known_hosts` keyed by VM name, so repeated `list-vms`, bootstrap, and `evander-cli ssh` calls stay quiet while preserving normal SSH host-key warnings.
+   New VMs receive provider-neutral baseline config (`/etc/evander/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; provider-specific config is written later by `bootstrap_codex_vm.sh`, `bootstrap_claude_vm.sh`, or `bootstrap_copilot_vm.sh`. The `agent` user is the unprivileged runtime user; `agent-admin` is the host-control SSH user for privileged setup, resume, and root-owned log access. Cloud-init asks Ubuntu to install `ripgrep`, and provider bootstraps also seed a host `rg` binary into `~/bin/rg` so existing VMs can be repaired without guest internet.
+   Host-side guest SSH commands cache guest host keys in `~/.ssh/evander-known_hosts` keyed by VM name, so repeated `list-vms`, bootstrap, and `evander-cli ssh` calls stay quiet while preserving normal SSH host-key warnings.
    To see all currently running VMs together with live guest agent status, run `evander-cli list-vms`.
 
 8. (Optional) Bootstrap a provider runtime inside the VM:
@@ -160,13 +160,13 @@ Directory-scoped config is rooted at `root`:
    ./scripts/bootstrap_copilot_vm.sh vm-real
    ```
 
-   By default, orchestration uses provider-neutral agent run state under `/home/agent/.agent-sandbox` (`agent-*.state`, `agent-*.pid`, and runner helper files). Agent transcripts are written by the privileged host-control path to root-owned logs under `/var/log/agent-sandbox/agent-runs`, so the unprivileged `agent` user cannot read or edit prior transcripts.
+   By default, orchestration uses provider-neutral agent run state under `/home/agent/.evander` (`agent-*.state`, `agent-*.pid`, and runner helper files). Agent transcripts are written by the privileged host-control path to root-owned logs under `/var/log/evander/agent-runs`, so the unprivileged `agent` user cannot read or edit prior transcripts.
    Legacy VMs that still rely on `agent` for sudo should be recreated or migrated; for one-off maintenance against an old VM, set `VM_SSH_USER=agent` explicitly.
    To seed `rg` into a current VM without rerunning a provider bootstrap, run `./scripts/bootstrap_ripgrep_vm.sh <vm-name> [vm-user]`.
 
    ### Codex provider bootstrap
 
-   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay through the `evander_openai_relay` provider with bootstrap defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), disables Codex websocket prewarm for that relay provider, registers the host MCP gateway as `agent_sandbox`, copies the host Codex model cache when available so offline guests see the same model menu, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
+   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay through the `evander_openai_relay` provider with bootstrap defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), disables Codex websocket prewarm for that relay provider, registers the host MCP gateway as `evander`, copies the host Codex model cache when available so offline guests see the same model menu, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
 
    ### Claude Code provider bootstrap
 
@@ -174,7 +174,7 @@ Directory-scoped config is rooted at `root`:
 
    ### GitHub Copilot CLI provider bootstrap
 
-   This copies the host `copilot` binary into the guest user's `~/bin`, writes `~/.copilot/mcp-config.json` so Copilot CLI can reach the host MCP gateway as `agent_sandbox`, installs a guest `gh` shim that serves `gh auth token` from a host gateway endpoint using the active `session_id`, sets `COPILOT_HOME` to `~/.copilot`, and verifies `copilot version`. The long-lived GitHub token stays on the host in the effective `github_token_env` provider setting and is not persisted in the guest. If you intentionally set `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, or run `copilot login`, those methods still take precedence over the host-mediated `gh` fallback.
+   This copies the host `copilot` binary into the guest user's `~/bin`, writes `~/.copilot/mcp-config.json` so Copilot CLI can reach the host MCP gateway as `evander`, installs a guest `gh` shim that serves `gh auth token` from a host gateway endpoint using the active `session_id`, sets `COPILOT_HOME` to `~/.copilot`, and verifies `copilot version`. The long-lived GitHub token stays on the host in the effective `github_token_env` provider setting and is not persisted in the guest. If you intentionally set `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, or run `copilot login`, those methods still take precedence over the host-mediated `gh` fallback.
 
 9. Optionally install the host `.NET` SDK into the VM:
 
@@ -198,7 +198,7 @@ Directory-scoped config is rooted at `root`:
    ./scripts/bootstrap_python_packages_vm.sh vm-real openai
    ```
 
-   This builds a temporary host wheelhouse for the requested package specs, copies it into the guest, creates or reuses a guest tools virtualenv under `~/.agent-sandbox/python-tools-venv`, and installs those packages offline there.
+   This builds a temporary host wheelhouse for the requested package specs, copies it into the guest, creates or reuses a guest tools virtualenv under `~/.evander/python-tools-venv`, and installs those packages offline there.
 
 11. Optionally install host-relay NuGet sources into the VM:
 
@@ -250,23 +250,23 @@ Install the gateway and relay services:
 sudo ./scripts/install_systemd_units.sh
 $EDITOR config/admin-web.env
 $EDITOR config/firewall.env
-sudo systemctl start agent-sandbox-admin-web.service
-sudo systemctl start agent-sandbox-firewall.service
-sudo systemctl start agent-sandbox-gateway.service
-sudo systemctl start agent-sandbox-openai-relay.service
-sudo systemctl start agent-sandbox-didww-sip-bridge.service
-sudo systemctl start agent-sandbox-nuget-relay.service
-sudo systemctl start agent-sandbox-npm-audit-facade.service
-sudo systemctl start agent-sandbox-ado-worker.service
-sudo systemctl start agent-sandbox-proxy-issue-sync.service
-sudo systemctl start agent-sandbox-discord-wake.service
-sudo systemctl start agent-sandbox-scheduled-wake.service
+sudo systemctl start evander-admin-web.service
+sudo systemctl start evander-firewall.service
+sudo systemctl start evander-gateway.service
+sudo systemctl start evander-openai-relay.service
+sudo systemctl start evander-didww-sip-bridge.service
+sudo systemctl start evander-nuget-relay.service
+sudo systemctl start evander-npm-audit-facade.service
+sudo systemctl start evander-ado-worker.service
+sudo systemctl start evander-proxy-issue-sync.service
+sudo systemctl start evander-discord-wake.service
+sudo systemctl start evander-scheduled-wake.service
 ```
 
 For fresh-host Ubuntu 24.04 deployment paths that wrap this same repo-native flow with Ansible,
 including the dedicated container-worker VM playbook, see `ansible/README.md`.
 
-When you expose `agent-sandbox-admin-web` beyond localhost, configure auth in `config/admin-web.env`
+When you expose `evander-admin-web` beyond localhost, configure auth in `config/admin-web.env`
 and put TLS plus ingress policy in front of the service.
 
 ## Admin Web Operations Dashboard
@@ -301,40 +301,40 @@ inspecting runtime activity.
 
 ## Admin Web Authentication
 
-`agent-sandbox-admin-web` now supports three explicit auth modes:
+`evander-admin-web` now supports three explicit auth modes:
 
-- `none`: default when no auth mode is configured and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is unset.
+- `none`: default when no auth mode is configured and `EVANDER_ADMIN_WEB_PASSWORD` is unset.
 - `local_password`: local username/password sign-in with one or more Admin Web users and the
   existing signed local session cookie.
 - `azure_sso`: Microsoft Entra browser sign-in using OIDC Authorization Code + PKCE, followed by the same local signed session cookie used by the rest of the admin API.
 
 Backward compatibility is preserved:
 
-- If `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is unset, the admin web stays in `none`.
-- If `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is set, the admin web behaves as `local_password`.
+- If `EVANDER_ADMIN_WEB_AUTH_MODE` is unset and `EVANDER_ADMIN_WEB_PASSWORD` is unset, the admin web stays in `none`.
+- If `EVANDER_ADMIN_WEB_AUTH_MODE` is unset and `EVANDER_ADMIN_WEB_PASSWORD` is set, the admin web behaves as `local_password`.
 
 Common auth env vars:
 
-- `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=none|local_password|azure_sso`
-- `AGENT_SANDBOX_ADMIN_WEB_USERNAME` for `local_password` bootstrap/break-glass access. Default: `admin`
-- `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` for `local_password` bootstrap/break-glass access
-- `AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET` for the signed local session cookie
-- `AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS` for the local session lifetime
-- `AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE=true|false`
+- `EVANDER_ADMIN_WEB_AUTH_MODE=none|local_password|azure_sso`
+- `EVANDER_ADMIN_WEB_USERNAME` for `local_password` bootstrap/break-glass access. Default: `admin`
+- `EVANDER_ADMIN_WEB_PASSWORD` for `local_password` bootstrap/break-glass access
+- `EVANDER_ADMIN_WEB_SESSION_SECRET` for the signed local session cookie
+- `EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS` for the local session lifetime
+- `EVANDER_ADMIN_WEB_COOKIE_SECURE=true|false`
 
 Azure SSO env vars:
 
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI`
-  or `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`, which is combined with `/api/auth/azure-sso/callback`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL`
+- `EVANDER_ADMIN_WEB_AZURE_TENANT_ID`
+- `EVANDER_ADMIN_WEB_AZURE_CLIENT_ID`
+- `EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET`
+- `EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI`
+  or `EVANDER_ADMIN_WEB_PUBLIC_BASE_URL`, which is combined with `/api/auth/azure-sso/callback`
+- `EVANDER_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL`
   Default: `https://login.microsoftonline.com`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`
+- `EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS`
   Optional first-run seed list of admin user principal names / email-style logins, for example
   `alice@example.com,bob@example.com`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
+- `EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
   Default: `/`
 
 Azure SSO is optional and disabled by default. To enable it:
@@ -342,12 +342,12 @@ Azure SSO is optional and disabled by default. To enable it:
 1. Register a confidential Microsoft Entra web application.
 2. Add the admin web callback URL as a redirect URI.
 3. Ensure the app can request OpenID scopes: `openid profile email`.
-4. Set the tenant you intend to trust with `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`.
-5. For the first startup, set `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` to the initial admin UPN/email-style identities.
+4. Set the tenant you intend to trust with `EVANDER_ADMIN_WEB_AZURE_TENANT_ID`.
+5. For the first startup, set `EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS` to the initial admin UPN/email-style identities.
 
 Admin Web users are managed in `runtime/admin-web.db` through the Admin Web Users & Groups tab.
-In `local_password` mode, `AGENT_SANDBOX_ADMIN_WEB_USERNAME` and
-`AGENT_SANDBOX_ADMIN_WEB_PASSWORD` seed the first local owner and remain a break-glass credential;
+In `local_password` mode, `EVANDER_ADMIN_WEB_USERNAME` and
+`EVANDER_ADMIN_WEB_PASSWORD` seed the first local owner and remain a break-glass credential;
 additional users get per-user password hashes through Users & Groups. In `azure_sso` mode, the env
 allowed-user list is only read when the SQLite user table is empty, and imported users receive the
 seeded Owner group. A legacy `runtime/admin-web-users.json` file is imported once when the SQLite
@@ -365,7 +365,7 @@ Sign-out clears only the local admin session cookie. v1 does not force Microsoft
 
 ### Trigger orchestrator
 
-The scaffold includes `agent-sandbox-trigger-orchestrator`, a host-side worker that:
+The scaffold includes `evander-trigger-orchestrator`, a host-side worker that:
 
 - validates and loads trigger definitions from `config/trigger-orchestrator/config.json`
 - polls provider-specific trigger implementations (`cron`, `ticket`, `discord`, `email`, `pull-request`, `git`)
@@ -379,13 +379,13 @@ The scaffold includes `agent-sandbox-trigger-orchestrator`, a host-side worker t
 One-shot cycle execution is supported for ops/debugging:
 
 ```bash
-agent-sandbox-trigger-orchestrator --runtime-dir runtime --once --log-level INFO
+evander-trigger-orchestrator --runtime-dir runtime --once --log-level INFO
 ```
 
 For continuous operation, run the systemd unit:
 
 ```bash
-sudo systemctl start agent-sandbox-trigger-orchestrator.service
+sudo systemctl start evander-trigger-orchestrator.service
 ```
 
 The generated units run as your user where appropriate. Runtime settings come from runtime/root
@@ -397,7 +397,7 @@ For private PR feedback polling, the service environment must provide `GITHUB_TO
 
 ### Azure DevOps worker and work-item workflows
 
-`agent-sandbox-ado-worker` now owns Azure DevOps PR feedback and completion polling only. For
+`evander-ado-worker` now owns Azure DevOps PR feedback and completion polling only. For
 foreground operation, run:
 
 ```bash
@@ -420,8 +420,8 @@ uses workflow-configured work-item and comment filters, keeps its own cursor in
 `runtime/trigger-cursors-ado-work-item-comments.json`, and baselines existing comments unless
 `include_existing` is explicitly enabled.
 
-The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
-`agent-sandbox-proxy-issue-sync` is the companion freshness worker for local Azure DevOps proxy
+The dedicated worker entry point is also available as `evander-ado-worker` for systemd.
+`evander-proxy-issue-sync` is the companion freshness worker for local Azure DevOps proxy
 issues. It runs every five minutes by default, batches remote summary reads, skips comments, and
 refreshes `runtime/local-issues.json` so ticket triggers and UI screens continue to read local
 state.
@@ -432,7 +432,7 @@ PR automation flags and can provide `ado_repo_source` for workflows that choose 
 
 ## Admin Web And CLI
 
-Use `agent-sandbox-admin-web` for the operator GUI and `evander-cli` for terminal
+Use `evander-admin-web` for the operator GUI and `evander-cli` for terminal
 automation. Admin Web now includes an Approvals tab for reviewing queued approval requests in the
 browser, while the CLI remains available for terminal-based review. Issue handling is a single
 local abstraction in both Admin Web and CLI flows:
@@ -490,7 +490,7 @@ curl -X POST http://127.0.0.1:8100/api/workflow-events \
   }'
 ```
 
-For server-to-server publishers, set `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS` on Admin Web
+For server-to-server publishers, set `EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS` on Admin Web
 to one or more comma-separated `source-name:token` entries. The token value is used in the same
 `Authorization: Bearer ...` header, and the matching source name is recorded on
 machine-authenticated events. Token values must not contain commas or colons.
@@ -503,7 +503,7 @@ example `${{trigger-external-deploy.payload.target}}`.
 
 For public inbound workflows, configure `trigger:http:webhook` and POST to
 `/api/workflow-webhooks/{slug}`. The request body must be a JSON object, and the signature header
-must be `X-Agent-Sandbox-Signature-256: sha256=<hex>`, where the HMAC-SHA256 is computed over the
+must be `X-Evander-Signature-256: sha256=<hex>`, where the HMAC-SHA256 is computed over the
 exact raw request body bytes with the configured secret.
 
 The webhook trigger stores the durable event as `external.webhook.<slug>` by default, exposes the
@@ -521,7 +521,7 @@ SIG="$(
 
 curl -X POST http://127.0.0.1:8100/api/workflow-webhooks/deploy \
   -H "Content-Type: application/json" \
-  -H "X-Agent-Sandbox-Signature-256: sha256=${SIG}" \
+  -H "X-Evander-Signature-256: sha256=${SIG}" \
   -d "$WEBHOOK_BODY"
 ```
 
@@ -570,11 +570,11 @@ already contain `package.json` plus `node_modules`.
 
 The guest clone URL is also derived from configurable Git-root settings:
 
-- `AGENT_SANDBOX_GIT_ROOT` selects the host bare-remote root. Set it in the `root`
+- `EVANDER_GIT_ROOT` selects the host bare-remote root. Set it in the `root`
   issue setup config or as a host environment variable, and make sure it already exists
   before guest clone starts.
-- `AGENT_SANDBOX_GIT_SSH_ALIAS` controls the SSH alias used in the guest clone URL
-  (default: `agent-sandbox-git-host`).
+- `EVANDER_GIT_SSH_ALIAS` controls the SSH alias used in the guest clone URL
+  (default: `evander-git-host`).
 
 That now also clones the mirrored repo into the guest user's home directory using
 the host repo basename, for example `/home/agent/AcmePlatform`. It also writes a short
@@ -584,7 +584,7 @@ repo-local `git sync-base` and `git push-agent` aliases, and starts a background
 inside the guest by default. `sync-base` merges the latest configured base branch via `origin`,
 while `push-agent` verifies the destination and base branches before using the safe
 session-namespaced push pattern. The guest-side PID and state files live under
-`/home/agent/.agent-sandbox/`; root-owned transcript logs live under `/var/log/agent-sandbox/agent-runs/`.
+`/home/agent/.evander/`; root-owned transcript logs live under `/var/log/evander/agent-runs/`.
 VM and container agents share `/artifacts` as the workflow-readable artifacts
 folder. Agents can call the `stage_artifact` MCP tool to copy a file or
 directory from `/home/agent` into this folder without leaving their working
@@ -623,8 +623,8 @@ number of recent lines first, then follows the guest agent log live over SSH.
 
 Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:
 
-Set the `root` issue setup config values for `AGENT_SANDBOX_GIT_ROOT`,
-`AGENT_SANDBOX_GIT_HOST`, `AGENT_SANDBOX_GIT_USER`, and `AGENT_SANDBOX_GIT_SSH_ALIAS`
+Set the `root` issue setup config values for `EVANDER_GIT_ROOT`,
+`EVANDER_GIT_HOST`, `EVANDER_GIT_USER`, and `EVANDER_GIT_SSH_ALIAS`
 through the admin UI or `evander-cli directories config-set`, then run:
 
 ```bash
@@ -672,7 +672,7 @@ and create the upstream PR automatically.
 Issue mirrors also remember their source settings, so later guest `git fetch` / `git pull`
 operations can trigger a host-side mirror refresh before the read is served.
 
-For fixed PR boilerplate, set `AGENT_SANDBOX_PR_FIXED_BODY_FILE` as a host environment variable
+For fixed PR boilerplate, set `EVANDER_PR_FIXED_BODY_FILE` as a host environment variable
 pointing at a markdown file. For per-directory boilerplate, use the root `pr_template` directory config
 domain and migrate the legacy repo-level `config/pr-template.md` with
 `evander-cli migrate-pr-template-to-root --config config/gateway.yaml`.
@@ -738,7 +738,7 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   `runtime/discord_commands.json` (the Discord command store). The adapter does not discover
   channels from guild membership, does not enumerate channel history beyond configured per-channel
   fetches, and does not poll arbitrary channels unless they are explicitly seeded in that store.
-- The host-side `agent-sandbox-discord-ingest` worker fills the Discord inbox store. It polls
+- The host-side `evander-discord-ingest` worker fills the Discord inbox store. It polls
   channels resolved from active sessions that have `discord_get_commands` and read-capable
   `discord_channel_allowlist` entries, plus enabled `trigger:communication:new-message` nodes that
   name read-capable Discord communication targets.
@@ -805,7 +805,7 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   create channel/chat messages, replies, and reactions for the teams targets you plan to use.
 - `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
   host, not by the wake workers. Discord inbox wakeups and scheduled resumes are handled by
-  `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake`.
+  `evander-discord-wake` and `evander-scheduled-wake`.
 - `trigger:teams:new-message` emits one event per new allowlisted Teams message discovered
   during a poll. Its payload includes the triggering Teams `channel_target`, cursor, message id,
   target type, and a normalized `message` object for the corresponding message, not just the
@@ -1055,7 +1055,7 @@ Response:
 
 ## Relay Environment Configuration
 
-- `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.
+- `OPENAI_API_KEY` is required on the host for `evander-openai-relay`.
 - `AZURE_ARTIFACTS_PAT` is required on the host only when the NuGet relay must reach private
   Azure Artifacts feeds.
 - `config/npm-audit-facade.env` is optional and may remain empty; the npm audit facade reads its
@@ -1079,8 +1079,8 @@ Use this when you want the guest to wake only for new review feedback and post t
    `session_id` in self-scoped MCP calls when using a session-scoped gateway connection; the gateway
    supplies the caller session.
 2. Bootstrap a provider runtime in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
-3. For Azure DevOps PR feedback and completion cleanup, keep `agent-sandbox-ado-worker` running; it owns Azure DevOps feedback ingestion, PR status tracking, and trigger publication.
-4. `agent-sandbox-discord-wake.service` and `agent-sandbox-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. Azure DevOps PR feedback ingestion runs in `agent-sandbox-ado-worker`.
+3. For Azure DevOps PR feedback and completion cleanup, keep `evander-ado-worker` running; it owns Azure DevOps feedback ingestion, PR status tracking, and trigger publication.
+4. `evander-discord-wake.service` and `evander-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. Azure DevOps PR feedback ingestion runs in `evander-ado-worker`.
 5. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
    Use `list_pull_requests(provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
@@ -1118,8 +1118,8 @@ Example `get_pull_request` result shape (Azure DevOps):
 
 ### Expected timing behavior
 
-- Azure DevOps feedback and completion pickup is driven by `agent-sandbox-ado-worker` cadence and updates the shared host feedback store, `runtime/pr-map.json` status fields, and trigger queue.
-- `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` do not poll Azure DevOps PR feedback streams.
+- Azure DevOps feedback and completion pickup is driven by `evander-ado-worker` cadence and updates the shared host feedback store, `runtime/pr-map.json` status fields, and trigger queue.
+- `evander-discord-wake` and `evander-scheduled-wake` do not poll Azure DevOps PR feedback streams.
 - Guests consume pending feedback via MCP tools by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps
   `agent-heartbeat.timer` disabled for new guests.
@@ -1183,8 +1183,8 @@ Example `get_pull_request` result shape (Azure DevOps):
 
 ### Audit/log locations and healthy signals
 
-- Discord wake service logs: `journalctl -u agent-sandbox-discord-wake.service`.
-- Scheduled wake service logs: `journalctl -u agent-sandbox-scheduled-wake.service`.
+- Discord wake service logs: `journalctl -u evander-discord-wake.service`.
+- Scheduled wake service logs: `journalctl -u evander-scheduled-wake.service`.
 - Host runtime: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`,
   `runtime/host-agent-control-state.json`, `runtime/audit.jsonl`.
 - Healthy pattern:
@@ -1256,9 +1256,9 @@ Guests can prepare a deterministic review checkout with:
 ```
 
 The helper resolves explicit target/head refs, writes durable local refs under
-`refs/agent-sandbox/review/*`, computes `REVIEW_DIFF_BASE_COMMIT` with `git merge-base`,
+`refs/evander/review/*`, computes `REVIEW_DIFF_BASE_COMMIT` with `git merge-base`,
 detaches the worktree onto the head commit, and writes a shell-safe context file at
-`.agent-sandbox/review-context.env` by default. Reviewers should inspect
+`.evander/review-context.env` by default. Reviewers should inspect
 `REVIEW_DIFF_BASE_COMMIT..REVIEW_HEAD_COMMIT` for normal PR findings; the target/head range can
 include target-branch drift. If you pass an explicit `--base-commit` or `--head-commit`, the
 helper fails instead of silently falling back to the branch tip.
@@ -1277,7 +1277,7 @@ helper fails instead of silently falling back to the branch tip.
 - The guest NuGet config also uses:
   - a guest-local writable `global-packages` folder at `/home/agent/.nuget/packages-local`
   - a guest-local writable HTTP cache at `/home/agent/.nuget/http-cache`
-  - a read-only fallback package folder at `/opt/agent-sandbox/nuget-cache-ro`
+  - a read-only fallback package folder at `/opt/evander/nuget-cache-ro`
 - Prewarm the shared host cache explicitly with `./scripts/prewarm_nuget_cache.sh ...` when you
   want faster first restores in disposable VMs.
 
@@ -1378,13 +1378,13 @@ future outbound-send enablement.
 
 ## Project Layout
 
-- `src/agent_sandbox/`: gateway, relay, policy, storage, and CLI code
+- `src/evander/`: gateway, relay, policy, storage, and CLI code
 - `scripts/`: libvirt and firewall automation
 - `config/`: sample configuration and cloud-init template
 - `systemd/`: service templates for the host gateway, relay, and firewall policy
 - `docs/`: operating notes and next steps
 - `docs/architecture.md`: design rationale, including when logic belongs in `scripts/*.sh` versus
-  `src/agent_sandbox/*.py`
+  `src/evander/*.py`
 
 ## Current Limitations
 
@@ -1393,5 +1393,5 @@ future outbound-send enablement.
   channel and operator allowlists.
 - The gateway is ready for integration adapters, not production credentials by default.
 - Network/firewall scripts assume Ubuntu 24.04 and nftables-backed libvirt hosts.
-- VM disk and seed artifacts default to `/var/lib/libvirt/images/agent-sandbox`, so VM lifecycle scripts should be run with `sudo` unless you deliberately provision an alternate libvirt-accessible storage path.
+- VM disk and seed artifacts default to `/var/lib/libvirt/images/evander`, so VM lifecycle scripts should be run with `sudo` unless you deliberately provision an alternate libvirt-accessible storage path.
 - Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint, `11666` for the host-side NuGet relay, `11777` for the HTTP target relay, `8081` for the host-side Nexus package cache, and `3142` for the host-side apt-cacher-ng relay.

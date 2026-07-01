@@ -8,8 +8,8 @@ from threading import Barrier, Thread
 
 import pytest
 
-from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
-from agent_sandbox.storage import JsonObjectStore
+from evander.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
+from evander.storage import JsonObjectStore
 
 
 def _prompt(

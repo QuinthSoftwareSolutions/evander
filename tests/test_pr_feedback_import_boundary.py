@@ -5,14 +5,14 @@ from pathlib import Path
 
 
 _PATTERN = re.compile(
-    r"(?:from\s+agent_sandbox\.daemons\.pr_feedback_worker\s+import|"
-    r"import\s+agent_sandbox\.daemons\.pr_feedback_worker\b)"
+    r"(?:from\s+evander\.daemons\.pr_feedback_worker\s+import|"
+    r"import\s+evander\.daemons\.pr_feedback_worker\b)"
 )
 
 
 def test_non_daemon_modules_do_not_import_pr_feedback_daemon() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    src_root = repo_root / "src" / "agent_sandbox"
+    src_root = repo_root / "src" / "evander"
 
     offending: list[str] = []
     for path in src_root.rglob("*.py"):

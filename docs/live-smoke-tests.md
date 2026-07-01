@@ -26,9 +26,9 @@ enabling send flows or touching non-test destinations.
 - Host services are running:
 
   ```bash
-  sudo systemctl status agent-sandbox-firewall.service
-  sudo systemctl status agent-sandbox-gateway.service
-  sudo systemctl status agent-sandbox-openai-relay.service
+  sudo systemctl status evander-firewall.service
+  sudo systemctl status evander-gateway.service
+  sudo systemctl status evander-openai-relay.service
   ```
 
 - The effective `root` config uses `discord_backend: "bot_api"`.
@@ -106,7 +106,7 @@ email_mailboxes:
 Create a dedicated smoke-test session:
 
 ```bash
-cd /path/to/agent-sandbox
+cd /path/to/evander
 ./.venv/bin/evander-cli create-session \
   smoke-live \
   --runtime-dir runtime \
@@ -167,7 +167,7 @@ If you are validating a non-default libvirt base image, use
 overlay verification, and host-side proof checks that go with this launch.
 
 ```bash
-cd /path/to/agent-sandbox
+cd /path/to/evander
 sudo ./scripts/destroy_agent_vm.sh vm-smoke-live
 sudo ./scripts/launch_agent_vm.sh vm-smoke-live smoke-live
 ./scripts/bootstrap_codex_vm.sh vm-smoke-live

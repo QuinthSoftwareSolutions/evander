@@ -1,51 +1,72 @@
 ---
+- name: Stop legacy worker egress policy service from retired operational name
+  ansible.builtin.systemd:
+    name: agent-sandbox-worker-egress-policy.service
+    enabled: false
+    state: stopped
+  failed_when: false
+
+- name: Remove legacy worker egress policy unit files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/agent-sandbox-worker-egress-policy.service
+    - /etc/systemd/system/agent-sandbox-worker-egress-policy.service.d
+  register: evander_legacy_worker_egress_policy_unit_remove
+
+- name: Reload systemd after removing legacy worker egress policy unit files
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: evander_legacy_worker_egress_policy_unit_remove.changed
+
 - name: Resolve worker egress policy activation
   ansible.builtin.set_fact:
-    agent_sandbox_worker_egress_policy_active: >-
+    evander_worker_egress_policy_active: >-
       {{
-        (agent_sandbox_worker_egress_policy_enabled | bool)
+        (evander_worker_egress_policy_enabled | bool)
         and (
-          agent_sandbox_worker_docker_network | default('none') | string | trim | lower
+          evander_worker_docker_network | default('none') | string | trim | lower
           not in ['', 'none']
         )
       }}
-    agent_sandbox_worker_effective_egress_policy_allow_tcp_endpoints: >-
+    evander_worker_effective_egress_policy_allow_tcp_endpoints: >-
       {{
-        (agent_sandbox_worker_egress_policy_allow_tcp_endpoints | default([]))
-        + (agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints | default([]))
+        (evander_worker_egress_policy_allow_tcp_endpoints | default([]))
+        + (evander_worker_egress_policy_extra_allow_tcp_endpoints | default([]))
       }}
 
 - name: Install worker egress policy
-  when: agent_sandbox_worker_egress_policy_active | bool
+  when: evander_worker_egress_policy_active | bool
   block:
     - name: Render worker egress policy script
       ansible.builtin.template:
-        src: agent-sandbox-worker-egress-policy.sh.j2
-        dest: "{{ agent_sandbox_worker_egress_policy_script_path }}"
+        src: evander-worker-egress-policy.sh.j2
+        dest: "{{ evander_worker_egress_policy_script_path }}"
         owner: root
         group: root
         mode: "0755"
-      register: agent_sandbox_worker_egress_policy_script_render
+      register: evander_worker_egress_policy_script_render
 
     - name: Install worker egress policy systemd unit
       ansible.builtin.template:
-        src: agent-sandbox-worker-egress-policy.service.j2
-        dest: /etc/systemd/system/agent-sandbox-worker-egress-policy.service
+        src: evander-worker-egress-policy.service.j2
+        dest: /etc/systemd/system/evander-worker-egress-policy.service
         owner: root
         group: root
         mode: "0644"
-      register: agent_sandbox_worker_egress_policy_unit_render
+      register: evander_worker_egress_policy_unit_render
 
     - name: Reconcile worker egress policy service
       ansible.builtin.systemd:
-        name: agent-sandbox-worker-egress-policy.service
+        name: evander-worker-egress-policy.service
         enabled: true
         state: >-
           {{
             'restarted'
             if (
-              agent_sandbox_worker_egress_policy_script_render.changed
-              or agent_sandbox_worker_egress_policy_unit_render.changed
+              evander_worker_egress_policy_script_render.changed
+              or evander_worker_egress_policy_unit_render.changed
             )
             else 'started'
           }}
@@ -53,16 +74,16 @@
 
 - name: Check existing worker egress policy systemd unit
   ansible.builtin.stat:
-    path: /etc/systemd/system/agent-sandbox-worker-egress-policy.service
-  register: agent_sandbox_worker_egress_policy_unit_stat
-  when: not (agent_sandbox_worker_egress_policy_active | bool)
+    path: /etc/systemd/system/evander-worker-egress-policy.service
+  register: evander_worker_egress_policy_unit_stat
+  when: not (evander_worker_egress_policy_active | bool)
 
 - name: Disable inactive worker egress policy service
   ansible.builtin.systemd:
-    name: agent-sandbox-worker-egress-policy.service
+    name: evander-worker-egress-policy.service
     enabled: false
     state: stopped
     daemon_reload: true
   when:
-    - not (agent_sandbox_worker_egress_policy_active | bool)
-    - agent_sandbox_worker_egress_policy_unit_stat.stat.exists | default(false)
+    - not (evander_worker_egress_policy_active | bool)
+    - evander_worker_egress_policy_unit_stat.stat.exists | default(false)

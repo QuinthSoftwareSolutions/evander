@@ -9,16 +9,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directories import DirectoryStore
-from agent_sandbox.execution import ExecutionStatusKind
-from agent_sandbox.execution.container_worker_repository import ContainerWorkerExecutionRecord
-from agent_sandbox.effects.providers.agent_clone_repo import (
+from evander.config import GatewayConfig
+from evander.directories import DirectoryStore
+from evander.execution import ExecutionStatusKind
+from evander.execution.container_worker_repository import ContainerWorkerExecutionRecord
+from evander.effects.providers.agent_clone_repo import (
     AgentCloneRepoEffectProvider,
     GitAuthorIdentity,
     _container_reachable_git_remote_url,
 )
-from agent_sandbox.effects.providers.agent_session import (
+from evander.effects.providers.agent_session import (
     build_container_session_files,
     _claude_json_log_filter_script,
     _codex_json_log_filter_script,
@@ -26,43 +26,43 @@ from agent_sandbox.effects.providers.agent_session import (
     container_thread_id_from_logs,
     selected_execution_backend_for_target,
 )
-from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
-from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
-from agent_sandbox.effects.providers.ado_post_work_item_comment import (
+from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+from evander.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
+from evander.effects.providers.ado_post_work_item_comment import (
     AdoPostWorkItemCommentEffectProvider,
 )
-from agent_sandbox.effects.providers.ado_work_item_tag import (
+from evander.effects.providers.ado_work_item_tag import (
     AdoAddWorkItemTagEffectProvider,
     AdoRemoveWorkItemTagEffectProvider,
 )
-from agent_sandbox.effects.providers.git_push_branch import GitPushBranchEffectProvider
-from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
-from agent_sandbox.effects.providers.pull_request_update import (
+from evander.effects.providers.git_push_branch import GitPushBranchEffectProvider
+from evander.effects.providers.http_request import HttpRequestEffectProvider
+from evander.effects.providers.pull_request_update import (
     PullRequestAddTagEffectProvider,
     PullRequestRemoveTagEffectProvider,
 )
-from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
+from evander.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
 )
-from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
+from evander.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
 )
-from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
-from agent_sandbox.effects.providers.base import (
+from evander.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
+from evander.effects.providers.base import (
     EffectProviderBase,
     EffectProviderExecutionError,
     EffectRuntimeContext,
 )
-from agent_sandbox.effects.registry import (
+from evander.effects.registry import (
     DEFAULT_EFFECT_PROVIDER_REGISTRY,
     EffectProviderFactory,
     EffectProviderRegistry,
 )
 from pydantic import BaseModel, Field, ValidationError
 
-from agent_sandbox.directory_config import ContactDirectoryConfig
-from agent_sandbox.events.models import WorkflowNodeEnvelope
-from agent_sandbox.events.provider_models import (
+from evander.directory_config import ContactDirectoryConfig
+from evander.events.models import WorkflowNodeEnvelope
+from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
     AgentCreateEffectDefinition,
@@ -80,20 +80,20 @@ from agent_sandbox.events.provider_models import (
     VmCloneRepoEffectDefinition,
     VmCreateEffectDefinition,
 )
-from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
-from agent_sandbox.messaging.targets import (
+from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.models import (
+from evander.models import (
     SessionManifest,
     ToolName,
     UpdatePullRequestResponse,
     VmActionResult,
 )
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.repositories.skills_library import SkillLibraryRepository
-from agent_sandbox.triggers.queue import TriggerQueueRecord
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.repositories.skills_library import SkillLibraryRepository
+from evander.triggers.queue import TriggerQueueRecord
 
 
 class _ResolverStub:
@@ -125,7 +125,7 @@ class _ContainerResolverStub:
         return self.contacts_config
 
     def resolve_effect_provider_config(self, directory_path: str | None):
-        from agent_sandbox.provider_config import EffectProviderConfig
+        from evander.provider_config import EffectProviderConfig
 
         del directory_path
         return EffectProviderConfig.model_validate(self.config.model_dump(mode="json"))
@@ -221,7 +221,7 @@ class _FakeContainerGitMirrorResolver:
     def __init__(
         self,
         *,
-        worker_repo_source: str = "ssh://agent-sandbox-git-host/git-remotes/repo.git",
+        worker_repo_source: str = "ssh://evander-git-host/git-remotes/repo.git",
         canonical_repo_source: str = "https://example.test/org/repo.git",
     ) -> None:
         self.worker_repo_source = worker_repo_source
@@ -598,7 +598,7 @@ def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.pull_request_automation.AzureDevOpsPrQueryProvider", StubPrProvider
+        "evander.pull_request_automation.AzureDevOpsPrQueryProvider", StubPrProvider
     )
     factory = EffectProviderFactory(
         provider_config_resolver=_ResolverStub(),
@@ -683,7 +683,7 @@ def test_pull_request_tag_effect_providers_resolve_single_tag(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.pull_request_automation.AzureDevOpsPrQueryProvider", StubPrProvider
+        "evander.pull_request_automation.AzureDevOpsPrQueryProvider", StubPrProvider
     )
     factory = EffectProviderFactory(
         provider_config_resolver=_ResolverStub(),
@@ -1721,7 +1721,7 @@ def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
             message="clone ok",
             target_dir="/home/agent/RepoName",
             guest_repo_name="RepoName",
-            remote_url="ssh://agent-sandbox-git-host/home/git/remotes/RepoName.git",
+            remote_url="ssh://evander-git-host/home/git/remotes/RepoName.git",
         )
 
     admin_service.clone_repo_into_vm = fake_clone_repo_into_vm  # type: ignore[method-assign]
@@ -1739,7 +1739,7 @@ def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
         "vm_name": "vm-42",
         "target_dir": "/home/agent/RepoName",
         "guest_repo_name": "RepoName",
-        "remote_url": "ssh://agent-sandbox-git-host/home/git/remotes/RepoName.git",
+        "remote_url": "ssh://evander-git-host/home/git/remotes/RepoName.git",
         "pr_notes_ref": "refs/notes/agent-pr/92e76c732d82",
     }
     assert admin_service.clone_repo_into_vm_calls[0] == {
@@ -2309,7 +2309,7 @@ def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_sess
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -2336,10 +2336,10 @@ def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_sess
     command = str(backend.started_specs[0].command)
     assert "check teams" in command
     assert "--json" in command
-    assert "agent_sandbox_codex_json_to_log" in command
+    assert "evander_codex_json_to_log" in command
     assert "thread.started" in command
     assert "item.completed" in command
-    assert "agent_sandbox_latest_codex_session_entry" not in command
+    assert "evander_latest_codex_session_entry" not in command
 
 
 def test_agent_enqueue_prompt_infers_claude_provider_for_anthropic_container_session(
@@ -2377,7 +2377,7 @@ def test_agent_enqueue_prompt_infers_claude_provider_for_anthropic_container_ses
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -2436,7 +2436,7 @@ def test_agent_enqueue_prompt_provider_rejects_expired_container_session_before_
     )
     backend_calls: list[object] = []
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
         lambda context, config: backend_calls.append((context, config)) or _FakeContainerBackend(),
     )
     factory = EffectProviderFactory(
@@ -2537,7 +2537,7 @@ def test_container_prompt_command_supports_claude_provider() -> None:
     assert "--mcp-config /home/agent/.claude/mcp-config.json" in command
     assert "printf '%s' 'check teams' | claude -p" in command
     assert "--mcp-config /home/agent/.claude/mcp-config.json 'check teams'" not in command
-    assert "agent_sandbox_claude_json_to_log" in command
+    assert "evander_claude_json_to_log" in command
     assert "http://gateway.test:8000/mcp?session_id=session-1" in command
 
 
@@ -2606,7 +2606,7 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
         "requires_openai_auth = false\n"
         "supports_websockets = false\n"
         "\n"
-        "[mcp_servers.agent_sandbox]\n"
+        "[mcp_servers.evander]\n"
         'url = "http://relay.test:8000/mcp?session_id=session-1"\n'
         "enabled = true\n"
         "\n"
@@ -2649,10 +2649,10 @@ def test_container_session_files_include_claude_provider_config() -> None:
     )
     by_path = {entry["destination_path"]: entry["content"] for entry in files}
 
-    assert "AGENT_PROVIDER=claude\n" in by_path["/home/agent/.agent-sandbox/session.env"]
+    assert "AGENT_PROVIDER=claude\n" in by_path["/home/agent/.evander/session.env"]
     assert (
         "ANTHROPIC_BASE_URL=http://relay.test:11434/session/session-1\n"
-        in by_path["/home/agent/.agent-sandbox/session.env"]
+        in by_path["/home/agent/.evander/session.env"]
     )
     assert "model = \"claude-sonnet-4-6\"" in by_path["/home/agent/.codex/config.toml"]
     assert by_path["/home/agent/.claude/settings.json"] == (
@@ -2671,7 +2671,7 @@ def test_container_session_files_include_claude_provider_config() -> None:
     assert by_path["/home/agent/.claude/mcp-config.json"] == (
         "{\n"
         '  "mcpServers": {\n'
-        '    "agent_sandbox": {\n'
+        '    "evander": {\n'
         '      "tools": [\n'
         '        "*"\n'
         "      ],\n"
@@ -2718,7 +2718,7 @@ def test_container_prompt_uses_claude_default_model_for_claude_session(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_prompt.container_backend",
+        "evander.effects.providers.agent_prompt.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -2763,7 +2763,7 @@ def test_agent_create_container_infers_claude_provider_for_anthropic_config(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -2789,7 +2789,7 @@ def test_agent_create_container_infers_claude_provider_for_anthropic_config(
     bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
     assert (
         "AGENT_PROVIDER=claude\n"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
 
 
@@ -3168,7 +3168,7 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
         ),
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -3266,7 +3266,7 @@ def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
         ),
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -3355,7 +3355,7 @@ def test_agent_enqueue_prompt_keeps_distinct_busy_messages_for_same_metadata_key
         ),
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -3476,7 +3476,7 @@ def test_chat_assistant_ensure_session_resume_thread_id_flows_into_enqueue_promp
     backend = _FakeContainerBackend()
     backend.start_error = RuntimeError("worker unavailable")
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
         lambda context, config: backend,
     )
     admin_service = SimpleNamespace(
@@ -3573,7 +3573,7 @@ def test_agent_enqueue_prompt_provider_queues_when_container_dispatch_fails(
     backend = _FakeContainerBackend()
     backend.start_error = RuntimeError("worker unavailable")
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -3788,24 +3788,24 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_clone_repo.container_backend",
+        "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
     )
     mirror_resolver = _FakeContainerGitMirrorResolver()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
         lambda context, directory_path: mirror_resolver,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_copy_files.container_backend",
+        "evander.effects.providers.agent_copy_files.container_backend",
         lambda context, config: backend,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_prompt.container_backend",
+        "evander.effects.providers.agent_prompt.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -3904,7 +3904,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert create["agent_home"] == "/home/agent"
     assert create["repo_root"] == "/home/agent/repos"
     assert clone["target_dir"] == "/home/agent/repos/repo"
-    assert clone["remote_url"] == "ssh://agent-sandbox-git-host/git-remotes/repo.git"
+    assert clone["remote_url"] == "ssh://evander-git-host/git-remotes/repo.git"
     assert clone["canonical_repo_source"] == "https://example.test/org/repo.git"
     assert clone["pr_notes_ref"] == "refs/notes/agent-pr/84097828fc31"
     assert copied["copied_paths"] == ["/home/agent/repos/repo/AGENT_TASK.yaml"]
@@ -3914,49 +3914,49 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert mirror_resolver.resolved[0]["repo_source"] == "/tmp/repo"
     assert (
         backend.cloned_repos[0]["repo_source"]
-        == "ssh://agent-sandbox-git-host/git-remotes/repo.git"
+        == "ssh://evander-git-host/git-remotes/repo.git"
     )
     assert backend.cloned_repos[0]["repo_name"] == "repo"
     bootstrap_files = backend.written_files[0]["files"]
     bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
-    assert "/home/agent/.agent-sandbox/session.env" in bootstrap_by_path
+    assert "/home/agent/.evander/session.env" in bootstrap_by_path
     assert "/home/agent/.config/pip/pip.conf" in bootstrap_by_path
     assert "/home/agent/.npmrc" in bootstrap_by_path
     assert (
-        "AGENT_SANDBOX_SESSION_ID=session-1"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        "EVANDER_SESSION_ID=session-1"
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
-        "AGENT_SANDBOX_ARTIFACTS_DIR=/artifacts"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        "EVANDER_ARTIFACTS_DIR=/artifacts"
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
         "HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
-        "AGENT_SANDBOX_HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        "EVANDER_HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777"
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
         "PIP_INDEX_URL=http://nexus.test:8081/repository/pypi-all/simple"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
         "NPM_CONFIG_REGISTRY=http://nexus.test:8081/repository/npm-all/"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
         "GIT_TERMINAL_PROMPT=0"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
         "GIT_HTTP_LOW_SPEED_LIMIT=1"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
         "GIT_HTTP_LOW_SPEED_TIME=15"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
         "trusted-host = nexus.test"
@@ -3977,7 +3977,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     )
     assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     assert "DOTNET_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert "AGENT_SANDBOX_DOTNET_TOOLS_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert "EVANDER_DOTNET_TOOLS_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert 'export DOTNET_CLI_HOME="$HOME"' in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert ".dotnet-cli" not in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert (
@@ -3989,9 +3989,9 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         in bootstrap_by_path["/home/agent/.profile"]["content"]
     )
     assert "DOTNET_NOLOGO" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert "AGENT_SANDBOX_NODE_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert "EVANDER_NODE_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert (
-        "AGENT_SANDBOX_PLAYWRIGHT_RUNTIME" in bootstrap_by_path["/home/agent/.profile"]["content"]
+        "EVANDER_PLAYWRIGHT_RUNTIME" in bootstrap_by_path["/home/agent/.profile"]["content"]
     )
     assert "PLAYWRIGHT_BROWSERS_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert (
@@ -4024,13 +4024,13 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "config alias.agent-pr-note" in clone_config_command
     assert "config alias.push-agent" in clone_config_command
     assert "config alias.sync-base" in clone_config_command
-    assert ".agent-sandbox/bin/push-agent" in clone_config_command
-    assert ".agent-sandbox/bin/sync-base" in clone_config_command
-    assert "git config agent-sandbox.prNotesRef" in clone_config_command
-    assert 'git config agent-sandbox.workBranch "$WORK_BRANCH"' in clone_config_command
+    assert ".evander/bin/push-agent" in clone_config_command
+    assert ".evander/bin/sync-base" in clone_config_command
+    assert "git config evander.prNotesRef" in clone_config_command
+    assert 'git config evander.workBranch "$WORK_BRANCH"' in clone_config_command
     assert "git switch -c" in clone_config_command
     assert "refs/notes/agent-pr/" in clone_config_command
-    assert 'git config agent-sandbox.pushAgentAvailable "true"' in clone_config_command
+    assert 'git config evander.pushAgentAvailable "true"' in clone_config_command
     assert "CANONICAL_REMOTE_URL=https://example.test/org/repo.git" in clone_config_command
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
     assert backend.started_specs[-1].command is not None
@@ -4069,7 +4069,7 @@ def test_agent_prompt_provider_rejects_expired_container_session_before_backend_
     )
     backend_calls: list[object] = []
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_prompt.container_backend",
+        "evander.effects.providers.agent_prompt.container_backend",
         lambda context, config: backend_calls.append((context, config)) or _FakeContainerBackend(),
     )
     factory = EffectProviderFactory(
@@ -4118,7 +4118,7 @@ def test_agent_create_container_can_override_npm_registry_url(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -4141,7 +4141,7 @@ def test_agent_create_container_can_override_npm_registry_url(
     bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
     assert (
         "NPM_CONFIG_REGISTRY=http://facade.test:11881/"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
         "registry=http://facade.test:11881/"
@@ -4179,7 +4179,7 @@ def test_agent_create_container_can_select_configured_image_alias(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -4238,7 +4238,7 @@ def test_agent_create_container_accepts_explicit_default_image_reference(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -4304,7 +4304,7 @@ def test_agent_create_container_rejects_unknown_container_image_selector_before_
         raise AssertionError("container session should not be prepared")
 
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     monkeypatch.setattr(backend, "prepare_session", fail_prepare)
@@ -4353,7 +4353,7 @@ def test_agent_create_container_rejects_vm_image_before_bootstrap(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -4441,7 +4441,7 @@ def test_agent_create_container_rejects_invalid_npm_registry_url_before_bootstra
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -4494,11 +4494,11 @@ def test_agent_clone_container_skips_config_job_when_repo_already_prepared(
     backend = _FakeContainerBackend()
     backend.clone_result_cloned = False
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_clone_repo.container_backend",
+        "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
         lambda context, directory_path: _FakeContainerGitMirrorResolver(),
     )
     factory = EffectProviderFactory(
@@ -4552,11 +4552,11 @@ def test_agent_clone_container_passes_explicit_bare_repo_to_mirror_resolver(
     backend = _FakeContainerBackend()
     mirror_resolver = _FakeContainerGitMirrorResolver()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_clone_repo.container_backend",
+        "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
         lambda context, directory_path: mirror_resolver,
     )
     factory = EffectProviderFactory(
@@ -4613,7 +4613,7 @@ def test_agent_create_container_noops_when_session_exists(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -4689,7 +4689,7 @@ def test_agent_create_container_upserts_when_session_exists(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -4753,7 +4753,7 @@ def test_agent_create_container_upserts_when_session_exists(
     }
     assert (
         "AGENT_PROVIDER=claude\n"
-        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"][
         "content"
@@ -4803,7 +4803,7 @@ def test_agent_create_container_upsert_preserves_omitted_allowed_contacts(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -4880,7 +4880,7 @@ def test_agent_create_container_does_not_persist_manifest_when_prepare_fails(
     backend = _FakeContainerBackend()
     backend.prepare_error = RuntimeError("prepare failed")
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -4924,7 +4924,7 @@ def test_agent_create_container_does_not_persist_manifest_when_write_files_fails
     backend = _FakeContainerBackend()
     backend.write_files_error = RuntimeError("write files failed")
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -4963,7 +4963,7 @@ def test_agent_clone_container_skips_push_alias_for_unreachable_remotes() -> Non
     assert "PUSH_REMOTE_URL=''" in command
     assert "config alias.push-agent" not in command
     assert "git remote remove agent >/dev/null 2>&1 || true" in command
-    assert 'git config agent-sandbox.pushAgentAvailable "false"' in command
+    assert 'git config evander.pushAgentAvailable "false"' in command
 
 
 def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of() -> None:
@@ -4971,12 +4971,12 @@ def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of()
         session_id="session-1",
         target_dir="/home/agent/repos/repo",
         repo_source="https://dev.azure.com/org/project/_git/repo",
-        remote_url="ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo-abc.git",
+        remote_url="ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git",
         clone_branch="main",
     )
 
     assert (
-        "PUSH_REMOTE_URL=ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo-abc.git"
+        "PUSH_REMOTE_URL=ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git"
         in command
     )
     assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
@@ -4989,7 +4989,7 @@ def test_agent_clone_container_configures_git_author_identity() -> None:
         session_id="session-1",
         target_dir="/home/agent/repos/repo",
         repo_source="https://dev.azure.com/org/project/_git/repo",
-        remote_url="ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo.git",
+        remote_url="ssh://evander-git-host/opt/evander/git-remotes/repo.git",
         clone_branch="main",
         git_identity=GitAuthorIdentity(
             name="Ada Lovelace",
@@ -5001,14 +5001,14 @@ def test_agent_clone_container_configures_git_author_identity() -> None:
     assert "git config user.email ada@example.com" in command
     assert "git config author.name 'Ada Lovelace'" in command
     assert "git config author.email ada@example.com" in command
-    assert "git config agent-sandbox.gitAuthorName 'Ada Lovelace'" in command
-    assert "git config agent-sandbox.gitAuthorEmail ada@example.com" in command
+    assert "git config evander.gitAuthorName 'Ada Lovelace'" in command
+    assert "git config evander.gitAuthorEmail ada@example.com" in command
     assert "config alias.push-agent" in command
-    assert "git config agent-sandbox.prNotesRef" in command
+    assert "git config evander.prNotesRef" in command
     assert "config alias.sync-base" in command
     assert "CLONE_BRANCH=main" in command
-    assert 'git config agent-sandbox.baseBranch "$BASE_BRANCH"' in command
-    assert 'git config agent-sandbox.pushAgentAvailable "true"' in command
+    assert 'git config evander.baseBranch "$BASE_BRANCH"' in command
+    assert 'git config evander.pushAgentAvailable "true"' in command
 
 
 def test_agent_clone_container_configures_separate_git_committer_identity() -> None:
@@ -5016,7 +5016,7 @@ def test_agent_clone_container_configures_separate_git_committer_identity() -> N
         session_id="session-1",
         target_dir="/home/agent/repos/repo",
         repo_source="https://dev.azure.com/org/project/_git/repo",
-        remote_url="ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo.git",
+        remote_url="ssh://evander-git-host/opt/evander/git-remotes/repo.git",
         clone_branch="main",
         git_author_identity=GitAuthorIdentity(
             name="Ada Lovelace",
@@ -5034,8 +5034,8 @@ def test_agent_clone_container_configures_separate_git_committer_identity() -> N
     assert "git config author.email ada@example.com" in command
     assert "git config committer.name 'Truman Bot'" in command
     assert "git config committer.email truman@example.com" in command
-    assert "git config agent-sandbox.gitAuthorName 'Ada Lovelace'" in command
-    assert "git config agent-sandbox.gitCommitterName 'Truman Bot'" in command
+    assert "git config evander.gitAuthorName 'Ada Lovelace'" in command
+    assert "git config evander.gitCommitterName 'Truman Bot'" in command
 
 
 def test_agent_clone_container_fails_before_worker_when_mirror_resolution_fails(
@@ -5069,11 +5069,11 @@ def test_agent_clone_container_fails_before_worker_when_mirror_resolution_fails(
             raise RuntimeError("upstream fetch failed")
 
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_clone_repo.container_backend",
+        "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
         lambda context, directory_path: FailingResolver(),
     )
     factory = EffectProviderFactory(
@@ -5108,9 +5108,9 @@ def test_agent_clone_container_allows_push_alias_for_mounted_remotes() -> None:
     assert "PUSH_REMOTE_URL=/artifacts/agent-push.git" in command
     assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
     assert "config alias.push-agent" in command
-    assert 'git config agent-sandbox.pushAgentAvailable "true"' in command
+    assert 'git config evander.pushAgentAvailable "true"' in command
     assert "CLONE_BRANCH=main" in command
-    assert 'git config agent-sandbox.baseBranch "$BASE_BRANCH"' in command
+    assert 'git config evander.baseBranch "$BASE_BRANCH"' in command
 
 
 def test_container_reachable_git_remote_url_is_limited_to_mounted_paths() -> None:
@@ -5127,9 +5127,9 @@ def test_container_reachable_git_remote_url_is_limited_to_mounted_paths() -> Non
     assert _container_reachable_git_remote_url("git@example.test/org/repo.git") is None
     assert (
         _container_reachable_git_remote_url(
-            "ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo.git"
+            "ssh://evander-git-host/opt/evander/git-remotes/repo.git"
         )
-        == "ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo.git"
+        == "ssh://evander-git-host/opt/evander/git-remotes/repo.git"
     )
 
 
@@ -5151,7 +5151,7 @@ def test_agent_create_container_rejects_mssql_until_supported(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -5196,7 +5196,7 @@ def test_agent_create_container_writes_managed_codex_skills(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -5220,7 +5220,7 @@ def test_agent_create_container_writes_managed_codex_skills(
         entry
         for entry in bootstrap_files
         if entry["destination_path"]
-        == "/home/agent/.config/agent-sandbox/codex/skills/managed.skill/SKILL.md"
+        == "/home/agent/.config/evander/codex/skills/managed.skill/SKILL.md"
     )
     assert skill_file["content"] == "# Managed\n"
 
@@ -5243,7 +5243,7 @@ def test_agent_create_container_rejects_unknown_codex_skill_before_prepare(
     )
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_create.container_backend",
+        "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -5502,7 +5502,7 @@ def test_agent_exec_provider_runs_container_command_and_cleans_up(
     backend = _FakeContainerBackend()
     backend.logs = "prepared\n"
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_exec.container_backend",
+        "evander.effects.providers.agent_exec.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -5570,7 +5570,7 @@ def test_agent_exec_provider_returns_container_failure_when_check_disabled(
     )
     backend.logs = "failure log\n"
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_exec.container_backend",
+        "evander.effects.providers.agent_exec.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(
@@ -5631,7 +5631,7 @@ def test_agent_exec_provider_raises_for_checked_container_failure(
         metadata={},
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.agent_exec.container_backend",
+        "evander.effects.providers.agent_exec.container_backend",
         lambda context, config: backend,
     )
     factory = EffectProviderFactory(

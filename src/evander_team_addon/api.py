@@ -14,21 +14,21 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from agent_sandbox.addons import AddonContext
-from agent_sandbox.admin.web.rbac import TEAM_CHATS_READ_ALL_PERMISSION
-from agent_sandbox.admin.web.user_store import normalize_admin_web_login
-from agent_sandbox.events.internal import (
+from evander.addons import AddonContext
+from evander.admin.web.rbac import TEAM_CHATS_READ_ALL_PERMISSION
+from evander.admin.web.user_store import normalize_admin_web_login
+from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
     internal_event_store_path,
 )
-from agent_sandbox.events.scheduled import (
+from evander.events.scheduled import (
     ScheduledInternalEventStore,
     scheduled_internal_event_store_path,
 )
-from agent_sandbox.email.http_utils import ProviderRequestError
-from agent_sandbox.models import utc_now
-from agent_sandbox.voice_sessions import (
+from evander.email.http_utils import ProviderRequestError
+from evander.models import utc_now
+from evander.voice_sessions import (
     OpenAIRealtimeClientSecretService,
     VoiceQueryDelegator,
     normalize_voice_session_status,

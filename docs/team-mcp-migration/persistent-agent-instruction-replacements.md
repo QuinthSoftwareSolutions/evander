@@ -67,7 +67,7 @@ Source: `_build_prompt()`.
 
 Sources: `/artifacts/team-action.schema.json`,
 `/artifacts/team-action.example.json`, and
-`/home/agent/.agent-sandbox/bin/team-finish`.
+`/home/agent/.evander/bin/team-finish`.
 
 | Old seeded file or instruction | Replacement |
 | --- | --- |
@@ -136,7 +136,7 @@ Use team_record_note only when durable note text is itself useful.
 
 - Read `/artifacts/team-action.schema.json`.
 - Use `/artifacts/team-action.example.json` as a writable template.
-- Use `/home/agent/.agent-sandbox/bin/team-finish`.
+- Use `/home/agent/.evander/bin/team-finish`.
 - Fill or preserve `schema_version`.
 - Fill or preserve `agent_id`.
 - Fill or preserve `dispatch_id`.

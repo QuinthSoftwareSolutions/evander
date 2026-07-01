@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.registry import EffectProviderFactory
-from agent_sandbox.events.provider_models import IssueUpsertAdoProxyEffectDefinition
-from agent_sandbox.models import LocalIssueRecord
-from agent_sandbox.storage import JsonStore
+from evander.config import GatewayConfig
+from evander.effects.registry import EffectProviderFactory
+from evander.events.provider_models import IssueUpsertAdoProxyEffectDefinition
+from evander.models import LocalIssueRecord
+from evander.storage import JsonStore
 
 
 class _ResolverStub:

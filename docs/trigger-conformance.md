@@ -21,7 +21,7 @@ PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py
 Optional report output path:
 
 ```bash
-AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT=runtime/trigger-conformance-report.json \
+EVANDER_TRIGGER_CONFORMANCE_REPORT=runtime/trigger-conformance-report.json \
 PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py
 ```
 
@@ -34,7 +34,7 @@ PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py
 Optional report output path:
 
 ```bash
-AGENT_SANDBOX_EFFECT_CONFORMANCE_REPORT=runtime/effect-conformance-report.json \
+EVANDER_EFFECT_CONFORMANCE_REPORT=runtime/effect-conformance-report.json \
 PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py
 ```
 
@@ -43,12 +43,12 @@ PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py
 On every successful run, the suite writes a machine-readable JSON report to:
 
 - `runtime/trigger-conformance-report.json` (default), or
-- the path in `AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT`.
+- the path in `EVANDER_TRIGGER_CONFORMANCE_REPORT`.
 
 The paired effect suite writes the same style of report to:
 
 - `runtime/effect-conformance-report.json` (default), or
-- the path in `AGENT_SANDBOX_EFFECT_CONFORMANCE_REPORT`.
+- the path in `EVANDER_EFFECT_CONFORMANCE_REPORT`.
 
 The report includes:
 

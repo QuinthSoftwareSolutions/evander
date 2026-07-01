@@ -3,6 +3,27 @@ import { useEffect, useRef, useState, type CSSProperties, type MutableRefObject,
 import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { DownloadIcon } from "../admin/PageActionIcons";
+import {
+  DashboardApprovalsIcon,
+  DashboardAddonsIcon,
+  DashboardAgentsIcon,
+  DashboardArtifactsIcon,
+  DashboardConfigurationIcon,
+  DashboardIssuesIcon,
+  DashboardMcpToolsIcon,
+  DashboardNewerIcon,
+  DashboardOlderIcon,
+  DashboardRefreshIcon,
+  DashboardReportsIcon,
+  DashboardSessionsIcon,
+  DashboardSkillsIcon,
+  DashboardToolVisibilityIcon,
+  DashboardToolsIcon,
+  DashboardUsersIcon,
+  DashboardVmsIcon,
+  DashboardWorkflowIcon,
+  DashboardWorkersIcon,
+} from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import type { AgentBackend } from "../admin/types";
 import { adminHash, type AdminHashParamValue, type AdminTab } from "../../adminRouting";
@@ -1091,92 +1112,29 @@ type DashboardIconName = AdminTab | "refresh" | "newer" | "older";
 
 function DashboardIcon({ name }: { name: DashboardIconName }) {
   const icons: Record<string, ReactNode> = {
-    refresh: (
-      <>
-        <path d="M20 6v5h-5" />
-        <path d="M4 18v-5h5" />
-        <path d="M6.8 9.2A7 7 0 0 1 18.5 8L20 11" />
-        <path d="M17.2 14.8A7 7 0 0 1 5.5 16L4 13" />
-      </>
-    ),
-    workflow: (
-      <>
-        <rect x="4" y="5" width="5" height="5" rx="1.2" />
-        <rect x="15" y="5" width="5" height="5" rx="1.2" />
-        <rect x="9.5" y="15" width="5" height="5" rx="1.2" />
-        <path d="M9 7.5h6" />
-        <path d="M12 10v5" />
-      </>
-    ),
-    approvals: (
-      <>
-        <path d="M5 12.5l4 4L19 6.5" />
-        <path d="M5.5 5.5h9" />
-        <path d="M5.5 10h5" />
-        <path d="M5.5 18.5h13" />
-      </>
-    ),
-    sessions: (
-      <>
-        <circle cx="12" cy="8" r="3.5" />
-        <path d="M5.5 19a6.8 6.8 0 0 1 13 0" />
-        <path d="M17 6.5h3.5" />
-        <path d="M18.75 4.75v3.5" />
-      </>
-    ),
-    "tool-calls": (
-      <>
-        <path d="M7 8.5L3.5 12 7 15.5" />
-        <path d="M17 8.5l3.5 3.5L17 15.5" />
-        <path d="M14 5l-4 14" />
-      </>
-    ),
-    configuration: (
-      <>
-        <circle cx="12" cy="12" r="3" />
-        <path d="M12 3.8v2.1" />
-        <path d="M12 18.1v2.1" />
-        <path d="M4.9 7.3l1.8 1" />
-        <path d="M17.3 15.7l1.8 1" />
-        <path d="M4.9 16.7l1.8-1" />
-        <path d="M17.3 8.3l1.8-1" />
-      </>
-    ),
-    workers: (
-      <>
-        <rect x="4.5" y="6" width="15" height="11" rx="2" />
-        <path d="M8 10h3.5" />
-        <path d="M8 13.5h8" />
-        <path d="M6.5 20h11" />
-      </>
-    ),
-    agents: (
-      <>
-        <rect x="5" y="6" width="14" height="10" rx="2" />
-        <path d="M9 20h6" />
-        <path d="M12 16v4" />
-        <path d="M9 10.5h.01" />
-        <path d="M15 10.5h.01" />
-      </>
-    ),
-    reports: (
-      <>
-        <path d="M5 19V5" />
-        <path d="M5 19h14" />
-        <path d="M8.5 15v-3" />
-        <path d="M12 15V8" />
-        <path d="M15.5 15v-5" />
-      </>
-    ),
-    newer: <path d="M14.5 6.5L9 12l5.5 5.5" />,
-    older: <path d="M9.5 6.5L15 12l-5.5 5.5" />,
+    refresh: <DashboardRefreshIcon />,
+    newer: <DashboardNewerIcon />,
+    older: <DashboardOlderIcon />,
+    workflow: <DashboardWorkflowIcon />,
+    approvals: <DashboardApprovalsIcon />,
+    sessions: <DashboardSessionsIcon />,
+    "tool-calls": <DashboardToolsIcon />,
+    configuration: <DashboardConfigurationIcon />,
+    workers: <DashboardWorkersIcon />,
+    agents: <DashboardAgentsIcon />,
+    reports: <DashboardReportsIcon />,
+    vms: <DashboardVmsIcon />,
+    artifacts: <DashboardArtifactsIcon />,
+    addons: <DashboardAddonsIcon />,
+    skills: <DashboardSkillsIcon />,
+    issues: <DashboardIssuesIcon />,
+    "tool-visibility": <DashboardToolVisibilityIcon />,
+    "mcp-tools": <DashboardMcpToolsIcon />,
+    users: <DashboardUsersIcon />,
+    dashboard: <DashboardWorkflowIcon />,
   };
 
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      {icons[name] ?? icons.workflow}
-    </svg>
-  );
+  return icons[name] ?? icons.workflow;
 }
 
 function TabButton({ tab, label }: { tab: AdminTab; label: string }) {

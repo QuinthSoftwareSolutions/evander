@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_sandbox.agent_control import AgentControlStore
+from evander.agent_control import AgentControlStore
 
 
 def test_agent_control_store_set_status_preserves_unrelated_vm_entries(tmp_path: Path) -> None:

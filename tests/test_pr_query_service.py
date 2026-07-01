@@ -6,13 +6,13 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from agent_sandbox.services import AzureDevOpsPrQueryProvider, GitHubPrQueryProvider, PrQueryService
+from evander.services import AzureDevOpsPrQueryProvider, GitHubPrQueryProvider, PrQueryService
 
 
 def patch_httpx_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTransport) -> None:
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.services.httpx.Client",
+        "evander.services.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
 

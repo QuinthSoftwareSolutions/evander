@@ -5,14 +5,14 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.model_usage.models import (
+from evander.model_usage.models import (
     ModelInferenceUsageEvent,
     ModelUsageCorrelationContext,
 )
-from agent_sandbox.model_usage.pricing import load_model_pricing_catalog_payload
-from agent_sandbox.model_usage.store import ModelUsageStore
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from evander.model_usage.pricing import load_model_pricing_catalog_payload
+from evander.model_usage.store import ModelUsageStore
+from evander.models import SessionManifest
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 import evander_team_addon.costs as costs_module
 from evander_team_addon.costs import TeamCostService
 from evander_team_addon.models import EphemeralAssignment
@@ -666,9 +666,9 @@ def test_remote_claude_transcript_scan_uses_configured_vm_ssh_options(
 ) -> None:
     private_key = tmp_path / "id_ed25519"
     private_key.write_text("private key", encoding="utf-8")
-    known_hosts = tmp_path / "agent-sandbox-known_hosts"
+    known_hosts = tmp_path / "evander-known_hosts"
     monkeypatch.setenv("SSH_PRIVATE_KEY_PATH", str(private_key))
-    monkeypatch.setenv("AGENT_SANDBOX_GUEST_KNOWN_HOSTS_FILE", str(known_hosts))
+    monkeypatch.setenv("EVANDER_GUEST_KNOWN_HOSTS_FILE", str(known_hosts))
     captured: dict[str, object] = {}
 
     def fake_run(cmd, **kwargs):

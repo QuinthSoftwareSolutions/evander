@@ -4,27 +4,27 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.artifact_spaces import (
+from evander.artifact_spaces import (
     ArtifactSpacePermissionError,
     ArtifactSpaceStore,
     normalize_space_path,
 )
-from agent_sandbox.effects.providers.artifact_space import (
+from evander.effects.providers.artifact_space import (
     ArtifactSpaceCreateEffectProvider,
     ArtifactSpacePublishVersionEffectProvider,
 )
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.events.provider_models import (
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.events.provider_models import (
     ArtifactSpaceCreateEffectDefinition,
     ArtifactSpacePublishVersionEffectDefinition,
 )
-from agent_sandbox.published_artifacts import PublishedArtifactStore
-from agent_sandbox.queries.providers.artifact_space import (
+from evander.published_artifacts import PublishedArtifactStore
+from evander.queries.providers.artifact_space import (
     ArtifactSpaceLatestQueryProvider,
     ArtifactSpaceListQueryProvider,
 )
-from agent_sandbox.queries.providers.base import QueryRuntimeContext
-from agent_sandbox.queries.providers.schemas import (
+from evander.queries.providers.base import QueryRuntimeContext
+from evander.queries.providers.schemas import (
     ArtifactSpaceLatestQueryDefinition,
     ArtifactSpaceListQueryDefinition,
 )
@@ -188,8 +188,8 @@ def test_artifact_space_effects_and_queries(tmp_path: Path) -> None:
 def test_artifact_space_admin_api(tmp_path: Path) -> None:
     from starlette.testclient import TestClient
 
-    from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-    from agent_sandbox.admin.web.app import create_app
+    from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+    from evander.admin.web.app import create_app
 
     config_path = tmp_path / "gateway.yaml"
     runtime_dir = tmp_path / "runtime"

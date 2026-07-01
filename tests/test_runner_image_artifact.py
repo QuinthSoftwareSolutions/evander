@@ -10,10 +10,10 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNNER_SCRIPT = ROOT / "scripts" / "build_agent_sandbox_runner_image.sh"
-RUNNER_DOCKERFILE = ROOT / "docker" / "agent-sandbox-runner" / "Dockerfile"
-CLAUDE_RUNNER_SCRIPT = ROOT / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
-CLAUDE_RUNNER_DOCKERFILE = ROOT / "docker" / "agent-sandbox-runner-claude" / "Dockerfile"
+RUNNER_SCRIPT = ROOT / "scripts" / "build_evander_runner_image.sh"
+RUNNER_DOCKERFILE = ROOT / "docker" / "evander-runner" / "Dockerfile"
+CLAUDE_RUNNER_SCRIPT = ROOT / "scripts" / "build_evander_claude_runner_image.sh"
+CLAUDE_RUNNER_DOCKERFILE = ROOT / "docker" / "evander-runner-claude" / "Dockerfile"
 HOST_CODEX_PACKAGE = "@openai/codex"
 RUNNER_PLATFORM_PACKAGE = "@openai/codex-linux-x64"
 RUNNER_TARGET_TRIPLE = "x86_64-unknown-linux-musl"
@@ -21,10 +21,10 @@ RUNNER_TARGET_TRIPLE = "x86_64-unknown-linux-musl"
 
 def _copy_runner_repo(tmp_path: Path) -> Path:
     repo_root = tmp_path / "runner-repo"
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
-    claude_script_path = repo_root / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
-    dockerfile_path = repo_root / "docker" / "agent-sandbox-runner" / "Dockerfile"
-    claude_dockerfile_path = repo_root / "docker" / "agent-sandbox-runner-claude" / "Dockerfile"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    claude_script_path = repo_root / "scripts" / "build_evander_claude_runner_image.sh"
+    dockerfile_path = repo_root / "docker" / "evander-runner" / "Dockerfile"
+    claude_dockerfile_path = repo_root / "docker" / "evander-runner-claude" / "Dockerfile"
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,7 +188,7 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "zlib1g" in dockerfile
     assert "libnss3" in dockerfile
     assert "libgtk-3-0" in dockerfile
-    assert "/home/agent/.agent-sandbox/session.env" in dockerfile
+    assert "/home/agent/.evander/session.env" in dockerfile
 
 
 def test_claude_runner_dockerfile_contains_minimal_runtime_contract() -> None:
@@ -202,8 +202,8 @@ def test_claude_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "CODEX_HOME" not in dockerfile
     assert "/home/agent/repos" in dockerfile
     assert "/home/agent/.claude" in dockerfile
-    assert "/home/agent/.agent-sandbox/session.env" in dockerfile
-    assert "/opt/agent-sandbox/toolchains/node-v24.14.0/bin" in dockerfile
+    assert "/home/agent/.evander/session.env" in dockerfile
+    assert "/opt/evander/toolchains/node-v24.14.0/bin" in dockerfile
     assert "ANTHROPIC_AUTH_TOKEN" in dockerfile
     assert "DISABLE_TELEMETRY" in dockerfile
     assert "python3-pip" in dockerfile
@@ -229,8 +229,8 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "RUNNER_BUILD_NETWORK" in script
     assert "RUNNER_MANIFEST_PATH" in script
     assert "RUNNER_FORCE_REBUILD" in script
-    assert "agent-sandbox-runner:latest" in script
-    assert "dist/agent-sandbox-runner.tar" in script
+    assert "evander-runner:latest" in script
+    assert "dist/evander-runner.tar" in script
     assert 'build_args=(build -t "${RUNNER_IMAGE_NAME}")' in script
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
     assert 'build_args+=(--pull)' in script
@@ -248,8 +248,8 @@ def test_claude_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "RUNNER_BUILD_NETWORK" in script
     assert "RUNNER_MANIFEST_PATH" in script
     assert "RUNNER_FORCE_REBUILD" in script
-    assert "agent-sandbox-runner-claude:latest" in script
-    assert "dist/agent-sandbox-runner-claude.tar" in script
+    assert "evander-runner-claude:latest" in script
+    assert "dist/evander-runner-claude.tar" in script
     assert "claude_bin_realpath" in script
     assert "claude_bin_sha256" in script
     assert 'cp "${RESOLVED_CLAUDE_BIN}" "${BUILD_CONTEXT}/claude"' in script
@@ -266,8 +266,8 @@ def test_runner_build_script_writes_manifest_and_reuses_cached_archive(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
-    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    archive_path = repo_root / "dist" / "evander-runner.tar"
     manifest_path = Path(f"{archive_path}.manifest")
     codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
@@ -286,14 +286,14 @@ def test_runner_build_script_writes_manifest_and_reuses_cached_archive(
     assert archive_path.read_text(encoding="utf-8") == "fake image\n"
     assert manifest_path.is_file()
     assert first.stdout.splitlines() == [
-        "Built agent-sandbox-runner:latest",
+        "Built evander-runner:latest",
         f"Saved {archive_path}",
     ]
     assert _docker_invocations(docker_log_path) == ["build", "save"]
 
     second = _run_runner_script(script_path, repo_root, env)
 
-    assert second.stdout.strip() == f"Reused cached agent-sandbox-runner:latest archive at {archive_path}"
+    assert second.stdout.strip() == f"Reused cached evander-runner:latest archive at {archive_path}"
     assert manifest_path.read_text(encoding="utf-8") == first_manifest
     assert _docker_invocations(docker_log_path) == ["build", "save"]
 
@@ -302,8 +302,8 @@ def test_claude_runner_build_script_writes_manifest_and_reuses_cached_archive(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
-    archive_path = repo_root / "dist" / "agent-sandbox-runner-claude.tar"
+    script_path = repo_root / "scripts" / "build_evander_claude_runner_image.sh"
+    archive_path = repo_root / "dist" / "evander-runner-claude.tar"
     manifest_path = Path(f"{archive_path}.manifest")
     claude_bin = _create_claude_fixture(tmp_path)
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
@@ -320,7 +320,7 @@ def test_claude_runner_build_script_writes_manifest_and_reuses_cached_archive(
     assert archive_path.read_text(encoding="utf-8") == "fake image\n"
     assert manifest_path.is_file()
     assert first.stdout.splitlines() == [
-        "Built agent-sandbox-runner-claude:latest",
+        "Built evander-runner-claude:latest",
         f"Saved {archive_path}",
     ]
     assert "claude_bin_sha256=" in first_manifest
@@ -330,7 +330,7 @@ def test_claude_runner_build_script_writes_manifest_and_reuses_cached_archive(
 
     assert (
         second.stdout.strip()
-        == f"Reused cached agent-sandbox-runner-claude:latest archive at {archive_path}"
+        == f"Reused cached evander-runner-claude:latest archive at {archive_path}"
     )
     assert manifest_path.read_text(encoding="utf-8") == first_manifest
     assert _docker_invocations(docker_log_path) == ["build", "save"]
@@ -340,8 +340,8 @@ def test_runner_build_script_resolves_hoisted_codex_binary_current_layout(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
-    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    archive_path = repo_root / "dist" / "evander-runner.tar"
     codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
 
@@ -364,8 +364,8 @@ def test_runner_build_script_resolves_hoisted_codex_binary_legacy_layout(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
-    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    archive_path = repo_root / "dist" / "evander-runner.tar"
     codex_root, _, _ = _create_codex_fixture(tmp_path, layout="legacy")
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
 
@@ -388,9 +388,9 @@ def test_runner_build_script_rebuilds_when_copied_dockerfile_changes(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
-    dockerfile_path = repo_root / "docker" / "agent-sandbox-runner" / "Dockerfile"
-    manifest_path = repo_root / "dist" / "agent-sandbox-runner.tar.manifest"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    dockerfile_path = repo_root / "docker" / "evander-runner" / "Dockerfile"
+    manifest_path = repo_root / "dist" / "evander-runner.tar.manifest"
     codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
 
@@ -422,8 +422,8 @@ def test_runner_build_script_rebuilds_when_codex_identity_changes(
     mutation: str,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
-    manifest_path = repo_root / "dist" / "agent-sandbox-runner.tar.manifest"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    manifest_path = repo_root / "dist" / "evander-runner.tar.manifest"
     codex_root, binary_path, platform_root = _create_codex_fixture(tmp_path, layout="current")
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
 
@@ -463,9 +463,9 @@ def test_claude_runner_build_script_rebuilds_when_identity_changes(
     mutation: str,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
-    dockerfile_path = repo_root / "docker" / "agent-sandbox-runner-claude" / "Dockerfile"
-    manifest_path = repo_root / "dist" / "agent-sandbox-runner-claude.tar.manifest"
+    script_path = repo_root / "scripts" / "build_evander_claude_runner_image.sh"
+    dockerfile_path = repo_root / "docker" / "evander-runner-claude" / "Dockerfile"
+    manifest_path = repo_root / "dist" / "evander-runner-claude.tar.manifest"
     claude_bin = _create_claude_fixture(tmp_path)
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
 
@@ -498,8 +498,8 @@ def test_claude_runner_build_script_rebuilds_when_identity_changes(
 
 def test_runner_build_script_rebuilds_when_archive_is_deleted(tmp_path: Path) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
-    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    archive_path = repo_root / "dist" / "evander-runner.tar"
     manifest_path = Path(f"{archive_path}.manifest")
     codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
@@ -524,8 +524,8 @@ def test_runner_build_script_rebuilds_when_archive_is_deleted(tmp_path: Path) ->
 
 def test_runner_build_script_rebuilds_when_manifest_is_deleted(tmp_path: Path) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
-    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    archive_path = repo_root / "dist" / "evander-runner.tar"
     manifest_path = Path(f"{archive_path}.manifest")
     codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
@@ -560,8 +560,8 @@ def test_runner_build_script_forces_rebuild_even_with_matching_manifest(
     force_mode: str,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
-    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    archive_path = repo_root / "dist" / "evander-runner.tar"
     manifest_path = Path(f"{archive_path}.manifest")
     codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
@@ -596,7 +596,7 @@ def test_runner_build_script_pulls_base_image_on_forced_rebuild(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
     codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
     docker_command_log_path = tmp_path / "docker-command.log"
@@ -627,7 +627,7 @@ def test_claude_runner_build_script_pulls_base_image_on_forced_rebuild(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
+    script_path = repo_root / "scripts" / "build_evander_claude_runner_image.sh"
     claude_bin = _create_claude_fixture(tmp_path)
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
     docker_command_log_path = tmp_path / "docker-command.log"
@@ -656,8 +656,8 @@ def test_runner_build_script_preserves_cache_after_failed_save(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
-    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    archive_path = repo_root / "dist" / "evander-runner.tar"
     manifest_path = Path(f"{archive_path}.manifest")
     codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
@@ -687,7 +687,7 @@ def test_runner_build_script_preserves_cache_after_failed_save(
 
     reused = _run_runner_script(script_path, repo_root, env)
 
-    assert reused.stdout.strip() == f"Reused cached agent-sandbox-runner:latest archive at {archive_path}"
+    assert reused.stdout.strip() == f"Reused cached evander-runner:latest archive at {archive_path}"
     assert archive_path.read_text(encoding="utf-8") == "fake image\n"
     assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
 
@@ -696,8 +696,8 @@ def test_claude_runner_build_script_preserves_cache_after_failed_save(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
-    script_path = repo_root / "scripts" / "build_agent_sandbox_claude_runner_image.sh"
-    archive_path = repo_root / "dist" / "agent-sandbox-runner-claude.tar"
+    script_path = repo_root / "scripts" / "build_evander_claude_runner_image.sh"
+    archive_path = repo_root / "dist" / "evander-runner-claude.tar"
     manifest_path = Path(f"{archive_path}.manifest")
     claude_bin = _create_claude_fixture(tmp_path)
     fake_docker, docker_log_path = _write_fake_docker(tmp_path)
@@ -727,7 +727,7 @@ def test_claude_runner_build_script_preserves_cache_after_failed_save(
 
     assert (
         reused.stdout.strip()
-        == f"Reused cached agent-sandbox-runner-claude:latest archive at {archive_path}"
+        == f"Reused cached evander-runner-claude:latest archive at {archive_path}"
     )
     assert archive_path.read_text(encoding="utf-8") == "fake image\n"
     assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]

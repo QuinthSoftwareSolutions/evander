@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.storage import JsonObjectStore
-from agent_sandbox.workflow.state_store import WorkflowStateStore
+from evander.storage import JsonObjectStore
+from evander.workflow.state_store import WorkflowStateStore
 
 
 def test_workflow_state_store_uses_runtime_dir_and_isolates_scopes(tmp_path: Path) -> None:

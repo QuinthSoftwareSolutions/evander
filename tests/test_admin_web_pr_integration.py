@@ -8,10 +8,10 @@ import pytest
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.web.app import create_app
-from agent_sandbox.admin.web.pr_integration import pr_integration_routes
-from agent_sandbox.pr_merge_preflight import (
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.web.app import create_app
+from evander.admin.web.pr_integration import pr_integration_routes
+from evander.pr_merge_preflight import (
     MergePreflightCheck,
     MergePreflightParticipant,
     MergePreflightReport,

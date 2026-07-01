@@ -8,8 +8,8 @@ from typing import Any
 import httpx
 import pytest
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.services import (
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.services import (
     PrIntegrationPreflightAdminDependencies,
     PrIntegrationPreflightAdminService,
     VmAgentAdminSupport,
@@ -21,7 +21,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 def patch_httpx_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTransport) -> None:
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.services.httpx.Client",
+        "evander.services.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
 

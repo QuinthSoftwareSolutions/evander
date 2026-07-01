@@ -7,23 +7,23 @@ from unittest.mock import patch
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryStore
-from agent_sandbox.events.provider_models import ApprovalPendingCreatedTriggerDefinition
-from agent_sandbox.models import (
+from evander.config import GatewayConfig
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryStore
+from evander.events.provider_models import ApprovalPendingCreatedTriggerDefinition
+from evander.models import (
     ApprovalNotificationStatus,
     ApprovalRequest,
     ApprovalStatus,
     SessionManifest,
     ToolName,
 )
-from agent_sandbox.runtime import build_runtime
-from agent_sandbox.storage import JsonStore
-from agent_sandbox.triggers.providers.approval_pending_created import (
+from evander.runtime import build_runtime
+from evander.storage import JsonStore
+from evander.triggers.providers.approval_pending_created import (
     ApprovalPendingCreatedTriggerProvider,
 )
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.base import TriggerRuntimeContext
 
 
 def _write_root_policy_overlay(config: GatewayConfig, payload: dict[str, object]) -> None:
@@ -401,7 +401,7 @@ def test_pending_created_trigger_reports_notification_state_without_resending_no
             "status": "stubbed",
         }
 
-    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+    with patch("evander.approval_notifications.NotificationSender.send", new=fake_send):
         approval = runtime.policy.create_approval(
             "session-1",
             "email_send_approved",

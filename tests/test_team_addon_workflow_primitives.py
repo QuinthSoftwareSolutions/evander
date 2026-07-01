@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.triggers.providers.base import TriggerRuntimeContext
 from evander_team_addon.models import AgentStatus, ProjectGoal, TeamInboxItemType
 from evander_team_addon.provider_schemas import (
     TeamCreateReviewRequestEffectDefinition,

@@ -13,11 +13,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.model_usage.models import (
+from evander.model_usage.models import (
     ModelInferenceUsageEvent,
     ModelUsageCorrelationContext,
 )
-from agent_sandbox.model_usage.pricing import (
+from evander.model_usage.pricing import (
     ModelCostEstimate,
     ModelPricingCatalog,
     default_model_pricing_catalog,
@@ -25,13 +25,13 @@ from agent_sandbox.model_usage.pricing import (
     extract_cache_write_input_tokens,
     extract_cached_input_tokens,
 )
-from agent_sandbox.model_usage.store import ModelUsageStore
-from agent_sandbox.models import utc_now
+from evander.model_usage.store import ModelUsageStore
+from evander.models import utc_now
 
 from .models import EphemeralAssignment, PersistentAgent, TeamState, agent_project_ids
 
-CLAUDE_TRANSCRIPT_ROOTS_ENV = "AGENT_SANDBOX_CLAUDE_TRANSCRIPT_ROOTS"
-WORKER_ROOT_ENV = "AGENT_SANDBOX_WORKER_ROOT"
+CLAUDE_TRANSCRIPT_ROOTS_ENV = "EVANDER_CLAUDE_TRANSCRIPT_ROOTS"
+WORKER_ROOT_ENV = "EVANDER_WORKER_ROOT"
 DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
 TRANSCRIPT_SOURCE_NAME = "claude_transcript_backfill"
 DEFAULT_REMOTE_AGENT_HOME = "/home/agent"
@@ -1714,11 +1714,11 @@ def _resolve_private_key_path() -> Path | None:
 
 
 def _known_hosts_path() -> Path:
-    configured = os.environ.get("AGENT_SANDBOX_GUEST_KNOWN_HOSTS_FILE", "").strip()
+    configured = os.environ.get("EVANDER_GUEST_KNOWN_HOSTS_FILE", "").strip()
     if configured:
         path = Path(configured).expanduser()
     else:
-        path = _caller_home() / ".ssh" / "agent-sandbox-known_hosts"
+        path = _caller_home() / ".ssh" / "evander-known_hosts"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch(exist_ok=True)
@@ -1730,7 +1730,7 @@ def _known_hosts_path() -> Path:
     except OSError:
         fallback = (
             Path("/tmp")
-            / f"agent-sandbox-known_hosts-{os.environ.get('SUDO_USER') or os.environ.get('USER') or 'agent'}"
+            / f"evander-known_hosts-{os.environ.get('SUDO_USER') or os.environ.get('USER') or 'agent'}"
         )
         fallback.parent.mkdir(parents=True, exist_ok=True)
         fallback.touch(exist_ok=True)

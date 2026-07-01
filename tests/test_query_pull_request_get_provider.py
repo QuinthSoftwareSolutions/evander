@@ -5,12 +5,12 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.provider_models import PullRequestGetQueryDefinition
-from agent_sandbox.models import GetPullRequestResponse, PullRequestCommit, PullRequestReviewer
-from agent_sandbox.queries.providers.base import QueryRuntimeContext
-from agent_sandbox.queries.providers.pull_request_get import PullRequestGetQueryProvider
-from agent_sandbox.queries.registry import QueryProviderFactory
+from evander.config import GatewayConfig
+from evander.events.provider_models import PullRequestGetQueryDefinition
+from evander.models import GetPullRequestResponse, PullRequestCommit, PullRequestReviewer
+from evander.queries.providers.base import QueryRuntimeContext
+from evander.queries.providers.pull_request_get import PullRequestGetQueryProvider
+from evander.queries.registry import QueryProviderFactory
 
 
 class _Resolver:
@@ -87,7 +87,7 @@ def test_pull_request_get_query_builds_through_factory_and_uses_ado_provider(
         return ("azure_devops", "Resolved Project", StubProvider())
 
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.pull_request_get.build_pull_request_provider",
+        "evander.queries.providers.pull_request_get.build_pull_request_provider",
         stub_builder,
     )
 
@@ -171,7 +171,7 @@ def test_pull_request_get_query_resolves_github_token_and_falls_back_without_one
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.pull_request_get.GitHubPrQueryProvider",
+        "evander.queries.providers.pull_request_get.GitHubPrQueryProvider",
         StubProvider,
     )
     resolver = _Resolver(

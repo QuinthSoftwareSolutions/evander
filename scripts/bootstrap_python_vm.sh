@@ -26,7 +26,7 @@ Environment:
                      Default: dev
   GUEST_WHEELHOUSE_DIR
                      Guest wheelhouse destination. Default:
-                     ~/.agent-sandbox/python-wheelhouse/<repo-name>
+                     ~/.evander/python-wheelhouse/<repo-name>
 EOF
 }
 
@@ -82,7 +82,7 @@ HOST_PYTHON_BIN="${HOST_PYTHON_BIN:-python3}"
 GUEST_PYTHON_BIN="${GUEST_PYTHON_BIN:-python3}"
 PYTHON_EXTRAS="${PYTHON_EXTRAS:-dev}"
 GUEST_REPO_BASENAME="$(basename "${GUEST_REPO_ROOT}")"
-GUEST_WHEELHOUSE_DIR="${GUEST_WHEELHOUSE_DIR:-/home/${VM_USER}/.agent-sandbox/python-wheelhouse/${GUEST_REPO_BASENAME}}"
+GUEST_WHEELHOUSE_DIR="${GUEST_WHEELHOUSE_DIR:-/home/${VM_USER}/.evander/python-wheelhouse/${GUEST_REPO_BASENAME}}"
 
 if [[ ! -f "${HOST_CHECKOUT_ROOT}/pyproject.toml" ]]; then
   echo "Missing pyproject.toml under host checkout: ${HOST_CHECKOUT_ROOT}" >&2

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Dispatch, ReactNode, SetStateAction } from "react";
+import type { Dispatch, SetStateAction } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { DestroyIcon, PowerIcon, StartIcon, StopIcon, VmRunningIcon, VmStoppedIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { type VmActionResponse, type VmListResponse, type VmRecord } from "../admin/types";
 
@@ -52,60 +53,6 @@ function appendLogEntry(
   tone: ActionLogEntry["tone"],
 ) {
   setActionLog((current) => [{ at: new Date().toISOString(), message, tone }, ...current].slice(0, 30));
-}
-
-function VmIcon({ children, viewBox = "0 0 24 24" }: { children: ReactNode; viewBox?: string }) {
-  return (
-    <svg aria-hidden="true" viewBox={viewBox} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      {children}
-    </svg>
-  );
-}
-
-function VmRunningIcon() {
-  return (
-    <VmIcon>
-      <path d="M9 7.5v9l7-4.5z" fill="currentColor" stroke="none" />
-    </VmIcon>
-  );
-}
-
-function VmStoppedIcon() {
-  return (
-    <VmIcon>
-      <rect x="7.5" y="7.5" width="9" height="9" rx="1.5" fill="currentColor" stroke="none" />
-    </VmIcon>
-  );
-}
-
-function StartIcon() {
-  return (
-    <VmIcon>
-      <path d="M8 6.5v11l8-5.5z" fill="currentColor" stroke="none" />
-    </VmIcon>
-  );
-}
-
-function PowerIcon() {
-  return (
-    <VmIcon>
-      <path d="M12 3.5v7" />
-      <path d="M7.2 6.8a8 8 0 1 0 9.6 0" />
-    </VmIcon>
-  );
-}
-
-function DestroyIcon() {
-  return (
-    <VmIcon>
-      <path d="M5.5 7.5h13" />
-      <path d="M9 7.5v-2h6v2" />
-      <path d="M8.5 10.5v6" />
-      <path d="M12 10.5v6" />
-      <path d="M15.5 10.5v6" />
-      <path d="M7.5 7.5v10.2a1.3 1.3 0 0 0 1.3 1.3h6.4a1.3 1.3 0 0 0 1.3-1.3V7.5" />
-    </VmIcon>
-  );
 }
 
 export function VmsPage() {

@@ -30,7 +30,7 @@ vm_agent_status_from_ssh() {
     "VM_AGENT_STATE_MAX_AGE_SECONDS='${state_max_age_seconds}' bash -s" <<'REMOTE_EOF'
 set -euo pipefail
 
-LOG_DIR="${HOME}/.agent-sandbox"
+LOG_DIR="${HOME}/.evander"
 VM_AGENT_STATE_MAX_AGE_SECONDS="${VM_AGENT_STATE_MAX_AGE_SECONDS:-600}"
 CONTROL_STATE_PATH="${LOG_DIR}/agent-control.state"
 

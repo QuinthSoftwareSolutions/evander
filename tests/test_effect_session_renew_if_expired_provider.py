@@ -6,16 +6,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.session_renew_if_expired import (
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.session_renew_if_expired import (
     SessionRenewIfExpiredEffectProvider,
     parse_session_extend_by,
     parse_session_renew_if_expires_within,
 )
-from agent_sandbox.events.provider_models import SessionRenewIfExpiredEffectDefinition
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from evander.events.provider_models import SessionRenewIfExpiredEffectDefinition
+from evander.models import SessionManifest, ToolName
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 
 class _ProviderConfigResolver:

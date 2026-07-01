@@ -6,11 +6,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADMIN_SERVICE_SYMBOL_RE = re.compile(r"\bAdmin" + r"Service\b")
-ADMIN_SERVICE_MODULE_RE = re.compile(r"agent_sandbox\.admin\.service(?!s)")
+ADMIN_SERVICE_MODULE_RE = re.compile(r"evander\.admin\.service(?!s)")
 
 
 def test_admin_service_module_is_removed() -> None:
-    assert not (REPO_ROOT / "src" / "agent_sandbox" / "admin" / "service.py").exists()
+    assert not (REPO_ROOT / "src" / "evander" / "admin" / "service.py").exists()
 
 
 def test_admin_runtime_does_not_reintroduce_admin_service_symbol() -> None:
@@ -24,7 +24,7 @@ def test_admin_runtime_does_not_reintroduce_admin_service_symbol() -> None:
             if ADMIN_SERVICE_SYMBOL_RE.search(text):
                 hits.append("Admin" + "Service")
             if ADMIN_SERVICE_MODULE_RE.search(text):
-                hits.append("agent_sandbox.admin." + "service")
+                hits.append("evander.admin." + "service")
             if hits:
                 offenders[str(path.relative_to(REPO_ROOT))] = hits
     assert offenders == {}

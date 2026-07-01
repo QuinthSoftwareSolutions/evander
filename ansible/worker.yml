@@ -1,9 +1,9 @@
 ---
-- name: Deploy agent-sandbox container worker VMs
-  hosts: agent_sandbox_worker_hosts
+- name: Deploy evander container worker VMs
+  hosts: evander_worker_hosts
   become: true
   vars:
-    agent_sandbox_repo_parent: "{{ agent_sandbox_deploy_path | dirname }}"
+    evander_repo_parent: "{{ evander_deploy_path | dirname }}"
   pre_tasks:
     - name: Resolve local worker playbook revision
       ansible.builtin.command:
@@ -18,8 +18,8 @@
       become: false
       changed_when: false
       check_mode: false
-      register: agent_sandbox_worker_playbook_revision
-      when: agent_sandbox_worker_enforce_revision_match | bool
+      register: evander_worker_playbook_revision
+      when: evander_worker_enforce_revision_match | bool
 
     - name: Check worker deploy source tree for uncommitted contract changes
       ansible.builtin.command:
@@ -34,36 +34,36 @@
               '--untracked-files=all',
               '--'
             ]
-            + agent_sandbox_worker_revision_guard_paths
+            + evander_worker_revision_guard_paths
           }}
       delegate_to: localhost
       become: false
       changed_when: false
       check_mode: false
-      register: agent_sandbox_worker_dirty_contract_paths
-      when: agent_sandbox_worker_enforce_revision_match | bool
+      register: evander_worker_dirty_contract_paths
+      when: evander_worker_enforce_revision_match | bool
 
     - name: Assert worker deploy contract changes are committed
       ansible.builtin.assert:
         that:
-          - (agent_sandbox_worker_dirty_contract_paths.stdout_lines | length) == 0
+          - (evander_worker_dirty_contract_paths.stdout_lines | length) == 0
         fail_msg: >-
           Worker deployment renders systemd from the local playbook but installs
           daemon code from Git. Commit and push worker playbook/daemon contract
           changes before deploying, or set
-          agent_sandbox_worker_enforce_revision_match=false after confirming the
+          evander_worker_enforce_revision_match=false after confirming the
           target revision is compatible. Dirty paths={{
-            agent_sandbox_worker_dirty_contract_paths.stdout_lines
+            evander_worker_dirty_contract_paths.stdout_lines
           }}
         success_msg: Worker deploy contract files are committed.
-      when: agent_sandbox_worker_enforce_revision_match | bool
+      when: evander_worker_enforce_revision_match | bool
 
     - name: Default worker repo checkout to the playbook revision
       ansible.builtin.set_fact:
-        agent_sandbox_repo_version: "{{ agent_sandbox_worker_playbook_revision.stdout }}"
+        evander_repo_version: "{{ evander_worker_playbook_revision.stdout }}"
       when:
-        - agent_sandbox_worker_enforce_revision_match | bool
-        - agent_sandbox_worker_repo_version_mode == 'playbook_revision'
+        - evander_worker_enforce_revision_match | bool
+        - evander_worker_repo_version_mode == 'playbook_revision'
 
     - name: Resolve requested worker repo revision locally
       ansible.builtin.command:
@@ -73,35 +73,35 @@
           - "{{ playbook_dir }}/.."
           - rev-parse
           - --verify
-          - "{{ agent_sandbox_repo_version }}^{commit}"
+          - "{{ evander_repo_version }}^{commit}"
       delegate_to: localhost
       become: false
       changed_when: false
       check_mode: false
-      register: agent_sandbox_worker_requested_revision
-      when: agent_sandbox_worker_enforce_revision_match | bool
+      register: evander_worker_requested_revision
+      when: evander_worker_enforce_revision_match | bool
 
     - name: Assert worker playbook and daemon checkout revisions match
       ansible.builtin.assert:
         that:
-          - agent_sandbox_worker_requested_revision.stdout == agent_sandbox_worker_playbook_revision.stdout
+          - evander_worker_requested_revision.stdout == evander_worker_playbook_revision.stdout
         fail_msg: >-
           Worker deployment would render Ansible templates from local commit
-          {{ agent_sandbox_worker_playbook_revision.stdout }} but install daemon
-          code from agent_sandbox_repo_version={{ agent_sandbox_repo_version }}
-          ({{ agent_sandbox_worker_requested_revision.stdout }}). Run the
+          {{ evander_worker_playbook_revision.stdout }} but install daemon
+          code from evander_repo_version={{ evander_repo_version }}
+          ({{ evander_worker_requested_revision.stdout }}). Run the
           playbook from the target revision, use the default playbook_revision
-          mode, or set agent_sandbox_worker_enforce_revision_match=false only
+          mode, or set evander_worker_enforce_revision_match=false only
           after confirming the unit and daemon CLI are compatible.
         success_msg: Worker playbook and daemon checkout revisions match.
-      when: agent_sandbox_worker_enforce_revision_match | bool
+      when: evander_worker_enforce_revision_match | bool
 
     - name: Assert the worker token is configured
       ansible.builtin.assert:
         that:
-          - (agent_sandbox_worker_token | default('') | string | length) > 0
+          - (evander_worker_token | default('') | string | length) > 0
         fail_msg: >-
-          agent_sandbox_worker_token must be set from Vault or inventory. It is rendered
+          evander_worker_token must be set from Vault or inventory. It is rendered
           only to the worker daemon env file and must match the control-plane
           container_worker_token_env value.
         success_msg: Worker token is configured.
@@ -109,41 +109,41 @@
     - name: Assert the worker sandbox profile is supported
       ansible.builtin.assert:
         that:
-          - agent_sandbox_worker_sandbox_profile in ['default', 'strict']
-        fail_msg: "agent_sandbox_worker_sandbox_profile must be either 'default' or 'strict'."
+          - evander_worker_sandbox_profile in ['default', 'strict']
+        fail_msg: "evander_worker_sandbox_profile must be either 'default' or 'strict'."
         success_msg: Worker sandbox profile is supported.
 
     - name: Resolve worker Docker network and egress allowlist
       ansible.builtin.set_fact:
-        agent_sandbox_worker_docker_network_normalized: >-
-          {{ agent_sandbox_worker_docker_network | default('none') | string | trim | lower }}
-        agent_sandbox_worker_effective_egress_policy_allow_tcp_endpoints: >-
+        evander_worker_docker_network_normalized: >-
+          {{ evander_worker_docker_network | default('none') | string | trim | lower }}
+        evander_worker_effective_egress_policy_allow_tcp_endpoints: >-
           {{
-            (agent_sandbox_worker_egress_policy_allow_tcp_endpoints | default([]))
-            + (agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints | default([]))
+            (evander_worker_egress_policy_allow_tcp_endpoints | default([]))
+            + (evander_worker_egress_policy_extra_allow_tcp_endpoints | default([]))
           }}
 
     - name: Assert the worker Docker network is not host
       ansible.builtin.assert:
         that:
-          - agent_sandbox_worker_docker_network_normalized != 'host'
+          - evander_worker_docker_network_normalized != 'host'
         fail_msg: "The container worker daemon refuses Docker host networking."
         success_msg: Worker Docker network is acceptable.
 
     - name: Assert non-none worker Docker networking has egress policy
       ansible.builtin.assert:
         that:
-          - agent_sandbox_worker_egress_policy_enabled | bool
-          - (agent_sandbox_worker_effective_egress_policy_allow_tcp_endpoints | length) > 0
+          - evander_worker_egress_policy_enabled | bool
+          - (evander_worker_effective_egress_policy_allow_tcp_endpoints | length) > 0
         fail_msg: >-
-          agent_sandbox_worker_docker_network={{ agent_sandbox_worker_docker_network }}
-          requires agent_sandbox_worker_egress_policy_enabled=true and at least
+          evander_worker_docker_network={{ evander_worker_docker_network }}
+          requires evander_worker_egress_policy_enabled=true and at least
           one allowlisted endpoint in
-          agent_sandbox_worker_egress_policy_allow_tcp_endpoints or
-          agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints. Use
-          agent_sandbox_worker_docker_network=none for isolated containers.
+          evander_worker_egress_policy_allow_tcp_endpoints or
+          evander_worker_egress_policy_extra_allow_tcp_endpoints. Use
+          evander_worker_docker_network=none for isolated containers.
         success_msg: Worker Docker network is paired with an egress policy.
-      when: agent_sandbox_worker_docker_network_normalized not in ['', 'none']
+      when: evander_worker_docker_network_normalized not in ['', 'none']
 
     - name: Assert worker egress allowlist endpoints are concrete
       ansible.builtin.assert:
@@ -159,17 +159,17 @@
             item
           }}.
         success_msg: Worker egress allowlist endpoint is concrete.
-      loop: "{{ agent_sandbox_worker_effective_egress_policy_allow_tcp_endpoints }}"
+      loop: "{{ evander_worker_effective_egress_policy_allow_tcp_endpoints }}"
       when:
-        - agent_sandbox_worker_egress_policy_enabled | bool
-        - agent_sandbox_worker_docker_network_normalized not in ['', 'none']
+        - evander_worker_egress_policy_enabled | bool
+        - evander_worker_docker_network_normalized not in ['', 'none']
 
     - name: Assert worker state paths are absolute
       ansible.builtin.assert:
         that:
-          - agent_sandbox_worker_root is match('^/')
-          - agent_sandbox_worker_runtime_dir is match('^/')
-        fail_msg: "agent_sandbox_worker_root and agent_sandbox_worker_runtime_dir must be absolute paths."
+          - evander_worker_root is match('^/')
+          - evander_worker_runtime_dir is match('^/')
+        fail_msg: "evander_worker_root and evander_worker_runtime_dir must be absolute paths."
         success_msg: Worker state paths are absolute.
 
   roles:

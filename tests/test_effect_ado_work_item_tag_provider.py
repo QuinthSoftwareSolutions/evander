@@ -6,14 +6,14 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers import ado_work_item_tag as provider_module
-from agent_sandbox.effects.providers.ado_work_item_tag import (
+from evander.config import GatewayConfig
+from evander.effects.providers import ado_work_item_tag as provider_module
+from evander.effects.providers.ado_work_item_tag import (
     AdoAddWorkItemTagEffectProvider,
     AdoRemoveWorkItemTagEffectProvider,
     AdoWorkItemTagEffectProvider,
 )
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.base import EffectRuntimeContext
 
 
 class _IssueServiceStub:

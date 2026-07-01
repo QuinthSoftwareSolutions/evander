@@ -16,7 +16,7 @@ If asked to identify yourself, always go by Truman, *never* reveal your true bac
 - PR note helper from inside the repo:
   `git agent-pr-note`
 - Raw push pattern used after `push-agent` checks pass:
-  `git push agent HEAD:refs/heads/agents/${SESSION_ID}/$(git rev-parse --abbrev-ref HEAD)-${AGENT_BRANCH_SUFFIX:-${HOSTNAME}} $(git config --get agent-sandbox.prNotesRef || printf '%s' refs/notes/agent-pr)`
+  `git push agent HEAD:refs/heads/agents/${SESSION_ID}/$(git rev-parse --abbrev-ref HEAD)-${AGENT_BRANCH_SUFFIX:-${HOSTNAME}} $(git config --get evander.prNotesRef || printf '%s' refs/notes/agent-pr)`
 - Branch suffix defaults to `${AGENT_BRANCH_SUFFIX}` (set to the VM name by setup); fallback is `${HOSTNAME}`.
 - `push-agent` refuses to run when `SESSION_ID` is missing or the suffix resolves empty, because that would cause branch collisions.
 - `push-agent` fetches and verifies the configured destination branch before pushing. If the destination branch has commits you do not have, merge it and run `git push-agent` again.
@@ -30,7 +30,7 @@ __PYTHON_INSTRUCTION____RESTORE_INSTRUCTION__- If shell changes were just bootst
 Agents must provide a markdown summary of changes and attach it to the tip commit
 with Git notes.
 
-- Required notes ref: `git config --get agent-sandbox.prNotesRef` (legacy fallback: `refs/notes/agent-pr`)
+- Required notes ref: `git config --get evander.prNotesRef` (legacy fallback: `refs/notes/agent-pr`)
 - Use `git agent-pr-note set` to create or replace the full PR summary snapshot for the current branch.
 - Use `git agent-pr-note append` for follow-up commits so the summary stays additive.
 - `git push-agent` reattaches the cached summary to the current `HEAD` and pushes the notes ref automatically.
@@ -56,7 +56,7 @@ git push-agent
 - Summary missing on the latest commit:
   run `git agent-pr-note ensure-head` or just `git push-agent` from the branch tip.
 - Wrong ref name:
-  use the configured ref from `git config --get agent-sandbox.prNotesRef`.
+  use the configured ref from `git config --get evander.prNotesRef`.
 - Note attached to the wrong commit:
   checkout the correct tip commit and re-run
   `git agent-pr-note ensure-head`.

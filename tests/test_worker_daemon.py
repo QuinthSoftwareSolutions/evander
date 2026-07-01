@@ -13,10 +13,10 @@ import pytest
 from pydantic import ValidationError
 from starlette.testclient import TestClient
 
-from agent_sandbox.capacity_health import HealthState, TelemetryStatus
-from agent_sandbox.worker.service import WorkerDaemon
-from agent_sandbox.worker.models import WorkerRepoCloneRequest
-from agent_sandbox.worker_daemon import (
+from evander.capacity_health import HealthState, TelemetryStatus
+from evander.worker.service import WorkerDaemon
+from evander.worker.models import WorkerRepoCloneRequest
+from evander.worker_daemon import (
     WorkerJobRecord,
     WorkerJobRequest,
     WorkerJobStore,
@@ -252,15 +252,15 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
 ) -> None:
     ssh_source = tmp_path / "git-ssh"
     ssh_source.mkdir()
-    for name in ("agent-sandbox-git", "config"):
+    for name in ("evander-git", "config"):
         (ssh_source / name).write_text("ssh\n", encoding="utf-8")
-    (ssh_source / "agent-sandbox-git.pub").write_text("ssh pub\n", encoding="utf-8")
+    (ssh_source / "evander-git.pub").write_text("ssh pub\n", encoding="utf-8")
     daemon = WorkerDaemon(
         runtime_dir=tmp_path / "runtime",
         worker_root=tmp_path / "worker-root",
         container_runtime=FakeContainerRuntime(),
         token="test-token",
-        allowed_git_source_prefixes=["ssh://agent-sandbox-git-host/git-remotes/"],
+        allowed_git_source_prefixes=["ssh://evander-git-host/git-remotes/"],
         git_ssh_source_dir=ssh_source,
     )
     calls: list[dict[str, object]] = []
@@ -274,7 +274,7 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     daemon.clone_repo(
         "session-1",
         WorkerRepoCloneRequest(
-            repo_source="ssh://agent-sandbox-git-host/git-remotes/repo.git",
+            repo_source="ssh://evander-git-host/git-remotes/repo.git",
             clone_branch="main",
             repo_name="repo",
         ),
@@ -286,7 +286,7 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     assert clone_call["env"]["HOME"] == str(paths.agent_home)  # type: ignore[index]
     assert clone_call["env"]["GIT_SSH_COMMAND"] == (  # type: ignore[index]
         f"ssh -F {paths.agent_home / '.ssh' / 'config'} "
-        f"-i {paths.agent_home / '.ssh' / 'agent-sandbox-git'}"
+        f"-i {paths.agent_home / '.ssh' / 'evander-git'}"
     )
 
 
@@ -521,9 +521,9 @@ def test_session_file_write_merges_managed_section(tmp_path: Path) -> None:
     target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
     assert target.read_text(encoding="utf-8") == (
         "# Base\n\n"
-        "<!-- agent-sandbox-managed-section:evander-team-addon:begin -->\n"
+        "<!-- evander-managed-section:evander-team-addon:begin -->\n"
         "Team guidance v2\n"
-        "<!-- agent-sandbox-managed-section:evander-team-addon:end -->\n"
+        "<!-- evander-managed-section:evander-team-addon:end -->\n"
     )
 
 
@@ -539,12 +539,12 @@ def test_session_file_write_removes_stale_managed_sections(tmp_path: Path) -> No
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         "# Base\n\n"
-        "<!-- agent-sandbox-managed-section:truman-team-addon:begin -->\n"
+        "<!-- evander-managed-section:truman-team-addon:begin -->\n"
         "Old guidance\n"
-        "<!-- agent-sandbox-managed-section:truman-team-addon:end -->\n\n"
-        "<!-- agent-sandbox-managed-section:evander-team-addon:begin -->\n"
+        "<!-- evander-managed-section:truman-team-addon:end -->\n\n"
+        "<!-- evander-managed-section:evander-team-addon:begin -->\n"
         "Team guidance v1\n"
-        "<!-- agent-sandbox-managed-section:evander-team-addon:end -->\n",
+        "<!-- evander-managed-section:evander-team-addon:end -->\n",
         encoding="utf-8",
     )
 
@@ -602,9 +602,9 @@ def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
 def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Path) -> None:
     ssh_source = tmp_path / "worker-ssh"
     ssh_source.mkdir()
-    (ssh_source / "agent-sandbox-git").write_text("private-key\n", encoding="utf-8")
-    (ssh_source / "agent-sandbox-git.pub").write_text("public-key\n", encoding="utf-8")
-    (ssh_source / "config").write_text("Host agent-sandbox-git-host\n", encoding="utf-8")
+    (ssh_source / "evander-git").write_text("private-key\n", encoding="utf-8")
+    (ssh_source / "evander-git.pub").write_text("public-key\n", encoding="utf-8")
+    (ssh_source / "config").write_text("Host evander-git-host\n", encoding="utf-8")
     (ssh_source / "known_hosts").write_text("known-host\n", encoding="utf-8")
     client = _client(tmp_path, git_ssh_source_dir=ssh_source)
 
@@ -616,10 +616,10 @@ def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Pat
 
     assert response.status_code == 201
     target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / ".ssh"
-    assert (target / "agent-sandbox-git").read_text(encoding="utf-8") == "private-key\n"
-    assert (target / "config").read_text(encoding="utf-8") == "Host agent-sandbox-git-host\n"
-    assert oct((target / "agent-sandbox-git").stat().st_mode & 0o777) == "0o600"
-    assert oct((target / "agent-sandbox-git.pub").stat().st_mode & 0o777) == "0o644"
+    assert (target / "evander-git").read_text(encoding="utf-8") == "private-key\n"
+    assert (target / "config").read_text(encoding="utf-8") == "Host evander-git-host\n"
+    assert oct((target / "evander-git").stat().st_mode & 0o777) == "0o600"
+    assert oct((target / "evander-git.pub").stat().st_mode & 0o777) == "0o644"
 
 
 def test_session_delete_removes_durable_paths_and_worker_jobs(tmp_path: Path) -> None:
@@ -775,7 +775,7 @@ def test_session_delete_marks_cleanup_failed_when_session_root_removal_fails(
     def _raise(*_args: object, **_kwargs: object) -> None:
         raise OSError("permission denied")
 
-    monkeypatch.setattr("agent_sandbox.worker.service.shutil.rmtree", _raise)
+    monkeypatch.setattr("evander.worker.service.shutil.rmtree", _raise)
 
     deleted = client.delete("/v1/sessions/session-1", headers=_auth())
 
@@ -1081,7 +1081,7 @@ def test_session_repo_clone_rejects_sources_without_allowed_prefix(tmp_path: Pat
 def test_session_repo_clone_rejects_sources_outside_allowed_prefix(tmp_path: Path) -> None:
     client = _client(
         tmp_path,
-        allowed_git_source_prefixes=["ssh://agent-sandbox-git-host/opt/git/"],
+        allowed_git_source_prefixes=["ssh://evander-git-host/opt/git/"],
     )
 
     response = client.post(
@@ -1099,7 +1099,7 @@ def test_job_repo_clone_enforces_allowed_prefix(tmp_path: Path) -> None:
     client = _client(
         tmp_path,
         runtime,
-        allowed_git_source_prefixes=["ssh://agent-sandbox-git-host/opt/git/"],
+        allowed_git_source_prefixes=["ssh://evander-git-host/opt/git/"],
     )
 
     response = client.post(
@@ -1280,9 +1280,9 @@ def test_logs_endpoint_returns_bounded_pages_from_newest_end(tmp_path: Path) -> 
 
     assert response.status_code == 200
     assert response.text == "two\nthree\n"
-    assert response.headers["x-agent-sandbox-log-paged"] == "true"
-    assert response.headers["x-agent-sandbox-log-returned-lines"] == "2"
-    assert response.headers["x-agent-sandbox-log-has-more-before"] == "true"
+    assert response.headers["x-evander-log-paged"] == "true"
+    assert response.headers["x-evander-log-returned-lines"] == "2"
+    assert response.headers["x-evander-log-has-more-before"] == "true"
 
 
 def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
@@ -1309,7 +1309,7 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
         / "session-1"
         / "agent_home"
         / ".config"
-        / "agent-sandbox"
+        / "evander"
         / "codex"
         / "sessions"
         / "2026"
@@ -1405,7 +1405,7 @@ def test_execution_logs_skip_codex_no_response_requested_artifact(tmp_path: Path
     session_dir = (
         paths.agent_home
         / ".config"
-        / "agent-sandbox"
+        / "evander"
         / "codex"
         / "sessions"
         / "2026"
@@ -1461,7 +1461,7 @@ def test_completed_codex_job_records_missing_final_message_as_failure(tmp_path: 
         job_id="job-1",
         session_id="session-1",
         image="codex:latest",
-        command=["bash", "-lc", "codex exec --json prompt | agent_sandbox_codex_json_to_log"],
+        command=["bash", "-lc", "codex exec --json prompt | evander_codex_json_to_log"],
         container_name="agent-worker-job-1",
         status="exited",
         started_at=started_at,
@@ -1475,7 +1475,7 @@ def test_completed_codex_job_records_missing_final_message_as_failure(tmp_path: 
     session_dir = (
         paths.agent_home
         / ".config"
-        / "agent-sandbox"
+        / "evander"
         / "codex"
         / "sessions"
         / "2026"
@@ -1550,7 +1550,7 @@ def test_completed_codex_job_allows_null_task_complete_after_assistant_text(
         job_id="job-1",
         session_id="session-1",
         image="codex:latest",
-        command=["bash", "-lc", "codex exec --json prompt | agent_sandbox_codex_json_to_log"],
+        command=["bash", "-lc", "codex exec --json prompt | evander_codex_json_to_log"],
         container_name="agent-worker-job-1",
         status="exited",
         started_at=started_at,
@@ -1564,7 +1564,7 @@ def test_completed_codex_job_allows_null_task_complete_after_assistant_text(
     session_dir = (
         paths.agent_home
         / ".config"
-        / "agent-sandbox"
+        / "evander"
         / "codex"
         / "sessions"
         / "2026"
@@ -1634,7 +1634,7 @@ def test_execution_logs_limit_resumed_thread_to_job_window(tmp_path: Path) -> No
     session_dir = (
         paths.agent_home
         / ".config"
-        / "agent-sandbox"
+        / "evander"
         / "codex"
         / "sessions"
         / "2026"
@@ -1690,7 +1690,7 @@ def test_logs_recover_claude_messages_from_project_jsonl(tmp_path: Path) -> None
     record = WorkerJobRecord(
         job_id="job-claude",
         session_id="claude-test-agent",
-        image="agent-sandbox-runner-claude:latest",
+        image="evander-runner-claude:latest",
         command=["true"],
         container_name="agent-worker-job-claude",
         status="removed",
@@ -1737,7 +1737,7 @@ def test_logs_recover_claude_messages_from_project_jsonl(tmp_path: Path) -> None
                         "content": [
                             {
                                 "type": "tool_use",
-                                "name": "mcp__agent_sandbox__teams_get_messages",
+                                "name": "mcp__evander__teams_get_messages",
                                 "input": {"limit": 5},
                             }
                         ],
@@ -1769,7 +1769,7 @@ def test_logs_recover_claude_messages_from_project_jsonl(tmp_path: Path) -> None
     codex_session_dir = (
         paths.agent_home
         / ".config"
-        / "agent-sandbox"
+        / "evander"
         / "codex"
         / "sessions"
         / "2026"
@@ -1818,7 +1818,7 @@ def test_execution_logs_skip_claude_no_response_requested_artifact(tmp_path: Pat
     record = WorkerJobRecord(
         job_id="job-claude",
         session_id="claude-test-agent",
-        image="agent-sandbox-runner-claude:latest",
+        image="evander-runner-claude:latest",
         command=["true"],
         container_name="agent-worker-job-claude",
         status="running",
@@ -1894,7 +1894,7 @@ def test_logs_recover_live_codex_messages_without_thread_id_in_container_output(
         / "session-1"
         / "agent_home"
         / ".config"
-        / "agent-sandbox"
+        / "evander"
         / "codex"
         / "sessions"
         / "2026"
@@ -1952,7 +1952,7 @@ def test_logs_show_active_codex_exec_command_from_session_jsonl(tmp_path: Path) 
         / "session-1"
         / "agent_home"
         / ".config"
-        / "agent-sandbox"
+        / "evander"
         / "codex"
         / "sessions"
         / "2026"
@@ -2049,7 +2049,7 @@ def test_raw_logs_reconstruct_removed_codex_job_from_session_timestamps(
     session_dir = (
         paths.agent_home
         / ".config"
-        / "agent-sandbox"
+        / "evander"
         / "codex"
         / "sessions"
         / "2026"

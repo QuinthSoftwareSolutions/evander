@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.capacity_health import (
+from evander.capacity_health import (
     DiskThresholds,
     HealthState,
     SessionStorageSample,
@@ -65,7 +65,7 @@ def test_collect_disk_usage_marks_permission_denied_without_leaking_path(
     def fail_disk_usage(path: Path) -> shutil._ntuple_diskusage:
         raise PermissionError(f"permission denied: {path}")
 
-    monkeypatch.setattr("agent_sandbox.capacity_health.shutil.disk_usage", fail_disk_usage)
+    monkeypatch.setattr("evander.capacity_health.shutil.disk_usage", fail_disk_usage)
 
     telemetry = collect_disk_usage(tmp_path, scope="control_plane_runtime")
 
@@ -116,7 +116,7 @@ def test_collect_recursive_directory_size_sanitizes_child_scan_errors(
             raise PermissionError(f"permission denied while scanning {current}")
         return real_scandir(path)
 
-    monkeypatch.setattr("agent_sandbox.capacity_health.os.scandir", fake_scandir)
+    monkeypatch.setattr("evander.capacity_health.os.scandir", fake_scandir)
 
     telemetry = collect_recursive_directory_size(root, scope="session_storage")
 

@@ -45,7 +45,7 @@ sanitize_suffix() {
 session_id() {
   local value="${SESSION_ID:-}"
   if [[ -z "${value}" ]]; then
-    value="$(config_value agent-sandbox.sessionId)"
+    value="$(config_value evander.sessionId)"
   fi
   [[ -n "${value}" ]] || die "SESSION_ID is not set; refusing ambiguous agent push."
   printf '%s\n' "${value}"
@@ -55,7 +55,7 @@ branch_suffix() {
   local suffix_source="${AGENT_BRANCH_SUFFIX:-}"
   local suffix
   if [[ -z "${suffix_source}" ]]; then
-    suffix_source="$(config_value agent-sandbox.branchSuffix)"
+    suffix_source="$(config_value evander.branchSuffix)"
   fi
   if [[ -z "${suffix_source}" ]]; then
     suffix_source="${HOSTNAME:-}"
@@ -67,7 +67,7 @@ branch_suffix() {
 
 pr_notes_ref() {
   local notes_ref
-  notes_ref="$(config_value agent-sandbox.prNotesRef)"
+  notes_ref="$(config_value evander.prNotesRef)"
   if [[ -z "${notes_ref}" ]]; then
     notes_ref="refs/notes/agent-pr"
   fi
@@ -78,7 +78,7 @@ expected_destination_branch() {
   local expected_issue_number="$1"
   local session_id_value="$2"
   local destination_branch
-  destination_branch="$(config_value agent-sandbox.destinationBranch)"
+  destination_branch="$(config_value evander.destinationBranch)"
   if [[ -z "${expected_issue_number}" ]]; then
     expected_issue_number="$(issue_number_from_value "${session_id_value}" || true)"
   fi
@@ -89,7 +89,7 @@ expected_destination_branch() {
 }
 
 base_branch() {
-  config_value agent-sandbox.baseBranch
+  config_value evander.baseBranch
 }
 
 issue_number_from_value() {
@@ -242,7 +242,7 @@ main() {
 
   local session_id_value expected_issue_number suffix notes_ref repo_root branch destination_branch base_branch_value
   session_id_value="$(session_id)"
-  expected_issue_number="$(config_value agent-sandbox.issueNumber)"
+  expected_issue_number="$(config_value evander.issueNumber)"
   verify_session_matches_issue "${session_id_value}" "${expected_issue_number}"
   suffix="$(branch_suffix)"
   notes_ref="$(pr_notes_ref)"
@@ -253,7 +253,7 @@ main() {
   verify_publish_preconditions "${destination_branch}" "${base_branch_value}"
 
   repo_root="$(git rev-parse --show-toplevel)"
-  "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head
+  "${repo_root}/.evander/bin/agent-pr-note" ensure-head
   git push agent "HEAD:refs/heads/agents/${session_id_value}/${branch}-${suffix}" "${notes_ref}"
 }
 

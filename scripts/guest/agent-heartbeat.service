@@ -1,8 +1,8 @@
 [Unit]
-Description=Agent Sandbox Guest Heartbeat Resume Service
+Description=Evander Guest Heartbeat Resume Service
 After=default.target
 
 [Service]
 Type=oneshot
-EnvironmentFile=-%h/.config/agent-sandbox/guest-heartbeat.env
+EnvironmentFile=-%h/.config/evander/guest-heartbeat.env
 ExecStart=%h/.config/systemd/user/heartbeat_cycle.sh

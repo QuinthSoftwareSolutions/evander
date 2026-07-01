@@ -9,18 +9,19 @@ from types import SimpleNamespace
 import pytest
 from starlette.routing import Route
 
-from agent_sandbox.addons import (
+from evander.addons import (
     AddonContext,
     AddonLoaderConfig,
     AddonRegistration,
     addon_json_object_store,
     addon_runtime_dir,
     addon_storage_path,
+    discover_addons,
     load_addons,
     register_addon_mcp_tools,
     resolve_addon_admin_api_routes,
 )
-from agent_sandbox.workflow.plugins import load_provider_plugins
+from evander.workflow.plugins import load_provider_plugins
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,7 +36,7 @@ def test_load_addons_defaults_to_empty_catalog() -> None:
 def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    addon_entry_points = pyproject["project"]["entry-points"]["agent_sandbox.addons"]
+    addon_entry_points = pyproject["project"]["entry-points"]["evander.addons"]
     package_data = pyproject["tool"]["setuptools"]["package-data"]
 
     assert addon_entry_points["team"] == "evander_team_addon:register_addon"
@@ -53,7 +54,7 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
 def test_bundled_bokio_addon_packaging_contract_is_declared() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    addon_entry_points = pyproject["project"]["entry-points"]["agent_sandbox.addons"]
+    addon_entry_points = pyproject["project"]["entry-points"]["evander.addons"]
     package_data = pyproject["tool"]["setuptools"]["package-data"]
 
     assert addon_entry_points["bokio"] == "evander_bokio_addon:register_addon"
@@ -117,6 +118,43 @@ def register_addon():
     assert catalog.registrations[0].admin_navigation is not None
 
 
+def test_discover_addons_reports_candidates_without_enabled_filter(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module_root = tmp_path / "plugins"
+    module_root.mkdir()
+    (module_root / "custom_addon.py").write_text(
+        """
+def register_addon():
+    return {"addon_id": "custom-addon", "display_name": "Custom Add-on"}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(module_root))
+    importlib.invalidate_caches()
+    sys.modules.pop("custom_addon", None)
+
+    records = discover_addons(
+        AddonLoaderConfig(modules=["custom_addon"], enabled_addon_ids=[])
+    )
+
+    assert len(records) == 1
+    assert records[0].source == "custom_addon"
+    assert records[0].source_type == "module"
+    assert records[0].registration is not None
+    assert records[0].registration.addon_id == "custom-addon"
+    assert records[0].error is None
+
+
+def test_discover_addons_reports_load_errors() -> None:
+    records = discover_addons(AddonLoaderConfig(modules=["missing_addon_module"]))
+
+    assert len(records) == 1
+    assert records[0].registration is None
+    assert records[0].error is not None
+    assert "missing_addon_module" in records[0].error
+
+
 def test_load_addons_supports_entry_points(monkeypatch) -> None:
     class _EntryPointStub:
         name = "custom"
@@ -130,7 +168,7 @@ def test_load_addons_supports_entry_points(monkeypatch) -> None:
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.addons._iter_addon_entry_points", lambda: (_EntryPointStub(),)
+        "evander.addons._iter_addon_entry_points", lambda: (_EntryPointStub(),)
     )
 
     catalog = load_addons(AddonLoaderConfig(enabled_entry_points=True))
@@ -222,7 +260,7 @@ def test_workflow_provider_loader_can_include_addon_provider(tmp_path: Path, mon
     module_root.mkdir()
     (module_root / "provider_addon.py").write_text(
         """
-from agent_sandbox.triggers.providers.base import TriggerProviderBase
+from evander.triggers.providers.base import TriggerProviderBase
 
 class AddonTriggerProvider(TriggerProviderBase):
     pass

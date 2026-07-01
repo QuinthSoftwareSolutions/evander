@@ -1,0 +1,4 @@
+Acquire::http::Proxy "{{ evander_worker_apt_proxy_url }}";
+{% if (evander_worker_apt_proxy_https_url | default('') | string | length) > 0 %}
+Acquire::https::Proxy "{{ evander_worker_apt_proxy_https_url }}";
+{% endif %}

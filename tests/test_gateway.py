@@ -13,19 +13,19 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
-from agent_sandbox.addons import AddonLoaderConfig
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directories import DirectoryService
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
+from evander.addons import AddonLoaderConfig
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.config import GatewayConfig
+from evander.directories import DirectoryService
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
 )
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.events.provider_models import (
+from evander.directory_config import DirectoryConfigStore
+from evander.events.provider_models import (
     SessionRevokeMcpToolApprovalLeaseEffectDefinition,
 )
-from agent_sandbox.gateway import (
+from evander.gateway import (
     _assistant_mutation_audit_result,
     _filter_discord_commands_for_session,
     _MCP_REQUEST_CONTEXT,
@@ -33,8 +33,8 @@ from agent_sandbox.gateway import (
     create_app,
     create_server,
 )
-from agent_sandbox.admin.web.chat import ChatStore
-from agent_sandbox.models import (
+from evander.admin.web.chat import ChatStore
+from evander.models import (
     AgentPromptQueueRecord,
     AgentPromptQueueSummary,
     AgentRecord,
@@ -46,12 +46,12 @@ from agent_sandbox.models import (
     SessionManifest,
     ToolName,
 )
-from agent_sandbox.policy import PolicyError
-from agent_sandbox.repositories.session_tool_approval_leases import (
+from evander.policy import PolicyError
+from evander.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
 )
-from agent_sandbox.runtime import build_runtime
-from agent_sandbox.worker.models import (
+from evander.runtime import build_runtime
+from evander.worker.models import (
     WorkerMssqlDatabaseDeleteRecord,
     WorkerMssqlDatabaseListRecord,
     WorkerMssqlDatabaseRecord,
@@ -118,7 +118,7 @@ def _mcp_initialize_session(
         headers={
             "accept": "application/json, text/event-stream",
             "content-type": "application/json",
-            "x-agent-sandbox-session-id": session_id,
+            "x-evander-session-id": session_id,
         },
         content=json.dumps(
             {
@@ -429,7 +429,7 @@ def test_resolve_session_id_from_context_reads_ambient_query_param_then_header()
     header_ctx = SimpleNamespace(
         request_context=SimpleNamespace(
             request=SimpleNamespace(
-                query_params={}, headers={"x-agent-sandbox-session-id": "header-session"}
+                query_params={}, headers={"x-evander-session-id": "header-session"}
             )
         )
     )
@@ -1611,7 +1611,7 @@ def test_mssql_tools_call_container_worker_backend_and_redact_audit(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.gateway.mssql_tools.ContainerWorkerVmExecutionBackend",
+        "evander.gateway.mssql_tools.ContainerWorkerVmExecutionBackend",
         FakeContainerWorkerBackend,
     )
     server = create_server(context)
@@ -1722,7 +1722,7 @@ def test_mssql_tools_reuse_mapped_transport_session(
             )
 
     monkeypatch.setattr(
-        "agent_sandbox.gateway.mssql_tools.ContainerWorkerVmExecutionBackend",
+        "evander.gateway.mssql_tools.ContainerWorkerVmExecutionBackend",
         FakeContainerWorkerBackend,
     )
     server = create_server(context)
@@ -1921,7 +1921,7 @@ def test_assistant_list_agents_defaults_to_all_directories(
         ]
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.services.vm_agent_service.VmAgentAdminService.list_agents",
+        "evander.admin.services.vm_agent_service.VmAgentAdminService.list_agents",
         fake_list_agents,
     )
     server = create_server(context)
@@ -2332,7 +2332,7 @@ def test_make_phone_call_enforces_policy_contact_alias_and_audit_redaction(
     def fake_client(*_args: object, **_kwargs: object) -> httpx.Client:
         return real_client(transport=httpx.MockTransport(handler))
 
-    monkeypatch.setattr("agent_sandbox.retell_phone.httpx.Client", fake_client)
+    monkeypatch.setattr("evander.retell_phone.httpx.Client", fake_client)
     context = build_runtime(
         GatewayConfig(
             runtime_dir=tmp_path,
@@ -2583,7 +2583,7 @@ def test_voice_media_controller_creates_origin_query_and_submit_tool_answers(
             "session_id": "session-1",
             "query_id": query_id,
             "answer": "It adds the hybrid voice query path.",
-            "citations": ["src/agent_sandbox/voice_sessions.py"],
+            "citations": ["src/evander/voice_sessions.py"],
             "confidence": "high",
         },
     )
@@ -3163,7 +3163,7 @@ def test_get_pull_request_allows_repo_scoped_pr_lookup(
 
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.services.httpx.Client",
+        "evander.services.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=httpx.MockTransport(handler)),
     )
 
@@ -3219,7 +3219,7 @@ def test_get_pull_request_supports_github_without_token(
 
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.services.httpx.Client",
+        "evander.services.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=httpx.MockTransport(handler)),
     )
 
@@ -3312,7 +3312,7 @@ def test_gateway_app_exposes_host_mediated_copilot_auth(
 
     client = TestClient(create_app(context))
     response = client.get(
-        "/copilot-auth/token", headers={"x-agent-sandbox-session-id": "session-1"}
+        "/copilot-auth/token", headers={"x-evander-session-id": "session-1"}
     )
 
     assert response.status_code == 200
@@ -3355,11 +3355,11 @@ def test_gateway_app_rejects_missing_unauthorized_or_expired_copilot_auth_sessio
     missing_response = client.get("/copilot-auth/token")
     unauthorized_response = client.get(
         "/copilot-auth/token",
-        headers={"x-agent-sandbox-session-id": "active-session"},
+        headers={"x-evander-session-id": "active-session"},
     )
     expired_response = client.get(
         "/copilot-auth/token",
-        headers={"x-agent-sandbox-session-id": "expired-session"},
+        headers={"x-evander-session-id": "expired-session"},
     )
 
     assert missing_response.status_code == 403
@@ -3410,7 +3410,7 @@ def test_gateway_app_reports_missing_host_token_for_copilot_auth(
 
     client = TestClient(create_app(context))
     response = client.get(
-        "/copilot-auth/token", headers={"x-agent-sandbox-session-id": "session-1"}
+        "/copilot-auth/token", headers={"x-evander-session-id": "session-1"}
     )
 
     assert response.status_code == 503
@@ -3443,10 +3443,10 @@ def test_gateway_app_runs_mounted_mcp_lifespan_on_startup(tmp_path: Path) -> Non
 
 
 def test_gateway_import_paths_expose_migration_entry_points() -> None:
-    import agent_sandbox.gateway as compatibility_gateway
-    from agent_sandbox.gateway.app import create_app as canonical_create_app
-    from agent_sandbox.gateway.cli import main as canonical_main
-    from agent_sandbox.gateway.server import create_server as canonical_create_server
+    import evander.gateway as compatibility_gateway
+    from evander.gateway.app import create_app as canonical_create_app
+    from evander.gateway.cli import main as canonical_main
+    from evander.gateway.server import create_server as canonical_create_server
 
     assert compatibility_gateway.create_app is canonical_create_app
     assert compatibility_gateway.create_server is canonical_create_server
@@ -3455,10 +3455,10 @@ def test_gateway_import_paths_expose_migration_entry_points() -> None:
 
 def test_gateway_legacy_module_shim_exposes_migration_entry_points() -> None:
     legacy_module_path = (
-        Path(__file__).resolve().parents[1] / "src" / "agent_sandbox" / "gateway.py"
+        Path(__file__).resolve().parents[1] / "src" / "evander" / "gateway.py"
     )
     spec = importlib.util.spec_from_file_location(
-        "_agent_sandbox_gateway_legacy_shim",
+        "_evander_gateway_legacy_shim",
         legacy_module_path,
     )
     assert spec is not None
@@ -3466,9 +3466,9 @@ def test_gateway_legacy_module_shim_exposes_migration_entry_points() -> None:
     legacy_gateway = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(legacy_gateway)
 
-    from agent_sandbox.gateway.app import create_app as canonical_create_app
-    from agent_sandbox.gateway.cli import main as canonical_main
-    from agent_sandbox.gateway.server import create_server as canonical_create_server
+    from evander.gateway.app import create_app as canonical_create_app
+    from evander.gateway.cli import main as canonical_main
+    from evander.gateway.server import create_server as canonical_create_server
 
     assert legacy_gateway.create_app is canonical_create_app
     assert legacy_gateway.create_server is canonical_create_server

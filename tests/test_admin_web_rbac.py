@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.admin.web.rbac import (
+from evander.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
     OPERATOR_GROUP_ID,
     OWNER_GROUP_ID,
@@ -15,7 +15,7 @@ from agent_sandbox.admin.web.rbac import (
     WORKFLOWS_READ_PERMISSION,
     WORKFLOWS_WRITE_PERMISSION,
 )
-from agent_sandbox.admin.web.user_store import AdminWebUserStore
+from evander.admin.web.user_store import AdminWebUserStore
 
 
 def _admin_web_user_store(tmp_path: Path) -> AdminWebUserStore:

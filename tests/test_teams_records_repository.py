@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_sandbox.models import TeamsMessageEnvelope
-from agent_sandbox.repositories.records import (
+from evander.models import TeamsMessageEnvelope
+from evander.repositories.records import (
     JsonTeamsRecordsRepository,
     SqliteTeamsRecordsRepository,
     teams_records_db_path,

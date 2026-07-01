@@ -41,7 +41,7 @@ EOF
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_MCP_GATEWAY_URL"] = (
+    env["EVANDER_MCP_GATEWAY_URL"] = (
         "http://gateway.test:8000/mcp?session_id=session-1"
     )
     command = (
@@ -69,13 +69,13 @@ EOF
         "--model",
         "claude-test",
         "--mcp-config",
-        str(home / ".claude" / "agent-sandbox-mcp-config.json"),
+        str(home / ".claude" / "evander-mcp-config.json"),
     ]
     mcp_config = json.loads(
-        (home / ".claude" / "agent-sandbox-mcp-config.json").read_text(
+        (home / ".claude" / "evander-mcp-config.json").read_text(
             encoding="utf-8"
         )
     )
-    assert mcp_config["mcpServers"]["agent_sandbox"]["url"] == (
+    assert mcp_config["mcpServers"]["evander"]["url"] == (
         "http://gateway.test:8000/mcp?session_id=session-1"
     )

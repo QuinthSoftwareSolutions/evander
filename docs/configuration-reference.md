@@ -21,7 +21,7 @@ manager environment or optional repo-root `secrets.env`.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AZURE_DEVOPS_PR_PAT` | `config/gateway.env.example` | `src/agent_sandbox/runtime.py` / `src/agent_sandbox/gateway.py` when PR reply providers use the default `azure_devops_pr_pat_env`. |
+| `AZURE_DEVOPS_PR_PAT` | `config/gateway.env.example` | `src/evander/runtime.py` / `src/evander/gateway.py` when PR reply providers use the default `azure_devops_pr_pat_env`. |
 
 Phone-call tools require provider secrets to exist in the host process environment. Retell uses the
 configured `retell_api_key_env`, which defaults to `RETELL_API_KEY`. The OpenAI Realtime/DIDWW
@@ -36,25 +36,25 @@ manager environment rather than `config/gateway.env`.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `OPENAI_API_KEY` | `config/openai-relay.env.example` | `src/agent_sandbox/relays/openai.py` model relay traffic (looked up using config key `openai_api_key_env`, defaulting to `OPENAI_API_KEY`). |
+| `OPENAI_API_KEY` | `config/openai-relay.env.example` | `src/evander/relays/openai.py` model relay traffic (looked up using config key `openai_api_key_env`, defaulting to `OPENAI_API_KEY`). |
 
 ## `config/didww-sip-bridge.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `DIDWW_SIP_BRIDGE_HOST`, `DIDWW_SIP_BRIDGE_PORT` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` bridge API listener bind. |
-| `DIDWW_SIP_BRIDGE_TOKEN_ENV` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` env-var name for the bridge API bearer token. |
-| `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` enables the long-lived inbound `StasisStart` listener for fixed DID routes; defaults to `false`. |
-| `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL`, `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` gateway provisioning endpoint and bearer-token env-var name for accepted inbound calls; the token env default is `VOICE_MEDIA_CONTROLLER_TOKEN`. |
-| `OPENAI_REALTIME_*` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` server-side OpenAI Realtime WebSocket session setup. |
-| `ASTERISK_*` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` Asterisk ARI and PJSIP endpoint control. |
-| `DIDWW_SIP_BRIDGE_RTP_*`, `DIDWW_SIP_BRIDGE_MEDIA_FORMAT`, `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ`, `DIDWW_SIP_BRIDGE_FRAME_DURATION_MS` | `config/didww-sip-bridge.env.example` | `src/agent_sandbox/didww_sip_bridge.py` Asterisk `ExternalMedia` RTP settings. |
+| `DIDWW_SIP_BRIDGE_HOST`, `DIDWW_SIP_BRIDGE_PORT` | `config/didww-sip-bridge.env.example` | `src/evander/didww_sip_bridge.py` bridge API listener bind. |
+| `DIDWW_SIP_BRIDGE_TOKEN_ENV` | `config/didww-sip-bridge.env.example` | `src/evander/didww_sip_bridge.py` env-var name for the bridge API bearer token. |
+| `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS` | `config/didww-sip-bridge.env.example` | `src/evander/didww_sip_bridge.py` enables the long-lived inbound `StasisStart` listener for fixed DID routes; defaults to `false`. |
+| `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_URL`, `DIDWW_SIP_BRIDGE_INBOUND_GATEWAY_TOKEN_ENV` | `config/didww-sip-bridge.env.example` | `src/evander/didww_sip_bridge.py` gateway provisioning endpoint and bearer-token env-var name for accepted inbound calls; the token env default is `VOICE_MEDIA_CONTROLLER_TOKEN`. |
+| `OPENAI_REALTIME_*` | `config/didww-sip-bridge.env.example` | `src/evander/didww_sip_bridge.py` server-side OpenAI Realtime WebSocket session setup. |
+| `ASTERISK_*` | `config/didww-sip-bridge.env.example` | `src/evander/didww_sip_bridge.py` Asterisk ARI and PJSIP endpoint control. |
+| `DIDWW_SIP_BRIDGE_RTP_*`, `DIDWW_SIP_BRIDGE_MEDIA_FORMAT`, `DIDWW_SIP_BRIDGE_SAMPLE_RATE_HZ`, `DIDWW_SIP_BRIDGE_FRAME_DURATION_MS` | `config/didww-sip-bridge.env.example` | `src/evander/didww_sip_bridge.py` Asterisk `ExternalMedia` RTP settings. |
 
 ## `config/nuget-relay.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AZURE_ARTIFACTS_PAT` | `config/nuget-relay.env.example` | `src/agent_sandbox/relays/nuget.py` (looked up via config key `nuget_azure_pat_env`, defaulting to `AZURE_ARTIFACTS_PAT`). |
+| `AZURE_ARTIFACTS_PAT` | `config/nuget-relay.env.example` | `src/evander/relays/nuget.py` (looked up via config key `nuget_azure_pat_env`, defaulting to `AZURE_ARTIFACTS_PAT`). |
 
 ## `config/npm-audit-facade.env.example`
 
@@ -82,9 +82,9 @@ polling only; work-item intake should be modeled with workflow nodes.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `runtime_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` and runtime path defaults. |
-| `poll_interval_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `directories` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` (exact canonical directories to inspect for PR feedback/completion streams; child directories must be listed separately; empty list means process nothing). |
+| `runtime_dir` | `config/ado-worker/config.json` | `src/evander/daemons/ado_issue_worker.py` and runtime path defaults. |
+| `poll_interval_seconds` | `config/ado-worker/config.json` | `src/evander/daemons/ado_issue_worker.py`. |
+| `directories` | `config/ado-worker/config.json` | `src/evander/daemons/ado_issue_worker.py` (exact canonical directories to inspect for PR feedback/completion streams; child directories must be listed separately; empty list means process nothing). |
 | `yaml_output_dir` | `config/ado-worker/config.json` | Legacy work-item helper path; workflow `effect:issue:upsert-ado-proxy` defaults to `runtime/ado-work-items`. |
 | `processed_store_path` | `config/ado-worker/config.json` | Legacy processed-store cleanup path for `poll-ado-backlog --forget`. |
 | `ado_work_items_azure_devops_pat_env` | `config/ado-worker/config.json` | Legacy work-item helper env-var name. The running ADO worker does not require it. |
@@ -120,7 +120,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `runtime_dir` | `config/trigger-orchestrator/config.json` | `src/agent_sandbox/config.py` runtime path defaults for trigger orchestrator state files. |
+| `runtime_dir` | `config/trigger-orchestrator/config.json` | `src/evander/config.py` runtime path defaults for trigger orchestrator state files. |
 | `poll_interval_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker polling cadence. |
 | `jitter_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker jitter between cycles. |
 | `lock_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator single-instance lock file path. |
@@ -139,13 +139,13 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`). Legacy one-item `directory_paths` values are accepted and emitted during the compatibility window, but each graph has exactly one canonical directory. `user_ids` are ownership/audit metadata, not a visibility boundary; Admin Web group assignments and direct workflow grants control graph visibility. Pack-backed workflows store the same metadata as `graphs` inside the pack file. |
 | `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names (for example `await_agent_completion`) applied after structural compile/validation. |
-| `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/agent_sandbox/triggers/models.py`). |
+| `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/evander/triggers/models.py`). |
 | `gate_execution_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON gate execution log path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |
 | `gate_lock_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator single-instance lock file path. |
 | `effect_execution_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON effect execution log path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `effect_cursor_store_path` | `config/trigger-orchestrator/config.json` | Effect orchestrator cursor/checkpoint path. |
-| `effects` | `config/trigger-orchestrator/config.json` | Effect definition list (`src/agent_sandbox/events/models.py`). Effects no longer take `upstream_id`; they are wired with edges. |
+| `effects` | `config/trigger-orchestrator/config.json` | Effect definition list (`src/evander/events/models.py`). Effects no longer take `upstream_id`; they are wired with edges. |
 | `gates` | `config/trigger-orchestrator/config.json` | Gate definition list (filter/map/merge nodes). |
 | `edges` | `config/trigger-orchestrator/config.json` | Explicit graph wiring between triggers, gates, and effects. |
 | `max_graph_depth` | `config/trigger-orchestrator/config.json` | Maximum allowed downstream graph depth during workflow execution safety checks. |
@@ -155,8 +155,13 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `provider_loader.provider_modules` | `config/trigger-orchestrator/config.json` | Additional provider plugin Python modules to load after selected profile modules. |
 | `provider_loader.provider_entry_points_enabled` | `config/trigger-orchestrator/config.json` | Enables provider plugin discovery via Python entry points. |
 | `addon_loader.modules` | Host config and `config/trigger-orchestrator/config.json` | Explicit add-on Python modules. Admin Web uses host config for add-on routes/navigation; workflow workers use their config to include add-on provider contributions. |
-| `addon_loader.enabled_entry_points` | Host config and `config/trigger-orchestrator/config.json` | Enables add-on discovery through Python entry points in `agent_sandbox.addons`. Defaults to `false`. |
+| `addon_loader.enabled_entry_points` | Host config and `config/trigger-orchestrator/config.json` | Enables add-on discovery through Python entry points in `evander.addons`. Defaults to `false`. |
 | `addon_loader.enabled_addon_ids` | Host config and `config/trigger-orchestrator/config.json` | Optional allowlist of add-on ids to load from configured modules/entry points. |
+
+The Admin Web **Add-ons** page can toggle `addon_loader.enabled_addon_ids` and
+keeps host and trigger-orchestrator add-on loader settings aligned. Changes are
+restart-gated; restart Admin Web, trigger/effect orchestrators, and gateway when
+MCP tools are involved.
 
 For the bundled Team Add-on, prefer explicit module loading:
 `addon_loader.modules: ["evander_team_addon"]`. Configure this in the host
@@ -218,6 +223,8 @@ Type-specific keys:
 | `trigger:issue:comment-created` | — | `provider`, `organization_url`, `project`, `directories` |
 | `trigger:ado:work-item-matching` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top` |
 | `trigger:ado:work-item-comment-created` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `comment_contains`, `comment_contains_any`, `comment_author_exclude_names`, `comment_author_exclude_ids`, `comment_case_sensitive`, `include_existing` |
+| `trigger:remote-issue-matching` | `provider` | `directory_path`, ADO: `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`; GitHub: `repo`, `state`, `labels_any`, `labels_all`, `assignee`, `author`, `mentioned`, `milestone`, `since`; common: `text_search`, `top` |
+| `trigger:remote-issue-comment-created` | `provider` | Same filters as `trigger:remote-issue-matching`, plus `comment_contains`, `comment_contains_any`, `comment_author_exclude_names`, `comment_author_exclude_ids`, `comment_case_sensitive`, `include_existing` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
 | `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `case_sensitive` |
@@ -244,7 +251,7 @@ closed, or abandoned. Wire `session_id` into `effect:agent:destroy.session_id` w
 should delete the agent after the tracked PR is terminal.
 
 For Azure DevOps PR triggers, `repo` is the explicit polling mode switch. When `repo` is set,
-`agent-sandbox-ado-worker` lists candidate PRs with the same criteria surface as
+`evander-ado-worker` lists candidate PRs with the same criteria surface as
 `query:pull-request:list` and stores trigger-owned cursors under the runtime trigger cursor files.
 When `repo` is omitted, the trigger stays in legacy `runtime/pr-map.json` compatibility mode.
 Explicit-mode events include normalized `pr` plus feedback/completion payloads and do not attach a
@@ -280,11 +287,20 @@ Existing comments are baselined without emitting by default; set `include_existi
 explicit backfill workflows. Bot names, mention text, tags, and cleanup states are workflow config,
 not built-in defaults.
 
+`trigger:remote-issue-matching` and `trigger:remote-issue-comment-created` are the provider-neutral
+remote issue intake primitives. Set `provider=azure_devops` or `provider=ado` to use the ADO
+work-item filter surface, including WIQL and current-iteration mode. Set `provider=github` to use
+GitHub issue filters such as `repo`, `state`, labels, assignee, author, mentions, milestone, and
+`since`; WIQL and current-iteration mode are rejected for GitHub. The matching trigger stores
+cursors in `runtime/trigger-cursors-remote-issues.json`; the comment trigger stores cursors in
+`runtime/trigger-cursors-remote-issue-comments.json` and baselines existing comments unless
+`include_existing=true`.
+
 `trigger:event` consumes durable internal workflow events. The Admin Web HTTP ingress publishes
 caller-supplied event names under the reserved `external.` prefix, so a POST with
 `event_type=deploy_requested` should be matched with `event_type=external.deploy_requested`.
 The HTTP ingress requires either a bearer token minted by a signed-in Admin Web user or a
-configured machine token from `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS`. Machine tokens are
+configured machine token from `EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS`. Machine tokens are
 configured as comma-separated `source-name:token` entries; the matching source name is recorded on
 the published event. Token values must not contain commas or colons. The ingress accepts arbitrary
 JSON-object payloads for workflow-specific data. Scheduled internal events are first written to
@@ -292,12 +308,40 @@ JSON-object payloads for workflow-specific data. Scheduled internal events are f
 the trigger orchestrator when they become due, so the end-to-end delay is bounded by the trigger
 orchestrator poll interval.
 
+Known stable internal event names are exposed through the workflow editor catalog and appear as
+suggestions for `trigger:event.event_type`. Operator-defined events are still valid when they pass
+the internal event name validator. Core patterns are:
+
+| Pattern | Producer |
+|---|---|
+| `external.<name>` | Admin Web/API event ingress |
+| `external.webhook.<name>` | `trigger:http:webhook` durable ingress event |
+| custom concrete names | `effect:event:emit`, `effect:event:schedule`, or direct host-owned publishers |
+
+The bundled Team Add-on contributes these stable event names when enabled in the trigger worker
+provider loader:
+
+| Event name | Meaning |
+|---|---|
+| `team.chat.message_queued` | Operator chat message queued for a Team agent |
+| `team.agent.wake_requested` | Explicit Team agent wake requested |
+| `team.ephemeral.requested` | Persistent Team agent requested ephemeral execution work |
+| `team.ephemeral.completed` | Ephemeral Team assignment completed |
+| `team.operator.escalation_requested` | Team automation requested operator escalation |
+| `team.git.promotion_requested` | Team Git branch promotion requested |
+| `team.git.release_recovery_requested` | Team release recovery promotion requested |
+
+For newly created Team deliverables, prefer the dedicated
+`trigger:team:deliverable-created` add-on trigger instead of matching raw internal events. Generated
+workflow node-completion queue records are runtime plumbing and are not stable operator-facing
+`trigger:event.event_type` names.
+
 `trigger:http:webhook` exposes a public `POST /api/workflow-webhooks/{slug}` ingress for a single
 active webhook trigger. The configured `slug` must match `[A-Za-z0-9_.-]+`, be unique across the
 active composed config, and is used as the public path segment. `secret_env` names the host
 environment variable that contains the HMAC secret. `event_type` is optional and defaults to
 `webhook.<slug>`. Requests must include
-`X-Agent-Sandbox-Signature-256: sha256=<hex>` and the signature must be computed over the exact raw
+`X-Evander-Signature-256: sha256=<hex>` and the signature must be computed over the exact raw
 request body bytes using HMAC-SHA256. The webhook ingress accepts JSON object bodies only. The
 durable event stored for the trigger is `external.<event_type>`, and downstream trigger output is
 the webhook envelope with `slug`, `headers`, `query`, `body`, `received_at`, `remote_addr`, and
@@ -589,7 +633,7 @@ allowlist.
 `effect:runtime:diagnostics-snapshot` captures a host-side diagnostic snapshot
 without accepting arbitrary commands or paths from workflow config. It reads only
 the configured runtime directory, fixed orchestration failure files, and an
-allowlisted subset of `agent-sandbox-*` systemd units. Service log collection is
+allowlisted subset of `evander-*` systemd units. Service log collection is
 bounded by `since`, `units`, `max_journal_lines_per_unit`, and
 `command_timeout_seconds`; runtime file reads are bounded by
 `max_runtime_file_bytes`. Redaction is always enabled before the snapshot is
@@ -713,6 +757,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 |---|---|---|
 | `query:agent:artifact-text` | `session_id`, `path` | `vm_user`, `outputs` |
 | `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
+| `query:remote-issues` | `provider` | `directory_path`, ADO: `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`; GitHub: `repo`, `state`, `labels_any`, `labels_all`, `assignee`, `author`, `mentioned`, `milestone`, `since`; common: `text_search`, `top`, `skip`, `outputs` |
 | `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
 | `query:issue:list` | _none beyond envelope_ | `directory_path`, `direct_only`, `states`, `exclude_states`, `source`, `source_type`, `tags_any`, `tags_all`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `limit`, `outputs` |
@@ -744,8 +789,9 @@ sessions.
 `query:issue:list` reads tracked local and proxy issues from the local issue
 store. It defaults to the workflow runtime directory and `direct_only=true`,
 returns `issues` plus `count`, and uses the same directory and metadata filter
-semantics as `query:session:list`. Use `query:ado:work-items` for remote Azure
-DevOps discovery.
+semantics as `query:session:list`. Use `query:remote-issues` for provider-neutral
+remote discovery across Azure DevOps work items and GitHub issues; `query:ado:work-items`
+remains available as an ADO compatibility alias.
 
 `query:pull-request:get`, `query:pull-request:list`, `query:pull-request:feedback`,
 `effect:pull-request:update`, `effect:pull-request:add-tag`, and
@@ -1142,24 +1188,24 @@ root directory-scoped config and host environment:
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AGENT_SANDBOX_GIT_ROOT` | `runtime/directory-config/root/issue-setup.json` | `src/agent_sandbox/cli.py` and git automation scripts (`create_git_remote.sh`, `git_ssh_command_wrapper.sh`, `promote_agent_branch.sh`). |
-| `AGENT_SANDBOX_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
-| `AGENT_SANDBOX_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
-| `AGENT_SANDBOX_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
+| `EVANDER_GIT_ROOT` | `runtime/directory-config/root/issue-setup.json` | `src/evander/cli.py` and git automation scripts (`create_git_remote.sh`, `git_ssh_command_wrapper.sh`, `promote_agent_branch.sh`). |
+| `EVANDER_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
+| `EVANDER_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
+| `EVANDER_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
 | `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat toggle). |
 | `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat prompt). |
 | `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (post-exec resume prompt metadata). |
-| `AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV` | `runtime/directory-config/root/providers.json` or host shell | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` (alternate env var name for Azure DevOps PAT). |
+| `EVANDER_AZURE_DEVOPS_PR_PAT_ENV` | `runtime/directory-config/root/providers.json` or host shell | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` (alternate env var name for Azure DevOps PAT). |
 | `AZURE_DEVOPS_PR_PAT` | host shell or `secrets.env` | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` when Azure DevOps remotes are accessed over HTTPS. |
-| `RETELL_API_KEY` | host shell or `secrets.env` | `src/agent_sandbox/retell_phone.py` / `src/agent_sandbox/gateway.py` when Retell phone-call tools use the default `retell_api_key_env`. |
-| `OPENAI_API_KEY` | host shell or `secrets.env` | `src/agent_sandbox/voice_sessions.py` when Team Add-on browser direct agent calls use the default `openai_realtime_api_key_env` to mint ephemeral Realtime client secrets. |
-| `DIDWW_SIP_BRIDGE_TOKEN` | host shell or `secrets.env` | `src/agent_sandbox/voice_sessions.py` when `phone_call_backend` is `openai_realtime_didww` and the default `didww_sip_bridge_token_env` is used. |
-| `VOICE_MEDIA_CONTROLLER_TOKEN` | host shell or `secrets.env` | `src/agent_sandbox/gateway.py` voice media controller endpoints when Realtime bridges create delegated origin-agent queries. |
-| `ASTERISK_ARI_PASSWORD` | host shell or `secrets.env` | `src/agent_sandbox/didww_sip_bridge.py` for Asterisk ARI control of DIDWW outbound calls. |
-| `AGENT_SANDBOX_PR_NOTES_REF` | host shell | `scripts/handle_agent_push.sh` (PR notes ref). |
-| `AGENT_SANDBOX_PR_FIXED_BODY_FILE` | host shell | `scripts/handle_agent_push.sh` (host-wide override that prepends markdown to PR body). |
-| `AGENT_SANDBOX_PR_BODY_MAX_BYTES` | host shell | `scripts/handle_agent_push.sh` (body truncation limit). |
-| `AGENT_SANDBOX_NOTIFY_COMMAND` | host shell | `scripts/handle_agent_push.sh` (post-promotion host notification command). |
+| `RETELL_API_KEY` | host shell or `secrets.env` | `src/evander/retell_phone.py` / `src/evander/gateway.py` when Retell phone-call tools use the default `retell_api_key_env`. |
+| `OPENAI_API_KEY` | host shell or `secrets.env` | `src/evander/voice_sessions.py` when Team Add-on browser direct agent calls use the default `openai_realtime_api_key_env` to mint ephemeral Realtime client secrets. |
+| `DIDWW_SIP_BRIDGE_TOKEN` | host shell or `secrets.env` | `src/evander/voice_sessions.py` when `phone_call_backend` is `openai_realtime_didww` and the default `didww_sip_bridge_token_env` is used. |
+| `VOICE_MEDIA_CONTROLLER_TOKEN` | host shell or `secrets.env` | `src/evander/gateway.py` voice media controller endpoints when Realtime bridges create delegated origin-agent queries. |
+| `ASTERISK_ARI_PASSWORD` | host shell or `secrets.env` | `src/evander/didww_sip_bridge.py` for Asterisk ARI control of DIDWW outbound calls. |
+| `EVANDER_PR_NOTES_REF` | host shell | `scripts/handle_agent_push.sh` (PR notes ref). |
+| `EVANDER_PR_FIXED_BODY_FILE` | host shell | `scripts/handle_agent_push.sh` (host-wide override that prepends markdown to PR body). |
+| `EVANDER_PR_BODY_MAX_BYTES` | host shell | `scripts/handle_agent_push.sh` (body truncation limit). |
+| `EVANDER_NOTIFY_COMMAND` | host shell | `scripts/handle_agent_push.sh` (post-promotion host notification command). |
 
 ## 2) Host bootstrap config (`runtime/host-config.json`)
 
@@ -1181,49 +1227,49 @@ Key bootstrap fields include:
 
 ## 3) Legacy gateway import keys
 
-These keys are defined in `src/agent_sandbox/config.py` (`GatewayConfig` + `MailboxConfig`) and were historically loaded by `load_config()`.
+These keys are defined in `src/evander/config.py` (`GatewayConfig` + `MailboxConfig`) and were historically loaded by `load_config()`.
 In the root-only model, this file is an import source for seeding `runtime/directory-config/root/...` and is not the live runtime baseline.
 
 ### Core server/runtime keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `host`, `port` | legacy gateway YAML | `src/agent_sandbox/gateway.py` server bind settings. |
-| `log_level` | legacy gateway YAML | `src/agent_sandbox/gateway.py` logging setup for gateway process. |
-| `runtime_dir` | legacy gateway YAML | `src/agent_sandbox/runtime.py` store locations. |
-| `audit_log_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` audit logger destination. |
-| `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` persistent JSON stores. |
-| `directories_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/directories.py`, directory admin/config services. |
+| `host`, `port` | legacy gateway YAML | `src/evander/gateway.py` server bind settings. |
+| `log_level` | legacy gateway YAML | `src/evander/gateway.py` logging setup for gateway process. |
+| `runtime_dir` | legacy gateway YAML | `src/evander/runtime.py` store locations. |
+| `audit_log_path` | legacy gateway YAML | `src/evander/runtime.py` audit logger destination. |
+| `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/evander/runtime.py` persistent JSON stores. |
+| `directories_store_path` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/directories.py`, directory admin/config services. |
 | `addon_loader` | host config, legacy gateway YAML, and trigger-orchestrator config | Optional add-on module/entry-point loading for Admin Web routes/navigation and workflow-provider contributions. Add-ons are disabled by default. |
-| `enable_directory_scoped_config` | legacy gateway YAML | `src/agent_sandbox/admin/directory.py`, Admin Web directory edit surfaces, `src/agent_sandbox/daemons/ado_issue_worker.py`, and `src/agent_sandbox/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
-| `approval_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/policy.py` approval expiry computation. |
-| `default_session_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/cli.py` session creation defaults. |
-| `bind_network_cidr` | legacy gateway YAML | `src/agent_sandbox/config.py` validation/normalization (policy-bound network constraints). |
-| `gateway_url` | legacy gateway YAML | `src/agent_sandbox/cli.py` health checks / external endpoint references. |
-| `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence` | root or directory `providers.json` | `src/agent_sandbox/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. |
+| `enable_directory_scoped_config` | legacy gateway YAML | `src/evander/admin/directory.py`, Admin Web directory edit surfaces, `src/evander/daemons/ado_issue_worker.py`, and `src/evander/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
+| `approval_ttl_seconds` | legacy gateway YAML | `src/evander/policy.py` approval expiry computation. |
+| `default_session_ttl_seconds` | legacy gateway YAML | `src/evander/cli.py` session creation defaults. |
+| `bind_network_cidr` | legacy gateway YAML | `src/evander/config.py` validation/normalization (policy-bound network constraints). |
+| `gateway_url` | legacy gateway YAML | `src/evander/cli.py` health checks / external endpoint references. |
+| `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex/Claude model relays, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
-| `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `local_openai_api_base_url`, `local_openai_api_key`, `local_openai_provider_name`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/agent_sandbox/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; local mode forwards OpenAI-compatible requests to a host-local endpoint such as Ollama and uses a placeholder configured key rather than a host secret env var. Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
+| `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `local_openai_api_base_url`, `local_openai_api_key`, `local_openai_provider_name`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/evander/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; local mode forwards OpenAI-compatible requests to a host-local endpoint such as Ollama and uses a placeholder configured key rather than a host secret env var. Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
 | `communication_artifact_public_base_url`, `communication_artifact_link_secret_env`, `communication_artifact_link_ttl_seconds` | root or directory `providers.json` | Signed public download links for staged communication artifacts, used by `teams_post_file` when a non-image Teams file has no SharePoint/OneDrive `contentUrl`. The secret env var must be loaded by both gateway and Admin Web; the link TTL is also capped by the staged artifact expiry. |
-| `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number`, `inbound_phone_routes` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and `src/agent_sandbox/gateway.py` for host-side phone calls. |
-| `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/agent_sandbox/directory_config.py`, `src/agent_sandbox/retell_phone.py`, `src/agent_sandbox/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
-| `redacted_keys` | legacy gateway YAML (optional) | `src/agent_sandbox/gateway.py` request/response redaction in logs. |
+| `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number`, `inbound_phone_routes` | root or directory `providers.json` | `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and `src/evander/gateway.py` for host-side phone calls. |
+| `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/evander/directory_config.py`, `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
+| `redacted_keys` | legacy gateway YAML (optional) | `src/evander/gateway.py` request/response redaction in logs. |
 
 ### OpenAI relay keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `openai_relay_host`, `openai_relay_port` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` listener bind. |
-| `openai_api_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream URL base. |
-| `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` env-var name lookup for API key. |
-| `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream request timeout. |
-| `local_openai_api_base_url` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` OpenAI-compatible local upstream URL used in `local_openai` mode. Defaults to `http://127.0.0.1:11434/v1`; effective `local_openai` config is rejected when that URL targets the relay listener, such as the default `0.0.0.0:11434` relay bind. |
-| `local_openai_api_key` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` placeholder bearer token sent to the local OpenAI-compatible upstream in `local_openai` mode. Defaults to `ollama`. |
-| `local_openai_provider_name` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` provider name stored in model-usage rows for local OpenAI-compatible traffic. Defaults to `local_openai`. |
-| `anthropic_api_base_url` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` Anthropic upstream URL base. |
-| `anthropic_api_key_env` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` env-var name lookup for Anthropic API key. |
-| `anthropic_api_version` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` default `anthropic-version` header. |
-| `anthropic_relay_timeout_seconds` | legacy gateway YAML or directory provider config | `src/agent_sandbox/relays/openai.py` upstream Anthropic request timeout. |
+| `openai_relay_host`, `openai_relay_port` | legacy gateway YAML | `src/evander/relays/openai.py` listener bind. |
+| `openai_api_base_url` | legacy gateway YAML | `src/evander/relays/openai.py` upstream URL base. |
+| `openai_api_key_env` | legacy gateway YAML | `src/evander/relays/openai.py` env-var name lookup for API key. |
+| `openai_relay_timeout_seconds` | legacy gateway YAML | `src/evander/relays/openai.py` upstream request timeout. |
+| `local_openai_api_base_url` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` OpenAI-compatible local upstream URL used in `local_openai` mode. Defaults to `http://127.0.0.1:11434/v1`; effective `local_openai` config is rejected when that URL targets the relay listener, such as the default `0.0.0.0:11434` relay bind. |
+| `local_openai_api_key` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` placeholder bearer token sent to the local OpenAI-compatible upstream in `local_openai` mode. Defaults to `ollama`. |
+| `local_openai_provider_name` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` provider name stored in model-usage rows for local OpenAI-compatible traffic. Defaults to `local_openai`. |
+| `anthropic_api_base_url` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` Anthropic upstream URL base. |
+| `anthropic_api_key_env` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` env-var name lookup for Anthropic API key. |
+| `anthropic_api_version` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` default `anthropic-version` header. |
+| `anthropic_relay_timeout_seconds` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` upstream Anthropic request timeout. |
 
 Session metadata key `model_provider_mode` overrides the effective directory
 provider mode for that session while still inheriting the directory's endpoint
@@ -1320,7 +1366,7 @@ schedule the origin-session reconciliation wake.
 ### DIDWW SIP bridge service keys
 
 These keys live in `config/didww-sip-bridge.env` or host environment and are consumed by
-`agent-sandbox-didww-sip-bridge`. They are service-local settings, not directory-scoped provider
+`evander-didww-sip-bridge`. They are service-local settings, not directory-scoped provider
 overlays.
 
 | Key | Found in | Consumed by |
@@ -1369,8 +1415,8 @@ C# bridge under `integrations/teams-meeting-media-bridge`.
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `http_target_relay_host`, `http_target_relay_port` | root `host-config.json`, provider config overlays | `src/agent_sandbox/relays/http_target.py` listener bind and `src/agent_sandbox/cli.py` status checks. |
-| `http_target_relay_timeout_seconds` | provider config overlays | `src/agent_sandbox/relays/http_target.py` upstream request timeout. |
+| `http_target_relay_host`, `http_target_relay_port` | root `host-config.json`, provider config overlays | `src/evander/relays/http_target.py` listener bind and `src/evander/cli.py` status checks. |
+| `http_target_relay_timeout_seconds` | provider config overlays | `src/evander/relays/http_target.py` upstream request timeout. |
 
 The current HTTP target relay is auth-transparent: it allowlists the upstream destination by
 session and per-target alias, but it forwards guest `Authorization` headers and cookies instead of
@@ -1382,59 +1428,59 @@ environment.
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `nuget_relay_host`, `nuget_relay_port` | legacy gateway YAML | `src/agent_sandbox/relays/nuget.py` listener bind. |
-| `nuget_public_feed_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/nuget.py` public feed proxy target. |
-| `nuget_azure_feed_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/nuget.py` Azure feed proxy target. |
-| `nuget_azure_pat_env` | legacy gateway YAML | `src/agent_sandbox/relays/nuget.py` env-var name lookup for Azure Artifacts PAT. |
-| `nuget_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/relays/nuget.py` upstream timeout. |
+| `nuget_relay_host`, `nuget_relay_port` | legacy gateway YAML | `src/evander/relays/nuget.py` listener bind. |
+| `nuget_public_feed_base_url` | legacy gateway YAML | `src/evander/relays/nuget.py` public feed proxy target. |
+| `nuget_azure_feed_base_url` | legacy gateway YAML | `src/evander/relays/nuget.py` Azure feed proxy target. |
+| `nuget_azure_pat_env` | legacy gateway YAML | `src/evander/relays/nuget.py` env-var name lookup for Azure Artifacts PAT. |
+| `nuget_relay_timeout_seconds` | legacy gateway YAML | `src/evander/relays/nuget.py` upstream timeout. |
 
 ### Discord keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `discord_backend` | legacy gateway YAML | `src/agent_sandbox/runtime.py` adapter selection (`stub`/`bot_api`). |
-| `discord_bot_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py` token env lookup. |
-| `discord_api_base_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py` bot API client base URL. |
-| `discord_poll_limit` | legacy gateway YAML | `src/agent_sandbox/runtime.py` polling window size. |
-| `discord_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` HTTP timeout. |
-| `discord_retry_count` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry behavior. |
-| `discord_retry_base_backoff_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry backoff floor. |
-| `discord_retry_max_backoff_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry backoff ceiling. |
+| `discord_backend` | legacy gateway YAML | `src/evander/runtime.py` adapter selection (`stub`/`bot_api`). |
+| `discord_bot_token_env` | legacy gateway YAML | `src/evander/runtime.py` token env lookup. |
+| `discord_api_base_url` | legacy gateway YAML | `src/evander/runtime.py` bot API client base URL. |
+| `discord_poll_limit` | legacy gateway YAML | `src/evander/runtime.py` polling window size. |
+| `discord_timeout_seconds` | legacy gateway YAML | `src/evander/runtime.py` HTTP timeout. |
+| `discord_retry_count` | legacy gateway YAML | `src/evander/runtime.py` retry behavior. |
+| `discord_retry_base_backoff_seconds` | legacy gateway YAML | `src/evander/runtime.py` retry backoff floor. |
+| `discord_retry_max_backoff_seconds` | legacy gateway YAML | `src/evander/runtime.py` retry backoff ceiling. |
 | `discord_read_reaction_emoji` | legacy gateway YAML | Legacy adapter config retained for compatibility. The gateway no longer applies unread-message read reactions automatically; use `add_message_reaction` explicitly. |
-| `discord_operator_user_allowlist` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/policy.py` authorization checks. |
-| `discord_operator_channel_allowlist` | legacy gateway YAML | `src/agent_sandbox/runtime.py` channel filter for operator events. |
-| `discord_poll_operator_dms` | legacy gateway YAML | `src/agent_sandbox/runtime.py` DM polling toggle. |
+| `discord_operator_user_allowlist` | legacy gateway YAML | `src/evander/runtime.py` and `src/evander/policy.py` authorization checks. |
+| `discord_operator_channel_allowlist` | legacy gateway YAML | `src/evander/runtime.py` channel filter for operator events. |
+| `discord_poll_operator_dms` | legacy gateway YAML | `src/evander/runtime.py` DM polling toggle. |
 
 ### Email keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `email_mailboxes[]` | legacy gateway YAML | `src/agent_sandbox/runtime.py` mailbox provider adapter construction. |
-| `email_mailboxes[].mailbox_id` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/policy.py`, validation in `src/agent_sandbox/config.py`. |
-| `email_mailboxes[].provider` | legacy gateway YAML | `src/agent_sandbox/runtime.py` provider type dispatch (`json_store`/`gmail`/`graph`). |
-| `email_mailboxes[].account_identifier` (`account`/`address` aliases) | legacy gateway YAML | `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
-| `email_mailboxes[].auth_secret_refs` (`auth_env_var_names` alias) | legacy gateway YAML | `src/agent_sandbox/runtime.py` + provider token resolution. |
+| `email_mailboxes[]` | legacy gateway YAML | `src/evander/runtime.py` mailbox provider adapter construction. |
+| `email_mailboxes[].mailbox_id` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/policy.py`, validation in `src/evander/config.py`. |
+| `email_mailboxes[].provider` | legacy gateway YAML | `src/evander/runtime.py` provider type dispatch (`json_store`/`gmail`/`graph`). |
+| `email_mailboxes[].account_identifier` (`account`/`address` aliases) | legacy gateway YAML | `src/evander/email/gmail_provider.py`, `src/evander/email/graph_provider.py`. |
+| `email_mailboxes[].auth_secret_refs` (`auth_env_var_names` alias) | legacy gateway YAML | `src/evander/runtime.py` + provider token resolution. |
 | `email_mailboxes[].folder_mapping` | legacy gateway YAML | Gmail/Graph provider folder mapping. |
-| `email_mailboxes[].folder_allowlist_defaults` | legacy gateway YAML | Defaulting logic in `src/agent_sandbox/config.py`. |
-| `email_mailbox_allowlist` | legacy gateway YAML | `src/agent_sandbox/cli.py` session manifest policy surface. |
-| `email_folder_allowlist_by_mailbox` | legacy gateway YAML | `src/agent_sandbox/cli.py` / `src/agent_sandbox/policy.py`. |
-| `email_draft_recipient_allowlist` | legacy gateway YAML | `src/agent_sandbox/policy.py` recipient checks. |
-| `email_draft_domain_allowlist` | legacy gateway YAML | `src/agent_sandbox/policy.py` domain checks. |
-| `email_send_enabled` | legacy gateway YAML | `src/agent_sandbox/cli.py`, `src/agent_sandbox/gateway.py`, `src/agent_sandbox/policy.py`. |
-| `email_provider_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` email + PR provider HTTP client timeouts. |
+| `email_mailboxes[].folder_allowlist_defaults` | legacy gateway YAML | Defaulting logic in `src/evander/config.py`. |
+| `email_mailbox_allowlist` | legacy gateway YAML | `src/evander/cli.py` session manifest policy surface. |
+| `email_folder_allowlist_by_mailbox` | legacy gateway YAML | `src/evander/cli.py` / `src/evander/policy.py`. |
+| `email_draft_recipient_allowlist` | legacy gateway YAML | `src/evander/policy.py` recipient checks. |
+| `email_draft_domain_allowlist` | legacy gateway YAML | `src/evander/policy.py` domain checks. |
+| `email_send_enabled` | legacy gateway YAML | `src/evander/cli.py`, `src/evander/gateway.py`, `src/evander/policy.py`. |
+| `email_provider_timeout_seconds` | legacy gateway YAML | `src/evander/runtime.py` email + PR provider HTTP client timeouts. |
 
 ### PR/feedback keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `pr_reply_require_approval` | legacy gateway YAML | `src/agent_sandbox/gateway.py` PR-reply approval gate. |
-| `github_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/reviews/request_service.py`, PR feedback trigger providers, and GitHub PR get query providers. |
-| `azure_devops_pr_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/reviews/request_service.py`, and PR feedback/completion trigger providers. |
-| `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/issues/service.py`, and PR feedback trigger providers. |
-| `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/issues/service.py`, and PR feedback trigger providers. |
+| `pr_reply_require_approval` | legacy gateway YAML | `src/evander/gateway.py` PR-reply approval gate. |
+| `github_token_env` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/reviews/request_service.py`, PR feedback trigger providers, and GitHub PR get query providers. |
+| `azure_devops_pr_pat_env` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/reviews/request_service.py`, and PR feedback/completion trigger providers. |
+| `azure_devops_organization_url` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/issues/service.py`, and PR feedback trigger providers. |
+| `azure_devops_project` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/issues/service.py`, and PR feedback trigger providers. |
 | `pr_feedback_resume_prompt` | legacy gateway YAML / directory wake config | Prompt used when resuming for unread PR feedback. |
-| `discord_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/messaging/discord_wake.py`. |
-| `pr_map_path` | legacy gateway YAML | `src/agent_sandbox/daemons/ado_issue_worker.py`, PR feedback/completion trigger providers, PR status tracking, ownership cleanup, and admin/session pruning. |
+| `discord_resume_prompt` | legacy gateway YAML | `src/evander/messaging/discord_wake.py`. |
+| `pr_map_path` | legacy gateway YAML | `src/evander/daemons/ado_issue_worker.py`, PR feedback/completion trigger providers, PR status tracking, ownership cleanup, and admin/session pruning. |
 
 ## 4) Cloud-init template placeholders (`config/cloud-init-user-data.yaml`)
 
@@ -1443,11 +1489,11 @@ These placeholders are substituted by `scripts/launch_agent_vm.sh` before VM boo
 | Placeholder / variable | Found in | Consumed by |
 |---|---|---|
 | `__SSH_PUBLIC_KEY__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh` injects selected SSH public key. |
-| `__GATEWAY_URL__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written to guest `/etc/agent-sandbox/session.env` as `AGENT_SANDBOX_GATEWAY_URL`. |
-| `__SESSION_ID__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `AGENT_SANDBOX_SESSION_ID`. |
-| `__LLM_BASE_URL__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `AGENT_SANDBOX_LLM_BASE_URL` and `OPENAI_BASE_URL`. |
-| `__ANTHROPIC_BASE_URL__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `AGENT_SANDBOX_ANTHROPIC_BASE_URL` and `ANTHROPIC_BASE_URL`. |
-| `__NUGET_FALLBACK_PACKAGES__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES`. |
+| `__GATEWAY_URL__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written to guest `/etc/evander/session.env` as `EVANDER_GATEWAY_URL`. |
+| `__SESSION_ID__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `EVANDER_SESSION_ID`. |
+| `__LLM_BASE_URL__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `EVANDER_LLM_BASE_URL` and `OPENAI_BASE_URL`. |
+| `__ANTHROPIC_BASE_URL__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `EVANDER_ANTHROPIC_BASE_URL` and `ANTHROPIC_BASE_URL`. |
+| `__NUGET_FALLBACK_PACKAGES__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `EVANDER_NUGET_FALLBACK_PACKAGES`. |
 | `__NUGET_PACKAGES__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `NUGET_PACKAGES`. |
 | `__NUGET_HTTP_CACHE_PATH__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `NUGET_HTTP_CACHE_PATH`. |
 | `__NUGET_CACHE_FS_TYPE__`, `__NUGET_CACHE_MOUNT_OPTIONS__`, `__NUGET_CACHE_TAG__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; mount + `/etc/fstab` entry for shared NuGet cache. |
@@ -1464,10 +1510,10 @@ Storage paths:
 
 | Path | Source of truth | Used by |
 |---|---|---|
-| `runtime/directories.json` (or `directories_store_path`) | Directory tree metadata, canonical ownership, configured domains | `src/agent_sandbox/directories.py`, `src/agent_sandbox/admin/directory.py`, `src/agent_sandbox/ownership.py` |
-| `runtime/directory-config/root/.../<domain>.json` | Raw per-domain overlay payloads for directories listed in `directories.json` metadata | `src/agent_sandbox/directory_config.py` |
+| `runtime/directories.json` (or `directories_store_path`) | Directory tree metadata, canonical ownership, configured domains | `src/evander/directories.py`, `src/evander/admin/directory.py`, `src/evander/ownership.py` |
+| `runtime/directory-config/root/.../<domain>.json` | Raw per-domain overlay payloads for directories listed in `directories.json` metadata | `src/evander/directory_config.py` |
 | `runtime/assistant-settings.json` | Admin assistant and workflow generation settings | Admin Web Chat and Workflow generator |
-| `runtime/communication-targets.db` | SQLite-backed communication target overlays keyed by directory and target ID | `src/agent_sandbox/messaging/targets.py`, Admin Web Configuration -> Communications, workflow notification/message effects |
+| `runtime/communication-targets.db` | SQLite-backed communication target overlays keyed by directory and target ID | `src/evander/messaging/targets.py`, Admin Web Configuration -> Communications, workflow notification/message effects |
 
 Supported directory config domains:
 
@@ -1492,7 +1538,7 @@ Assistant settings fields:
 | `workflow_generation_model` | Optional model used only by the Workflow tab natural-language graph generator. |
 | `enabled`, `show_launcher_when_disabled`, `default_profile`, `read_only`, `custom_system_instructions` | Admin assistant launch, capability, and prompt controls. |
 
-Merge behavior in `src/agent_sandbox/directory_config.py`:
+Merge behavior in `src/evander/directory_config.py`:
 
 - scalars: last write wins
 - maps/objects: deep merge
@@ -1723,16 +1769,16 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AGENT_SANDBOX_GIT_ROOT` | `src/agent_sandbox/cli.py` | `agent-sandbox` CLI git-remote helpers (`resolve_git_root`). |
-| `MSSQL_SA_PASSWORD` | `src/agent_sandbox/cli.py`, `scripts/setup_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
-| `AGENT_SANDBOX_MODEL_PRICING_PATH` | `src/agent_sandbox/model_usage/pricing.py` and Admin Web Configuration | Optional override for the local model pricing catalog used by `query:model-usage:list` cost estimates. Defaults to `config/model-pricing.openai.json`; Admin Web displays and edits the active catalog after privileged unlock with revision checks. |
-| `AGENT_SANDBOX_ADMIN_WEB_PAGE_TITLE`, `AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE`, `AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE_VISIBLE`, `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE`, `AGENT_SANDBOX_ADMIN_WEB_*_LOGO_*`, `AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR` | `config/admin-web.env` | Optional Admin Web branding. The Python service exposes `/api/admin/branding` and `/api/admin/branding/assets/...`; the React shell uses them for the browser title, header title, header logo, product logo, sign-in company logo, and optional wordmark-style header presentation without rebuilding per environment. |
-| Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
-| Teams delegated Graph token env name (`teams_graph_access_token_env`, default `GRAPH_TEAMS_ACCESS_TOKEN`) | Referenced indirectly in effective provider config under `teams_graph_access_token_env` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/services.py`. |
+| `EVANDER_GIT_ROOT` | `src/evander/cli.py` | `evander` CLI git-remote helpers (`resolve_git_root`). |
+| `MSSQL_SA_PASSWORD` | `src/evander/cli.py`, `scripts/setup_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
+| `EVANDER_MODEL_PRICING_PATH` | `src/evander/model_usage/pricing.py` and Admin Web Configuration | Optional override for the local model pricing catalog used by `query:model-usage:list` cost estimates. Defaults to `config/model-pricing.openai.json`; Admin Web displays and edits the active catalog after privileged unlock with revision checks. |
+| `EVANDER_ADMIN_WEB_PAGE_TITLE`, `EVANDER_ADMIN_WEB_HEADER_TITLE`, `EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE`, `EVANDER_ADMIN_WEB_HEADER_LOGO_SIZE`, `EVANDER_ADMIN_WEB_*_LOGO_*`, `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` | `config/admin-web.env` | Optional Admin Web branding. The Python service exposes `/api/admin/branding` and `/api/admin/branding/assets/...`; the React shell uses them for the browser title, header title, header logo, product logo, sign-in company logo, and optional wordmark-style header presentation without rebuilding per environment. |
+| Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/evander/runtime.py`, `src/evander/email/gmail_provider.py`, `src/evander/email/graph_provider.py`. |
+| Teams delegated Graph token env name (`teams_graph_access_token_env`, default `GRAPH_TEAMS_ACCESS_TOKEN`) | Referenced indirectly in effective provider config under `teams_graph_access_token_env` | `src/evander/runtime.py`, `src/evander/services.py`. |
 
-For issue setup, `AGENT_SANDBOX_GIT_*`, `AGENT_DEFAULT_MODEL`, and `AGENT_POST_EXEC_VERIFICATION_PROMPT` are now
+For issue setup, `EVANDER_GIT_*`, `AGENT_DEFAULT_MODEL`, and `AGENT_POST_EXEC_VERIFICATION_PROMPT` are now
 read from the root `issue_setup` directory config when present, with host environment variables
-still acting as overrides. `AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV` remains a provider-level setting.
+still acting as overrides. `EVANDER_AZURE_DEVOPS_PR_PAT_ENV` remains a provider-level setting.
 GitHub Copilot CLI host-mediated auth also uses the effective provider `github_token_env` on the
 host when the guest `gh` shim calls `/copilot-auth/token`.
 
@@ -1766,7 +1812,7 @@ The following environment variables are consumed directly by scripts as runtime 
 | `scripts/bootstrap_mssql_server_vm.sh` | `MSSQL_SA_PASSWORD`, `MSSQL_PID`, `HOST_MSSQL_SERVER_ROOT`, `HOST_MSSQL_SERVICE_FILE`, `SSH_KEY_PATH` |
 | `scripts/bootstrap_mssql_tools_vm.sh` | `SSH_KEY_PATH`, `HOST_MSSQL_TOOLS_ROOT`, `HOST_MSSQL_ODBC_ROOT` |
 | `scripts/bootstrap_mssql_vm.sh` | `MSSQL_PID`, `MSSQL_SA_PASSWORD`, `SSH_KEY_PATH` |
-| `agent-sandbox-worker-daemon --mssql-enabled` | `AGENT_SANDBOX_WORKER_MSSQL_ADMIN_PASSWORD` |
+| `evander-worker-daemon --mssql-enabled` | `EVANDER_WORKER_MSSQL_ADMIN_PASSWORD` |
 | `scripts/bootstrap_nuget_vm.sh` | `SSH_KEY_PATH`, `NUGET_RELAY_BASE_URL`, `NUGET_FALLBACK_PACKAGES`, `NUGET_PACKAGES_DIR`, `NUGET_HTTP_CACHE_DIR` |
 | `scripts/bootstrap_playwright_vm.sh` | `SSH_KEY_PATH`, `HOST_NODE_ROOT`, `HOST_PLAYWRIGHT_NODE_MODULES`, `HOST_PLAYWRIGHT_BROWSERS` |
 | `scripts/bootstrap_python_packages_vm.sh` | `SSH_KEY_PATH`, `HOST_PYTHON_BIN`, `GUEST_PYTHON_BIN`, `GUEST_WHEELHOUSE_DIR` |

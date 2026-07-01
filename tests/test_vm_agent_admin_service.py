@@ -9,13 +9,13 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.services import VmAgentAdminDependencies, VmAgentAdminService
-from agent_sandbox.admin.services import process_helpers, session_helpers, vm_helpers
-from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
-from agent_sandbox.admin.services.vm_agent_service import AgentCreateOperation
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.services import VmAgentAdminDependencies, VmAgentAdminService
+from evander.admin.services import process_helpers, session_helpers, vm_helpers
+from evander.admin.services.local_issue_identity import LocalIssueIdentityResolver
+from evander.admin.services.vm_agent_service import AgentCreateOperation
+from evander.config import GatewayConfig
+from evander.models import SessionManifest, ToolName, VmActionResult
 
 
 @dataclass
@@ -323,7 +323,7 @@ class FakeAdmin:
 
     def _resolve_issue_setup(self, directory_path: str, *, root_dir: Path) -> SimpleNamespace:
         return SimpleNamespace(
-            git_ssh_alias="agent-sandbox-git-host",
+            git_ssh_alias="evander-git-host",
             git_root="/srv/git",
             git_host="127.0.0.1",
             git_user="git",
@@ -1242,7 +1242,7 @@ def test_vm_agent_admin_service_list_vms_falls_back_when_provider_listing_fails(
 def test_libvirt_provider_skips_agent_state_probe_when_omit_state_is_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.vm.provider import LibvirtVmProvider, VmProviderContext
+    from evander.vm.provider import LibvirtVmProvider, VmProviderContext
 
     session_store = FakeSessionsStore()
     session_store.upsert_session(
@@ -1313,7 +1313,7 @@ def test_libvirt_provider_skips_agent_state_probe_when_omit_state_is_true(
 
 
 def test_libvirt_create_vm_output_ip_parser() -> None:
-    from agent_sandbox.vm.provider import _extract_setup_guest_ipv4
+    from evander.vm.provider import _extract_setup_guest_ipv4
 
     assert (
         _extract_setup_guest_ipv4(

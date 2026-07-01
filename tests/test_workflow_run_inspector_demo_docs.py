@@ -11,7 +11,7 @@ def test_workflow_run_inspector_demo_docs_cover_seed_command_and_lookup_ids() ->
 
     assert "seed_workflow_run_inspector_demo.sh" in doc
     assert "runtime/workflow-run-inspector-demo" in doc
-    assert "agent-sandbox-admin-web" in doc
+    assert "evander-admin-web" in doc
     assert "--runtime-dir runtime/workflow-run-inspector-demo" in doc
     assert "evt-detail" in doc
     assert "trace-detail" in doc

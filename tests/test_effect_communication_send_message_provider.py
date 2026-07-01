@@ -5,17 +5,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.communication_send_message import (
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.communication_send_message import (
     CommunicationSendMessageEffectProvider,
 )
-from agent_sandbox.events.provider_models import CommunicationSendMessageEffectDefinition
-from agent_sandbox.messaging.targets import (
+from evander.events.provider_models import CommunicationSendMessageEffectDefinition
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.runtime import build_runtime
+from evander.runtime import build_runtime
 
 
 def _write_targets(project_dir: Path, targets: list[dict[str, object]]) -> None:

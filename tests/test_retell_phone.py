@@ -10,19 +10,19 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.email.http_utils import ProviderRequestError
-from agent_sandbox.directory_config import ContactDirectoryConfig
-from agent_sandbox.gateway import create_app
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.retell_phone import (
+from evander.config import GatewayConfig
+from evander.email.http_utils import ProviderRequestError
+from evander.directory_config import ContactDirectoryConfig
+from evander.gateway import create_app
+from evander.models import SessionManifest, ToolName
+from evander.retell_phone import (
     RetellPhoneCallStore,
     RetellPhoneClient,
     RetellPhoneCallService,
     RetellWebhookSignatureError,
     verify_retell_webhook_signature,
 )
-from agent_sandbox.runtime import build_runtime
+from evander.runtime import build_runtime
 
 
 def _config(tmp_path: Path, **kwargs: object) -> GatewayConfig:

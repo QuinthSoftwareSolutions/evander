@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
-from agent_sandbox.models import VmSummary
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
+from evander.models import VmSummary
 
 
 class _AdminServiceStub:

@@ -5,7 +5,7 @@ show_help() {
   cat <<'EOH'
 Usage: install_systemd_units.sh [--preflight] [--help]
 
-Render and install the agent-sandbox systemd unit files, then enable them.
+Render and install the evander systemd unit files, then enable them.
 
 Options:
   --preflight  Run validation checks only (non-destructive).
@@ -17,7 +17,9 @@ EOH
 }
 
 MODE="install"
-SERVICE_PROFILE="${AGENT_SANDBOX_SERVICE_PROFILE:-full}"
+SERVICE_PROFILE="${EVANDER_SERVICE_PROFILE:-full}"
+SETUP_EXECUTION_BACKEND="${EVANDER_SETUP_EXECUTION_BACKEND:-}"
+SETUP_EXECUTION_MODEL="${EVANDER_SETUP_EXECUTION_MODEL:-}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   show_help
@@ -54,6 +56,50 @@ fi
 PROJECT_DIR="${ROOT_DIR}"
 SYSTEMD_DIR="/etc/systemd/system"
 SECRETS_FILE="${ROOT_DIR}/secrets.env"
+LEGACY_LOCAL_SECRETS_FILE="/etc/agent-sandbox/local-secrets.env"
+LOCAL_SECRETS_FILE="/etc/evander/local-secrets.env"
+
+EVANDER_UNITS=(
+  evander-gateway.service
+  evander-admin-web.service
+  evander-openai-relay.service
+  evander-didww-sip-bridge.service
+  evander-firewall.service
+  evander-nuget-relay.service
+  evander-npm-audit-facade.service
+  evander-http-target-relay.service
+  evander-ado-worker.service
+  evander-proxy-issue-sync.service
+  evander-discord-ingest.service
+  evander-discord-wake.service
+  evander-scheduled-wake.service
+  evander-teams-ingest.service
+  evander-teams-meeting-ingest.service
+  evander-effect-orchestrator.service
+  evander-trigger-orchestrator.service
+)
+
+LEGACY_AGENT_SANDBOX_UNITS=(
+  agent-sandbox-gateway.service
+  agent-sandbox-admin-web.service
+  agent-sandbox-openai-relay.service
+  agent-sandbox-didww-sip-bridge.service
+  agent-sandbox-firewall.service
+  agent-sandbox-nuget-relay.service
+  agent-sandbox-npm-audit-facade.service
+  agent-sandbox-http-target-relay.service
+  agent-sandbox-ado-worker.service
+  agent-sandbox-proxy-issue-sync.service
+  agent-sandbox-discord-ingest.service
+  agent-sandbox-discord-wake.service
+  agent-sandbox-scheduled-wake.service
+  agent-sandbox-teams-ingest.service
+  agent-sandbox-teams-meeting-ingest.service
+  agent-sandbox-effect-orchestrator.service
+  agent-sandbox-trigger-orchestrator.service
+  agent-sandbox-issue-orchestrator.service
+  agent-sandbox-host-heartbeat.service
+)
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -237,6 +283,68 @@ PY
   report_fail "$(printf "%s or %s is missing or empty in %s." "$1" "$2" "${file_path}")" "${hint}" "${severity}"
 }
 
+admin_frontend_assets_ready() {
+  python3 - "${ROOT_DIR}/frontend/workflow-editor/dist" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+dist_dir = Path(sys.argv[1])
+index_path = dist_dir / "index.html"
+if not index_path.is_file():
+    print(index_path)
+    raise SystemExit(1)
+
+html = index_path.read_text(encoding="utf-8")
+references = [
+    match.group("path").split("?", 1)[0].split("#", 1)[0].lstrip("/")
+    for match in re.finditer(r'''(?:src|href)=["'](?P<path>/?assets/[^"']+)["']''', html)
+]
+if not references:
+    print(dist_dir / "assets" / "*.js")
+    raise SystemExit(1)
+
+missing = [dist_dir / reference for reference in references if not (dist_dir / reference).is_file()]
+if missing:
+    print("\n".join(str(path) for path in missing))
+    raise SystemExit(1)
+PY
+}
+
+check_admin_frontend_assets() {
+  local missing
+  if missing="$(admin_frontend_assets_ready)"; then
+    report_pass "Admin Web frontend assets are built."
+    return
+  fi
+
+  if command -v npm >/dev/null 2>&1; then
+    report_pass "Admin Web frontend assets are missing or stale; npm is available to build them during guided setup launch."
+  elif [[ "${SERVICE_PROFILE}" == "setup" ]] && command -v apt-get >/dev/null 2>&1 && command -v apt-cache >/dev/null 2>&1 && { [[ "${EUID}" -eq 0 ]] || command -v sudo >/dev/null 2>&1; }; then
+    local nodejs_version
+    local npm_version
+    nodejs_version="$(apt_package_candidate nodejs)"
+    npm_version="$(apt_package_candidate npm)"
+    if [[ -n "${nodejs_version}" && "${nodejs_version}" != "(none)" && -n "${npm_version}" && "${npm_version}" != "(none)" ]]; then
+      report_pass "Admin Web frontend assets are missing or stale; guided setup can install Node.js ${nodejs_version} and npm ${npm_version} during launch after confirmation."
+    else
+      report_fail \
+        "Admin Web frontend assets are missing or stale and npm is not installed." \
+        "No apt candidate was found for Node.js/npm. Install Node.js/npm and build frontend/workflow-editor manually. Missing assets: ${missing}" \
+        "critical"
+    fi
+  else
+    report_fail \
+      "Admin Web frontend assets are missing or stale and npm is not installed." \
+      "Install Node.js/npm and build frontend/workflow-editor, or run guided setup on an apt-based host with sudo available so it can ask before installing them. Missing assets: ${missing}" \
+      "critical"
+  fi
+}
+
+apt_package_candidate() {
+  apt-cache policy "$1" | awk '/Candidate:/ {print $2; exit}'
+}
+
 run_preflight_checks() {
   echo "Running install_systemd_units preflight checks..."
   echo "Service profile: ${SERVICE_PROFILE}"
@@ -247,21 +355,34 @@ run_preflight_checks() {
   check_command "python3" "Install Python 3 so the gateway/relay and env checks can run."
   if [[ "${SERVICE_PROFILE}" == "full" ]]; then
     check_command "virsh" "Install libvirt-clients so VM lifecycle commands are available." "warning"
+  elif [[ "${SERVICE_PROFILE}" == "setup" && "${SETUP_EXECUTION_BACKEND}" == "libvirt_vm" ]]; then
+    check_command "virsh" "Install libvirt-clients so VM lifecycle commands are available."
   else
     report_pass "Skipping virsh check for service profile ${SERVICE_PROFILE}."
+  fi
+  if [[ "${SERVICE_PROFILE}" == "setup" && "${SETUP_EXECUTION_MODEL}" == "container_same_host" ]]; then
+    check_command "docker" "Install Docker so the same-host container worker can run agent containers."
+  fi
+  check_admin_frontend_assets
+
+  local setup_managed_config_severity="critical"
+  if [[ "${SERVICE_PROFILE}" == "setup" ]]; then
+    setup_managed_config_severity="warning"
   fi
 
   check_file "${ROOT_DIR}/config/firewall.env" "Copy config/firewall.env.example to config/firewall.env."
   check_file \
     "${ROOT_DIR}/config/ado-worker/config.json" \
-    "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json."
+    "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json." \
+    "${setup_managed_config_severity}"
   check_file \
     "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" \
     "Run evander-cli migrate-ado-worker-env-to-root, migrate-global-config-to-root, or configure the directory after deployment." \
     "warning"
   check_file \
     "${ROOT_DIR}/config/trigger-orchestrator/config.json" \
-    "Copy config/trigger-orchestrator/config-example.json to config/trigger-orchestrator/config.json and copy the workflow pack examples it references to operator-local pack files."
+    "Copy config/trigger-orchestrator/config-example.json to config/trigger-orchestrator/config.json and copy the workflow pack examples it references to operator-local pack files." \
+    "${setup_managed_config_severity}"
   check_file \
     "${ROOT_DIR}/config/teams-meeting-ingest/config.json" \
     "Copy config/teams-meeting-ingest/config.json.example to config/teams-meeting-ingest/config.json if you want to override Teams meeting ingest defaults." \
@@ -314,112 +435,136 @@ render_unit() {
     "${template}" > "${target}"
 }
 
-render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-gateway.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-gateway.service"
+migrate_legacy_local_secrets() {
+  if [[ -f "${LEGACY_LOCAL_SECRETS_FILE}" && ! -f "${LOCAL_SECRETS_FILE}" ]]; then
+    install -d -m 0750 "$(dirname "${LOCAL_SECRETS_FILE}")"
+    install -m 0600 "${LEGACY_LOCAL_SECRETS_FILE}" "${LOCAL_SECRETS_FILE}"
+    echo "Copied legacy local secrets to ${LOCAL_SECRETS_FILE}."
+  fi
+
+  if [[ ! -f "${LOCAL_SECRETS_FILE}" ]]; then
+    return
+  fi
+
+  local unit dropin_dir dropin_path
+  for unit in "${EVANDER_UNITS[@]}"; do
+    dropin_dir="${SYSTEMD_DIR}/${unit}.d"
+    dropin_path="${dropin_dir}/10-local-secrets.conf"
+    install -d -m 0755 "${dropin_dir}"
+    printf '[Service]\nEnvironmentFile=-%s\n' "${LOCAL_SECRETS_FILE}" > "${dropin_path}"
+  done
+}
+
+retire_legacy_agent_sandbox_units() {
+  local unit removed=0
+  for unit in "${LEGACY_AGENT_SANDBOX_UNITS[@]}"; do
+    if [[ -e "${SYSTEMD_DIR}/${unit}" || -d "${SYSTEMD_DIR}/${unit}.d" ]]; then
+      echo "Retiring legacy unit ${unit}."
+      systemctl disable --now "${unit}" >/dev/null 2>&1 || true
+      rm -f "${SYSTEMD_DIR}/${unit}"
+      rm -rf "${SYSTEMD_DIR:?}/${unit}.d"
+      removed=1
+    fi
+  done
+
+  if [[ "${removed}" -ne 0 ]]; then
+    systemctl daemon-reload
+  fi
+}
+
+migrate_legacy_local_secrets
+retire_legacy_agent_sandbox_units
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-admin-web.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-admin-web.service"
+  "${ROOT_DIR}/systemd/evander-gateway.service.template" \
+  "${SYSTEMD_DIR}/evander-gateway.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-openai-relay.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-openai-relay.service"
+  "${ROOT_DIR}/systemd/evander-admin-web.service.template" \
+  "${SYSTEMD_DIR}/evander-admin-web.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-didww-sip-bridge.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-didww-sip-bridge.service"
+  "${ROOT_DIR}/systemd/evander-openai-relay.service.template" \
+  "${SYSTEMD_DIR}/evander-openai-relay.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-firewall.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-firewall.service"
+  "${ROOT_DIR}/systemd/evander-didww-sip-bridge.service.template" \
+  "${SYSTEMD_DIR}/evander-didww-sip-bridge.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-nuget-relay.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-nuget-relay.service"
+  "${ROOT_DIR}/systemd/evander-firewall.service.template" \
+  "${SYSTEMD_DIR}/evander-firewall.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-npm-audit-facade.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-npm-audit-facade.service"
+  "${ROOT_DIR}/systemd/evander-nuget-relay.service.template" \
+  "${SYSTEMD_DIR}/evander-nuget-relay.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-http-target-relay.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-http-target-relay.service"
+  "${ROOT_DIR}/systemd/evander-npm-audit-facade.service.template" \
+  "${SYSTEMD_DIR}/evander-npm-audit-facade.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-ado-worker.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-ado-worker.service"
+  "${ROOT_DIR}/systemd/evander-http-target-relay.service.template" \
+  "${SYSTEMD_DIR}/evander-http-target-relay.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-proxy-issue-sync.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-proxy-issue-sync.service"
+  "${ROOT_DIR}/systemd/evander-ado-worker.service.template" \
+  "${SYSTEMD_DIR}/evander-ado-worker.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-discord-ingest.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-discord-ingest.service"
+  "${ROOT_DIR}/systemd/evander-proxy-issue-sync.service.template" \
+  "${SYSTEMD_DIR}/evander-proxy-issue-sync.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-discord-wake.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-discord-wake.service"
+  "${ROOT_DIR}/systemd/evander-discord-ingest.service.template" \
+  "${SYSTEMD_DIR}/evander-discord-ingest.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-scheduled-wake.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-scheduled-wake.service"
+  "${ROOT_DIR}/systemd/evander-discord-wake.service.template" \
+  "${SYSTEMD_DIR}/evander-discord-wake.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-teams-ingest.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-teams-ingest.service"
+  "${ROOT_DIR}/systemd/evander-scheduled-wake.service.template" \
+  "${SYSTEMD_DIR}/evander-scheduled-wake.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-teams-meeting-ingest.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-teams-meeting-ingest.service"
+  "${ROOT_DIR}/systemd/evander-teams-ingest.service.template" \
+  "${SYSTEMD_DIR}/evander-teams-ingest.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-effect-orchestrator.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-effect-orchestrator.service"
+  "${ROOT_DIR}/systemd/evander-teams-meeting-ingest.service.template" \
+  "${SYSTEMD_DIR}/evander-teams-meeting-ingest.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-trigger-orchestrator.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-trigger-orchestrator.service"
+  "${ROOT_DIR}/systemd/evander-effect-orchestrator.service.template" \
+  "${SYSTEMD_DIR}/evander-effect-orchestrator.service"
+
+render_unit \
+  "${ROOT_DIR}/systemd/evander-trigger-orchestrator.service.template" \
+  "${SYSTEMD_DIR}/evander-trigger-orchestrator.service"
 
 systemctl daemon-reload
-systemctl enable agent-sandbox-gateway.service
-systemctl enable agent-sandbox-admin-web.service
-systemctl enable agent-sandbox-openai-relay.service
-systemctl enable agent-sandbox-didww-sip-bridge.service
-systemctl enable agent-sandbox-firewall.service
-systemctl enable agent-sandbox-nuget-relay.service
-systemctl enable agent-sandbox-npm-audit-facade.service
-systemctl enable agent-sandbox-http-target-relay.service
-systemctl enable agent-sandbox-ado-worker.service
-systemctl enable agent-sandbox-proxy-issue-sync.service
-systemctl enable agent-sandbox-discord-ingest.service
-systemctl enable agent-sandbox-discord-wake.service
-systemctl enable agent-sandbox-scheduled-wake.service
-systemctl enable agent-sandbox-teams-ingest.service
-systemctl enable agent-sandbox-teams-meeting-ingest.service
-systemctl enable agent-sandbox-effect-orchestrator.service
-systemctl enable agent-sandbox-trigger-orchestrator.service
+systemctl enable "${EVANDER_UNITS[@]}"
 
 cat <<EOF
 Installed systemd units:
-  agent-sandbox-gateway.service
-  agent-sandbox-admin-web.service
-  agent-sandbox-openai-relay.service
-  agent-sandbox-didww-sip-bridge.service
-  agent-sandbox-firewall.service
-  agent-sandbox-nuget-relay.service
-  agent-sandbox-npm-audit-facade.service
-  agent-sandbox-http-target-relay.service
-  agent-sandbox-ado-worker.service
-  agent-sandbox-proxy-issue-sync.service
-  agent-sandbox-discord-ingest.service
-  agent-sandbox-discord-wake.service
-  agent-sandbox-scheduled-wake.service
-  agent-sandbox-teams-ingest.service
-  agent-sandbox-teams-meeting-ingest.service
-  agent-sandbox-effect-orchestrator.service
-  agent-sandbox-trigger-orchestrator.service
+  evander-gateway.service
+  evander-admin-web.service
+  evander-openai-relay.service
+  evander-didww-sip-bridge.service
+  evander-firewall.service
+  evander-nuget-relay.service
+  evander-npm-audit-facade.service
+  evander-http-target-relay.service
+  evander-ado-worker.service
+  evander-proxy-issue-sync.service
+  evander-discord-ingest.service
+  evander-discord-wake.service
+  evander-scheduled-wake.service
+  evander-teams-ingest.service
+  evander-teams-meeting-ingest.service
+  evander-effect-orchestrator.service
+  evander-trigger-orchestrator.service
 
 Next steps:
   1. Populate ${ROOT_DIR}/runtime/directory-config/root/ado-worker.json via the root directory config migration commands.
@@ -432,21 +577,21 @@ Next steps:
   8. Populate ${ROOT_DIR}/config/admin-web.env from the example file and set host/auth settings for the admin UI.
   9. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
   10. Start services:
-     sudo systemctl start agent-sandbox-admin-web.service
-     sudo systemctl start agent-sandbox-firewall.service
-     sudo systemctl start agent-sandbox-gateway.service
-     sudo systemctl start agent-sandbox-openai-relay.service
-     sudo systemctl start agent-sandbox-didww-sip-bridge.service
-     sudo systemctl start agent-sandbox-nuget-relay.service
-     sudo systemctl start agent-sandbox-npm-audit-facade.service
-     sudo systemctl start agent-sandbox-http-target-relay.service
-     sudo systemctl start agent-sandbox-ado-worker.service
-     sudo systemctl start agent-sandbox-proxy-issue-sync.service
-     sudo systemctl start agent-sandbox-discord-ingest.service
-     sudo systemctl start agent-sandbox-discord-wake.service
-     sudo systemctl start agent-sandbox-scheduled-wake.service
-     sudo systemctl start agent-sandbox-teams-ingest.service
-     sudo systemctl start agent-sandbox-teams-meeting-ingest.service
-     sudo systemctl start agent-sandbox-effect-orchestrator.service
-     sudo systemctl start agent-sandbox-trigger-orchestrator.service
+     sudo systemctl start evander-admin-web.service
+     sudo systemctl start evander-firewall.service
+     sudo systemctl start evander-gateway.service
+     sudo systemctl start evander-openai-relay.service
+     sudo systemctl start evander-didww-sip-bridge.service
+     sudo systemctl start evander-nuget-relay.service
+     sudo systemctl start evander-npm-audit-facade.service
+     sudo systemctl start evander-http-target-relay.service
+     sudo systemctl start evander-ado-worker.service
+     sudo systemctl start evander-proxy-issue-sync.service
+     sudo systemctl start evander-discord-ingest.service
+     sudo systemctl start evander-discord-wake.service
+     sudo systemctl start evander-scheduled-wake.service
+     sudo systemctl start evander-teams-ingest.service
+     sudo systemctl start evander-teams-meeting-ingest.service
+     sudo systemctl start evander-effect-orchestrator.service
+     sudo systemctl start evander-trigger-orchestrator.service
 EOF

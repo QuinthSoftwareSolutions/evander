@@ -2,21 +2,21 @@
 - name: Skip managed Admin Web Caddy proxy when disabled
   ansible.builtin.debug:
     msg: "Managed Admin Web Caddy proxy is disabled."
-  when: not (agent_sandbox_admin_web_caddy_enabled | bool)
+  when: not (evander_admin_web_caddy_enabled | bool)
 
 - name: Manage Admin Web Caddy proxy
-  when: agent_sandbox_admin_web_caddy_enabled | bool
+  when: evander_admin_web_caddy_enabled | bool
   block:
     - name: Assert Admin Web Caddy hostname is configured
       ansible.builtin.assert:
         that:
-          - agent_sandbox_services.admin_web | bool
-          - agent_sandbox_admin_web_caddy_hostname | length > 0
+          - evander_services.admin_web | bool
+          - evander_admin_web_caddy_hostname | length > 0
         fail_msg: >-
-          agent_sandbox_services.admin_web must be enabled and
-          agent_sandbox_admin_web_caddy_hostname must be set, or
-          AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL must be present in
-          agent_sandbox_admin_web_env.
+          evander_services.admin_web must be enabled and
+          evander_admin_web_caddy_hostname must be set, or
+          EVANDER_ADMIN_WEB_PUBLIC_BASE_URL must be present in
+          evander_admin_web_env.
         success_msg: "Admin Web Caddy hostname is configured."
 
     - name: Install Caddy package
@@ -26,36 +26,36 @@
 
     - name: Ensure Admin Web frontend dist directory exists
       ansible.builtin.stat:
-        path: "{{ agent_sandbox_admin_web_frontend_dist_dir }}/index.html"
-      register: agent_sandbox_admin_web_frontend_index
+        path: "{{ evander_admin_web_frontend_dist_dir }}/index.html"
+      register: evander_admin_web_frontend_index
 
     - name: Assert Admin Web frontend assets were built
       ansible.builtin.assert:
         that:
-          - agent_sandbox_admin_web_frontend_index.stat.exists
+          - evander_admin_web_frontend_index.stat.exists
         fail_msg: >-
           Expected built Admin Web frontend at
-          {{ agent_sandbox_admin_web_frontend_dist_dir }}/index.html before
+          {{ evander_admin_web_frontend_dist_dir }}/index.html before
           enabling Caddy static serving.
         success_msg: "Admin Web frontend assets are present."
 
     - name: Render Admin Web Caddyfile
       ansible.builtin.template:
         src: Caddyfile.j2
-        dest: "{{ agent_sandbox_admin_web_caddy_config_path }}"
+        dest: "{{ evander_admin_web_caddy_config_path }}"
         owner: root
         group: root
         mode: "0644"
-      register: agent_sandbox_admin_web_caddy_config
-      when: agent_sandbox_admin_web_caddy_manage_config | bool
+      register: evander_admin_web_caddy_config
+      when: evander_admin_web_caddy_manage_config | bool
 
     - name: Validate Admin Web Caddyfile
       ansible.builtin.command:
-        cmd: "caddy validate --adapter caddyfile --config {{ agent_sandbox_admin_web_caddy_config_path }}"
+        cmd: "caddy validate --adapter caddyfile --config {{ evander_admin_web_caddy_config_path }}"
       changed_when: false
       when:
-        - agent_sandbox_admin_web_caddy_manage_config | bool
-        - agent_sandbox_admin_web_caddy_validate_config | bool
+        - evander_admin_web_caddy_manage_config | bool
+        - evander_admin_web_caddy_validate_config | bool
 
     - name: Enable and start Caddy
       ansible.builtin.systemd:
@@ -67,4 +67,4 @@
       ansible.builtin.systemd:
         name: caddy.service
         state: reloaded
-      when: agent_sandbox_admin_web_caddy_config.changed | default(false)
+      when: evander_admin_web_caddy_config.changed | default(false)

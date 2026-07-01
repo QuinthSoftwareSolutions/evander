@@ -7,32 +7,32 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.execution import ExecutionBackendKind
-from agent_sandbox.daemons.effect_orchestrator import JsonExecutionStore
-from agent_sandbox.effects.providers.lifecycle_hooks import (
+from evander.config import GatewayConfig
+from evander.execution import ExecutionBackendKind
+from evander.daemons.effect_orchestrator import JsonExecutionStore
+from evander.effects.providers.lifecycle_hooks import (
     AgentEnqueuePromptQueueDispatchHook,
 )
-from agent_sandbox.messaging.agent_prompt_queue import (
+from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     QueuedAgentPromptRecord,
 )
-from agent_sandbox.models import (
+from evander.models import (
     SessionManifest,
     ToolName,
     WakeDispatchRecord,
     WakeResumePromptPayload,
     WakeScheduleDefinition,
 )
-from agent_sandbox.messaging.scheduled_wake import (
+from evander.messaging.scheduled_wake import (
     _build_scheduled_resume_prompt,
     _load_scheduled_wake_worker_global_config,
     ScheduledWakeWorkerGlobalConfigReloader,
     ScheduledWakeCycleResult,
     build_scheduled_wake_worker,
 )
-from agent_sandbox.orchestration.host_polling import HostFileLockManager
-from agent_sandbox.runtime import build_runtime
+from evander.orchestration.host_polling import HostFileLockManager
+from evander.runtime import build_runtime
 
 
 def _build_worker(
@@ -283,7 +283,7 @@ def test_scheduled_wake_worker_reloads_prefix_text_between_cycles(
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state",
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state",
         lambda **kwargs: "idle",
     )
 
@@ -311,7 +311,7 @@ def test_scheduled_wake_worker_reloads_prefix_text_between_cycles(
         return record
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.HostWakeDispatcher.resume_binding",
+        "evander.messaging.wake_dispatch.HostWakeDispatcher.resume_binding",
         resume_binding,
     )
 
@@ -396,7 +396,7 @@ def test_scheduled_wake_worker_rebuilds_runtime_when_runtime_dir_changes(
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state",
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state",
         lambda **kwargs: "idle",
     )
 
@@ -424,7 +424,7 @@ def test_scheduled_wake_worker_rebuilds_runtime_when_runtime_dir_changes(
         return record
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.HostWakeDispatcher.resume_binding",
+        "evander.messaging.wake_dispatch.HostWakeDispatcher.resume_binding",
         resume_binding,
     )
 
@@ -473,7 +473,7 @@ def test_scheduled_wake_worker_keeps_last_known_good_prefix_when_reload_payload_
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state",
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state",
         lambda **kwargs: "idle",
     )
 
@@ -501,7 +501,7 @@ def test_scheduled_wake_worker_keeps_last_known_good_prefix_when_reload_payload_
         return record
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.HostWakeDispatcher.resume_binding",
+        "evander.messaging.wake_dispatch.HostWakeDispatcher.resume_binding",
         resume_binding,
     )
 
@@ -615,7 +615,7 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
 
     dispatched: list[str] = []
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
     dispatch_at = datetime.now(UTC)
 
@@ -695,10 +695,10 @@ def test_scheduled_wake_worker_records_failed_dispatch_for_expired_due_request(
         worker, request_id="wake-expired", session_id="session-a", due_at=due_at
     )
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.subprocess.run",
+        "evander.messaging.wake_dispatch.subprocess.run",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("resume script must not run for expired wake sessions")
         ),
@@ -739,7 +739,7 @@ def test_scheduled_wake_worker_retries_failed_one_time_request_with_backoff_and_
 
     dispatch_calls: list[str] = []
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
 
     def resume_binding(binding, **kwargs):
@@ -839,9 +839,9 @@ def test_scheduled_wake_worker_failed_retry_backoff_uses_dispatch_completion_tim
                 return cycle_started_at
             return dispatch_completed_at
 
-    monkeypatch.setattr("agent_sandbox.messaging.scheduled_wake.datetime", _FakeDateTime)
+    monkeypatch.setattr("evander.messaging.scheduled_wake.datetime", _FakeDateTime)
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state",
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state",
         lambda **kwargs: "idle",
     )
 
@@ -932,7 +932,7 @@ def test_scheduled_wake_worker_backs_off_unconfirmed_one_time_dispatch_before_re
     worker.runtime.wake_store.upsert_request(pending)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
 
     first_cycle = worker.run_once()
@@ -1007,7 +1007,7 @@ def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_bindi
     backend = _ContainerBackendStub(active=False)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda resolved_config, *, admin_service: backend,
     )
 
@@ -1056,7 +1056,7 @@ def test_scheduled_wake_worker_dispatches_due_claude_container_request(
     backend = _ContainerBackendStub(active=False)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda resolved_config, *, admin_service: backend,
     )
 
@@ -1104,7 +1104,7 @@ def test_scheduled_wake_worker_preserves_claude_queue_metadata_for_later_dispatc
     dispatch_backend = _ContainerBackendStub(active=True)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda resolved_config, *, admin_service: dispatch_backend,
     )
 
@@ -1128,7 +1128,7 @@ def test_scheduled_wake_worker_preserves_claude_queue_metadata_for_later_dispatc
         container_worker_base_url="http://worker.test",
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda resolved_config, *, admin_service: replay_backend,
     )
     orchestrator_worker = SimpleNamespace(
@@ -1184,7 +1184,7 @@ def test_cancel_queued_container_wake_deletes_prompt_queue(
     )
     backend = _ContainerBackendStub(active=True)
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda resolved_config, *, admin_service: backend,
     )
 
@@ -1227,7 +1227,7 @@ def test_scheduled_wake_worker_dispatches_due_container_request_by_metadata_and_
     backend = _ContainerBackendStub(active=True)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        "evander.messaging.wake_dispatch.build_execution_backend",
         lambda resolved_config, *, admin_service: backend,
     )
 
@@ -1274,7 +1274,7 @@ def test_scheduled_wake_worker_leaves_plain_no_vm_session_due(
     _schedule_one_time_request(worker, request_id="wake-plain", session_id="session-plain", due_at=due_at)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state",
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("busy-check should be skipped")),
     )
 
@@ -1332,7 +1332,7 @@ def test_scheduled_wake_worker_uses_find_due_requests_directly(
     worker.runtime.wake_store = fake_store
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
     dispatch_at = datetime.now(UTC)
 
@@ -1397,7 +1397,7 @@ def test_scheduled_wake_worker_dispatches_due_cron_range_request(
 
     dispatched: list[str] = []
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
     dispatch_at = datetime.now(UTC)
 
@@ -1448,7 +1448,7 @@ def test_scheduled_wake_worker_leaves_due_cron_request_available_after_failed_di
     _schedule_cron_request(worker, request_id="wake-cron-failed", session_id="session-a", due_at=due_at)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
     dispatch_at = datetime.now(UTC)
 
@@ -1495,7 +1495,7 @@ def test_scheduled_wake_worker_leaves_due_cron_request_available_after_timed_out
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
     dispatch_at = datetime.now(UTC)
 
@@ -1543,7 +1543,7 @@ def test_scheduled_wake_worker_keeps_due_cron_request_unmodified_when_resume_scr
     _schedule_cron_request(worker, request_id="wake-cron-missing", session_id="session-a", due_at=due_at)
 
     monkeypatch.setattr(
-        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+        "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
     monkeypatch.setattr(worker.dispatcher, "resume_binding", lambda binding, **kwargs: None)
 

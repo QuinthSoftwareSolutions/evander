@@ -13,62 +13,62 @@
 - name: Verify worker daemon service is active
   ansible.builtin.assert:
     that:
-      - "ansible_facts.services['agent-sandbox-worker-daemon.service'].status == 'enabled'"
-      - "ansible_facts.services['agent-sandbox-worker-daemon.service'].state == 'running'"
+      - "ansible_facts.services['evander-worker-daemon.service'].status == 'enabled'"
+      - "ansible_facts.services['evander-worker-daemon.service'].state == 'running'"
     fail_msg: >-
-      agent-sandbox-worker-daemon.service should be enabled and running.
+      evander-worker-daemon.service should be enabled and running.
       actual={{
-        ansible_facts.services.get('agent-sandbox-worker-daemon.service', {})
+        ansible_facts.services.get('evander-worker-daemon.service', {})
       }}
-    success_msg: "agent-sandbox-worker-daemon.service is enabled and running."
+    success_msg: "evander-worker-daemon.service is enabled and running."
 
 - name: Check worker egress policy service enabled state
   ansible.builtin.command:
     argv:
       - systemctl
       - is-enabled
-      - agent-sandbox-worker-egress-policy.service
-  register: agent_sandbox_worker_egress_policy_enabled_state
+      - evander-worker-egress-policy.service
+  register: evander_worker_egress_policy_enabled_state
   changed_when: false
   failed_when: false
   when:
-    - agent_sandbox_worker_egress_policy_enabled | bool
-    - (agent_sandbox_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+    - evander_worker_egress_policy_enabled | bool
+    - (evander_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
 
 - name: Check worker egress policy service active state
   ansible.builtin.command:
     argv:
       - systemctl
       - is-active
-      - agent-sandbox-worker-egress-policy.service
-  register: agent_sandbox_worker_egress_policy_active_state
+      - evander-worker-egress-policy.service
+  register: evander_worker_egress_policy_active_state
   changed_when: false
   failed_when: false
   when:
-    - agent_sandbox_worker_egress_policy_enabled | bool
-    - (agent_sandbox_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+    - evander_worker_egress_policy_enabled | bool
+    - (evander_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
 
 - name: Verify worker egress policy service is active
   ansible.builtin.assert:
     that:
-      - "agent_sandbox_worker_egress_policy_enabled_state.stdout == 'enabled'"
-      - "agent_sandbox_worker_egress_policy_active_state.stdout == 'active'"
+      - "evander_worker_egress_policy_enabled_state.stdout == 'enabled'"
+      - "evander_worker_egress_policy_active_state.stdout == 'active'"
     fail_msg: >-
-      agent-sandbox-worker-egress-policy.service should be enabled and active
+      evander-worker-egress-policy.service should be enabled and active
       whenever a non-none worker Docker network is configured with
-      agent_sandbox_worker_egress_policy_enabled=true. service_facts={{
-        ansible_facts.services.get('agent-sandbox-worker-egress-policy.service', {})
+      evander_worker_egress_policy_enabled=true. service_facts={{
+        ansible_facts.services.get('evander-worker-egress-policy.service', {})
       }} systemctl_enabled={{
-        agent_sandbox_worker_egress_policy_enabled_state.stdout | default('')
+        evander_worker_egress_policy_enabled_state.stdout | default('')
       }} systemctl_active={{
-        agent_sandbox_worker_egress_policy_active_state.stdout | default('')
+        evander_worker_egress_policy_active_state.stdout | default('')
       }} systemctl_active_stderr={{
-        agent_sandbox_worker_egress_policy_active_state.stderr | default('')
+        evander_worker_egress_policy_active_state.stderr | default('')
       }}
-    success_msg: "agent-sandbox-worker-egress-policy.service is enabled and active."
+    success_msg: "evander-worker-egress-policy.service is enabled and active."
   when:
-    - agent_sandbox_worker_egress_policy_enabled | bool
-    - (agent_sandbox_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+    - evander_worker_egress_policy_enabled | bool
+    - (evander_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
 
 - name: Verify Docker is usable by the worker user
   ansible.builtin.command:
@@ -77,18 +77,18 @@
       - ps
       - --format
       - "{{ '{{' }}.ID{{ '}}' }}"
-  become_user: "{{ agent_sandbox_run_user }}"
+  become_user: "{{ evander_run_user }}"
   changed_when: false
 
 - name: Wait for worker daemon listener
   ansible.builtin.wait_for:
     host: "127.0.0.1"
-    port: "{{ agent_sandbox_worker_port }}"
+    port: "{{ evander_worker_port }}"
     timeout: 30
 
 - name: Verify worker daemon health endpoint
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ agent_sandbox_worker_port }}/healthz"
+    url: "http://127.0.0.1:{{ evander_worker_port }}/healthz"
     method: GET
     return_content: true
     status_code: 200
@@ -96,9 +96,9 @@
 - name: Emit worker deployment verification summary
   ansible.builtin.debug:
     msg:
-      - "worker root: {{ agent_sandbox_worker_root }}"
-      - "worker runtime dir: {{ agent_sandbox_worker_runtime_dir }}"
-      - "worker daemon: http://{{ ansible_default_ipv4.address | default(agent_sandbox_worker_host) }}:{{ agent_sandbox_worker_port }}"
-      - "sandbox profile: {{ agent_sandbox_worker_sandbox_profile }}"
-      - "container user: {{ agent_sandbox_effective_worker_container_user }}"
-      - "worker egress policy: {{ agent_sandbox_worker_egress_policy_enabled }}"
+      - "worker root: {{ evander_worker_root }}"
+      - "worker runtime dir: {{ evander_worker_runtime_dir }}"
+      - "worker daemon: http://{{ ansible_default_ipv4.address | default(evander_worker_host) }}:{{ evander_worker_port }}"
+      - "sandbox profile: {{ evander_worker_sandbox_profile }}"
+      - "container user: {{ evander_effective_worker_container_user }}"
+      - "worker egress policy: {{ evander_worker_egress_policy_enabled }}"

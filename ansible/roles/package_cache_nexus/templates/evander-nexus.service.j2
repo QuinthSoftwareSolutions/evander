@@ -1,0 +1,19 @@
+[Unit]
+Description=Evander Nexus Package Cache
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ evander_nexus_user }}
+Group={{ evander_nexus_group }}
+WorkingDirectory={{ evander_nexus_current_link }}
+Environment=NEXUS_DATA={{ evander_nexus_data_dir }}
+ExecStart={{ evander_nexus_current_link }}/bin/nexus run
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=600
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

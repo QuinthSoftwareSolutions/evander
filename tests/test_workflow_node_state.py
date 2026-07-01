@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_sandbox.workflow.node_state import workflow_node_is_enabled
+from evander.workflow.node_state import workflow_node_is_enabled
 
 
 def test_workflow_node_is_enabled_defaults_to_true() -> None:

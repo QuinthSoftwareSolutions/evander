@@ -35,7 +35,7 @@ Options:
   --ssh-user USER             Privileged guest SSH user for host control/log access.
                               Default: agent-admin, falling back to --vm-user when reachable.
   --agent-log-dir PATH        Root-owned guest log directory. Default:
-                              /var/log/agent-sandbox/agent-runs
+                              /var/log/evander/agent-runs
   --resume-mode MODE          Resume mode: same_context or new_context. Default: same_context
   --worker-mode               Disable TTY allocation and run non-interactive worker mode.
   --dispatch-only             In worker mode, dispatch the guest resume in the background and
@@ -204,7 +204,7 @@ parse_args() {
   MCP_GATEWAY_URL=""
   VM_USER="agent"
   SSH_USER="${VM_SSH_USER:-agent-admin}"
-  AGENT_RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
+  AGENT_RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/evander/agent-runs}"
   RESUME_MODE="same_context"
   WORKER_MODE=0
   DISPATCH_ONLY=0
@@ -462,7 +462,7 @@ if (( WORKER_MODE )); then
     set +e
     ssh "${SSH_FLAGS[@]}" \
       "${SSH_USER}@${VM_IP}" \
-      sudo -n env "AGENT_USER=${VM_USER}" "AGENT_RUN_LOG_DIR=${AGENT_RUN_LOG_DIR}" "PROMPT_B64=${PROMPT_B64}" "SESSION_ID=${SESSION_ID}" "DISPATCH_ID=${DISPATCH_ID}" "RESUME_THREAD_ID=${RESUME_THREAD_ID}" "AGENT_SANDBOX_MCP_GATEWAY_URL=${MCP_GATEWAY_URL}" "AGENT_BRANCH_SUFFIX=${VM_NAME}" "AGENT_PROVIDER=${AGENT_PROVIDER}" "AGENT_MODEL=${AGENT_MODEL}" "AGENT_WEB_SEARCH_MODE=${AGENT_WEB_SEARCH_MODE}" "RESUME_MODE=${RESUME_MODE}" "HOST_CONTROL_STATUS=${HOST_CONTROL_STATUS}" "AGENT_RUNNER_LIB_B64=${AGENT_RUNNER_LIB_B64}" "AGENT_RUNNER_PROVIDER_LIB_NAME=${AGENT_RUNNER_PROVIDER_LIB_NAME}" "AGENT_RUNNER_PROVIDER_LIB_B64=${AGENT_RUNNER_PROVIDER_LIB_B64}" "AGENT_STATE_LIB_B64=${AGENT_STATE_LIB_B64}" bash -s <<'REMOTE'
+      sudo -n env "AGENT_USER=${VM_USER}" "AGENT_RUN_LOG_DIR=${AGENT_RUN_LOG_DIR}" "PROMPT_B64=${PROMPT_B64}" "SESSION_ID=${SESSION_ID}" "DISPATCH_ID=${DISPATCH_ID}" "RESUME_THREAD_ID=${RESUME_THREAD_ID}" "EVANDER_MCP_GATEWAY_URL=${MCP_GATEWAY_URL}" "AGENT_BRANCH_SUFFIX=${VM_NAME}" "AGENT_PROVIDER=${AGENT_PROVIDER}" "AGENT_MODEL=${AGENT_MODEL}" "AGENT_WEB_SEARCH_MODE=${AGENT_WEB_SEARCH_MODE}" "RESUME_MODE=${RESUME_MODE}" "HOST_CONTROL_STATUS=${HOST_CONTROL_STATUS}" "AGENT_RUNNER_LIB_B64=${AGENT_RUNNER_LIB_B64}" "AGENT_RUNNER_PROVIDER_LIB_NAME=${AGENT_RUNNER_PROVIDER_LIB_NAME}" "AGENT_RUNNER_PROVIDER_LIB_B64=${AGENT_RUNNER_PROVIDER_LIB_B64}" "AGENT_STATE_LIB_B64=${AGENT_STATE_LIB_B64}" bash -s <<'REMOTE'
 set -euo pipefail
 
 AGENT_USER="${AGENT_USER:-agent}"
@@ -473,10 +473,10 @@ if [[ -z "${AGENT_HOME}" ]]; then
 fi
 export HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}"
 cd "${AGENT_HOME}"
-RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
-install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.agent-sandbox"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/evander/agent-runs}"
+install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.evander"
 install -d -m 0700 -o root -g root "${RUN_LOG_DIR}"
-RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}" AGENT_SANDBOX_MCP_GATEWAY_URL="${AGENT_SANDBOX_MCP_GATEWAY_URL:-}" AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE:-disabled}")
+RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}" EVANDER_MCP_GATEWAY_URL="${EVANDER_MCP_GATEWAY_URL:-}" AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE:-disabled}")
 
 repair_agent_profile_session_env() {
   local target="${AGENT_HOME}/.profile"
@@ -506,7 +506,7 @@ for line in lines:
         in_session_env = False
     out.append(line)
     if stripped in {
-        "if [ -f /etc/agent-sandbox/session.env ]; then",
+        "if [ -f /etc/evander/session.env ]; then",
         'if [ -f "$HOME/.claude/settings.json" ]; then',
     }:
         in_session_env = True
@@ -562,12 +562,20 @@ printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agen
 source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 
-LOG_DIR="${HOME}/.agent-sandbox"
+LOG_DIR="${HOME}/.evander"
+STATE_LOG_DIR="${LOG_DIR}"
+LEGACY_LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
+if [[ -z "${RESOLVED_REPO_NAME}" && -d "${LEGACY_LOG_DIR}" ]]; then
+  RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LEGACY_LOG_DIR}" || true)"
+  if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
+    STATE_LOG_DIR="${LEGACY_LOG_DIR}"
+  fi
+fi
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
   RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
-  PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
-  STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
+  PID_FILE="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
+  STATE_PATH="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
   AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
 else
   RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"
@@ -633,7 +641,7 @@ nohup "${RUN_AS_AGENT[@]}" \
   AGENT_PROVIDER="${AGENT_PROVIDER}" \
   AGENT_MODEL="${AGENT_MODEL}" \
   AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE}" \
-  AGENT_SANDBOX_MCP_GATEWAY_URL="${AGENT_SANDBOX_MCP_GATEWAY_URL}" \
+  EVANDER_MCP_GATEWAY_URL="${EVANDER_MCP_GATEWAY_URL}" \
   RESUME_MODE="${RESUME_MODE}" \
   RESUME_THREAD_ID="${RESUME_THREAD_ID}" \
   PROMPT="${PROMPT}" \
@@ -643,8 +651,8 @@ nohup "${RUN_AS_AGENT[@]}" \
 bash -lc '
 set -euo pipefail
 . "$HOME/.profile" >/dev/null 2>&1 || true
-. "$HOME/.agent-sandbox/lib/agent_runner.sh"
-. "$HOME/.agent-sandbox/lib/agent_state.sh"
+. "$HOME/.evander/lib/agent_runner.sh"
+. "$HOME/.evander/lib/agent_state.sh"
 
 ensure_agent_enabled
 
@@ -698,7 +706,7 @@ REMOTE
   timeout --foreground "${RESUME_COMMAND_TIMEOUT_SECONDS}s" \
     ssh "${SSH_FLAGS[@]}" \
     "${SSH_USER}@${VM_IP}" \
-    sudo -n env "AGENT_USER=${VM_USER}" "AGENT_RUN_LOG_DIR=${AGENT_RUN_LOG_DIR}" "PROMPT_B64=${PROMPT_B64}" "SESSION_ID=${SESSION_ID}" "DISPATCH_ID=${DISPATCH_ID}" "RESUME_THREAD_ID=${RESUME_THREAD_ID}" "AGENT_SANDBOX_MCP_GATEWAY_URL=${MCP_GATEWAY_URL}" "AGENT_BRANCH_SUFFIX=${VM_NAME}" "AGENT_PROVIDER=${AGENT_PROVIDER}" "AGENT_MODEL=${AGENT_MODEL}" "AGENT_WEB_SEARCH_MODE=${AGENT_WEB_SEARCH_MODE}" "RESUME_MODE=${RESUME_MODE}" "HOST_CONTROL_STATUS=${HOST_CONTROL_STATUS}" "AGENT_RUNNER_LIB_B64=${AGENT_RUNNER_LIB_B64}" "AGENT_RUNNER_PROVIDER_LIB_NAME=${AGENT_RUNNER_PROVIDER_LIB_NAME}" "AGENT_RUNNER_PROVIDER_LIB_B64=${AGENT_RUNNER_PROVIDER_LIB_B64}" "AGENT_STATE_LIB_B64=${AGENT_STATE_LIB_B64}" bash -s <<'REMOTE'
+    sudo -n env "AGENT_USER=${VM_USER}" "AGENT_RUN_LOG_DIR=${AGENT_RUN_LOG_DIR}" "PROMPT_B64=${PROMPT_B64}" "SESSION_ID=${SESSION_ID}" "DISPATCH_ID=${DISPATCH_ID}" "RESUME_THREAD_ID=${RESUME_THREAD_ID}" "EVANDER_MCP_GATEWAY_URL=${MCP_GATEWAY_URL}" "AGENT_BRANCH_SUFFIX=${VM_NAME}" "AGENT_PROVIDER=${AGENT_PROVIDER}" "AGENT_MODEL=${AGENT_MODEL}" "AGENT_WEB_SEARCH_MODE=${AGENT_WEB_SEARCH_MODE}" "RESUME_MODE=${RESUME_MODE}" "HOST_CONTROL_STATUS=${HOST_CONTROL_STATUS}" "AGENT_RUNNER_LIB_B64=${AGENT_RUNNER_LIB_B64}" "AGENT_RUNNER_PROVIDER_LIB_NAME=${AGENT_RUNNER_PROVIDER_LIB_NAME}" "AGENT_RUNNER_PROVIDER_LIB_B64=${AGENT_RUNNER_PROVIDER_LIB_B64}" "AGENT_STATE_LIB_B64=${AGENT_STATE_LIB_B64}" bash -s <<'REMOTE'
 set -euo pipefail
 
 AGENT_USER="${AGENT_USER:-agent}"
@@ -709,10 +717,10 @@ if [[ -z "${AGENT_HOME}" ]]; then
 fi
 export HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}"
 cd "${AGENT_HOME}"
-RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
-install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.agent-sandbox"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/evander/agent-runs}"
+install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.evander"
 install -d -m 0700 -o root -g root "${RUN_LOG_DIR}"
-RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}" AGENT_SANDBOX_MCP_GATEWAY_URL="${AGENT_SANDBOX_MCP_GATEWAY_URL:-}" AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE:-disabled}")
+RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}" EVANDER_MCP_GATEWAY_URL="${EVANDER_MCP_GATEWAY_URL:-}" AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE:-disabled}")
 
 repair_agent_profile_session_env() {
   local target="${AGENT_HOME}/.profile"
@@ -742,7 +750,7 @@ for line in lines:
         in_session_env = False
     out.append(line)
     if stripped in {
-        "if [ -f /etc/agent-sandbox/session.env ]; then",
+        "if [ -f /etc/evander/session.env ]; then",
         'if [ -f "$HOME/.claude/settings.json" ]; then',
     }:
         in_session_env = True
@@ -798,11 +806,19 @@ printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agen
 source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 
-LOG_DIR="${HOME}/.agent-sandbox"
+LOG_DIR="${HOME}/.evander"
+STATE_LOG_DIR="${LOG_DIR}"
+LEGACY_LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
+if [[ -z "${RESOLVED_REPO_NAME}" && -d "${LEGACY_LOG_DIR}" ]]; then
+  RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LEGACY_LOG_DIR}" || true)"
+  if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
+    STATE_LOG_DIR="${LEGACY_LOG_DIR}"
+  fi
+fi
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
   RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
-  STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
+  STATE_PATH="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
   AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
 else
   RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"
@@ -839,7 +855,7 @@ repair_agent_profile_session_env
   AGENT_PROVIDER="${AGENT_PROVIDER}" \
   AGENT_MODEL="${AGENT_MODEL}" \
   AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE}" \
-  AGENT_SANDBOX_MCP_GATEWAY_URL="${AGENT_SANDBOX_MCP_GATEWAY_URL}" \
+  EVANDER_MCP_GATEWAY_URL="${EVANDER_MCP_GATEWAY_URL}" \
   RESUME_MODE="${RESUME_MODE}" \
   PROMPT="${PROMPT}" \
   STATE_PATH="${STATE_PATH}" \
@@ -847,8 +863,8 @@ repair_agent_profile_session_env
 bash -lc '
 set -euo pipefail
 . "$HOME/.profile" >/dev/null 2>&1 || true
-. "$HOME/.agent-sandbox/lib/agent_runner.sh"
-. "$HOME/.agent-sandbox/lib/agent_state.sh"
+. "$HOME/.evander/lib/agent_runner.sh"
+. "$HOME/.evander/lib/agent_state.sh"
 
 ensure_agent_enabled
 
@@ -904,7 +920,7 @@ set +e
 resume_output="$(
   ssh "${SSH_FLAGS[@]}" \
     "${SSH_USER}@${VM_IP}" \
-    sudo -n env "AGENT_USER=${VM_USER}" "AGENT_RUN_LOG_DIR=${AGENT_RUN_LOG_DIR}" "PROMPT_B64=${PROMPT_B64}" "SESSION_ID=${SESSION_ID}" "DISPATCH_ID=${DISPATCH_ID}" "RESUME_THREAD_ID=${RESUME_THREAD_ID}" "AGENT_SANDBOX_MCP_GATEWAY_URL=${MCP_GATEWAY_URL}" "AGENT_BRANCH_SUFFIX=${VM_NAME}" "AGENT_PROVIDER=${AGENT_PROVIDER}" "AGENT_MODEL=${AGENT_MODEL}" "AGENT_WEB_SEARCH_MODE=${AGENT_WEB_SEARCH_MODE}" "RESUME_MODE=${RESUME_MODE}" "HOST_CONTROL_STATUS=${HOST_CONTROL_STATUS}" "AGENT_RUNNER_LIB_B64=${AGENT_RUNNER_LIB_B64}" "AGENT_RUNNER_PROVIDER_LIB_NAME=${AGENT_RUNNER_PROVIDER_LIB_NAME}" "AGENT_RUNNER_PROVIDER_LIB_B64=${AGENT_RUNNER_PROVIDER_LIB_B64}" "AGENT_STATE_LIB_B64=${AGENT_STATE_LIB_B64}" bash -s <<'REMOTE'
+    sudo -n env "AGENT_USER=${VM_USER}" "AGENT_RUN_LOG_DIR=${AGENT_RUN_LOG_DIR}" "PROMPT_B64=${PROMPT_B64}" "SESSION_ID=${SESSION_ID}" "DISPATCH_ID=${DISPATCH_ID}" "RESUME_THREAD_ID=${RESUME_THREAD_ID}" "EVANDER_MCP_GATEWAY_URL=${MCP_GATEWAY_URL}" "AGENT_BRANCH_SUFFIX=${VM_NAME}" "AGENT_PROVIDER=${AGENT_PROVIDER}" "AGENT_MODEL=${AGENT_MODEL}" "AGENT_WEB_SEARCH_MODE=${AGENT_WEB_SEARCH_MODE}" "RESUME_MODE=${RESUME_MODE}" "HOST_CONTROL_STATUS=${HOST_CONTROL_STATUS}" "AGENT_RUNNER_LIB_B64=${AGENT_RUNNER_LIB_B64}" "AGENT_RUNNER_PROVIDER_LIB_NAME=${AGENT_RUNNER_PROVIDER_LIB_NAME}" "AGENT_RUNNER_PROVIDER_LIB_B64=${AGENT_RUNNER_PROVIDER_LIB_B64}" "AGENT_STATE_LIB_B64=${AGENT_STATE_LIB_B64}" bash -s <<'REMOTE'
 set -euo pipefail
 
 AGENT_USER="${AGENT_USER:-agent}"
@@ -915,10 +931,10 @@ if [[ -z "${AGENT_HOME}" ]]; then
 fi
 export HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}"
 cd "${AGENT_HOME}"
-RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
-install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.agent-sandbox"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/evander/agent-runs}"
+install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.evander"
 install -d -m 0700 -o root -g root "${RUN_LOG_DIR}"
-RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}" AGENT_SANDBOX_MCP_GATEWAY_URL="${AGENT_SANDBOX_MCP_GATEWAY_URL:-}" AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE:-disabled}")
+RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}" EVANDER_MCP_GATEWAY_URL="${EVANDER_MCP_GATEWAY_URL:-}" AGENT_WEB_SEARCH_MODE="${AGENT_WEB_SEARCH_MODE:-disabled}")
 
 repair_agent_profile_session_env() {
   local target="${AGENT_HOME}/.profile"
@@ -948,7 +964,7 @@ for line in lines:
         in_session_env = False
     out.append(line)
     if stripped in {
-        "if [ -f /etc/agent-sandbox/session.env ]; then",
+        "if [ -f /etc/evander/session.env ]; then",
         'if [ -f "$HOME/.claude/settings.json" ]; then',
     }:
         in_session_env = True
@@ -1004,12 +1020,20 @@ printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agen
 source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 
-LOG_DIR="${HOME}/.agent-sandbox"
+LOG_DIR="${HOME}/.evander"
+STATE_LOG_DIR="${LOG_DIR}"
+LEGACY_LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
+if [[ -z "${RESOLVED_REPO_NAME}" && -d "${LEGACY_LOG_DIR}" ]]; then
+  RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LEGACY_LOG_DIR}" || true)"
+  if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
+    STATE_LOG_DIR="${LEGACY_LOG_DIR}"
+  fi
+fi
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
   RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
-  PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
-  STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
+  PID_FILE="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
+  STATE_PATH="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
   AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
 else
   RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"
@@ -1094,8 +1118,8 @@ nohup "${RUN_AS_AGENT[@]}" \
 bash -lc '
 set -euo pipefail
 . "$HOME/.profile" >/dev/null 2>&1 || true
-. "$HOME/.agent-sandbox/lib/agent_runner.sh"
-. "$HOME/.agent-sandbox/lib/agent_state.sh"
+. "$HOME/.evander/lib/agent_runner.sh"
+. "$HOME/.evander/lib/agent_state.sh"
 
 ensure_agent_enabled
 
@@ -1206,8 +1230,9 @@ if [[ -z "${AGENT_HOME}" ]]; then
   echo "Unknown agent user: ${AGENT_USER}" >&2
   exit 1
 fi
-LOG_DIR="${AGENT_HOME}/.agent-sandbox"
-RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
+LOG_DIR="${AGENT_HOME}/.evander"
+LEGACY_LOG_DIR="${AGENT_HOME}/.agent-sandbox"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/evander/agent-runs}"
 
 resolve_primary_agent_paths() {
   local log_dir="$1"
@@ -1240,6 +1265,9 @@ resolve_primary_agent_paths() {
 }
 
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
+if [[ -z "${RESOLVED_REPO_NAME}" && -d "${LEGACY_LOG_DIR}" ]]; then
+  RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LEGACY_LOG_DIR}" || true)"
+fi
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
   LOG_PATH="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
 else

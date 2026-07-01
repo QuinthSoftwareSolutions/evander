@@ -1,6 +1,6 @@
-# Agent Sandbox Repo Notes
+# Evander Repo Notes
 
-This file is for future Codex instances working in the `agent-sandbox` repo.
+This file is for future Codex instances working in the `evander` repo.
 
 ## Purpose
 
@@ -19,63 +19,63 @@ The security model is:
 ## Current Core Surfaces
 
 - MCP gateway:
-  - Entry point: `agent-sandbox-gateway`
-  - Code: `src/agent_sandbox/gateway.py`
+  - Entry point: `evander-gateway`
+  - Code: `src/evander/gateway.py`
   - Default guest-reachable port: `8000`
   - Gateway liveness is checked on `/mcp`; a plain GET can return `406 Not Acceptable` and still
     prove the MCP endpoint is reachable.
 
 - OpenAI relay:
-  - Entry point: `agent-sandbox-openai-relay`
-  - Code: `src/agent_sandbox/relays/openai.py`
+  - Entry point: `evander-openai-relay`
+  - Code: `src/evander/relays/openai.py`
   - Default guest-reachable port: `11434`
   - The streaming path intentionally keeps the upstream client alive for the full stream and
     forwards raw SSE bytes.
 
 - NuGet relay:
-  - Entry point: `agent-sandbox-nuget-relay`
-  - Code: `src/agent_sandbox/relays/nuget.py`
+  - Entry point: `evander-nuget-relay`
+  - Code: `src/evander/relays/nuget.py`
   - Default guest-reachable port: `11666`
   - Health endpoint: `/healthz`
 
 - HTTP target relay:
-  - Entry point: `agent-sandbox-http-target-relay`
-  - Code: `src/agent_sandbox/relays/http_target.py`
+  - Entry point: `evander-http-target-relay`
+  - Code: `src/evander/relays/http_target.py`
   - Default guest-reachable port: `11777`
   - Session-scoped relay for allowlisted external HTTP targets. It forwards guest-managed auth
     headers/cookies; host secrets are not injected into the guest request.
 
 - Admin Web:
-  - Entry point: `agent-sandbox-admin-web`
-  - Code: `src/agent_sandbox/admin/web/app.py`
+  - Entry point: `evander-admin-web`
+  - Code: `src/evander/admin/web/app.py`
   - Default port from `config/admin-web.env.example`: `8100`
   - This is the supported operator GUI for dashboard, VMs/issues, sessions, approvals, tool-call
     audit, workflow editing/runs/reports, configuration, workers, skills, chat, and users.
 
 - Workflow runtime:
   - Trigger worker command: `evander-cli trigger-orchestrator`
-  - Trigger worker service: `agent-sandbox-trigger-orchestrator.service`
-  - Effect worker: `agent-sandbox-effect-orchestrator`
+  - Trigger worker service: `evander-trigger-orchestrator.service`
+  - Effect worker: `evander-effect-orchestrator`
   - Config: `config/trigger-orchestrator/config.json`
   - Operator workflow packs: `config/workflow-packs/*.json`
   - Checked-in pack files are examples or built-ins; live operator pack files may be ignored by
     Git and edited through Admin Web.
 
 - Provider and wake workers:
-  - ADO backlog/PR feedback worker: `agent-sandbox-ado-worker`
-  - ADO proxy issue freshness worker: `agent-sandbox-proxy-issue-sync`
-  - Discord ingest: `agent-sandbox-discord-ingest`
-  - Discord wake: `agent-sandbox-discord-wake`
-  - Scheduled wake: `agent-sandbox-scheduled-wake`
+  - ADO backlog/PR feedback worker: `evander-ado-worker`
+  - ADO proxy issue freshness worker: `evander-proxy-issue-sync`
+  - Discord ingest: `evander-discord-ingest`
+  - Discord wake: `evander-discord-wake`
+  - Scheduled wake: `evander-scheduled-wake`
   - Teams ingest: `evander-cli teams-ingest` via `scripts/run_teams_ingest.sh`
-  - Teams meeting ingest: `agent-sandbox-teams-meeting-ingest`
-  - There is no current `agent-sandbox-host-heartbeat` service. Azure DevOps PR feedback polling
+  - Teams meeting ingest: `evander-teams-meeting-ingest`
+  - There is no current `evander-host-heartbeat` service. Azure DevOps PR feedback polling
     lives in the ADO worker; Discord/scheduled wakeups live in their dedicated wake workers.
 
 - Execution backends:
   - Default: `libvirt_vm`
   - Additive worker backend: `container_worker_vm`
-  - Worker daemon entry point: `agent-sandbox-worker-daemon`
+  - Worker daemon entry point: `evander-worker-daemon`
   - Worker daemon docs: `docs/container-worker-backend.md`
   - The worker daemon is deployed by the dedicated Ansible worker playbook, not by
     `scripts/install_systemd_units.sh` on the control plane.
@@ -111,7 +111,7 @@ The security model is:
 - Guest cloud-init:
   - Template: `config/cloud-init-user-data.yaml`
   - Creates unprivileged `agent` and privileged setup user `agent-admin`.
-  - Writes `/etc/agent-sandbox/session.env`.
+  - Writes `/etc/evander/session.env`.
   - Writes provider-neutral guest config at `/home/agent/.agent/config.env`.
   - Adds a shell profile hook that loads the session env and sets a placeholder
     `OPENAI_API_KEY`.
@@ -119,7 +119,7 @@ The security model is:
   - Fixes `/home/agent` ownership.
 
 - VM storage:
-  - VM disks live under `/var/lib/libvirt/images/agent-sandbox`.
+  - VM disks live under `/var/lib/libvirt/images/evander`.
   - New VM overlays default to `20G`; override with `DISK_SIZE_GB`.
   - Do not put VM disks under a normal user's home directory.
 
@@ -134,21 +134,21 @@ sudo ./scripts/install_systemd_units.sh
 
 The current install script renders and enables:
 
-- `agent-sandbox-firewall.service`
-- `agent-sandbox-gateway.service`
-- `agent-sandbox-admin-web.service`
-- `agent-sandbox-openai-relay.service`
-- `agent-sandbox-nuget-relay.service`
-- `agent-sandbox-http-target-relay.service`
-- `agent-sandbox-ado-worker.service`
-- `agent-sandbox-proxy-issue-sync.service`
-- `agent-sandbox-discord-ingest.service`
-- `agent-sandbox-discord-wake.service`
-- `agent-sandbox-scheduled-wake.service`
-- `agent-sandbox-teams-ingest.service`
-- `agent-sandbox-teams-meeting-ingest.service`
-- `agent-sandbox-effect-orchestrator.service`
-- `agent-sandbox-trigger-orchestrator.service`
+- `evander-firewall.service`
+- `evander-gateway.service`
+- `evander-admin-web.service`
+- `evander-openai-relay.service`
+- `evander-nuget-relay.service`
+- `evander-http-target-relay.service`
+- `evander-ado-worker.service`
+- `evander-proxy-issue-sync.service`
+- `evander-discord-ingest.service`
+- `evander-discord-wake.service`
+- `evander-scheduled-wake.service`
+- `evander-teams-ingest.service`
+- `evander-teams-meeting-ingest.service`
+- `evander-effect-orchestrator.service`
+- `evander-trigger-orchestrator.service`
 
 Before install/start, populate the required local config and secret files for the services you use:
 
@@ -201,14 +201,14 @@ Before install/start, populate the required local config and secret files for th
 5. Start the services you need, usually beginning with:
 
    ```bash
-   sudo systemctl start agent-sandbox-firewall.service
-   sudo systemctl start agent-sandbox-gateway.service
-   sudo systemctl start agent-sandbox-admin-web.service
-   sudo systemctl start agent-sandbox-openai-relay.service
-   sudo systemctl start agent-sandbox-nuget-relay.service
-   sudo systemctl start agent-sandbox-http-target-relay.service
-   sudo systemctl start agent-sandbox-trigger-orchestrator.service
-   sudo systemctl start agent-sandbox-effect-orchestrator.service
+   sudo systemctl start evander-firewall.service
+   sudo systemctl start evander-gateway.service
+   sudo systemctl start evander-admin-web.service
+   sudo systemctl start evander-openai-relay.service
+   sudo systemctl start evander-nuget-relay.service
+   sudo systemctl start evander-http-target-relay.service
+   sudo systemctl start evander-trigger-orchestrator.service
+   sudo systemctl start evander-effect-orchestrator.service
    ```
 
 Use `evander-cli status --runtime-dir runtime --json` as the first broad health check.
@@ -275,13 +275,13 @@ For host-local Git remotes:
 5. Open or update the PR from a trusted host clone with `scripts/open_agent_pr.sh`.
 
 The guest clone flow writes `/home/agent/AGENTS.md`, configures `git sync-base` and
-`git push-agent`, and uses root-owned logs under `/var/log/agent-sandbox/agent-runs`.
+`git push-agent`, and uses root-owned logs under `/var/log/evander/agent-runs`.
 
 ### Container Worker Flow
 
 Use this only when the directory/provider config selects `execution_backend: container_worker_vm`.
 
-1. Build the runner image with `scripts/build_agent_sandbox_runner_image.sh`.
+1. Build the runner image with `scripts/build_evander_runner_image.sh`.
 2. Deploy the worker VM with `ansible/worker.yml`.
 3. Configure root provider settings such as `container_worker_base_url`,
    `container_worker_token_env`, and guest relay URLs.
@@ -296,14 +296,14 @@ egress, no autoscaling/Kubernetes scheduler, and no replacement for the existing
 
 ## Common Pitfalls Already Hit
 
-- `src/agent_sandbox/openai_relay.py` and `src/agent_sandbox/nuget_relay.py` are stale paths; use
-  `src/agent_sandbox/relays/openai.py` and `src/agent_sandbox/relays/nuget.py`.
-- `agent-sandbox-host-heartbeat.service` and `config/host-heartbeat.env` are stale references.
+- `src/evander/openai_relay.py` and `src/evander/nuget_relay.py` are stale paths; use
+  `src/evander/relays/openai.py` and `src/evander/relays/nuget.py`.
+- `evander-host-heartbeat.service` and `config/host-heartbeat.env` are stale references.
 - Guest heartbeat still exists as optional guest-local timer assets, but provider bootstraps
   default `ENABLE_GUEST_HEARTBEAT=0`.
-- Azure DevOps PR feedback and completion pickup are handled by `agent-sandbox-ado-worker`.
-- Discord inbox wakeups and scheduled resumes are handled by `agent-sandbox-discord-wake` and
-  `agent-sandbox-scheduled-wake`.
+- Azure DevOps PR feedback and completion pickup are handled by `evander-ado-worker`.
+- Discord inbox wakeups and scheduled resumes are handled by `evander-discord-wake` and
+  `evander-scheduled-wake`.
 - Putting VM disks under a normal user's home directory fails with `libvirt-qemu` permission
   errors.
 - Guest shell often needs `source ~/.profile` after bootstrap for current-session `PATH` and relay
@@ -360,10 +360,10 @@ Do not leave stalled test processes running while continuing work.
 
 ## Guidance For Future Changes
 
-- Treat `src/agent_sandbox/admin/composition.py::build_admin_runtime` as the supported admin
+- Treat `src/evander/admin/composition.py::build_admin_runtime` as the supported admin
   runtime assembly point for CLI, gateway, and Admin Web integration. Keep the compatibility
-  facades in `src/agent_sandbox/admin/facades.py` thin and domain-scoped; place new admin domain
-  logic in narrower services under `src/agent_sandbox/admin/services/` with clear ownership
+  facades in `src/evander/admin/facades.py` thin and domain-scoped; place new admin domain
+  logic in narrower services under `src/evander/admin/services/` with clear ownership
   boundaries for operations, issue/git, VM/agent, workflow config, skills, reporting, and PR
   preflight.
 - Keep base VMs minimal; prefer post-launch bootstraps for optional toolchains.

@@ -6,7 +6,7 @@ show_help() {
 Usage: list_unassigned_ado_work_items.sh
 
 Load secrets.env when present and print Azure DevOps work items that:
-- match the same worker query as agent-sandbox-ado-worker
+- match the same worker query as evander-ado-worker
 - have not yet been picked up by agents according to ADO_PROCESSED_STORE_PATH
 
 Output format:
@@ -16,7 +16,7 @@ Requirements:
 - Root directory config for ado_worker
 - The PAT environment variable named by `config/ado-worker/config.json`
 - Optional `secrets.env` in the repo root for secret env vars
-- A working .venv with agent-sandbox installed
+- A working .venv with evander installed
 EOF
 }
 
@@ -28,7 +28,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CLI_BIN="${ROOT_DIR}/.venv/bin/evander-cli"
-LEGACY_CLI_BIN="${ROOT_DIR}/.venv/bin/agent-sandbox-cli"
+LEGACY_CLI_BIN="${ROOT_DIR}/.venv/bin/evander-cli"
 
 if [[ ! -x "${CLI_BIN}" && -x "${LEGACY_CLI_BIN}" ]]; then
   CLI_BIN="${LEGACY_CLI_BIN}"

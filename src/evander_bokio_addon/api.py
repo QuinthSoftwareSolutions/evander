@@ -6,7 +6,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from agent_sandbox.addons import AddonContext
+from evander.addons import AddonContext
 
 from .client import BokioApiError, BokioClient, BokioConfigError, settings_from_context
 from .state import PreparedActionStore, upload_staging_dir

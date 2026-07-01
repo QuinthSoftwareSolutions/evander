@@ -7,22 +7,22 @@ import httpx
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.config import GatewayConfig, TeamsMeetingIngestWorkerGlobalConfig
-from agent_sandbox.gateway import create_server
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.orchestration.host_polling import single_instance_lock
-from agent_sandbox.runtime import build_runtime
-from agent_sandbox.teams_meeting import (
+from evander.config import GatewayConfig, TeamsMeetingIngestWorkerGlobalConfig
+from evander.gateway import create_server
+from evander.models import SessionManifest, ToolName
+from evander.orchestration.host_polling import single_instance_lock
+from evander.runtime import build_runtime
+from evander.teams_meeting import (
     TeamsMeetingBinding,
     TeamsMeetingBridgeEvent,
     TeamsMeetingStore,
 )
-from agent_sandbox.messaging.teams_meeting_ingest import (
+from evander.messaging.teams_meeting_ingest import (
     TeamsMeetingIngestWorker,
 )
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
-from agent_sandbox.triggers.providers.schemas import TeamsMeetingNewTranscriptTriggerDefinition
-from agent_sandbox.triggers.providers.teams_meeting_new_transcript import (
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.schemas import TeamsMeetingNewTranscriptTriggerDefinition
+from evander.triggers.providers.teams_meeting_new_transcript import (
     TeamsMeetingNewTranscriptTriggerProvider,
 )
 
@@ -113,7 +113,7 @@ def read_audit_events(path: Path) -> list[dict[str, object]]:
 def test_teams_meeting_config_defaults_follow_runtime_dir_and_normalize_bridge_url() -> None:
     config = GatewayConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "teams_meeting_media_bridge_url": " https://bridge.example/ ",
         }
     )
@@ -121,16 +121,16 @@ def test_teams_meeting_config_defaults_follow_runtime_dir_and_normalize_bridge_u
     assert config.teams_meeting_media_bridge_url == "https://bridge.example"
     assert config.teams_meeting_default_voice == "en-US-JennyNeural"
     assert str(config.teams_meeting_store_path) == (
-        "/tmp/agent-sandbox-runtime/teams-meetings.json"
+        "/tmp/evander-runtime/teams-meetings.json"
     )
 
 
 def test_teams_meeting_ingest_worker_config_defaults_follow_runtime_dir() -> None:
     config = TeamsMeetingIngestWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+        {"runtime_dir": "/tmp/evander-runtime"}
     )
 
-    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/teams-meeting-ingest.lock"
+    assert str(config.lock_path) == "/tmp/evander-runtime/teams-meeting-ingest.lock"
     assert config.directories == []
 
 
@@ -285,7 +285,7 @@ def test_teams_meeting_gateway_audits_bridge_http_error(tmp_path: Path) -> None:
 def test_teams_meeting_start_projects_origin_session_into_realtime_bridge(
     tmp_path: Path,
 ) -> None:
-    from agent_sandbox.teams_meeting import TeamsMeetingService
+    from evander.teams_meeting import TeamsMeetingService
 
     context = make_context(tmp_path, teams_meeting_media_bridge_url="https://bridge.example")
     context.session_repository.upsert_session(
@@ -346,7 +346,7 @@ def test_teams_meeting_start_projects_origin_session_into_realtime_bridge(
 def test_teams_meeting_stop_completes_projected_agent_speech_without_auto_reconciliation(
     tmp_path: Path,
 ) -> None:
-    from agent_sandbox.teams_meeting import TeamsMeetingService
+    from evander.teams_meeting import TeamsMeetingService
 
     context = make_context(tmp_path, teams_meeting_media_bridge_url="https://bridge.example")
     context.session_repository.upsert_session(

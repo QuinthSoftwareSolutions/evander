@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from agent_sandbox.config import GatewayConfig
+from evander.config import GatewayConfig
 from evander_bokio_addon.client import BokioApiError, BokioClient, BokioConfigError, settings_from_context
 from evander_bokio_addon.providers import BokioCompanyQueryProvider
 from evander_bokio_addon.state import PreparedActionStore, upload_staging_dir

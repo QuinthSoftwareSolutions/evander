@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.git_mirror import ContainerGitMirrorResolver, _safe_worker_repo_name
+from evander.git_mirror import ContainerGitMirrorResolver, _safe_worker_repo_name
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +54,7 @@ def _resolver(tmp_path: Path) -> ContainerGitMirrorResolver:
         git_root=tmp_path / "git-remotes",
         git_host="10.0.0.10",
         git_user="gitbot",
-        git_ssh_alias="agent-sandbox-git-host",
+        git_ssh_alias="evander-git-host",
     )
 
 
@@ -85,11 +85,11 @@ def test_container_git_mirror_resolves_remote_url_to_private_ssh_mirror(
     )
 
     assert mirror.canonical_repo_source == remote_url
-    assert mirror.worker_repo_source.startswith("ssh://agent-sandbox-git-host")
+    assert mirror.worker_repo_source.startswith("ssh://evander-git-host")
     assert mirror.worker_repo_source.endswith(f"{mirror.mirror_name}.git")
     assert mirror.mirror_path.is_dir()
     trusted_repo_path = subprocess.run(
-        ["git", f"--git-dir={mirror.mirror_path}", "config", "--get", "agent-sandbox.trustedRepoPath"],
+        ["git", f"--git-dir={mirror.mirror_path}", "config", "--get", "evander.trustedRepoPath"],
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -135,7 +135,7 @@ def test_container_git_mirror_honors_explicit_bare_repo_name(tmp_path: Path) -> 
     assert mirror.mirror_path == tmp_path / "git-remotes" / "evander.git"
     assert (
         mirror.worker_repo_source
-        == f"ssh://agent-sandbox-git-host{tmp_path}/git-remotes/evander.git"
+        == f"ssh://evander-git-host{tmp_path}/git-remotes/evander.git"
     )
     assert _has_ref(mirror.mirror_path, "refs/heads/main")
 
@@ -192,7 +192,7 @@ def test_container_git_mirror_sanitizes_worker_repo_name(tmp_path: Path) -> None
     mirror = _resolver(tmp_path).resolve(repo_source=str(source), clone_branch="main")
 
     assert mirror.repo_name == "example_backup"
-    assert mirror.worker_repo_source.startswith("ssh://agent-sandbox-git-host")
+    assert mirror.worker_repo_source.startswith("ssh://evander-git-host")
 
 
 def test_container_git_mirror_prefers_remote_matching_canonical_source(
@@ -222,7 +222,7 @@ def test_container_git_mirror_prefers_remote_matching_canonical_source(
                 f"--git-dir={mirror.mirror_path}",
                 "config",
                 "--get",
-                "agent-sandbox.mirrorRemoteName",
+                "evander.mirrorRemoteName",
             ],
             cwd=ROOT,
             check=True,
@@ -271,7 +271,7 @@ def test_container_git_mirror_waits_for_upload_pack_sync_lock(tmp_path: Path) ->
     source = _source_repo(tmp_path / "repo")
     resolver = _resolver(tmp_path)
     mirror = resolver.resolve(repo_source=str(source), clone_branch="main")
-    lock_path = mirror.mirror_path / "agent-sandbox-sync.lock"
+    lock_path = mirror.mirror_path / "evander-sync.lock"
     ready_path = tmp_path / "lock-ready"
     release_path = tmp_path / "lock-release"
     holder = subprocess.Popen(

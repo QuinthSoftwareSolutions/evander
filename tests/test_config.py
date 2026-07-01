@@ -1,6 +1,6 @@
 import pytest
 
-from agent_sandbox.config import (
+from evander.config import (
     AdoWorkerGlobalConfig,
     DiscordIngestWorkerGlobalConfig,
     DiscordWakeWorkerGlobalConfig,
@@ -9,20 +9,20 @@ from agent_sandbox.config import (
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
-from agent_sandbox.container_worker_images import (
+from evander.container_worker_images import (
     normalize_container_worker_images,
     resolve_container_worker_image_selector,
 )
-from agent_sandbox.host_config import HostConfig, build_runtime_gateway_config
-from agent_sandbox.events.models import materialize_node_definition
-from agent_sandbox.models import (
+from evander.host_config import HostConfig, build_runtime_gateway_config
+from evander.events.models import materialize_node_definition
+from evander.models import (
     ApprovalRequest,
     SessionManifest,
     SessionToolApprovalLease,
     ToolName,
 )
-from agent_sandbox.policy_config import EffectivePolicyConfig
-from agent_sandbox.effects.providers.agent_session import (
+from evander.policy_config import EffectivePolicyConfig
+from evander.effects.providers.agent_session import (
     container_worker_guest_anthropic_base_url,
     container_worker_guest_http_target_relay_base_url,
     container_worker_guest_npm_registry_url,
@@ -480,7 +480,7 @@ def test_communication_artifact_link_defaults_are_control_plane_scoped() -> None
     assert config.communication_artifact_public_base_url is None
     assert (
         config.communication_artifact_link_secret_env
-        == "AGENT_SANDBOX_COMMUNICATION_ARTIFACT_LINK_SECRET"
+        == "EVANDER_COMMUNICATION_ARTIFACT_LINK_SECRET"
     )
     assert config.communication_artifact_link_ttl_seconds == 7 * 24 * 60 * 60
 
@@ -624,7 +624,7 @@ def test_http_url_fields_reject_invalid_values_with_field_name(field_name: str, 
 
 def test_runtime_gateway_config_carries_npm_audit_facade_bind_settings() -> None:
     host_config = HostConfig(
-        runtime_dir="/tmp/agent-sandbox-runtime",
+        runtime_dir="/tmp/evander-runtime",
         npm_audit_facade_host="127.0.0.1",
         npm_audit_facade_port=18181,
     )
@@ -807,7 +807,7 @@ def test_anthropic_provider_config_rejects_empty_required_fields(
 def test_legacy_gateway_config_import_preserves_npm_audit_facade_bind_settings() -> None:
     config = GatewayConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "npm_audit_facade_host": "127.0.0.1",
             "npm_audit_facade_port": 18181,
         }
@@ -846,7 +846,7 @@ def test_container_worker_package_cache_urls_derive_from_gateway_host() -> None:
 
 
 def test_container_worker_package_cache_url_derivation_does_not_change_relays() -> None:
-    from agent_sandbox.effects.providers.agent_session import (
+    from evander.effects.providers.agent_session import (
         container_worker_guest_gateway_url,
         container_worker_guest_nuget_relay_base_url,
         container_worker_guest_openai_base_url,
@@ -910,26 +910,26 @@ def test_bind_network_cidr_rejects_invalid_values_with_clear_error(value: str) -
 
 
 def test_wake_session_cooldown_path_follows_runtime_dir_default() -> None:
-    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert (
         str(config.wake_session_cooldown_path)
-        == "/tmp/agent-sandbox-runtime/wake-session-cooldown.json"
+        == "/tmp/evander-runtime/wake-session-cooldown.json"
     )
 
 
 def test_wake_dispatch_state_path_follows_runtime_dir_default() -> None:
-    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert (
         str(config.wake_dispatch_state_path)
-        == "/tmp/agent-sandbox-runtime/wake-dispatch-state.json"
+        == "/tmp/evander-runtime/wake-dispatch-state.json"
     )
 
 
 def test_host_agent_control_state_path_follows_runtime_dir_default() -> None:
-    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert (
         str(config.host_agent_control_state_path)
-        == "/tmp/agent-sandbox-runtime/host-agent-control-state.json"
+        == "/tmp/evander-runtime/host-agent-control-state.json"
     )
 
 
@@ -949,14 +949,14 @@ def test_wake_completion_confirmation_retry_policy_defaults_are_conservative() -
 
 def test_discord_wake_worker_global_config_defaults_follow_runtime_dir() -> None:
     config = DiscordWakeWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+        {"runtime_dir": "/tmp/evander-runtime"}
     )
-    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/discord-wake.lock"
+    assert str(config.lock_path) == "/tmp/evander-runtime/discord-wake.lock"
     assert (
         str(config.session_cooldown_path)
-        == "/tmp/agent-sandbox-runtime/discord-wake-session-cooldown.json"
+        == "/tmp/evander-runtime/discord-wake-session-cooldown.json"
     )
-    assert str(config.wake_state_path) == "/tmp/agent-sandbox-runtime/discord-wake-state.json"
+    assert str(config.wake_state_path) == "/tmp/evander-runtime/discord-wake-state.json"
     assert config.directories == []
     assert config.backoff_seconds == 60.0
 
@@ -964,7 +964,7 @@ def test_discord_wake_worker_global_config_defaults_follow_runtime_dir() -> None
 def test_discord_wake_worker_global_config_directory_paths_are_normalized() -> None:
     config = DiscordWakeWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "directories": [" root/team-a ", "root/team-a/subdir", "  "],
         }
     )
@@ -973,15 +973,15 @@ def test_discord_wake_worker_global_config_directory_paths_are_normalized() -> N
 
 def test_scheduled_wake_worker_global_config_defaults_follow_runtime_dir() -> None:
     config = ScheduledWakeWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+        {"runtime_dir": "/tmp/evander-runtime"}
     )
-    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/scheduled-wake.lock"
+    assert str(config.lock_path) == "/tmp/evander-runtime/scheduled-wake.lock"
     assert config.backoff_seconds == 60.0
     assert (
         str(config.session_cooldown_path)
-        == "/tmp/agent-sandbox-runtime/scheduled-wake-session-cooldown.json"
+        == "/tmp/evander-runtime/scheduled-wake-session-cooldown.json"
     )
-    assert str(config.wake_state_path) == "/tmp/agent-sandbox-runtime/scheduled-wake-state.json"
+    assert str(config.wake_state_path) == "/tmp/evander-runtime/scheduled-wake-state.json"
     assert config.directories == []
     assert config.backoff_seconds == 60.0
     assert config.late_threshold_seconds == 300.0
@@ -1026,7 +1026,7 @@ def test_scheduled_wake_worker_global_config_scheduled_wake_prefix_uses_canonica
 def test_scheduled_wake_worker_global_config_directory_paths_are_normalized() -> None:
     config = ScheduledWakeWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "directories": [" root/team-a ", "root/team-a/subdir", "  "],
         }
     )
@@ -1036,7 +1036,7 @@ def test_scheduled_wake_worker_global_config_directory_paths_are_normalized() ->
 def test_scheduled_wake_worker_global_config_accepts_retry_policy_overrides() -> None:
     config = ScheduledWakeWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "completion_confirmation_retry_max_attempts": 5,
             "completion_confirmation_retry_window_seconds": 7200,
             "completion_confirmation_retry_base_backoff_seconds": 90,
@@ -1052,16 +1052,16 @@ def test_scheduled_wake_worker_global_config_accepts_retry_policy_overrides() ->
 
 def test_discord_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:
     config = DiscordIngestWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+        {"runtime_dir": "/tmp/evander-runtime"}
     )
-    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/discord-ingest.lock"
+    assert str(config.lock_path) == "/tmp/evander-runtime/discord-ingest.lock"
     assert config.directories == []
 
 
 def test_discord_ingest_worker_global_config_directory_paths_are_normalized() -> None:
     config = DiscordIngestWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "directories": [" root/team-a ", "root/team-a/subdir", "  "],
         }
     )
@@ -1070,16 +1070,16 @@ def test_discord_ingest_worker_global_config_directory_paths_are_normalized() ->
 
 def test_teams_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:
     config = TeamsIngestWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+        {"runtime_dir": "/tmp/evander-runtime"}
     )
-    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/teams-ingest.lock"
+    assert str(config.lock_path) == "/tmp/evander-runtime/teams-ingest.lock"
     assert config.directories == []
 
 
 def test_teams_ingest_worker_global_config_directory_paths_are_normalized() -> None:
     config = TeamsIngestWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "directories": [" root/team-a ", "root/team-a/subdir", "  "],
         }
     )
@@ -1098,9 +1098,9 @@ def test_directory_scoped_config_flag_defaults_to_disabled() -> None:
 
 
 def test_teams_delegated_credential_store_path_follows_runtime_dir_default() -> None:
-    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert str(config.teams_delegated_credential_store_path) == (
-        "/tmp/agent-sandbox-runtime/teams-delegated-credentials.json"
+        "/tmp/evander-runtime/teams-delegated-credentials.json"
     )
 
 
@@ -1120,15 +1120,15 @@ def test_teams_backend_accepts_delegated_graph_api_when_identity_is_bound() -> N
 
 def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+        {"runtime_dir": "/tmp/evander-runtime"}
     )
-    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/trigger-orchestrator.lock"
+    assert str(config.lock_path) == "/tmp/evander-runtime/trigger-orchestrator.lock"
     assert (
         str(config.event_queue_store_path)
-        == "/tmp/agent-sandbox-runtime/trigger-orchestrator-events.json"
+        == "/tmp/evander-runtime/trigger-orchestrator-events.json"
     )
     assert config.orchestration_store_backend == "sqlite"
-    assert str(config.orchestration_store_path) == "/tmp/agent-sandbox-runtime/orchestration.db"
+    assert str(config.orchestration_store_path) == "/tmp/evander-runtime/orchestration.db"
     assert config.orchestration_retention_days == 30
     assert config.orchestration_wal_checkpoint_mode == "truncate"
     assert config.orchestration_wal_checkpoint_min_bytes == 64 * 1024 * 1024
@@ -1136,36 +1136,36 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
     assert config.orchestration_wal_checkpoint_busy_timeout_ms == 1_000
     assert (
         str(config.event_queue_cursor_store_path)
-        == "/tmp/agent-sandbox-runtime/trigger-orchestrator-cursors.json"
+        == "/tmp/evander-runtime/trigger-orchestrator-cursors.json"
     )
     assert (
         str(config.workflow_event_journal_path)
-        == "/tmp/agent-sandbox-runtime/workflow-events.jsonl"
+        == "/tmp/evander-runtime/workflow-events.jsonl"
     )
     assert (
         str(config.scheduled_internal_event_store_path)
-        == "/tmp/agent-sandbox-runtime/scheduled-internal-events.json"
+        == "/tmp/evander-runtime/scheduled-internal-events.json"
     )
     assert (
         str(config.gate_execution_store_path)
-        == "/tmp/agent-sandbox-runtime/gate-orchestrator-executions.json"
+        == "/tmp/evander-runtime/gate-orchestrator-executions.json"
     )
     assert (
         str(config.gate_cursor_store_path)
-        == "/tmp/agent-sandbox-runtime/gate-orchestrator-cursors.json"
+        == "/tmp/evander-runtime/gate-orchestrator-cursors.json"
     )
     assert (
         str(config.effect_execution_store_path)
-        == "/tmp/agent-sandbox-runtime/effect-orchestrator-executions.json"
+        == "/tmp/evander-runtime/effect-orchestrator-executions.json"
     )
     assert (
         str(config.effect_cursor_store_path)
-        == "/tmp/agent-sandbox-runtime/effect-orchestrator-cursors.json"
+        == "/tmp/evander-runtime/effect-orchestrator-cursors.json"
     )
-    assert str(config.effect_lock_path) == "/tmp/agent-sandbox-runtime/effect-orchestrator.lock"
+    assert str(config.effect_lock_path) == "/tmp/evander-runtime/effect-orchestrator.lock"
     assert (
         str(config.workflow_config_snapshot_store_path)
-        == "/tmp/agent-sandbox-runtime/workflow-config-snapshots.json"
+        == "/tmp/evander-runtime/workflow-config-snapshots.json"
     )
     assert config.triggers == []
 
@@ -1173,7 +1173,7 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
 def test_trigger_orchestrator_filter_gate_accepts_when_predicates() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
                 {
                     "id": "trigger-1",
@@ -1229,7 +1229,7 @@ def test_trigger_orchestrator_filter_gate_rejects_match_and_when_together() -> N
     with pytest.raises(ValueError, match="mutually exclusive"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "runtime_dir": "/tmp/evander-runtime",
                 "triggers": [
                     {
                         "id": "trigger-1",
@@ -1257,7 +1257,7 @@ def test_trigger_orchestrator_filter_gate_rejects_match_and_when_together() -> N
 def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
                 {
                     "id": "trigger-1",
@@ -1321,7 +1321,7 @@ def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
 def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "gates": [
                 {
                     "id": "gate-switch",
@@ -1363,7 +1363,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
     [
         (
             {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "runtime_dir": "/tmp/evander-runtime",
                 "gates": [
                     {
                         "id": "gate-switch",
@@ -1377,7 +1377,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
         ),
         (
             {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "runtime_dir": "/tmp/evander-runtime",
                 "gates": [
                     {
                         "id": "gate-switch",
@@ -1398,7 +1398,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
         ),
         (
             {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "runtime_dir": "/tmp/evander-runtime",
                 "gates": [
                     {
                         "id": "gate-switch",
@@ -1419,7 +1419,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
         ),
         (
             {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "runtime_dir": "/tmp/evander-runtime",
                 "gates": [
                     {
                         "id": "gate-switch",
@@ -1440,7 +1440,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
         ),
         (
             {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "runtime_dir": "/tmp/evander-runtime",
                 "gates": [
                     {
                         "id": "gate-switch",
@@ -1462,7 +1462,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
         ),
         (
             {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "runtime_dir": "/tmp/evander-runtime",
                 "gates": [
                     {
                         "id": "gate-switch",
@@ -1484,7 +1484,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
         ),
         (
             {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "runtime_dir": "/tmp/evander-runtime",
                 "gates": [
                     {
                         "id": "gate-switch",
@@ -1506,7 +1506,7 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
         ),
         (
             {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "runtime_dir": "/tmp/evander-runtime",
                 "gates": [
                     {
                         "id": "gate-switch",
@@ -1530,7 +1530,7 @@ def test_trigger_orchestrator_switch_gate_rejects_invalid_cases(
 def test_trigger_orchestrator_await_agent_gate_accepts_completion_trigger_reference() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
                 {
                     "id": "trigger-1",
@@ -1578,7 +1578,7 @@ def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_compl
 ):
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
                 {
                     "id": "trigger-1",
@@ -1618,7 +1618,7 @@ def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_compl
 def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
                 {
                     "id": "trigger-1",
@@ -1667,7 +1667,7 @@ def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return(
 def test_trigger_orchestrator_for_gate_allows_missing_done_edge_in_core_validation() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
                 {
                     "id": "trigger-1",
@@ -1708,7 +1708,7 @@ def test_trigger_orchestrator_while_gate_accepts_body_done_exhausted_ports_and_c
 ):
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
                 {
                     "id": "trigger-1",
@@ -1774,7 +1774,7 @@ def test_trigger_orchestrator_while_gate_rejects_invalid_literal_max_iterations(
     with pytest.raises(ValueError, match="gate:while max_iterations must be a positive integer"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "runtime_dir": "/tmp/evander-runtime",
                 "gates": [
                     {
                         "id": "while-1",
@@ -1791,7 +1791,7 @@ def test_trigger_orchestrator_while_gate_rejects_invalid_literal_max_iterations(
 def test_trigger_orchestrator_allows_orphaned_draft_subgraphs() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
-            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
                 {
                     "id": "trigger-1",

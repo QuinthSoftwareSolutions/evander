@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from agent_sandbox.models import utc_now
+from evander.models import utc_now
 from evander_team_addon.git_naming import (
     DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
     normalize_canonical_release_branch_prefix,

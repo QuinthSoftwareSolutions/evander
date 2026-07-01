@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.effects.providers.agent_session import resolve_vm_target as legacy_resolve_vm_target
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.vm_targeting import (
+from evander.effects.providers.agent_session import resolve_vm_target as legacy_resolve_vm_target
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.vm_targeting import (
     ResolvedVmTarget,
     read_all_sessions,
     resolve_session_id_from_vm_name,

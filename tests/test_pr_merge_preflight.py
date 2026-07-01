@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from agent_sandbox.pr_merge_preflight import (
+from evander.pr_merge_preflight import (
     GitMergePreflightEngine,
     MergePreflightPullRequest,
 )

@@ -394,7 +394,7 @@ test("admin shell release and capacity panels show missing states without invent
   assert.equal(await releasePanel.locator(".release-kind-pill").count(), 0);
   assert.equal(await releasePanel.getByText("News", { exact: true }).count(), 0);
   assert.equal(await releasePanel.getByText("0.2.2").count(), 0);
-  assert.equal(await releasePanel.getByText("agent-sandbox-build-20260521").count(), 0);
+  assert.equal(await releasePanel.getByText("evander-build-20260521").count(), 0);
 
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/capacity-health?_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info?_dashboard=1&news_index=0"));

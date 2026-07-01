@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.vm_to_container_migration import (
+from evander.config import GatewayConfig
+from evander.models import SessionManifest, ToolName
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.vm_to_container_migration import (
     CONTAINER_BACKEND,
     build_container_migrated_manifest,
     build_session_migration_plan,
@@ -145,7 +145,7 @@ def test_verify_worker_session_state_and_codex_state_mirror(tmp_path: Path) -> N
     assert (
         paths.agent_home
         / ".config"
-        / "agent-sandbox"
+        / "evander"
         / "codex"
         / "sessions"
         / "2026"
@@ -174,16 +174,16 @@ def test_refresh_container_session_files_preserves_original_profile(tmp_path: Pa
         agent_home=agent_home,
     )
 
-    preserved = agent_home / ".agent-sandbox" / "migration-originals" / ".profile"
+    preserved = agent_home / ".evander" / "migration-originals" / ".profile"
     assert preserved.read_text(encoding="utf-8") == "original profile\n"
-    assert "AGENT_SANDBOX_SESSION_ID=session-1" in (
-        agent_home / ".agent-sandbox" / "session.env"
+    assert "EVANDER_SESSION_ID=session-1" in (
+        agent_home / ".evander" / "session.env"
     ).read_text(encoding="utf-8")
     assert "evander_openai_relay" in (
-        agent_home / ".config" / "agent-sandbox" / "codex" / "config.toml"
+        agent_home / ".config" / "evander" / "codex" / "config.toml"
     ).read_text(encoding="utf-8")
     assert "non_prefixed_mcp_tool_names = true" in (
-        agent_home / ".config" / "agent-sandbox" / "codex" / "config.toml"
+        agent_home / ".config" / "evander" / "codex" / "config.toml"
     ).read_text(encoding="utf-8")
     assert "non_prefixed_mcp_tool_names = true" in (
         agent_home / ".codex" / "config.toml"

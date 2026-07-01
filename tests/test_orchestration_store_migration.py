@@ -4,15 +4,15 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_sandbox.daemons.effect_orchestrator import (
+from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
-from agent_sandbox.orchestration.migration import migrate_orchestration_store_to_sqlite
-from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
-from agent_sandbox.workflow.events import SqliteWorkflowEventJournal, WorkflowChangeEvent
+from evander.orchestration.migration import migrate_orchestration_store_to_sqlite
+from evander.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
+from evander.workflow.events import SqliteWorkflowEventJournal, WorkflowChangeEvent
 
 
 def test_migrate_orchestration_store_imports_json_history_idempotently(

@@ -1,6 +1,6 @@
 # Control Plane Admin UI User Manual
 
-This manual covers the Control Plane Admin UI served by `agent-sandbox-admin-web`.
+This manual covers the Control Plane Admin UI served by `evander-admin-web`.
 It is written for operators who need to monitor the control plane, manage execution targets,
 review privileged work, adjust directory-scoped policy, and inspect workflow runtime behavior.
 
@@ -20,13 +20,13 @@ http://127.0.0.1:8100/
 The service entry point is:
 
 ```bash
-agent-sandbox-admin-web --runtime-dir runtime --host 127.0.0.1 --port 8100
+evander-admin-web --runtime-dir runtime --host 127.0.0.1 --port 8100
 ```
 
 For persistent deployments, start the systemd unit after `config/admin-web.env` is configured:
 
 ```bash
-sudo systemctl start agent-sandbox-admin-web.service
+sudo systemctl start evander-admin-web.service
 ```
 
 If the Admin UI is exposed beyond localhost, put it behind TLS and configure authentication in
@@ -38,30 +38,33 @@ If the Admin UI is exposed beyond localhost, put it behind TLS and configure aut
 
 ### Branding
 
-Set Admin UI branding in `config/admin-web.env` and restart `agent-sandbox-admin-web.service`.
-The supported environment variables include:
+The default Admin UI branding uses the bundled Evander and Quinth Software Solutions assets.
+Set Admin UI branding overrides in `config/admin-web.env` and restart
+`evander-admin-web.service`. The supported environment variables include:
 
-- `AGENT_SANDBOX_ADMIN_WEB_PAGE_TITLE` for the browser title.
-- `AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE` for the shell header title.
-- `AGENT_SANDBOX_ADMIN_WEB_HEADER_TITLE_VISIBLE=false` to keep the shell header title available to
+- `EVANDER_ADMIN_WEB_PAGE_TITLE` for the browser title.
+- `EVANDER_ADMIN_WEB_HEADER_TITLE` for the shell header title.
+- `EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE=false` to keep the shell header title available to
   assistive technology without rendering it beside the logo.
-- `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_SIZE=wordmark` for wider header logo lockups. The default is
-  `compact`.
-- `AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL` and
-  `AGENT_SANDBOX_ADMIN_WEB_PRODUCT_LOGO_DARK_URL` for the product logo used in the header and
+- `EVANDER_ADMIN_WEB_HEADER_LOGO_SIZE=wordmark` for wider header logo lockups. The default is
+  `wordmark`.
+- `EVANDER_ADMIN_WEB_PRODUCT_LOGO_LIGHT_URL` and
+  `EVANDER_ADMIN_WEB_PRODUCT_LOGO_DARK_URL` for the product logo used in the header and
   sign-in brand bar.
-- `AGENT_SANDBOX_ADMIN_WEB_COMPANY_LOGO_LIGHT_URL` and
-  `AGENT_SANDBOX_ADMIN_WEB_COMPANY_LOGO_DARK_URL` for the companion company logo in the sign-in
+- `EVANDER_ADMIN_WEB_COMPANY_LOGO_LIGHT_URL` and
+  `EVANDER_ADMIN_WEB_COMPANY_LOGO_DARK_URL` for the companion company logo in the sign-in
   brand bar.
-- `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_LIGHT_URL` and
-  `AGENT_SANDBOX_ADMIN_WEB_HEADER_LOGO_DARK_URL` when the header logo should differ from the
+- `EVANDER_ADMIN_WEB_HEADER_LOGO_LIGHT_URL` and
+  `EVANDER_ADMIN_WEB_HEADER_LOGO_DARK_URL` when the header logo should differ from the
   product logo.
 - Matching `*_ALT` variables for accessible logo text.
 
 Logo values can be absolute `https://...` URLs, in-app paths such as `/assets/logo.png`,
-`data:image/...` URLs, or paths relative to `AGENT_SANDBOX_ADMIN_WEB_BRANDING_ASSET_DIR`.
+`data:image/...` URLs, or paths relative to `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR`.
 Relative asset paths are served by the Admin Web API under `/api/admin/branding/assets/...`, which
 also works when Caddy proxies the HTML entrypoints and serves hashed frontend assets directly.
+When no asset directory is configured, Admin Web serves the bundled defaults from
+`frontend/workflow-editor/branding`.
 
 ## Shared Shell
 

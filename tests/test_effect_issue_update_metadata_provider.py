@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.issue_update_metadata import IssueUpdateMetadataEffectProvider
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.issue_update_metadata import IssueUpdateMetadataEffectProvider
 
 
 class _AdminServiceStub:

@@ -10,18 +10,18 @@ from typing import Any
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.gateway import create_server
-from agent_sandbox.models import (
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.config import GatewayConfig
+from evander.gateway import create_server
+from evander.models import (
     ApprovalGrantSettings,
     ApprovalPayloadMode,
     ApprovalStatus,
     SessionManifest,
     ToolName,
 )
-from agent_sandbox.runtime import build_runtime
-from agent_sandbox.semantic.qdrant import (
+from evander.runtime import build_runtime
+from evander.semantic.qdrant import (
     QdrantCollectionInfo,
     QdrantOperationResult,
     QdrantPoint,
@@ -153,23 +153,23 @@ def reset_fakes() -> None:
 
 def install_semantic_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.semantic.workflow_helpers.OpenAIEmbeddingClient",
+        "evander.semantic.workflow_helpers.OpenAIEmbeddingClient",
         FakeEmbeddingClient,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.semantic_upsert.QdrantClient",
+        "evander.effects.providers.semantic_upsert.QdrantClient",
         FakeQdrantClient,
     )
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.semantic_search.QdrantClient",
+        "evander.queries.providers.semantic_search.QdrantClient",
         FakeQdrantClient,
     )
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.semantic_get.QdrantClient",
+        "evander.queries.providers.semantic_get.QdrantClient",
         FakeQdrantClient,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.semantic_delete.QdrantClient",
+        "evander.effects.providers.semantic_delete.QdrantClient",
         FakeQdrantClient,
     )
 

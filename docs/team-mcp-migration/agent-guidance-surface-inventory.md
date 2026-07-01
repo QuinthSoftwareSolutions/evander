@@ -25,7 +25,7 @@ contract.
 | `_correction_hints()` feedback text | Persistent agents after failed action validation | Follow-up correction hints, including writing `team-action.json` and using `team-finish`. | `specialized-instruction-replacements.md` |
 | `/artifacts/team-action.schema.json` | Persistent Team agents | Seeded JSON Schema for the action file. | `persistent-agent-instruction-replacements.md` |
 | `/artifacts/team-action.example.json` | Persistent Team agents | Seeded JSON example/template for the action file. | `persistent-agent-instruction-replacements.md` |
-| `/home/agent/.agent-sandbox/bin/team-finish` | Persistent Team agents and Team Chat wakes | Helper to fill `schema_version`, `agent_id`, and `dispatch_id`, then write `team-action.json`. | `persistent-agent-instruction-replacements.md` and `specialized-instruction-replacements.md` |
+| `/home/agent/.evander/bin/team-finish` | Persistent Team agents and Team Chat wakes | Helper to fill `schema_version`, `agent_id`, and `dispatch_id`, then write `team-action.json`. | `persistent-agent-instruction-replacements.md` and `specialized-instruction-replacements.md` |
 
 ## Target Guidance Surfaces
 

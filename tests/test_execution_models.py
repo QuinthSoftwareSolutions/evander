@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_sandbox.execution import (
+from evander.execution import (
     ExecutionBackendCapabilities,
     ExecutionBackendKind,
     ExecutionHandle,

@@ -241,7 +241,7 @@ ssh "${SSH_FLAGS[@]}" \
   "REMOTE_STATUS='${REMOTE_STATUS}' REMOTE_PHASE='${REMOTE_PHASE}' bash -s" <<'REMOTE'
 set -euo pipefail
 
-LOG_DIR="${HOME}/.agent-sandbox"
+LOG_DIR="${HOME}/.evander"
 CONTROL_STATE_PATH="${LOG_DIR}/agent-control.state"
 
 write_control_state() {

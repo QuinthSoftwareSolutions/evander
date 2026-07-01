@@ -5,10 +5,10 @@
     enabled: false
     state: stopped
   failed_when: false
-  when: not (agent_sandbox_services.apt_cache | default(false) | bool)
+  when: not (evander_services.apt_cache | default(false) | bool)
 
 - name: Configure apt cache relay
-  when: agent_sandbox_services.apt_cache | default(false) | bool
+  when: evander_services.apt_cache | default(false) | bool
   block:
     - name: Install apt-cacher-ng package
       ansible.builtin.apt:
@@ -18,7 +18,7 @@
 
     - name: Ensure apt-cacher-ng cache directory exists
       ansible.builtin.file:
-        path: "{{ agent_sandbox_apt_cache_cache_dir }}"
+        path: "{{ evander_apt_cache_cache_dir }}"
         state: directory
         owner: apt-cacher-ng
         group: apt-cacher-ng
@@ -26,25 +26,25 @@
 
     - name: Configure apt-cacher-ng listener and cache directory
       ansible.builtin.lineinfile:
-        path: "{{ agent_sandbox_apt_cache_config_path }}"
+        path: "{{ evander_apt_cache_config_path }}"
         regexp: "{{ item.regexp }}"
         line: "{{ item.line }}"
       loop:
         - regexp: '^\s*#?\s*Port:'
-          line: "Port: {{ agent_sandbox_apt_cache_port }}"
+          line: "Port: {{ evander_apt_cache_port }}"
         - regexp: '^\s*#?\s*BindAddress:'
-          line: "BindAddress: {{ agent_sandbox_apt_cache_bind_host }}"
+          line: "BindAddress: {{ evander_apt_cache_bind_host }}"
         - regexp: '^\s*#?\s*CacheDir:'
-          line: "CacheDir: {{ agent_sandbox_apt_cache_cache_dir }}"
-      register: agent_sandbox_apt_cache_config
+          line: "CacheDir: {{ evander_apt_cache_cache_dir }}"
+      register: evander_apt_cache_config
 
     - name: Configure apt-cacher-ng HTTPS pass-through allowlist
       ansible.builtin.lineinfile:
-        path: "{{ agent_sandbox_apt_cache_config_path }}"
+        path: "{{ evander_apt_cache_config_path }}"
         regexp: '^\s*#?\s*PassThroughPattern:'
-        line: "PassThroughPattern: {{ agent_sandbox_apt_cache_passthrough_pattern }}"
-      register: agent_sandbox_apt_cache_passthrough_config
-      when: (agent_sandbox_apt_cache_passthrough_pattern | default('') | string | length) > 0
+        line: "PassThroughPattern: {{ evander_apt_cache_passthrough_pattern }}"
+      register: evander_apt_cache_passthrough_config
+      when: (evander_apt_cache_passthrough_pattern | default('') | string | length) > 0
 
     - name: Reconcile apt cache relay service
       ansible.builtin.systemd:
@@ -54,8 +54,8 @@
           {{
             'restarted'
             if (
-              agent_sandbox_apt_cache_config.changed
-              or agent_sandbox_apt_cache_passthrough_config.changed | default(false)
+              evander_apt_cache_config.changed
+              or evander_apt_cache_passthrough_config.changed | default(false)
             )
             else 'started'
           }}
@@ -64,12 +64,12 @@
     - name: Wait for apt cache relay listener
       ansible.builtin.wait_for:
         host: "127.0.0.1"
-        port: "{{ agent_sandbox_apt_cache_port }}"
+        port: "{{ evander_apt_cache_port }}"
         timeout: 60
 
     - name: Verify apt cache relay report endpoint
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ agent_sandbox_apt_cache_port }}/acng-report.html"
+        url: "http://127.0.0.1:{{ evander_apt_cache_port }}/acng-report.html"
         method: GET
         return_content: true
         status_code: 200

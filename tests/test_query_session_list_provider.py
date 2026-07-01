@@ -4,17 +4,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from agent_sandbox.effects.providers.session_update_metadata import (
+from evander.effects.providers.session_update_metadata import (
     SessionUpdateMetadataEffectProvider,
 )
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.events.provider_models import (
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.events.provider_models import (
     SessionListQueryDefinition,
     SessionUpdateMetadataEffectDefinition,
 )
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.queries.providers.base import QueryRuntimeContext
-from agent_sandbox.queries.providers.session_list import SessionListQueryProvider
+from evander.models import SessionManifest
+from evander.queries.providers.base import QueryRuntimeContext
+from evander.queries.providers.session_list import SessionListQueryProvider
 
 
 @dataclass

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.workflow.plugins import load_provider_plugins
+from evander.workflow.plugins import load_provider_plugins
 
 
 def test_load_provider_plugins_supports_explicit_module_list(tmp_path: Path, monkeypatch) -> None:
@@ -14,7 +14,7 @@ def test_load_provider_plugins_supports_explicit_module_list(tmp_path: Path, mon
     module_root.mkdir()
     (module_root / "custom_plugin.py").write_text(
         """
-from agent_sandbox.triggers.providers.base import TriggerProviderBase
+from evander.triggers.providers.base import TriggerProviderBase
 
 class CustomTriggerProvider(TriggerProviderBase):
     pass
@@ -31,7 +31,7 @@ def register_providers():
     catalog = load_provider_plugins(module_names=["custom_plugin"], include_entry_points=False)
 
     assert "trigger:custom:test" in catalog.trigger_providers
-    assert "agent_sandbox.providers.builtin" not in catalog.loaded_plugins
+    assert "evander.providers.builtin" not in catalog.loaded_plugins
     assert "custom_plugin" in catalog.loaded_plugins
 
 
@@ -42,7 +42,7 @@ def test_load_provider_plugins_supports_entry_points(monkeypatch) -> None:
 
         @staticmethod
         def load():
-            from agent_sandbox.queries.providers.base import QueryProviderBase
+            from evander.queries.providers.base import QueryProviderBase
 
             class CustomQueryProvider(QueryProviderBase):
                 pass
@@ -50,7 +50,7 @@ def test_load_provider_plugins_supports_entry_points(monkeypatch) -> None:
             return {"query_providers": {"query:custom:test": CustomQueryProvider}}
 
     monkeypatch.setattr(
-        "agent_sandbox.workflow.plugins._iter_provider_entry_points", lambda: (_EntryPointStub(),)
+        "evander.workflow.plugins._iter_provider_entry_points", lambda: (_EntryPointStub(),)
     )
 
     catalog = load_provider_plugins(module_names=[], include_entry_points=True)
@@ -66,7 +66,7 @@ def test_load_provider_plugins_can_include_builtin_explicitly() -> None:
 
     assert "trigger:cron" in catalog.trigger_providers
     assert "effect:http:request" in catalog.effect_providers
-    assert "agent_sandbox.providers.builtin" in catalog.loaded_plugins
+    assert "evander.providers.builtin" in catalog.loaded_plugins
 
 
 def test_load_provider_plugins_exposes_workflow_editor_catalog_entries(
@@ -76,7 +76,7 @@ def test_load_provider_plugins_exposes_workflow_editor_catalog_entries(
     module_root.mkdir()
     (module_root / "catalog_plugin.py").write_text(
         """
-from agent_sandbox.triggers.providers.base import TriggerProviderBase
+from evander.triggers.providers.base import TriggerProviderBase
 
 class CatalogTriggerProvider(TriggerProviderBase):
     pass
@@ -123,6 +123,48 @@ def register_providers():
     assert entry.fields[0].description == "Message to emit."
 
 
+def test_load_provider_plugins_exposes_internal_event_catalog_entries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module_root = tmp_path / "plugins"
+    module_root.mkdir()
+    (module_root / "event_catalog_plugin.py").write_text(
+        """
+def register_providers():
+    return {
+        "internal_event_catalog_entries": [
+            {
+                "event_type": "custom.ready",
+                "label": "Custom ready",
+                "description": "Custom ready event.",
+                "source": "Test plugin",
+                "metadata": {"domain": "custom"},
+            }
+        ],
+    }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(module_root))
+    importlib.invalidate_caches()
+    sys.modules.pop("event_catalog_plugin", None)
+
+    catalog = load_provider_plugins(
+        module_names=["event_catalog_plugin"],
+        include_entry_points=False,
+        include_builtin=False,
+    )
+
+    assert [entry.event_type for entry in catalog.internal_event_catalog_entries] == [
+        "custom.ready"
+    ]
+    entry = catalog.internal_event_catalog_entries[0]
+    assert entry.label == "Custom ready"
+    assert entry.description == "Custom ready event."
+    assert entry.source == "Test plugin"
+    assert entry.metadata == {"domain": "custom"}
+
+
 def test_load_provider_plugins_rejects_catalog_entry_without_provider(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -130,7 +172,7 @@ def test_load_provider_plugins_rejects_catalog_entry_without_provider(
     module_root.mkdir()
     (module_root / "bad_catalog_plugin.py").write_text(
         """
-from agent_sandbox.triggers.providers.base import TriggerProviderBase
+from evander.triggers.providers.base import TriggerProviderBase
 
 class CatalogTriggerProvider(TriggerProviderBase):
     pass
@@ -169,7 +211,7 @@ def test_load_provider_plugins_rejects_duplicate_catalog_entries(
     for module_name in ("catalog_one", "catalog_two"):
         (module_root / f"{module_name}.py").write_text(
             """
-from agent_sandbox.triggers.providers.base import TriggerProviderBase
+from evander.triggers.providers.base import TriggerProviderBase
 
 class CatalogTriggerProvider(TriggerProviderBase):
     pass
@@ -196,6 +238,39 @@ def register_providers():
     with pytest.raises(ValueError, match="Duplicate workflow editor catalog entry"):
         load_provider_plugins(
             module_names=["catalog_one", "catalog_two"],
+            include_entry_points=False,
+            include_builtin=False,
+        )
+
+
+def test_load_provider_plugins_rejects_duplicate_internal_event_catalog_entries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module_root = tmp_path / "plugins"
+    module_root.mkdir()
+    for module_name in ("event_catalog_one", "event_catalog_two"):
+        (module_root / f"{module_name}.py").write_text(
+            """
+def register_providers():
+    return {
+        "internal_event_catalog_entries": [
+            {
+                "event_type": "custom.duplicate",
+                "label": "Duplicate",
+            }
+        ],
+    }
+""",
+            encoding="utf-8",
+        )
+    monkeypatch.syspath_prepend(str(module_root))
+    importlib.invalidate_caches()
+    sys.modules.pop("event_catalog_one", None)
+    sys.modules.pop("event_catalog_two", None)
+
+    with pytest.raises(ValueError, match="Duplicate internal event catalog entry"):
+        load_provider_plugins(
+            module_names=["event_catalog_one", "event_catalog_two"],
             include_entry_points=False,
             include_builtin=False,
         )

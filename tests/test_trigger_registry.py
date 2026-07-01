@@ -4,17 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.provider_models import (
+from evander.config import GatewayConfig
+from evander.events.provider_models import (
     CommunicationNewMessageTriggerDefinition,
     CronTriggerDefinition,
 )
-from agent_sandbox.messaging.targets import (
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.triggers.providers.base import TriggerProviderBase
-from agent_sandbox.triggers.registry import (
+from evander.triggers.providers.base import TriggerProviderBase
+from evander.triggers.registry import (
     DEFAULT_TRIGGER_PROVIDER_REGISTRY,
     TriggerProviderFactory,
     TriggerProviderRegistry,
@@ -51,6 +51,8 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
         "trigger:issue:comment-created",
         "trigger:ado:work-item-matching",
         "trigger:ado:work-item-comment-created",
+        "trigger:remote-issue-matching",
+        "trigger:remote-issue-comment-created",
         "trigger:script-run-request",
         "trigger:communication:new-message",
         "trigger:http:webhook",

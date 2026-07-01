@@ -14,7 +14,7 @@ Arguments:
 Environment:
   SSH_KEY_PATH           Private key matching the guest authorized key.
   NUGET_RELAY_BASE_URL   Host relay base URL. Default: http://192.168.250.1:11666
-  NUGET_FALLBACK_PACKAGES  Guest read-only fallback package folder. Default: /opt/agent-sandbox/nuget-cache-ro
+  NUGET_FALLBACK_PACKAGES  Guest read-only fallback package folder. Default: /opt/evander/nuget-cache-ro
   NUGET_PACKAGES_DIR       Guest writable global-packages folder. Default: /home/agent/.nuget/packages-local
   NUGET_HTTP_CACHE_DIR     Guest writable HTTP cache folder. Default: /home/agent/.nuget/http-cache
 USAGE
@@ -42,7 +42,7 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   SSH_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
 NUGET_RELAY_BASE_URL="${NUGET_RELAY_BASE_URL:-http://192.168.250.1:11666}"
-NUGET_FALLBACK_PACKAGES="${NUGET_FALLBACK_PACKAGES:-/opt/agent-sandbox/nuget-cache-ro}"
+NUGET_FALLBACK_PACKAGES="${NUGET_FALLBACK_PACKAGES:-/opt/evander/nuget-cache-ro}"
 NUGET_PACKAGES_DIR="${NUGET_PACKAGES_DIR:-/home/agent/.nuget/packages-local}"
 NUGET_HTTP_CACHE_DIR="${NUGET_HTTP_CACHE_DIR:-/home/agent/.nuget/http-cache}"
 

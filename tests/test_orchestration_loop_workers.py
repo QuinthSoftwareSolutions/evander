@@ -4,18 +4,18 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
-from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.orchestration import wal_maintenance
-from agent_sandbox.orchestration.wiring import (
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
+from evander.events.models import TriggerEvent
+from evander.orchestration import wal_maintenance
+from evander.orchestration.wiring import (
     build_effect_worker_wiring,
     build_trigger_worker_wiring,
 )
-from agent_sandbox.orchestration.wiring import effect as effect_wiring
-from agent_sandbox.repositories.orchestration_db import OrchestrationWalCheckpointResult
-from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
-from agent_sandbox.workflow.engine import OrchestrationLoop
+from evander.orchestration.wiring import effect as effect_wiring
+from evander.repositories.orchestration_db import OrchestrationWalCheckpointResult
+from evander.daemons.trigger_orchestrator import TriggerOrchestratorWorker
+from evander.workflow.engine import OrchestrationLoop
 
 
 class _StaticProvider:

@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import field_validator
 
-from agent_sandbox.events.models import (
+from evander.events.models import (
     ConfigValue,
     EffectDefinition,
     QueryDefinition,

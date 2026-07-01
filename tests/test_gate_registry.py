@@ -4,10 +4,10 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
-from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.gates.registry import DEFAULT_GATE_PROVIDER_REGISTRY, GateProviderRegistry
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
+from evander.events.models import TriggerEvent
+from evander.gates.registry import DEFAULT_GATE_PROVIDER_REGISTRY, GateProviderRegistry
 
 
 def _edge(source_id: str, target_id: str) -> dict[str, str]:

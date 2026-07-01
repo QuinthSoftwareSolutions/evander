@@ -7,11 +7,11 @@ from email import message_from_bytes, policy
 import httpx
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.email.gmail_provider import GmailEmailProvider
-from agent_sandbox.email.graph_provider import GraphEmailProvider
-from agent_sandbox.email.http_utils import ProviderRequestError
-from agent_sandbox.email.providers import EmailDraftAttachment
+from evander.config import GatewayConfig
+from evander.email.gmail_provider import GmailEmailProvider
+from evander.email.graph_provider import GraphEmailProvider
+from evander.email.http_utils import ProviderRequestError
+from evander.email.providers import EmailDraftAttachment
 
 
 def patch_provider_client(
@@ -207,9 +207,9 @@ def test_gmail_retries_transient_503_then_succeeds(monkeypatch: pytest.MonkeyPat
         )
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr("agent_sandbox.email.http_utils.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("evander.email.http_utils.time.sleep", lambda _seconds: None)
     monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "token")
-    patch_provider_client(monkeypatch, "agent_sandbox.email.gmail_provider.httpx.Client", transport)
+    patch_provider_client(monkeypatch, "evander.email.gmail_provider.httpx.Client", transport)
     provider = GmailEmailProvider(
         account_identifier="me",
         folder_mapping={"inbox": "INBOX", "drafts": "DRAFT"},
@@ -232,7 +232,7 @@ def test_graph_auth_error_fails_fast_without_retry(monkeypatch: pytest.MonkeyPat
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "token")
-    patch_provider_client(monkeypatch, "agent_sandbox.email.graph_provider.httpx.Client", transport)
+    patch_provider_client(monkeypatch, "evander.email.graph_provider.httpx.Client", transport)
     provider = GraphEmailProvider(
         account_identifier="leader@example.com",
         folder_mapping={"inbox": "Inbox", "drafts": "Drafts"},
@@ -256,7 +256,7 @@ def test_gmail_create_draft_post_does_not_retry_transient_503(
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "token")
-    patch_provider_client(monkeypatch, "agent_sandbox.email.gmail_provider.httpx.Client", transport)
+    patch_provider_client(monkeypatch, "evander.email.gmail_provider.httpx.Client", transport)
     provider = GmailEmailProvider(
         account_identifier="me",
         folder_mapping={"inbox": "INBOX", "drafts": "DRAFT"},
@@ -293,7 +293,7 @@ def test_gmail_send_draft_posts_to_provider_send_endpoint(
 
     patch_provider_client(
         monkeypatch,
-        "agent_sandbox.email.gmail_provider.httpx.Client",
+        "evander.email.gmail_provider.httpx.Client",
         httpx.MockTransport(handler),
     )
     provider = GmailEmailProvider(
@@ -324,7 +324,7 @@ def test_graph_send_draft_posts_to_provider_send_endpoint(
 
     patch_provider_client(
         monkeypatch,
-        "agent_sandbox.email.graph_provider.httpx.Client",
+        "evander.email.graph_provider.httpx.Client",
         httpx.MockTransport(handler),
     )
     provider = GraphEmailProvider(
@@ -405,7 +405,7 @@ def test_gmail_download_attachment_decodes_body(monkeypatch: pytest.MonkeyPatch)
 
     patch_provider_client(
         monkeypatch,
-        "agent_sandbox.email.gmail_provider.httpx.Client",
+        "evander.email.gmail_provider.httpx.Client",
         httpx.MockTransport(handler),
     )
     provider = GmailEmailProvider(
@@ -432,7 +432,7 @@ def test_gmail_download_attachment_rejects_unknown_attachment(
 
     patch_provider_client(
         monkeypatch,
-        "agent_sandbox.email.gmail_provider.httpx.Client",
+        "evander.email.gmail_provider.httpx.Client",
         httpx.MockTransport(handler),
     )
     provider = GmailEmailProvider(
@@ -463,7 +463,7 @@ def test_gmail_create_draft_generates_mime_attachment_payload(
 
     patch_provider_client(
         monkeypatch,
-        "agent_sandbox.email.gmail_provider.httpx.Client",
+        "evander.email.gmail_provider.httpx.Client",
         httpx.MockTransport(handler),
     )
     provider = GmailEmailProvider(
@@ -537,7 +537,7 @@ def test_graph_list_and_download_file_attachment(monkeypatch: pytest.MonkeyPatch
 
     patch_provider_client(
         monkeypatch,
-        "agent_sandbox.email.graph_provider.httpx.Client",
+        "evander.email.graph_provider.httpx.Client",
         httpx.MockTransport(handler),
     )
     provider = GraphEmailProvider(
@@ -567,7 +567,7 @@ def test_graph_download_rejects_non_file_attachment(monkeypatch: pytest.MonkeyPa
 
     patch_provider_client(
         monkeypatch,
-        "agent_sandbox.email.graph_provider.httpx.Client",
+        "evander.email.graph_provider.httpx.Client",
         httpx.MockTransport(handler),
     )
     provider = GraphEmailProvider(
@@ -598,7 +598,7 @@ def test_graph_create_draft_embeds_small_attachment_payload(
 
     patch_provider_client(
         monkeypatch,
-        "agent_sandbox.email.graph_provider.httpx.Client",
+        "evander.email.graph_provider.httpx.Client",
         httpx.MockTransport(handler),
     )
     provider = GraphEmailProvider(
@@ -650,7 +650,7 @@ def test_graph_create_draft_uses_upload_session_for_large_attachment(
 
     patch_provider_client(
         monkeypatch,
-        "agent_sandbox.email.graph_provider.httpx.Client",
+        "evander.email.graph_provider.httpx.Client",
         httpx.MockTransport(handler),
     )
     provider = GraphEmailProvider(

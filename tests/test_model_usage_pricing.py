@@ -6,8 +6,8 @@ from decimal import Decimal
 
 import pytest
 
-from agent_sandbox.model_usage.models import ModelInferenceUsageEvent
-from agent_sandbox.model_usage.pricing import (
+from evander.model_usage.models import ModelInferenceUsageEvent
+from evander.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
     estimate_model_usage_cost,
@@ -151,7 +151,7 @@ def test_default_model_pricing_catalog_reloads_when_file_changes(
         json.dumps(_pricing_catalog_payload(version="cache-initial", model="test-model")),
         encoding="utf-8",
     )
-    monkeypatch.setenv("AGENT_SANDBOX_MODEL_PRICING_PATH", str(catalog_path))
+    monkeypatch.setenv("EVANDER_MODEL_PRICING_PATH", str(catalog_path))
     clear_model_pricing_catalog_cache()
 
     assert default_model_pricing_catalog().version == "cache-initial"

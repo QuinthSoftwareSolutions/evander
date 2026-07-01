@@ -1,4 +1,0 @@
-Acquire::http::Proxy "{{ agent_sandbox_worker_apt_proxy_url }}";
-{% if (agent_sandbox_worker_apt_proxy_https_url | default('') | string | length) > 0 %}
-Acquire::https::Proxy "{{ agent_sandbox_worker_apt_proxy_https_url }}";
-{% endif %}

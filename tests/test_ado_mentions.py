@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from agent_sandbox.ado_mentions import (
+from evander.ado_mentions import (
     AdoMentionResolver,
     AdoResolvedMention,
     render_ado_mentions_html_prefix,

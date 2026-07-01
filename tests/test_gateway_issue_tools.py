@@ -8,19 +8,19 @@ from pathlib import Path
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.gateway import create_server
-from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.models import (
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.config import GatewayConfig
+from evander.directory_config import DirectoryConfigStore
+from evander.gateway import create_server
+from evander.directories import DirectoryService, DirectoryStore
+from evander.models import (
     ApprovalGrantSettings,
     ApprovalPayloadMode,
     ApprovalStatus,
     SessionManifest,
     ToolName,
 )
-from agent_sandbox.runtime import build_runtime
+from evander.runtime import build_runtime
 
 
 def make_context(tmp_path: Path):
@@ -346,7 +346,7 @@ def test_create_ado_backlog_item_success_with_allowed_tool(
                 },
             }
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     result = call_tool(
@@ -469,7 +469,7 @@ def test_create_ado_backlog_item_denies_argument_policy_violation(
             captured["request"] = kwargs
             return {}
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     with pytest.raises(ToolError, match="tool_argument_policy_denied"):
@@ -537,7 +537,7 @@ def test_create_ado_backlog_item_normalizes_assignee_identity_object(
                 },
             }
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     result = call_tool(
@@ -696,7 +696,7 @@ def test_update_ado_backlog_tags_merges_existing_tags(
                 "fields": kwargs.get("fields"),
             }
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     result = call_tool(
@@ -778,7 +778,7 @@ def test_update_ado_backlog_title_updates_system_title(
                 "fields": {"System.Title": "Renamed backlog item"},
             }
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     result = call_tool(
@@ -828,7 +828,7 @@ def test_update_ado_backlog_title_rejects_blank_title_before_service(
             calls.append(kwargs)
             return {}
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     with pytest.raises(ToolError, match="title cannot be empty"):
@@ -910,7 +910,7 @@ def test_query_ado_backlog_items_maps_request_into_issue_service(
                 },
             }
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     result = call_tool(
@@ -1040,7 +1040,7 @@ def test_list_ado_current_iteration_backlog_items_maps_request_and_shape(
                 "count": 1,
             }
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     result = call_tool(
@@ -1119,7 +1119,7 @@ def test_list_ado_current_iteration_backlog_items_errors_when_no_iteration_confi
                 "Azure DevOps team 'Platform Team' has no current iteration configured."
             )
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     with pytest.raises(ToolError, match="no current iteration configured"):
@@ -1241,7 +1241,7 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
                 },
             }
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     result = call_tool(
@@ -1366,7 +1366,7 @@ def test_get_ado_backlog_item_maps_request_into_issue_service(
                 "updates": [{"id": "3", "rev": 7}],
             }
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
     result = call_tool(
         server,
@@ -1442,7 +1442,7 @@ def test_delete_ado_backlog_item_creates_pending_approval_without_instantiating_
         def __init__(self, provider_config: object) -> None:
             raise AssertionError("IssueService must not be instantiated before approval")
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
 
     with pytest.raises(ToolError, match="requires approval"):
@@ -1507,7 +1507,7 @@ def test_delete_ado_backlog_item_approved_exact_retry_executes_once(
             calls.append({"delete": kwargs})
             return {"provider": "azure_devops", "deleted": True}
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
     tool_arguments = {
         "session_id": "session-1",
@@ -1583,7 +1583,7 @@ def test_delete_ado_backlog_item_rejects_payload_replay_even_with_loose_session_
             calls.append({"delete": kwargs})
             return {"provider": "azure_devops", "deleted": True}
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
     approved_arguments = {
         "session_id": "session-1",
@@ -1706,7 +1706,7 @@ def test_delete_ado_backlog_item_propagates_missing_work_item_error(
                 "Azure DevOps delete work item failed (status 404): Work item does not exist"
             )
 
-    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
     server = create_server(context)
     tool_arguments = {
         "session_id": "session-1",

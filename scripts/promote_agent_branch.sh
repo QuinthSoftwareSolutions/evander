@@ -90,7 +90,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/lib/runtime_config.sh"
 load_issue_setup_config
 
-GIT_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
+GIT_ROOT="${EVANDER_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 
 resolve_bare_repo() {
   local input="$1"
@@ -126,7 +126,7 @@ if [[ -z "${REVIEW_BRANCH}" ]]; then
   REVIEW_BRANCH="$(derive_review_branch "${AGENT_BRANCH}")"
 fi
 
-LOCK_PATH="${HOST_REPO_PATH}/.git/agent-sandbox-promote.lock"
+LOCK_PATH="${HOST_REPO_PATH}/.git/evander-promote.lock"
 exec 9>"${LOCK_PATH}"
 flock 9
 
@@ -141,7 +141,7 @@ else
 fi
 
 FETCH_REF="refs/heads/${AGENT_BRANCH}"
-PROMOTION_REF="refs/agent-sandbox/promotions/${AGENT_BRANCH}"
+PROMOTION_REF="refs/evander/promotions/${AGENT_BRANCH}"
 
 if ! git -C "${HOST_REPO_PATH}" fetch "${REMOTE_NAME}" "+${FETCH_REF}:${PROMOTION_REF}"; then
   echo "Failed to fetch agent branch ${AGENT_BRANCH} from ${REMOTE_NAME}" >&2

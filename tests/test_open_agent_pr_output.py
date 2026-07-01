@@ -80,7 +80,7 @@ printf '%s\\n' "$*" >> "{attach_log}"
     pr_map.chmod(0o444)
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(pr_map)
+    env["EVANDER_PR_MAP_PATH"] = str(pr_map)
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
 
     try:
@@ -188,7 +188,7 @@ esac
     pr_map = tmp_path / "runtime" / "pr-map.json"
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(pr_map)
+    env["EVANDER_PR_MAP_PATH"] = str(pr_map)
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
 
     old_umask = os.umask(0o027)
@@ -386,9 +386,9 @@ printf '%s\\n' "$*" >> "{attach_log}"
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["EVANDER_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
-    env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
+    env["EVANDER_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
 
     subprocess.run(
         [str(script), "--create-pr", "--base", "main", str(host_repo), "review/session-123/work"],
@@ -402,13 +402,13 @@ printf '%s\\n' "$*" >> "{attach_log}"
     fetch_index = next(
         i
         for i, command in enumerate(commands)
-        if "fetch agent-sandbox-pr-origin refs/heads/review/session-123/work:refs/remotes/agent-sandbox-pr-origin/review/session-123/work"
+        if "fetch evander-pr-origin refs/heads/review/session-123/work:refs/remotes/evander-pr-origin/review/session-123/work"
         in command
     )
     push_index = next(
         i
         for i, command in enumerate(commands)
-        if "push --force-with-lease agent-sandbox-pr-origin" in command
+        if "push --force-with-lease evander-pr-origin" in command
     )
     assert fetch_index < push_index
 
@@ -482,9 +482,9 @@ echo "https://github.com/example/repo/pull/42"
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["EVANDER_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
-    env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
+    env["EVANDER_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
 
     subprocess.run(
         [str(script), "--create-pr", "--base", "main", str(host_repo), "review/session-123/work"],
@@ -496,7 +496,7 @@ echo "https://github.com/example/repo/pull/42"
 
     commands = git_log.read_text(encoding="utf-8").splitlines()
     assert any(
-        "agent-sandbox-pr-origin https://github.com/example/repo.git" in command
+        "evander-pr-origin https://github.com/example/repo.git" in command
         and ("remote add " in command or "remote set-url " in command)
         for command in commands
     )
@@ -583,9 +583,9 @@ echo "https://github.com/example/repo/pull/42"
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["EVANDER_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
-    env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
+    env["EVANDER_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
 
     subprocess.run(
         [str(script), "--create-pr", "--base", "main", str(host_repo), "review/session-123/work"],
@@ -599,13 +599,13 @@ echo "https://github.com/example/repo/pull/42"
     base_fetch_index = next(
         i
         for i, command in enumerate(commands)
-        if "fetch agent-sandbox-pr-origin refs/heads/main:refs/remotes/agent-sandbox-pr-origin/main"
+        if "fetch evander-pr-origin refs/heads/main:refs/remotes/evander-pr-origin/main"
         in command
     )
     review_fetch_index = next(
         i
         for i, command in enumerate(commands)
-        if "fetch agent-sandbox-pr-origin refs/heads/review/session-123/work:refs/remotes/agent-sandbox-pr-origin/review/session-123/work"
+        if "fetch evander-pr-origin refs/heads/review/session-123/work:refs/remotes/evander-pr-origin/review/session-123/work"
         in command
     )
     assert review_fetch_index < base_fetch_index
@@ -731,7 +731,7 @@ printf '%s\\n' "$*" >> "{attach_log}"
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["EVANDER_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
@@ -902,7 +902,7 @@ urllib.request.urlopen = fake_urlopen
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["PYTHONPATH"] = str(sitecustomize_dir)
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["EVANDER_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
@@ -1044,7 +1044,7 @@ printf '%s\\n' "$*" >> "{attach_log}"
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["EVANDER_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
@@ -1101,7 +1101,7 @@ case "${{args[0]:-}}" in
   remote)
     if [[ "${{args[1]:-}}" == "get-url" && "${{args[2]:-}}" == "origin" ]]; then
       echo "git@ssh.dev.azure.com:v3/example-org/example-project/example-repo"
-    elif [[ "${{args[1]:-}}" == "get-url" && "${{args[2]:-}}" == "agent-sandbox-pr-origin" ]]; then
+    elif [[ "${{args[1]:-}}" == "get-url" && "${{args[2]:-}}" == "evander-pr-origin" ]]; then
       echo "https://dev.azure.com/example-org/example-project/_git/example-repo"
     else
       echo "unexpected git remote invocation: $*" >&2
@@ -1111,7 +1111,7 @@ case "${{args[0]:-}}" in
   push)
     ;;
   symbolic-ref)
-    echo "agent-sandbox-pr-origin/main"
+    echo "evander-pr-origin/main"
     ;;
   log)
     echo "Latest commit title"
@@ -1187,7 +1187,7 @@ printf '%s\\n' "$*" >> "{attach_log}"
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["EVANDER_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
@@ -1207,11 +1207,11 @@ printf '%s\\n' "$*" >> "{attach_log}"
     )
 
     assert (
-        "Pushed review/issue-123/work to agent-sandbox-pr-origin/feature/issue-123" in result.stdout
+        "Pushed review/issue-123/work to evander-pr-origin/feature/issue-123" in result.stdout
     )
     git_commands = git_log.read_text(encoding="utf-8")
     assert (
-        "push agent-sandbox-pr-origin review/issue-123/work:refs/heads/feature/issue-123"
+        "push evander-pr-origin review/issue-123/work:refs/heads/feature/issue-123"
         in git_commands
     )
 
@@ -1337,9 +1337,9 @@ exit 1
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["EVANDER_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
-    env["AGENT_SANDBOX_RUNTIME_DIR"] = str(runtime_dir)
+    env["EVANDER_RUNTIME_DIR"] = str(runtime_dir)
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     subprocess.run(
@@ -1524,9 +1524,9 @@ urllib.request.urlopen = fake_urlopen
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["PYTHONPATH"] = str(sitecustomize_dir)
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["EVANDER_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["EVANDER_CLI_BIN"] = str(fake_bin / "evander-cli")
-    env["AGENT_SANDBOX_RUNTIME_DIR"] = str(runtime_dir)
+    env["EVANDER_RUNTIME_DIR"] = str(runtime_dir)
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     result = subprocess.run(

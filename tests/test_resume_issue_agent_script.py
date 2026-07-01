@@ -132,7 +132,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
   exit 0
 fi
 cat > /dev/null
-printf 'resumed pid=321 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log\\n'
+printf 'resumed pid=321 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log\\n'
 exit 0
 """,
     )
@@ -153,7 +153,7 @@ exit 0
 
     assert result.stdout == (
         "Agent resumed for vm-14084 "
-        "(resumed pid=321 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log).\n"
+        "(resumed pid=321 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log).\n"
     )
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("agent-admin@192.168.122.11 true" in call for call in ssh_calls)
@@ -210,7 +210,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
 fi
 if [[ "$*" == *"PROMPT_B64="* ]]; then
   cat > /dev/null
-  printf 'resumed pid=321 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log\\n'
+  printf 'resumed pid=321 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log\\n'
   exit 0
 fi
 cat > /dev/null
@@ -363,7 +363,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
   exit 0
 fi
 cat > /dev/null
-printf 'resumed pid=456 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log\\n'
+printf 'resumed pid=456 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log\\n'
 exit 0
 """,
     )
@@ -384,7 +384,7 @@ exit 0
 
     assert result.stdout == (
         "Agent resumed for vm-14084 "
-        "(resumed pid=456 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log).\n"
+        "(resumed pid=456 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log).\n"
     )
     run_call = next(
         call for call in ssh_log.read_text(encoding="utf-8").splitlines() if "PROMPT_B64=" in call
@@ -438,7 +438,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
 fi
 cat > /dev/null
 printf 'thread_id=claude-thread-1\\n'
-printf 'resumed pid=456 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log\\n'
+printf 'resumed pid=456 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log\\n'
 exit 0
 """,
     )
@@ -460,7 +460,7 @@ exit 0
     assert result.stdout == (
         "thread_id=claude-thread-1\n"
         "Agent resumed for vm-14084 "
-        "(resumed pid=456 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log).\n"
+        "(resumed pid=456 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log).\n"
     )
     run_call = next(
         call for call in ssh_log.read_text(encoding="utf-8").splitlines() if "PROMPT_B64=" in call
@@ -475,8 +475,14 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
 
     assert "resolve_primary_agent_paths() {" in script_text
     assert 'RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
-    assert 'PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"' in script_text
-    assert 'STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"' in script_text
+    assert 'LEGACY_LOG_DIR="${HOME}/.agent-sandbox"' in script_text
+    assert (
+        'RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LEGACY_LOG_DIR}" || true)"'
+        in script_text
+    )
+    assert 'STATE_LOG_DIR="${LEGACY_LOG_DIR}"' in script_text
+    assert 'PID_FILE="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"' in script_text
+    assert 'STATE_PATH="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"' in script_text
     assert (
         'AGENT_RUNNER_PROVIDER_LIB_NAME="$(agent_provider_runner_lib_name "${AGENT_PROVIDER}")"'
         in script_text
@@ -513,7 +519,7 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert "repair_agent_profile_session_env" in script_text
     assert 'if [ -f "$HOME/.claude/settings.json" ]; then' in script_text
     assert 'line == line.lstrip() and stripped.startswith("export ")' in script_text
-    assert '. "$HOME/.agent-sandbox/lib/agent_runner.sh"' in script_text
+    assert '. "$HOME/.evander/lib/agent_runner.sh"' in script_text
     assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text
     assert 'RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"' in script_text
     assert 'write_state "running" "resume"' in script_text
@@ -617,7 +623,7 @@ exit 0
     run_call = next(call for call in ssh_calls if "PROMPT_B64=" in call)
     assert " -t " not in f" {run_call} "
     assert "agent-admin@192.168.122.44" in run_call
-    assert f"UserKnownHostsFile={caller_home}/.ssh/agent-sandbox-known_hosts" in run_call
+    assert f"UserKnownHostsFile={caller_home}/.ssh/evander-known_hosts" in run_call
     assert "SESSION_ID=session-14084" in run_call
     assert "AGENT_BRANCH_SUFFIX=vm-14084" in run_call
     assert "AGENT_WEB_SEARCH_MODE=live" in run_call

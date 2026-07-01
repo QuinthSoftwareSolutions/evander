@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.git_pr_notes import agent_pr_notes_ref_for_session
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +40,7 @@ def test_agent_pr_note_helper_uses_configured_per_session_ref_and_file_input(
     _git(repo, "config", "user.name", "Test User")
     _git(repo, "config", "user.email", "test@example.com")
     notes_ref = agent_pr_notes_ref_for_session("session-1")
-    _git(repo, "config", "agent-sandbox.prNotesRef", notes_ref)
+    _git(repo, "config", "evander.prNotesRef", notes_ref)
 
     (repo / "hello.txt").write_text("hello\n", encoding="utf-8")
     _git(repo, "add", "hello.txt")

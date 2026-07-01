@@ -8,15 +8,15 @@ import httpx
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.gateway import create_server
-from agent_sandbox.messaging.targets import (
+from evander.config import GatewayConfig
+from evander.gateway import create_server
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.models import SessionManifest, TeamsMessageEnvelope, ToolName
-from agent_sandbox.runtime import build_runtime
-from agent_sandbox.messaging.teams_auth import JsonTeamsIdentityCredentialStore
+from evander.models import SessionManifest, TeamsMessageEnvelope, ToolName
+from evander.runtime import build_runtime
+from evander.messaging.teams_auth import JsonTeamsIdentityCredentialStore
 
 
 class FakeTeamsService:
@@ -235,7 +235,7 @@ def patch_httpx_client(
 ) -> None:
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.services.httpx.Client",
+        "evander.services.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
 

@@ -26,8 +26,8 @@ def test_git_remote_docs_and_script_are_present() -> None:
     assert "create-issue-vm" in readme
     assert "create-issue-vm" in ops
     assert "setup_vm.sh" in ops
-    assert ".agent-sandbox" in readme
-    assert ".agent-sandbox" in ops
+    assert ".evander" in readme
+    assert ".evander" in ops
     assert "promote_agent_branch.sh" in readme
     assert "promote_agent_branch.sh" in ops
     assert "open_agent_pr.sh" in readme

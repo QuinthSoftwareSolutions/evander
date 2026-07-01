@@ -4,22 +4,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.approval_diagnostics import build_payload_diagnostic
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
+from evander.config import GatewayConfig
+from evander.approval_diagnostics import build_payload_diagnostic
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
 )
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryStore
-from agent_sandbox.events.provider_models import (
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryStore
+from evander.events.provider_models import (
     SessionRevokeMcpToolApprovalLeaseEffectDefinition,
 )
-from agent_sandbox.messaging.targets import (
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.models import (
+from evander.models import (
     ApprovalGrantSettings,
     ApprovalNotificationStatus,
     ApprovalPayloadMode,
@@ -33,7 +33,7 @@ from agent_sandbox.models import (
     ToolName,
     digest_payload,
 )
-from agent_sandbox.policy import (
+from evander.policy import (
     ALWAYS_APPROVAL_REQUIRED_TOOLS,
     PolicyEngine,
     PolicyError,
@@ -41,16 +41,16 @@ from agent_sandbox.policy import (
     reset_tool_approval_context,
     set_tool_approval_context,
 )
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.repositories.session_tool_approval_leases import (
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
 )
-from agent_sandbox.runtime import allowed_tools_for_capability_profile
-from agent_sandbox.services import (
+from evander.runtime import allowed_tools_for_capability_profile
+from evander.services import (
     effective_teams_channel_targets,
     normalize_teams_chat_targets,
 )
-from agent_sandbox.storage import JsonStore
+from evander.storage import JsonStore
 
 
 def make_engine(tmp_path: Path) -> PolicyEngine:

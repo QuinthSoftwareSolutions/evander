@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
-from agent_sandbox.effects.providers.base import EffectProviderBase
-from agent_sandbox.events.models import TriggerEvent
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
+from evander.effects.providers.base import EffectProviderBase
+from evander.events.models import TriggerEvent
 
 
 class _ImmediateExecutor:

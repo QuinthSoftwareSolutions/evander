@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agent_sandbox.cli import EndpointStatus, UnitStatus, app
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryStore
-from agent_sandbox.execution import (
+from evander.cli import EndpointStatus, UnitStatus, app
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryStore
+from evander.execution import (
     ExecutionBackendKind,
     ExecutionHandle,
     ExecutionSpec,
@@ -20,11 +20,11 @@ from agent_sandbox.execution import (
     ExecutionStatusKind,
     PreparedExecution,
 )
-from agent_sandbox.execution.container_worker_repository import (
+from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
 )
-from agent_sandbox.models import (
+from evander.models import (
     ApprovalNotificationDeliveryRecord,
     ApprovalNotificationDeliveryStatus,
     ApprovalNotificationStatus,
@@ -34,7 +34,7 @@ from agent_sandbox.models import (
     VmActionResult,
     VmSummary,
 )
-from agent_sandbox.messaging.teams_auth import InvalidClientConfigurationError
+from evander.messaging.teams_auth import InvalidClientConfigurationError
 
 UTC = timezone.utc
 
@@ -66,7 +66,7 @@ def patch_cli_admin_runtime(monkeypatch, **service_factories):
             **{name: factory(config) for name, factory in service_factories.items()}
         )
 
-    monkeypatch.setattr("agent_sandbox.cli.build_admin_runtime", fake_build_admin_runtime)
+    monkeypatch.setattr("evander.cli.build_admin_runtime", fake_build_admin_runtime)
 
 
 def write_container_config(
@@ -313,7 +313,7 @@ def test_execution_start_container_job_builds_spec_with_metadata_and_limits(
     config_path = write_container_config(tmp_path)
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     FakeExecutionBackend.instances = []
-    monkeypatch.setattr("agent_sandbox.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
     runner = CliRunner()
 
     result = runner.invoke(
@@ -372,7 +372,7 @@ def test_execution_start_container_job_uses_human_output_by_default(
     config_path = write_container_config(tmp_path)
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     FakeExecutionBackend.instances = []
-    monkeypatch.setattr("agent_sandbox.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
     runner = CliRunner()
 
     result = runner.invoke(
@@ -480,7 +480,7 @@ def test_execution_target_commands_auto_route_container_mappings_through_backend
     )
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     FakeExecutionBackend.instances = []
-    monkeypatch.setattr("agent_sandbox.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
     runner = CliRunner()
 
     status = runner.invoke(app, ["execution", "status", "--config", str(config_path), "exec-1"])
@@ -559,7 +559,7 @@ def test_execution_smoke_container_worker_runs_two_jobs_with_same_session(
     config_path = write_container_config(tmp_path)
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     FakeExecutionBackend.instances = []
-    monkeypatch.setattr("agent_sandbox.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
     runner = CliRunner()
 
     result = runner.invoke(
@@ -1254,15 +1254,15 @@ def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(tmp_path:
     env_file.write_text(
         "\n".join(
             [
-                "AGENT_SANDBOX_GIT_ROOT=/tmp/git-remotes",
-                "AGENT_SANDBOX_GIT_HOST=10.1.2.3",
-                "AGENT_SANDBOX_GIT_USER=gitbot",
-                "AGENT_SANDBOX_GIT_SSH_ALIAS=issue-git",
+                "EVANDER_GIT_ROOT=/tmp/git-remotes",
+                "EVANDER_GIT_HOST=10.1.2.3",
+                "EVANDER_GIT_USER=gitbot",
+                "EVANDER_GIT_SSH_ALIAS=issue-git",
                 "AGENT_DEFAULT_MODEL=gpt-5.3-codex",
                 "AGENT_POST_EXEC_VERIFICATION_PROMPT=verify everything",
                 "ENABLE_GUEST_HEARTBEAT=1",
                 "GUEST_HEARTBEAT_PROMPT=continue working",
-                "AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV=TEAM_ISSUE_SETUP_ADO_PAT",
+                "EVANDER_AZURE_DEVOPS_PR_PAT_ENV=TEAM_ISSUE_SETUP_ADO_PAT",
             ]
         ),
         encoding="utf-8",
@@ -1382,10 +1382,10 @@ def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(
     env_file.write_text(
         "\n".join(
             [
-                'AGENT_SANDBOX_GIT_ROOT="/tmp/from-file"',
-                'AGENT_SANDBOX_GIT_HOST="10.55.0.1"',
-                'AGENT_SANDBOX_GIT_USER="env-file-user"',
-                'AGENT_SANDBOX_GIT_SSH_ALIAS="env-file-alias"',
+                'EVANDER_GIT_ROOT="/tmp/from-file"',
+                'EVANDER_GIT_HOST="10.55.0.1"',
+                'EVANDER_GIT_USER="env-file-user"',
+                'EVANDER_GIT_SSH_ALIAS="env-file-alias"',
                 'AGENT_DEFAULT_MODEL="gpt-5.2-codex"',
                 'AGENT_POST_EXEC_VERIFICATION_PROMPT="verify from file"',
             ]
@@ -1840,7 +1840,7 @@ def test_create_issue_vm_creates_manifest_before_invoking_setup_script(
         assert sessions["issue-1234-session"]["vm_id"] == "vm-1234"
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -1869,7 +1869,7 @@ def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkey
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.services.process_helpers.subprocess.run",
+        "evander.admin.services.process_helpers.subprocess.run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
@@ -2012,7 +2012,7 @@ def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(
         captured_env.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.admin.services.process_helpers.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -2032,7 +2032,7 @@ def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(
     assert captured_env["GATEWAY_URL"] == "http://10.10.10.1:8000/mcp"
     assert captured_env["LLM_BASE_URL"] == "http://10.10.10.1:12000/v1"
     assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.10.10.1:13000"
-    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "AZURE_DEVOPS_PR_PAT"
+    assert captured_env["EVANDER_AZURE_DEVOPS_PR_PAT_ENV"] == "AZURE_DEVOPS_PR_PAT"
 
 
 def test_create_issue_vm_requires_mssql_password_env(tmp_path: Path, monkeypatch) -> None:
@@ -2066,7 +2066,7 @@ def test_create_issue_vm_rejects_mssql_init_root_without_mssql(tmp_path: Path, m
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.services.process_helpers.subprocess.run",
+        "evander.admin.services.process_helpers.subprocess.run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
@@ -2106,7 +2106,7 @@ def test_create_issue_vm_rejects_existing_session_id_without_running_setup(
         run_called = True
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -2135,7 +2135,7 @@ def test_create_issue_vm_does_not_grant_unrequested_tool_families(
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.admin.services.process_helpers.subprocess.run",
+        "evander.admin.services.process_helpers.subprocess.run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
@@ -3629,7 +3629,7 @@ def test_destroy_issue_vm_cleans_issue_state_and_bare_repo(tmp_path: Path, monke
     hook_log.parent.mkdir(parents=True, exist_ok=True)
     hook_log.write_text("hook log", encoding="utf-8")
 
-    monkeypatch.setenv("AGENT_SANDBOX_GIT_ROOT", str(git_root))
+    monkeypatch.setenv("EVANDER_GIT_ROOT", str(git_root))
 
     def fake_run(
         cmd: list[str],
@@ -3642,7 +3642,7 @@ def test_destroy_issue_vm_cleans_issue_state_and_bare_repo(tmp_path: Path, monke
             return subprocess.CompletedProcess(cmd, 0, stdout=str(trusted_repo), stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["destroy-issue-vm", "--config", str(config_path), "1234"])
 
@@ -3694,7 +3694,7 @@ def test_destroy_issue_vm_accepts_vm_name_target(tmp_path: Path, monkeypatch) ->
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["destroy-issue-vm", "--config", str(config_path), "vm-1234"])
 
@@ -3897,7 +3897,7 @@ def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(
     (git_root / "13301_repo.git").mkdir(parents=True)
     (git_root / "14084_repo.git").mkdir(parents=True)
     trusted_repo.mkdir(parents=True)
-    monkeypatch.setenv("AGENT_SANDBOX_GIT_ROOT", str(git_root))
+    monkeypatch.setenv("EVANDER_GIT_ROOT", str(git_root))
 
     def fake_run(
         cmd: list[str],
@@ -3912,7 +3912,7 @@ def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(
             return subprocess.CompletedProcess(cmd, 0, stdout=str(trusted_repo), stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["prune-orphaned-issue-state", "--config", str(config_path)])
 
@@ -3963,7 +3963,7 @@ def test_list_vms_invokes_script_with_selected_vm_user(tmp_path: Path, monkeypat
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["list-vms", "--vm-user", "root"])
 
@@ -3990,7 +3990,7 @@ def test_list_vms_all_invokes_script_with_all_flag(tmp_path: Path, monkeypatch) 
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["list-vms", "--all", "--vm-user", "root"])
 
@@ -4019,7 +4019,7 @@ def test_list_vms_omit_state_invokes_script_with_omit_state_flag(
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["list-vms", "--omit-state", "--vm-user", "root"])
 
@@ -4159,7 +4159,7 @@ def test_ssh_resolves_issue_number_to_vm_name(tmp_path: Path, monkeypatch) -> No
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["ssh", "12305"])
 
@@ -4186,7 +4186,7 @@ def test_disable_agent_invokes_state_script(tmp_path: Path, monkeypatch) -> None
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["disable-agent", "12305", "--vm-user", "root"])
 
@@ -4215,7 +4215,7 @@ def test_enable_agent_invokes_state_script(tmp_path: Path, monkeypatch) -> None:
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["enable-agent", "vm-12305"])
 
@@ -4239,7 +4239,7 @@ def test_logs_invokes_script_with_issue_number_and_repo_name(tmp_path: Path, mon
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["logs", "vm-12305", "--repo-name", "AdminClient"])
 
@@ -4261,7 +4261,7 @@ def test_logs_omits_repo_name_positional_when_not_provided(tmp_path: Path, monke
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["logs", "12305"])
 
@@ -4283,7 +4283,7 @@ def test_logs_accepts_custom_initial_tail_line_count(tmp_path: Path, monkeypatch
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["logs", "12305", "--lines", "25", "--vm-user", "debugger"])
 
@@ -4330,7 +4330,7 @@ def test_resume_agent_invokes_script_with_message_and_issue_number(
         assert env["AGENT_MODEL"] == "gpt-5.2-codex"
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -4383,7 +4383,7 @@ def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, m
         assert env["AGENT_MODEL"] == "gpt-5.2-codex"
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -4424,10 +4424,10 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
                 "--config",
                 str(config_path),
                 "--vm-id",
-                "agent-sandbox-receptionist-vm",
+                "evander-receptionist-vm",
                 "--model",
                 "gpt-5.4",
-                "agent-sandbox-receptionist-vm-20260330T112127Z-1353036",
+                "evander-receptionist-vm-20260330T112127Z-1353036",
             ],
         ).exit_code
         == 0
@@ -4445,13 +4445,13 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
         assert env["AGENT_MODEL"] == "gpt-5.4"
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
         [
             "resume-agent",
-            "agent-sandbox-receptionist-vm",
+            "evander-receptionist-vm",
             "--config",
             str(config_path),
             "--message",
@@ -4465,7 +4465,7 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
         "--prompt",
         "Continue from Discord",
         "--vm-name",
-        "agent-sandbox-receptionist-vm",
+        "evander-receptionist-vm",
         "--vm-user",
         "agent",
         "--host-control-state-path",
@@ -4621,11 +4621,11 @@ def test_status_json_reports_healthy_state(tmp_path: Path, monkeypatch) -> None:
     sessions_path.write_text(json.dumps(sessions_payload), encoding="utf-8")
 
     monkeypatch.setattr(
-        "agent_sandbox.cli._get_systemd_unit_state",
+        "evander.cli._get_systemd_unit_state",
         lambda unit: UnitStatus(unit=unit, state="active", available=True, detail=None),
     )
     monkeypatch.setattr(
-        "agent_sandbox.cli._check_health_endpoint",
+        "evander.cli._check_health_endpoint",
         lambda name, url: EndpointStatus(
             name=name,
             url=url,
@@ -4658,11 +4658,11 @@ def test_status_human_output_reports_degraded_state(tmp_path: Path, monkeypatch)
     email_store_path.unlink()
 
     monkeypatch.setattr(
-        "agent_sandbox.cli._get_systemd_unit_state",
+        "evander.cli._get_systemd_unit_state",
         lambda unit: UnitStatus(unit=unit, state="inactive", available=True, detail=None),
     )
     monkeypatch.setattr(
-        "agent_sandbox.cli._check_health_endpoint",
+        "evander.cli._check_health_endpoint",
         lambda name, url: EndpointStatus(
             name=name,
             url=url,
@@ -4708,7 +4708,7 @@ def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(
     )
 
     monkeypatch.setattr(
-        "agent_sandbox.cli._get_systemd_unit_state",
+        "evander.cli._get_systemd_unit_state",
         lambda unit: UnitStatus(unit=unit, state="active", available=True, detail=None),
     )
 
@@ -4716,7 +4716,7 @@ def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(
         checked_urls.append((name, url))
         return EndpointStatus(name=name, url=url, reachable=True, status_code=200, error=None)
 
-    monkeypatch.setattr("agent_sandbox.cli._check_health_endpoint", fake_check)
+    monkeypatch.setattr("evander.cli._check_health_endpoint", fake_check)
 
     result = runner.invoke(app, ["status", "--config", str(config_path), "--json"])
 
@@ -4748,7 +4748,7 @@ def test_trigger_orchestrator_once_runs_single_cycle(tmp_path: Path, monkeypatch
             raise AssertionError("run_forever should not be called in --once mode")
 
     monkeypatch.setattr(
-        "agent_sandbox.cli.build_trigger_orchestrator_worker", lambda cfg, **kwargs: _FakeWorker()
+        "evander.cli.build_trigger_orchestrator_worker", lambda cfg, **kwargs: _FakeWorker()
     )
 
     result = runner.invoke(
@@ -4780,7 +4780,7 @@ def test_discord_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> Non
             raise AssertionError("run_forever should not be called in --once mode")
 
     monkeypatch.setattr(
-        "agent_sandbox.cli.build_discord_wake_worker", lambda cfg, **kwargs: _FakeWorker()
+        "evander.cli.build_discord_wake_worker", lambda cfg, **kwargs: _FakeWorker()
     )
 
     result = runner.invoke(
@@ -4808,7 +4808,7 @@ def test_scheduled_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> N
             raise AssertionError("run_forever should not be called in --once mode")
 
     monkeypatch.setattr(
-        "agent_sandbox.cli.build_scheduled_wake_worker", lambda cfg, **kwargs: _FakeWorker()
+        "evander.cli.build_scheduled_wake_worker", lambda cfg, **kwargs: _FakeWorker()
     )
 
     result = runner.invoke(
@@ -4842,7 +4842,7 @@ def test_teams_ingest_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> Non
             raise AssertionError("run_forever should not be called in --once mode")
 
     monkeypatch.setattr(
-        "agent_sandbox.cli._build_teams_ingest_worker", lambda cfg, **kwargs: _FakeWorker()
+        "evander.cli._build_teams_ingest_worker", lambda cfg, **kwargs: _FakeWorker()
     )
 
     result = runner.invoke(

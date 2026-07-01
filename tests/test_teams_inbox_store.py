@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 
 
 def _message(

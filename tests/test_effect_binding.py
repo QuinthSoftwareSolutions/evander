@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sandbox.effects.binding import BindingResolutionError, resolve_effect_config_bindings
+from evander.effects.binding import BindingResolutionError, resolve_effect_config_bindings
 
 
 def test_resolve_nested_object_and_list_bindings() -> None:
@@ -73,11 +73,11 @@ def test_missing_output_reference_raises_in_strict_mode() -> None:
 def test_mixed_literal_and_substitution_coerces_to_string() -> None:
     result = resolve_effect_config_bindings(
         {"prompt": "Ticket ${{trigger_1.ticket_id}} in ${{trigger_1.repo}}"},
-        upstream_payload={"trigger_1": {"ticket_id": 42, "repo": "agent-orchestrator"}},
+        upstream_payload={"trigger_1": {"ticket_id": 42, "repo": "evander"}},
         declared_upstream_output_names={"trigger_1": {"ticket_id", "repo"}},
     )
 
-    assert result.resolved_config == {"prompt": "Ticket 42 in agent-orchestrator"}
+    assert result.resolved_config == {"prompt": "Ticket 42 in evander"}
     assert result.trace.consumed_output_keys == ("trigger_1.repo", "trigger_1.ticket_id")
 
 

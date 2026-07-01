@@ -3,13 +3,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from agent_sandbox.effects.providers.base import EffectProviderBase
-from agent_sandbox.queries.providers.base import QueryProviderBase
-from agent_sandbox.workflow.catalog import (
+from evander.effects.providers.base import EffectProviderBase
+from evander.queries.providers.base import QueryProviderBase
+from evander.workflow.catalog import (
     WorkflowEditorFieldDefinition,
     WorkflowEditorNodeCatalogEntry,
 )
-from agent_sandbox.workflow.plugins import ProviderPluginRegistration
+from evander.workflow.plugins import ProviderPluginRegistration
 
 from .api import _execute_prepared_action
 from .client import BokioClient

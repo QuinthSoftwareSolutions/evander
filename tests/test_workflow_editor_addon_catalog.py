@@ -3,10 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from starlette.testclient import TestClient
-
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.web.app import create_app
+from evander.admin.composition import build_admin_runtime
 
 
 def _write_gateway_config(tmp_path: Path) -> Path:
@@ -75,10 +72,10 @@ def _write_invalid_trigger_config_with_team_addon(tmp_path: Path) -> None:
 
 def _catalog_payload(tmp_path: Path, *, enable_team_addon: bool) -> dict[str, object]:
     _write_trigger_config(tmp_path, enable_team_addon=enable_team_addon)
-    client = TestClient(create_app(build_admin_runtime(_write_gateway_config(tmp_path))))
-    response = client.get("/api/workflow-editor/catalog?directory_path=root")
-    assert response.status_code == 200
-    return response.json()
+    runtime = build_admin_runtime(_write_gateway_config(tmp_path))
+    return runtime.workflow_config_admin.read_workflow_editor_catalog(
+        directory_path="root"
+    ).model_dump(mode="json")
 
 
 def test_workflow_editor_catalog_excludes_addon_nodes_when_addon_disabled(
@@ -87,9 +84,13 @@ def test_workflow_editor_catalog_excludes_addon_nodes_when_addon_disabled(
     payload = _catalog_payload(tmp_path, enable_team_addon=False)
 
     node_types = {node["type"] for node in payload["nodes"]}
+    internal_event_types = {
+        entry["event_type"] for entry in payload.get("internal_events", [])
+    }
 
     assert "effect:team:wake-due-agents" not in node_types
     assert "query:team:state" not in node_types
+    assert "team.agent.wake_requested" not in internal_event_types
 
 
 def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
@@ -98,16 +99,41 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     payload = _catalog_payload(tmp_path, enable_team_addon=True)
 
     nodes = {node["type"]: node for node in payload["nodes"]}
+    internal_events = {entry["event_type"]: entry for entry in payload["internal_events"]}
     wake = nodes["effect:team:wake-due-agents"]
     finalize_dispatch = nodes["effect:team:finalize-agent-dispatch"]
     create_task = nodes["effect:team:create-task"]
     create_case = nodes["effect:team:create-case"]
     update_case = nodes["effect:team:update-case"]
     read_state = nodes["query:team:state"]
+    internal_event_trigger = nodes["trigger:event"]
+    internal_event_field = next(
+        field for field in internal_event_trigger["fields"] if field["key"] == "event_type"
+    )
+    internal_event_options = {
+        option["value"]: option for option in internal_event_field["options"]
+    }
 
     assert "query:team:agent-action-artifact" not in nodes
     assert "effect:team:apply-agent-action" not in nodes
     assert "effect:team:apply-ephemeral-action" not in nodes
+    assert set(internal_events) >= {
+        "team.chat.message_queued",
+        "team.agent.wake_requested",
+        "team.ephemeral.requested",
+        "team.ephemeral.completed",
+        "team.operator.escalation_requested",
+        "team.git.promotion_requested",
+        "team.git.release_recovery_requested",
+    }
+    assert internal_events["team.agent.wake_requested"]["label"] == "Team agent wake requested"
+    assert internal_events["team.agent.wake_requested"]["source"] == "Team Add-on"
+    assert internal_event_options["team.agent.wake_requested"]["label"] == (
+        "Team agent wake requested"
+    )
+    assert internal_event_options["team.agent.wake_requested"]["metadata"] == {
+        "source": "Team Add-on"
+    }
     assert wake["kind"] == "effect"
     assert wake["label"] == "Wake Team agents"
     assert wake["description"]
@@ -160,11 +186,11 @@ def test_workflow_editor_catalog_uses_loader_settings_when_workflow_config_is_in
     tmp_path: Path,
 ) -> None:
     _write_invalid_trigger_config_with_team_addon(tmp_path)
-    client = TestClient(create_app(build_admin_runtime(_write_gateway_config(tmp_path))))
+    runtime = build_admin_runtime(_write_gateway_config(tmp_path))
 
-    response = client.get("/api/workflow-editor/catalog?directory_path=root")
-
-    assert response.status_code == 200
-    nodes = {node["type"]: node for node in response.json()["nodes"]}
+    catalog_payload = runtime.workflow_config_admin.read_workflow_editor_catalog(
+        directory_path="root"
+    ).model_dump(mode="json")
+    nodes = {node["type"]: node for node in catalog_payload["nodes"]}
     assert "trigger:cron" in nodes
     assert "effect:team:wake-due-agents" in nodes

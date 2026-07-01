@@ -6,16 +6,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
+from evander.config import GatewayConfig
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.session_revoke_mcp_tool_approval_lease import (
     SessionRevokeMcpToolApprovalLeaseEffectProvider,
 )
-from agent_sandbox.events.provider_models import (
+from evander.events.provider_models import (
     SessionRevokeMcpToolApprovalLeaseEffectDefinition,
 )
-from agent_sandbox.models import ToolName
-from agent_sandbox.repositories.session_tool_approval_leases import (
+from evander.models import ToolName
+from evander.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
 )
 

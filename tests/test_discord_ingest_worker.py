@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directories import DirectoryService
-from agent_sandbox.messaging.targets import (
+from evander.config import GatewayConfig
+from evander.directories import DirectoryService
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.messaging.discord_ingest import build_discord_ingest_worker
-from agent_sandbox.models import SessionManifest, ToolName
+from evander.messaging.discord_ingest import build_discord_ingest_worker
+from evander.models import SessionManifest, ToolName
 
 
 def ensure_directory(worker, directory_path: str) -> None:

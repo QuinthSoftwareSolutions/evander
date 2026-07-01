@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_sandbox.bootstrap import load_host_bootstrap_config, load_runtime_gateway_config
-from agent_sandbox.host_config import build_runtime_gateway_config
-from agent_sandbox.issues.service import IssueService
-from agent_sandbox.migrations import (
+from evander.bootstrap import load_host_bootstrap_config, load_runtime_gateway_config
+from evander.host_config import build_runtime_gateway_config
+from evander.issues.service import IssueService
+from evander.migrations import (
     LOCAL_ISSUE_MIGRATION_MARKER_RELATIVE_PATH,
     migrate_local_issues_to_unified_schema,
 )

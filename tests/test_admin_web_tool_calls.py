@@ -6,11 +6,11 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.web.app import create_app
-from agent_sandbox.audit import AuditLogger
-from agent_sandbox.models import AuditEvent
-from agent_sandbox.repositories.audit_index import ToolCallAuditIndex, audit_index_path_for_log_path
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.web.app import create_app
+from evander.audit import AuditLogger
+from evander.models import AuditEvent
+from evander.repositories.audit_index import ToolCallAuditIndex, audit_index_path_for_log_path
 
 
 def write_config(tmp_path: Path) -> Path:

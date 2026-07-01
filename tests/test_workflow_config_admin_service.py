@@ -4,8 +4,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sandbox.admin.services.process_helpers import resolve_path_setting
-from agent_sandbox.admin.services.workflow_config_service import (
+from evander.admin.services.process_helpers import resolve_path_setting
+from evander.admin.services.workflow_config_service import (
     WorkflowConfigAdminDependencies,
     WorkflowConfigAdminService,
 )
@@ -42,7 +42,10 @@ def _make_service(
     return WorkflowConfigAdminService(
         WorkflowConfigAdminDependencies(
             project_dir=tmp_path,
-            config=SimpleNamespace(model_dump=lambda **_kwargs: {}),
+            config=SimpleNamespace(
+                runtime_dir=tmp_path / "runtime",
+                model_dump=lambda **_kwargs: {},
+            ),
             skill_library=EmptySkillLibrary(),
             directory_admin=SimpleNamespace(),
             admin_config_mutation_lock=admin_config_mutation_lock or _null_lock,

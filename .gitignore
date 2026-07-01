@@ -20,6 +20,9 @@ runtime/
 .codex
 .worktrees/
 AGENT_TASK.yaml
+/.evander/
+/.evander/review-context.env
+# Legacy local state/review context from the retired operational name.
 /.agent-sandbox/
 /.agent-sandbox/review-context.env
 git-remotes/
@@ -80,8 +83,6 @@ tasks/
 !ansible/roles/worker_container_egress_policy/tasks/main.yml
 frontend/workflow-editor/node_modules/
 frontend/workflow-editor/tsconfig.tsbuildinfo
-frontend/workflow-editor/evander-logo-dark.png
-frontend/workflow-editor/evander-logo-light.png
 **/dist/*
 /integrations/teams-meeting-media-bridge/**/bin/
 /integrations/teams-meeting-media-bridge/**/obj/

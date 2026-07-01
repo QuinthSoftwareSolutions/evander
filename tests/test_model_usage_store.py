@@ -4,11 +4,11 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.model_usage.models import (
+from evander.model_usage.models import (
     ModelInferenceUsageEvent,
     ModelUsageCorrelationContext,
 )
-from agent_sandbox.model_usage.store import ModelUsageStore, model_usage_store_db_path
+from evander.model_usage.store import ModelUsageStore, model_usage_store_db_path
 
 
 def _store(tmp_path: Path) -> ModelUsageStore:

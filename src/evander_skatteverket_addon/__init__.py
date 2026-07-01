@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_sandbox.addons import AddonAdminNavigation, AddonRegistration
+from evander.addons import AddonAdminNavigation, AddonRegistration
 
 from .api import admin_api_routes
 from .catalog import ADDON_ID, STATE_DB

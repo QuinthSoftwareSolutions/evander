@@ -32,49 +32,49 @@ runcmd:
   - systemctl enable ssh
   - systemctl start ssh
   - printf '%s\n' 'nameserver 9.9.9.9' > /etc/resolv.conf
-  - mkdir -p /opt/agent-sandbox/nuget-cache-ro
+  - mkdir -p /opt/evander/nuget-cache-ro
   - mkdir -p /home/agent/.nuget/packages-local
   - mkdir -p /home/agent/.nuget/http-cache
-  - install -d -m 0700 -o agent -g agent /home/agent/.agent-sandbox
+  - install -d -m 0700 -o agent -g agent /home/agent/.evander
   - install -d -m 0775 -o agent -g agent /artifacts
   - ln -sfn /artifacts /home/agent/artifacts
   - chown -h agent:agent /home/agent/artifacts
-  - install -d -m 0700 -o root -g root /var/log/agent-sandbox/agent-runs
-  - mount -t __NUGET_CACHE_FS_TYPE__ -o __NUGET_CACHE_MOUNT_OPTIONS__ __NUGET_CACHE_TAG__ /opt/agent-sandbox/nuget-cache-ro || true
-  - grep -q '^__NUGET_CACHE_TAG__ /opt/agent-sandbox/nuget-cache-ro __NUGET_CACHE_FS_TYPE__ __NUGET_CACHE_MOUNT_OPTIONS__ 0 0$' /etc/fstab || printf '%s\n' '__NUGET_CACHE_TAG__ /opt/agent-sandbox/nuget-cache-ro __NUGET_CACHE_FS_TYPE__ __NUGET_CACHE_MOUNT_OPTIONS__ 0 0' >> /etc/fstab
+  - install -d -m 0700 -o root -g root /var/log/evander/agent-runs
+  - mount -t __NUGET_CACHE_FS_TYPE__ -o __NUGET_CACHE_MOUNT_OPTIONS__ __NUGET_CACHE_TAG__ /opt/evander/nuget-cache-ro || true
+  - grep -q '^__NUGET_CACHE_TAG__ /opt/evander/nuget-cache-ro __NUGET_CACHE_FS_TYPE__ __NUGET_CACHE_MOUNT_OPTIONS__ 0 0$' /etc/fstab || printf '%s\n' '__NUGET_CACHE_TAG__ /opt/evander/nuget-cache-ro __NUGET_CACHE_FS_TYPE__ __NUGET_CACHE_MOUNT_OPTIONS__ 0 0' >> /etc/fstab
   - chown -R agent:agent /home/agent
 write_files:
-  - path: /etc/agent-sandbox/session.env
+  - path: /etc/evander/session.env
     owner: root:root
     permissions: "0644"
     content: |
-      AGENT_SANDBOX_GATEWAY_URL=__GATEWAY_URL__
-      AGENT_SANDBOX_SESSION_ID=__SESSION_ID__
+      EVANDER_GATEWAY_URL=__GATEWAY_URL__
+      EVANDER_SESSION_ID=__SESSION_ID__
       HTTP_TARGET_RELAY_BASE_URL=__HTTP_TARGET_RELAY_BASE_URL__
-      AGENT_SANDBOX_LLM_BASE_URL=__LLM_BASE_URL__
-      AGENT_SANDBOX_ANTHROPIC_BASE_URL=__ANTHROPIC_BASE_URL__
+      EVANDER_LLM_BASE_URL=__LLM_BASE_URL__
+      EVANDER_ANTHROPIC_BASE_URL=__ANTHROPIC_BASE_URL__
       OPENAI_BASE_URL=__LLM_BASE_URL__
       ANTHROPIC_BASE_URL=__ANTHROPIC_BASE_URL__
-      AGENT_SANDBOX_ARTIFACTS_DIR=/artifacts
-      AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES=__NUGET_FALLBACK_PACKAGES__
+      EVANDER_ARTIFACTS_DIR=/artifacts
+      EVANDER_NUGET_FALLBACK_PACKAGES=__NUGET_FALLBACK_PACKAGES__
       NUGET_PACKAGES=__NUGET_PACKAGES__
       NUGET_HTTP_CACHE_PATH=__NUGET_HTTP_CACHE_PATH__
   - path: /home/agent/.agent/config.env
     owner: agent:agent
     permissions: "0600"
     content: |
-      AGENT_SANDBOX_PROVIDER_CONFIG_VERSION=1
+      EVANDER_PROVIDER_CONFIG_VERSION=1
       HTTP_TARGET_RELAY_BASE_URL=__HTTP_TARGET_RELAY_BASE_URL__
-      AGENT_SANDBOX_LLM_BASE_URL=__LLM_BASE_URL__
-      AGENT_SANDBOX_ANTHROPIC_BASE_URL=__ANTHROPIC_BASE_URL__
+      EVANDER_LLM_BASE_URL=__LLM_BASE_URL__
+      EVANDER_ANTHROPIC_BASE_URL=__ANTHROPIC_BASE_URL__
   - path: /home/agent/.profile
     owner: agent:agent
     permissions: "0644"
     append: true
     content: |
-      if [ -f /etc/agent-sandbox/session.env ]; then
+      if [ -f /etc/evander/session.env ]; then
         set -a
-        . /etc/agent-sandbox/session.env
+        . /etc/evander/session.env
         set +a
       fi
       export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"

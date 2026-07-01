@@ -15,11 +15,11 @@ def test_python_package_bootstrap_docs_and_script_are_present() -> None:
     assert 'HOST_PYTHON_BIN="${HOST_PYTHON_BIN:-python3}"' in script
     assert 'GUEST_PYTHON_BIN="${GUEST_PYTHON_BIN:-python3}"' in script
     assert (
-        'GUEST_VENV_PATH="${GUEST_VENV_PATH:-/home/${VM_USER}/.agent-sandbox/python-tools-venv}"'
+        'GUEST_VENV_PATH="${GUEST_VENV_PATH:-/home/${VM_USER}/.evander/python-tools-venv}"'
         in script
     )
     assert (
-        'GUEST_WHEELHOUSE_DIR="${GUEST_WHEELHOUSE_DIR:-/home/${VM_USER}/.agent-sandbox/python-wheelhouse/tools}"'
+        'GUEST_WHEELHOUSE_DIR="${GUEST_WHEELHOUSE_DIR:-/home/${VM_USER}/.evander/python-wheelhouse/tools}"'
         in script
     )
     assert '"${HOST_PYTHON_BIN}" -m ensurepip --upgrade' in script

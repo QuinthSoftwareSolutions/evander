@@ -6,15 +6,15 @@ from unittest.mock import patch
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.approval_notifications import ApprovalNotificationDispatcher
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryStore
-from agent_sandbox.messaging.targets import (
+from evander.config import GatewayConfig
+from evander.approval_notifications import ApprovalNotificationDispatcher
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryStore
+from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
-from agent_sandbox.models import (
+from evander.models import (
     ApprovalNotificationDeliveryStatus,
     ApprovalNotificationStatus,
     ApprovalRequest,
@@ -22,7 +22,7 @@ from agent_sandbox.models import (
     SessionManifest,
     ToolName,
 )
-from agent_sandbox.runtime import build_runtime
+from evander.runtime import build_runtime
 
 
 def _write_root_policy_overlay(config: GatewayConfig, payload: dict[str, object]) -> None:
@@ -74,7 +74,7 @@ def test_approval_notifications_are_disabled_when_no_targets_are_configured(
     runtime = _runtime(tmp_path, approval_notification_target_ids=[])
     runtime.session_repository.upsert_session(_session_manifest())
 
-    with patch("agent_sandbox.approval_notifications.NotificationSender.send") as send_mock:
+    with patch("evander.approval_notifications.NotificationSender.send") as send_mock:
         approval = runtime.policy.create_approval(
             "session-1",
             "email_send_approved",
@@ -94,7 +94,7 @@ def test_approval_notifications_send_safe_message_to_configured_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", "https://admin.example.com")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PUBLIC_BASE_URL", "https://admin.example.com")
     _write_targets(
         tmp_path,
         [
@@ -150,7 +150,7 @@ def test_approval_notifications_send_safe_message_to_configured_targets(
         "authorization": "Bearer secret",
         "nested": {"token": "nested-secret", "safe": "ok"},
     }
-    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+    with patch("evander.approval_notifications.NotificationSender.send", new=fake_send):
         approval = runtime.policy.create_approval(
             "session-1",
             "email_send_approved",
@@ -207,7 +207,7 @@ def test_approval_notifications_fallback_to_local_admin_web_url_when_public_base
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_PUBLIC_BASE_URL", raising=False)
     _write_targets(
         tmp_path,
         [
@@ -229,7 +229,7 @@ def test_approval_notifications_fallback_to_local_admin_web_url_when_public_base
         send_calls.append(kwargs)
         return {"success": True, "provider": "teams", "communication_target_id": "ops-approvals"}
 
-    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+    with patch("evander.approval_notifications.NotificationSender.send", new=fake_send):
         approval = runtime.policy.create_approval(
             "session-1",
             "email_send_approved",
@@ -249,11 +249,11 @@ def test_approval_notifications_read_public_base_url_from_admin_web_env_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_PUBLIC_BASE_URL", raising=False)
     admin_env_path = tmp_path / "config" / "admin-web.env"
     admin_env_path.parent.mkdir(parents=True)
     admin_env_path.write_text(
-        'AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL="https://admin.example.com/control/"\n',
+        'EVANDER_ADMIN_WEB_PUBLIC_BASE_URL="https://admin.example.com/control/"\n',
         encoding="utf-8",
     )
     _write_targets(
@@ -277,7 +277,7 @@ def test_approval_notifications_read_public_base_url_from_admin_web_env_file(
         send_calls.append(kwargs)
         return {"success": True, "provider": "teams", "communication_target_id": "ops-approvals"}
 
-    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+    with patch("evander.approval_notifications.NotificationSender.send", new=fake_send):
         approval = runtime.policy.create_approval(
             "session-1",
             "email_send_approved",
@@ -359,7 +359,7 @@ def test_approval_notifications_ignore_guest_allowlists(tmp_path: Path, monkeypa
         send_calls.append(kwargs)
         return {"success": True, "provider": "teams", "communication_target_id": "ops-approvals"}
 
-    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+    with patch("evander.approval_notifications.NotificationSender.send", new=fake_send):
         approval = runtime.policy.create_approval(
             "session-1",
             "email_send_approved",
@@ -426,7 +426,7 @@ def test_approval_notification_dispatch_uses_persisted_target_ids(
         }
 
     with (
-        patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send),
+        patch("evander.approval_notifications.NotificationSender.send", new=fake_send),
         patch.object(
             runtime.policy_config,
             "resolve_for_directory",
@@ -478,7 +478,7 @@ def test_approval_notification_dispatch_records_failure_for_persisted_target_ids
         raise RuntimeError(f"unknown communication target: {kwargs['communication_target_id']}")
 
     with (
-        patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send),
+        patch("evander.approval_notifications.NotificationSender.send", new=fake_send),
         patch.object(
             runtime.policy_config,
             "resolve_for_directory",
@@ -528,7 +528,7 @@ def test_duplicate_approval_submission_does_not_resend_notifications(
         send_calls.append(kwargs)
         return {"success": True, "provider": "teams", "communication_target_id": "ops-approvals"}
 
-    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+    with patch("evander.approval_notifications.NotificationSender.send", new=fake_send):
         first = runtime.policy.create_approval(
             "session-1",
             "email_send_approved",
@@ -591,7 +591,7 @@ def test_stale_approval_submission_refreshes_and_resends_notifications(
         send_calls.append(kwargs)
         return {"success": True, "provider": "teams", "communication_target_id": "ops-approvals"}
 
-    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+    with patch("evander.approval_notifications.NotificationSender.send", new=fake_send):
         first = runtime.policy.create_approval(
             "session-1",
             "email_send_approved",
@@ -677,7 +677,7 @@ def test_approval_notification_failures_are_recorded_per_target(
             return {"success": True, "provider": "teams", "communication_target_id": "ops-primary"}
         raise RuntimeError("notification relay unavailable")
 
-    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+    with patch("evander.approval_notifications.NotificationSender.send", new=fake_send):
         approval = runtime.policy.create_approval(
             "session-1",
             "email_send_approved",

@@ -67,7 +67,7 @@ import {
 } from "./types";
 import { ApiError } from "./features/admin/api";
 import { useAdminUi, type DirectoryTreeNode } from "./features/admin/AdminContext";
-import { CopyIcon, HistoryIcon, PlusIcon, SettingsIcon } from "./features/admin/PageActionIcons";
+import { CopyIcon, EditIcon, HistoryIcon, PlusIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
 import { hashQueryParam } from "./adminRouting";
 import { graphVisibleInDirectory } from "./workflowGraphDirectory";
@@ -550,7 +550,7 @@ const WORKFLOW_SIDEBAR_RESIZE_STEP = 32;
 const WORKFLOW_COMPACT_BREAKPOINT = 980;
 const WORKFLOW_GENERATOR_MIN_DESCRIPTION_LENGTH = 24;
 const WORKFLOW_UNDO_HISTORY_LIMIT = 50;
-const NODE_TYPE_DRAG_DATA_MIME = "application/x-agent-sandbox-workflow-node-type";
+const NODE_TYPE_DRAG_DATA_MIME = "application/x-evander-workflow-node-type";
 
 type SidebarResizeState = {
   pointerId: number;
@@ -747,7 +747,7 @@ function emptyConfig(): WorkflowConfig {
 }
 
 function emptyCatalog(): WorkflowEditorCatalog {
-  return { worker_id: "trigger-orchestrator", nodes: [] };
+  return { worker_id: "trigger-orchestrator", nodes: [], internal_events: [] };
 }
 
 function nodeCollections(config: WorkflowConfig) {
@@ -10817,7 +10817,7 @@ export default function App() {
                     aria-label={`Edit ${selectedWorkflowPack.display_name || selectedWorkflowPack.reference}`}
                     title="Edit workflow pack"
                   >
-                    <SettingsIcon />
+                    <EditIcon />
                   </button>
                 ) : null}
                 <button

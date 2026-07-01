@@ -5,8 +5,8 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents
-from agent_sandbox.admin.services import (
+from evander.admin.composition import AdminRuntimeComponents
+from evander.admin.services import (
     ApprovalAuditAdminDependencies,
     ApprovalAuditAdminService,
     CapacityHealthAdminDependencies,
@@ -27,10 +27,10 @@ from agent_sandbox.admin.services import (
     WorkflowReportsAdminDependencies,
     WorkflowReportsAdminService,
 )
-from agent_sandbox.admin.services.teams_service import TeamsGraphClient
+from evander.admin.services.teams_service import TeamsGraphClient
 
-ADMIN_SERVICES_DIR = Path(__file__).resolve().parents[1] / "src" / "agent_sandbox" / "admin" / "services"
-ADMIN_SRC_DIR = Path(__file__).resolve().parents[1] / "src" / "agent_sandbox" / "admin"
+ADMIN_SERVICES_DIR = Path(__file__).resolve().parents[1] / "src" / "evander" / "admin" / "services"
+ADMIN_SRC_DIR = Path(__file__).resolve().parents[1] / "src" / "evander" / "admin"
 
 
 class RecordingHost:

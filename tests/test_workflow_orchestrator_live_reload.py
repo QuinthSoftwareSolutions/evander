@@ -8,14 +8,14 @@ from pathlib import Path
 from threading import Event
 from textwrap import dedent
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.daemons.effect_orchestrator import (
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.daemons.effect_orchestrator import (
     EffectOrchestratorWorker,
     build_effect_orchestrator_worker,
 )
-from agent_sandbox.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
-from agent_sandbox.events.models import TriggerEvent
+from evander.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
+from evander.events.models import TriggerEvent
 
 
 class _QueuedTriggerProvider:
@@ -173,12 +173,12 @@ def _write_reload_provider_module(
             """
             from __future__ import annotations
 
-            from agent_sandbox.events.models import TriggerEvent
-            from agent_sandbox.effects.providers.base import EffectProviderBase
-            from agent_sandbox.gates.providers.base import GateProviderBase
-            from agent_sandbox.queries.providers.base import QueryProviderBase
-            from agent_sandbox.triggers.providers.base import TriggerProviderBase
-            from agent_sandbox.workflow.plugins import ProviderPluginRegistration
+            from evander.events.models import TriggerEvent
+            from evander.effects.providers.base import EffectProviderBase
+            from evander.gates.providers.base import GateProviderBase
+            from evander.queries.providers.base import QueryProviderBase
+            from evander.triggers.providers.base import TriggerProviderBase
+            from evander.workflow.plugins import ProviderPluginRegistration
 
             TRIGGER_EVENT_QUEUE: dict[str, list[TriggerEvent]] = {}
             TRIGGER_POLLS: list[str] = []

@@ -80,8 +80,8 @@ echo "Bootstrapping Playwright into ${VM_USER}@${VM_IP}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
-  mkdir -p ~/toolchains ~/playwright-runtime/node_modules ~/.cache ~/.agent-sandbox
-  chmod 700 ~/.agent-sandbox
+  mkdir -p ~/toolchains ~/playwright-runtime/node_modules ~/.cache ~/.evander
+  chmod 700 ~/.evander
 "
 
 scp "${SSH_OPTS[@]}" -r "${HOST_NODE_ROOT}" "${VM_USER}@${VM_IP}:~/toolchains/node-v24.14.0"
@@ -120,7 +120,7 @@ def repair_missing_profile_fi(profile_lines):
             in_managed_block = False
         out.append(line)
         if stripped in {
-            "if [ -f /etc/agent-sandbox/session.env ]; then",
+            "if [ -f /etc/evander/session.env ]; then",
             'if [ -f "$HOME/.claude/settings.json" ]; then',
         }:
             in_managed_block = True
@@ -136,9 +136,9 @@ playwright_block_start = 'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && com
 managed_exports = {
     'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"',
     'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
-    'export AGENT_SANDBOX_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"',
+    'export EVANDER_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"',
     'export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"',
-    'export NODE_PATH="$AGENT_SANDBOX_PLAYWRIGHT_RUNTIME"',
+    'export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME"',
     'export NODE_PATH="$HOME/playwright-runtime/node_modules"',
     'export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"',
     'export PLAYWRIGHT_MCP_SANDBOX="0"',
@@ -177,16 +177,16 @@ filtered = remove_managed_playwright_lines(lines)
 filtered.extend(
     [
         'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
-        'export AGENT_SANDBOX_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"',
+        'export EVANDER_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"',
         'export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"',
-        'export NODE_PATH="$AGENT_SANDBOX_PLAYWRIGHT_RUNTIME"',
+        'export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME"',
         'export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"',
         'export PLAYWRIGHT_MCP_SANDBOX="0"',
         'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && command -v node >/dev/null 2>&1; then',
-        '  if _agent_sandbox_playwright_chromium="$(node -e \'const fs = require("fs"); const path = require("path"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);\' 2>/dev/null)" && [ -n "$_agent_sandbox_playwright_chromium" ]; then',
-        '    export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$_agent_sandbox_playwright_chromium"',
+        '  if _evander_playwright_chromium="$(node -e \'const fs = require("fs"); const path = require("path"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);\' 2>/dev/null)" && [ -n "$_evander_playwright_chromium" ]; then',
+        '    export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$_evander_playwright_chromium"',
         '  fi',
-        '  unset _agent_sandbox_playwright_chromium',
+        '  unset _evander_playwright_chromium',
         'fi',
     ]
 )
@@ -197,21 +197,21 @@ PY
 append_node_path_setup ~/.profile
 
 export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"
-export AGENT_SANDBOX_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"
+export EVANDER_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"
 export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"
-export NODE_PATH="$AGENT_SANDBOX_PLAYWRIGHT_RUNTIME"
+export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME"
 export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"
 export PLAYWRIGHT_MCP_SANDBOX="0"
-if _agent_sandbox_playwright_chromium="$(node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);' 2>/dev/null)" && [[ -n "${_agent_sandbox_playwright_chromium}" ]]; then
-  export PLAYWRIGHT_MCP_EXECUTABLE_PATH="${_agent_sandbox_playwright_chromium}"
+if _evander_playwright_chromium="$(node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);' 2>/dev/null)" && [[ -n "${_evander_playwright_chromium}" ]]; then
+  export PLAYWRIGHT_MCP_EXECUTABLE_PATH="${_evander_playwright_chromium}"
 else
-  echo "Could not resolve seeded Chromium executable from ${AGENT_SANDBOX_PLAYWRIGHT_RUNTIME}" >&2
+  echo "Could not resolve seeded Chromium executable from ${EVANDER_PLAYWRIGHT_RUNTIME}" >&2
   exit 1
 fi
-unset _agent_sandbox_playwright_chromium
+unset _evander_playwright_chromium
 
 node --version
-node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); console.log(executable); if (!fs.existsSync(executable)) process.exit(3);'
+node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); console.log(executable); if (!fs.existsSync(executable)) process.exit(3);'
 printf 'PLAYWRIGHT_MCP_EXECUTABLE_PATH=%s\n' "${PLAYWRIGHT_MCP_EXECUTABLE_PATH}"
 EOF
 

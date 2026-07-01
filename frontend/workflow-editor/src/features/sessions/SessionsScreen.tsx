@@ -218,7 +218,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_ado_backlog_item: "Fetch a single Azure DevOps backlog item with its latest host-side details.",
   resolve_ado_identity: "Resolve an Azure DevOps user identity for reporting filters.",
   query_ado_work_item_activity: "Find Azure DevOps work items with matching created, changed, or commented activity.",
-  create_local_issue: "Create a local issue record in the selected directory so the session can track work inside agent-sandbox.",
+  create_local_issue: "Create a local issue record in the selected directory so the session can track work inside evander.",
   list_issues: "List local issues that the session is allowed to inspect in the current directory scope.",
   get_issue: "Read the details of a specific local issue, including status, metadata, and body content.",
   set_issue_plan: "Store or update the implementation plan attached to a local issue.",

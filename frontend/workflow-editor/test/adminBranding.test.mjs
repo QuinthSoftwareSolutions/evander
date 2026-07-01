@@ -58,6 +58,20 @@ test("initial branding reads the server bootstrap payload", () => {
 });
 
 test("branding normalization keeps stable defaults", () => {
+  assert.equal(DEFAULT_ADMIN_BRANDING.page_title, "Evander Admin");
+  assert.equal(DEFAULT_ADMIN_BRANDING.header_title, "EVANDER");
+  assert.equal(DEFAULT_ADMIN_BRANDING.header_title_visible, false);
+  assert.equal(DEFAULT_ADMIN_BRANDING.header_logo_size, "wordmark");
+  assert.deepEqual(DEFAULT_ADMIN_BRANDING.product_logo, {
+    light_url: "/api/admin/branding/assets/evander-logo-light.png",
+    dark_url: "/api/admin/branding/assets/evander-logo-dark.png",
+    alt: "Evander Logo",
+  });
+  assert.deepEqual(DEFAULT_ADMIN_BRANDING.company_logo, {
+    light_url: "/api/admin/branding/assets/qss-light.png",
+    dark_url: "/api/admin/branding/assets/qss-dark.png",
+    alt: "Quinth Software Solutions",
+  });
   assert.deepEqual(normalizeAdminBranding(null), DEFAULT_ADMIN_BRANDING);
   assert.deepEqual(normalizeAdminBranding({ page_title: "   ", product_logo: [] }), DEFAULT_ADMIN_BRANDING);
 });
@@ -92,7 +106,7 @@ test("branding normalization trims text and falls header logo back to product lo
   assert.deepEqual(branding.company_logo, {
     light_url: null,
     dark_url: "https://assets.example.test/company-dark.png",
-    alt: "Company logo",
+    alt: "Quinth Software Solutions",
   });
 });
 

@@ -4080,12 +4080,12 @@ Branding changes are global host-side UI settings, not per-directory controls.
 3. Sign-in bar and company logo assets.
 4. Optional relative logo paths through the built-in branding asset route.
 
-Most branding changes are applied through `config/admin-web.env` values in the `AGENT_SANDBOX_ADMIN_WEB_*` family.
+Most branding changes are applied through `config/admin-web.env` values in the `EVANDER_ADMIN_WEB_*` family.
 
 After changing these values:
 
 1. Save the file.
-2. Restart or reload `agent-sandbox-admin-web.service`.
+2. Restart or reload `evander-admin-web.service`.
 3. Refresh browser tabs and confirm the header and sign-in branding.
 
 If a deployment is exposed beyond localhost, confirm TLS and authentication policy as part of branding rollout.
@@ -4450,24 +4450,24 @@ service setting changes and revision handling, use section 16.
 Workers are grouped by role:
 
 1. Workflow automation processing
-   - `agent-sandbox-trigger-orchestrator`
-   - `agent-sandbox-effect-orchestrator`
+   - `evander-trigger-orchestrator`
+   - `evander-effect-orchestrator`
 2. Inbound and resume automation
-   - `agent-sandbox-ado-worker`
-   - `agent-sandbox-proxy-issue-sync`
-   - `agent-sandbox-discord-ingest`
-   - `agent-sandbox-discord-wake`
-   - `agent-sandbox-scheduled-wake`
-   - `agent-sandbox-teams-ingest`
-   - `agent-sandbox-teams-meeting-ingest`
+   - `evander-ado-worker`
+   - `evander-proxy-issue-sync`
+   - `evander-discord-ingest`
+   - `evander-discord-wake`
+   - `evander-scheduled-wake`
+   - `evander-teams-ingest`
+   - `evander-teams-meeting-ingest`
 
 In many deployments, the exact set matches what is installed and enabled on the host.
 If a worker is not active in this environment, it may still appear with a stopped state or not
 show up at all.
 
-Services such as `agent-sandbox-gateway.service`, `agent-sandbox-openai-relay.service`,
-`agent-sandbox-nuget-relay.service`, `agent-sandbox-http-target-relay.service`, and
-`agent-sandbox-admin-web.service` are not Workers-managed entries. Use host service checks for
+Services such as `evander-gateway.service`, `evander-openai-relay.service`,
+`evander-nuget-relay.service`, `evander-http-target-relay.service`, and
+`evander-admin-web.service` are not Workers-managed entries. Use host service checks for
 start, stop, and log review for those units.
 
 What to remember:

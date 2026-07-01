@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.gateway import create_server
-from agent_sandbox.runtime import build_runtime
+from evander.config import GatewayConfig
+from evander.gateway import create_server
+from evander.runtime import build_runtime
 
 
 def test_create_server_registers_admin_operator_tools(tmp_path: Path) -> None:

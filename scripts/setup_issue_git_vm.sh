@@ -20,7 +20,7 @@ Arguments:
   vm-name       libvirt domain name.
   issue-number  Issue identifier used to derive the repo/remote names.
   repo-source   Working tree path or remote URL to mirror.
-                Default: $AGENT_SANDBOX_DEFAULT_REPO_SOURCE
+                Default: $EVANDER_DEFAULT_REPO_SOURCE
   vm-user       Guest user to configure. Default: agent
 EOF
 }
@@ -72,9 +72,9 @@ fi
 
 VM_NAME="$1"
 ISSUE_NUMBER="$2"
-REPO_SOURCE="${3:-${AGENT_SANDBOX_DEFAULT_REPO_SOURCE:-}}"
+REPO_SOURCE="${3:-${EVANDER_DEFAULT_REPO_SOURCE:-}}"
 if [[ -z "${REPO_SOURCE}" ]]; then
-  echo "Missing repo-source: pass [repo-source] or set AGENT_SANDBOX_DEFAULT_REPO_SOURCE." >&2
+  echo "Missing repo-source: pass [repo-source] or set EVANDER_DEFAULT_REPO_SOURCE." >&2
   exit 1
 fi
 VM_USER="${4:-agent}"
@@ -87,4 +87,4 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 echo
 echo "One-command Git setup complete."
 echo "Inside the VM, clone or set the remote to:"
-echo "  ssh://agent-sandbox-git-host${ROOT_DIR}/git-remotes/${ISSUE_NUMBER}_repo.git"
+echo "  ssh://evander-git-host${ROOT_DIR}/git-remotes/${ISSUE_NUMBER}_repo.git"

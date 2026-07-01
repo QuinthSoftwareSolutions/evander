@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from agent_sandbox.models import SessionManifest
+from evander.models import SessionManifest
 from evander_team_addon.git_naming import (
     canonical_release_branch,
     ephemeral_agent_branch,

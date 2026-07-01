@@ -6,23 +6,23 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.events.provider_models import (
+from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     IssueGetQueryDefinition,
     IssueListQueryDefinition,
     VmRunStateQueryDefinition,
 )
-from agent_sandbox.models import LocalIssueRecord, SessionManifest, ToolName, VmSummary
-from agent_sandbox.provider_runtime.adapters import (
+from evander.models import LocalIssueRecord, SessionManifest, ToolName, VmSummary
+from evander.provider_runtime.adapters import (
     AdminRuntimeProviderAdapter,
     build_provider_runtime_ports,
 )
-from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
-from agent_sandbox.queries.providers.issue_list import IssueListQueryProvider
-from agent_sandbox.queries.providers.vm_run_state import VmRunStateQueryProvider
-from agent_sandbox.queries.providers.base import QueryRuntimeContext
+from evander.queries.providers.issue_get import IssueGetQueryProvider
+from evander.queries.providers.issue_list import IssueListQueryProvider
+from evander.queries.providers.vm_run_state import VmRunStateQueryProvider
+from evander.queries.providers.base import QueryRuntimeContext
 
 
 @dataclass

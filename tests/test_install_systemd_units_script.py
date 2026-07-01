@@ -54,22 +54,65 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert "secrets.env" in text
     assert "config/ado-worker.env" not in text
     assert "config/issue-orchestrator/config.json" not in text
-    assert "agent-sandbox-issue-orchestrator.service" not in text
-    assert "agent-sandbox-teams-ingest.service" in text
-    assert "agent-sandbox-trigger-orchestrator.service" in text
-    assert "agent-sandbox-http-target-relay.service" in text
-    assert "agent-sandbox-didww-sip-bridge.service" in text
+    assert "evander-issue-orchestrator.service" not in text
+    assert "evander-teams-ingest.service" in text
+    assert "evander-trigger-orchestrator.service" in text
+    assert "evander-http-target-relay.service" in text
+    assert "evander-didww-sip-bridge.service" in text
+    assert "evander-admin-web.service" in text
+    assert "evander-npm-audit-facade.service" in text
+
+
+def test_install_systemd_units_retires_legacy_agent_sandbox_units() -> None:
+    text = _script_text()
+
+    assert 'LEGACY_LOCAL_SECRETS_FILE="/etc/agent-sandbox/local-secrets.env"' in text
+    assert 'LOCAL_SECRETS_FILE="/etc/evander/local-secrets.env"' in text
+    assert "migrate_legacy_local_secrets" in text
+    assert "retire_legacy_agent_sandbox_units" in text
+    assert "agent-sandbox-gateway.service" in text
     assert "agent-sandbox-admin-web.service" in text
-    assert "agent-sandbox-npm-audit-facade.service" in text
+    assert "agent-sandbox-nexus.service" not in text
+    assert "agent-sandbox-worker-daemon.service" not in text
+    assert 'systemctl disable --now "${unit}"' in text
+    assert 'rm -rf "${SYSTEMD_DIR:?}/${unit}.d"' in text
+    assert 'systemctl enable "${EVANDER_UNITS[@]}"' in text
 
 
 def test_install_systemd_units_preflight_is_service_profile_aware() -> None:
     text = _script_text()
 
-    assert 'SERVICE_PROFILE="${AGENT_SANDBOX_SERVICE_PROFILE:-full}"' in text
+    assert 'SERVICE_PROFILE="${EVANDER_SERVICE_PROFILE:-full}"' in text
+    assert 'SETUP_EXECUTION_BACKEND="${EVANDER_SETUP_EXECUTION_BACKEND:-}"' in text
+    assert 'SETUP_EXECUTION_MODEL="${EVANDER_SETUP_EXECUTION_MODEL:-}"' in text
     assert 'if [[ "${SERVICE_PROFILE}" == "full" ]]; then' in text
+    assert (
+        'elif [[ "${SERVICE_PROFILE}" == "setup" && "${SETUP_EXECUTION_BACKEND}" == "libvirt_vm" ]]; then'
+        in text
+    )
     assert "Skipping virsh check for service profile" in text
+    assert (
+        'if [[ "${SERVICE_PROFILE}" == "setup" && "${SETUP_EXECUTION_MODEL}" == "container_same_host" ]]; then'
+        in text
+    )
+    assert "Install Docker so the same-host container worker can run agent containers." in text
+    assert 'if [[ "${SERVICE_PROFILE}" == "setup" ]]; then' in text
+    assert 'setup_managed_config_severity="warning"' in text
+    assert '"${setup_managed_config_severity}"' in text
     assert '"warning"' in text
+
+
+def test_install_systemd_units_preflight_checks_admin_frontend_assets() -> None:
+    text = _script_text()
+
+    assert "admin_frontend_assets_ready()" in text
+    assert "apt_package_candidate()" in text
+    assert "check_admin_frontend_assets" in text
+    assert "Admin Web frontend assets are built." in text
+    assert "Admin Web frontend assets are missing or stale; npm is available" in text
+    assert "guided setup can install Node.js ${nodejs_version} and npm ${npm_version}" in text
+    assert "Admin Web frontend assets are missing or stale and npm is not installed." in text
+    assert "run guided setup on an apt-based host with sudo available" in text
 
 
 def test_install_systemd_units_no_longer_requires_removed_per_service_env_files() -> None:
@@ -84,43 +127,43 @@ def test_install_systemd_units_no_longer_requires_removed_per_service_env_files(
 def test_service_templates_use_optional_shared_secrets_env() -> None:
     repo = Path(__file__).resolve().parents[1]
 
-    gateway = (repo / "systemd" / "agent-sandbox-gateway.service.template").read_text(
+    gateway = (repo / "systemd" / "evander-gateway.service.template").read_text(
         encoding="utf-8"
     )
-    openai = (repo / "systemd" / "agent-sandbox-openai-relay.service.template").read_text(
+    openai = (repo / "systemd" / "evander-openai-relay.service.template").read_text(
         encoding="utf-8"
     )
-    nuget = (repo / "systemd" / "agent-sandbox-nuget-relay.service.template").read_text(
+    nuget = (repo / "systemd" / "evander-nuget-relay.service.template").read_text(
         encoding="utf-8"
     )
     npm_audit_facade = (
-        repo / "systemd" / "agent-sandbox-npm-audit-facade.service.template"
+        repo / "systemd" / "evander-npm-audit-facade.service.template"
     ).read_text(encoding="utf-8")
-    http_target = (repo / "systemd" / "agent-sandbox-http-target-relay.service.template").read_text(
+    http_target = (repo / "systemd" / "evander-http-target-relay.service.template").read_text(
         encoding="utf-8"
     )
     didww_sip_bridge = (
-        repo / "systemd" / "agent-sandbox-didww-sip-bridge.service.template"
+        repo / "systemd" / "evander-didww-sip-bridge.service.template"
     ).read_text(encoding="utf-8")
-    discord_wake = (repo / "systemd" / "agent-sandbox-discord-wake.service.template").read_text(
+    discord_wake = (repo / "systemd" / "evander-discord-wake.service.template").read_text(
         encoding="utf-8"
     )
-    scheduled_wake = (repo / "systemd" / "agent-sandbox-scheduled-wake.service.template").read_text(
+    scheduled_wake = (repo / "systemd" / "evander-scheduled-wake.service.template").read_text(
         encoding="utf-8"
     )
-    teams_ingest = (repo / "systemd" / "agent-sandbox-teams-ingest.service.template").read_text(
+    teams_ingest = (repo / "systemd" / "evander-teams-ingest.service.template").read_text(
         encoding="utf-8"
     )
-    discord_ingest = (repo / "systemd" / "agent-sandbox-discord-ingest.service.template").read_text(
+    discord_ingest = (repo / "systemd" / "evander-discord-ingest.service.template").read_text(
         encoding="utf-8"
     )
     proxy_issue_sync = (
-        repo / "systemd" / "agent-sandbox-proxy-issue-sync.service.template"
+        repo / "systemd" / "evander-proxy-issue-sync.service.template"
     ).read_text(encoding="utf-8")
     trigger_orchestrator = (
-        repo / "systemd" / "agent-sandbox-trigger-orchestrator.service.template"
+        repo / "systemd" / "evander-trigger-orchestrator.service.template"
     ).read_text(encoding="utf-8")
-    admin_web = (repo / "systemd" / "agent-sandbox-admin-web.service.template").read_text(
+    admin_web = (repo / "systemd" / "evander-admin-web.service.template").read_text(
         encoding="utf-8"
     )
 
@@ -130,7 +173,7 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env" in admin_web
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in admin_web
     assert (
-        "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-admin-web --runtime-dir __PROJECT_DIR__/runtime --host ${ADMIN_WEB_HOST} --port ${ADMIN_WEB_PORT}"
+        "ExecStart=__PROJECT_DIR__/.venv/bin/evander-admin-web --runtime-dir __PROJECT_DIR__/runtime --host ${ADMIN_WEB_HOST} --port ${ADMIN_WEB_PORT}"
         in admin_web
     )
     assert "EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env" in openai
@@ -139,39 +182,39 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in nuget
     assert "EnvironmentFile=-__PROJECT_DIR__/config/npm-audit-facade.env" in npm_audit_facade
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in npm_audit_facade
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-npm-audit-facade" in npm_audit_facade
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-npm-audit-facade" in npm_audit_facade
     assert "EnvironmentFile=-__PROJECT_DIR__/config/http-target-relay.env" in http_target
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in http_target
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-http-target-relay" in http_target
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-http-target-relay" in http_target
     assert "EnvironmentFile=-__PROJECT_DIR__/config/didww-sip-bridge.env" in didww_sip_bridge
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in didww_sip_bridge
     assert (
-        "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-didww-sip-bridge --runtime-dir __PROJECT_DIR__/runtime"
+        "ExecStart=__PROJECT_DIR__/.venv/bin/evander-didww-sip-bridge --runtime-dir __PROJECT_DIR__/runtime"
         in didww_sip_bridge
     )
     assert "Environment=DISCORD_WAKE_LOG_LEVEL=INFO" in discord_wake
     assert "--log-level ${DISCORD_WAKE_LOG_LEVEL}" in discord_wake
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-discord-wake" in discord_wake
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-discord-wake" in discord_wake
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in discord_wake
     assert "Environment=SCHEDULED_WAKE_LOG_LEVEL=INFO" in scheduled_wake
     assert "--log-level ${SCHEDULED_WAKE_LOG_LEVEL}" in scheduled_wake
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-scheduled-wake" in scheduled_wake
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-scheduled-wake" in scheduled_wake
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in scheduled_wake
     assert "Environment=TEAMS_INGEST_LOG_LEVEL=INFO" in teams_ingest
     assert "ExecStart=__PROJECT_DIR__/scripts/run_teams_ingest.sh" in teams_ingest
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in teams_ingest
     assert "Environment=DISCORD_INGEST_LOG_LEVEL=INFO" in discord_ingest
     assert "--log-level ${DISCORD_INGEST_LOG_LEVEL}" in discord_ingest
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-discord-ingest" in discord_ingest
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-discord-ingest" in discord_ingest
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in discord_ingest
     assert "Environment=ADO_WORKER_LOG_LEVEL=INFO" in (
-        repo / "systemd" / "agent-sandbox-ado-worker.service.template"
+        repo / "systemd" / "evander-ado-worker.service.template"
     ).read_text(encoding="utf-8")
     assert "--log-level ${ADO_WORKER_LOG_LEVEL}" in (
-        repo / "systemd" / "agent-sandbox-ado-worker.service.template"
+        repo / "systemd" / "evander-ado-worker.service.template"
     ).read_text(encoding="utf-8")
     assert "Environment=PROXY_ISSUE_SYNC_LOG_LEVEL=INFO" in proxy_issue_sync
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-proxy-issue-sync" in (
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-proxy-issue-sync" in (
         proxy_issue_sync
     )
     assert "--log-level ${PROXY_ISSUE_SYNC_LOG_LEVEL}" in proxy_issue_sync
@@ -185,11 +228,11 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
 def test_wake_service_templates_run_as_operator_user_and_load_shared_secrets() -> None:
     repo = Path(__file__).resolve().parents[1]
 
-    discord_wake = (repo / "systemd" / "agent-sandbox-discord-wake.service.template").read_text(
+    discord_wake = (repo / "systemd" / "evander-discord-wake.service.template").read_text(
         encoding="utf-8"
     )
     scheduled_wake = (
-        repo / "systemd" / "agent-sandbox-scheduled-wake.service.template"
+        repo / "systemd" / "evander-scheduled-wake.service.template"
     ).read_text(encoding="utf-8")
 
     assert discord_wake.count("\nUser=__RUN_USER__\n") == 1
@@ -200,7 +243,7 @@ def test_wake_service_templates_run_as_operator_user_and_load_shared_secrets() -
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in scheduled_wake
     assert "Environment=DISCORD_WAKE_LOG_LEVEL=INFO" in discord_wake
     assert "--log-level ${DISCORD_WAKE_LOG_LEVEL}" in discord_wake
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-discord-wake" in discord_wake
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-discord-wake" in discord_wake
     assert "Environment=SCHEDULED_WAKE_LOG_LEVEL=INFO" in scheduled_wake
     assert "--log-level ${SCHEDULED_WAKE_LOG_LEVEL}" in scheduled_wake
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-scheduled-wake" in scheduled_wake
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-scheduled-wake" in scheduled_wake

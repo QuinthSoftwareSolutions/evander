@@ -9,13 +9,13 @@ import subprocess
 import pytest
 import yaml
 
-import agent_sandbox.admin.services.issue_git_service as issue_git_module
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.services.issue_git_service import (
+import evander.admin.services.issue_git_service as issue_git_module
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.services.issue_git_service import (
     IssueGitAdminDependencies,
     IssueGitAdminService,
 )
-from agent_sandbox.models import LocalIssueRecord, RemoteIssueReference, SessionManifest, ToolName
+from evander.models import LocalIssueRecord, RemoteIssueReference, SessionManifest, ToolName
 
 
 class FakeStore:
@@ -282,14 +282,14 @@ def test_issue_git_admin_service_import_git_repo_uses_explicit_dependencies(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(("git", cmd))
         key = cmd[-1]
-        if key == "agent-sandbox.canonicalOriginUrl":
+        if key == "evander.canonicalOriginUrl":
             return subprocess.CompletedProcess(
                 args=cmd,
                 returncode=0,
                 stdout="https://github.com/example/trusted.git\n",
                 stderr="",
             )
-        if key == "agent-sandbox.baseBranch":
+        if key == "evander.baseBranch":
             return subprocess.CompletedProcess(
                 args=cmd, returncode=0, stdout="main\n", stderr=""
             )
@@ -350,9 +350,9 @@ def test_issue_git_admin_service_push_branch_pushes_with_fixed_git_args(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured.append(cmd)
         args = _git_args(cmd)
-        if args == ["remote", "get-url", "agent-sandbox-pr-origin"]:
+        if args == ["remote", "get-url", "evander-pr-origin"]:
             return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
-        if args[:3] == ["remote", "add", "agent-sandbox-pr-origin"]:
+        if args[:3] == ["remote", "add", "evander-pr-origin"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
         if args == ["rev-parse", "--verify", "review/session/work^{commit}"]:
             return subprocess.CompletedProcess(
@@ -361,13 +361,13 @@ def test_issue_git_admin_service_push_branch_pushes_with_fixed_git_args(
         if args == [
             "ls-remote",
             "--exit-code",
-            "agent-sandbox-pr-origin",
+            "evander-pr-origin",
             "refs/heads/feature/topic",
         ]:
             return subprocess.CompletedProcess(args=cmd, returncode=2, stdout="", stderr="")
         if args == [
             "push",
-            "agent-sandbox-pr-origin",
+            "evander-pr-origin",
             "review/session/work:refs/heads/feature/topic",
         ]:
             return subprocess.CompletedProcess(
@@ -393,7 +393,7 @@ def test_issue_git_admin_service_push_branch_pushes_with_fixed_git_args(
     assert result["local_branch"] == "review/session/work"
     assert result["origin_branch"] == "feature/topic"
     assert result["base_branch"] == "main"
-    assert result["remote_name"] == "agent-sandbox-pr-origin"
+    assert result["remote_name"] == "evander-pr-origin"
     assert (
         result["push_remote_url"]
         == "https://dev.azure.com/example-org/example-project/_git/example-repo"
@@ -402,7 +402,7 @@ def test_issue_git_admin_service_push_branch_pushes_with_fixed_git_args(
     remote_add = next(
         cmd
         for cmd in captured
-        if _git_args(cmd)[:3] == ["remote", "add", "agent-sandbox-pr-origin"]
+        if _git_args(cmd)[:3] == ["remote", "add", "evander-pr-origin"]
     )
     assert remote_add[-1] == "https://dev.azure.com/example-org/example-project/_git/example-repo"
     push_cmd = next(cmd for cmd in captured if _git_args(cmd)[0] == "push")
@@ -430,9 +430,9 @@ def test_issue_git_admin_service_push_branch_uses_converted_auth_remote_without_
                 stdout="git@ssh.dev.azure.com:v3/example-org/example-project/example-repo\n",
                 stderr="",
             )
-        if args == ["remote", "get-url", "agent-sandbox-pr-origin"]:
+        if args == ["remote", "get-url", "evander-pr-origin"]:
             return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
-        if args[:3] == ["remote", "add", "agent-sandbox-pr-origin"]:
+        if args[:3] == ["remote", "add", "evander-pr-origin"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
         if args == ["rev-parse", "--verify", "review/session/work^{commit}"]:
             return subprocess.CompletedProcess(
@@ -441,13 +441,13 @@ def test_issue_git_admin_service_push_branch_uses_converted_auth_remote_without_
         if args == [
             "ls-remote",
             "--exit-code",
-            "agent-sandbox-pr-origin",
+            "evander-pr-origin",
             "refs/heads/feature/topic",
         ]:
             return subprocess.CompletedProcess(args=cmd, returncode=2, stdout="", stderr="")
         if args == [
             "push",
-            "agent-sandbox-pr-origin",
+            "evander-pr-origin",
             "review/session/work:refs/heads/feature/topic",
         ]:
             return subprocess.CompletedProcess(
@@ -465,7 +465,7 @@ def test_issue_git_admin_service_push_branch_uses_converted_auth_remote_without_
     )
 
     assert result["success"] is True
-    assert result["remote_name"] == "agent-sandbox-pr-origin"
+    assert result["remote_name"] == "evander-pr-origin"
     assert (
         result["push_remote_url"]
         == "https://dev.azure.com/example-org/example-project/_git/example-repo"
@@ -473,7 +473,7 @@ def test_issue_git_admin_service_push_branch_uses_converted_auth_remote_without_
     remote_add = next(
         cmd
         for cmd in captured
-        if _git_args(cmd)[:3] == ["remote", "add", "agent-sandbox-pr-origin"]
+        if _git_args(cmd)[:3] == ["remote", "add", "evander-pr-origin"]
     )
     assert remote_add[-1] == "https://dev.azure.com/example-org/example-project/_git/example-repo"
     assert not any(

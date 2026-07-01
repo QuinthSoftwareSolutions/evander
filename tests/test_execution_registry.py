@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.execution import ExecutionBackendKind, build_execution_backend
-from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
-from agent_sandbox.execution.libvirt_backend import LibvirtVmExecutionBackend
+from evander.config import GatewayConfig
+from evander.execution import ExecutionBackendKind, build_execution_backend
+from evander.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
+from evander.execution.libvirt_backend import LibvirtVmExecutionBackend
 
 
 class FakeAdminService:

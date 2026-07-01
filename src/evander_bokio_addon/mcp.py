@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_sandbox.addons import AddonContext
+from evander.addons import AddonContext
 
 from .api import _execute_prepared_action
 from .client import BokioClient

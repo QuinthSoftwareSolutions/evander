@@ -22,7 +22,7 @@ PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py
 Optional custom output path for the trigger report:
 
 ```bash
-AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT=runtime/trigger-conformance-report.json \
+EVANDER_TRIGGER_CONFORMANCE_REPORT=runtime/trigger-conformance-report.json \
 PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py
 ```
 
@@ -35,7 +35,7 @@ PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py
 Optional custom output path for the effect report:
 
 ```bash
-AGENT_SANDBOX_EFFECT_CONFORMANCE_REPORT=runtime/effect-conformance-report.json \
+EVANDER_EFFECT_CONFORMANCE_REPORT=runtime/effect-conformance-report.json \
 PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py
 ```
 

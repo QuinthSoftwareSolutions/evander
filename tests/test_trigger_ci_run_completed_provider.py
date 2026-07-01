@@ -6,11 +6,11 @@ from typing import Any
 
 import httpx
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.provider_models import CiRunCompletedTriggerDefinition
-from agent_sandbox.triggers.providers import ci_run_completed as ci_provider_module
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
-from agent_sandbox.triggers.providers.ci_run_completed import CiRunCompletedTriggerProvider
+from evander.config import GatewayConfig
+from evander.events.provider_models import CiRunCompletedTriggerDefinition
+from evander.triggers.providers import ci_run_completed as ci_provider_module
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.ci_run_completed import CiRunCompletedTriggerProvider
 
 
 class _DirectoryConfigResolver:

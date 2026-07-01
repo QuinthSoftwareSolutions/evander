@@ -6,12 +6,12 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers import ado_post_work_item_comment as provider_module
-from agent_sandbox.effects.providers.ado_post_work_item_comment import (
+from evander.config import GatewayConfig
+from evander.effects.providers import ado_post_work_item_comment as provider_module
+from evander.effects.providers.ado_post_work_item_comment import (
     AdoPostWorkItemCommentEffectProvider,
 )
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.base import EffectRuntimeContext
 
 
 class _IssueServiceStub:

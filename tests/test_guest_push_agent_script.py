@@ -32,7 +32,7 @@ def _git_dir(repo: Path, *args: str, check: bool = True) -> subprocess.Completed
 
 
 def _install_helpers(repo: Path) -> None:
-    bin_dir = repo / ".agent-sandbox" / "bin"
+    bin_dir = repo / ".evander" / "bin"
     bin_dir.mkdir(parents=True)
     for source, destination_name in (
         (NOTE_HELPER, "agent-pr-note"),
@@ -46,19 +46,19 @@ def _install_helpers(repo: Path) -> None:
         repo,
         "config",
         "alias.agent-pr-note",
-        '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" "$@"; }; f',
+        '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.evander/bin/agent-pr-note" "$@"; }; f',
     )
     _git(
         repo,
         "config",
         "alias.push-agent",
-        '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/push-agent" "$@"; }; f',
+        '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.evander/bin/push-agent" "$@"; }; f',
     )
     _git(
         repo,
         "config",
         "alias.sync-base",
-        '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/sync-base" "$@"; }; f',
+        '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.evander/bin/sync-base" "$@"; }; f',
     )
 
 
@@ -92,15 +92,15 @@ def _create_issue_repos(
     _git(agent, "switch", "-c", WORK_BRANCH)
     _git(agent, "config", "user.name", "Truman Bot")
     _git(agent, "config", "user.email", "truman@example.com")
-    _git(agent, "config", "agent-sandbox.sessionId", SESSION_ID)
+    _git(agent, "config", "evander.sessionId", SESSION_ID)
     if configure_issue_number:
-        _git(agent, "config", "agent-sandbox.issueNumber", "1")
-        _git(agent, "config", "agent-sandbox.destinationBranch", ISSUE_BRANCH)
-    _git(agent, "config", "agent-sandbox.branchSuffix", "vm-test")
-    _git(agent, "config", "agent-sandbox.prNotesRef", NOTES_REF)
+        _git(agent, "config", "evander.issueNumber", "1")
+        _git(agent, "config", "evander.destinationBranch", ISSUE_BRANCH)
+    _git(agent, "config", "evander.branchSuffix", "vm-test")
+    _git(agent, "config", "evander.prNotesRef", NOTES_REF)
     if configure_base_branch:
-        _git(agent, "config", "agent-sandbox.baseBranch", "main")
-    _git(agent, "config", "agent-sandbox.workBranch", WORK_BRANCH)
+        _git(agent, "config", "evander.baseBranch", "main")
+    _git(agent, "config", "evander.workBranch", WORK_BRANCH)
     _install_helpers(agent)
 
     _run(["git", "init", "--bare", str(dropbox)])

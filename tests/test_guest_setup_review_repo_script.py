@@ -71,7 +71,7 @@ def test_guest_setup_review_repo_uses_explicit_base_and_head_refs(tmp_path: Path
     )
     _git(prep_repo, "checkout", "main", env=env)
 
-    context_file = prep_repo / ".agent-sandbox" / "review-context.env"
+    context_file = prep_repo / ".evander" / "review-context.env"
     result = subprocess.run(
         [
             "bash",
@@ -98,11 +98,11 @@ def test_guest_setup_review_repo_uses_explicit_base_and_head_refs(tmp_path: Path
     assert context_file.exists()
     assert _git(prep_repo, "rev-parse", "HEAD", env=env).stdout.strip() == head_sha
     assert (
-        _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/base", env=env).stdout.strip()
+        _git(prep_repo, "rev-parse", "refs/evander/review/base", env=env).stdout.strip()
         == target_sha
     )
     assert (
-        _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/head", env=env).stdout.strip()
+        _git(prep_repo, "rev-parse", "refs/evander/review/head", env=env).stdout.strip()
         == head_sha
     )
 
@@ -228,11 +228,11 @@ def test_guest_setup_review_repo_fetches_missing_explicit_commits(tmp_path: Path
     assert f"REVIEW_DIFF_BASE_COMMIT={base_sha}" in result.stdout
     assert _git(prep_repo, "rev-parse", "HEAD", env=env).stdout.strip() == head_sha
     assert (
-        _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/base", env=env).stdout.strip()
+        _git(prep_repo, "rev-parse", "refs/evander/review/base", env=env).stdout.strip()
         == base_sha
     )
     assert (
-        _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/head", env=env).stdout.strip()
+        _git(prep_repo, "rev-parse", "refs/evander/review/head", env=env).stdout.strip()
         == head_sha
     )
 
@@ -316,11 +316,11 @@ def test_guest_setup_review_repo_fails_when_explicit_commit_is_stale(tmp_path: P
         "was not present after fetching agent"
     ) in result.stderr
     assert (
-        _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/base", env=env).stdout.strip()
+        _git(prep_repo, "rev-parse", "refs/evander/review/base", env=env).stdout.strip()
         == base_tip_sha
     )
     head_ref = subprocess.run(
-        ["git", "-C", str(prep_repo), "show-ref", "--verify", "refs/agent-sandbox/review/head"],
+        ["git", "-C", str(prep_repo), "show-ref", "--verify", "refs/evander/review/head"],
         text=True,
         capture_output=True,
         env=env,

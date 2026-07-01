@@ -7,12 +7,12 @@ from typing import Any
 import pytest
 import yaml
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers import ado_update_work_item as provider_module
-from agent_sandbox.effects.providers.ado_update_work_item import AdoUpdateWorkItemEffectProvider
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.models import LocalIssueRecord
-from agent_sandbox.storage import JsonStore
+from evander.config import GatewayConfig
+from evander.effects.providers import ado_update_work_item as provider_module
+from evander.effects.providers.ado_update_work_item import AdoUpdateWorkItemEffectProvider
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.models import LocalIssueRecord
+from evander.storage import JsonStore
 
 
 class _IssueServiceStub:

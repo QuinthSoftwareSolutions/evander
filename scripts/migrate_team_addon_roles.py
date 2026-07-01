@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.storage import JsonObjectStore
+from evander.storage import JsonObjectStore
 from evander_team_addon.models import SCHEMA_VERSION, TeamState
 
 

@@ -9,7 +9,7 @@ import httpx
 import pytest
 import yaml
 
-from agent_sandbox.daemons.ado_issue_worker import (
+from evander.daemons.ado_issue_worker import (
     ProcessedWorkItemStore,
     WorkerConfig,
     _load_ado_pr_feedback_session_bindings,
@@ -26,15 +26,15 @@ from agent_sandbox.daemons.ado_issue_worker import (
     run_worker,
     run_worker_command,
 )
-from agent_sandbox.events.provider_models import (
+from evander.events.provider_models import (
     PullRequestCompletedTriggerDefinition,
     PullRequestNewFeedbackTriggerDefinition,
 )
-from agent_sandbox.models import GetPullRequestResponse, LocalIssueRecord
-from agent_sandbox.pr_feedback import FeedbackEnvelope
-from agent_sandbox.services import PrFeedbackService
-from agent_sandbox.storage import JsonStore
-from agent_sandbox.triggers.queue import TriggerEventQueue
+from evander.models import GetPullRequestResponse, LocalIssueRecord
+from evander.pr_feedback import FeedbackEnvelope
+from evander.services import PrFeedbackService
+from evander.storage import JsonStore
+from evander.triggers.queue import TriggerEventQueue
 
 
 @pytest.fixture
@@ -437,7 +437,7 @@ def test_run_worker_idles_without_directories_or_pat(
         assert seconds == idle_config.poll_interval_seconds
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.time.sleep", stop_after_first_sleep)
+    monkeypatch.setattr("evander.daemons.ado_issue_worker.time.sleep", stop_after_first_sleep)
 
     with pytest.raises(KeyboardInterrupt):
         run_worker(idle_config)
@@ -450,27 +450,27 @@ def test_run_worker_publishes_pr_events_without_work_item_pat(
     configured = WorkerConfig(**{**worker_config.__dict__, "directories": ("root/team-a",)})
     monkeypatch.delenv(configured.pat_env_var_name, raising=False)
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker._require_env",
+        "evander.daemons.ado_issue_worker._require_env",
         lambda _name: pytest.fail("work-item PAT should not be required"),
     )
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker._publish_directory_pr_feedback_events",
+        "evander.daemons.ado_issue_worker._publish_directory_pr_feedback_events",
         lambda **kwargs: calls.append(("feedback", kwargs["directory_path"])) or 0,
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker._publish_directory_pr_completion_events",
+        "evander.daemons.ado_issue_worker._publish_directory_pr_completion_events",
         lambda **kwargs: calls.append(("completion", kwargs["directory_path"])) or 0,
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker._poll_and_process_directory",
+        "evander.daemons.ado_issue_worker._poll_and_process_directory",
         lambda **_kwargs: pytest.fail("work-item polling should not run"),
     )
 
     def stop_after_first_cycle(_seconds: float) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.time.sleep", stop_after_first_cycle)
+    monkeypatch.setattr("evander.daemons.ado_issue_worker.time.sleep", stop_after_first_cycle)
 
     with pytest.raises(KeyboardInterrupt):
         run_worker(configured)
@@ -1203,11 +1203,11 @@ def test_poll_once_attaches_comments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_candidate_ids",
+        "evander.daemons.ado_issue_worker.fetch_candidate_ids",
         lambda **kwargs: [10],
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_batch",
+        "evander.daemons.ado_issue_worker.fetch_work_item_batch",
         lambda **kwargs: [
             {
                 "id": 10,
@@ -1225,7 +1225,7 @@ def test_poll_once_attaches_comments(
         ],
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_comments",
+        "evander.daemons.ado_issue_worker.fetch_work_item_comments",
         lambda **kwargs: [
             {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
         ],
@@ -1257,11 +1257,11 @@ def test_poll_once_skips_comments_for_processed_unchanged_items(
     assert process_work_item(item, config=worker_config, store=store) is True
 
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_candidate_ids",
+        "evander.daemons.ado_issue_worker.fetch_candidate_ids",
         lambda **kwargs: [10],
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_batch",
+        "evander.daemons.ado_issue_worker.fetch_work_item_batch",
         lambda **kwargs: [
             {
                 "id": 10,
@@ -1288,7 +1288,7 @@ def test_poll_once_skips_comments_for_processed_unchanged_items(
         ]
 
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_comments",
+        "evander.daemons.ado_issue_worker.fetch_work_item_comments",
         fake_fetch_comments,
     )
 
@@ -1320,11 +1320,11 @@ def test_poll_once_includes_processed_items_missing_local_issue_record(
         project=worker_config.project,
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_candidate_ids",
+        "evander.daemons.ado_issue_worker.fetch_candidate_ids",
         lambda **kwargs: [10],
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_batch",
+        "evander.daemons.ado_issue_worker.fetch_work_item_batch",
         lambda **kwargs: [
             {
                 "id": 10,
@@ -1342,7 +1342,7 @@ def test_poll_once_includes_processed_items_missing_local_issue_record(
         ],
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_comments",
+        "evander.daemons.ado_issue_worker.fetch_work_item_comments",
         lambda **kwargs: [
             {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
         ],
@@ -1368,7 +1368,7 @@ def test_fetch_work_item_by_id_attaches_comments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_batch",
+        "evander.daemons.ado_issue_worker.fetch_work_item_batch",
         lambda *args, **kwargs: [
             {
                 "id": 10,
@@ -1386,13 +1386,13 @@ def test_fetch_work_item_by_id_attaches_comments(
         ],
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_comments",
+        "evander.daemons.ado_issue_worker.fetch_work_item_comments",
         lambda **kwargs: [
             {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
         ],
     )
 
-    from agent_sandbox.daemons.ado_issue_worker import fetch_work_item_by_id
+    from evander.daemons.ado_issue_worker import fetch_work_item_by_id
 
     with httpx.Client() as client:
         item = fetch_work_item_by_id(
@@ -1444,7 +1444,7 @@ def test_list_unprocessed_work_items_filters_processed(
         project=worker_config.project,
     )
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.poll_once",
+        "evander.daemons.ado_issue_worker.poll_once",
         lambda **kwargs: [
             {
                 "id": 10,
@@ -1483,7 +1483,7 @@ def test_unprocessed_items_for_worker_iterates_configured_directories(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     runtime_gateway_config = yaml.safe_load(
         json.dumps(
@@ -1544,7 +1544,7 @@ def test_poll_and_process_directory_uses_directory_specific_config(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
         {
@@ -1605,7 +1605,7 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -1812,7 +1812,7 @@ def test_publish_directory_pr_feedback_events_handles_agent_authored_feedback(
     suppress_agent_authored_feedback: bool,
     expected_published: int,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -1949,7 +1949,7 @@ def test_publish_directory_pr_completion_events_updates_pr_map_and_enqueues_even
     expected_merged: bool,
     expected_completed_at: str,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -2082,7 +2082,7 @@ def test_publish_directory_pr_feedback_events_uses_explicit_pr_query_candidates_
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
         {
@@ -2272,7 +2272,7 @@ def test_publish_directory_pr_feedback_events_keeps_explicit_stream_unbound_with
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -2413,7 +2413,7 @@ def test_publish_directory_pr_completion_events_uses_explicit_pr_query_candidate
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
         {
@@ -2644,7 +2644,7 @@ def test_publish_directory_pr_completion_events_defaults_explicit_query_to_termi
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
         {
@@ -2746,7 +2746,7 @@ def test_publish_directory_pr_feedback_events_uses_session_ado_project(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -2831,7 +2831,7 @@ def test_publish_directory_pr_feedback_events_skips_missing_pr_stream_and_contin
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -2960,7 +2960,7 @@ def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -3081,7 +3081,7 @@ def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     queue_path = worker_config.runtime_dir / "custom-trigger-events.json"
     trigger_worker_config = ado_worker.TriggerOrchestratorWorkerGlobalConfig.model_validate(
@@ -3184,7 +3184,7 @@ def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path
 
 
 def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: WorkerConfig) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     project_dir = worker_config.gateway_config_path.parent
     (project_dir / "config" / "trigger-orchestrator").mkdir(parents=True)
@@ -3240,7 +3240,7 @@ def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: Wo
 def test_load_ado_pr_completed_triggers_resolves_workflow_packs(
     worker_config: WorkerConfig,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     project_dir = worker_config.gateway_config_path.parent
     (project_dir / "config" / "trigger-orchestrator").mkdir(parents=True)
@@ -3296,7 +3296,7 @@ def test_load_ado_pr_completed_triggers_resolves_workflow_packs(
 def test_resolve_directory_worker_config_uses_each_directorys_repo_source(
     worker_config: WorkerConfig,
 ) -> None:
-    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+    from evander.daemons import ado_issue_worker as ado_worker
 
     directories_path = worker_config.runtime_dir / "directories.json"
     directories_path.write_text(
@@ -3419,7 +3419,7 @@ def test_run_worker_command_list_unprocessed_is_deprecated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker.WorkerConfig.load_from_env", lambda: worker_config
+        "evander.daemons.ado_issue_worker.WorkerConfig.load_from_env", lambda: worker_config
     )
 
     with pytest.raises(SystemExit, match="deprecated"):

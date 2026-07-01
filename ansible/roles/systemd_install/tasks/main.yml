@@ -3,17 +3,17 @@
   ansible.builtin.command:
     cmd: "./scripts/install_systemd_units.sh --preflight"
   args:
-    chdir: "{{ agent_sandbox_deploy_path }}"
+    chdir: "{{ evander_deploy_path }}"
   changed_when: false
   environment:
-    SUDO_USER: "{{ agent_sandbox_run_user }}"
-    AGENT_SANDBOX_SERVICE_PROFILE: "{{ agent_sandbox_service_profile }}"
+    SUDO_USER: "{{ evander_run_user }}"
+    EVANDER_SERVICE_PROFILE: "{{ evander_service_profile }}"
 
 - name: Install repo-native systemd units
   ansible.builtin.command:
     cmd: "./scripts/install_systemd_units.sh"
   args:
-    chdir: "{{ agent_sandbox_deploy_path }}"
+    chdir: "{{ evander_deploy_path }}"
   environment:
-    SUDO_USER: "{{ agent_sandbox_run_user }}"
-    AGENT_SANDBOX_SERVICE_PROFILE: "{{ agent_sandbox_service_profile }}"
+    SUDO_USER: "{{ evander_run_user }}"
+    EVANDER_SERVICE_PROFILE: "{{ evander_service_profile }}"

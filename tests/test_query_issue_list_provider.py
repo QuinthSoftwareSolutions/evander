@@ -7,10 +7,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from agent_sandbox.events.provider_models import IssueListQueryDefinition
-from agent_sandbox.models import LocalIssueRecord, RemoteIssueReference
-from agent_sandbox.queries.providers.base import QueryRuntimeContext
-from agent_sandbox.queries.providers.issue_list import IssueListQueryProvider
+from evander.events.provider_models import IssueListQueryDefinition
+from evander.models import LocalIssueRecord, RemoteIssueReference
+from evander.queries.providers.base import QueryRuntimeContext
+from evander.queries.providers.issue_list import IssueListQueryProvider
 
 
 @dataclass

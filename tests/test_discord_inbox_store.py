@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.messaging.discord_inbox_store import (
+from evander.messaging.discord_inbox_store import (
     DiscordInboxStore,
     discord_inbox_db_path,
 )
-from agent_sandbox.models import DiscordMessageEnvelope
+from evander.models import DiscordMessageEnvelope
 
 
 def _parse_cursor(value: str) -> datetime:

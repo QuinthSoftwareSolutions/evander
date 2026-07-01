@@ -55,32 +55,32 @@ def test_azure_deployment_examples_are_non_secret_templates() -> None:
     vars_payload = yaml.safe_load(vars_text)
     vault_payload = yaml.safe_load(vault_text)
 
-    assert inventory["all"]["vars"]["agent_sandbox_control_plane_public_host"] == "203.0.113.10"
-    assert "AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE" in inventory_text
-    assert "AGENT_SANDBOX_WORKER_SSH_KEY_FILE" in inventory_text
+    assert inventory["all"]["vars"]["evander_control_plane_public_host"] == "203.0.113.10"
+    assert "EVANDER_CONTROL_PLANE_SSH_KEY_FILE" in inventory_text
+    assert "EVANDER_WORKER_SSH_KEY_FILE" in inventory_text
     assert "ProxyCommand" in inventory_text
     assert "StrictHostKeyChecking=accept-new" in inventory_text
     assert "IdentitiesOnly=yes" in inventory_text
-    assert 'agent_sandbox_worker_docker_network: "bridge"' in inventory_text
-    assert "agent_sandbox_worker_egress_policy_enabled: true" in inventory_text
+    assert 'evander_worker_docker_network: "bridge"' in inventory_text
+    assert "evander_worker_egress_policy_enabled: true" in inventory_text
 
-    assert vars_payload["agent_sandbox_repo_url"] == "git@example.com:your-org/agent-sandbox.git"
-    assert vars_payload["agent_sandbox_install_azure_cli"] is True
-    assert vars_payload["agent_sandbox_admin_web_caddy_enabled"] is True
-    assert vars_payload["agent_sandbox_nexus_admin_password"] == (
-        "{{ vault_agent_sandbox_nexus_admin_password | default('') }}"
+    assert vars_payload["evander_repo_url"] == "git@example.com:your-org/evander.git"
+    assert vars_payload["evander_install_azure_cli"] is True
+    assert vars_payload["evander_admin_web_caddy_enabled"] is True
+    assert vars_payload["evander_nexus_admin_password"] == (
+        "{{ vault_evander_nexus_admin_password | default('') }}"
     )
     assert (
-        vars_payload["agent_sandbox_admin_web_env"]["AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL"]
+        vars_payload["evander_admin_web_env"]["EVANDER_ADMIN_WEB_PUBLIC_BASE_URL"]
         == "https://admin.example.com"
     )
 
     assert set(vault_payload) >= {
         "vault_openai_api_key",
         "vault_admin_web_password",
-        "vault_agent_sandbox_repo_ssh_private_key",
-        "vault_agent_sandbox_worker_token",
-        "vault_agent_sandbox_nexus_admin_password",
+        "vault_evander_repo_ssh_private_key",
+        "vault_evander_worker_token",
+        "vault_evander_nexus_admin_password",
     }
     assert all(value == "" for value in vault_payload.values())
 

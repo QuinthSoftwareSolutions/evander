@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_sandbox.agent_context_retry import (
+from evander.agent_context_retry import (
     build_reduced_context_retry_prompt,
     context_exhaustion_reason,
 )

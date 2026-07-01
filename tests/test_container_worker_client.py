@@ -3,13 +3,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from agent_sandbox.capacity_health import TelemetryStatus
-from agent_sandbox.execution.container_worker_client import (
+from evander.capacity_health import TelemetryStatus
+from evander.execution.container_worker_client import (
     ContainerWorkerClient,
     ContainerWorkerClientError,
 )
-from agent_sandbox.worker.models import WorkerJobRequest
-from agent_sandbox.worker.models import (
+from evander.worker.models import WorkerJobRequest
+from evander.worker.models import (
     WorkerFileWriteRequest,
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
@@ -391,7 +391,7 @@ def test_container_worker_client_retries_connect_failure_before_create_success(
     exception_class: type[httpx.HTTPError],
 ) -> None:
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
-    monkeypatch.setattr("agent_sandbox.execution.container_worker_client.random.random", lambda: 0.5)
+    monkeypatch.setattr("evander.execution.container_worker_client.random.random", lambda: 0.5)
     requests: list[httpx.Request] = []
     sleeps: list[float] = []
 
@@ -423,7 +423,7 @@ def test_container_worker_client_exhausts_connect_retries_with_capped_backoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
-    monkeypatch.setattr("agent_sandbox.execution.container_worker_client.random.random", lambda: 0.5)
+    monkeypatch.setattr("evander.execution.container_worker_client.random.random", lambda: 0.5)
     requests: list[httpx.Request] = []
     sleeps: list[float] = []
 

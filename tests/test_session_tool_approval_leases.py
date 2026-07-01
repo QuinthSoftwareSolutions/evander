@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
-from agent_sandbox.models import ApprovalGrantSettings, ToolName
-from agent_sandbox.repositories.session_tool_approval_leases import (
+from evander.models import ApprovalGrantSettings, ToolName
+from evander.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
 )
 

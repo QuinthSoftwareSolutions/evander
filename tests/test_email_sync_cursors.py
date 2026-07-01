@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.email.cursor_store import DurableCursorStore, EmailSyncCursor
-from agent_sandbox.email.gmail_provider import GmailEmailProvider
-from agent_sandbox.email.graph_provider import GraphEmailProvider
-from agent_sandbox.email.providers import EmailMessageSummary
+from evander.email.cursor_store import DurableCursorStore, EmailSyncCursor
+from evander.email.gmail_provider import GmailEmailProvider
+from evander.email.graph_provider import GraphEmailProvider
+from evander.email.providers import EmailMessageSummary
 
 
 def _summary(provider: str, mailbox_id: str, folder: str, message_id: str) -> EmailMessageSummary:

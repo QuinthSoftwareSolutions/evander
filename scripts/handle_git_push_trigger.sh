@@ -12,7 +12,7 @@ Arguments:
   bare-repo-path  Absolute path to the bare repository receiving the push.
 
 Configuration:
-  AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG (optional)
+  EVANDER_TRIGGER_ORCHESTRATOR_CONFIG (optional)
     Path to trigger orchestrator config JSON.
     Default: <repo-root>/config/trigger-orchestrator/config.json
 USAGE
@@ -31,7 +31,7 @@ fi
 BARE_REPO_PATH="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CONFIG_PATH="${AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG:-${ROOT_DIR}/config/trigger-orchestrator/config.json}"
+CONFIG_PATH="${EVANDER_TRIGGER_ORCHESTRATOR_CONFIG:-${ROOT_DIR}/config/trigger-orchestrator/config.json}"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   exit 0
@@ -59,12 +59,12 @@ from contextlib import contextmanager
 from pathlib import Path
 import fcntl
 
-from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.orchestration.host_polling import HostWakeNotifier, wake_socket_path_for_lock
-from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
-from agent_sandbox.triggers.providers.git_push import build_git_push_payloads, git_push_trigger_matches_repo
-from agent_sandbox.workflow.node_state import workflow_node_is_enabled
-from agent_sandbox.workflow.packs import compose_workflow_ir
+from evander.events.models import TriggerEvent
+from evander.orchestration.host_polling import HostWakeNotifier, wake_socket_path_for_lock
+from evander.triggers.queue import SqliteTriggerEventQueue
+from evander.triggers.providers.git_push import build_git_push_payloads, git_push_trigger_matches_repo
+from evander.workflow.node_state import workflow_node_is_enabled
+from evander.workflow.packs import compose_workflow_ir
 
 def _resolve_repo(path_text: str) -> Path:
     return Path(path_text).expanduser().resolve()
@@ -221,7 +221,7 @@ def _publish_json_events(queue_store_path: Path, events: list[TriggerEvent]) -> 
     queue_store_path.parent.mkdir(parents=True, exist_ok=True)
     published = 0
     with _locked_queue(queue_store_path):
-        hold_seconds = float(os.environ.get("AGENT_SANDBOX_TRIGGER_QUEUE_LOCK_HOLD_SECONDS", "0") or "0")
+        hold_seconds = float(os.environ.get("EVANDER_TRIGGER_QUEUE_LOCK_HOLD_SECONDS", "0") or "0")
         if hold_seconds > 0:
             time.sleep(hold_seconds)
         if queue_store_path.exists():

@@ -1,0 +1,14 @@
+[Unit]
+Description=Evander Firewall Policy
+After=network-online.target libvirtd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=__PROJECT_DIR__/config/firewall.env
+ExecStart=__PROJECT_DIR__/scripts/apply_firewall.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

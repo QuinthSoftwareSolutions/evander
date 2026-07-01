@@ -13,7 +13,7 @@ Arguments:
 
 Environment:
   SHARED_NUGET_CACHE_DIR  Host shared global-packages cache directory.
-                          Default: /var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages
+                          Default: /var/lib/libvirt/images/evander/nuget-cache/global-packages
 EOF
 }
 
@@ -22,7 +22,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-SHARED_NUGET_CACHE_DIR="${SHARED_NUGET_CACHE_DIR:-/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages}"
+SHARED_NUGET_CACHE_DIR="${SHARED_NUGET_CACHE_DIR:-/var/lib/libvirt/images/evander/nuget-cache/global-packages}"
 
 if [[ ! -d "${SHARED_NUGET_CACHE_DIR}" ]]; then
   echo "Shared cache directory does not exist: ${SHARED_NUGET_CACHE_DIR}" >&2

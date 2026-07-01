@@ -18,24 +18,24 @@ service setting changes and revision handling, use section 16.
 Workers are grouped by role:
 
 1. Workflow automation processing
-   - `agent-sandbox-trigger-orchestrator`
-   - `agent-sandbox-effect-orchestrator`
+   - `evander-trigger-orchestrator`
+   - `evander-effect-orchestrator`
 2. Inbound and resume automation
-   - `agent-sandbox-ado-worker`
-   - `agent-sandbox-proxy-issue-sync`
-   - `agent-sandbox-discord-ingest`
-   - `agent-sandbox-discord-wake`
-   - `agent-sandbox-scheduled-wake`
-   - `agent-sandbox-teams-ingest`
-   - `agent-sandbox-teams-meeting-ingest`
+   - `evander-ado-worker`
+   - `evander-proxy-issue-sync`
+   - `evander-discord-ingest`
+   - `evander-discord-wake`
+   - `evander-scheduled-wake`
+   - `evander-teams-ingest`
+   - `evander-teams-meeting-ingest`
 
 In many deployments, the exact set matches what is installed and enabled on the host.
 If a worker is not active in this environment, it may still appear with a stopped state or not
 show up at all.
 
-Services such as `agent-sandbox-gateway.service`, `agent-sandbox-openai-relay.service`,
-`agent-sandbox-nuget-relay.service`, `agent-sandbox-http-target-relay.service`, and
-`agent-sandbox-admin-web.service` are not Workers-managed entries. Use host service checks for
+Services such as `evander-gateway.service`, `evander-openai-relay.service`,
+`evander-nuget-relay.service`, `evander-http-target-relay.service`, and
+`evander-admin-web.service` are not Workers-managed entries. Use host service checks for
 start, stop, and log review for those units.
 
 What to remember:

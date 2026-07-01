@@ -8,9 +8,9 @@ from threading import Barrier, Thread
 
 import pytest
 
-from agent_sandbox.cron import next_cron_time
-from agent_sandbox.messaging.wake_store import WakeRequestStore
-from agent_sandbox.models import (
+from evander.cron import next_cron_time
+from evander.messaging.wake_store import WakeRequestStore
+from evander.models import (
     WakeDispatchRecord,
     WakeMessageEnvelope,
     WakeResumePromptPayload,
@@ -27,6 +27,12 @@ class _FrozenDateTime(datetime):
         if tz is None:
             return cls.frozen
         return cls.frozen.astimezone(tz)
+
+
+@pytest.fixture(autouse=True)
+def _freeze_wake_store_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FrozenDateTime.frozen = datetime(2026, 4, 2, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr("evander.messaging.wake_store.datetime", _FrozenDateTime)
 
 
 def test_wake_request_store_resolves_json_path_to_sibling_db_and_creates_schema(
@@ -1106,7 +1112,7 @@ def test_compaction_removes_old_disabled_requests_dispatches_and_messages_via_re
     old_now = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
     current_now = old_now + timedelta(days=91)
 
-    monkeypatch.setattr("agent_sandbox.messaging.wake_store.datetime", _FrozenDateTime)
+    monkeypatch.setattr("evander.messaging.wake_store.datetime", _FrozenDateTime)
 
     _FrozenDateTime.frozen = old_now
     store = WakeRequestStore(path)

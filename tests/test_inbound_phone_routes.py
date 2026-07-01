@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
+from evander.config import GatewayConfig
 
 
 def test_inbound_phone_routes_normalize_numbers_and_round_trip_through_config_model() -> None:

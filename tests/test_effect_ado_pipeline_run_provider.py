@@ -7,13 +7,13 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
-from agent_sandbox.effects.providers.base import (
+from evander.config import GatewayConfig
+from evander.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
+from evander.effects.providers.base import (
     EffectProviderExecutionError,
     EffectRuntimeContext,
 )
-from agent_sandbox.events.provider_models import AdoPipelineRunEffectDefinition
+from evander.events.provider_models import AdoPipelineRunEffectDefinition
 
 
 def _runtime_context(tmp_path: Path, *, env: dict[str, str] | None = None) -> EffectRuntimeContext:
@@ -54,7 +54,7 @@ def _install_mock_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.MockT
         return original_client(*args, **kwargs)
 
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.ado_pipeline_run.httpx.Client", _client_factory
+        "evander.effects.providers.ado_pipeline_run.httpx.Client", _client_factory
     )
 
 
@@ -206,7 +206,7 @@ def test_ado_pipeline_run_preserves_outputs_on_checked_timeout(
 
     ticks = iter([0.0, 2.0])
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.ado_pipeline_run.time.monotonic",
+        "evander.effects.providers.ado_pipeline_run.time.monotonic",
         lambda: next(ticks),
     )
     _install_mock_client(monkeypatch, httpx.MockTransport(handler))

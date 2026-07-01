@@ -13,42 +13,42 @@
       - gnupg
       - lsb-release
     state: present
-  when: agent_sandbox_install_azure_cli | bool
+  when: evander_install_azure_cli | bool
 
 - name: Ensure Azure CLI apt keyring directory exists
   ansible.builtin.file:
     path: /etc/apt/keyrings
     state: directory
     mode: "0755"
-  when: agent_sandbox_install_azure_cli | bool
+  when: evander_install_azure_cli | bool
 
 - name: Download Microsoft signing key for Azure CLI
   ansible.builtin.get_url:
     url: https://packages.microsoft.com/keys/microsoft.asc
     dest: /etc/apt/keyrings/microsoft.asc
     mode: "0644"
-  when: agent_sandbox_install_azure_cli | bool
-  register: agent_sandbox_azure_cli_key
+  when: evander_install_azure_cli | bool
+  register: evander_azure_cli_key
 
 - name: Check Azure CLI apt keyring
   ansible.builtin.stat:
     path: /etc/apt/keyrings/microsoft.gpg
-  when: agent_sandbox_install_azure_cli | bool
-  register: agent_sandbox_azure_cli_keyring
+  when: evander_install_azure_cli | bool
+  register: evander_azure_cli_keyring
 
 - name: Install Azure CLI apt keyring
   ansible.builtin.command:
     cmd: gpg --batch --yes --dearmor -o /etc/apt/keyrings/microsoft.gpg /etc/apt/keyrings/microsoft.asc
   when:
-    - agent_sandbox_install_azure_cli | bool
-    - agent_sandbox_azure_cli_key.changed or not agent_sandbox_azure_cli_keyring.stat.exists
+    - evander_install_azure_cli | bool
+    - evander_azure_cli_key.changed or not evander_azure_cli_keyring.stat.exists
   changed_when: true
 
 - name: Make Azure CLI apt keyring readable
   ansible.builtin.file:
     path: /etc/apt/keyrings/microsoft.gpg
     mode: "0644"
-  when: agent_sandbox_install_azure_cli | bool
+  when: evander_install_azure_cli | bool
 
 - name: Configure Azure CLI apt repository
   ansible.builtin.copy:
@@ -59,49 +59,49 @@
       URIs: https://packages.microsoft.com/repos/azure-cli/
       Suites: {{ ansible_distribution_release }}
       Components: main
-      Architectures: {{ agent_sandbox_azure_cli_deb_architecture }}
+      Architectures: {{ evander_azure_cli_deb_architecture }}
       Signed-by: /etc/apt/keyrings/microsoft.gpg
-  when: agent_sandbox_install_azure_cli | bool
-  register: agent_sandbox_azure_cli_repo
+  when: evander_install_azure_cli | bool
+  register: evander_azure_cli_repo
 
 - name: Install Azure CLI
   ansible.builtin.apt:
     name: azure-cli
     state: present
-    update_cache: "{{ agent_sandbox_azure_cli_repo.changed | default(false) }}"
-  when: agent_sandbox_install_azure_cli | bool
+    update_cache: "{{ evander_azure_cli_repo.changed | default(false) }}"
+  when: evander_install_azure_cli | bool
 
 - name: Install host prerequisite packages
   ansible.builtin.apt:
-    name: "{{ agent_sandbox_host_packages }}"
+    name: "{{ evander_host_packages }}"
     state: present
 
 - name: Ensure the service account exists
   ansible.builtin.user:
-    name: "{{ agent_sandbox_run_user }}"
+    name: "{{ evander_run_user }}"
     shell: /bin/bash
     create_home: true
     groups: >-
       {{
-        agent_sandbox_run_user_supplementary_groups
-        if (agent_sandbox_run_user_supplementary_groups | length) > 0
+        evander_run_user_supplementary_groups
+        if (evander_run_user_supplementary_groups | length) > 0
         else omit
       }}
-    append: "{{ (agent_sandbox_run_user_supplementary_groups | length) > 0 }}"
+    append: "{{ (evander_run_user_supplementary_groups | length) > 0 }}"
     state: present
-  register: agent_sandbox_run_user_account
-  when: agent_sandbox_manage_run_user | bool
+  register: evander_run_user_account
+  when: evander_manage_run_user | bool
 
 - name: Record whether run-user group membership changed
   ansible.builtin.set_fact:
-    agent_sandbox_run_user_membership_changed: "{{ agent_sandbox_run_user_account.changed | default(false) }}"
+    evander_run_user_membership_changed: "{{ evander_run_user_account.changed | default(false) }}"
 
 - name: Ensure the deploy root parent exists
   ansible.builtin.file:
-    path: "{{ agent_sandbox_repo_parent }}"
+    path: "{{ evander_repo_parent }}"
     state: directory
-    owner: "{{ agent_sandbox_run_user }}"
-    group: "{{ agent_sandbox_run_user }}"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
     mode: "0755"
 
 - name: Install uv for repo bootstrap
@@ -109,4 +109,4 @@
     name: uv
     executable: pip3
     extra_args: --break-system-packages
-  environment: "{{ agent_sandbox_python_install_env | default({}) }}"
+  environment: "{{ evander_python_install_env | default({}) }}"

@@ -1,0 +1,253 @@
+---
+# Dedicated container-worker VM defaults. Shared repo checkout variables can still be
+# overridden from inventory or Vault in the same way as the control-plane playbook.
+evander_deploy_path: "/opt/evander-worker"
+evander_run_user: "agent-worker"
+evander_manage_run_user: true
+evander_run_user_supplementary_groups:
+  - docker
+evander_install_azure_cli: false
+
+evander_repo_managed_tracked_config_paths: []
+evander_repo_managed_untracked_config_paths:
+  - config/worker-daemon.env
+
+# The worker systemd unit is rendered from this local Ansible checkout, while the
+# daemon executable is installed from evander_repo_version on the worker.
+# Keep those two artifacts on the same commit unless explicitly bypassed.
+evander_worker_repo_version_mode: "playbook_revision"
+evander_worker_enforce_revision_match: true
+evander_worker_revision_guard_paths:
+  - ansible/worker.yml
+  - ansible/group_vars/evander_worker_hosts.yml
+  - ansible/roles/worker_apt_proxy
+  - ansible/roles/worker_git_access
+  - ansible/roles/worker_package_cache_preflight
+  - ansible/roles/python_env
+  - ansible/roles/container_worker_runtime
+  - ansible/roles/worker_dotnet_toolchain
+  - ansible/roles/worker_node_toolchain
+  - ansible/roles/worker_playwright_toolchain
+  - ansible/roles/worker_mssql
+  - ansible/roles/worker_container_egress_policy
+  - ansible/roles/container_worker_service
+  - ansible/roles/container_worker_verification
+  - pyproject.toml
+  - src/evander/worker
+  - src/evander/worker_daemon.py
+
+evander_host_packages:
+  - acl
+  - openssh-server
+  - git
+  - curl
+  - python3
+  - python3-pip
+  - python3-venv
+  - docker.io
+
+evander_python_install_extras: ""
+evander_worker_pypi_trusted_host: "{{ evander_worker_pypi_index_url | urlsplit('hostname') }}"
+evander_python_install_env:
+  UV_DEFAULT_INDEX: "{{ evander_worker_pypi_index_url }}"
+  UV_INDEX_URL: "{{ evander_worker_pypi_index_url }}"
+  UV_INSECURE_HOST: "{{ evander_worker_pypi_trusted_host }}"
+  PIP_INDEX_URL: "{{ evander_worker_pypi_index_url }}"
+  PIP_TRUSTED_HOST: "{{ evander_worker_pypi_trusted_host }}"
+
+evander_worker_host: "0.0.0.0"
+evander_worker_port: 11888
+evander_worker_root: "/var/lib/agent-worker"
+evander_worker_runtime_dir: "{{ evander_worker_root }}/runtime"
+evander_worker_sandbox_profile: "default"
+# The worker daemon and generic worker inventory default to isolated containers.
+# Deployments that need private control-plane reachability must opt into a
+# non-none Docker network and the worker egress policy together.
+evander_worker_docker_network: "none"
+evander_worker_egress_policy_enabled: false
+evander_worker_egress_policy_chain: "EVANDER-WORKER-EGRESS"
+evander_worker_egress_policy_script_path: "/usr/local/sbin/evander-worker-egress-policy"
+evander_worker_egress_policy_source_cidrs: []
+evander_worker_egress_policy_block_cidrs:
+  - "169.254.0.0/16"
+evander_worker_read_only_rootfs: false
+evander_worker_tmpfs: []
+# Empty means the playbook runs containers as the worker service account uid:gid so
+# capability-dropped containers can still write durable session mounts.
+evander_worker_container_user: ""
+evander_worker_env:
+  EVANDER_WORKER_TOKEN: "{{ evander_worker_token }}"
+  EVANDER_WORKER_MSSQL_ADMIN_PASSWORD: "{{ evander_worker_mssql_admin_password }}"
+
+# Optional worker-host SQL Server instance for session-scoped database provisioning.
+# When enabled, agents request databases through MCP and receive a scoped SQL login
+# that can connect from runner containers to evander_worker_mssql_container_host.
+evander_worker_mssql_enabled: false
+evander_worker_mssql_accept_eula: false
+evander_worker_mssql_pid: "Developer"
+evander_worker_mssql_admin_user: "sa"
+evander_worker_mssql_admin_password: "{{ vault_evander_worker_mssql_admin_password | default('') }}"
+evander_worker_mssql_admin_password_env: "EVANDER_WORKER_MSSQL_ADMIN_PASSWORD"
+evander_worker_mssql_admin_host: "127.0.0.1"
+evander_worker_mssql_port: 1433
+evander_worker_mssql_container_host: "172.17.0.1"
+evander_worker_mssql_sqlcmd_path: "/opt/mssql-tools18/bin/sqlcmd"
+evander_worker_mssql_package_proxy_environment:
+  http_proxy: "{{ evander_worker_apt_proxy_url }}"
+  https_proxy: "{{ evander_worker_apt_proxy_url }}"
+evander_worker_mssql_apt_key_url: "https://packages.microsoft.com/keys/microsoft.asc"
+evander_worker_mssql_apt_key_path: "/etc/apt/keyrings/microsoft.asc"
+evander_worker_mssql_server_repo: "deb [arch=amd64,arm64 signed-by={{ evander_worker_mssql_apt_key_path }}] http://packages.microsoft.com/ubuntu/22.04/mssql-server-2022 jammy main"
+evander_worker_mssql_tools_repo: "deb [arch=amd64,arm64 signed-by={{ evander_worker_mssql_apt_key_path }}] http://packages.microsoft.com/ubuntu/22.04/prod jammy main"
+evander_worker_mssql_server_package: "mssql-server"
+evander_worker_mssql_tools_packages:
+  - mssql-tools18
+  - unixodbc-dev
+evander_worker_mssql_manage_iptables: true
+evander_worker_mssql_allowed_source_cidr: "172.17.0.0/16"
+
+# Worker Git is restricted to the control-plane bare mirror root. The worker
+# daemon rejects repo_source values outside these prefixes.
+evander_control_plane_group: "evander_hosts"
+evander_control_plane_host: "{{ groups.get(evander_control_plane_group, []) | first | default('') }}"
+evander_control_plane_deploy_path: >-
+  {{
+    hostvars[evander_control_plane_host].evander_deploy_path | default('/opt/evander')
+    if (evander_control_plane_host | string | length) > 0
+    else '/opt/evander'
+  }}
+evander_git_host: >-
+  {{
+    hostvars[evander_control_plane_host].get(
+      'evander_control_plane_private_ip',
+      hostvars[evander_control_plane_host].get(
+        'ansible_default_ipv4',
+        {}
+      ).get(
+        'address',
+        hostvars[evander_control_plane_host].get('ansible_host', '')
+      )
+    )
+    if (evander_control_plane_host | string | length) > 0
+    else (evander_control_plane_private_ip | default(''))
+  }}
+evander_git_user: >-
+  {{
+    hostvars[evander_control_plane_host].evander_run_user | default('evander')
+    if (evander_control_plane_host | string | length) > 0
+    else 'evander'
+  }}
+evander_git_root: "{{ evander_control_plane_deploy_path }}/git-remotes"
+evander_git_ssh_alias: "evander-git-host"
+evander_worker_git_ssh_source_dir: "/home/{{ evander_run_user }}/.ssh"
+evander_worker_git_key_path: "{{ evander_worker_git_ssh_source_dir }}/evander-git"
+evander_worker_git_allowed_from: "{{ ansible_default_ipv4.address | default(ansible_host) }}/32"
+evander_worker_git_access_enabled: "{{ (evander_worker_git_ssh_source_dir | default('') | string | trim | length) > 0 }}"
+evander_worker_install_control_plane_git_authorized_key: "{{ (groups.get(evander_control_plane_group, []) | length) > 0 }}"
+evander_worker_repo_checkout_via_control_plane_git: "{{ evander_worker_install_control_plane_git_authorized_key }}"
+evander_worker_repo_mirror_name: "evander-deploy"
+evander_worker_repo_mirror_path: "{{ evander_git_root }}/{{ evander_worker_repo_mirror_name }}.git"
+evander_worker_repo_checkout_url: "ssh://{{ evander_git_ssh_alias }}{{ evander_worker_repo_mirror_path }}"
+evander_worker_allowed_git_source_prefixes:
+  - "ssh://{{ evander_git_ssh_alias }}{{ evander_git_root }}/"
+
+# Runner images are deployed as local Docker archives produced on the Ansible
+# control machine.
+evander_runner_image_name: "evander-runner:latest"
+evander_runner_image_archive_path: "{{ playbook_dir }}/../dist/evander-runner.tar"
+evander_runner_image_remote_archive_path: "{{ evander_worker_root }}/images/evander-runner.tar"
+evander_claude_runner_image_name: "evander-runner-claude:latest"
+evander_claude_runner_image_archive_path: "{{ playbook_dir }}/../dist/evander-runner-claude.tar"
+evander_claude_runner_image_remote_archive_path: "{{ evander_worker_root }}/images/evander-runner-claude.tar"
+evander_runner_image_archives:
+  - image_name: "{{ evander_runner_image_name }}"
+    archive_path: "{{ evander_runner_image_archive_path }}"
+    remote_archive_path: "{{ evander_runner_image_remote_archive_path }}"
+    build_command: "scripts/build_evander_runner_image.sh"
+  - image_name: "{{ evander_claude_runner_image_name }}"
+    archive_path: "{{ evander_claude_runner_image_archive_path }}"
+    remote_archive_path: "{{ evander_claude_runner_image_remote_archive_path }}"
+    build_command: "scripts/build_evander_claude_runner_image.sh"
+
+# Worker-level read-only caches mounted into every runner container. The playbook
+# creates these directories and seeds the .NET, Node, and Playwright caches.
+# Operators can still populate NuGet fallback package artifacts out-of-band.
+evander_worker_toolchain_cache_root: "{{ evander_worker_root }}/toolchain-cache"
+evander_worker_dotnet_cache_path: "{{ evander_worker_toolchain_cache_root }}/dotnet"
+evander_worker_dotnet_tools_cache_path: "{{ evander_worker_toolchain_cache_root }}/dotnet-tools"
+evander_worker_node_cache_path: "{{ evander_worker_toolchain_cache_root }}/node-v24.14.0"
+evander_worker_playwright_runtime_cache_path: "{{ evander_worker_toolchain_cache_root }}/playwright-runtime"
+evander_worker_playwright_browsers_cache_path: "{{ evander_worker_toolchain_cache_root }}/ms-playwright"
+evander_worker_nuget_fallback_cache_path: "{{ evander_worker_toolchain_cache_root }}/nuget-cache-ro"
+
+# Seed the worker-mounted .NET SDK from the Ansible control machine.
+# HOST_DOTNET_ROOT can override the default local dotnet path; set
+# evander_worker_dotnet_toolchain_archive_path to an existing .tar.gz when
+# deploying from a prebuilt archive instead of a local dotnet directory.
+evander_worker_dotnet_toolchain_enabled: true
+evander_worker_dotnet_toolchain_local_path: >-
+  {{
+    lookup('env', 'HOST_DOTNET_ROOT')
+    | default('/usr/lib/dotnet', true)
+  }}
+evander_worker_dotnet_toolchain_archive_path: "{{ lookup('env', 'HOST_DOTNET_ARCHIVE') | default('', true) }}"
+evander_worker_dotnet_toolchain_remote_archive_path: "{{ evander_worker_root }}/images/dotnet-toolchain.tar.gz"
+evander_worker_dotnet_tools_archive_path: "{{ lookup('env', 'HOST_DOTNET_TOOLS_ARCHIVE') | default('', true) }}"
+evander_worker_dotnet_tools_remote_archive_path: "{{ evander_worker_root }}/images/dotnet-tools.tar.gz"
+evander_worker_dotnet_ef_package_id: "dotnet-ef"
+evander_worker_dotnet_ef_version: "{{ lookup('env', 'HOST_DOTNET_EF_VERSION') | default('10.0.0', true) }}"
+evander_worker_nuget_fallback_archive_path: "{{ lookup('env', 'HOST_NUGET_FALLBACK_ARCHIVE') | default('', true) }}"
+evander_worker_dotnet_restore_support_archive_path: >-
+  {{
+    lookup('env', 'HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE')
+    | default(evander_worker_nuget_fallback_archive_path, true)
+  }}
+evander_worker_dotnet_restore_support_remote_archive_path: "{{ evander_worker_root }}/images/dotnet-restore-support.tar.gz"
+evander_worker_dotnet_restore_support_package_id: "Microsoft.Extensions.FileSystemGlobbing"
+evander_worker_dotnet_restore_support_package_version: "6.0.0"
+
+# Seed the worker-mounted Node/npm toolchain from the Ansible control machine.
+# HOST_NODE_ROOT can override the default local nvm path; set
+# evander_worker_node_toolchain_archive_path to an existing .tar.gz when
+# deploying from a prebuilt archive instead of a local Node directory.
+evander_worker_node_toolchain_enabled: true
+evander_worker_node_version: "v24.14.0"
+evander_worker_node_toolchain_local_path: >-
+  {{
+    lookup('env', 'HOST_NODE_ROOT')
+    | default(lookup('env', 'HOME') ~ '/.nvm/versions/node/' ~ evander_worker_node_version, true)
+  }}
+evander_worker_node_toolchain_archive_path: "{{ lookup('env', 'HOST_NODE_ARCHIVE') | default('', true) }}"
+evander_worker_node_toolchain_remote_archive_path: "{{ evander_worker_root }}/images/node-{{ evander_worker_node_version }}.tar.gz"
+
+# Seed the worker-mounted Playwright runtime and browser cache from the Ansible
+# control machine. HOST_PLAYWRIGHT_NODE_MODULES should point at a node_modules
+# directory containing playwright and playwright-core; HOST_PLAYWRIGHT_BROWSERS
+# should point at the Playwright browser cache.
+evander_worker_playwright_toolchain_enabled: true
+evander_worker_playwright_node_modules_local_path: >-
+  {{
+    lookup('env', 'HOST_PLAYWRIGHT_NODE_MODULES')
+    | default(playbook_dir ~ '/../frontend/workflow-editor/node_modules', true)
+  }}
+evander_worker_playwright_browsers_local_path: >-
+  {{
+    lookup('env', 'HOST_PLAYWRIGHT_BROWSERS')
+    | default(lookup('env', 'HOME') ~ '/.cache/ms-playwright', true)
+  }}
+evander_worker_playwright_runtime_archive_path: "{{ lookup('env', 'HOST_PLAYWRIGHT_RUNTIME_ARCHIVE') | default('', true) }}"
+evander_worker_playwright_browsers_archive_path: "{{ lookup('env', 'HOST_PLAYWRIGHT_BROWSERS_ARCHIVE') | default('', true) }}"
+evander_worker_playwright_runtime_remote_archive_path: "{{ evander_worker_root }}/images/playwright-runtime.tar.gz"
+evander_worker_playwright_browsers_remote_archive_path: "{{ evander_worker_root }}/images/playwright-browsers.tar.gz"
+evander_worker_readonly_mounts:
+  - "{{ evander_worker_dotnet_cache_path }}:/opt/evander/toolchains/dotnet"
+  - "{{ evander_worker_dotnet_tools_cache_path }}:/opt/evander/toolchains/dotnet-tools"
+  - "{{ evander_worker_node_cache_path }}:/opt/evander/toolchains/node-v24.14.0"
+  - "{{ evander_worker_playwright_runtime_cache_path }}:/opt/evander/playwright-runtime"
+  - "{{ evander_worker_playwright_browsers_cache_path }}:/opt/evander/ms-playwright"
+  - "{{ evander_worker_nuget_fallback_cache_path }}:/opt/evander/nuget-cache-ro"
+
+# Optional images to pre-pull during deployment. Add approved image refs here when
+# they are not already included in the repo-local runner tarball above; runtime
+# dispatch does not pull or build images.
+evander_worker_preload_images: []

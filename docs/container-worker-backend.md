@@ -1,6 +1,6 @@
 # Container Worker Backend
 
-`agent-sandbox-worker-daemon` is the worker-VM side of the container execution backend. It exposes a small HTTP API for starting, inspecting, stopping, deleting, and reading logs for jobs that run inside disposable Docker containers.
+`evander-worker-daemon` is the worker-VM side of the container execution backend. It exposes a small HTTP API for starting, inspecting, stopping, deleting, and reading logs for jobs that run inside disposable Docker containers.
 
 The daemon is intentionally only an execution envelope. It does not store host secrets, publish pull requests, decide policy, or turn platform summaries into agent memory.
 
@@ -11,12 +11,12 @@ The daemon is intentionally only an execution envelope. It does not store host s
 ```yaml
 execution_backend: container_worker_vm
 container_worker_base_url: "http://10.0.2.10:11888"
-container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
-container_worker_default_image: "agent-sandbox-runner:latest"
+container_worker_token_env: "EVANDER_WORKER_TOKEN"
+container_worker_default_image: "evander-runner:latest"
 container_worker_images:
-  default: "agent-sandbox-runner:latest"
-  claude: "agent-sandbox-runner-claude:latest"
-  dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
+  default: "evander-runner:latest"
+  claude: "evander-runner-claude:latest"
+  dotnet-playwright: "evander-runner-dotnet-playwright:2026-06-05"
 container_worker_job_timeout_seconds: 1800
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_anthropic_base_url: "http://<control-plane-private-ip>:11434/v1"
@@ -44,59 +44,59 @@ fallback, or replace both together when a subtree needs a different default:
 ```yaml
 # runtime/directory-config/root/providers.json
 execution_backend: container_worker_vm
-container_worker_default_image: "agent-sandbox-runner:latest"
+container_worker_default_image: "evander-runner:latest"
 container_worker_images:
-  default: "agent-sandbox-runner:latest"
-  claude: "agent-sandbox-runner-claude:latest"
-  dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
+  default: "evander-runner:latest"
+  claude: "evander-runner-claude:latest"
+  dotnet-playwright: "evander-runner-dotnet-playwright:2026-06-05"
 
 # runtime/directory-config/root/design/docs/providers.json
-container_worker_default_image: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
+container_worker_default_image: "evander-runner-dotnet-playwright:2026-06-05"
 container_worker_images:
-  default: "agent-sandbox-runner:latest"
-  claude: "agent-sandbox-runner-claude:latest"
-  dotnet-playwright: "agent-sandbox-runner-dotnet-playwright:2026-06-05"
+  default: "evander-runner:latest"
+  claude: "evander-runner-claude:latest"
+  dotnet-playwright: "evander-runner-dotnet-playwright:2026-06-05"
 ```
 
 This is the Phase 5 first slice: one configured worker VM. The worker daemon still treats `none`
 as the safe default for disposable job containers, and the supported non-`none` path is the single
 worker VM deployment with an explicit egress policy. If the worker VM uses a non-`none` Docker
-network, the deployment must enable `agent_sandbox_worker_egress_policy_enabled` and provide an
+network, the deployment must enable `evander_worker_egress_policy_enabled` and provide an
 allowlist rather than relying on Docker networking alone.
 
 For directory-scoped runtime config, put these values on the root `providers` domain. Start the worker daemon on the worker VM with a matching token:
 
 ```bash
-AGENT_SANDBOX_WORKER_TOKEN=... agent-sandbox-worker-daemon --host 0.0.0.0 --port 11888 --runtime-dir runtime --worker-root /var/lib/agent-worker
+EVANDER_WORKER_TOKEN=... evander-worker-daemon --host 0.0.0.0 --port 11888 --runtime-dir runtime --worker-root /var/lib/agent-worker
 ```
 
 For a reproducible worker VM deployment, use the dedicated Ansible playbook:
 
 ```bash
-./scripts/build_agent_sandbox_runner_image.sh
-./scripts/build_agent_sandbox_claude_runner_image.sh
+./scripts/build_evander_runner_image.sh
+./scripts/build_evander_claude_runner_image.sh
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 ```
 
-The Codex build script writes a sidecar manifest at `dist/agent-sandbox-runner.tar.manifest` next to
-`dist/agent-sandbox-runner.tar`. The Claude build script writes
-`dist/agent-sandbox-runner-claude.tar.manifest` next to
-`dist/agent-sandbox-runner-claude.tar`. If those manifests still match the tarball inputs, rerunning
+The Codex build script writes a sidecar manifest at `dist/evander-runner.tar.manifest` next to
+`dist/evander-runner.tar`. The Claude build script writes
+`dist/evander-runner-claude.tar.manifest` next to
+`dist/evander-runner-claude.tar`. If those manifests still match the tarball inputs, rerunning
 the scripts reuse the cached archives, print that the cached archive was reused, and skip Docker
 build/save entirely. The cache keys include the Dockerfile text, the build script text,
 `RUNNER_IMAGE_NAME`, the resolved agent executable path and SHA-256, provider package identity where
 applicable, and the Dockerfile base-image policy from the `FROM` line. Use
-`RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_runner_image.sh` or
-`./scripts/build_agent_sandbox_runner_image.sh --force` for Codex, and
-`RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_claude_runner_image.sh` or
-`./scripts/build_agent_sandbox_claude_runner_image.sh --force` for Claude, to force a rebuild.
+`RUNNER_FORCE_REBUILD=1 ./scripts/build_evander_runner_image.sh` or
+`./scripts/build_evander_runner_image.sh --force` for Codex, and
+`RUNNER_FORCE_REBUILD=1 ./scripts/build_evander_claude_runner_image.sh` or
+`./scripts/build_evander_claude_runner_image.sh --force` for Claude, to force a rebuild.
 Moving tags such as
 `ubuntu:24.04` require a force rebuild when you want a base-image refresh, because the Dockerfile
 text can stay the same while the upstream image changes.
 
 The worker playbook copies each configured local runner image archive to the worker VM, runs
 `docker load`, verifies every configured image tag exists, installs Docker, deploys the repo
-package, renders `config/worker-daemon.env`, installs `agent-sandbox-worker-daemon.service`,
+package, renders `config/worker-daemon.env`, installs `evander-worker-daemon.service`,
 creates `/var/lib/agent-worker`, and verifies the local `/healthz` endpoint. This slice keeps the
 existing tar-copy/load deployment model and does not do worker-side remote manifest comparison yet.
 That remote skip path is deferred because it needs a separate trusted manifest storage/read path on
@@ -119,16 +119,16 @@ the original session and execution context visible so the operator can retry cle
 logs and metadata before taking manual action.
 
 Worker host OS packages are provisioned through the control-plane apt-cacher-ng relay on `3142`.
-The worker playbook writes `/etc/apt/apt.conf.d/01agent-sandbox-proxy` before its first
+The worker playbook writes `/etc/apt/apt.conf.d/01evander-proxy` before its first
 `host_prereqs` apt update. Container-session `pip` and `npm` traffic remains separate and resolves
 through Nexus on `8081`. The worker host's own `uv pip install -e .` step also uses that Nexus
 PyPI group through `UV_DEFAULT_INDEX` and `PIP_INDEX_URL`, so the worker deploy does not need direct
 `pypi.org` egress.
-The control plane also exposes `agent-sandbox-npm-audit-facade` on `11881` for npm audit POSTs;
+The control plane also exposes `evander-npm-audit-facade` on `11881` for npm audit POSTs;
 it is separate from the worker registry setting and routes package metadata/tarballs through
 Nexus while sending audit requests to public npm.
 
-For Azure-style deployments that include `agent_sandbox_hosts`, the worker playbook also prepares
+For Azure-style deployments that include `evander_hosts`, the worker playbook also prepares
 restricted SSH before `repo_checkout` and checks out the deployment repo through a control-plane bare
 mirror instead of talking to GitHub directly. Deploy the control plane first so that mirror can serve
 the requested worker revision from the control-plane checkout.
@@ -141,32 +141,32 @@ The runner image intentionally contains only stable base tools, the vendored Cod
 Playwright operating-system libraries. .NET, Node, Playwright packages, browser caches, and NuGet
 fallback packages are worker-level caches mounted read-only into containers:
 
-- `/opt/agent-sandbox/toolchains/dotnet`
-- `/opt/agent-sandbox/toolchains/dotnet-tools`
-- `/opt/agent-sandbox/toolchains/node-v24.14.0`
-- `/opt/agent-sandbox/playwright-runtime`
-- `/opt/agent-sandbox/ms-playwright`
-- `/opt/agent-sandbox/nuget-cache-ro`
+- `/opt/evander/toolchains/dotnet`
+- `/opt/evander/toolchains/dotnet-tools`
+- `/opt/evander/toolchains/node-v24.14.0`
+- `/opt/evander/playwright-runtime`
+- `/opt/evander/ms-playwright`
+- `/opt/evander/nuget-cache-ro`
 
-The worker playbook creates the cache directories under `agent_sandbox_worker_toolchain_cache_root`
+The worker playbook creates the cache directories under `evander_worker_toolchain_cache_root`
 and wires them into the daemon with repeated `--readonly-mount` flags. It also seeds the .NET,
 Node, and Playwright caches from the Ansible control machine and verifies them inside
-`agent-sandbox-runner:latest`.
+`evander-runner:latest`.
 By default dotnet reads `HOST_DOTNET_ROOT` or `/usr/lib/dotnet`; set
-`agent_sandbox_worker_dotnet_toolchain_archive_path` to copy a prebuilt tarball instead. The worker
+`evander_worker_dotnet_toolchain_archive_path` to copy a prebuilt tarball instead. The worker
 role also installs `dotnet-ef` into a separate shared tools cache and verifies
 `dotnet ef --version` in the runner container; set `HOST_DOTNET_EF_VERSION` to pin a different
 version, or set `HOST_DOTNET_TOOLS_ARCHIVE` /
-`agent_sandbox_worker_dotnet_tools_archive_path` to copy a prebuilt dotnet tool-path tarball.
+`evander_worker_dotnet_tools_archive_path` to copy a prebuilt dotnet tool-path tarball.
 The same role seeds `Microsoft.Extensions.FileSystemGlobbing` into the worker NuGet fallback cache
 and runs an offline `dotnet restore` smoke test inside the runner. Use
 `HOST_NUGET_FALLBACK_ARCHIVE` /
-`agent_sandbox_worker_nuget_fallback_archive_path` when deploys must use a prebuilt NuGet
+`evander_worker_nuget_fallback_archive_path` when deploys must use a prebuilt NuGet
 global-packages tarball instead of restoring only that support package from the Ansible control
 machine. The older `HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE` /
-`agent_sandbox_worker_dotnet_restore_support_archive_path` names remain accepted for compatibility.
+`evander_worker_dotnet_restore_support_archive_path` names remain accepted for compatibility.
 Node reads `HOST_NODE_ROOT` or `~/.nvm/versions/node/v24.14.0`; set
-`agent_sandbox_worker_node_toolchain_archive_path` to copy a prebuilt tarball instead. By default
+`evander_worker_node_toolchain_archive_path` to copy a prebuilt tarball instead. By default
 Playwright reads `HOST_PLAYWRIGHT_NODE_MODULES` or the repo frontend `node_modules` plus
 `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; set the Playwright archive variables to copy
 prebuilt tarballs instead. Playwright-enabled container sessions export
@@ -187,14 +187,14 @@ without the runner image hard-coding a host-specific user id.
 
 Container sessions write `/home/agent/.config/pip/pip.conf` and `/home/agent/.npmrc` so `pip` and
 `npm` resolve through the control-plane Nexus package cache. The same URLs are exported as
-`PIP_INDEX_URL` and `NPM_CONFIG_REGISTRY` from `/home/agent/.agent-sandbox/session.env`, with
+`PIP_INDEX_URL` and `NPM_CONFIG_REGISTRY` from `/home/agent/.evander/session.env`, with
 `PIP_TRUSTED_HOST` added for plain HTTP Nexus endpoints.
 
 ## Worker Egress Policy
 
 The Docker sandbox profile still starts from `--network none`. Worker deploys can override the
 daemon network for the supported single-worker slice, but `host` is refused. Any non-`none`
-network on the worker VM must be paired with `agent_sandbox_worker_egress_policy_enabled: true`
+network on the worker VM must be paired with `evander_worker_egress_policy_enabled: true`
 and an explicit allowlist. The worker-managed policy installs rules in `DOCKER-USER`, blocks
 `169.254.0.0/16` including `169.254.169.254`, and only then permits named private endpoints.
 
@@ -209,13 +209,13 @@ The default allowlist is intentionally small and private:
 - control-plane apt-cacher-ng on `3142`
 
 Operators can append extra private endpoints with
-`agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints`, but the policy should not be used
+`evander_worker_egress_policy_extra_allow_tcp_endpoints`, but the policy should not be used
 as a general internet egress path.
 
 The daemon defaults to the `default` sandbox profile. To select the stricter profile:
 
 ```bash
-AGENT_SANDBOX_WORKER_TOKEN=... agent-sandbox-worker-daemon --host 0.0.0.0 --port 11888 --runtime-dir runtime --worker-root /var/lib/agent-worker --sandbox-profile strict
+EVANDER_WORKER_TOKEN=... evander-worker-daemon --host 0.0.0.0 --port 11888 --runtime-dir runtime --worker-root /var/lib/agent-worker --sandbox-profile strict
 ```
 
 The host reads the token from `container_worker_token_env` when it calls the worker. Token values and request headers are not written to the execution mapping store.
@@ -253,15 +253,15 @@ For the Azure/single-worker slice, set the worker network override and enable th
 inventory:
 
 ```yaml
-agent_sandbox_worker_docker_network: "bridge"
-agent_sandbox_worker_egress_policy_enabled: true
+evander_worker_docker_network: "bridge"
+evander_worker_egress_policy_enabled: true
 ```
 
 Then deploy the worker playbook and verify the worker-side policy on the VM:
 
 ```bash
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
-sudo systemctl status agent-sandbox-worker-egress-policy.service
+sudo systemctl status evander-worker-egress-policy.service
 sudo iptables -S DOCKER-USER
 evander-cli execution smoke-container-worker --json
 ```
@@ -284,7 +284,7 @@ Each session contains:
 - `logs/`: platform-owned job logs
 - `metadata.json`: platform bookkeeping for paths and creation time
 
-Containers are disposable. Continuity comes from mounting the same `agent_home/` into each run for a session. The runner image currently sets `CODEX_HOME=/home/agent/.config/agent-sandbox/codex`, so native Codex resume state is persisted under `/var/lib/agent-worker/sessions/<session_id>/agent_home/.config/agent-sandbox/codex/sessions`. The bootstrap also writes `/var/lib/agent-worker/sessions/<session_id>/agent_home/.codex/config.toml` for compatibility, but `.codex/sessions` is not the active session store unless `CODEX_HOME` is changed. Both config files use the `evander_openai_relay` Codex provider with `supports_websockets = false` so container Codex sessions do not websocket-prewarm against the HTTP/SSE relay.
+Containers are disposable. Continuity comes from mounting the same `agent_home/` into each run for a session. The runner image currently sets `CODEX_HOME=/home/agent/.config/evander/codex`, so native Codex resume state is persisted under `/var/lib/agent-worker/sessions/<session_id>/agent_home/.config/evander/codex/sessions`. The bootstrap also writes `/var/lib/agent-worker/sessions/<session_id>/agent_home/.codex/config.toml` for compatibility, but `.codex/sessions` is not the active session store unless `CODEX_HOME` is changed. Both config files use the `evander_openai_relay` Codex provider with `supports_websockets = false` so container Codex sessions do not websocket-prewarm against the HTTP/SSE relay.
 
 The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` so Codex state, identity files, and checked-out repos can resume naturally.
 
@@ -316,9 +316,9 @@ The VM-to-container migration path is intentionally staged. Stop the effect and 
 orchestrators before copying active sessions so no agent writes new state while rsync is running:
 
 ```bash
-sudo systemctl stop agent-sandbox-effect-orchestrator.service
-sudo systemctl stop agent-sandbox-trigger-orchestrator.service
-systemctl is-active agent-sandbox-effect-orchestrator.service agent-sandbox-trigger-orchestrator.service
+sudo systemctl stop evander-effect-orchestrator.service
+sudo systemctl stop evander-trigger-orchestrator.service
+systemctl is-active evander-effect-orchestrator.service evander-trigger-orchestrator.service
 ```
 
 Dry-run selection first. With no phase flag, the command only reports which libvirt-backed sessions
@@ -339,10 +339,10 @@ The copy maps VM `/home/agent` to
 `<worker-root>/sessions/<session_id>/artifacts`, and optionally VM run logs to
 `<worker-root>/sessions/<session_id>/logs/migrated-vm-agent-runs`. It mirrors Codex session files
 between the legacy `.codex/sessions` tree and the active container
-`.config/agent-sandbox/codex/sessions` tree so old `.codex` history is not stranded. It also
-refreshes container-side session files such as `.agent-sandbox/session.env`, shell profiles, Codex
+`.config/evander/codex/sessions` tree so old `.codex` history is not stranded. It also
+refreshes container-side session files such as `.evander/session.env`, shell profiles, Codex
 config, Claude config, and package-manager config. Any overwritten file is first copied under
-`/home/agent/.agent-sandbox/migration-originals` inside the migrated worker session home.
+`/home/agent/.evander/migration-originals` inside the migrated worker session home.
 
 Verify copied sessions before cutover:
 
@@ -407,7 +407,7 @@ present. The in-container repo can still record the canonical upstream URL with 
 all fetch and push traffic goes through the private restricted-SSH mirror.
 
 `effect:agent:create` on `container_worker_vm` writes the session bootstrap files under
-`/home/agent`: `.agent-sandbox/session.env`, shell profiles, Codex config in both supported
+`/home/agent`: `.evander/session.env`, shell profiles, Codex config in both supported
 locations, Claude Code settings and MCP config, and NuGet config when `nuget=true`. The Codex
 config points at the session-scoped OpenAI relay URL and MCP gateway URL, while the Claude Code
 settings disable commit-message attribution trailers. If `dotnet=true` or `playwright=true`, the
@@ -451,7 +451,7 @@ evander-cli execution start-container-job \
   --session-id demo-session \
   --directory root \
   --target-name demo-container-1 \
-  --image agent-sandbox-runner:latest \
+  --image evander-runner:latest \
   --repo-source git@example.test/repo.git \
   --clone-branch main \
   --memory 512m \
@@ -482,7 +482,7 @@ The smoke command runs two unique jobs with the same session id. The first write
 ```bash
 evander-cli execution smoke-container-worker \
   --session-id smoke-session \
-  --image agent-sandbox-runner:latest \
+  --image evander-runner:latest \
   --json
 ```
 
@@ -493,7 +493,7 @@ The CLI does not expose raw environment injection. Container behavior is sent th
 All routes except `GET /healthz` require:
 
 ```text
-Authorization: Bearer <AGENT_SANDBOX_WORKER_TOKEN>
+Authorization: Bearer <EVANDER_WORKER_TOKEN>
 ```
 
 Routes:
@@ -532,7 +532,7 @@ Docker is used as a local container runtime on the worker VM. The default sandbo
 
 The Docker network can be overridden with worker config or `--docker-network`, but `host` is
 refused. In the Ansible-managed single-worker path, any non-`none` worker Docker network must be
-paired with `agent_sandbox_worker_egress_policy_enabled: true`. That policy installs a
+paired with `evander_worker_egress_policy_enabled: true`. That policy installs a
 default-deny `DOCKER-USER` chain for the configured container network, blocks `169.254.0.0/16`, and
 allows only the configured private control-plane endpoints. Workers should not have direct
 outbound access to Ubuntu mirrors, `pypi.org`, or `registry.npmjs.org`; apt-cacher-ng is the
@@ -540,7 +540,7 @@ private apt egress point and Nexus is the private PyPI/npm egress point.
 
 For single-host local experiments only, the daemon has an explicit escape hatch:
 `--unsafe-allow-host-network --docker-network host` or
-`AGENT_SANDBOX_WORKER_UNSAFE_ALLOW_HOST_NETWORK=1`. This is intended for an operator-owned
+`EVANDER_WORKER_UNSAFE_ALLOW_HOST_NETWORK=1`. This is intended for an operator-owned
 workstation where the worker daemon and control plane run on the same host and Docker bridge
 traffic is not usable. It weakens the container isolation boundary and should not be used for
 customer or shared deployments.
@@ -551,7 +551,7 @@ The `strict` sandbox profile keeps the default profile behavior and also adds:
 - `--tmpfs /tmp:rw,noexec,nosuid,size=512m`
 - `--pids-limit 512` when the job did not provide its own pids limit
 
-Operators can tune worker daemon container flags with `--read-only-rootfs`, repeated `--tmpfs`, and `--container-user`. `--docker-network` and `AGENT_SANDBOX_WORKER_DOCKER_NETWORK` override the selected profile network, but `host` remains rejected.
+Operators can tune worker daemon container flags with `--read-only-rootfs`, repeated `--tmpfs`, and `--container-user`. `--docker-network` and `EVANDER_WORKER_DOCKER_NETWORK` override the selected profile network, but `host` remains rejected.
 
 Non-`none` networking requires the worker egress policy before it can protect cloud metadata or
 adjacent infrastructure endpoints. Do not treat a Docker network override as a

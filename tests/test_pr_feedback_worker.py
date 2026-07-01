@@ -8,14 +8,14 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent_sandbox.audit import AuditLogger
-from agent_sandbox.config import GatewayConfig
-import agent_sandbox.daemons.pr_feedback_worker as daemon_pr_feedback_worker
-from agent_sandbox.daemons.pr_feedback_worker import (
+from evander.audit import AuditLogger
+from evander.config import GatewayConfig
+import evander.daemons.pr_feedback_worker as daemon_pr_feedback_worker
+from evander.daemons.pr_feedback_worker import (
     PullRequestFeedbackWorker,
     build_pr_feedback_worker,
 )
-from agent_sandbox.pr_feedback import (
+from evander.pr_feedback import (
     FeedbackEnvelope,
     FeedbackProviderAuthError,
     FeedbackProviderConfigurationError,
@@ -25,8 +25,8 @@ from agent_sandbox.pr_feedback import (
     annotate_agent_directed_feedback,
     pr_feedback_item_payload,
 )
-from agent_sandbox.models import PrFeedbackItem
-from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
+from evander.models import PrFeedbackItem
+from evander.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
 
 
 def test_pr_feedback_store_dedupes_feedback(tmp_path: Path) -> None:

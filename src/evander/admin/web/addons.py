@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import BaseRoute, Route
+
+from evander.admin.composition import AdminRuntimeComponents
+from evander.admin.payloads import AdminRevisionConflict
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
+from evander.admin.web.shared import AdminWebAuth, json_error, request_has_privileged_operations
+
+
+async def _json_body(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Request body must be valid JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Request body must be a JSON object")
+    return payload
+
+
+def addon_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[BaseRoute]:
+    async def get_addons(request: Request) -> JSONResponse:
+        auth.require(request)
+        payload = await run_in_threadpool(service.addon_admin.read_addon_state)
+        return JSONResponse(payload)
+
+    async def put_enabled_addons(request: Request) -> JSONResponse:
+        auth.require(request)
+        try:
+            auth.require_permission(request, ADMIN_OWNER_PERMISSION)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+            return json_error("Privileged operations are locked.", status_code=403)
+        try:
+            payload = await _json_body(request)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        enabled_addon_ids = payload.get("enabled_addon_ids")
+        if not isinstance(enabled_addon_ids, list):
+            return json_error("enabled_addon_ids must be a JSON array", status_code=400)
+        expected_revision = str(payload.get("expected_revision") or "").strip()
+        if not expected_revision:
+            return json_error("expected_revision is required", status_code=428)
+        try:
+            result = await run_in_threadpool(
+                service.addon_admin.update_enabled_addons,
+                enabled_addon_ids,
+                expected_revision=expected_revision,
+            )
+        except AdminRevisionConflict as exc:
+            return json_error(str(exc), status_code=409, details=exc.details)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse(result)
+
+    return [
+        Route("/api/admin/addons", get_addons, methods=["GET"]),
+        Route("/api/admin/addons/enabled", put_enabled_addons, methods=["PUT"]),
+    ]
+
+
+__all__ = ["addon_routes"]

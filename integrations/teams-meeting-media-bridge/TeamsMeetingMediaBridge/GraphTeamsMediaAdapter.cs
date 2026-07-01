@@ -301,7 +301,7 @@ public sealed class GraphApplicationHostedMediaClient :
             TenantId = string.IsNullOrWhiteSpace(coordinates.TenantId)
                 ? options.TenantId
                 : coordinates.TenantId.Trim(),
-            Subject = $"agent-sandbox-{externalMeetingId}",
+            Subject = $"evander-{externalMeetingId}",
         };
         var call = await communicationsClient.Calls(maintainState: true)
             .AddAsync(parameters, scenarioId, cancellationToken);

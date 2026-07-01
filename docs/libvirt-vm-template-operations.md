@@ -27,10 +27,10 @@ Use Ubuntu or another cloud-init-compatible `qcow2` image. Keep the image in the
 storage tree, not in a home directory.
 
 ```bash
-sudo install -d -m 0755 /var/lib/libvirt/images/agent-sandbox/images
-sudo cp ~/Downloads/dotnet-agent.qcow2 /var/lib/libvirt/images/agent-sandbox/images/
-sudo cp ~/Downloads/ubuntu-24.04-server-cloudimg-amd64.img /var/lib/libvirt/images/agent-sandbox/images/
-sudo qemu-img info /var/lib/libvirt/images/agent-sandbox/images/dotnet-agent.qcow2
+sudo install -d -m 0755 /var/lib/libvirt/images/evander/images
+sudo cp ~/Downloads/dotnet-agent.qcow2 /var/lib/libvirt/images/evander/images/
+sudo cp ~/Downloads/ubuntu-24.04-server-cloudimg-amd64.img /var/lib/libvirt/images/evander/images/
+sudo qemu-img info /var/lib/libvirt/images/evander/images/dotnet-agent.qcow2
 ```
 
 Expected checks:
@@ -40,7 +40,7 @@ Expected checks:
 - no secrets, tokens, or host-specific private keys are baked into the image
 
 If you need a different image name, copy it into
-`/var/lib/libvirt/images/agent-sandbox/images/` with `sudo cp` and verify it with
+`/var/lib/libvirt/images/evander/images/` with `sudo cp` and verify it with
 `qemu-img info` before registering an alias.
 
 ## Register An Alias
@@ -84,7 +84,7 @@ jq '.["template-smoke"].metadata.libvirt_vm_template' runtime/sessions.json
 
 `scripts/setup_vm.sh` passes the chosen base image through `LIBVIRT_BASE_IMAGE` to
 `scripts/launch_agent_vm.sh`. The launch script then creates the per-VM overlay disk under
-`/var/lib/libvirt/images/agent-sandbox/vms/<vm-name>/disk.qcow2` and uses the selected base image
+`/var/lib/libvirt/images/evander/vms/<vm-name>/disk.qcow2` and uses the selected base image
 as the qcow2 backing file.
 
 That means the operator prepares one approved read-only image, registers it once in `vm.json`, and
@@ -144,11 +144,11 @@ session. It requires a libvirt-capable host.
 5. Verify the overlay disk uses that base image as its backing file:
 
    ```bash
-   sudo qemu-img info /var/lib/libvirt/images/agent-sandbox/vms/vm-template-smoke/disk.qcow2
+   sudo qemu-img info /var/lib/libvirt/images/evander/vms/vm-template-smoke/disk.qcow2
    ```
 
    The output should report a backing file under
-   `/var/lib/libvirt/images/agent-sandbox/images/dotnet-agent.qcow2`.
+   `/var/lib/libvirt/images/evander/images/dotnet-agent.qcow2`.
 
 6. Check guest readiness once the VM is up:
 
@@ -192,9 +192,9 @@ and `sudo virsh console <vm-name>` lets you see cloud-init and boot-time failure
   `sudo qemu-img info <image-ref>`, and `runtime/sessions.json` if the selection came from a
   workflow run.
 - Likely cause: the alias or selector points at a file that does not exist, or the image was
-  copied somewhere outside `/var/lib/libvirt/images/agent-sandbox/images/`.
+  copied somewhere outside `/var/lib/libvirt/images/evander/images/`.
 - Remediation: place the approved `qcow2` under the shared libvirt image tree with `sudo install
-  -d -m 0755 /var/lib/libvirt/images/agent-sandbox/images` and `sudo cp <source> ...`, then update
+  -d -m 0755 /var/lib/libvirt/images/evander/images` and `sudo cp <source> ...`, then update
   the alias catalog or selection to point at the copied file. Re-run `sudo qemu-img info` and
   confirm it reports `file format: qcow2`.
 
@@ -203,7 +203,7 @@ and `sudo virsh console <vm-name>` lets you see cloud-init and boot-time failure
 - Symptom: the effect runtime rejects the selector with `unknown libvirt VM template selector ...;
   configured aliases: ...`.
 - Where to look: `evander-cli directories config-show root --domain vm --runtime-dir runtime`,
-  the workflow run output, and `journalctl -u agent-sandbox-effect-orchestrator.service` when the
+  the workflow run output, and `journalctl -u evander-effect-orchestrator.service` when the
   failure surfaced through `effect:agent:create`.
 - Likely cause: `vm_image` names an alias that is not present in the effective `vm.json`
   catalog, or a parent directory override removed the alias you expected.
@@ -237,9 +237,9 @@ and `sudo virsh console <vm-name>` lets you see cloud-init and boot-time failure
 
 - Symptom: `scripts/setup_vm.sh` reaches `bootstrap_<provider>` and exits non-zero, or the provider
   bootstrap script emits an error after SSH is already ready.
-- Where to look: `journalctl -u agent-sandbox-effect-orchestrator.service` if the VM was launched
+- Where to look: `journalctl -u evander-effect-orchestrator.service` if the VM was launched
   from a workflow, `runtime/sessions.json`, the root-owned logs under
-  `/var/log/agent-sandbox/agent-runs`, and the guest `/var/log/cloud-init-output.log`.
+  `/var/log/evander/agent-runs`, and the guest `/var/log/cloud-init-output.log`.
 - Likely cause: the optional provider bootstrap is missing a prerequisite, or the image needs a
   heavy OS-level dependency that should have been present before first boot.
 - Remediation: fix the bootstrap script or the optional capability flags first. Only move a change

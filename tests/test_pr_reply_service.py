@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent_sandbox.services import (
+from evander.services import (
     AzureDevOpsPrReplyProvider,
     GitHubPrReplyProvider,
     PrReplyService,
@@ -16,7 +16,7 @@ from agent_sandbox.services import (
 def patch_httpx_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTransport) -> None:
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.services.httpx.Client",
+        "evander.services.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
 
@@ -30,7 +30,7 @@ def test_pr_reply_service_idempotency_reuses_first_response(tmp_path: Path) -> N
         def post_reply(self, **kwargs: object):
             self.calls += 1
             self.body_texts.append(str(kwargs["body_text"]))
-            from agent_sandbox.models import PostPrFeedbackReplyResponse
+            from evander.models import PostPrFeedbackReplyResponse
 
             return PostPrFeedbackReplyResponse(
                 status="posted",
@@ -80,7 +80,7 @@ def test_pr_reply_service_trims_feedback_replies_before_posting(tmp_path: Path) 
 
         def post_reply(self, **kwargs: object):
             self.body_text = str(kwargs["body_text"])
-            from agent_sandbox.models import PostPrFeedbackReplyResponse
+            from evander.models import PostPrFeedbackReplyResponse
 
             return PostPrFeedbackReplyResponse(
                 status="posted",
@@ -113,7 +113,7 @@ def test_pr_reply_service_trims_feedback_replies_before_posting(tmp_path: Path) 
 def test_pr_reply_service_records_ignored_feedback_id_for_github_reply(tmp_path: Path) -> None:
     class StubProvider:
         def post_reply(self, **_: object):
-            from agent_sandbox.models import PostPrFeedbackReplyResponse
+            from evander.models import PostPrFeedbackReplyResponse
 
             return PostPrFeedbackReplyResponse(
                 status="posted",
@@ -150,7 +150,7 @@ def test_pr_reply_service_records_ignored_feedback_id_for_github_reply(tmp_path:
 def test_pr_reply_service_records_ignored_feedback_id_for_azure_reply(tmp_path: Path) -> None:
     class StubProvider:
         def post_reply(self, **_: object):
-            from agent_sandbox.models import PostPrFeedbackReplyResponse
+            from evander.models import PostPrFeedbackReplyResponse
 
             return PostPrFeedbackReplyResponse(
                 status="posted",
@@ -192,7 +192,7 @@ def test_pr_reply_service_normalizes_azure_devops_provider_alias(tmp_path: Path)
 
         def post_reply(self, **kwargs: object):
             self.calls.append(kwargs)
-            from agent_sandbox.models import PostPrFeedbackReplyResponse
+            from evander.models import PostPrFeedbackReplyResponse
 
             return PostPrFeedbackReplyResponse(
                 status="posted",

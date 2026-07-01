@@ -10,7 +10,7 @@ Usage:
   agent-pr-note ensure-head
 
 Maintains an additive PR-summary note for the current branch and attaches the
-full summary to HEAD on the configured agent-sandbox.prNotesRef notes ref.
+full summary to HEAD on the configured evander.prNotesRef notes ref.
 EOF
 }
 
@@ -57,12 +57,12 @@ cache_file_for_current_branch() {
 
   git_dir="$(git rev-parse --git-dir)"
   branch="$(branch_name)"
-  printf '%s/agent-sandbox/agent-pr-cache/%s.md\n' "${git_dir}" "${branch}"
+  printf '%s/evander/agent-pr-cache/%s.md\n' "${git_dir}" "${branch}"
 }
 
 pr_notes_ref() {
   local notes_ref
-  notes_ref="$(git config --get agent-sandbox.prNotesRef 2>/dev/null || true)"
+  notes_ref="$(git config --get evander.prNotesRef 2>/dev/null || true)"
   if [[ -z "${notes_ref}" ]]; then
     notes_ref="refs/notes/agent-pr"
   fi

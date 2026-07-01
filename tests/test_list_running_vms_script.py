@@ -364,7 +364,7 @@ printf '%s\\n' 'idle'
     ssh_args = ssh_log.read_text(encoding="utf-8").strip()
     assert "-o StrictHostKeyChecking=yes" in ssh_args
     assert "-o HostKeyAlias=vm-clean" in ssh_args
-    assert "agent-sandbox-known_hosts" in ssh_args
+    assert "evander-known_hosts" in ssh_args
 
 
 def test_list_running_vms_adds_missing_host_key_types_for_existing_vm_alias(tmp_path: Path) -> None:
@@ -374,7 +374,7 @@ def test_list_running_vms_adds_missing_host_key_types_for_existing_vm_alias(tmp_
     home_dir = tmp_path / "home"
     ssh_dir = home_dir / ".ssh"
     ssh_dir.mkdir(parents=True)
-    known_hosts_path = ssh_dir / "agent-sandbox-known_hosts"
+    known_hosts_path = ssh_dir / "evander-known_hosts"
     known_hosts_path.write_text("vm-partial ssh-rsa AAAA-existing-rsa\n", encoding="utf-8")
 
     _write_executable(
@@ -425,7 +425,7 @@ printf '%s\\n' 'idle'
     )
 
     env = os.environ.copy()
-    env["AGENT_SANDBOX_GUEST_KNOWN_HOSTS_FILE"] = str(known_hosts_path)
+    env["EVANDER_GUEST_KNOWN_HOSTS_FILE"] = str(known_hosts_path)
     env["HOME"] = str(home_dir)
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
@@ -452,7 +452,7 @@ def test_list_running_vms_replaces_changed_host_key_for_existing_vm_alias(tmp_pa
     home_dir = tmp_path / "home"
     ssh_dir = home_dir / ".ssh"
     ssh_dir.mkdir(parents=True)
-    known_hosts_path = ssh_dir / "agent-sandbox-known_hosts"
+    known_hosts_path = ssh_dir / "evander-known_hosts"
     known_hosts_path.write_text("vm-14357 ssh-ed25519 AAAA-old-ed25519\n", encoding="utf-8")
 
     _write_executable(
@@ -503,7 +503,7 @@ printf '%s\n' 'idle'
     )
 
     env = os.environ.copy()
-    env["AGENT_SANDBOX_GUEST_KNOWN_HOSTS_FILE"] = str(known_hosts_path)
+    env["EVANDER_GUEST_KNOWN_HOSTS_FILE"] = str(known_hosts_path)
     env["HOME"] = str(home_dir)
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["SSH_PRIVATE_KEY_PATH"] = str(private_key)

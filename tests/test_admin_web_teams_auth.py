@@ -10,10 +10,10 @@ import pytest
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.composition import AdminRuntimeComponents, build_admin_runtime
-from agent_sandbox.admin.web.app import create_app
-from agent_sandbox.admin.web.teams_auth import teams_auth_routes
-from agent_sandbox.messaging.teams_auth import DeviceCodeLoginSession
+from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.web.app import create_app
+from evander.admin.web.teams_auth import teams_auth_routes
+from evander.messaging.teams_auth import DeviceCodeLoginSession
 
 _SENSITIVE_KEY_NAMES = {
     "access_token",
@@ -85,7 +85,7 @@ def test_admin_web_teams_auth_routes_use_focused_admin_services(
     async def run_inline(func, *args, **kwargs):
         return func(*args, **kwargs)
 
-    monkeypatch.setattr("agent_sandbox.admin.web.teams_auth.run_in_threadpool", run_inline)
+    monkeypatch.setattr("evander.admin.web.teams_auth.run_in_threadpool", run_inline)
 
     class TeamsService:
         def normalize_directory_reference(self, value: str) -> str:
@@ -238,8 +238,8 @@ def test_admin_web_teams_auth_routes_use_focused_admin_services(
 def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", raising=False)
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_PASSWORD", raising=False)
 
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     created = service.directory_admin.create_child(parent="root", name="operations")
@@ -492,9 +492,9 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
 def test_admin_web_teams_auth_requires_auth_when_enabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
 
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
@@ -510,8 +510,8 @@ def test_admin_web_teams_auth_requires_auth_when_enabled(
 def test_admin_web_teams_auth_mutations_are_locked_until_privileged_unlock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", raising=False)
-    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_PASSWORD", raising=False)
 
     service = build_admin_runtime(write_config(tmp_path))
     calls: list[str] = []

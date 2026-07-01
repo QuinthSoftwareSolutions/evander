@@ -143,6 +143,7 @@ const TUTORIAL_EFFECT_CATALOG_ENTRY: WorkflowEditorNodeCatalogEntry = {
 const TUTORIAL_CATALOG: WorkflowEditorCatalog = {
   worker_id: "trigger-orchestrator",
   nodes: [TUTORIAL_TRIGGER_CATALOG_ENTRY, TUTORIAL_EFFECT_CATALOG_ENTRY],
+  internal_events: [],
 };
 
 const TUTORIAL_GRAPH: WorkflowGraphMetadata = {

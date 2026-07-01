@@ -6,7 +6,7 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_sandbox.daemons.effect_orchestrator import (
+from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
     JsonExecutionStore,
@@ -14,13 +14,13 @@ from agent_sandbox.daemons.effect_orchestrator import (
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
-from agent_sandbox.repositories.orchestration import (
+from evander.repositories.orchestration import (
     JsonEffectCursorRepository,
     JsonGateCursorRepository,
     JsonWorkflowConfigSnapshotRepository,
     SqliteWorkflowConfigSnapshotRepository,
 )
-from agent_sandbox.repositories.orchestration_db import (
+from evander.repositories.orchestration_db import (
     connect_orchestration_db,
     maybe_checkpoint_orchestration_wal,
 )

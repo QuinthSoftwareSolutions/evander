@@ -83,7 +83,7 @@ def _run_launch(
             "PATH": f"{fake_bin}:{env['PATH']}",
             "USER": "agent",
             "VM_STORAGE_DIR": str(vm_storage_dir),
-            "AGENT_SANDBOX_RUNTIME_DIR": str(tmp_path / "runtime"),
+            "EVANDER_RUNTIME_DIR": str(tmp_path / "runtime"),
             "SSH_PUBLIC_KEY_FILE": str(ssh_key_file),
             "GATEWAY_URL": "http://gateway.test/mcp",
             "HTTP_TARGET_RELAY_BASE_URL": "http://relay.test",

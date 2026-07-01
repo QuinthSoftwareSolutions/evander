@@ -6,8 +6,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent_sandbox.ado_reports import DEFAULT_EFFORT_FIELDS
-from agent_sandbox.issues.service import AzureDevOpsIssueAdapter, IssueService
+from evander.ado_reports import DEFAULT_EFFORT_FIELDS
+from evander.issues.service import AzureDevOpsIssueAdapter, IssueService
 
 
 class _DummyClient:
@@ -87,7 +87,7 @@ def test_create_issue_appends_parent_relation_operation(monkeypatch: pytest.Monk
         "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/77"}},
     }
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
     )
 
@@ -131,7 +131,7 @@ def test_create_issue_uses_explicit_project_override(monkeypatch: pytest.MonkeyP
         },
     }
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
     )
 
@@ -194,7 +194,7 @@ def test_create_issue_uploads_description_artifact_and_links_relation(
         ),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -257,7 +257,7 @@ def test_post_comment_formats_markdownish_body_as_explicit_ado_html(
         ),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -303,7 +303,7 @@ def test_post_comment_uploads_artifact_appends_image_and_links_relation(
         httpx.Response(200, json={"id": 77}),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -368,7 +368,7 @@ def test_post_comment_resolves_ado_mentions_before_posting(
         ),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -422,7 +422,7 @@ def test_update_issue_uploads_field_artifact_appends_image_and_links_relation(
         httpx.Response(200, json={"id": 77}),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -469,7 +469,7 @@ def test_update_issue_adds_expected_state_test_before_mutations(
     calls: list[dict[str, object]] = []
     responses = [httpx.Response(200, json={"id": 77})]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -527,7 +527,7 @@ def test_create_issue_surfaces_parent_linkage_failure_action(
         400, json={"message": "The parent does not exist in this project."}
     )
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _DummyClient(error_response, calls),
     )
 
@@ -566,7 +566,7 @@ def test_create_issue_composes_json_patch_for_backlog_fields(
         "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/88"}},
     }
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
     )
 
@@ -622,7 +622,7 @@ def test_create_issue_formats_plain_text_ado_html_fields(monkeypatch: pytest.Mon
         "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/90"}},
     }
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
     )
 
@@ -672,7 +672,7 @@ def test_create_issue_normalizes_assigned_to_identity_object(
         "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/89"}},
     }
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
     )
 
@@ -701,7 +701,7 @@ def test_create_issue_propagates_ado_error_message(monkeypatch: pytest.MonkeyPat
         headers={"Content-Type": "application/json"},
     )
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _DummyClient(error_response, calls),
     )
 
@@ -842,7 +842,7 @@ def test_read_issues_batch_uses_workitemsbatch_without_comments(
         )
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -1008,7 +1008,7 @@ def test_list_current_iteration_uses_project_default_team_when_team_omitted(
         httpx.Response(200, json={"workItems": []}),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -1052,7 +1052,7 @@ def test_list_current_iteration_explicit_team_skips_project_default_lookup(
         httpx.Response(200, json={"workItems": []}),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -1097,7 +1097,7 @@ def test_list_current_iteration_scopes_wiql_to_team_field_values(
         httpx.Response(200, json={"workItems": []}),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -1142,7 +1142,7 @@ def test_get_backlog_item_by_id_url_encodes_project_name(monkeypatch: pytest.Mon
         )
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -1211,7 +1211,7 @@ def test_get_backlog_item_extracts_inline_media_from_fields_comments_and_relatio
         ),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -1367,7 +1367,7 @@ def test_query_work_item_activity_filters_created_comments_and_updates(
         ),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses),
     )
 
@@ -1488,7 +1488,7 @@ def test_query_work_item_activity_paginates_after_activity_filtering(
         ),
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses),
     )
 
@@ -1532,7 +1532,7 @@ def test_delete_issue_soft_delete_uses_destroy_false_and_returns_payload_project
         )
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -1564,7 +1564,7 @@ def test_delete_issue_permanent_destroy_sets_destroy_true_and_falls_back_to_requ
     calls: list[dict[str, object]] = []
     responses = [httpx.Response(204)]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -1601,7 +1601,7 @@ def test_delete_issue_raises_clear_error_for_ado_404(
         )
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issues.service.httpx.Client",
+        "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
@@ -1642,10 +1642,10 @@ def test_delete_remote_issue_forwards_to_adapter(monkeypatch: pytest.MonkeyPatch
     assert result == {"provider": "azure_devops", "deleted": True}
 
 
-def test_delete_remote_issue_rejects_unsupported_provider() -> None:
+def test_delete_remote_issue_rejects_unsupported_github_delete_operation() -> None:
     service = IssueService(config_resolver=object())
 
-    with pytest.raises(ValueError, match="Unsupported issue provider: github"):
+    with pytest.raises(ValueError, match="GitHub issue deletion is not supported"):
         service.delete_remote_issue(
             provider="github",
             remote_issue_id="101",

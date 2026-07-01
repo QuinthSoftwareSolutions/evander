@@ -13,7 +13,7 @@ Add-ons may register generic integration points:
 - Admin Web API routes under `/api/addons/<addon_id>/...`
 - Admin Web navigation metadata and optional UI routes under `/addons/<addon_id>/...`
 - Workflow providers using the same trigger/gate/effect/query provider shape as
-  `agent_sandbox.providers`
+  `evander.providers`
 - Workflow editor catalog metadata through those workflow provider registrations
 - Host-side MCP tools registered through the add-on MCP registrar and governed
   by the same session, directory policy, approval, and audit machinery as core
@@ -39,8 +39,18 @@ Add-on discovery is configured with `addon_loader`:
 ```
 
 External packages can also expose Python entry points in the
-`agent_sandbox.addons` group. Entry-point loading is disabled by default and
+`evander.addons` group. Entry-point loading is disabled by default and
 must be explicitly enabled.
+
+Admin Web exposes an **Add-ons** page for first-class add-on visibility and
+restart-gated enablement. The page edits `addon_loader.enabled_addon_ids` in
+host config and trigger-orchestrator config, while leaving module lists and
+entry-point discovery in advanced configuration. Saving add-on enablement does
+not hot-load or hot-unload add-on routes, workflow providers, or MCP tools;
+restart the listed services for changes to take effect.
+
+Disabling an add-on means it will not load after restart. It does not delete
+private state under `runtime/addons/<addon_id>/`.
 
 An add-on module should expose `register_addon()` and return either an
 `AddonRegistration` or a compatible mapping:
@@ -80,11 +90,11 @@ def register_addon():
 
 ## Storage
 
-Use the add-on storage helpers from `agent_sandbox.addons` so state remains
+Use the add-on storage helpers from `evander.addons` so state remains
 scoped and removable:
 
 ```python
-from agent_sandbox.addons import addon_json_object_store
+from evander.addons import addon_json_object_store
 
 store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 ```
@@ -190,7 +200,7 @@ add-ons should be proposed for Truman core.
 The bundled `evander_team_addon` package provides the initial state-model layer
 for this pattern. It is still disabled by default; enable it with
 `addon_loader.modules: ["evander_team_addon"]` or by enabling the
-`agent_sandbox.addons` entry-point group. For the bundled add-on, explicit
+`evander.addons` entry-point group. For the bundled add-on, explicit
 module loading is the recommended operator path because entry-point loading is
 disabled by default. Its canonical state lives in relational SQLite under
 `runtime/addons/team-addon/state.db`; a legacy
@@ -315,6 +325,16 @@ request authority, validates the optional review profile, creates the reviewer
 inbox item, and publishes the reviewer wake event. Use one effect node per
 required reviewer or review profile; the existing review cascade keeps the
 deliverable pending until all attached review requests are accepted.
+
+The Team Add-on also registers its stable internal event names in the workflow
+editor catalog, so `trigger:event.event_type` suggests the event names without
+requiring code inspection. Current Team events are
+`team.chat.message_queued`, `team.agent.wake_requested`,
+`team.ephemeral.requested`, `team.ephemeral.completed`,
+`team.operator.escalation_requested`, `team.git.promotion_requested`, and
+`team.git.release_recovery_requested`. Use these for generic Team event
+workflows; use `trigger:team:deliverable-created` for deliverable-created
+workflows because it owns the deliverable cursor and startup baseline behavior.
 
 Admin API write routes require `expected_revision`. Missing or null revisions
 return `400`, stale revisions return `409`, and successful writes advance the

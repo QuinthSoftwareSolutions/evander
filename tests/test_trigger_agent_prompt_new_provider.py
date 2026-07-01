@@ -4,13 +4,13 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.provider_models import AgentPromptNewTriggerDefinition
-from agent_sandbox.models import SessionManifest
-from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
+from evander.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
+from evander.config import GatewayConfig
+from evander.events.provider_models import AgentPromptNewTriggerDefinition
+from evander.models import SessionManifest
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
+from evander.triggers.providers.base import TriggerRuntimeContext
 
 
 def _context(runtime_dir: Path) -> TriggerRuntimeContext:

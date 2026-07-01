@@ -6,22 +6,22 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.semantic_delete import SemanticDeleteEffectProvider
-from agent_sandbox.effects.providers.semantic_upsert import SemanticUpsertEffectProvider
-from agent_sandbox.effects.providers.schemas import (
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.semantic_delete import SemanticDeleteEffectProvider
+from evander.effects.providers.semantic_upsert import SemanticUpsertEffectProvider
+from evander.effects.providers.schemas import (
     SemanticDeleteEffectDefinition,
     SemanticUpsertEffectDefinition,
 )
-from agent_sandbox.queries.providers.base import QueryRuntimeContext
-from agent_sandbox.queries.providers.schemas import (
+from evander.queries.providers.base import QueryRuntimeContext
+from evander.queries.providers.schemas import (
     SemanticGetQueryDefinition,
     SemanticSearchQueryDefinition,
 )
-from agent_sandbox.queries.providers.semantic_get import SemanticGetQueryProvider
-from agent_sandbox.queries.providers.semantic_search import SemanticSearchQueryProvider
-from agent_sandbox.semantic.openai_embeddings import OpenAIEmbeddingClient
-from agent_sandbox.semantic.qdrant import (
+from evander.queries.providers.semantic_get import SemanticGetQueryProvider
+from evander.queries.providers.semantic_search import SemanticSearchQueryProvider
+from evander.semantic.openai_embeddings import OpenAIEmbeddingClient
+from evander.semantic.qdrant import (
     QdrantClient,
     QdrantCollectionInfo,
     QdrantCollectionSchemaMismatch,
@@ -439,11 +439,11 @@ def _reset_fakes() -> None:
 
 def test_semantic_upsert_provider_embeds_ensures_and_upserts(monkeypatch) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.semantic.workflow_helpers.OpenAIEmbeddingClient",
+        "evander.semantic.workflow_helpers.OpenAIEmbeddingClient",
         _FakeEmbeddingClient,
     )
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.semantic_upsert.QdrantClient",
+        "evander.effects.providers.semantic_upsert.QdrantClient",
         _FakeQdrantClient,
     )
     provider = SemanticUpsertEffectProvider()
@@ -520,11 +520,11 @@ def test_semantic_upsert_requires_text() -> None:
 
 def test_semantic_search_provider_embeds_and_queries(monkeypatch) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.semantic.workflow_helpers.OpenAIEmbeddingClient",
+        "evander.semantic.workflow_helpers.OpenAIEmbeddingClient",
         _FakeEmbeddingClient,
     )
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.semantic_search.QdrantClient",
+        "evander.queries.providers.semantic_search.QdrantClient",
         _FakeQdrantClient,
     )
     provider = SemanticSearchQueryProvider()
@@ -566,11 +566,11 @@ def test_semantic_search_provider_embeds_and_queries(monkeypatch) -> None:
 
 def test_semantic_search_fails_before_embedding_when_collection_missing(monkeypatch) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.semantic.workflow_helpers.OpenAIEmbeddingClient",
+        "evander.semantic.workflow_helpers.OpenAIEmbeddingClient",
         _FakeEmbeddingClient,
     )
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.semantic_search.QdrantClient",
+        "evander.queries.providers.semantic_search.QdrantClient",
         _FakeQdrantClient,
     )
     _FakeQdrantClient.collection_exists = False
@@ -593,7 +593,7 @@ def test_semantic_search_fails_before_embedding_when_collection_missing(monkeypa
 
 def test_semantic_get_provider_retrieves_explicit_ids(monkeypatch) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.queries.providers.semantic_get.QdrantClient",
+        "evander.queries.providers.semantic_get.QdrantClient",
         _FakeQdrantClient,
     )
     provider = SemanticGetQueryProvider()
@@ -620,7 +620,7 @@ def test_semantic_get_provider_retrieves_explicit_ids(monkeypatch) -> None:
 
 def test_semantic_delete_provider_deletes_only_explicit_ids(monkeypatch) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.effects.providers.semantic_delete.QdrantClient",
+        "evander.effects.providers.semantic_delete.QdrantClient",
         _FakeQdrantClient,
     )
     provider = SemanticDeleteEffectProvider()

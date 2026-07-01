@@ -6,7 +6,7 @@ from typing import Any
 
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.addons import AddonContext
+from evander.addons import AddonContext
 
 from .models import (
     AgentRuntime,

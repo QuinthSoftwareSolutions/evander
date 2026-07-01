@@ -130,12 +130,12 @@ Branding changes are global host-side UI settings, not per-directory controls.
 3. Sign-in bar and company logo assets.
 4. Optional relative logo paths through the built-in branding asset route.
 
-Most branding changes are applied through `config/admin-web.env` values in the `AGENT_SANDBOX_ADMIN_WEB_*` family.
+Most branding changes are applied through `config/admin-web.env` values in the `EVANDER_ADMIN_WEB_*` family.
 
 After changing these values:
 
 1. Save the file.
-2. Restart or reload `agent-sandbox-admin-web.service`.
+2. Restart or reload `evander-admin-web.service`.
 3. Refresh browser tabs and confirm the header and sign-in branding.
 
 If a deployment is exposed beyond localhost, confirm TLS and authentication policy as part of branding rollout.

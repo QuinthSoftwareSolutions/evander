@@ -4,10 +4,10 @@ from datetime import timedelta
 
 import pytest
 
-from agent_sandbox.communication_artifacts import CommunicationArtifactStore, utc_now
-from agent_sandbox.models import CommunicationFileArtifact
-from agent_sandbox.worker.models import WorkerFileWriteRequest, WorkerSessionPrepareRequest
-from agent_sandbox.worker.service import WorkerDaemon
+from evander.communication_artifacts import CommunicationArtifactStore, utc_now
+from evander.models import CommunicationFileArtifact
+from evander.worker.models import WorkerFileWriteRequest, WorkerSessionPrepareRequest
+from evander.worker.service import WorkerDaemon
 
 
 def test_store_stages_metadata_with_safe_filename_and_opaque_id(tmp_path):

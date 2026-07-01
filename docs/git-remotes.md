@@ -16,12 +16,12 @@ Move code changes out of an agent VM without routing source code through MCP pay
 Create a local bare remote on the host:
 
 ```bash
-cd /path/to/agent-sandbox
-evander-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"agent-sandbox-git-host\"}"
+cd /path/to/evander
+evander-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"evander-git-host\"}"
 ./scripts/create_git_remote.sh sample-repo
 ```
 
-This creates a bare repository under `AGENT_SANDBOX_GIT_ROOT` and prints the SSH remote URL for the VM.
+This creates a bare repository under `EVANDER_GIT_ROOT` and prints the SSH remote URL for the VM.
 Before a guest can clone or push without prompting for your host password, bootstrap guest Git SSH once:
 
 ```bash
@@ -30,7 +30,7 @@ Before a guest can clone or push without prompting for your host password, boots
 
 That creates a dedicated guest SSH key, installs a restricted forced-command entry in your host
 `authorized_keys`, and configures the guest to use the host alias
-`agent-sandbox-git-host` by default.
+`evander-git-host` by default.
 
 If you want to mirror the default host repo into an issue-specific bare remote using the project
 naming convention, use:
@@ -75,7 +75,7 @@ That derives:
 - host working-tree remote: `14084-mirror`
 
 It uses the explicit second argument when provided, otherwise
-`AGENT_SANDBOX_DEFAULT_REPO_SOURCE`. Pass a repo path or remote URL that should be mirrored.
+`EVANDER_DEFAULT_REPO_SOURCE`. Pass a repo path or remote URL that should be mirrored.
 
 Each bare repo also gets a `post-receive` hook. Once the bare repo has been associated with a
 trusted host clone by `mirror_issue_repo.sh`, that hook can automatically promote guest-pushed
@@ -99,12 +99,12 @@ the same post-receive update stream into `handle_git_push_trigger.sh`:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-cat | /path/to/agent-sandbox/scripts/handle_git_push_trigger.sh /path/to/repo.git
+cat | /path/to/evander/scripts/handle_git_push_trigger.sh /path/to/repo.git
 ```
 
 Optional environment override:
 
-- `AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG` points to a non-default trigger orchestrator config
+- `EVANDER_TRIGGER_ORCHESTRATOR_CONFIG` points to a non-default trigger orchestrator config
   JSON file (default: `config/trigger-orchestrator/config.json` under repo root).
 
 ### Security boundary for trigger hooks
@@ -130,10 +130,10 @@ refs.
 For an existing bare repo, configure the refresh metadata once on the host:
 
 ```bash
-git --git-dir=/path/to/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorSource /path/to/ExampleIndustryAPP
-git --git-dir=/path/to/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorRemoteName origin
-git --git-dir=/path/to/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorSyncRemote 1
-git --git-dir=/path/to/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorForceLocal 0
+git --git-dir=/path/to/evander/git-remotes/ExampleIndustryAPP.git config evander.mirrorSource /path/to/ExampleIndustryAPP
+git --git-dir=/path/to/evander/git-remotes/ExampleIndustryAPP.git config evander.mirrorRemoteName origin
+git --git-dir=/path/to/evander/git-remotes/ExampleIndustryAPP.git config evander.mirrorSyncRemote 1
+git --git-dir=/path/to/evander/git-remotes/ExampleIndustryAPP.git config evander.mirrorForceLocal 0
 ```
 
 After that, the next guest-side `git fetch` or `git pull` refreshes the host bare repo automatically.
@@ -143,9 +143,9 @@ After that, the next guest-side `git fetch` or `git pull` refreshes the host bar
 Inside the VM:
 
 ```bash
-git clone ssh://agent-sandbox-git-host/path/to/agent-sandbox/git-remotes/sample-repo.git
+git clone ssh://evander-git-host/path/to/evander/git-remotes/sample-repo.git
 cd sample-repo
-git remote add agent ssh://agent-sandbox-git-host/path/to/agent-sandbox/git-remotes/sample-repo.git
+git remote add agent ssh://evander-git-host/path/to/evander/git-remotes/sample-repo.git
 git checkout -b work
 # agent edits, commits, tests
 git push agent HEAD:refs/heads/agents/<session-id>/work-<agent-suffix>
@@ -154,7 +154,7 @@ git push agent HEAD:refs/heads/agents/<session-id>/work-<agent-suffix>
 For an issue-specific mirrored repo, the guest clone typically looks like:
 
 ```bash
-git clone ssh://agent-sandbox-git-host/path/to/agent-sandbox/git-remotes/14084_repo.git
+git clone ssh://evander-git-host/path/to/evander/git-remotes/14084_repo.git
 ```
 
 Recommended branch namespace:
@@ -221,7 +221,7 @@ top-level keys (`create_prs_automatically`, `create_prs_as_draft`) or
 ### PR body assembly from Git notes
 
 Host-side PR automation reads agent-authored markdown summaries from the configured PR notes ref.
-New repo clones set `agent-sandbox.prNotesRef` to
+New repo clones set `evander.prNotesRef` to
 `refs/notes/agent-pr/<session-hash>`, where `<session-hash>` is the first 12 hex characters of
 `sha256(session_id)`. Older checkouts that do not have that config still use the legacy
 `refs/notes/agent-pr` ref. The automation fetches the selected notes ref before it calls
@@ -240,7 +240,7 @@ the canonical remote.
 
 When a PR body is assembled, merge order is deterministic:
 
-1. optional fixed operator-controlled body (configured by `AGENT_SANDBOX_PR_FIXED_BODY_FILE`)
+1. optional fixed operator-controlled body (configured by `EVANDER_PR_FIXED_BODY_FILE`)
 2. separator + heading (`---` and `## Agent Summary`)
 3. appended agent summary markdown from the commit note in the configured PR notes ref
 
@@ -291,8 +291,8 @@ When combining Git push automation with PR feedback handling:
 ### Setup steps
 
 1. Complete Git remote setup (`bootstrap_git_vm.sh` + mirror/setup issue helper).
-2. For Azure DevOps PR feedback, ensure `agent-sandbox-ado-worker` is running so feedback ingestion and trigger publication continue.
-3. Keep `agent-sandbox-discord-wake.service` and `agent-sandbox-scheduled-wake.service` running if you rely on Discord inbox wakeups or scheduled resumes.
+2. For Azure DevOps PR feedback, ensure `evander-ado-worker` is running so feedback ingestion and trigger publication continue.
+3. Keep `evander-discord-wake.service` and `evander-scheduled-wake.service` running if you rely on Discord inbox wakeups or scheduled resumes.
 4. Ensure session policy allows feedback tools for the target provider/repo/PR stream.
 5. In agent logic, post replies with `post_pr_feedback_reply(..., idempotency_key=...)` before `git push-agent` when feedback requires code changes.
 
@@ -316,7 +316,7 @@ When combining Git push automation with PR feedback handling:
 - **Push worked but no host promotion/PR update:** inspect bare-repo hook output and `runtime/agent-events.log`.
 - **`AGENT_PR_NOTES fetch failed (non-fatal)` in `runtime/agent-events.log`:**
   host could not fetch the selected PR notes ref from the bare remote during promotion.
-  Verify the guest push included `git config --get agent-sandbox.prNotesRef` and the trusted
+  Verify the guest push included `git config --get evander.prNotesRef` and the trusted
   clone can fetch that ref. For older checkouts, verify the legacy `refs/notes/agent-pr` ref.
 - **`AGENT_PR_NOTES read failed (non-fatal)` in `runtime/agent-events.log`:**
   notes ref was present but reading the note for the promoted commit failed.
@@ -327,7 +327,7 @@ When combining Git push automation with PR feedback handling:
   Check post-receive input/new SHA correctness and confirm the promote fetch succeeded for the pushed branch.
 - **`Configured PR fixed body file missing (non-fatal)` in `runtime/agent-events.log`:**
   configured fixed boilerplate file path does not exist on the host.
-  Fix `AGENT_SANDBOX_PR_FIXED_BODY_FILE` or create the file, then push a new commit to retrigger automation.
+  Fix `EVANDER_PR_FIXED_BODY_FILE` or create the file, then push a new commit to retrigger automation.
 
 ### Audit/log locations and healthy signals
 

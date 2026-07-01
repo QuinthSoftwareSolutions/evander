@@ -8,17 +8,17 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox import gateway
-from agent_sandbox.communication_artifact_links import (
+from evander import gateway
+from evander.communication_artifact_links import (
     verify_communication_artifact_download_token,
 )
-from agent_sandbox.communication_artifacts import CommunicationArtifactStore
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import DirectoryConfigStore
-from agent_sandbox.directories import DirectoryService
-from agent_sandbox.gateway import create_server
-from agent_sandbox.models import SessionManifest, ToolName
-from agent_sandbox.runtime import build_runtime
+from evander.communication_artifacts import CommunicationArtifactStore
+from evander.config import GatewayConfig
+from evander.directory_config import DirectoryConfigStore
+from evander.directories import DirectoryService
+from evander.gateway import create_server
+from evander.models import SessionManifest, ToolName
+from evander.runtime import build_runtime
 
 
 class FakeAgentExecEffectProvider:
@@ -465,7 +465,7 @@ def test_inline_media_pr_feedback_downloads_and_copies_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.pr_feedback import FeedbackEnvelope
+    from evander.pr_feedback import FeedbackEnvelope
 
     FakeAgentCopyFilesEffectProvider.calls = []
     monkeypatch.setattr(
@@ -770,7 +770,7 @@ def test_ado_backlog_inline_media_does_not_duplicate_aggregate_comment_media(
 
 
 def test_pr_feedback_inline_media_rejects_mime_before_staging(tmp_path: Path) -> None:
-    from agent_sandbox.pr_feedback import FeedbackEnvelope
+    from evander.pr_feedback import FeedbackEnvelope
 
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
@@ -924,7 +924,7 @@ def test_ado_backlog_inline_media_rejects_oversize_before_staging(
 
 
 def test_pr_feedback_inline_media_requires_receive_permission(tmp_path: Path) -> None:
-    from agent_sandbox.pr_feedback import FeedbackEnvelope
+    from evander.pr_feedback import FeedbackEnvelope
 
     context = make_context(tmp_path)
     context.session_repository.upsert_session(

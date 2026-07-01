@@ -17,15 +17,15 @@ def test_guest_heartbeat_cycle_uses_persisted_model_from_env_file(tmp_path: Path
     script_path = root / "scripts" / "guest" / "heartbeat_cycle.sh"
 
     home = tmp_path / "home"
-    lib_dir = home / ".config" / "agent-sandbox" / "agent-runner-lib"
-    env_file = home / ".config" / "agent-sandbox" / "guest-heartbeat.env"
+    lib_dir = home / ".config" / "evander" / "agent-runner-lib"
+    env_file = home / ".config" / "evander" / "guest-heartbeat.env"
     fake_bin = tmp_path / "bin"
     lib_dir.mkdir(parents=True)
     fake_bin.mkdir()
 
     (lib_dir / "agent_runner.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     env_file.write_text(
-        "AGENT_MODEL='gpt-5.4'\nAGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT='Resume from env file'\n",
+        "AGENT_MODEL='gpt-5.4'\nEVANDER_GUEST_HEARTBEAT_PROMPT='Resume from env file'\n",
         encoding="utf-8",
     )
     _write_executable(

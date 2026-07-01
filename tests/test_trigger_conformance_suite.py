@@ -10,39 +10,39 @@ from typing import Any
 import pytest
 from pydantic import TypeAdapter
 
-from agent_sandbox.config import GatewayConfig, MailboxConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.email.providers import EmailMessageSummary
-from agent_sandbox.pr_feedback import AzureDevOpsFeedbackAdapter
-from agent_sandbox.models import (
+from evander.config import GatewayConfig, MailboxConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.email.providers import EmailMessageSummary
+from evander.pr_feedback import AzureDevOpsFeedbackAdapter
+from evander.models import (
     DiscordMessageEnvelope,
     EmailMessage,
     LocalIssueRecord,
     PrFeedbackItem,
 )
-from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
-from agent_sandbox.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
-from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
-from agent_sandbox.provider_config import ProviderConfigResolver
-from agent_sandbox.provider_runtime.adapters import trigger_provider_config_blob
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
-from agent_sandbox.triggers.providers.cron import CronTriggerProvider
-from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
-from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
-from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
-from agent_sandbox.triggers.providers.pull_request_new_feedback import (
+from evander.daemons.trigger_orchestrator import TriggerOrchestratorWorker
+from evander.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
+from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from evander.provider_config import ProviderConfigResolver
+from evander.provider_runtime.adapters import trigger_provider_config_blob
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.cron import CronTriggerProvider
+from evander.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
+from evander.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
+from evander.triggers.providers.git_push import GitPushTriggerProvider
+from evander.triggers.providers.pull_request_new_feedback import (
     PullRequestNewFeedbackTriggerProvider,
 )
-from agent_sandbox.triggers.providers.pull_request_completed import (
+from evander.triggers.providers.pull_request_completed import (
     PullRequestCompletedTriggerProvider,
 )
-from agent_sandbox.triggers.providers.teams_direct_message import TeamsDirectMessageTriggerProvider
-from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
-from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
-from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
-from agent_sandbox.triggers.queue import TriggerEventQueue
+from evander.triggers.providers.teams_direct_message import TeamsDirectMessageTriggerProvider
+from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
+from evander.triggers.providers.ticket_changed import TicketChangedTriggerProvider
+from evander.triggers.providers.ticket_created import TicketCreatedTriggerProvider
+from evander.triggers.queue import TriggerEventQueue
 
 
-REPORT_ENV_VAR = "AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT"
+REPORT_ENV_VAR = "EVANDER_TRIGGER_CONFORMANCE_REPORT"
 
 
 @pytest.fixture(scope="module")
@@ -933,7 +933,7 @@ def test_email_new_message_resolves_full_mailbox_config_without_provider_cursor(
         return FakeEmailProvider()
 
     monkeypatch.setattr(
-        "agent_sandbox.triggers.providers.email_new_message._build_email_provider",
+        "evander.triggers.providers.email_new_message._build_email_provider",
         fake_build_email_provider,
     )
     provider = EmailNewMessageTriggerProvider()
@@ -1370,7 +1370,7 @@ def test_conformance_cron_due_and_cursor_persistence(
                 return frozen_now.replace(tzinfo=None)
             return frozen_now.astimezone(tz)
 
-    monkeypatch.setattr("agent_sandbox.triggers.providers.cron.datetime", _FrozenDatetime)
+    monkeypatch.setattr("evander.triggers.providers.cron.datetime", _FrozenDatetime)
 
     provider = CronTriggerProvider()
     provider.initialize(
@@ -1443,7 +1443,7 @@ def test_conformance_cron_high_frequency_edit_skips_backlog(
                 return frozen_now.replace(tzinfo=None)
             return frozen_now.astimezone(tz)
 
-    monkeypatch.setattr("agent_sandbox.triggers.providers.cron.datetime", _FrozenDatetime)
+    monkeypatch.setattr("evander.triggers.providers.cron.datetime", _FrozenDatetime)
 
     provider = CronTriggerProvider()
     provider.initialize(
@@ -2203,7 +2203,7 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
 
     class _Provider:
         def poll(self):
-            from agent_sandbox.events.models import TriggerEvent
+            from evander.events.models import TriggerEvent
 
             return [TriggerEvent.model_validate(event_payload)]
 
@@ -2223,7 +2223,7 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
 
     monkeypatch.setattr(worker._kernel._sleeper, "sleep", _fake_sleep)
     monkeypatch.setattr(
-        "agent_sandbox.daemons.trigger_orchestrator.random.uniform", lambda _a, _b: 1.25
+        "evander.daemons.trigger_orchestrator.random.uniform", lambda _a, _b: 1.25
     )
 
     with pytest.raises(RuntimeError, match="stop-loop"):

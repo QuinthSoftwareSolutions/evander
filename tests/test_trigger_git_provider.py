@@ -3,11 +3,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.provider_models import GitPushTriggerDefinition
-from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
-from agent_sandbox.triggers.providers.git_push import (
+from evander.config import GatewayConfig
+from evander.events.provider_models import GitPushTriggerDefinition
+from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.git_push import (
     GitPushTriggerProvider,
     build_git_push_payloads,
 )
@@ -19,11 +19,11 @@ def test_git_push_provider_generates_event_for_matching_repo_branch(tmp_path: Pa
         ["git", "init", "--bare", str(repo_path)], check=True, capture_output=True, text=True
     )
     subprocess.run(
-        ["git", f"--git-dir={repo_path}", "config", "agent-sandbox.trustedRepoPath", "/src/repo"],
+        ["git", f"--git-dir={repo_path}", "config", "evander.trustedRepoPath", "/src/repo"],
         check=True,
     )
     subprocess.run(
-        ["git", f"--git-dir={repo_path}", "config", "agent-sandbox.baseBranch", "main"], check=True
+        ["git", f"--git-dir={repo_path}", "config", "evander.baseBranch", "main"], check=True
     )
     trigger = GitPushTriggerDefinition(
         id="git-main",
@@ -101,7 +101,7 @@ def test_git_push_provider_derives_session_metadata_from_agent_branch(tmp_path: 
             "git",
             f"--git-dir={repo_path}",
             "config",
-            "agent-sandbox.canonicalOriginUrl",
+            "evander.canonicalOriginUrl",
             "https://example.com/org/repo.git",
         ],
         check=True,
@@ -155,13 +155,13 @@ def test_build_git_push_payloads_maps_notes_push_to_matching_agent_branch_tip(
             "git",
             f"--git-dir={repo_path}",
             "config",
-            "agent-sandbox.trustedRepoPath",
+            "evander.trustedRepoPath",
             "/trusted/repo",
         ],
         check=True,
     )
     subprocess.run(
-        ["git", f"--git-dir={repo_path}", "config", "agent-sandbox.baseBranch", "main"], check=True
+        ["git", f"--git-dir={repo_path}", "config", "evander.baseBranch", "main"], check=True
     )
 
     (worktree / "hello.txt").write_text("Hello World", encoding="utf-8")

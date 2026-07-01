@@ -12,7 +12,7 @@ Arguments:
 
 Environment:
   SHARED_NUGET_CACHE_DIR  Host shared global-packages cache directory.
-                          Default: /var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages
+                          Default: /var/lib/libvirt/images/evander/nuget-cache/global-packages
   NUGET_CONFIG_FILE       NuGet.Config path used for host prewarm restores.
                           Default: <repo>/runtime/host-prewarm/NuGet.Config
   NUGET_HTTP_CACHE_DIR    Host HTTP cache directory.
@@ -35,7 +35,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-SHARED_NUGET_CACHE_DIR="${SHARED_NUGET_CACHE_DIR:-/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages}"
+SHARED_NUGET_CACHE_DIR="${SHARED_NUGET_CACHE_DIR:-/var/lib/libvirt/images/evander/nuget-cache/global-packages}"
 HOST_PREWARM_DIR="${ROOT_DIR}/runtime/host-prewarm"
 NUGET_CONFIG_FILE="${NUGET_CONFIG_FILE:-${HOST_PREWARM_DIR}/NuGet.Config}"
 NUGET_HTTP_CACHE_DIR="${NUGET_HTTP_CACHE_DIR:-${HOST_PREWARM_DIR}/http-cache}"

@@ -6,12 +6,12 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
-from agent_sandbox.models import LocalIssueRecord, RemoteIssueReference
-from agent_sandbox.storage import JsonStore
-from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
-from agent_sandbox.triggers.providers.issue_comment_created import (
+from evander.config import GatewayConfig
+from evander.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
+from evander.models import LocalIssueRecord, RemoteIssueReference
+from evander.storage import JsonStore
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.issue_comment_created import (
     IssueCommentCreatedTriggerProvider,
 )
 

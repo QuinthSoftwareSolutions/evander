@@ -6,8 +6,8 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_LEVEL="${TRIGGER_ORCHESTRATOR_LOG_LEVEL:-INFO}"
 CLI_BIN="${ROOT_DIR}/.venv/bin/evander-cli"
 
-if [[ ! -x "${CLI_BIN}" && -x "${ROOT_DIR}/.venv/bin/agent-sandbox-cli" ]]; then
-  CLI_BIN="${ROOT_DIR}/.venv/bin/agent-sandbox-cli"
+if [[ ! -x "${CLI_BIN}" && -x "${ROOT_DIR}/.venv/bin/evander-cli" ]]; then
+  CLI_BIN="${ROOT_DIR}/.venv/bin/evander-cli"
 fi
 
 exec "${CLI_BIN}" trigger-orchestrator \

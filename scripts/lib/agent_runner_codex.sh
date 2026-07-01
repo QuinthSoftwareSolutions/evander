@@ -176,10 +176,10 @@ agent_runner_codex_config_args() {
       "-c" \
       "web_search=\"${AGENT_WEB_SEARCH_MODE}\""
   fi
-  if [[ -n "${AGENT_SANDBOX_MCP_GATEWAY_URL:-}" ]]; then
+  if [[ -n "${EVANDER_MCP_GATEWAY_URL:-}" ]]; then
     printf '%s\0%s\0' \
       "-c" \
-      "mcp_servers.agent_sandbox.url=\"${AGENT_SANDBOX_MCP_GATEWAY_URL}\""
+      "mcp_servers.evander.url=\"${EVANDER_MCP_GATEWAY_URL}\""
     printf '%s\0%s\0' \
       "--enable" \
       "non_prefixed_mcp_tool_names"

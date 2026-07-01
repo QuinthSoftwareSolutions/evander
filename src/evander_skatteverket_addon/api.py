@@ -7,7 +7,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_sandbox.addons import AddonContext
+from evander.addons import AddonContext
 
 from .catalog import catalog_payload
 from .client import SkatteverketClient

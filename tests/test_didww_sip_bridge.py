@@ -17,8 +17,8 @@ import pytest
 from pydantic import ValidationError
 from starlette.testclient import TestClient
 
-import agent_sandbox.didww_sip_bridge as didww_sip_bridge
-from agent_sandbox.didww_sip_bridge import (
+import evander.didww_sip_bridge as didww_sip_bridge
+from evander.didww_sip_bridge import (
     AsteriskAriClient,
     AsteriskCallHandles,
     DidwwAudioQualityEvent,
@@ -65,7 +65,7 @@ def test_didww_sip_bridge_imports_with_deprecation_warnings_as_errors() -> None:
             "-W",
             "error::DeprecationWarning",
             "-c",
-            "import agent_sandbox.didww_sip_bridge",
+            "import evander.didww_sip_bridge",
         ],
         cwd=repo_root,
         env=env,
@@ -7911,7 +7911,7 @@ def test_realtime_active_response_error_requeues_response_request(
     store = DidwwBridgeStore(tmp_path / "bridge.json")
     record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
     stop_event = asyncio.Event()
-    caplog.set_level(logging.INFO, logger="agent_sandbox.didww_sip_bridge")
+    caplog.set_level(logging.INFO, logger="evander.didww_sip_bridge")
 
     class FakeRealtime:
         def __init__(self) -> None:

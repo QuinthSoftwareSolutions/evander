@@ -1,0 +1,17 @@
+[Unit]
+Description=Evander Discord Ingest Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+WorkingDirectory=__PROJECT_DIR__
+Environment=DISCORD_INGEST_LOG_LEVEL=INFO
+EnvironmentFile=-__PROJECT_DIR__/secrets.env
+ExecStart=__PROJECT_DIR__/.venv/bin/evander-discord-ingest --log-level ${DISCORD_INGEST_LOG_LEVEL}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

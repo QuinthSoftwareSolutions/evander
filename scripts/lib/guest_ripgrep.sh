@@ -67,7 +67,7 @@ guest_ripgrep_seed() {
     fi
     return 0
   fi
-  remote_temp_name=".rg.agent-sandbox-bootstrap-$$"
+  remote_temp_name=".rg.evander-bootstrap-$$"
   if ! scp "${ssh_opts[@]}" "${host_rg}" "${vm_user}@${vm_ip}:~/bin/${remote_temp_name}"; then
     echo "Could not copy host rg binary into guest." >&2
     ssh "${ssh_opts[@]}" "${vm_user}@${vm_ip}" \

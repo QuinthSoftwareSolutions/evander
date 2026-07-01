@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent_sandbox.services import (
+from evander.services import (
     AzureDevOpsPrPublishProvider,
     GitHubPrPublishProvider,
     PrPublishService,
@@ -16,7 +16,7 @@ from agent_sandbox.services import (
 def patch_httpx_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTransport) -> None:
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.services.httpx.Client",
+        "evander.services.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
 
@@ -699,7 +699,7 @@ def test_azure_publish_provider_failed_inline_comment_does_not_post_summary(
         pat="secret",
     )
 
-    caplog.set_level("WARNING", logger="agent_sandbox.services")
+    caplog.set_level("WARNING", logger="evander.services")
     with pytest.raises(httpx.HTTPStatusError) as exc_info:
         provider.submit_review(
             repo="repo1",

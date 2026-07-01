@@ -2,25 +2,25 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sandbox.managed_sections import merge_managed_section, remove_managed_sections
+from evander.managed_sections import merge_managed_section, remove_managed_sections
 
 
 def test_merge_managed_section_creates_missing_file_content() -> None:
     merged = merge_managed_section("", section_id="team", content="hello\n")
 
     assert merged == (
-        "<!-- agent-sandbox-managed-section:team:begin -->\n"
+        "<!-- evander-managed-section:team:begin -->\n"
         "hello\n"
-        "<!-- agent-sandbox-managed-section:team:end -->\n"
+        "<!-- evander-managed-section:team:end -->\n"
     )
 
 
 def test_merge_managed_section_replaces_only_matching_section() -> None:
     existing = (
         "intro\n\n"
-        "<!-- agent-sandbox-managed-section:team:begin -->\n"
+        "<!-- evander-managed-section:team:begin -->\n"
         "old\n"
-        "<!-- agent-sandbox-managed-section:team:end -->\n\n"
+        "<!-- evander-managed-section:team:end -->\n\n"
         "tail\n"
     )
 
@@ -28,9 +28,9 @@ def test_merge_managed_section_replaces_only_matching_section() -> None:
 
     assert merged == (
         "intro\n\n"
-        "<!-- agent-sandbox-managed-section:team:begin -->\n"
+        "<!-- evander-managed-section:team:begin -->\n"
         "new\n"
-        "<!-- agent-sandbox-managed-section:team:end -->\n"
+        "<!-- evander-managed-section:team:end -->\n"
         "\n"
         "tail\n"
     )
@@ -41,21 +41,21 @@ def test_merge_managed_section_appends_after_existing_content() -> None:
 
     assert merged == (
         "intro\n\n"
-        "<!-- agent-sandbox-managed-section:team:begin -->\n"
+        "<!-- evander-managed-section:team:begin -->\n"
         "new\n"
-        "<!-- agent-sandbox-managed-section:team:end -->\n"
+        "<!-- evander-managed-section:team:end -->\n"
     )
 
 
 def test_merge_managed_section_removes_stale_sections_first() -> None:
     existing = (
         "intro\n\n"
-        "<!-- agent-sandbox-managed-section:truman-team-addon:begin -->\n"
+        "<!-- evander-managed-section:truman-team-addon:begin -->\n"
         "stale\n"
-        "<!-- agent-sandbox-managed-section:truman-team-addon:end -->\n\n"
-        "<!-- agent-sandbox-managed-section:evander-team-addon:begin -->\n"
+        "<!-- evander-managed-section:truman-team-addon:end -->\n\n"
+        "<!-- evander-managed-section:evander-team-addon:begin -->\n"
         "old\n"
-        "<!-- agent-sandbox-managed-section:evander-team-addon:end -->\n"
+        "<!-- evander-managed-section:evander-team-addon:end -->\n"
     )
 
     merged = merge_managed_section(
@@ -68,9 +68,9 @@ def test_merge_managed_section_removes_stale_sections_first() -> None:
     assert "truman-team-addon" not in merged
     assert merged == (
         "intro\n\n"
-        "<!-- agent-sandbox-managed-section:evander-team-addon:begin -->\n"
+        "<!-- evander-managed-section:evander-team-addon:begin -->\n"
         "new\n"
-        "<!-- agent-sandbox-managed-section:evander-team-addon:end -->\n"
+        "<!-- evander-managed-section:evander-team-addon:end -->\n"
     )
 
 

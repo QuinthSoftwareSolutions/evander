@@ -38,7 +38,7 @@ PY
 
 git_provider_prepare_remote() {
   local remote_url="$1"
-  local azure_pat_env="${AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV:-AZURE_DEVOPS_PR_PAT}"
+  local azure_pat_env="${EVANDER_AZURE_DEVOPS_PR_PAT_ENV:-AZURE_DEVOPS_PR_PAT}"
   local azure_pat_value="${!azure_pat_env:-}"
   local https_remote_url=""
 

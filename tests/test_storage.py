@@ -10,7 +10,7 @@ from threading import Barrier, Thread
 import pytest
 from pydantic import BaseModel
 
-from agent_sandbox.storage import JsonObjectStore, JsonStore
+from evander.storage import JsonObjectStore, JsonStore
 
 
 class SampleRecord(BaseModel):

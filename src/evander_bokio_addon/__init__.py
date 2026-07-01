@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_sandbox.addons import AddonAdminNavigation, AddonRegistration
+from evander.addons import AddonAdminNavigation, AddonRegistration
 
 from .api import admin_api_routes
 from .mcp import register_mcp_tools
