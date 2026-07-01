@@ -82,8 +82,8 @@
   icon buttons and the edit dialog.
 
 - Moved the Admin Web workflow generator launcher into a top-right workflow
-  canvas overlay with a wand-sparkles icon, and opened the generator prompt in
-  a modal dialog.
+  canvas overlay with a wand-sparkles icon, and kept generation controls in a
+  floating canvas panel so draft workflows remain inspectable before acceptance.
 
 - Fixed worker MSSQL deployment so the SQL Server admin connectivity check waits
   for TCP login readiness after service start or restart.

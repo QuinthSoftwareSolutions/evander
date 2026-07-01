@@ -4142,10 +4142,11 @@ export default function App() {
     : null;
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canWriteWorkflows;
-  const workflowPackManageLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canManageWorkflowPacks;
+  const workflowMutationLocked = workflowEditLocked || workflowGeneratorOpen;
+  const workflowPackManageLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || workflowGeneratorOpen || !canManageWorkflowPacks;
   const workflowRunReadLocked = !canReadWorkflowRuns;
   const workflowRunControlLocked = !canControlWorkflowRuns || workflowRunReadLocked;
-  const canUndoWorkflowChanges = !workflowEditLocked && undoHistory.length > 0;
+  const canUndoWorkflowChanges = !workflowMutationLocked && undoHistory.length > 0;
   useEffect(() => {
     runtimePulseNodeIdsRef.current = runtimePulseNodeIds;
   }, [runtimePulseNodeIds]);
@@ -5557,6 +5558,7 @@ export default function App() {
 
   function openWorkflowGenerator() {
     if (workflowEditLocked) return;
+    if (workflowGeneratorOpen) return;
     if (hasUnsavedWorkflowChanges) {
       const confirmed = window.confirm(
         "Opening the workflow generator will discard unsaved workflow edits. Continue?",
@@ -6438,7 +6440,7 @@ export default function App() {
       setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
       return;
     }
-    if (workflowEditLocked && !canStartConnection) {
+    if (workflowMutationLocked && !canStartConnection) {
       return;
     }
     if (!nodeConnectionMenu) return;
@@ -6451,7 +6453,7 @@ export default function App() {
   }
 
   function startCompactConnectionFromNode(node: Node<GraphNodeData>) {
-    if (workflowEditLocked) return;
+    if (workflowMutationLocked) return;
     const sourcePoint = nodeCenterCanvasPoint(node);
     const routes = node.data.type === "gate:switch" && node.data.outputPorts.length === 0
       ? []
@@ -6537,7 +6539,7 @@ export default function App() {
       setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
       return;
     }
-    if (workflowEditLocked && !canDrag) {
+    if (workflowMutationLocked && !canDrag) {
       event.preventDefault();
       return;
     }
@@ -6552,7 +6554,7 @@ export default function App() {
   function handleNodeTypeDragOver(event: ReactDragEvent<HTMLElement>) {
     const expectedAction = tutorialCurrentRequiredAction();
     if (
-      workflowEditLocked &&
+      workflowMutationLocked &&
       !(
         isTutorialMode &&
         expectedAction?.kind === "add-node"
@@ -6566,7 +6568,7 @@ export default function App() {
   function handleNodeTypeDrop(event: ReactDragEvent<HTMLElement>) {
     const expectedAction = tutorialCurrentRequiredAction();
     if (
-      workflowEditLocked &&
+      workflowMutationLocked &&
       !(
         isTutorialMode &&
         expectedAction?.kind === "add-node"
@@ -6592,7 +6594,7 @@ export default function App() {
     event.stopPropagation();
     const expectedAction = tutorialCurrentRequiredAction();
     if (
-      workflowEditLocked &&
+      workflowMutationLocked &&
       !(
         isTutorialMode &&
         expectedAction?.kind === "connect" &&
@@ -6745,7 +6747,7 @@ export default function App() {
       compactCanvasTouchModeRef.current = "multi-touch-pan";
       return;
     }
-    if (!workflowEditLocked && eventTargetInsideWorkflowNodeDragSurface(event.target)) {
+    if (!workflowMutationLocked && eventTargetInsideWorkflowNodeDragSurface(event.target)) {
       compactCanvasTouchModeRef.current = "node-drag";
       return;
     }
@@ -6849,7 +6851,7 @@ export default function App() {
   }
 
   function deleteSelectedEdge() {
-    if (!document || !selectedEdgeId || workflowEditLocked) return;
+    if (!document || !selectedEdgeId || workflowMutationLocked) return;
     const nextConfig = cloneConfig(document.config);
     nextConfig.edges = nextConfig.edges.filter(
       (edge) => edgeId(edge) !== selectedEdgeId,
@@ -6860,7 +6862,7 @@ export default function App() {
   }
 
   function deleteNodes(nodeIds: string[]) {
-    if (!document || nodeIds.length === 0 || workflowEditLocked) return;
+    if (!document || nodeIds.length === 0 || workflowMutationLocked) return;
     const deletedNodeIds = new Set(nodeIds);
     const nextConfig = cloneConfig(document.config);
     nextConfig.triggers = (nextConfig.triggers ?? []).filter((node) => !deletedNodeIds.has(node.id));
@@ -6928,7 +6930,7 @@ export default function App() {
 
   function pasteCopiedSelection() {
     const copiedSelection = copiedSelectionRef.current;
-    if (!document || !copiedSelection || copiedSelection.nodes.length === 0 || workflowEditLocked) return false;
+    if (!document || !copiedSelection || copiedSelection.nodes.length === 0 || workflowMutationLocked) return false;
     const nextConfig = cloneConfig(document.config);
     nextConfig.triggers ??= [];
     nextConfig.gates ??= [];
@@ -7052,7 +7054,7 @@ export default function App() {
   }
 
   function persistNodePositions(activeNode: Node<GraphNodeData>, draggedNodes: Node<GraphNodeData>[]) {
-    if (!document || workflowEditLocked) return;
+    if (!document || workflowMutationLocked) return;
     setSnapGuides([]);
     const currentNodes = flowInstance?.getNodes() as Node<GraphNodeData>[] | undefined;
     const { snappedNodes } = snapVisibleDraggedNodes(
@@ -7087,7 +7089,7 @@ export default function App() {
       expectedAction.nodeKind === kind &&
       expectedAction.nodeType === type;
     const tutorialAddNodeAction = isTutorialAddNode ? expectedAction : null;
-    if (workflowEditLocked && !isTutorialAddNode) return;
+    if (workflowMutationLocked && !isTutorialAddNode) return;
     if (isTutorialMode && expectedAction?.kind === "add-node" && !isTutorialAddNode) {
       setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
       return;
@@ -7159,7 +7161,7 @@ export default function App() {
   }
 
   function applyWorkflowGraphChanges() {
-    if (!document || !selectedGraph || workflowEditLocked) return;
+    if (!document || !selectedGraph || workflowMutationLocked) return;
     const nextName = graphNameDraft.trim();
     if (!nextName) {
       setError("Graph name is required.");
@@ -7305,7 +7307,7 @@ export default function App() {
 
   function replaceSelectedNode(nextNode: WorkflowNodeConfig, originalNodeId: string) {
     if (!document || !selectedNode) return;
-    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
+    if (workflowMutationLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
     if (isTutorialMode && activeWorkflowTutorial && activeWorkflowDocument) {
       const nextConfig = cloneConfig(activeWorkflowDocument.config);
       const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
@@ -7392,7 +7394,7 @@ export default function App() {
   function resetSelectedNodeChanges() {
     if (!document || !selectedNode) return;
     if (isTutorialMode) return;
-    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
+    if (workflowMutationLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
     const originalNodeId = nodeEditOrigins[selectedNode.id] ?? selectedNode.id;
     const savedWorkflowDocument = savedDocument;
     if (!savedWorkflowDocument) {
@@ -7476,7 +7478,7 @@ export default function App() {
 
   function stageInspectorDraft(nextDraft: Partial<InspectorDraftSnapshot> = {}) {
     if (!document || !selectedNode) return;
-    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
+    if (workflowMutationLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
     try {
       const nextNode = materializeInspectorNodeFromDraft({
         nodeId: nextDraft.nodeId ?? inspectorNodeId,
@@ -7500,12 +7502,12 @@ export default function App() {
 
   function onConnect(connection: Connection) {
     if (!document || !connection.source || !connection.target) return;
-    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "connect")) return;
+    if (workflowMutationLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "connect")) return;
     addWorkflowEdge(connection.source, connection.target, connection.sourceHandle);
   }
 
   function onEdgesDelete(deletedEdges: Edge[]) {
-    if (!document || workflowEditLocked) return;
+    if (!document || workflowMutationLocked) return;
     const deleted = new Set(deletedEdges.map((edge) => edge.id));
     const nextConfig = cloneConfig(document.config);
     nextConfig.edges = nextConfig.edges.filter(
@@ -7516,7 +7518,7 @@ export default function App() {
   }
 
   function onNodesDelete(deletedNodes: Node[]) {
-    if (workflowEditLocked) return;
+    if (workflowMutationLocked) return;
     deleteNodes(deletedNodes.map((node) => node.id));
   }
 
@@ -7712,7 +7714,7 @@ export default function App() {
   }
 
   async function saveDocument() {
-    if (!document || workflowEditLocked || inspectorDraftError) return;
+    if (!document || workflowMutationLocked || inspectorDraftError) return;
     setSaveState("saving");
     setError(null);
     try {
@@ -7946,7 +7948,7 @@ export default function App() {
     if (!hasCollapsedTargetUi || !effectTargetField) return null;
     const value = inspectorKnownValues[effectTargetKey];
     const mode = inspectorFieldModes[effectTargetKey] ?? fieldValueMode(effectTargetField, value);
-    const isDisabled = effectTargetField.read_only || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(effectTargetKey));
+    const isDisabled = effectTargetField.read_only || (workflowMutationLocked && !tutorialAllowsInspectorFieldEdit(effectTargetKey));
     const targetTypeLabel = selectedNode?.type === "effect:agent:prompt" ? "Prompt target type" : "Target type";
     const targetPlaceholder =
       effectTargetKey === "session_id"
@@ -8148,7 +8150,7 @@ export default function App() {
             type="checkbox"
             checked={enabled}
             onChange={(event) => updateSelectedTriggerEnabled(event.target.checked)}
-            disabled={workflowEditLocked}
+            disabled={workflowMutationLocked}
             aria-label="Trigger enabled"
           />
           <span>{enabled ? "Trigger enabled" : "Trigger disabled"}</span>
@@ -8164,7 +8166,7 @@ export default function App() {
   }
 
   function addStringMapRow(key: string) {
-    if (workflowEditLocked) return;
+    if (workflowMutationLocked) return;
     const next = {
       ...inspectorStringMapDrafts,
       [key]: [...(inspectorStringMapDrafts[key] ?? []), createStringMapDraftRow()],
@@ -8190,7 +8192,7 @@ export default function App() {
   }
 
   function removeStringMapRow(fieldKey: string, rowId: string) {
-    if (workflowEditLocked) return;
+    if (workflowMutationLocked) return;
     const next = {
       ...inspectorStringMapDrafts,
       [fieldKey]: (inspectorStringMapDrafts[fieldKey] ?? []).filter((row) => row.id !== rowId),
@@ -8901,7 +8903,7 @@ export default function App() {
   }
 
   function addObjectListItem(key: string, field: WorkflowEditorFieldDefinition) {
-    if (workflowEditLocked) return;
+    if (workflowMutationLocked) return;
     const currentItems = Array.isArray(inspectorKnownValues[key]) ? [...(inspectorKnownValues[key] as unknown[])] : [];
     const nextItem = Object.fromEntries(
       field.item_fields
@@ -8915,7 +8917,7 @@ export default function App() {
   }
 
   function removeObjectListItem(key: string, index: number) {
-    if (workflowEditLocked) return;
+    if (workflowMutationLocked) return;
     const currentItems = Array.isArray(inspectorKnownValues[key]) ? [...(inspectorKnownValues[key] as unknown[])] : [];
     currentItems.splice(index, 1);
     const next = { ...inspectorKnownValues, [key]: currentItems };
@@ -9051,7 +9053,7 @@ export default function App() {
               const value = inspectorKnownValues[field.key];
               const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
               const rawFieldDisabled = field.read_only
-                || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(field.key));
+                || (workflowMutationLocked && !tutorialAllowsInspectorFieldEdit(field.key));
               return renderGenericJsonField(field, value, mode, rawFieldDisabled);
             })}
           </div>
@@ -9173,7 +9175,7 @@ export default function App() {
   function renderField(field: WorkflowEditorFieldDefinition) {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
-    const isDisabled = field.read_only || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(field.key));
+    const isDisabled = field.read_only || (workflowMutationLocked && !tutorialAllowsInspectorFieldEdit(field.key));
     const selectedNodeType = selectedNode?.type;
 
     if (selectedNodeType === "query:session:list" && isSessionListMetadataFieldKey(field.key)) {
@@ -9964,7 +9966,7 @@ export default function App() {
     );
   }
 
-  function renderWorkflowGeneratorDialog() {
+  function renderWorkflowGeneratorCanvasPanel() {
     if (!workflowGeneratorOpen) return null;
     const generatedNodeCount = workflowNodeIds(config).length;
     const generatorDescription = workflowGeneratorDescription.trim();
@@ -9993,69 +9995,59 @@ export default function App() {
                 ? "Draft out of date"
                 : "Generation failed";
     return (
-      <div
-        className="modal-backdrop workflow-generator-modal-backdrop"
-        role="presentation"
-        onClick={(event) => {
-          if (event.target === event.currentTarget) {
-            cancelWorkflowGenerator();
-          }
-        }}
-      >
-        <div className="modal-card workflow-generator-modal" role="dialog" aria-modal="true" aria-label="Generate workflow prompt">
-          <div className="modal-header workflow-generator-header">
-            <div>
-              <div className="section-label">Generate</div>
-              <h2>Generate workflow</h2>
-              <p>Draft workflow canvas</p>
-            </div>
-            <span className={`workflow-generator-status state-${workflowGeneratorState}`}>
-              {generatorStatus}
-            </span>
+      <section className="workflow-generator-canvas-panel" role="dialog" aria-modal="false" aria-label="Generate workflow">
+        <div className="workflow-generator-header">
+          <div>
+            <div className="section-label">Generate</div>
+            <h2>Generate workflow</h2>
+            <p>Draft workflow canvas</p>
           </div>
-          <div className="modal-body workflow-generator-form">
-            <label className="inspector-label workflow-generator-prompt">
-              <span>Description</span>
-              <textarea
-                value={workflowGeneratorDescription}
-                rows={7}
-                placeholder="Describe the workflow to draft."
-                onChange={(event) => handleWorkflowGeneratorDescriptionChange(event.target.value)}
-                disabled={workflowEditLocked}
-                autoFocus
-              />
-            </label>
-            {workflowGeneratorError ? <div className="runtime-run-error">{workflowGeneratorError}</div> : null}
-            {workflowGeneratorWarnings.length > 0 ? (
-              <div className="workflow-generator-warnings">
-                {workflowGeneratorWarnings.slice(0, 4).map((warning, index) => (
-                  <div key={`${warning}-${index}`}>{warning}</div>
-                ))}
-              </div>
-            ) : null}
-            <div className="workflow-generator-actions">
-              <button
-                type="button"
-                className="primary"
-                onClick={generateWorkflowGeneratorDraft}
-                disabled={!canGenerateDraft}
-              >
-                Generate draft
-              </button>
-              <button
-                type="button"
-                onClick={acceptWorkflowGeneratorDraft}
-                disabled={!canAcceptGeneratedDraft || workflowEditLocked}
-              >
-                Accept draft
-              </button>
-              <button type="button" className="subtle-button" onClick={cancelWorkflowGenerator}>
-                Cancel
-              </button>
+          <span className={`workflow-generator-status state-${workflowGeneratorState}`}>
+            {generatorStatus}
+          </span>
+        </div>
+        <div className="workflow-generator-form">
+          <label className="inspector-label workflow-generator-prompt">
+            <span>Description</span>
+            <textarea
+              value={workflowGeneratorDescription}
+              rows={7}
+              placeholder="Describe the workflow to draft."
+              onChange={(event) => handleWorkflowGeneratorDescriptionChange(event.target.value)}
+              disabled={workflowEditLocked}
+              autoFocus
+            />
+          </label>
+          {workflowGeneratorError ? <div className="runtime-run-error">{workflowGeneratorError}</div> : null}
+          {workflowGeneratorWarnings.length > 0 ? (
+            <div className="workflow-generator-warnings">
+              {workflowGeneratorWarnings.slice(0, 4).map((warning, index) => (
+                <div key={`${warning}-${index}`}>{warning}</div>
+              ))}
             </div>
+          ) : null}
+          <div className="workflow-generator-actions">
+            <button
+              type="button"
+              className="primary"
+              onClick={generateWorkflowGeneratorDraft}
+              disabled={!canGenerateDraft}
+            >
+              Generate draft
+            </button>
+            <button
+              type="button"
+              onClick={acceptWorkflowGeneratorDraft}
+              disabled={!canAcceptGeneratedDraft || workflowEditLocked}
+            >
+              Accept draft
+            </button>
+            <button type="button" className="subtle-button" onClick={cancelWorkflowGenerator}>
+              Cancel
+            </button>
           </div>
         </div>
-      </div>
+      </section>
     );
   }
 
@@ -10542,7 +10534,7 @@ export default function App() {
         >
           Undo
         </button>
-        {panelButton("create", "Create", workflowEditLocked)}
+        {panelButton("create", "Create", workflowMutationLocked)}
         {panelButton("inspector", "Inspector")}
         {panelButton("runs", "Runs", workflowRunReadLocked)}
         {panelButton("graphs", "Graphs")}
@@ -10628,13 +10620,13 @@ export default function App() {
                           <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
                             <button
                               type="button"
-                              draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
+                              draggable={!workflowMutationLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
                               onDragStart={(event) => startNodeTypeDrag(event, entry)}
                               onClick={() => {
                                 addNode(entry.kind, entry.type);
                                 if (compact) setCompactActivePanel(null);
                               }}
-                              disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
+                              disabled={workflowMutationLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
                             >
                               {entry.label}
                             </button>
@@ -10898,7 +10890,7 @@ export default function App() {
         <button onClick={undoWorkflowChange} disabled={!canUndoWorkflowChanges}>
           Undo
         </button>
-        <button className="primary" onClick={() => void saveDocument()} disabled={workflowEditLocked}>
+        <button className="primary" onClick={() => void saveDocument()} disabled={workflowMutationLocked}>
           {saveState === "saving" ? "Saving..." : "Save workflow"}
         </button>
         <div className={`save-status save-status-${savePanelStatusTone}`} role="status" aria-live="polite">
@@ -10959,7 +10951,7 @@ export default function App() {
               <input
                 value={graphNameDraft}
                 onChange={(event) => setGraphNameDraft(event.target.value)}
-                disabled={workflowEditLocked}
+                disabled={workflowMutationLocked}
               />
             </label>
             <label className="inspector-label">
@@ -10968,7 +10960,7 @@ export default function App() {
                 value={graphDescriptionDraft}
                 rows={3}
                 onChange={(event) => setGraphDescriptionDraft(event.target.value)}
-                disabled={workflowEditLocked}
+                disabled={workflowMutationLocked}
               />
             </label>
             <label className="inspector-label">
@@ -10980,7 +10972,7 @@ export default function App() {
                 value={graphDirectoryDraft}
                 placeholder={selectedDirectoryPath}
                 onChange={(event) => setGraphDirectoryDraft(event.target.value)}
-                disabled={workflowEditLocked}
+                disabled={workflowMutationLocked}
               />
             </label>
             <label className="inspector-label">
@@ -10992,14 +10984,14 @@ export default function App() {
                 value={graphUsersDraft}
                 rows={3}
                 onChange={(event) => setGraphUsersDraft(event.target.value)}
-                disabled={workflowEditLocked}
+                disabled={workflowMutationLocked}
               />
             </label>
             <button
               type="button"
               className="primary"
               onClick={applyWorkflowGraphChanges}
-              disabled={workflowEditLocked}
+              disabled={workflowMutationLocked}
             >
               Apply graph details
             </button>
@@ -11214,7 +11206,7 @@ export default function App() {
         <button onClick={selectDownstreamBranch} disabled={workflowEditLocked || !selectedNodeId}>
           Select downstream branch
         </button>
-        <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
+        <button className="danger" onClick={deleteSelectedNode} disabled={workflowMutationLocked}>
           Delete selected nodes
         </button>
       </div>
@@ -11266,7 +11258,7 @@ export default function App() {
               setInspectorDisplayName(nextValue);
               stageInspectorDraft({ displayName: nextValue });
             }}
-            disabled={workflowEditLocked}
+            disabled={workflowMutationLocked}
           />
         </label>
 
@@ -11286,12 +11278,12 @@ export default function App() {
         {renderSelectedNodeOutputContract()}
 
         {selectedNodeHasUnsavedChanges ? (
-          <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowEditLocked}>
+          <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowMutationLocked}>
             Reset changes
           </button>
         ) : null}
 
-        <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
+        <button className="danger" onClick={deleteSelectedNode} disabled={workflowMutationLocked}>
           Delete node
         </button>
       </div>
@@ -11309,7 +11301,7 @@ export default function App() {
           <div>{selectedEdge.target_id}</div>
           {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
         </div>
-        <button className="danger" onClick={deleteSelectedEdge} disabled={workflowEditLocked}>
+        <button className="danger" onClick={deleteSelectedEdge} disabled={workflowMutationLocked}>
           Delete edge
         </button>
       </div>
@@ -11638,7 +11630,7 @@ export default function App() {
                     <input
                       value={graphNameDraft}
                       onChange={(event) => setGraphNameDraft(event.target.value)}
-                      disabled={workflowEditLocked}
+                      disabled={workflowMutationLocked}
                     />
                   </label>
                   <label className="inspector-label">
@@ -11647,7 +11639,7 @@ export default function App() {
                       value={graphDescriptionDraft}
                       rows={3}
                       onChange={(event) => setGraphDescriptionDraft(event.target.value)}
-                      disabled={workflowEditLocked}
+                      disabled={workflowMutationLocked}
                     />
                   </label>
                   <label className="inspector-label">
@@ -11659,7 +11651,7 @@ export default function App() {
                       value={graphDirectoryDraft}
                       placeholder={selectedDirectoryPath}
                       onChange={(event) => setGraphDirectoryDraft(event.target.value)}
-                      disabled={workflowEditLocked}
+                      disabled={workflowMutationLocked}
                     />
                   </label>
                   <label className="inspector-label">
@@ -11671,14 +11663,14 @@ export default function App() {
                       value={graphUsersDraft}
                       rows={3}
                       onChange={(event) => setGraphUsersDraft(event.target.value)}
-                      disabled={workflowEditLocked}
+                      disabled={workflowMutationLocked}
                     />
                   </label>
                   <button
                     type="button"
                     className="primary"
                     onClick={applyWorkflowGraphChanges}
-                    disabled={workflowEditLocked}
+                    disabled={workflowMutationLocked}
                   >
                     Apply graph details
                   </button>
@@ -11735,10 +11727,10 @@ export default function App() {
                                 <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
                                   <button
                                     type="button"
-                                    draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
+                                    draggable={!workflowMutationLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
                                     onDragStart={(event) => startNodeTypeDrag(event, entry)}
                                     onClick={() => addNode(entry.kind, entry.type)}
-                                    disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
+                                    disabled={workflowMutationLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
                                   >
                                     {entry.label}
                                   </button>
@@ -11762,7 +11754,7 @@ export default function App() {
               <button onClick={undoWorkflowChange} disabled={!canUndoWorkflowChanges}>
                 Undo
               </button>
-              <button className="primary" onClick={() => void saveDocument()} disabled={workflowEditLocked}>
+              <button className="primary" onClick={() => void saveDocument()} disabled={workflowMutationLocked}>
                 {saveState === "saving" ? "Saving..." : "Save workflow"}
               </button>
               <div className={`save-status save-status-${savePanelStatusTone}`} role="status" aria-live="polite">
@@ -11796,7 +11788,7 @@ export default function App() {
                 <button onClick={selectDownstreamBranch} disabled={workflowEditLocked || !selectedNodeId}>
                   Select downstream branch
                 </button>
-                <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
+                <button className="danger" onClick={deleteSelectedNode} disabled={workflowMutationLocked}>
                   Delete selected nodes
                 </button>
               </div>
@@ -11845,7 +11837,7 @@ export default function App() {
                       setInspectorDisplayName(nextValue);
                       stageInspectorDraft({ displayName: nextValue });
                     }}
-                    disabled={workflowEditLocked}
+                    disabled={workflowMutationLocked}
                   />
                 </label>
 
@@ -11865,12 +11857,12 @@ export default function App() {
                 {renderSelectedNodeOutputContract()}
 
                 {selectedNodeHasUnsavedChanges ? (
-                  <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowEditLocked}>
+                  <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowMutationLocked}>
                     Reset changes
                   </button>
                 ) : null}
 
-                <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
+                <button className="danger" onClick={deleteSelectedNode} disabled={workflowMutationLocked}>
                   Delete node
                 </button>
               </div>
@@ -11885,7 +11877,7 @@ export default function App() {
                   <div>{selectedEdge.target_id}</div>
                   {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
                 </div>
-                <button className="danger" onClick={deleteSelectedEdge} disabled={workflowEditLocked}>
+                <button className="danger" onClick={deleteSelectedEdge} disabled={workflowMutationLocked}>
                   Delete edge
                 </button>
               </div>
@@ -11898,8 +11890,6 @@ export default function App() {
 
         {renderWorkflowTutorialChooser()}
         {renderWorkflowPackModal()}
-        {renderWorkflowGeneratorDialog()}
-
           <div
             className="workflow-sidebar-resize-handle"
             role="separator"
@@ -11929,6 +11919,7 @@ export default function App() {
             onTouchCancelCapture={handleCanvasTouchCancelCapture}
           >
             {renderWorkflowGeneratorCanvasControl()}
+            {renderWorkflowGeneratorCanvasPanel()}
             {renderWorkflowPackCanvasControl()}
             {renderWorkflowPackHistoryCanvasPanel()}
             <ReactFlow
@@ -11966,11 +11957,11 @@ export default function App() {
               onConnect={onConnect}
               onEdgesDelete={onEdgesDelete}
               onNodesDelete={onNodesDelete}
-              nodesDraggable={!workflowEditLocked && (!isCompactCanvasTouchMode || compactCanvasMode !== "connect")}
-              nodesConnectable={!workflowEditLocked}
+              nodesDraggable={!workflowMutationLocked && (!isCompactCanvasTouchMode || compactCanvasMode !== "connect")}
+              nodesConnectable={!workflowMutationLocked}
               elementsSelectable={!workflowEditLocked}
               fitView
-              deleteKeyCode={isInspectMode ? null : ["Backspace", "Delete"]}
+              deleteKeyCode={workflowMutationLocked ? null : ["Backspace", "Delete"]}
               multiSelectionKeyCode={["Control", "Meta"]}
             >
               <Background gap={20} size={1} />
