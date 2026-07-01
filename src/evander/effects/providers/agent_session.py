@@ -46,6 +46,9 @@ from .vm_targeting import (
     resolve_vm_target as _resolve_vm_target_canonical,
 )
 
+_CODEX_NON_PREFIXED_MCP_TOOL_NAMES_FEATURE = "non_prefixed_mcp_tool_names"
+_CODEX_OPTIONAL_FEATURE_ARGS_MARKER = "__EVANDER_CODEX_OPTIONAL_FEATURE_ARGS__"
+
 NEXUS_PACKAGE_CACHE_PORT = 8081
 NEXUS_PYPI_GROUP_REPOSITORY = "pypi-all"
 NEXUS_NPM_GROUP_REPOSITORY = "npm-all"
@@ -917,8 +920,7 @@ def container_prompt_command(
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
-        "--enable",
-        "non_prefixed_mcp_tool_names",
+        _CODEX_OPTIONAL_FEATURE_ARGS_MARKER,
         "--model",
         model,
         "-c",
@@ -950,7 +952,8 @@ def container_prompt_command(
         container_shell_preamble()
         + "cd /home/agent\n"
         + _codex_json_log_filter_shell()
-        + shlex.join(args)
+        + _codex_optional_feature_args_shell()
+        + _shell_join_with_codex_optional_feature_args(args)
         + " | evander_codex_json_to_log\n"
     )
 
@@ -1433,9 +1436,6 @@ def _codex_config_content(
         'personality = "pragmatic"\n'
         f"web_search = {_toml_string('live' if web_search_enabled else 'disabled')}\n"
         "\n"
-        "[features]\n"
-        "non_prefixed_mcp_tool_names = true\n"
-        "\n"
         "[model_providers.evander_openai_relay]\n"
         'name = "Evander OpenAI Relay"\n'
         f"base_url = {_toml_string(openai_base_url)}\n"
@@ -1451,6 +1451,28 @@ def _codex_config_content(
         '[projects."/home/agent"]\n'
         'trust_level = "trusted"\n'
     )
+
+
+def _codex_optional_feature_args_shell() -> str:
+    feature = shlex.quote(_CODEX_NON_PREFIXED_MCP_TOOL_NAMES_FEATURE)
+    return (
+        "codex_feature_args=()\n"
+        "if codex features list 2>/dev/null "
+        f"| awk -v feature={feature} "
+        "'$1 == feature && $2 != \"removed\" { found=1 } END { exit found ? 0 : 1 }'; then\n"
+        f"  codex_feature_args+=(--enable {feature})\n"
+        "fi\n"
+    )
+
+
+def _shell_join_with_codex_optional_feature_args(args: Sequence[str]) -> str:
+    parts = [
+        '"${codex_feature_args[@]}"'
+        if arg == _CODEX_OPTIONAL_FEATURE_ARGS_MARKER
+        else shlex.quote(arg)
+        for arg in args
+    ]
+    return " ".join(parts)
 
 
 def _claude_settings_content(*, anthropic_base_url: str) -> str:

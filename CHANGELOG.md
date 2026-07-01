@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-01 - Codex Optional Feature Compatibility
+
+- Made Codex `non_prefixed_mcp_tool_names` enablement conditional on the
+  installed CLI advertising that feature, avoiding agent-run startup failures
+  on hosts or worker images with different Codex feature sets.
+- Stopped writing that optional feature into generated container Codex config
+  files; runtime invocations now probe support and add the flag only when safe.
+
 ## 2026-06-30 - Refactoring, renaming and UI improvements
 
 - Changed the default Admin Web title and login/shell branding to the bundled
@@ -82,8 +90,8 @@
   icon buttons and the edit dialog.
 
 - Moved the Admin Web workflow generator launcher into a top-right workflow
-  canvas overlay with a wand-sparkles icon, and opened the generator prompt in
-  a modal dialog.
+  canvas overlay with a wand-sparkles icon, and kept generation controls in a
+  floating canvas panel so draft workflows remain inspectable before acceptance.
 
 - Fixed worker MSSQL deployment so the SQL Server admin connectivity check waits
   for TCP login readiness after service start or restart.

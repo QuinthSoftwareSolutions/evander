@@ -19,11 +19,19 @@ test("workflow generator model requests require an explicit action", () => {
 
   assert.match(app, /async function generateWorkflowGeneratorDraft\(\)/);
   assert.match(app, /onClick=\{generateWorkflowGeneratorDraft\}/);
-  assert.match(app, /function renderWorkflowGeneratorDialog\(\)/);
+  assert.match(app, /function renderWorkflowGeneratorCanvasPanel\(\)/);
   assert.match(app, /function renderWorkflowGeneratorCanvasControl\(\)/);
   assert.match(app, /className="workflow-generator-canvas-control"/);
-  assert.match(app, /aria-label="Generate workflow prompt"/);
+  assert.match(app, /className="workflow-generator-canvas-panel"/);
+  assert.match(app, /role="dialog" aria-modal="false"/);
+  assert.match(app, /aria-label="Generate workflow"/);
   assert.match(app, /aria-haspopup="dialog"/);
+  assert.doesNotMatch(app.slice(app.indexOf("function renderWorkflowGeneratorCanvasPanel"), app.indexOf("function renderWorkflowPackModal")), /modal-backdrop/);
+  assert.match(app, /const workflowMutationLocked = workflowEditLocked \|\| workflowGeneratorOpen;/);
+  assert.match(app, /nodesDraggable=\{!workflowMutationLocked/);
+  assert.match(app, /nodesConnectable=\{!workflowMutationLocked\}/);
+  assert.match(app, /elementsSelectable=\{!workflowEditLocked\}/);
+  assert.match(app, /deleteKeyCode=\{workflowMutationLocked \? null : \["Backspace", "Delete"\]\}/);
   assert.match(app, /WORKFLOW_GENERATOR_MIN_DESCRIPTION_LENGTH\s*=\s*24/);
   assert.doesNotMatch(app, /WORKFLOW_GENERATOR_DEBOUNCE_MS/);
   assert.match(generatorRequestSource, /async function generateWorkflowGeneratorDraft\(\)/);
