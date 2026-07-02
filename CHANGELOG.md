@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-02 - Add-on Runtime Workflow Packs
+
+- Made Admin Web add-on enablement materialize advertised runtime workflow
+  packs, list them in the trigger-orchestrator workflow pack config, and expose
+  an explicit refresh action that overwrites existing operator pack files only
+  after confirmation.
+
 ## 2026-07-02 - Team Git Work Contexts
 
 - Added optional Team Git work contexts so Git deliverables must bind to a

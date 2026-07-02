@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib import import_module
 from typing import Any
 
 from evander.addons import (
@@ -12,8 +13,9 @@ from evander.addons import (
     validate_addon_id,
 )
 from evander.admin.payloads import AdminRevisionConflict
+from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 from evander.host_config import HostConfig, host_config_path, load_host_config, save_host_config
-from evander.workflow.packs import load_workflow_pack
+from evander.workflow.packs import WorkflowPack, load_workflow_pack
 
 _PROVIDER_COLLECTIONS = (
     "trigger_providers",
@@ -34,6 +36,13 @@ class AddonAdminDependencies:
     config: Any
     project_dir: Any
     workflow_config_admin: Any
+
+
+@dataclass(slots=True)
+class RuntimeWorkflowPackPayload:
+    source: str
+    reference: str
+    payload: dict[str, object]
 
 
 class AddonAdminService:
@@ -89,6 +98,10 @@ class AddonAdminService:
                     "has_workflow_providers": bool(registration and registration.workflow_providers),
                     "workflow_node_types": sorted(node_types),
                     "referenced_workflow_node_types": referenced_node_types,
+                    "runtime_workflow_pack": self._runtime_workflow_pack_status(
+                        registration,
+                        worker_payload.config,
+                    ),
                     "load_error": candidate.error,
                     "required_restart_services": list(
                         self._required_restart_services(has_mcp_tools=has_mcp_tools)
@@ -123,6 +136,7 @@ class AddonAdminService:
                     "has_workflow_providers": False,
                     "workflow_node_types": [],
                     "referenced_workflow_node_types": [],
+                    "runtime_workflow_pack": None,
                     "load_error": "Configured enabled add-on was not discovered.",
                     "required_restart_services": list(
                         self._required_restart_services(has_mcp_tools=False)
@@ -162,6 +176,7 @@ class AddonAdminService:
         enabled_addon_ids: list[object],
         *,
         expected_revision: str,
+        actor: WorkflowPackChangeActor | None = None,
     ) -> dict[str, Any]:
         normalized_ids = self._normalize_enabled_addon_ids(enabled_addon_ids)
         with self.workflow_config_admin.admin_config_mutation_lock():
@@ -187,6 +202,11 @@ class AddonAdminService:
             if unknown_ids:
                 raise ValueError(f"Unknown add-on id(s): {', '.join(unknown_ids)}")
 
+            registrations_by_id = {
+                candidate.registration.addon_id: candidate.registration
+                for candidate in candidates
+                if candidate.registration is not None and candidate.error is None
+            }
             next_loader = AddonLoaderConfig(
                 modules=list(host_config.addon_loader.modules),
                 enabled_entry_points=host_config.addon_loader.enabled_entry_points,
@@ -194,12 +214,93 @@ class AddonAdminService:
             )
             next_worker_config = dict(worker_payload.config)
             next_worker_config["addon_loader"] = next_loader.model_dump(mode="json")
+            runtime_packs: list[RuntimeWorkflowPackPayload] = []
+            for addon_id in normalized_ids:
+                registration = registrations_by_id.get(addon_id)
+                runtime_pack = self._runtime_workflow_pack_payload(registration)
+                if runtime_pack is None:
+                    continue
+                runtime_packs.append(runtime_pack)
+            self._validate_runtime_workflow_pack_materializations(
+                next_worker_config,
+                runtime_packs,
+                overwrite_existing=False,
+            )
+            for runtime_pack in runtime_packs:
+                next_worker_config, _reference = (
+                    self.workflow_config_admin.ensure_workflow_pack_payload_unlocked(
+                        raw_config=next_worker_config,
+                        pack_payload=runtime_pack.payload,
+                        overwrite_existing=False,
+                        operation=(
+                            "runtime_pack_configure"
+                            if self.workflow_config_admin._workflow_editor_pack_path(
+                                runtime_pack.reference
+                            ).exists()
+                            else "runtime_pack_create"
+                        ),
+                        actor=actor,
+                    )
+                )
             self.workflow_config_admin.write_worker_global_config_unlocked(
                 "trigger-orchestrator",
                 next_worker_config,
             )
             save_host_config(host_config.model_copy(update={"addon_loader": next_loader}))
 
+        return self.read_addon_state()
+
+    def refresh_runtime_workflow_pack(
+        self,
+        addon_id: str,
+        *,
+        expected_revision: str,
+        actor: WorkflowPackChangeActor | None = None,
+    ) -> dict[str, Any]:
+        normalized_addon_id = validate_addon_id(addon_id)
+        with self.workflow_config_admin.admin_config_mutation_lock():
+            host_config = self._read_host_config()
+            worker_payload = self.workflow_config_admin.read_worker_global_config(
+                "trigger-orchestrator"
+            )
+            worker_loader = self._worker_addon_loader(worker_payload.config)
+            current_revision = self._revision(host_config.addon_loader, worker_loader)
+            if current_revision != expected_revision:
+                raise AdminRevisionConflict(
+                    "Add-on configuration changed before refresh. Reload add-ons before trying again.",
+                    details={"current_revision": current_revision},
+                )
+            candidates = discover_addons(host_config.addon_loader)
+            registration = next(
+                (
+                    candidate.registration
+                    for candidate in candidates
+                    if candidate.registration is not None
+                    and candidate.error is None
+                    and candidate.registration.addon_id == normalized_addon_id
+                ),
+                None,
+            )
+            if registration is None:
+                raise ValueError(f"Unknown add-on id: {normalized_addon_id}")
+            runtime_pack = self._runtime_workflow_pack_payload(registration)
+            if runtime_pack is None:
+                raise ValueError(
+                    f"Add-on {normalized_addon_id} does not define a runtime workflow pack."
+                )
+            next_worker_config, _reference = (
+                self.workflow_config_admin.ensure_workflow_pack_payload_unlocked(
+                    raw_config=dict(worker_payload.config),
+                    pack_payload=runtime_pack.payload,
+                    overwrite_existing=True,
+                    operation="runtime_pack_refresh",
+                    actor=actor,
+                )
+            )
+            self.workflow_config_admin.write_worker_global_config_unlocked(
+                "trigger-orchestrator",
+                next_worker_config,
+            )
         return self.read_addon_state()
 
     def _read_host_config(self) -> HostConfig:
@@ -315,6 +416,122 @@ class AddonAdminService:
         if isinstance(value, Mapping):
             return value.get(name)
         return getattr(value, name, None)
+
+    def _runtime_workflow_pack_source(self, registration: AddonRegistration | None) -> str | None:
+        if registration is None:
+            return None
+        source = registration.metadata.get("runtime_workflow_pack")
+        if source is None:
+            return None
+        if callable(source):
+            return f"{source.__module__}.{source.__qualname__}"
+        text = str(source).strip()
+        return text or None
+
+    def _runtime_workflow_pack_payload(
+        self, registration: AddonRegistration | None
+    ) -> RuntimeWorkflowPackPayload | None:
+        source = self._runtime_workflow_pack_source(registration)
+        if source is None:
+            return None
+        factory = self._runtime_workflow_pack_factory(registration, source)
+        payload = factory()
+        if not isinstance(payload, dict):
+            raise ValueError(f"runtime workflow pack {source} must return a JSON object")
+        pack = WorkflowPack.model_validate(payload)
+        reference = self.workflow_config_admin._workflow_pack_reference_for_metadata(
+            pack_id=pack.pack_id,
+            pack_version=pack.pack_version,
+        )
+        return RuntimeWorkflowPackPayload(
+            source=source,
+            reference=reference,
+            payload=pack.model_dump(mode="json"),
+        )
+
+    def _runtime_workflow_pack_factory(
+        self,
+        registration: AddonRegistration | None,
+        source: str,
+    ):
+        raw_source = registration.metadata.get("runtime_workflow_pack") if registration else None
+        if callable(raw_source):
+            return raw_source
+        module_name, separator, attribute_name = source.rpartition(".")
+        if not separator or not module_name or not attribute_name:
+            raise ValueError(
+                f"runtime workflow pack source {source!r} must be a dotted callable path"
+            )
+        value: object = import_module(module_name)
+        for part in attribute_name.split("."):
+            value = getattr(value, part)
+        if not callable(value):
+            raise ValueError(f"runtime workflow pack source {source!r} is not callable")
+        return value
+
+    def _runtime_workflow_pack_status(
+        self,
+        registration: AddonRegistration | None,
+        worker_config: Mapping[str, object],
+    ) -> dict[str, object] | None:
+        source = self._runtime_workflow_pack_source(registration)
+        if source is None:
+            return None
+        status: dict[str, object] = {
+            "source": source,
+            "reference": None,
+            "path": None,
+            "exists": False,
+            "configured": False,
+            "refresh_available": False,
+            "error": None,
+        }
+        try:
+            runtime_pack = self._runtime_workflow_pack_payload(registration)
+            if runtime_pack is None:
+                return None
+            pack_path = self.workflow_config_admin._workflow_editor_pack_path(
+                runtime_pack.reference
+            )
+            configured_references = (
+                self.workflow_config_admin._workflow_editor_configured_pack_references(
+                    dict(worker_config)
+                )
+            )
+            status.update(
+                {
+                    "reference": runtime_pack.reference,
+                    "path": str(pack_path),
+                    "exists": pack_path.exists(),
+                    "configured": runtime_pack.reference in configured_references,
+                    "refresh_available": True,
+                }
+            )
+        except Exception as exc:
+            status["error"] = str(exc)
+        return status
+
+    def _validate_runtime_workflow_pack_materializations(
+        self,
+        worker_config: Mapping[str, object],
+        runtime_packs: list[RuntimeWorkflowPackPayload],
+        *,
+        overwrite_existing: bool,
+    ) -> None:
+        if not runtime_packs:
+            return
+        if self.workflow_config_admin._workflow_editor_has_inline_workflow(dict(worker_config)):
+            raise ValueError(
+                "Workflow pack management cannot update configs that combine workflow packs with inline workflow definitions."
+            )
+        if overwrite_existing:
+            return
+        for runtime_pack in runtime_packs:
+            pack_path = self.workflow_config_admin._workflow_editor_pack_path(
+                runtime_pack.reference
+            )
+            if pack_path.exists():
+                load_workflow_pack(self.project_dir, runtime_pack.reference)
 
     def _required_restart_services(self, *, has_mcp_tools: bool) -> tuple[str, ...]:
         if has_mcp_tools:

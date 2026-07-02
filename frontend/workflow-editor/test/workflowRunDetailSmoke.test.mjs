@@ -471,6 +471,14 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
       }));
       return;
     }
+    if (pathname.startsWith("/api/admin/branding/assets/")) {
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
     if (pathname === "/api/admin/deployment-status") {
       await route.fulfill(jsonResponse({ active: false, message: null, source: null, started_at: null, updated_at: null, ttl_seconds: 0, stale: false }));
       return;
@@ -484,6 +492,14 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         can_manage_users: true,
         privileged_operations: { unlocked: true },
         assistant: { enabled: false, show_launcher_when_disabled: false },
+      }));
+      return;
+    }
+    if (pathname === "/api/admin/user-notifications") {
+      await route.fulfill(jsonResponse({
+        user_id: "admin",
+        unread_count: 0,
+        notifications: [],
       }));
       return;
     }
@@ -575,6 +591,15 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         },
         limit: 100,
         total: 1,
+      }));
+      return;
+    }
+    if (pathname === "/api/operator-steering/notes") {
+      await route.fulfill(jsonResponse({
+        session_id: url.searchParams.get("session_id"),
+        dispatch_id: url.searchParams.get("dispatch_id"),
+        directory_path: "root",
+        notes: [],
       }));
       return;
     }

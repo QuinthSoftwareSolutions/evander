@@ -108,7 +108,7 @@ from evander.workflow.events import (
     workflow_event_journal_path,
 )
 from evander.workflow.migrations import migrate_agent_prompt_lifecycle_ports
-from evander.workflow.packs import compose_workflow_ir, load_workflow_pack
+from evander.workflow.packs import WorkflowPack, compose_workflow_ir, load_workflow_pack
 from evander.workflow.runtime_config import (
     _append_builtin_hidden_workflows,
     _compose_configured_workflow_ir,
@@ -827,6 +827,69 @@ class WorkflowConfigAdminService:
                 config_path=config_path,
                 selected_reference=reference,
             )
+
+    def ensure_workflow_pack_payload_unlocked(
+        self,
+        *,
+        raw_config: dict[str, object],
+        pack_payload: dict[str, object],
+        overwrite_existing: bool,
+        operation: str,
+        actor: WorkflowPackChangeActor | None = None,
+    ) -> tuple[dict[str, object], str]:
+        if self._workflow_editor_has_inline_workflow(raw_config):
+            raise ValueError(
+                "Workflow pack management cannot update configs that combine workflow packs with inline workflow definitions."
+            )
+        pack = WorkflowPack.model_validate(pack_payload)
+        normalized_payload = pack.model_dump(mode="json")
+        reference = self._workflow_pack_reference_for_metadata(
+            pack_id=pack.pack_id,
+            pack_version=pack.pack_version,
+        )
+        config_path, _config_exists, _current_raw_config = (
+            self._workflow_editor_read_raw_worker_config()
+        )
+        pack_path = self._workflow_editor_pack_path(reference)
+        layout_path = self._workflow_editor_pack_layout_path(reference)
+        configured_references = self._workflow_editor_configured_pack_references(raw_config)
+        existing_pack = pack_path.exists()
+        if existing_pack and not overwrite_existing:
+            load_workflow_pack(self.project_dir, reference)
+
+        before_files = self._workflow_pack_history_files(
+            config_path=config_path,
+            pack_path=pack_path,
+            layout_path=layout_path,
+            tolerate_invalid=overwrite_existing,
+        )
+        write_pack = overwrite_existing or not existing_pack
+        if write_pack:
+            pack_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_json_file_atomic(pack_path, normalized_payload)
+
+        wrote_config = False
+        next_config = dict(raw_config)
+        if reference not in configured_references:
+            next_config["workflow_packs"] = [*configured_references, reference]
+            self._write_worker_global_config_unlocked("trigger-orchestrator", next_config)
+            wrote_config = True
+
+        if write_pack or wrote_config:
+            after_files = self._workflow_pack_history_files(
+                config_path=config_path,
+                pack_path=pack_path,
+                layout_path=layout_path,
+                tolerate_invalid=overwrite_existing,
+            )
+            self._record_workflow_pack_history(
+                operation=operation,
+                workflow_pack=reference,
+                actor=actor,
+                before_files=before_files,
+                after_files=after_files,
+            )
+        return next_config, reference
 
     def _update_workflow_pack_metadata(
         self,
