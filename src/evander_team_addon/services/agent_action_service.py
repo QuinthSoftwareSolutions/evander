@@ -201,6 +201,7 @@ class TeamAgentActionService:
                         result=result,
                     )
                     return state_model
+            effective_dispatch_id = normalized_dispatch_id or runtime.active_dispatch_id
             active_stand_downs = _active_stand_downs_for_agent(state_model, agent.id)
             if active_stand_downs and _non_empty_action_fields(normalized_action):
                 reason = _stand_down_error_detail(active_stand_downs)
@@ -716,7 +717,7 @@ class TeamAgentActionService:
                         agent_id=agent.id,
                         task_id=task.id,
                         deliverable=deliverable_payload,
-                        dispatch_id=normalized_dispatch_id,
+                        dispatch_id=effective_dispatch_id,
                     )
                     git_refs = _deliverable_git_refs_from_payload(
                         deliverable_payload.get("git_refs")

@@ -271,6 +271,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert document.output_schemas["team-wake-due-agents"]["failed_project_repo_preparations"] == {
         "type": "array"
     }
+    assert document.output_schemas["team-wake-due-agents"]["git_work_contexts"] == {
+        "type": "array"
+    }
     assert document.output_schemas["team-wake-due-agents"]["review_artifact_imports"] == {
         "type": "array"
     }
@@ -512,6 +515,7 @@ def _seed_git_work_context(
     context_id: str = "ctx-task",
     agent_branch: str = "agents/session-backend/review",
     commit_sha: str | None = "abc123",
+    dispatch_id: str | None = None,
 ) -> None:
     def _mutate(state: TeamState) -> TeamState:
         state.git_work_contexts[context_id] = GitWorkContext(
@@ -522,10 +526,50 @@ def _seed_git_work_context(
             base_commit="base123",
             agent_branch=agent_branch,
             commit_sha=commit_sha,
+            dispatch_id=dispatch_id,
         )
         return state
 
     repo.update(_mutate)
+
+
+def test_agent_action_uses_active_dispatch_for_git_context_binding(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-other-dispatch",
+        agent_branch="agents/session-backend/work-session-backend",
+        commit_sha=None,
+        dispatch_id="dispatch-other",
+    )
+
+    def _set_runtime(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id="dispatch-active",
+        )
+        return state
+
+    repo.update(_set_runtime)
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        session_id="session-backend",
+        action={
+            "deliverables": [
+                {
+                    "id": "deliverable-wrong-context",
+                    "task_id": "task",
+                    "summary": "Ready.",
+                    "branch_context_id": "ctx-other-dispatch",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert "belongs to dispatch dispatch-other, not dispatch-active" in result["errors"][0]
+    assert "deliverable-wrong-context" not in state.deliverables
 
 
 def _add_luke_reviewer(
@@ -3585,6 +3629,22 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     project_repo = result["dispatches"][0]["project_repo"]
     assert project_repo["target_dir"] == "/home/agent/Truman"
     assert project_repo["base_branch"] == "main"
+    assert project_repo["branch_context_id"]
+    assert project_repo["agent_branch"] == "agents/session-backend/work-session-backend"
+    git_context = project_repo["git_work_contexts"][0]
+    assert git_context == {
+        "id": project_repo["branch_context_id"],
+        "branch_context_id": project_repo["branch_context_id"],
+        "agent_id": "backend",
+        "task_id": "task",
+        "agent_branch": "agents/session-backend/work-session-backend",
+        "base_branch": "main",
+        "dispatch_id": result["dispatches"][0]["dispatch_id"],
+        "worktree_path": "/home/agent/Truman",
+        "state": "active",
+    }
+    assert project_repo["branch_contexts_by_task_id"] == {"task": git_context}
+    assert result["git_work_contexts"] == [git_context]
     assert result["prepared_project_repos"] == [
         {
             "agent_id": "backend",
@@ -3598,10 +3658,18 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert result["failed_project_repo_preparations"] == []
     prompt = str(resumer.calls[0]["prompt"])
     assert '"project_repo"' in prompt
+    assert project_repo["branch_context_id"] in prompt
+    assert "agents/session-backend/work-session-backend" in prompt
     assert "/home/agent/Truman" in prompt
     assert "The project host checkout is not mounted in the guest" in prompt
+    assert "project_repo.git_work_contexts" in prompt
     assert session_store.calls[1]["metadata"]["team_addon"]["project_repo"] == project_repo
     assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
+    reread = TeamStateRepository(tmp_path).read()
+    assert set(reread.git_work_contexts) == {project_repo["branch_context_id"]}
+    assert reread.git_work_contexts[project_repo["branch_context_id"]].dispatch_id == (
+        result["dispatches"][0]["dispatch_id"]
+    )
 
 
 def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
@@ -4908,6 +4976,10 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         "alpha-promotion",
         "alpha-release-promotion",
     }
+    assert set(project_state["git_work_contexts"]) == {"alpha-context"}
+    assert project_state["git_work_contexts"]["alpha-context"]["worktree_path"] == (
+        "/worktrees/alpha"
+    )
     assert project_state["release_packages"]["alpha-release"]["git_promotion_record_ids"] == [
         "alpha-release-promotion"
     ]
@@ -5018,6 +5090,10 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         "alpha-promotion",
         "alpha-release-promotion",
     }
+    assert set(agent_state["git_work_contexts"]) == {"alpha-context"}
+    assert agent_state["git_work_contexts"]["alpha-context"]["agent_branch"] == (
+        "agents/session-alpha-dev/work-session-alpha-dev"
+    )
     assert agent_state["release_packages"]["alpha-release"]["git_promotion_record_ids"] == [
         "alpha-release-promotion"
     ]
@@ -5707,6 +5783,26 @@ def _multi_team_state() -> TeamState:
                 source_branch="team/beta/features/beta-task",
                 target_branch="team/beta/releases/beta-release",
                 promotion_kind="release",
+            ),
+        },
+        git_work_contexts={
+            "alpha-context": GitWorkContext(
+                id="alpha-context",
+                agent_id="alpha-dev",
+                task_id="alpha-task",
+                dispatch_id="alpha-dispatch",
+                agent_branch="agents/session-alpha-dev/work-session-alpha-dev",
+                base_branch="main",
+                worktree_path="/worktrees/alpha",
+            ),
+            "beta-context": GitWorkContext(
+                id="beta-context",
+                agent_id="beta-dev",
+                task_id="beta-task",
+                dispatch_id="beta-dispatch",
+                agent_branch="agents/session-beta-dev/work-session-beta-dev",
+                base_branch="main",
+                worktree_path="/worktrees/beta",
             ),
         },
         ephemeral_assignments={

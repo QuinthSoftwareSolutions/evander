@@ -714,12 +714,43 @@ def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
             "execution_backend",
             "vm_name",
             "base_branch",
+            "branch_context_id",
+            "agent_branch",
         ),
     )
+    git_contexts = [
+        _compact_git_work_context(row)
+        for row in _mapping_rows(repo.get("git_work_contexts"))
+    ]
+    if git_contexts:
+        row["git_work_contexts"] = git_contexts
+        row["branch_contexts_by_task_id"] = {
+            context["task_id"]: context
+            for context in git_contexts
+            if _optional_text(context.get("task_id")) is not None
+        }
     message = _optional_text(repo.get("message"))
     if message is not None:
         row["message"] = _trim_text(message)
     return row
+
+
+def _compact_git_work_context(context: Mapping[str, Any]) -> dict[str, Any]:
+    return _compact_fields(
+        context,
+        (
+            "id",
+            "branch_context_id",
+            "agent_id",
+            "task_id",
+            "agent_branch",
+            "base_branch",
+            "commit_sha",
+            "dispatch_id",
+            "worktree_path",
+            "state",
+        ),
+    )
 
 
 def _compact_review_artifact_import(item: Mapping[str, Any]) -> dict[str, Any]:

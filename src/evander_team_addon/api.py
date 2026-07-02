@@ -115,6 +115,7 @@ TEAM_STATE_COLLECTION_KEYS = (
     "release_packages",
     "ephemeral_assignments",
     "git_promotions",
+    "git_work_contexts",
     "conversations",
     "conversation_messages",
 )

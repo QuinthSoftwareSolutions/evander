@@ -138,6 +138,7 @@ from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.domain.common import _slug_id_part
 from .services.domain.ephemeral import (
     EPHEMERAL_COMPLETED_EVENT_TYPE,
     EPHEMERAL_REQUESTED_EVENT_TYPE,
@@ -1521,6 +1522,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []
         failed_project_repo_preparations: list[dict[str, Any]] = []
+        git_work_contexts: list[dict[str, Any]] = []
         review_artifact_imports: list[dict[str, Any]] = []
         review_artifact_import_errors: list[dict[str, Any]] = []
         for lease in leases:
@@ -1542,7 +1544,14 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 )
                 guidance_result = _seed_team_agent_guidance(context, agent=agent)
                 try:
-                    project_repo = _prepare_project_repo(context, state=state, agent=agent)
+                    state, project_repo = _prepare_project_repo(
+                        context,
+                        repo=repo,
+                        state=state,
+                        agent=agent,
+                        dispatch_id=lease["dispatch_id"],
+                        tasks=lease.get("tasks"),
+                    )
                 except Exception as exc:
                     failed_project_repo_preparations.append(
                         _project_repo_prepare_record(
@@ -1554,6 +1563,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     raise
                 if project_repo is not None:
                     lease = {**lease, "project_repo": project_repo}
+                    git_work_contexts.extend(
+                        _mapping_items(project_repo.get("git_work_contexts"))
+                    )
                     prepared_project_repos.append(
                         _project_repo_prepare_record(
                             agent=agent,
@@ -1650,6 +1662,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "dispatches": dispatches,
             "prepared_project_repos": prepared_project_repos,
             "failed_project_repo_preparations": failed_project_repo_preparations,
+            "git_work_contexts": git_work_contexts,
             "review_artifact_imports": review_artifact_imports,
             "review_artifact_import_errors": review_artifact_import_errors,
             "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
@@ -4075,22 +4088,32 @@ def _project_repo_prompt_guidance(project_repo: object) -> str:
     target_dir = _optional_text(project_repo.get("target_dir"))
     if target_dir is None:
         return ""
+    git_context_rows = _mapping_items(project_repo.get("git_work_contexts"))
+    git_context_guidance = (
+        " Use the project_repo.git_work_contexts row matching your deliverable "
+        "task_id; pass its branch_context_id and push the code to its agent_branch."
+        if git_context_rows
+        else ""
+    )
     return (
         f"Project repository: work in the prepared guest checkout at {target_dir}. "
         "The project host checkout is not mounted in the guest; use this guest "
-        "repo and its configured Git helpers for code changes.\n\n"
+        f"repo and its configured Git helpers for code changes.{git_context_guidance}\n\n"
     )
 
 
 def _prepare_project_repo(
     context: Any,
     *,
+    repo: TeamStateRepository,
     state: Any,
     agent: Mapping[str, Any],
-) -> dict[str, Any] | None:
+    dispatch_id: str,
+    tasks: object,
+) -> tuple[Any, dict[str, Any] | None]:
     projects = getattr(state, "projects", None)
     if not isinstance(projects, Mapping):
-        return None
+        return state, None
 
     def _value(item: object, field_name: str) -> object:
         if isinstance(item, Mapping):
@@ -4110,8 +4133,9 @@ def _prepare_project_repo(
         git = candidate_git
         break
     if git is None:
-        return None
+        return state, None
 
+    agent_id = _required_text(agent.get("id"), "agent.id")
     session_id = _required_text(agent.get("session_id"), "session_id")
     repo_source = _required_text(_value(git, "host_repo_path"), "project.git.host_repo_path")
     clone_branch = _optional_text(_value(git, "base_branch"))
@@ -4144,8 +4168,27 @@ def _prepare_project_repo(
         clone_result=clone_result,
         base_branch=clone_branch,
     )
+    state, git_work_contexts = _create_project_repo_git_work_contexts(
+        repo,
+        state=state,
+        agent_id=agent_id,
+        session_id=session_id,
+        project_id=project_id,
+        project_repo=project_repo,
+        dispatch_id=dispatch_id,
+        tasks=tasks,
+        base_branch=clone_branch,
+    )
+    if git_work_contexts:
+        project_repo["git_work_contexts"] = git_work_contexts
+        project_repo["branch_contexts_by_task_id"] = {
+            _required_text(row.get("task_id"), "task_id"): row for row in git_work_contexts
+        }
+        if len(git_work_contexts) == 1:
+            project_repo["branch_context_id"] = git_work_contexts[0]["branch_context_id"]
+            project_repo["agent_branch"] = git_work_contexts[0]["agent_branch"]
     _mark_project_repo_prepared(context, session_id=session_id, project_repo=project_repo)
-    return project_repo
+    return state, project_repo
 
 
 def _project_repo_payload(
@@ -4173,6 +4216,95 @@ def _project_repo_payload(
     if base_branch is not None:
         payload["base_branch"] = base_branch
     return payload
+
+
+def _create_project_repo_git_work_contexts(
+    repo: TeamStateRepository,
+    *,
+    state: Any,
+    agent_id: str,
+    session_id: str,
+    project_id: str,
+    project_repo: Mapping[str, Any],
+    dispatch_id: str,
+    tasks: object,
+    base_branch: str | None,
+) -> tuple[Any, list[dict[str, Any]]]:
+    target_dir = _optional_text(project_repo.get("target_dir"))
+    if target_dir is None:
+        return state, []
+    rows: list[dict[str, Any]] = []
+    agent_branch = _project_repo_agent_branch(session_id)
+    admin = TeamAdminService(repo)
+    for task in _project_repo_context_tasks(
+        tasks,
+        project_id=project_id,
+        agent_id=agent_id,
+    ):
+        task_id = _required_text(task.get("id"), "task.id")
+        state, context_id = admin.create_git_work_context_with_id(
+            context_id=None,
+            agent_id=agent_id,
+            task_id=task_id,
+            agent_branch=agent_branch,
+            base_branch=base_branch,
+            dispatch_id=dispatch_id,
+            worktree_path=target_dir,
+            expected_revision=getattr(state, "revision", None),
+        )
+        context_model = state.git_work_contexts[context_id]
+        rows.append(_git_work_context_prompt_payload(context_model))
+    return state, rows
+
+
+def _project_repo_agent_branch(session_id: str) -> str:
+    suffix = _slug_id_part(session_id, fallback="session")
+    return validate_branch_name(f"agents/{session_id}/work-{suffix}")
+
+
+def _project_repo_context_tasks(
+    tasks: object,
+    *,
+    project_id: str,
+    agent_id: str,
+) -> list[Mapping[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    for task in _mapping_items(tasks):
+        task_id = _optional_text(task.get("id"))
+        if task_id is None or task_id in seen:
+            continue
+        if _optional_text(task.get("project_id")) != project_id:
+            continue
+        if _optional_text(task.get("owner_agent_id")) != agent_id:
+            continue
+        seen.add(task_id)
+        rows.append(task)
+    return rows
+
+
+def _git_work_context_prompt_payload(context: Any) -> dict[str, Any]:
+    payload = context.model_dump(mode="json") if hasattr(context, "model_dump") else dict(context)
+    context_id = _required_text(payload.get("id"), "git_work_context.id")
+    row: dict[str, Any] = {
+        "id": context_id,
+        "branch_context_id": context_id,
+    }
+    for key in (
+        "agent_id",
+        "task_id",
+        "agent_branch",
+        "base_branch",
+        "base_commit",
+        "commit_sha",
+        "dispatch_id",
+        "worktree_path",
+        "state",
+    ):
+        value = _optional_text(payload.get(key))
+        if value is not None:
+            row[key] = value
+    return row
 
 
 def _project_repo_prepare_record(
@@ -5594,6 +5726,12 @@ def _filtered_team_state_payload(
         and value.get("owner_agent_id") in visible_agent_ids
     }
     visible_task_ids = set(filtered["tasks"])
+    filtered["git_work_contexts"] = {
+        key: value
+        for key, value in filtered.get("git_work_contexts", {}).items()
+        if value.get("agent_id") in visible_agent_ids
+        and value.get("task_id") in visible_task_ids
+    }
     filtered["cases"] = {
         key: {
             **value,

@@ -8,6 +8,8 @@
 - Added a Team MCP identity read tool that returns the caller's full role
   description, permissions, and named hierarchy without exposing unrelated Team
   state.
+- Scoped Team agent read-tool visibility by team rather than project and kept
+  direct superior identity available to the caller's own identity read.
 - Kept the waking agent's full role description in compact Team wake prompts
   while leaving other identity detail available through the identity read tool.
 - Reduced Team wake prompt context to current and salient compact summaries,
@@ -28,6 +30,11 @@
 - Added optional Team Git work contexts so Git deliverables must bind to a
   server-owned branch context, while artifact-only and non-coding deliverables
   continue to work without Git metadata.
+- Created Git work contexts during project-repo wakes, surfaced their
+  `branch_context_id` values in wake outputs, prompt context, and task read
+  tools, and scoped state/query output so unrelated contexts are not exposed.
+- Tightened Git deliverable binding so dispatch-scoped contexts must match the
+  active dispatch even through the legacy action path.
 
 ## 2026-07-01 - Codex Optional Feature Compatibility
 

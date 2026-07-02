@@ -19,6 +19,7 @@ from evander_team_addon import mcp as team_mcp
 from evander_team_addon.models import (
     AgentInboxItem,
     AgentRuntime,
+    GitWorkContext,
     ProjectGoal,
     ReleasePackage,
     ReviewRequest,
@@ -209,6 +210,7 @@ def _seed_team(
         name=f"{team_id.title()} Team",
         manager_agent_id=manager_agent_id,
         manager_session_id=manager_session_id,
+        manager_display_name=f"{team_id.title()} Manager",
         expected_revision=repo.read().revision,
     )
     admin.create_project(
@@ -322,6 +324,15 @@ def _seed_read_records(repo: TeamStateRepository) -> None:
                 active_dispatch_id=None,
                 wake_reason=None,
                 next_wake_at=datetime(2099, 1, 1, tzinfo=UTC),
+            )
+            state.git_work_contexts[f"{team_id}-context"] = GitWorkContext(
+                id=f"{team_id}-context",
+                agent_id=f"{team_id}-dev",
+                task_id=f"{team_id}-task-a",
+                dispatch_id=f"{team_id}-dispatch",
+                agent_branch=f"agents/session-{team_id}-dev/work-session-{team_id}-dev",
+                base_branch="main",
+                worktree_path=f"/worktrees/{team_id}",
             )
         return state
 
@@ -451,6 +462,45 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
     assert repo.read().revision == before_revision
 
 
+def test_team_addon_task_read_tools_surface_callers_git_work_context(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=list(EXPECTED_READ_TOOL_NAMES))
+    _seed_read_tool_state(context.config.runtime_dir)
+    server = create_server(context)
+
+    list_result = _call_tool(
+        server,
+        TEAM_LIST_TASKS_TOOL,
+        {"session_id": "session-alpha-dev", "limit": 10},
+    )
+    _assert_read_success(list_result)
+    alpha_task = next(row for row in _items(list_result) if row["id"] == "alpha-task-a")
+    assert alpha_task["git_work_contexts"] == [
+        {
+            "id": "alpha-context",
+            "branch_context_id": "alpha-context",
+            "agent_id": "alpha-dev",
+            "task_id": "alpha-task-a",
+            "agent_branch": "agents/session-alpha-dev/work-session-alpha-dev",
+            "base_branch": "main",
+            "dispatch_id": "alpha-dispatch",
+            "worktree_path": "/worktrees/alpha",
+            "state": "active",
+        }
+    ]
+
+    get_result = _call_tool(
+        server,
+        TEAM_GET_TASK_TOOL,
+        {"session_id": "session-alpha-dev", "task_id": "alpha-task-a"},
+    )
+    _assert_read_success(get_result)
+    assert _item(get_result)["git_work_contexts"] == alpha_task["git_work_contexts"]
+    assert "beta-context" not in json.dumps(list_result, sort_keys=True)
+    assert "beta-context" not in json.dumps(get_result, sort_keys=True)
+
+
 def test_team_addon_get_my_identity_returns_complete_bounded_identity(
     tmp_path: Path,
 ) -> None:
@@ -503,6 +553,14 @@ def test_team_addon_get_my_identity_returns_complete_bounded_identity(
 
     assert lead_identity["id"] == "alpha-lead"
     assert lead_identity["display_name"] == "Alpha Lead"
+    assert lead_identity["superior"] == {
+        "id": "alpha-manager",
+        "display_name": "Alpha Manager",
+        "team_id": "alpha",
+        "role_id": "alpha__manager",
+        "role_name": "Manager",
+        "status": "active",
+    }
     assert {
         "id": "alpha-dev",
         "display_name": "Alpha Developer",
@@ -511,6 +569,62 @@ def test_team_addon_get_my_identity_returns_complete_bounded_identity(
         "role_name": "Developer",
         "status": "active",
     } in lead_identity["subordinates"]
+
+
+def test_team_addon_get_agent_visibility_is_team_scoped_not_project_scoped(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(
+        tmp_path,
+        allowed_tools=[TEAM_LIST_AGENTS_TOOL, TEAM_GET_AGENT_TOOL],
+    )
+    repo = _seed_read_tool_state(context.config.runtime_dir)
+    admin = _team_admin_service(repo)
+    admin.create_role(
+        role_id="alpha__observer",
+        team_id="alpha",
+        name="Observer",
+        permissions=[RolePermission.REQUEST_RELEASE],
+        expected_revision=repo.read().revision,
+    )
+    admin.register_agent(
+        agent_id="alpha-observer",
+        team_id="alpha",
+        role_id="alpha__observer",
+        session_id="session-alpha-observer",
+        display_name="Alpha Observer",
+        expected_revision=repo.read().revision,
+    )
+    server = create_server(context)
+
+    list_result = _call_tool(
+        server,
+        TEAM_LIST_AGENTS_TOOL,
+        {"session_id": "session-alpha-dev", "limit": 20},
+    )
+    _assert_read_success(list_result)
+    listed_ids = {row["id"] for row in _items(list_result)}
+
+    assert "alpha-observer" in listed_ids
+    assert "beta-dev" not in listed_ids
+
+    observer_result = _call_tool(
+        server,
+        TEAM_GET_AGENT_TOOL,
+        {"session_id": "session-alpha-dev", "agent_id": "alpha-observer"},
+    )
+    _assert_read_success(observer_result)
+    observer = _item(observer_result)
+    assert observer["id"] == "alpha-observer"
+    assert observer["display_name"] == "Alpha Observer"
+    assert observer["role_permissions"] == ["request_release"]
+    assert observer["effective_role_permissions"] == ["request_release"]
+
+    _call_denied_or_not_found(
+        server,
+        TEAM_GET_AGENT_TOOL,
+        {"session_id": "session-alpha-dev", "agent_id": "beta-dev"},
+    )
 
 
 def test_team_addon_read_tools_scope_task_and_project_by_callers_team(

@@ -37,6 +37,7 @@ class TeamReadService:
         self._actor = actor
         self._actor_id = actor.id
         self._managed_team_ids = self._managed_team_ids_for_actor()
+        self._visible_team_ids = self._compute_visible_team_ids()
         self._visible_project_ids = self._compute_visible_project_ids()
         self._visible_agent_ids = self._compute_visible_agent_ids()
 
@@ -66,6 +67,9 @@ class TeamReadService:
         if task is None or not self._task_visible(task):
             return None
         payload = task_payload_with_derived(self._state, task)
+        git_contexts = self._git_work_context_rows_for_task(task.id)
+        if git_contexts:
+            payload["git_work_contexts"] = git_contexts
         return _without_none(payload)
 
     def list_inbox(
@@ -234,10 +238,10 @@ class TeamReadService:
         agent = self._state.agents.get(_text(agent_id))
         if agent is None or not self._agent_visible(agent.id):
             return None
-        return self._agent_detail_payload(agent)
+        return self._agent_detail_payload(agent, full_identity=agent.id == self._actor_id)
 
     def get_my_identity(self) -> dict[str, Any]:
-        return self._agent_detail_payload(self._actor)
+        return self._agent_detail_payload(self._actor, full_identity=True)
 
     def list_projects(
         self,
@@ -302,6 +306,12 @@ class TeamReadService:
                 managed.add(team.id)
         return managed
 
+    def _compute_visible_team_ids(self) -> set[str]:
+        visible = set(self._managed_team_ids)
+        if self._actor.team_id is not None:
+            visible.add(self._actor.team_id)
+        return visible
+
     def _compute_visible_project_ids(self) -> set[str]:
         visible = set(agent_project_ids(self._state, self._actor_id))
         visible.update(agent_lead_project_ids(self._state, self._actor_id))
@@ -321,17 +331,22 @@ class TeamReadService:
 
     def _compute_visible_agent_ids(self) -> set[str]:
         visible = {self._actor_id}
-        visible.update(self._subordinate_agent_ids())
         for agent in self._state.agents.values():
-            if agent.team_id in self._managed_team_ids:
+            if agent.team_id in self._visible_team_ids:
                 visible.add(agent.id)
-        for assignment in self._state.project_assignments.values():
-            if assignment.project_id in self._visible_project_ids:
-                visible.add(assignment.agent_id)
-        for project in self._state.projects.values():
-            if project.id in self._visible_project_ids:
-                visible.add(project.lead_agent_id)
+        visible.update(self._governance_superior_agent_ids())
         return visible
+
+    def _governance_superior_agent_ids(self) -> set[str]:
+        superior_id = self._actor.reports_to_agent_id
+        if superior_id is None or not self._managed_team_ids:
+            return set()
+        for group in self._state.governance_groups.values():
+            if group.archived or group.manager_agent_id != superior_id:
+                continue
+            if set(group.member_team_ids).intersection(self._managed_team_ids):
+                return {superior_id}
+        return set()
 
     def _subordinate_agent_ids(self) -> set[str]:
         result: set[str] = set()
@@ -441,28 +456,58 @@ class TeamReadService:
                 return True
         return False
 
+    def _git_work_context_rows_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for context in self._state.git_work_contexts.values():
+            if context.task_id != task_id:
+                continue
+            if context.agent_id != self._actor_id:
+                continue
+            if _enum_value(context.state) != "active":
+                continue
+            rows.append(
+                _without_none(
+                    {
+                        "id": context.id,
+                        "branch_context_id": context.id,
+                        "agent_id": context.agent_id,
+                        "task_id": context.task_id,
+                        "agent_branch": context.agent_branch,
+                        "base_branch": context.base_branch,
+                        "base_commit": context.base_commit,
+                        "commit_sha": context.commit_sha,
+                        "dispatch_id": context.dispatch_id,
+                        "worktree_path": context.worktree_path,
+                        "state": _enum_value(context.state),
+                    }
+                )
+            )
+        return sorted(rows, key=lambda row: (_maybe_text(row.get("task_id")) or "", row["id"]))
+
     def _task_row(self, task: AgentTask) -> dict[str, Any]:
         derived = task_payload_with_derived(self._state, task)
         child_ids = _capped_list(derived.get("child_task_ids") or [], 12)
-        return _without_none(
-            {
-                "id": task.id,
-                "title": _compact_text(task.title, 180),
-                "description_preview": _compact_text(task.description, 240),
-                "state": task.state.value,
-                "priority": task.priority,
-                "owner_agent_id": task.owner_agent_id,
-                "project_id": task.project_id,
-                "case_id": task.case_id,
-                "dependency_status": derived.get("dependency_status"),
-                "blocked_by_task_ids": derived.get("blocked_by_task_ids") or [],
-                "child_task_ids": child_ids["items"],
-                "child_task_omitted_count": child_ids["omitted_count"],
-                "subtask_counts": derived.get("subtask_counts") or {},
-                "deliverable_count": len(task.deliverable_ids),
-                "updated_at": _json_value(task.updated_at),
-            }
-        )
+        row: dict[str, Any] = {
+            "id": task.id,
+            "title": _compact_text(task.title, 180),
+            "description_preview": _compact_text(task.description, 240),
+            "state": task.state.value,
+            "priority": task.priority,
+            "owner_agent_id": task.owner_agent_id,
+            "project_id": task.project_id,
+            "case_id": task.case_id,
+            "dependency_status": derived.get("dependency_status"),
+            "blocked_by_task_ids": derived.get("blocked_by_task_ids") or [],
+            "child_task_ids": child_ids["items"],
+            "child_task_omitted_count": child_ids["omitted_count"],
+            "subtask_counts": derived.get("subtask_counts") or {},
+            "deliverable_count": len(task.deliverable_ids),
+            "updated_at": _json_value(task.updated_at),
+        }
+        git_contexts = self._git_work_context_rows_for_task(task.id)
+        if git_contexts:
+            row["git_work_contexts"] = git_contexts
+        return _without_none(row)
 
     def _inbox_row(self, item: AgentInboxItem) -> dict[str, Any]:
         return _without_none(
@@ -582,45 +627,110 @@ class TeamReadService:
             }
         )
 
-    def _agent_detail_payload(self, agent: PersistentAgent) -> dict[str, Any]:
+    def _agent_detail_payload(
+        self,
+        agent: PersistentAgent,
+        *,
+        full_identity: bool,
+    ) -> dict[str, Any]:
         role = self._state.roles.get(agent.role_id) if agent.role_id is not None else None
-        effective_permissions = [
-            permission.value for permission in effective_role_permissions(self._state, agent)
-        ]
+        project_assignments = self._agent_project_assignment_payloads(
+            agent,
+            full_identity=full_identity,
+        )
+        effective_permissions = self._agent_effective_permission_values(
+            agent,
+            role=role,
+            project_assignments=project_assignments,
+            full_identity=full_identity,
+        )
         payload = self._agent_row(agent)
         payload.update(
             {
                 "session_id": agent.session_id,
                 "role_description": role.description if role is not None else "",
-                "role_permissions": [permission.value for permission in role.permissions]
-                if role is not None
-                else [],
+                "role_permissions": self._agent_role_permission_values(
+                    role,
+                    full_identity=full_identity,
+                ),
                 "effective_role_permissions": effective_permissions,
                 "ephemeral_policy": agent.ephemeral_policy.model_dump(mode="json"),
-                "superior": self._agent_reference(agent.reports_to_agent_id),
+                "superior": self._agent_reference(
+                    agent.reports_to_agent_id,
+                    allow_direct_superior=full_identity and agent.id == self._actor_id,
+                ),
                 "subordinates": [
                     reference
                     for subordinate_id in agent.subordinate_agent_ids
                     if (reference := self._agent_reference(subordinate_id)) is not None
                 ],
-                "project_assignments": [
-                    assignment
-                    for assignment in sorted(
-                        agent_project_assignment_payloads(self._state, agent.id),
-                        key=lambda item: (
-                            _maybe_text(item.get("project_id")) or "",
-                            _maybe_text(item.get("kind")) or "",
-                            _maybe_text(item.get("id")) or "",
-                        ),
-                    )
-                    if _maybe_text(assignment.get("project_id")) in self._visible_project_ids
-                ],
+                "project_assignments": project_assignments,
             }
         )
         return _without_none(payload)
 
-    def _agent_reference(self, agent_id: str | None) -> dict[str, Any] | None:
-        if not self._agent_visible(agent_id):
+    def _agent_project_assignment_payloads(
+        self,
+        agent: PersistentAgent,
+        *,
+        full_identity: bool,
+    ) -> list[dict[str, Any]]:
+        assignments = sorted(
+            agent_project_assignment_payloads(self._state, agent.id),
+            key=lambda item: (
+                _maybe_text(item.get("project_id")) or "",
+                _maybe_text(item.get("kind")) or "",
+                _maybe_text(item.get("id")) or "",
+            ),
+        )
+        if full_identity:
+            return assignments
+        return [
+            assignment
+            for assignment in assignments
+            if _maybe_text(assignment.get("team_id")) in self._visible_team_ids
+        ]
+
+    def _agent_effective_permission_values(
+        self,
+        agent: PersistentAgent,
+        *,
+        role: Any,
+        project_assignments: list[dict[str, Any]],
+        full_identity: bool,
+    ) -> list[str]:
+        if full_identity:
+            return [
+                permission.value for permission in effective_role_permissions(self._state, agent)
+            ]
+        values: list[str] = []
+
+        def add(items: object) -> None:
+            for item in _sequence(items):
+                text = _maybe_text(getattr(item, "value", item))
+                if text is not None and text not in values:
+                    values.append(text)
+
+        if role is not None and role.team_id in self._visible_team_ids:
+            add(role.permissions)
+        for assignment in project_assignments:
+            add(assignment.get("role_permissions"))
+        return values
+
+    def _agent_role_permission_values(self, role: Any, *, full_identity: bool) -> list[str]:
+        if role is None or (not full_identity and role.team_id not in self._visible_team_ids):
+            return []
+        return [permission.value for permission in role.permissions]
+
+    def _agent_reference(
+        self,
+        agent_id: str | None,
+        *,
+        allow_direct_superior: bool = False,
+    ) -> dict[str, Any] | None:
+        if not self._agent_visible(agent_id) and not (
+            allow_direct_superior and agent_id == self._actor.reports_to_agent_id
+        ):
             return None
         agent = self._state.agents.get(agent_id or "")
         if agent is None:

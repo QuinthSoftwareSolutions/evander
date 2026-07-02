@@ -101,23 +101,33 @@ def bind_deliverable_git_refs_to_work_context(
                 "deliverable_task_id": task_id,
             },
         )
-    if (
-        context.dispatch_id is not None
-        and dispatch_id is not None
-        and context.dispatch_id != dispatch_id
-    ):
-        raise GitWorkContextValidationError(
-            code="branch_context_dispatch_mismatch",
-            message=(
-                f"Git work context {branch_context_id} belongs to dispatch "
-                f"{context.dispatch_id}, not {dispatch_id}"
-            ),
-            correction_context={
-                "branch_context_id": branch_context_id,
-                "context_dispatch_id": context.dispatch_id,
-                "active_dispatch_id": dispatch_id,
-            },
-        )
+    if context.dispatch_id is not None:
+        if dispatch_id is None:
+            raise GitWorkContextValidationError(
+                code="branch_context_dispatch_required",
+                message=(
+                    f"Git work context {branch_context_id} belongs to dispatch "
+                    f"{context.dispatch_id}; an active dispatch is required"
+                ),
+                correction_context={
+                    "branch_context_id": branch_context_id,
+                    "context_dispatch_id": context.dispatch_id,
+                    "active_dispatch_id": dispatch_id,
+                },
+            )
+        if context.dispatch_id != dispatch_id:
+            raise GitWorkContextValidationError(
+                code="branch_context_dispatch_mismatch",
+                message=(
+                    f"Git work context {branch_context_id} belongs to dispatch "
+                    f"{context.dispatch_id}, not {dispatch_id}"
+                ),
+                correction_context={
+                    "branch_context_id": branch_context_id,
+                    "context_dispatch_id": context.dispatch_id,
+                    "active_dispatch_id": dispatch_id,
+                },
+            )
     if supplied_agent_branch is not None and supplied_agent_branch != context.agent_branch:
         raise GitWorkContextValidationError(
             code="agent_branch_mismatch",
