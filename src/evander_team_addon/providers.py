@@ -78,6 +78,7 @@ from .mcp import (
     TEAM_CREATE_TASK_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
+    TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
@@ -151,7 +152,7 @@ from .services.git_release_service import TeamGitReleaseService
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 13
+TEAM_AGENT_GUIDANCE_VERSION = 14
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -3535,6 +3536,12 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "or detailed visible records through the Team read tools instead of "
         "assuming the prompt contains the full Team state. Read tools currently "
         f"include: {', '.join(READ_TEAM_MCP_TOOL_NAMES)}.\n\n"
+        "Identity detail: your own full role_description is included in the wake "
+        "prompt Team context. Compact context may still omit display names or "
+        f"trim subordinate role descriptions. Use {TEAM_GET_MY_IDENTITY_TOOL} "
+        "when exact identity, effective permissions, direct superior display "
+        "name, subordinate display names, or another complete identity field "
+        "matters for the current decision.\n\n"
         "Core MCP surface:\n"
         f"- Use {TEAM_UPDATE_TASK_TOOL} for tasks you own. State, priority, title, "
         "and description edits are owner-only except that a superior may set "
@@ -3781,6 +3788,11 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         "tools granted to this session. Tool discovery is authoritative for exact "
         "arguments. The Team context JSON is a compact current summary; use "
         "Team read MCP tools to fetch detailed visible records when needed.\n\n"
+        "Identity detail: your full role_description is included in "
+        f"Team context JSON.agent. Use {TEAM_GET_MY_IDENTITY_TOOL} when you need "
+        "effective permissions, direct superior display name, subordinate display "
+        "names, or another complete identity field not shown in the compact "
+        "context.\n\n"
         "Role-aware delegation: when creating tasks or requests for subordinates, "
         "use subordinates[].role_name and subordinates[].role_description. "
         f"Reviewer roles should generally receive {TEAM_REQUEST_REVIEW_TOOL} calls "

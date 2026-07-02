@@ -22,6 +22,7 @@ from evander_team_addon.models import (
     ProjectGoal,
     ReleasePackage,
     ReviewRequest,
+    RolePermission,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
@@ -75,6 +76,11 @@ TEAM_GET_RELEASE_PACKAGE_TOOL = getattr(
 )
 TEAM_LIST_AGENTS_TOOL = getattr(team_mcp, "TEAM_LIST_AGENTS_TOOL", "team_list_agents")
 TEAM_GET_AGENT_TOOL = getattr(team_mcp, "TEAM_GET_AGENT_TOOL", "team_get_agent")
+TEAM_GET_MY_IDENTITY_TOOL = getattr(
+    team_mcp,
+    "TEAM_GET_MY_IDENTITY_TOOL",
+    "team_get_my_identity",
+)
 TEAM_LIST_PROJECTS_TOOL = getattr(
     team_mcp,
     "TEAM_LIST_PROJECTS_TOOL",
@@ -102,6 +108,7 @@ EXPECTED_READ_TOOL_NAMES = (
     TEAM_GET_RELEASE_PACKAGE_TOOL,
     TEAM_LIST_AGENTS_TOOL,
     TEAM_GET_AGENT_TOOL,
+    TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
     TEAM_LIST_RUNTIME_ATTENTION_TOOL,
@@ -210,6 +217,7 @@ def _seed_team(
         name=f"{team_id.title()} Project",
         lead_agent_id=lead_agent_id,
         lead_session_id=lead_session_id,
+        lead_display_name=f"{team_id.title()} Lead",
         goals=[ProjectGoal(id=f"{team_id}-goal", description=f"Ship {team_id}")],
         expected_revision=repo.read().revision,
     )
@@ -218,6 +226,12 @@ def _seed_team(
         team_id=team_id,
         project_id=project_id,
         name="Developer",
+        description=(
+            f"{team_id.title()} developer role owns implementation details, "
+            "coordination boundaries, and exact acceptance criteria. "
+            + ("role-detail " * 80)
+        ),
+        permissions=[RolePermission.REQUEST_PAYMENT_PREPARATION],
         expected_revision=repo.read().revision,
     )
     admin.register_agent(
@@ -422,6 +436,7 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
             "alpha-release",
         ),
         (TEAM_GET_AGENT_TOOL, {"agent_id": "alpha-dev"}, "alpha-dev"),
+        (TEAM_GET_MY_IDENTITY_TOOL, {}, "alpha-dev"),
         (TEAM_GET_PROJECT_TOOL, {"project_id": "alpha-project"}, "alpha-project"),
     ]
     for tool_name, arguments, expected_id in get_calls:
@@ -434,6 +449,68 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         assert _item(result)["id"] == expected_id
 
     assert repo.read().revision == before_revision
+
+
+def test_team_addon_get_my_identity_returns_complete_bounded_identity(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=list(EXPECTED_READ_TOOL_NAMES))
+    _upsert_session(
+        context,
+        session_id="session-alpha-lead",
+        allowed_tools=list(EXPECTED_READ_TOOL_NAMES),
+    )
+    _seed_read_tool_state(context.config.runtime_dir)
+    server = create_server(context)
+
+    worker_result = _call_tool(
+        server,
+        TEAM_GET_MY_IDENTITY_TOOL,
+        {"session_id": "session-alpha-dev"},
+    )
+    _assert_read_success(worker_result)
+    worker_identity = _item(worker_result)
+
+    assert worker_identity["id"] == "alpha-dev"
+    assert worker_identity["display_name"] == "Alpha Developer"
+    assert worker_identity["role_name"] == "Developer"
+    assert worker_identity["role_description"].startswith(
+        "Alpha developer role owns implementation details"
+    )
+    assert "..." not in worker_identity["role_description"]
+    assert "request_payment_preparation" in worker_identity["role_permissions"]
+    assert "request_payment_preparation" in worker_identity["effective_role_permissions"]
+    assert worker_identity["superior"] == {
+        "id": "alpha-lead",
+        "display_name": "Alpha Lead",
+        "team_id": "alpha",
+        "role_id": "alpha-project__project-lead",
+        "role_name": "Project Lead",
+        "status": "active",
+    }
+    assert worker_identity["subordinates"] == []
+    assert "tasks" not in worker_identity
+    assert "inbox" not in worker_identity
+    assert "deliverables" not in worker_identity
+
+    lead_result = _call_tool(
+        server,
+        TEAM_GET_MY_IDENTITY_TOOL,
+        {"session_id": "session-alpha-lead"},
+    )
+    _assert_read_success(lead_result)
+    lead_identity = _item(lead_result)
+
+    assert lead_identity["id"] == "alpha-lead"
+    assert lead_identity["display_name"] == "Alpha Lead"
+    assert {
+        "id": "alpha-dev",
+        "display_name": "Alpha Developer",
+        "team_id": "alpha",
+        "role_id": "alpha__developer",
+        "role_name": "Developer",
+        "status": "active",
+    } in lead_identity["subordinates"]
 
 
 def test_team_addon_read_tools_scope_task_and_project_by_callers_team(

@@ -91,6 +91,7 @@ TEAM_LIST_RELEASE_PACKAGES_TOOL = "team_list_release_packages"
 TEAM_GET_RELEASE_PACKAGE_TOOL = "team_get_release_package"
 TEAM_LIST_AGENTS_TOOL = "team_list_agents"
 TEAM_GET_AGENT_TOOL = "team_get_agent"
+TEAM_GET_MY_IDENTITY_TOOL = "team_get_my_identity"
 TEAM_LIST_PROJECTS_TOOL = "team_list_projects"
 TEAM_GET_PROJECT_TOOL = "team_get_project"
 TEAM_LIST_RUNTIME_ATTENTION_TOOL = "team_list_runtime_attention"
@@ -145,6 +146,7 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_GET_RELEASE_PACKAGE_TOOL,
     TEAM_LIST_AGENTS_TOOL,
     TEAM_GET_AGENT_TOOL,
+    TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
     TEAM_LIST_RUNTIME_ATTENTION_TOOL,
@@ -1992,6 +1994,24 @@ def _register_read_tools(server: FastMCP, resolver: TeamMcpContextResolver) -> N
         team_get_agent,
         name=TEAM_GET_AGENT_TOOL,
         description="Get one visible Team agent.",
+    )
+
+    def team_get_my_identity(session_id: str | None = None) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_MY_IDENTITY_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_my_identity(),
+            caller=caller,
+            record_name="identity",
+            record_id=caller.agent.id if caller.agent is not None else "self",
+        )
+
+    server.add_tool(
+        team_get_my_identity,
+        name=TEAM_GET_MY_IDENTITY_TOOL,
+        description="Get the calling Team agent's complete identity and role context.",
     )
 
     def team_list_projects(

@@ -16,8 +16,10 @@ from ..models import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    agent_project_assignment_payloads,
     agent_lead_project_ids,
     agent_project_ids,
+    effective_role_permissions,
     release_package_payload_with_derived,
     runtime_operations_payload,
     task_payload_with_derived,
@@ -232,18 +234,10 @@ class TeamReadService:
         agent = self._state.agents.get(_text(agent_id))
         if agent is None or not self._agent_visible(agent.id):
             return None
-        payload = self._agent_row(agent)
-        payload["session_id"] = agent.session_id
-        payload["ephemeral_policy"] = agent.ephemeral_policy.model_dump(mode="json")
-        payload["project_assignments"] = [
-            assignment.model_dump(mode="json")
-            for assignment in sorted(
-                self._state.project_assignments.values(),
-                key=lambda item: (item.project_id, item.kind.value, item.id),
-            )
-            if assignment.agent_id == agent.id and assignment.project_id in self._visible_project_ids
-        ]
-        return _without_none(payload)
+        return self._agent_detail_payload(agent)
+
+    def get_my_identity(self) -> dict[str, Any]:
+        return self._agent_detail_payload(self._actor)
 
     def list_projects(
         self,
@@ -585,6 +579,61 @@ class TeamReadService:
                 "lead_project_ids": [
                     project_id for project_id in lead_project_ids if self._project_visible(project_id)
                 ],
+            }
+        )
+
+    def _agent_detail_payload(self, agent: PersistentAgent) -> dict[str, Any]:
+        role = self._state.roles.get(agent.role_id) if agent.role_id is not None else None
+        effective_permissions = [
+            permission.value for permission in effective_role_permissions(self._state, agent)
+        ]
+        payload = self._agent_row(agent)
+        payload.update(
+            {
+                "session_id": agent.session_id,
+                "role_description": role.description if role is not None else "",
+                "role_permissions": [permission.value for permission in role.permissions]
+                if role is not None
+                else [],
+                "effective_role_permissions": effective_permissions,
+                "ephemeral_policy": agent.ephemeral_policy.model_dump(mode="json"),
+                "superior": self._agent_reference(agent.reports_to_agent_id),
+                "subordinates": [
+                    reference
+                    for subordinate_id in agent.subordinate_agent_ids
+                    if (reference := self._agent_reference(subordinate_id)) is not None
+                ],
+                "project_assignments": [
+                    assignment
+                    for assignment in sorted(
+                        agent_project_assignment_payloads(self._state, agent.id),
+                        key=lambda item: (
+                            _maybe_text(item.get("project_id")) or "",
+                            _maybe_text(item.get("kind")) or "",
+                            _maybe_text(item.get("id")) or "",
+                        ),
+                    )
+                    if _maybe_text(assignment.get("project_id")) in self._visible_project_ids
+                ],
+            }
+        )
+        return _without_none(payload)
+
+    def _agent_reference(self, agent_id: str | None) -> dict[str, Any] | None:
+        if not self._agent_visible(agent_id):
+            return None
+        agent = self._state.agents.get(agent_id or "")
+        if agent is None:
+            return None
+        role = self._state.roles.get(agent.role_id) if agent.role_id is not None else None
+        return _without_none(
+            {
+                "id": agent.id,
+                "display_name": agent.display_name,
+                "team_id": agent.team_id,
+                "role_id": agent.role_id,
+                "role_name": role.name if role is not None else None,
+                "status": agent.status.value,
             }
         )
 

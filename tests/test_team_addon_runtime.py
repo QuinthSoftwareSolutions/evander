@@ -1193,6 +1193,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "do not have create_root_task" in prompt
     assert "You may NOT create top-level tasks" in prompt
     assert "Every team_create_task or team_create_tasks call must set parent_task_id" in prompt
+    assert "Identity detail: your full role_description is included" in prompt
+    assert "Use team_get_my_identity" in prompt
     assert "A previous Team operation had validation errors" not in prompt
     for field_name in (
         "dependency_status",
@@ -2291,6 +2293,31 @@ def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:
     )
     assert "Role-aware delegation" in prompt
     assert "Reviewer roles should generally receive team_request_review calls" in prompt
+
+
+def test_build_prompt_includes_full_waking_agent_role_description(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    full_description = (
+        "Own the backend implementation role boundary. "
+        + ("Detailed role responsibility. " * 20)
+        + "UNTRUNCATED_ROLE_DESCRIPTION_SENTINEL"
+    )
+    _team_admin_service(repo).update_role(
+        role_id="project__backend",
+        description=full_description,
+        set_description=True,
+        expected_revision=repo.read().revision,
+    )
+
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
+
+    assert context["agent"]["role_description"] == full_description
+    assert "UNTRUNCATED_ROLE_DESCRIPTION_SENTINEL" in prompt
 
 
 def test_build_prompt_includes_release_package_recovery_context(tmp_path: Path) -> None:
@@ -3740,6 +3767,10 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert "a superior may set state: finished on a subordinate non-terminal task" in str(
         copied_file["content"]
     )
+    assert "your own full role_description is included in the wake prompt" in str(
+        copied_file["content"]
+    )
+    assert "Use team_get_my_identity when exact identity" in str(copied_file["content"])
     assert (
         session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"]["guidance_version"]
         == TEAM_AGENT_GUIDANCE_VERSION

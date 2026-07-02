@@ -5,6 +5,11 @@
 - Added Team MCP read tools for visible tasks, inbox, cases, deliverables,
   reviews, releases, agents, projects, and runtime attention so agents can
   fetch detail without receiving the full Team state in every wake prompt.
+- Added a Team MCP identity read tool that returns the caller's full role
+  description, permissions, and named hierarchy without exposing unrelated Team
+  state.
+- Kept the waking agent's full role description in compact Team wake prompts
+  while leaving other identity detail available through the identity read tool.
 - Reduced Team wake prompt context to current and salient compact summaries,
   preserving detailed state behind policy-gated read tools.
 

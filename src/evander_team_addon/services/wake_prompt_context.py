@@ -204,7 +204,11 @@ def _compact_agent(agent: Mapping[str, Any], *, subordinate: bool = False) -> di
     row = {key: _json_value(agent.get(key)) for key in fields if key in agent}
     role_description = _optional_text(agent.get("role_description"))
     if role_description is not None:
-        row["role_description"] = _trim_text(role_description, ROLE_DESCRIPTION_LIMIT)
+        row["role_description"] = (
+            _trim_text(role_description, ROLE_DESCRIPTION_LIMIT)
+            if subordinate
+            else role_description
+        )
     for key in (
         "project_ids",
         "lead_project_ids",
