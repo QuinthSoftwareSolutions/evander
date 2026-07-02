@@ -6,6 +6,9 @@
   packs, list them in the trigger-orchestrator workflow pack config, and expose
   an explicit refresh action that overwrites existing operator pack files only
   after confirmation.
+- Blocked runtime workflow pack refreshes when the trigger-orchestrator add-on
+  loader would not load the add-on, avoiding active workflow packs with
+  unavailable add-on providers.
 
 ## 2026-07-02 - Team Git Work Contexts
 

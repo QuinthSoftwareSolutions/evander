@@ -58,6 +58,9 @@ class AddonAdminService:
         worker_payload = self.workflow_config_admin.read_worker_global_config("trigger-orchestrator")
         host_loader = host_config.addon_loader
         worker_loader = self._worker_addon_loader(worker_payload.config)
+        worker_runtime_addon_ids, worker_runtime_loader_error = (
+            self._runtime_addon_ids_for_worker_loader(worker_loader)
+        )
         configured_node_types, workflow_reference_error = self._configured_workflow_node_types(
             worker_payload.config
         )
@@ -101,6 +104,10 @@ class AddonAdminService:
                     "runtime_workflow_pack": self._runtime_workflow_pack_status(
                         registration,
                         worker_payload.config,
+                        addon_runtime_enabled=bool(
+                            addon_id and addon_id in worker_runtime_addon_ids
+                        ),
+                        addon_runtime_loader_error=worker_runtime_loader_error,
                     ),
                     "load_error": candidate.error,
                     "required_restart_services": list(
@@ -288,6 +295,21 @@ class AddonAdminService:
                 raise ValueError(
                     f"Add-on {normalized_addon_id} does not define a runtime workflow pack."
                 )
+            worker_runtime_addon_ids, worker_runtime_loader_error = (
+                self._runtime_addon_ids_for_worker_loader(worker_loader)
+            )
+            if normalized_addon_id not in worker_runtime_addon_ids:
+                message = (
+                    f"Cannot refresh runtime workflow pack for add-on {normalized_addon_id} "
+                    "because trigger-orchestrator addon_loader does not load that add-on. "
+                    "Enable the add-on first, then refresh the runtime workflow pack."
+                )
+                if worker_runtime_loader_error:
+                    message = (
+                        f"{message} trigger-orchestrator addon_loader error: "
+                        f"{worker_runtime_loader_error}"
+                    )
+                raise ValueError(message)
             next_worker_config, _reference = (
                 self.workflow_config_admin.ensure_workflow_pack_payload_unlocked(
                     raw_config=dict(worker_payload.config),
@@ -341,6 +363,15 @@ class AddonAdminService:
         except Exception as exc:
             return [], str(exc)
         return [registration.addon_id for registration in catalog.registrations], None
+
+    def _runtime_addon_ids_for_worker_loader(
+        self, worker_loader: AddonLoaderConfig
+    ) -> tuple[set[str], str | None]:
+        try:
+            catalog = load_addons(worker_loader)
+        except Exception as exc:
+            return set(), str(exc)
+        return {registration.addon_id for registration in catalog.registrations}, None
 
     def _normalize_enabled_addon_ids(self, values: list[object]) -> list[str]:
         if not isinstance(values, list):
@@ -473,6 +504,9 @@ class AddonAdminService:
         self,
         registration: AddonRegistration | None,
         worker_config: Mapping[str, object],
+        *,
+        addon_runtime_enabled: bool,
+        addon_runtime_loader_error: str | None,
     ) -> dict[str, object] | None:
         source = self._runtime_workflow_pack_source(registration)
         if source is None:
@@ -504,9 +538,14 @@ class AddonAdminService:
                     "path": str(pack_path),
                     "exists": pack_path.exists(),
                     "configured": runtime_pack.reference in configured_references,
-                    "refresh_available": True,
+                    "refresh_available": addon_runtime_enabled,
                 }
             )
+            if not addon_runtime_enabled and addon_runtime_loader_error:
+                status["error"] = (
+                    "trigger-orchestrator addon_loader cannot load runtime workflow "
+                    f"providers: {addon_runtime_loader_error}"
+                )
         except Exception as exc:
             status["error"] = str(exc)
         return status
