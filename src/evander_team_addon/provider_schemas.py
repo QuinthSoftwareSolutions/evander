@@ -344,6 +344,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "dispatches": {"type": "array"},
         "prepared_project_repos": {"type": "array"},
         "failed_project_repo_preparations": {"type": "array"},
+        "git_work_contexts": {"type": "array"},
         "review_artifact_imports": {"type": "array"},
         "review_artifact_import_errors": {"type": "array"},
         "cost_guard_blocked_team_ids": {"type": "array"},

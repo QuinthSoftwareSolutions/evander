@@ -51,6 +51,7 @@ from evander.repositories.session_tool_approval_leases import (
     JsonSessionToolApprovalLeaseRepository,
 )
 from evander.runtime import build_runtime
+from evander.session_auth import ensure_session_mcp_auth_token
 from evander.worker.models import (
     WorkerMssqlDatabaseDeleteRecord,
     WorkerMssqlDatabaseListRecord,
@@ -88,6 +89,7 @@ def _make_request_context(
     *,
     session_id: str | None = None,
     transport_session_id: str | None = None,
+    mcp_session_token: str | None = None,
     workflow_run_id: str | None = None,
     mcp_tool_approval_lease_id: str | None = None,
 ) -> object:
@@ -101,6 +103,8 @@ def _make_request_context(
     headers: dict[str, str] = {}
     if transport_session_id is not None:
         headers["mcp-session-id"] = transport_session_id
+    if mcp_session_token is not None:
+        headers["x-evander-mcp-session-token"] = mcp_session_token
     return SimpleNamespace(
         request_context=SimpleNamespace(
             request=SimpleNamespace(query_params=query_params, headers=headers)
@@ -112,14 +116,18 @@ def _mcp_initialize_session(
     client: TestClient,
     *,
     session_id: str,
+    mcp_session_token: str | None = None,
 ) -> str:
+    headers = {
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+        "x-evander-session-id": session_id,
+    }
+    if mcp_session_token is not None:
+        headers["x-evander-mcp-session-token"] = mcp_session_token
     response = client.post(
         "/mcp",
-        headers={
-            "accept": "application/json, text/event-stream",
-            "content-type": "application/json",
-            "x-evander-session-id": session_id,
-        },
+        headers=headers,
         content=json.dumps(
             {
                 "jsonrpc": "2.0",
@@ -672,6 +680,91 @@ def test_gateway_mcp_tools_list_filters_visible_tools_for_session(
     assert binding.bound_session_id == "session-1"
     assert binding.last_visible_tool_names == ["get_workflow_snapshot"]
     assert binding.last_tools_list_at is not None
+
+
+def test_gateway_requires_mcp_session_token_for_tokenized_session(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    session = context.session_repository.get_session("session-1")
+    assert session is not None
+    protected_session, mcp_session_token = ensure_session_mcp_auth_token(session)
+    context.session_repository.upsert_session(protected_session)
+
+    with TestClient(create_app(context)) as client:
+        denied_initialize = client.post(
+            "/mcp",
+            headers={
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+                "x-evander-session-id": "session-1",
+            },
+            content=json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "clientInfo": {"name": "pytest", "version": "1.0"},
+                        "capabilities": {},
+                    },
+                }
+            ),
+        )
+        mcp_session_id = _mcp_initialize_session(
+            client,
+            session_id="session-1",
+            mcp_session_token=mcp_session_token,
+        )
+        denied_bound_list = client.post(
+            "/mcp",
+            headers={
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+                "mcp-session-id": mcp_session_id,
+            },
+            content=json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/list",
+                    "params": {},
+                }
+            ),
+        )
+        tool_names = _mcp_list_tool_names(
+            client,
+            mcp_session_id=mcp_session_id,
+            query_params={"mcp_session_token": mcp_session_token},
+        )
+
+    server = create_server(context)
+    with pytest.raises(ToolError, match="MCP session token is required"):
+        _call_tool_with_context(
+            server,
+            "get_workflow_snapshot",
+            {"session_id": "session-1"},
+            _make_request_context(session_id="session-1"),
+        )
+    result = _call_tool_with_context(
+        server,
+        "get_workflow_snapshot",
+        {"session_id": "session-1"},
+        _make_request_context(
+            session_id="session-1",
+            mcp_session_token=mcp_session_token,
+        ),
+    )
+
+    assert denied_initialize.status_code == 401
+    assert "MCP session token" in denied_initialize.json()["error"]
+    assert denied_bound_list.status_code == 401
+    assert "get_workflow_snapshot" in tool_names
+    assert result["worker_id"] == "trigger-orchestrator"
 
 
 def test_gateway_mcp_tools_list_rejects_conflicting_bound_transport_session(

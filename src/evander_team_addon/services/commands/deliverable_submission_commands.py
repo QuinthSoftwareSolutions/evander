@@ -62,6 +62,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
         artifact_paths: Sequence[str] | None = None,
         artifact_refs: Sequence[str] | None = None,
         artifact_space_ref: str | None = None,
+        branch_context_id: str | None = None,
         git_refs: Mapping[str, Any] | None = None,
         verification: Mapping[str, Any] | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
@@ -80,6 +81,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 "artifact_paths": list(artifact_paths or []),
                 "artifact_refs": list(artifact_refs or []),
                 "artifact_space_ref": artifact_space_ref,
+                "branch_context_id": branch_context_id,
                 "git_refs": dict(git_refs or {}),
                 "verification": dict(verification) if verification is not None else None,
             },
@@ -125,6 +127,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 task=task,
                 deliverable=normalized_deliverable,
                 deliverable_id=deliverable_id,
+                dispatch_id=resolved.dispatch_id,
             )
             published_records = _publish_command_deliverable_artifacts(
                 state,
@@ -247,6 +250,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 task=task,
                 deliverable=normalized_deliverable,
                 deliverable_id=deliverable_id,
+                dispatch_id=resolved.dispatch_id,
             )
             if not normalized_reviews:
                 raise TeamCommandValidationError(

@@ -39,6 +39,7 @@ from evander.workflow.migrations import (
 )
 from evander.workflow.validation import NodeCapability
 from evander.worker.security import sanitize_text
+from evander.session_auth import session_mcp_auth_token
 
 from .agent_session import (
     container_backend,
@@ -1205,6 +1206,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                                 record=record,
                                 config=config,
                                 session_id=session_id,
+                                session=session,
                             ),
                             web_search_enabled=bool(
                                 getattr(session, "web_search_enabled", False)
@@ -1356,6 +1358,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         record: Any,
         config: Any,
         session_id: str,
+        session: Any | None = None,
     ) -> str | None:
         lease_id = cls._record_text_value(record, "mcp_tool_approval_lease_id")
         if not lease_id:
@@ -1371,6 +1374,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 session_id=session_id,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=lease_id,
+                mcp_session_token=session_mcp_auth_token(session),
             )
         except Exception:
             return None
@@ -1581,6 +1585,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
             session_id=session_id,
             workflow_run_id=workflow_run_id,
             mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+            mcp_session_token=session_mcp_auth_token(
+                self._read_all_sessions_safe().get(session_id)
+            ),
         )
 
     def _session_id_from_target(self, target: str) -> str:

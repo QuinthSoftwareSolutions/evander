@@ -48,6 +48,7 @@ export function AddonsPage() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [runtimePackRefreshing, setRuntimePackRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
@@ -143,6 +144,34 @@ export function AddonsPage() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function refreshRuntimeWorkflowPack(addon: AdminAddonStatus) {
+    if (!state || !addon.addon_id || !addon.runtime_workflow_pack?.refresh_available) return;
+    const packReference = addon.runtime_workflow_pack.reference ?? "runtime workflow pack";
+    const confirmed = window.confirm(`Refresh ${packReference}? This overwrites the existing runtime workflow pack file.`);
+    if (!confirmed) return;
+    setRuntimePackRefreshing(true);
+    setError(null);
+    setStatus(null);
+    try {
+      const payload = await fetchJson<AdminAddonState>(
+        `/api/admin/addons/${encodeURIComponent(addon.addon_id)}/runtime-workflow-pack/refresh`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            expected_revision: state.revision,
+          }),
+        },
+      );
+      setState(payload);
+      setDraftEnabledIds(payload.explicit_enabled_addon_ids);
+      setStatus(`Refreshed ${packReference}. Restart the listed services for changes to take effect.`);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setRuntimePackRefreshing(false);
     }
   }
 
@@ -300,6 +329,35 @@ export function AddonsPage() {
                   </div>
                 </>
               ) : null}
+            </article>
+          ) : null}
+
+          {selectedAddon?.runtime_workflow_pack ? (
+            <article className="panel">
+              <div className="panel-header">
+                <h3>Runtime workflow pack</h3>
+                <span className={`status-pill ${selectedAddon.runtime_workflow_pack.configured ? "state-running" : "state-waiting"}`}>
+                  {selectedAddon.runtime_workflow_pack.configured ? "Configured" : "Not listed"}
+                </span>
+              </div>
+              <dl className="metadata-grid">
+                <div><dt>Reference</dt><dd>{selectedAddon.runtime_workflow_pack.reference ?? "Unavailable"}</dd></div>
+                <div><dt>File</dt><dd>{selectedAddon.runtime_workflow_pack.exists ? "Present" : "Missing"}</dd></div>
+                <div><dt>Source</dt><dd>{selectedAddon.runtime_workflow_pack.source}</dd></div>
+                <div><dt>Path</dt><dd>{selectedAddon.runtime_workflow_pack.path ?? "Unavailable"}</dd></div>
+              </dl>
+              {selectedAddon.runtime_workflow_pack.error ? (
+                <div className="callout warning-callout">{selectedAddon.runtime_workflow_pack.error}</div>
+              ) : null}
+              <div className="feature-toolbar-actions">
+                <button
+                  type="button"
+                  onClick={() => void refreshRuntimeWorkflowPack(selectedAddon)}
+                  disabled={runtimePackRefreshing || saving || !selectedAddon.runtime_workflow_pack.refresh_available}
+                >
+                  {runtimePackRefreshing ? "Refreshing..." : "Refresh runtime pack"}
+                </button>
+              </div>
             </article>
           ) : null}
         </div>

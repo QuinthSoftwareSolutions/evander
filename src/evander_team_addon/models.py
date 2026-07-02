@@ -81,6 +81,12 @@ class EphemeralAssignmentState(str, Enum):
     FAILED = "failed"
 
 
+class GitWorkContextState(str, Enum):
+    ACTIVE = "active"
+    SUBMITTED = "submitted"
+    ABANDONED = "abandoned"
+
+
 class ProjectStatus(str, Enum):
     ACTIVE = "active"
     BLOCKED = "blocked"
@@ -787,6 +793,7 @@ class AgentTask(TeamModel):
 
 
 class DeliverableGitRefs(TeamModel):
+    branch_context_id: str | None = None
     agent_branch: str | None = None
     review_branch: str | None = None
     feature_branch: str | None = None
@@ -800,6 +807,7 @@ class DeliverableGitRefs(TeamModel):
         "feature_branch",
         "release_branch",
         "commit_sha",
+        "branch_context_id",
         mode="before",
     )
     @classmethod
@@ -860,6 +868,38 @@ class Deliverable(TeamModel):
     @classmethod
     def _text_lists(cls, value: object, info) -> list[str]:
         return _unique_text_list(value, info.field_name)
+
+
+class GitWorkContext(TeamModel):
+    id: str
+    agent_id: str
+    task_id: str
+    agent_branch: str
+    base_branch: str | None = None
+    base_commit: str | None = None
+    commit_sha: str | None = None
+    dispatch_id: str | None = None
+    worktree_path: str | None = None
+    state: GitWorkContextState = GitWorkContextState.ACTIVE
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "agent_id", "task_id", "agent_branch", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "base_branch",
+        "base_commit",
+        "commit_sha",
+        "dispatch_id",
+        "worktree_path",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
 
 
 class ReviewProfileCriterion(TeamModel):
@@ -1461,6 +1501,7 @@ class TeamState(TeamModel):
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
     ephemeral_assignments: dict[str, EphemeralAssignment] = Field(default_factory=dict)
     git_promotions: dict[str, GitPromotionRecord] = Field(default_factory=dict)
+    git_work_contexts: dict[str, GitWorkContext] = Field(default_factory=dict)
     stand_downs: dict[str, AgentStandDown] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=utc_now)
 

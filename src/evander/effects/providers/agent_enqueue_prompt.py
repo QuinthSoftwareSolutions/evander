@@ -16,6 +16,7 @@ from evander.model_usage.runtime import (
     register_model_usage_correlation_context,
     resolve_runtime_dir,
 )
+from evander.session_auth import session_mcp_auth_token
 from evander.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
 )
@@ -878,11 +879,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     ) -> str | None:
         if not mcp_tool_approval_lease_id:
             return None
+        session_id = self._session_id_from_target(target)
         return gateway_url_with_session_context(
             base_gateway_url or config.gateway_url,
-            session_id=self._session_id_from_target(target),
+            session_id=session_id,
             workflow_run_id=workflow_run_id,
             mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+            mcp_session_token=session_mcp_auth_token(
+                self._session_for_metadata_lookup(target=target, session_id=session_id)
+            ),
         )
 
     def _session_id_from_target(self, target: str) -> str:

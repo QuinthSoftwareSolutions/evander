@@ -22,6 +22,7 @@ from evander.gateway.request_context import (
 from evander.gateway.session_context import (
     _SESSION_ID_CONTEXT_CONFLICT_MESSAGE,
     _ambient_session_id_from_request,
+    _mcp_session_token_from_request,
     _resolve_session_id_from_request,
 )
 from evander.models import tool_name_value
@@ -33,6 +34,10 @@ from evander.retell_phone import (
     verify_retell_webhook_signature,
 )
 from evander.runtime import RuntimeContext
+from evander.session_auth import (
+    redact_mcp_session_token_query,
+    verify_mcp_session_token,
+)
 from evander.voice_sessions import VoiceProjectionService, VoiceQueryDelegator
 from evander.voice_sessions import realtime_session_config, voice_query_payload
 
@@ -93,17 +98,19 @@ def _install_mcp_http_logging(
                         request_method_name = str(payload.get("method") or "").strip()
             except Exception:
                 request_method_name = ""
+            redacted_query = redact_mcp_session_token_query(request.url.query)
             logger.info(
                 "gateway_mcp_request method=%s path=%s query=%s accept=%s content_type=%s mcp_session_id=%s protocol_version=%s",
                 request.method,
                 request.url.path,
-                request.url.query,
+                redacted_query,
                 request.headers.get("accept", ""),
                 request.headers.get("content-type", ""),
                 request.headers.get("mcp-session-id", ""),
                 request.headers.get("mcp-protocol-version", ""),
             )
             try:
+                bound_session_id = ""
                 if transport_session_map is not None and request_transport_session_id:
                     bound_session_id = str(
                         transport_session_map.get(request_transport_session_id) or ""
@@ -124,6 +131,18 @@ def _install_mcp_http_logging(
                                 {"error": _SESSION_ID_CONTEXT_CONFLICT_MESSAGE},
                                 status_code=409,
                             )
+                auth_session_id = (declared_session_id or bound_session_id or "").strip()
+                if auth_session_id:
+                    session = runtime_context.session_repository.get_session(auth_session_id)
+                    if session is not None and not verify_mcp_session_token(
+                        session,
+                        _mcp_session_token_from_request(request),
+                    ):
+                        return JSONResponse(
+                            {"error": "MCP session token is required for this session"},
+                            status_code=401,
+                        )
+                if transport_session_map is not None and request_transport_session_id:
                     if transport_binding_store is not None:
                         effective_bound_session_id = (
                             declared_session_id or bound_session_id or None

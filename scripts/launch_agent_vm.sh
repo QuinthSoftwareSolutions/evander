@@ -19,6 +19,8 @@ Environment:
   BASE_IMAGE           Fallback base image ref or absolute path. Relative refs are
                        resolved under ${VM_STORAGE_DIR}/images.
   GATEWAY_URL          Host MCP gateway URL exposed to the guest.
+  EVANDER_MCP_SESSION_TOKEN
+                       Per-session MCP proof token exposed to the guest.
   HTTP_TARGET_RELAY_BASE_URL Host HTTP target relay URL exposed to the guest.
   SSH_PUBLIC_KEY_FILE  Public key injected into the guest.
   SSH_PRIVATE_KEY_PATH Private key used to derive a temporary public key when needed.
@@ -93,6 +95,7 @@ if [[ -z "${GATEWAY_URL:-}" || -z "${LLM_BASE_URL:-}" ]]; then
 fi
 
 GATEWAY_URL="${GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
+MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${MCP_SESSION_TOKEN:-}}"
 HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL:-http://192.168.250.1:11777}"
 LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
 ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}"
@@ -142,6 +145,8 @@ ESCAPED_LLM_BASE_URL="${LLM_BASE_URL//&/\\&}"
 ESCAPED_LLM_BASE_URL="${ESCAPED_LLM_BASE_URL//|/\\|}"
 ESCAPED_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL//&/\\&}"
 ESCAPED_ANTHROPIC_BASE_URL="${ESCAPED_ANTHROPIC_BASE_URL//|/\\|}"
+ESCAPED_MCP_SESSION_TOKEN="${MCP_SESSION_TOKEN//&/\\&}"
+ESCAPED_MCP_SESSION_TOKEN="${ESCAPED_MCP_SESSION_TOKEN//|/\\|}"
 ESCAPED_NUGET_FALLBACK_PACKAGES="${GUEST_NUGET_FALLBACK_PACKAGES//&/\\&}"
 ESCAPED_NUGET_FALLBACK_PACKAGES="${ESCAPED_NUGET_FALLBACK_PACKAGES//|/\\|}"
 ESCAPED_NUGET_PACKAGES="${GUEST_NUGET_PACKAGES//&/\\&}"
@@ -194,6 +199,7 @@ sed \
   -e "s|__GATEWAY_URL__|${GATEWAY_URL}|g" \
   -e "s|__HTTP_TARGET_RELAY_BASE_URL__|${ESCAPED_HTTP_TARGET_RELAY_BASE_URL}|g" \
   -e "s|__SESSION_ID__|${SESSION_ID}|g" \
+  -e "s|__MCP_SESSION_TOKEN__|${ESCAPED_MCP_SESSION_TOKEN}|g" \
   -e "s|__SSH_PUBLIC_KEY__|${ESCAPED_SSH_PUBLIC_KEY}|g" \
   -e "s|__LLM_BASE_URL__|${ESCAPED_LLM_BASE_URL}|g" \
   -e "s|__ANTHROPIC_BASE_URL__|${ESCAPED_ANTHROPIC_BASE_URL}|g" \

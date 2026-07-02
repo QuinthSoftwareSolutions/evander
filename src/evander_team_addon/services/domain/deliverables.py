@@ -29,10 +29,12 @@ _DELIVERABLE_VERIFICATION_STATUSES = frozenset(
 
 def _deliverable_git_refs_from_payload(value: object) -> DeliverableGitRefs:
     payload = _optional_mapping(value, "git_refs") or {}
+    branch_context_id = _optional_text(payload.get("branch_context_id"))
     agent_branch = _optional_text(payload.get("agent_branch"))
     if agent_branch is not None:
         agent_branch = validate_branch_name(agent_branch)
     return DeliverableGitRefs(
+        branch_context_id=branch_context_id,
         agent_branch=agent_branch,
         commit_sha=_optional_text(payload.get("commit_sha")),
     )

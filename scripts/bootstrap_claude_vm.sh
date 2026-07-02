@@ -234,12 +234,27 @@ if [ -f /etc/evander/session.env ]; then
   . /etc/evander/session.env
 fi
 
+append_evander_mcp_query() {
+  python3 - "$1" "$2" "${3:-}" <<'PY'
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+import sys
+
+url, session_id, token = sys.argv[1], sys.argv[2], sys.argv[3]
+parts = urlsplit(url)
+query = dict(parse_qsl(parts.query, keep_blank_values=True))
+query["session_id"] = session_id
+if token:
+    query["mcp_session_token"] = token
+print(urlunsplit(parts._replace(query=urlencode(query))))
+PY
+}
 CLAUDE_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${EVANDER_ANTHROPIC_BASE_URL:-${AGENT_SANDBOX_ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}}}"
 CLAUDE_GATEWAY_URL="${GATEWAY_URL:-${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}}"
 CLAUDE_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"
+CLAUDE_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"
 if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
   CLAUDE_ANTHROPIC_BASE_URL="${CLAUDE_ANTHROPIC_BASE_URL%/}/session/${CLAUDE_SESSION_ID}"
-  CLAUDE_GATEWAY_URL="${CLAUDE_GATEWAY_URL}?session_id=${CLAUDE_SESSION_ID}"
+  CLAUDE_GATEWAY_URL="$(append_evander_mcp_query "${CLAUDE_GATEWAY_URL}" "${CLAUDE_SESSION_ID}" "${CLAUDE_MCP_SESSION_TOKEN}")"
 fi
 
 cat > ~/.claude/settings.json <<CONFIG

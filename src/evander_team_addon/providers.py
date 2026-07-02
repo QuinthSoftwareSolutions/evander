@@ -69,6 +69,7 @@ from .mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
+    READ_TEAM_MCP_TOOL_NAMES,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     TEAM_ASK_QUESTION_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
@@ -77,6 +78,7 @@ from .mcp import (
     TEAM_CREATE_TASK_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
+    TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
@@ -136,6 +138,7 @@ from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.domain.common import _slug_id_part
 from .services.domain.ephemeral import (
     EPHEMERAL_COMPLETED_EVENT_TYPE,
     EPHEMERAL_REQUESTED_EVENT_TYPE,
@@ -147,9 +150,10 @@ from .services.domain.review import _apply_review_request, _review_request_was_c
 from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
+from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 12
+TEAM_AGENT_GUIDANCE_VERSION = 14
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -1518,6 +1522,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []
         failed_project_repo_preparations: list[dict[str, Any]] = []
+        git_work_contexts: list[dict[str, Any]] = []
         review_artifact_imports: list[dict[str, Any]] = []
         review_artifact_import_errors: list[dict[str, Any]] = []
         for lease in leases:
@@ -1539,7 +1544,14 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 )
                 guidance_result = _seed_team_agent_guidance(context, agent=agent)
                 try:
-                    project_repo = _prepare_project_repo(context, state=state, agent=agent)
+                    state, project_repo = _prepare_project_repo(
+                        context,
+                        repo=repo,
+                        state=state,
+                        agent=agent,
+                        dispatch_id=lease["dispatch_id"],
+                        tasks=lease.get("tasks"),
+                    )
                 except Exception as exc:
                     failed_project_repo_preparations.append(
                         _project_repo_prepare_record(
@@ -1551,6 +1563,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     raise
                 if project_repo is not None:
                     lease = {**lease, "project_repo": project_repo}
+                    git_work_contexts.extend(
+                        _mapping_items(project_repo.get("git_work_contexts"))
+                    )
                     prepared_project_repos.append(
                         _project_repo_prepare_record(
                             agent=agent,
@@ -1647,6 +1662,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "dispatches": dispatches,
             "prepared_project_repos": prepared_project_repos,
             "failed_project_repo_preparations": failed_project_repo_preparations,
+            "git_work_contexts": git_work_contexts,
             "review_artifact_imports": review_artifact_imports,
             "review_artifact_import_errors": review_artifact_import_errors,
             "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
@@ -3528,7 +3544,17 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         f"{display_line}\n"
         "Use the Team MCP tools granted to your session. Tool discovery is the "
         "source of truth for argument shapes; do not write local coordination "
-        "files, helper scripts, or finish commands.\n\n"
+        "files, helper scripts, or finish commands.\n"
+        "Wake prompts contain only current and salient Team context. Fetch older "
+        "or detailed visible records through the Team read tools instead of "
+        "assuming the prompt contains the full Team state. Read tools currently "
+        f"include: {', '.join(READ_TEAM_MCP_TOOL_NAMES)}.\n\n"
+        "Identity detail: your own full role_description is included in the wake "
+        "prompt Team context. Compact context may still omit display names or "
+        f"trim subordinate role descriptions. Use {TEAM_GET_MY_IDENTITY_TOOL} "
+        "when exact identity, effective permissions, direct superior display "
+        "name, subordinate display names, or another complete identity field "
+        "matters for the current decision.\n\n"
         "Core MCP surface:\n"
         f"- Use {TEAM_UPDATE_TASK_TOOL} for tasks you own. State, priority, title, "
         "and description edits are owner-only except that a superior may set "
@@ -3565,6 +3591,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         f"relative to /artifacts to {TEAM_SUBMIT_DELIVERABLE_TOOL} or "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}. The Team runtime publishes "
         "only those paths and records artifact refs for reviewers.\n"
+        "- Git deliverables must include the runtime-provided branch_context_id. "
+        "Do not invent branch names; submitted git_refs must match that context. "
+        "Artifact-only, administrative, customer-service, and operations work do "
+        "not need a Git context.\n"
         f"- Use {TEAM_REQUEST_REVIEW_TOOL} to ask a specific same-team reviewer "
         "to review a deliverable. Review artifact handoff is through "
         f"{TEAM_REQUEST_REVIEW_TOOL} or "
@@ -3590,7 +3620,8 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "Git and release:\n"
         f"- Use {TEAM_PUBLISH_REVIEW_BRANCH_TOOL} for review-branch promotion and "
         f"{TEAM_UPDATE_FEATURE_BRANCH_TOOL} for feature-branch promotion.\n"
-        "- Deliverable git_refs are provenance only. They do not publish a review "
+        "- Deliverable git_refs are provenance only and require a matching "
+        "branch_context_id. They do not publish a review "
         f"branch by themselves; call {TEAM_PUBLISH_REVIEW_BRANCH_TOOL} only when "
         "a durable review branch is needed for reviewer access, feature "
         "promotion, release sequencing, or a superior explicitly asks for one.\n"
@@ -3699,40 +3730,8 @@ def _team_agent_guidance_inactive_content(*, agent: Mapping[str, Any]) -> str:
 
 def _build_prompt(lease: Mapping[str, Any]) -> str:
     agent = lease["agent"]
-    context = {
-        "agent": _prompt_context_payload(_agent_prompt_payload(agent)),
-        "reason": lease["reason"],
-        "superior_id": lease["superior_agent_id"],
-        "subordinate_ids": lease["subordinate_agent_ids"],
-        "subordinates": _prompt_context_payload(lease.get("subordinates") or []),
-        "session_health": _prompt_context_payload(lease.get("session_health") or []),
-        "cases": _prompt_context_payload(lease.get("cases") or []),
-        "tasks": _prompt_context_payload(lease["tasks"]),
-        "inbox": _prompt_context_payload(lease["inbox"]),
-        "release_packages": _prompt_context_payload(lease.get("release_packages") or {}),
-        "runtime_attention": _prompt_context_payload(
-            _prompt_runtime_attention(lease.get("runtime_attention") or [])
-        ),
-        "operator_chat_participants": _prompt_context_payload(
-            lease.get("operator_chat_participants") or []
-        ),
-    }
-    manager_fallback_summary = lease.get("manager_fallback_summary")
-    if isinstance(manager_fallback_summary, Mapping):
-        prompt_summary = dict(manager_fallback_summary)
-        prompt_summary.pop("latest_failed_actions", None)
-        context["manager_fallback_summary"] = _prompt_context_payload(prompt_summary)
+    context = build_compact_wake_context(lease)
     project_repo = lease.get("project_repo")
-    if isinstance(project_repo, Mapping):
-        context["project_repo"] = _prompt_context_payload(dict(project_repo))
-    review_artifact_imports = lease.get("review_artifact_imports")
-    if isinstance(review_artifact_imports, list) and review_artifact_imports:
-        context["review_artifact_imports"] = _prompt_context_payload(review_artifact_imports)
-    review_artifact_import_errors = lease.get("review_artifact_import_errors")
-    if isinstance(review_artifact_import_errors, list) and review_artifact_import_errors:
-        context["review_artifact_import_errors"] = _prompt_context_payload(
-            review_artifact_import_errors
-        )
     runtime = lease.get("runtime")
     handoff_summary = (
         _optional_text(runtime.get("last_handoff_summary"))
@@ -3800,7 +3799,13 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         f"section {TEAM_AGENT_GUIDANCE_SECTION_ID}, version "
         f"{TEAM_AGENT_GUIDANCE_VERSION}. Use the Team context below and the MCP "
         "tools granted to this session. Tool discovery is authoritative for exact "
-        "arguments.\n\n"
+        "arguments. The Team context JSON is a compact current summary; use "
+        "Team read MCP tools to fetch detailed visible records when needed.\n\n"
+        "Identity detail: your full role_description is included in "
+        f"Team context JSON.agent. Use {TEAM_GET_MY_IDENTITY_TOOL} when you need "
+        "effective permissions, direct superior display name, subordinate display "
+        "names, or another complete identity field not shown in the compact "
+        "context.\n\n"
         "Role-aware delegation: when creating tasks or requests for subordinates, "
         "use subordinates[].role_name and subordinates[].role_description. "
         f"Reviewer roles should generally receive {TEAM_REQUEST_REVIEW_TOOL} calls "
@@ -3849,6 +3854,8 @@ def _deliverable_mechanics_guidance(lease: Mapping[str, Any]) -> str:
         "- A non-Git deliverable must include task_id, summary, and artifact paths. "
         "If you created or updated useful files only in the repo checkout, copy or "
         "summarize the deliverable under /artifacts before reporting it.\n"
+        "- A Git deliverable must include the runtime-provided branch_context_id; "
+        "do not invent or reuse branch names from another task worktree.\n"
         "- Include verification.status when you ran checks or could not run them. "
         "Use verification.status=not_run with verification.summary explaining "
         "missing test tooling or unavailable services.\n"
@@ -4081,22 +4088,32 @@ def _project_repo_prompt_guidance(project_repo: object) -> str:
     target_dir = _optional_text(project_repo.get("target_dir"))
     if target_dir is None:
         return ""
+    git_context_rows = _mapping_items(project_repo.get("git_work_contexts"))
+    git_context_guidance = (
+        " Use the project_repo.git_work_contexts row matching your deliverable "
+        "task_id; pass its branch_context_id and push the code to its agent_branch."
+        if git_context_rows
+        else ""
+    )
     return (
         f"Project repository: work in the prepared guest checkout at {target_dir}. "
         "The project host checkout is not mounted in the guest; use this guest "
-        "repo and its configured Git helpers for code changes.\n\n"
+        f"repo and its configured Git helpers for code changes.{git_context_guidance}\n\n"
     )
 
 
 def _prepare_project_repo(
     context: Any,
     *,
+    repo: TeamStateRepository,
     state: Any,
     agent: Mapping[str, Any],
-) -> dict[str, Any] | None:
+    dispatch_id: str,
+    tasks: object,
+) -> tuple[Any, dict[str, Any] | None]:
     projects = getattr(state, "projects", None)
     if not isinstance(projects, Mapping):
-        return None
+        return state, None
 
     def _value(item: object, field_name: str) -> object:
         if isinstance(item, Mapping):
@@ -4116,8 +4133,9 @@ def _prepare_project_repo(
         git = candidate_git
         break
     if git is None:
-        return None
+        return state, None
 
+    agent_id = _required_text(agent.get("id"), "agent.id")
     session_id = _required_text(agent.get("session_id"), "session_id")
     repo_source = _required_text(_value(git, "host_repo_path"), "project.git.host_repo_path")
     clone_branch = _optional_text(_value(git, "base_branch"))
@@ -4150,8 +4168,27 @@ def _prepare_project_repo(
         clone_result=clone_result,
         base_branch=clone_branch,
     )
+    state, git_work_contexts = _create_project_repo_git_work_contexts(
+        repo,
+        state=state,
+        agent_id=agent_id,
+        session_id=session_id,
+        project_id=project_id,
+        project_repo=project_repo,
+        dispatch_id=dispatch_id,
+        tasks=tasks,
+        base_branch=clone_branch,
+    )
+    if git_work_contexts:
+        project_repo["git_work_contexts"] = git_work_contexts
+        project_repo["branch_contexts_by_task_id"] = {
+            _required_text(row.get("task_id"), "task_id"): row for row in git_work_contexts
+        }
+        if len(git_work_contexts) == 1:
+            project_repo["branch_context_id"] = git_work_contexts[0]["branch_context_id"]
+            project_repo["agent_branch"] = git_work_contexts[0]["agent_branch"]
     _mark_project_repo_prepared(context, session_id=session_id, project_repo=project_repo)
-    return project_repo
+    return state, project_repo
 
 
 def _project_repo_payload(
@@ -4179,6 +4216,95 @@ def _project_repo_payload(
     if base_branch is not None:
         payload["base_branch"] = base_branch
     return payload
+
+
+def _create_project_repo_git_work_contexts(
+    repo: TeamStateRepository,
+    *,
+    state: Any,
+    agent_id: str,
+    session_id: str,
+    project_id: str,
+    project_repo: Mapping[str, Any],
+    dispatch_id: str,
+    tasks: object,
+    base_branch: str | None,
+) -> tuple[Any, list[dict[str, Any]]]:
+    target_dir = _optional_text(project_repo.get("target_dir"))
+    if target_dir is None:
+        return state, []
+    rows: list[dict[str, Any]] = []
+    agent_branch = _project_repo_agent_branch(session_id)
+    admin = TeamAdminService(repo)
+    for task in _project_repo_context_tasks(
+        tasks,
+        project_id=project_id,
+        agent_id=agent_id,
+    ):
+        task_id = _required_text(task.get("id"), "task.id")
+        state, context_id = admin.create_git_work_context_with_id(
+            context_id=None,
+            agent_id=agent_id,
+            task_id=task_id,
+            agent_branch=agent_branch,
+            base_branch=base_branch,
+            dispatch_id=dispatch_id,
+            worktree_path=target_dir,
+            expected_revision=getattr(state, "revision", None),
+        )
+        context_model = state.git_work_contexts[context_id]
+        rows.append(_git_work_context_prompt_payload(context_model))
+    return state, rows
+
+
+def _project_repo_agent_branch(session_id: str) -> str:
+    suffix = _slug_id_part(session_id, fallback="session")
+    return validate_branch_name(f"agents/{session_id}/work-{suffix}")
+
+
+def _project_repo_context_tasks(
+    tasks: object,
+    *,
+    project_id: str,
+    agent_id: str,
+) -> list[Mapping[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    for task in _mapping_items(tasks):
+        task_id = _optional_text(task.get("id"))
+        if task_id is None or task_id in seen:
+            continue
+        if _optional_text(task.get("project_id")) != project_id:
+            continue
+        if _optional_text(task.get("owner_agent_id")) != agent_id:
+            continue
+        seen.add(task_id)
+        rows.append(task)
+    return rows
+
+
+def _git_work_context_prompt_payload(context: Any) -> dict[str, Any]:
+    payload = context.model_dump(mode="json") if hasattr(context, "model_dump") else dict(context)
+    context_id = _required_text(payload.get("id"), "git_work_context.id")
+    row: dict[str, Any] = {
+        "id": context_id,
+        "branch_context_id": context_id,
+    }
+    for key in (
+        "agent_id",
+        "task_id",
+        "agent_branch",
+        "base_branch",
+        "base_commit",
+        "commit_sha",
+        "dispatch_id",
+        "worktree_path",
+        "state",
+    ):
+        value = _optional_text(payload.get(key))
+        if value is not None:
+            row[key] = value
+    return row
 
 
 def _project_repo_prepare_record(
@@ -4759,7 +4885,7 @@ def _session_repository_for_manifest_updates(context: Any) -> Any | None:
 def _ordinary_team_tools_for_agent(agent: Mapping[str, Any]) -> list[str]:
     if _optional_text(agent.get("team_id")) is None:
         return []
-    return list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+    return [*ORDINARY_TEAM_MCP_TOOL_NAMES, *READ_TEAM_MCP_TOOL_NAMES]
 
 
 def _team_chat_mutation_allowed(message: object) -> bool:
@@ -5600,6 +5726,12 @@ def _filtered_team_state_payload(
         and value.get("owner_agent_id") in visible_agent_ids
     }
     visible_task_ids = set(filtered["tasks"])
+    filtered["git_work_contexts"] = {
+        key: value
+        for key, value in filtered.get("git_work_contexts", {}).items()
+        if value.get("agent_id") in visible_agent_ids
+        and value.get("task_id") in visible_task_ids
+    }
     filtered["cases"] = {
         key: {
             **value,

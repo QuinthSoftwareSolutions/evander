@@ -45,11 +45,12 @@ runcmd:
   - chown -R agent:agent /home/agent
 write_files:
   - path: /etc/evander/session.env
-    owner: root:root
-    permissions: "0644"
+    owner: root:agent
+    permissions: "0640"
     content: |
       EVANDER_GATEWAY_URL=__GATEWAY_URL__
       EVANDER_SESSION_ID=__SESSION_ID__
+      EVANDER_MCP_SESSION_TOKEN=__MCP_SESSION_TOKEN__
       HTTP_TARGET_RELAY_BASE_URL=__HTTP_TARGET_RELAY_BASE_URL__
       EVANDER_LLM_BASE_URL=__LLM_BASE_URL__
       EVANDER_ANTHROPIC_BASE_URL=__ANTHROPIC_BASE_URL__

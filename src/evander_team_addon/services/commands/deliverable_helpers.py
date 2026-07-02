@@ -54,6 +54,10 @@ from ..domain.deliverables import (
     _normalize_deliverable_verification_mapping,
     _superseded_deliverable_for_rework,
 )
+from ..domain.git_work_contexts import (
+    GitWorkContextValidationError,
+    bind_deliverable_git_refs_to_work_context,
+)
 from ..domain.project_status import _recalculate_project_status
 from ..domain.review import _review_profile_for_request
 from ..domain.work_due import _mark_agent_work_due
@@ -70,6 +74,7 @@ def _normalize_deliverable_submission_mapping(
         "task_id": _required_text(payload.get("task_id"), f"{field_name}.task_id"),
         "summary": _optional_text(payload.get("summary")) or "",
         "supersedes_deliverable_id": _optional_text(payload.get("supersedes_deliverable_id")),
+        "branch_context_id": _optional_text(payload.get("branch_context_id")),
         "artifact_paths": _string_list(
             payload.get("artifact_paths"),
             f"{field_name}.artifact_paths",
@@ -80,6 +85,7 @@ def _normalize_deliverable_submission_mapping(
         ),
         "artifact_space_ref": _optional_text(payload.get("artifact_space_ref")),
         "git_refs": {
+            "branch_context_id": _optional_text(git_refs.get("branch_context_id")),
             "agent_branch": _optional_text(git_refs.get("agent_branch")),
             "commit_sha": _optional_text(git_refs.get("commit_sha")),
         },
@@ -384,6 +390,7 @@ def _validate_command_deliverable_submission_pre_publication(
     task: AgentTask,
     deliverable: Mapping[str, Any],
     deliverable_id: str,
+    dispatch_id: str | None,
 ) -> None:
     if deliverable_id in state.deliverables:
         raise TeamCommandValidationError(
@@ -413,8 +420,27 @@ def _validate_command_deliverable_submission_pre_publication(
             producer_agent_id=agent.id,
             supersedes_deliverable_id=supersedes_deliverable_id,
         )
+        if not isinstance(deliverable, dict):
+            raise ValueError("deliverable must be mutable for Git context binding")
+        bind_deliverable_git_refs_to_work_context(
+            state,
+            agent_id=agent.id,
+            task_id=task.id,
+            deliverable=deliverable,
+            dispatch_id=dispatch_id,
+        )
         _deliverable_git_refs_from_payload(deliverable.get("git_refs"))
         _deliverable_verification_from_payload(deliverable.get("verification"))
+    except GitWorkContextValidationError as exc:
+        raise TeamCommandValidationError(
+            code=exc.code,
+            message=exc.message,
+            correction_context={
+                "deliverable_id": deliverable_id,
+                "task_id": task.id,
+                **exc.correction_context,
+            },
+        ) from None
     except ValueError as exc:
         raise TeamCommandValidationError(
             code="deliverable_validation_failed",

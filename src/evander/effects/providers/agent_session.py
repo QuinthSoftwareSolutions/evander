@@ -37,6 +37,7 @@ from evander.repositories.session_manifests import (
     as_session_manifest_repository,
 )
 from evander.session_expiry import ensure_session_not_expired
+from evander.session_auth import MCP_SESSION_TOKEN_QUERY_PARAM_NAMES
 
 from .base import EffectRuntimeContext
 from .vm_targeting import (
@@ -661,10 +662,16 @@ def container_session_anthropic_base_url(config: GatewayConfig, session_id: str)
     return f"{container_worker_guest_anthropic_base_url(config).rstrip('/')}/session/{session_id}"
 
 
-def container_session_gateway_url(config: GatewayConfig, session_id: str) -> str:
+def container_session_gateway_url(
+    config: GatewayConfig,
+    session_id: str,
+    *,
+    mcp_session_token: str | None = None,
+) -> str:
     return gateway_url_with_session_context(
         container_worker_guest_gateway_url(config),
         session_id=session_id,
+        mcp_session_token=mcp_session_token,
     )
 
 
@@ -674,10 +681,13 @@ def gateway_url_with_session_context(
     session_id: str,
     workflow_run_id: str | None = None,
     mcp_tool_approval_lease_id: str | None = None,
+    mcp_session_token: str | None = None,
 ) -> str:
     parts = urlsplit(base_gateway_url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query["session_id"] = session_id
+    if mcp_session_token:
+        query[MCP_SESSION_TOKEN_QUERY_PARAM_NAMES[0]] = mcp_session_token
     if workflow_run_id:
         query["workflow_run_id"] = workflow_run_id
     if mcp_tool_approval_lease_id:
@@ -696,6 +706,7 @@ def build_container_session_files(
     nuget: bool,
     playwright: bool,
     npm_registry_url: str | None = None,
+    mcp_session_token: str | None = None,
 ) -> list[dict[str, Any]]:
     resolved_agent_provider = normalize_optional_string(
         agent_provider
@@ -714,7 +725,11 @@ def build_container_session_files(
         resolved_npm_registry_url = container_worker_guest_npm_registry_url(config)
     session_openai_base_url = container_session_openai_base_url(config, session_id)
     session_anthropic_base_url = container_session_anthropic_base_url(config, session_id)
-    session_gateway_url = container_session_gateway_url(config, session_id)
+    session_gateway_url = container_session_gateway_url(
+        config,
+        session_id,
+        mcp_session_token=mcp_session_token,
+    )
     session_env_values = {
         "EVANDER_SESSION_ID": session_id,
         "AGENT_PROVIDER": resolved_agent_provider,
@@ -737,6 +752,8 @@ def build_container_session_files(
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         "NPM_CONFIG_REGISTRY": resolved_npm_registry_url,
     }
+    if mcp_session_token:
+        session_env_values["EVANDER_MCP_SESSION_TOKEN"] = mcp_session_token
     pip_trusted_host = _pip_trusted_host(pypi_index_url)
     if pip_trusted_host:
         session_env_values["PIP_TRUSTED_HOST"] = pip_trusted_host

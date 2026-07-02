@@ -12,7 +12,7 @@ import httpx
 from PIL import Image
 from starlette.testclient import TestClient
 
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.directory_config import DirectoryConfigStore
 from evander.events.internal import InternalEventBus, internal_event_store_path
@@ -1027,6 +1027,32 @@ def test_team_addon_state_payload_filters_chats_without_read_all(
     assert {alice_conversation.id, bob_conversation.id}.issubset(
         set(read_all_payload["conversations"])
     )
+
+
+def test_team_addon_filtered_state_treats_git_work_contexts_as_collection() -> None:
+    payload = {
+        "revision": 1,
+        "tasks": {"task": {"id": "task"}},
+        "git_work_contexts": {
+            "alpha-context": {"id": "alpha-context"},
+            "beta-context": {"id": "beta-context"},
+        },
+    }
+
+    without_contexts = team_addon_api._filter_state_payload(
+        dict(payload),
+        collections={"tasks"},
+        ids_by_collection={},
+    )
+    assert "tasks" in without_contexts
+    assert "git_work_contexts" not in without_contexts
+
+    scoped_contexts = team_addon_api._filter_state_payload(
+        dict(payload),
+        collections={"git_work_contexts"},
+        ids_by_collection={"git_work_contexts": {"alpha-context"}},
+    )
+    assert set(scoped_contexts["git_work_contexts"]) == {"alpha-context"}
 
 
 def test_team_addon_bootstrap_counts_only_current_operator_chats_without_read_all(

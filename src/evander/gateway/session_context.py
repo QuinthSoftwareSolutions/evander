@@ -9,9 +9,14 @@ from starlette.requests import Request
 from evander.gateway.request_context import (
     _request_from_context,
     _string_from_headers,
+    _string_from_query_params,
     _string_from_raw_query,
 )
 from evander.policy import PolicyError
+from evander.session_auth import (
+    MCP_SESSION_TOKEN_HEADER_NAMES,
+    MCP_SESSION_TOKEN_QUERY_PARAM_NAMES,
+)
 
 _SESSION_ID_CONTEXT_CONFLICT_MESSAGE = (
     "session_id is bound by the MCP connection; omit it or use the connected session"
@@ -63,6 +68,24 @@ def _ambient_session_id_from_context(
         _request_from_context(ctx),
         transport_session_map=transport_session_map,
     )
+
+
+def _mcp_session_token_from_request(request: Any | None) -> str | None:
+    if request is None:
+        return None
+    headers = getattr(request, "headers", None)
+    query_params = getattr(request, "query_params", None)
+    raw_query = str(getattr(getattr(request, "url", None), "query", "") or "").strip()
+    token = _string_from_query_params(query_params, *MCP_SESSION_TOKEN_QUERY_PARAM_NAMES)
+    if token is None:
+        token = _string_from_raw_query(raw_query, *MCP_SESSION_TOKEN_QUERY_PARAM_NAMES)
+    if token is None:
+        token = _string_from_headers(headers, *MCP_SESSION_TOKEN_HEADER_NAMES)
+    return token
+
+
+def _mcp_session_token_from_context(ctx: Any | None) -> str | None:
+    return _mcp_session_token_from_request(_request_from_context(ctx))
 
 
 def _resolve_bound_session_id(

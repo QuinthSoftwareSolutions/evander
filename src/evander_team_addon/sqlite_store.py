@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 19
+SQLITE_SCHEMA_VERSION = 20
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -918,6 +918,12 @@ class TeamStateSqliteStore:
                 _ensure_column(
                     connection,
                     table_name="team_deliverables",
+                    column_name="branch_context_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
                     column_name="supersedes_deliverable_id",
                     definition="TEXT",
                 )
@@ -1039,6 +1045,7 @@ class TeamStateSqliteStore:
             "release_packages": {},
             "ephemeral_assignments": {},
             "git_promotions": {},
+            "git_work_contexts": {},
             "stand_downs": {},
         }
         self._read_teams(connection, payload)
@@ -1063,6 +1070,7 @@ class TeamStateSqliteStore:
         self._read_release_packages(connection, payload)
         self._read_ephemeral_assignments(connection, payload)
         self._read_git_promotions(connection, payload)
+        self._read_git_work_contexts(connection, payload)
         return TeamState.model_validate(payload).model_dump(mode="json")
 
     def _write_state(self, connection: sqlite3.Connection, state: TeamState) -> None:
@@ -1090,6 +1098,7 @@ class TeamStateSqliteStore:
         self._write_release_packages(connection, payload["release_packages"])
         self._write_ephemeral_assignments(connection, payload["ephemeral_assignments"])
         self._write_git_promotions(connection, payload["git_promotions"])
+        self._write_git_work_contexts(connection, payload["git_work_contexts"])
         connection.executemany(
             """
             INSERT INTO team_state_metadata(key, value)
@@ -1853,6 +1862,7 @@ class TeamStateSqliteStore:
                 "state": row["state"],
                 "review_request_ids": reviews.get(row["id"], []),
                 "git_refs": {
+                    "branch_context_id": row["branch_context_id"],
                     "agent_branch": row["agent_branch"],
                     "review_branch": row["review_branch"],
                     "feature_branch": row["feature_branch"],
@@ -1879,12 +1889,12 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_deliverables(
-                    id, task_id, producer_agent_id, summary, state, agent_branch,
-                    review_branch, feature_branch, release_branch, commit_sha,
+                    id, task_id, producer_agent_id, summary, state, branch_context_id,
+                    agent_branch, review_branch, feature_branch, release_branch, commit_sha,
                     verification_json, supersedes_deliverable_id,
                     superseded_by_deliverable_id, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -1892,6 +1902,7 @@ class TeamStateSqliteStore:
                     deliverable["producer_agent_id"],
                     deliverable["summary"],
                     deliverable.get("state", "pending"),
+                    git_refs.get("branch_context_id"),
                     git_refs.get("agent_branch"),
                     git_refs.get("review_branch"),
                     git_refs.get("feature_branch"),
@@ -2546,6 +2557,55 @@ class TeamStateSqliteStore:
                 ),
             )
 
+    @staticmethod
+    def _read_git_work_contexts(
+        connection: sqlite3.Connection, payload: dict[str, Any]
+    ) -> None:
+        for row in connection.execute("SELECT * FROM team_git_work_contexts ORDER BY id"):
+            payload["git_work_contexts"][row["id"]] = {
+                "id": row["id"],
+                "agent_id": row["agent_id"],
+                "task_id": row["task_id"],
+                "dispatch_id": row["dispatch_id"],
+                "worktree_path": row["worktree_path"],
+                "base_branch": row["base_branch"],
+                "base_commit": row["base_commit"],
+                "agent_branch": row["agent_branch"],
+                "commit_sha": row["commit_sha"],
+                "state": row["state"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_git_work_contexts(
+        connection: sqlite3.Connection, contexts: dict[str, Any]
+    ) -> None:
+        for context in contexts.values():
+            connection.execute(
+                """
+                INSERT INTO team_git_work_contexts(
+                    id, agent_id, task_id, dispatch_id, worktree_path, base_branch,
+                    base_commit, agent_branch, commit_sha, state, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    context["id"],
+                    context["agent_id"],
+                    context["task_id"],
+                    context.get("dispatch_id"),
+                    context.get("worktree_path"),
+                    context.get("base_branch"),
+                    context.get("base_commit"),
+                    context["agent_branch"],
+                    context.get("commit_sha"),
+                    context.get("state", "active"),
+                    context["created_at"],
+                    context["updated_at"],
+                ),
+            )
+
 
 class TeamStateSqliteCommandTransaction:
     def __init__(
@@ -3046,6 +3106,7 @@ _STATE_TABLES = (
     "team_release_git_promotions",
     "team_ephemeral_assignment_artifacts",
     "team_ephemeral_assignment_allowed_tools",
+    "team_git_work_contexts",
     "team_git_promotions",
     "team_ephemeral_assignments",
     "team_release_packages",
@@ -3348,6 +3409,7 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     producer_agent_id TEXT NOT NULL,
     summary TEXT NOT NULL,
     state TEXT NOT NULL,
+    branch_context_id TEXT,
     agent_branch TEXT,
     review_branch TEXT,
     feature_branch TEXT,
@@ -3623,6 +3685,27 @@ CREATE INDEX IF NOT EXISTS idx_team_git_promotions_deliverable
     ON team_git_promotions(deliverable_id, promotion_kind, state, id);
 CREATE INDEX IF NOT EXISTS idx_team_git_promotions_release
     ON team_git_promotions(release_package_id, promotion_kind, state, id);
+
+CREATE TABLE IF NOT EXISTS team_git_work_contexts (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    dispatch_id TEXT,
+    worktree_path TEXT,
+    base_branch TEXT,
+    base_commit TEXT,
+    agent_branch TEXT NOT NULL,
+    commit_sha TEXT,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_git_work_contexts_agent_task
+    ON team_git_work_contexts(agent_id, task_id, state, id);
+CREATE INDEX IF NOT EXISTS idx_team_git_work_contexts_dispatch
+    ON team_git_work_contexts(dispatch_id, state, id);
+CREATE INDEX IF NOT EXISTS idx_team_git_work_contexts_branch
+    ON team_git_work_contexts(agent_branch, state, id);
 
 CREATE TABLE IF NOT EXISTS team_dispatch_activity (
     id TEXT PRIMARY KEY,

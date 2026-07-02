@@ -30,7 +30,7 @@ test("workflow editor exposes workflow pack management actions", () => {
   assert.match(source, /const workflowPackModalTarget = workflowPackModalTargetReference/);
   assert.match(source, /expected_revision:\s*[\s\S]*editingWorkflowPack\?\.revision/);
   assert.match(source, /onClick=\{\(\) => openEditWorkflowPackModal\(selectedWorkflowPack\)\}/);
-  assert.match(source, /<SettingsIcon \/>/);
+  assert.match(source, /<EditIcon \/>/);
   assert.match(source, /<PlusIcon \/>/);
   assert.match(source, /const canRemoveEditingWorkflowPack = Boolean\(editingWorkflowPack && workflowPackOptions\.length > 1\)/);
   assert.match(source, /const removed = await removeSelectedWorkflowPack\(editingWorkflowPack\)/);

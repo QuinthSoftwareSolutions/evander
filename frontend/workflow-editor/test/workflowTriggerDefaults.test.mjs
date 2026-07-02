@@ -50,7 +50,7 @@ test("create panel does not default-expand the triggers group", () => {
     '<summary className="create-group-summary">',
   );
 
-  assert.match(createGroupBranch, /open=\{hasTutorialAllowedNodeType\}/);
+  assert.match(createGroupBranch, /open=\{compact \|\| hasTutorialAllowedNodeType\}/);
   assert.doesNotMatch(createGroupBranch, /group\.kind === "trigger"/);
 });
 
@@ -60,6 +60,6 @@ test("create panel subgroups do not default-expand", () => {
     '<summary className="create-subgroup-summary">',
   );
 
-  assert.match(createSubgroupBranch, /open=\{subgroupHasTutorialAllowedNodeType \|\| undefined\}/);
-  assert.doesNotMatch(createSubgroupBranch, /open(?:\s|>)/);
+  assert.match(createSubgroupBranch, /open=\{compact \|\| subgroupHasTutorialAllowedNodeType \|\| undefined\}/);
+  assert.doesNotMatch(createSubgroupBranch, /subgroup\.key === "trigger"/);
 });

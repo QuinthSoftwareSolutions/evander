@@ -23,6 +23,7 @@ from evander_team_addon.models import (
     DeliverableVerification,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
+    GitWorkContext,
     GitPromotionRecord,
     GovernanceAgendaItemType,
     GovernanceAgendaItemState,
@@ -132,6 +133,32 @@ def _team_ephemeral_service(repo: TeamStateRepository) -> TeamEphemeralService:
 
 def _team_git_release_service(repo: TeamStateRepository) -> TeamGitReleaseService:
     return TeamGitReleaseService(repo)
+
+
+def _seed_git_work_context(
+    repo: TeamStateRepository,
+    *,
+    context_id: str = "ctx-task",
+    agent_id: str = "backend",
+    task_id: str = "task",
+    dispatch_id: str | None = "dispatch-slice7",
+    agent_branch: str = "agents/session-backend/task",
+    commit_sha: str | None = "abc123",
+) -> None:
+    def _mutate(state):
+        state.git_work_contexts[context_id] = GitWorkContext(
+            id=context_id,
+            agent_id=agent_id,
+            task_id=task_id,
+            dispatch_id=dispatch_id,
+            worktree_path=f"/worktrees/{context_id}",
+            base_branch="main",
+            base_commit="base123",
+            agent_branch=agent_branch,
+            commit_sha=commit_sha,
+        )
+
+    repo.update(_mutate)
 
 
 def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
@@ -1465,6 +1492,7 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-slice7")
+    _seed_git_work_context(repo)
     published: list[dict[str, object]] = []
 
     def publish(**kwargs: object) -> dict[str, object]:
@@ -1481,7 +1509,8 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         task_id="task",
         summary="Backend work is ready.",
         artifact_paths=["reports/report.txt"],
-        git_refs={"agent_branch": "agents/session-backend/work", "commit_sha": "abc123"},
+        branch_context_id="ctx-task",
+        git_refs={"agent_branch": "agents/session-backend/task", "commit_sha": "abc123"},
         verification={
             "status": "not_run",
             "summary": "pytest is unavailable in this VM.",
@@ -1495,7 +1524,8 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         task_id="task",
         summary="Backend work is ready.",
         artifact_paths=["reports/report.txt"],
-        git_refs={"agent_branch": "agents/session-backend/work", "commit_sha": "abc123"},
+        branch_context_id="ctx-task",
+        git_refs={"agent_branch": "agents/session-backend/task", "commit_sha": "abc123"},
         verification={
             "status": "not_run",
             "summary": "pytest is unavailable in this VM.",
@@ -1511,6 +1541,11 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     assert state.deliverables["deliverable-1"].artifact_refs == [
         "artifact-space:/teams/team/projects/project/deliverables/deliverable-1"
     ]
+    assert state.deliverables["deliverable-1"].git_refs.branch_context_id == "ctx-task"
+    assert state.deliverables["deliverable-1"].git_refs.agent_branch == (
+        "agents/session-backend/task"
+    )
+    assert state.deliverables["deliverable-1"].git_refs.commit_sha == "abc123"
     assert state.deliverables["deliverable-1"].verification == DeliverableVerification(
         status="not_run",
         summary="pytest is unavailable in this VM.",
@@ -1539,6 +1574,100 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
         "summary": "pytest is unavailable in this VM.",
         "evidence_refs": [],
     }
+
+
+def test_admin_service_creates_git_work_context_for_task_owner(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+
+    state, context_id = _team_admin_service(repo).create_git_work_context_with_id(
+        context_id=None,
+        agent_id="backend",
+        task_id="task",
+        dispatch_id="dispatch-slice7",
+        worktree_path="/worktrees/backend-task",
+        base_branch="main",
+        base_commit="base123",
+        agent_branch="agents/session-backend/task",
+        commit_sha="abc123",
+    )
+
+    context = state.git_work_contexts[context_id]
+    assert context.agent_id == "backend"
+    assert context.task_id == "task"
+    assert context.agent_branch == "agents/session-backend/task"
+    assert repo.read().git_work_contexts[context_id].worktree_path == (
+        "/worktrees/backend-task"
+    )
+
+
+def test_submit_deliverable_command_rejects_git_refs_without_context(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-slice7")
+
+    state, result = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-branchless",
+        task_id="task",
+        summary="Backend work is ready.",
+        git_refs={"agent_branch": "agents/session-backend/task"},
+        request_id="request-submit-missing-context",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "branch_context_required"
+    assert state.deliverables == {}
+    assert repo.read().deliverables == {}
+
+
+def test_submit_deliverable_command_rejects_mismatched_git_branch_context(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-slice7")
+    _seed_git_work_context(repo, agent_branch="agents/session-backend/task")
+
+    state, result = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-wrong-branch",
+        task_id="task",
+        summary="Backend work is ready.",
+        branch_context_id="ctx-task",
+        git_refs={"agent_branch": "agents/session-backend/other-task"},
+        request_id="request-submit-mismatched-context",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "agent_branch_mismatch"
+    assert state.deliverables == {}
+    assert repo.read().deliverables == {}
+
+
+def test_submit_deliverable_command_allows_artifact_only_without_git_context(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-slice7")
+
+    state, result = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-artifact",
+        task_id="task",
+        summary="Operations report is ready.",
+        artifact_refs=["artifact-space:/teams/team/reports/report-1"],
+        request_id="request-submit-artifact-only",
+    )
+
+    assert result["success"] is True
+    deliverable = state.deliverables["deliverable-artifact"]
+    assert deliverable.git_refs.agent_branch is None
+    assert deliverable.git_refs.branch_context_id is None
+    assert deliverable.artifact_refs == ["artifact-space:/teams/team/reports/report-1"]
 
 
 def test_submit_deliverable_command_publish_failure_does_not_mutate_state(
@@ -8589,6 +8718,12 @@ def test_apply_agent_action_git_review_promotion_requires_git_config(tmp_path: P
 def test_apply_agent_action_records_deliverable_git_refs(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
+    _seed_git_work_context(
+        repo,
+        dispatch_id=None,
+        agent_branch="agents/session-backend/task",
+        commit_sha="deadbeef",
+    )
 
     state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
@@ -8598,8 +8733,9 @@ def test_apply_agent_action_records_deliverable_git_refs(tmp_path: Path) -> None
                     "id": "deliverable",
                     "task_id": "task",
                     "summary": "Ready for review.",
+                    "branch_context_id": "ctx-task",
                     "git_refs": {
-                        "agent_branch": "agents/session-backend/work",
+                        "agent_branch": "agents/session-backend/task",
                         "commit_sha": "deadbeef",
                     },
                 }
@@ -8609,16 +8745,23 @@ def test_apply_agent_action_records_deliverable_git_refs(tmp_path: Path) -> None
 
     assert result["success"] is True
     refs = state.deliverables["deliverable"].git_refs
-    assert refs.agent_branch == "agents/session-backend/work"
+    assert refs.branch_context_id == "ctx-task"
+    assert refs.agent_branch == "agents/session-backend/task"
     assert refs.commit_sha == "deadbeef"
 
 
-def test_apply_agent_action_persistent_git_review_promotion_from_commit(
+def test_apply_agent_action_persistent_git_review_promotion_from_context_branch(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
     _seed_task(repo, task_id="task")
+    _seed_git_work_context(
+        repo,
+        dispatch_id=None,
+        agent_branch="agents/session-backend/task",
+        commit_sha="deadbeef",
+    )
     _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
@@ -8627,6 +8770,7 @@ def test_apply_agent_action_persistent_git_review_promotion_from_commit(
                     "id": "deliverable",
                     "task_id": "task",
                     "summary": "Ready for review.",
+                    "branch_context_id": "ctx-task",
                     "git_refs": {"commit_sha": "deadbeef"},
                 }
             ],
@@ -8646,7 +8790,7 @@ def test_apply_agent_action_persistent_git_review_promotion_from_commit(
     assert promotion.promotion_kind == "review"
     assert promotion.deliverable_id == "deliverable"
     assert promotion.task_id == "task"
-    assert promotion.source_branch == "commit/deadbeef"
+    assert promotion.source_branch == "agents/session-backend/task"
     assert promotion.target_branch == "team/team/reviews/deliverable"
     assert promotion.commit_sha == "deadbeef"
     event = result["events"][0]
@@ -8682,6 +8826,12 @@ def test_apply_agent_action_persistent_git_review_promotion_checks_authority(
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
     _seed_task(repo, task_id="task")
+    _seed_git_work_context(
+        repo,
+        dispatch_id=None,
+        agent_branch="agents/session-backend/task",
+        commit_sha="deadbeef",
+    )
     _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
@@ -8690,6 +8840,7 @@ def test_apply_agent_action_persistent_git_review_promotion_checks_authority(
                     "id": "deliverable",
                     "task_id": "task",
                     "summary": "Ready for review.",
+                    "branch_context_id": "ctx-task",
                     "git_refs": {"commit_sha": "deadbeef"},
                 }
             ],

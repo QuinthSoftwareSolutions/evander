@@ -266,6 +266,16 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
       return;
     }
 
+    if (pathname.startsWith("/api/admin/branding/assets/")) {
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
+
     if (pathname === "/api/admin/deployment-status") {
       await route.fulfill(
         jsonResponse({
@@ -284,6 +294,17 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
     if (pathname === "/api/admin/state") {
       assert.equal(url.searchParams.get("directory_path"), "root");
       await route.fulfill(jsonResponse(adminStateResponse));
+      return;
+    }
+
+    if (pathname === "/api/admin/user-notifications") {
+      await route.fulfill(
+        jsonResponse({
+          user_id: "admin",
+          unread_count: 0,
+          notifications: [],
+        }),
+      );
       return;
     }
 

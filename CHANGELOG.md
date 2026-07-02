@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-07-02 - Team Add-on Read Tools And Compact Context
+
+- Added Team MCP read tools for visible tasks, inbox, cases, deliverables,
+  reviews, releases, agents, projects, and runtime attention so agents can
+  fetch detail without receiving the full Team state in every wake prompt.
+- Added a Team MCP identity read tool that returns the caller's full role
+  description, permissions, and named hierarchy without exposing unrelated Team
+  state.
+- Scoped Team agent read-tool visibility by team rather than project and kept
+  direct superior identity available to the caller's own identity read.
+- Added per-session MCP proof tokens for newly provisioned sessions so
+  `session_id` alone cannot impersonate tokenized agents, and kept other Team
+  agents' backing session ids out of read-tool details.
+- Kept the waking agent's full role description in compact Team wake prompts
+  while leaving other identity detail available through the identity read tool.
+- Reduced Team wake prompt context to current and salient compact summaries,
+  preserving detailed state behind policy-gated read tools.
+
+## 2026-07-02 - Add-on Runtime Workflow Packs
+
+- Made Admin Web add-on enablement materialize advertised runtime workflow
+  packs, list them in the trigger-orchestrator workflow pack config, and expose
+  an explicit refresh action that overwrites existing operator pack files only
+  after confirmation.
+- Blocked runtime workflow pack refreshes when the trigger-orchestrator add-on
+  loader would not load the add-on, avoiding active workflow packs with
+  unavailable add-on providers.
+- Removed disabled add-ons' runtime workflow pack references from
+  trigger-orchestrator config while leaving materialized pack files intact.
+
+## 2026-07-02 - Team Git Work Contexts
+
+- Added optional Team Git work contexts so Git deliverables must bind to a
+  server-owned branch context, while artifact-only and non-coding deliverables
+  continue to work without Git metadata.
+- Created Git work contexts during project-repo wakes, surfaced their
+  `branch_context_id` values in wake outputs, prompt context, and task read
+  tools, and scoped state/query output so unrelated contexts are not exposed.
+- Tightened Git deliverable binding so dispatch-scoped contexts must match the
+  active dispatch even through the legacy action path.
+
 ## 2026-07-01 - Codex Optional Feature Compatibility
 
 - Made Codex `non_prefixed_mcp_tool_names` enablement conditional on the

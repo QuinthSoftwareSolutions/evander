@@ -35,6 +35,11 @@ def _correction_hints(error: str) -> list[str]:
             "For Git-only deliverables, omit artifact_paths; otherwise list staged "
             "paths under /artifacts."
         )
+    if "branch_context" in normalized or "agent_branch" in normalized:
+        hints.append(
+            "Git deliverables must use the runtime-provided branch_context_id; "
+            "do not invent or reuse a branch from another task worktree."
+        )
     if "supersedes_deliverable_id" in normalized:
         hints.append(
             "When revising a rejected deliverable, set supersedes_deliverable_id to "

@@ -18,6 +18,7 @@ from evander.admin.services.vm_agent.common import (
     resolve_container_worker_image_selector,
     resolve_libvirt_vm_template_selector,
 )
+from evander.session_auth import ensure_session_mcp_auth_token
 
 
 class VmAgentCreateRequestMixin:
@@ -307,6 +308,7 @@ class VmAgentCreateRequestMixin:
                 "metadata": metadata,
             }
         )
+        manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
         session_record = backend.prepare_session(
             session_id=session_id,
             metadata={
@@ -341,6 +343,7 @@ class VmAgentCreateRequestMixin:
                     dotnet=bool(payload.get("dotnet", False)),
                     nuget=bool(payload.get("nuget", False)),
                     playwright=bool(payload.get("playwright", False)),
+                    mcp_session_token=mcp_session_token,
                 ),
                 *codex_skill_files,
             ],

@@ -19,6 +19,16 @@ export type AdminAddonLoaderConfig = {
   enabled_addon_ids: string[] | null;
 };
 
+export type AdminAddonRuntimeWorkflowPack = {
+  source: string;
+  reference: string | null;
+  path: string | null;
+  exists: boolean;
+  configured: boolean;
+  refresh_available: boolean;
+  error: string | null;
+};
+
 export type AdminAddonStatus = {
   candidate_key: string;
   addon_id: string | null;
@@ -38,6 +48,7 @@ export type AdminAddonStatus = {
   has_workflow_providers: boolean;
   workflow_node_types: string[];
   referenced_workflow_node_types: string[];
+  runtime_workflow_pack?: AdminAddonRuntimeWorkflowPack | null;
   load_error: string | null;
   required_restart_services: string[];
 };

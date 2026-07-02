@@ -13524,7 +13524,11 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     assert manifest is not None
     assert manifest.vm_id == "lab-vm"
     assert manifest.directory_path == team_path
-    assert manifest.metadata == {
+    metadata = dict(manifest.metadata)
+    mcp_session_auth = metadata.pop("mcp_session_auth")
+    assert setup_env["EVANDER_MCP_SESSION_TOKEN"] == mcp_session_auth["token"]
+    assert mcp_session_auth["token_sha256"]
+    assert metadata == {
         "model_provider_mode": "local_openai",
         "workflow": {"state": "active"},
         "labels": {

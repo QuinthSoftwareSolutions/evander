@@ -10649,6 +10649,9 @@ export default function App() {
     if (operation === "update_metadata") return "Metadata";
     if (operation === "remove") return "Removed";
     if (operation === "save") return "Saved";
+    if (operation === "runtime_pack_create") return "Runtime pack created";
+    if (operation === "runtime_pack_configure") return "Runtime pack listed";
+    if (operation === "runtime_pack_refresh") return "Runtime pack refreshed";
     return operation;
   }
 

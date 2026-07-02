@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import build_admin_runtime
 from evander.config import GatewayConfig
 from evander.artifact_spaces import ArtifactSpaceStore
 from evander.events.internal import InternalEventBus, internal_event_store_path
@@ -23,6 +23,7 @@ from evander.workflow.runtime_config import load_trigger_orchestrator_worker_glo
 from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
+    READ_TEAM_MCP_TOOL_NAMES,
     TEAM_CREATE_CASE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
@@ -40,6 +41,7 @@ from evander_team_addon.models import (
     Deliverable,
     EphemeralAgentPolicy,
     EphemeralAssignment,
+    GitWorkContext,
     GitPromotionRecord,
     PersistentAgent,
     Project,
@@ -108,6 +110,11 @@ from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 from evander_team_addon.services.commands import TeamEphemeralCommandService
 from evander_team_addon.workflow_packs import team_runtime_v1
+
+ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES = (
+    *ORDINARY_TEAM_MCP_TOOL_NAMES,
+    *READ_TEAM_MCP_TOOL_NAMES,
+)
 
 
 def _command_service(repo: TeamStateRepository) -> TeamEphemeralCommandService:
@@ -262,6 +269,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "type": "array"
     }
     assert document.output_schemas["team-wake-due-agents"]["failed_project_repo_preparations"] == {
+        "type": "array"
+    }
+    assert document.output_schemas["team-wake-due-agents"]["git_work_contexts"] == {
         "type": "array"
     }
     assert document.output_schemas["team-wake-due-agents"]["review_artifact_imports"] == {
@@ -497,6 +507,69 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         expected_revision=4,
     )
     return repo
+
+
+def _seed_git_work_context(
+    repo: TeamStateRepository,
+    *,
+    context_id: str = "ctx-task",
+    agent_branch: str = "agents/session-backend/review",
+    commit_sha: str | None = "abc123",
+    dispatch_id: str | None = None,
+) -> None:
+    def _mutate(state: TeamState) -> TeamState:
+        state.git_work_contexts[context_id] = GitWorkContext(
+            id=context_id,
+            agent_id="backend",
+            task_id="task",
+            base_branch="main",
+            base_commit="base123",
+            agent_branch=agent_branch,
+            commit_sha=commit_sha,
+            dispatch_id=dispatch_id,
+        )
+        return state
+
+    repo.update(_mutate)
+
+
+def test_agent_action_uses_active_dispatch_for_git_context_binding(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-other-dispatch",
+        agent_branch="agents/session-backend/work-session-backend",
+        commit_sha=None,
+        dispatch_id="dispatch-other",
+    )
+
+    def _set_runtime(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            active_dispatch_id="dispatch-active",
+        )
+        return state
+
+    repo.update(_set_runtime)
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        session_id="session-backend",
+        action={
+            "deliverables": [
+                {
+                    "id": "deliverable-wrong-context",
+                    "task_id": "task",
+                    "summary": "Ready.",
+                    "branch_context_id": "ctx-other-dispatch",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert "belongs to dispatch dispatch-other, not dispatch-active" in result["errors"][0]
+    assert "deliverable-wrong-context" not in state.deliverables
 
 
 def _add_luke_reviewer(
@@ -1117,14 +1190,14 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "schema_version" not in guidance
     assert result["dispatches"][0]["team_mcp_tools"] == {
         "session_id": "session-backend",
-        "requested_tools": list(ORDINARY_TEAM_MCP_TOOL_NAMES),
+        "requested_tools": list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES),
         "already_allowed_tools": [],
-        "granted_tools": list(ORDINARY_TEAM_MCP_TOOL_NAMES),
+        "granted_tools": list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES),
         "removed_tools": [],
         "error": None,
     }
     assert session_store.sessions["session-backend"].allowed_tools == list(
-        ORDINARY_TEAM_MCP_TOOL_NAMES
+        ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES
     )
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
@@ -1164,6 +1237,8 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "do not have create_root_task" in prompt
     assert "You may NOT create top-level tasks" in prompt
     assert "Every team_create_task or team_create_tasks call must set parent_task_id" in prompt
+    assert "Identity detail: your full role_description is included" in prompt
+    assert "Use team_get_my_identity" in prompt
     assert "A previous Team operation had validation errors" not in prompt
     for field_name in (
         "dependency_status",
@@ -1237,11 +1312,11 @@ def test_wake_due_agents_provider_preserves_active_governance_tools(
     assert result["leased_count"] == 1
     assert result["dispatches"][0]["agent_id"] == "backend"
     team_tools = result["dispatches"][0]["team_mcp_tools"]
-    assert team_tools["requested_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
-    assert team_tools["granted_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+    assert team_tools["requested_tools"] == list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES)
+    assert team_tools["granted_tools"] == list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES)
     assert team_tools["removed_tools"] == []
     assert session_store.sessions["session-backend"].allowed_tools == [
-        *ORDINARY_TEAM_MCP_TOOL_NAMES,
+        *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES,
         *GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ]
 
@@ -1912,15 +1987,15 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
     assert chat_dispatch["message_id"] == message.id
     assert chat_dispatch["team_chat_mcp_tools"] == {
         "session_id": "session-backend",
-        "requested_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_MCP_TOOL_NAMES],
+        "requested_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES],
         "already_allowed_tools": [],
-        "granted_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_MCP_TOOL_NAMES],
+        "granted_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES],
         "removed_tools": [],
         "error": None,
     }
     assert session_store.sessions["session-backend"].allowed_tools == [
         TEAM_REPLY_TO_CHAT_TOOL,
-        *ORDINARY_TEAM_MCP_TOOL_NAMES,
+        *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES,
     ]
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == dispatch_id
@@ -2264,6 +2339,31 @@ def test_build_prompt_includes_subordinate_role_context(tmp_path: Path) -> None:
     assert "Reviewer roles should generally receive team_request_review calls" in prompt
 
 
+def test_build_prompt_includes_full_waking_agent_role_description(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    full_description = (
+        "Own the backend implementation role boundary. "
+        + ("Detailed role responsibility. " * 20)
+        + "UNTRUNCATED_ROLE_DESCRIPTION_SENTINEL"
+    )
+    _team_admin_service(repo).update_role(
+        role_id="project__backend",
+        description=full_description,
+        set_description=True,
+        expected_revision=repo.read().revision,
+    )
+
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+    prompt = _build_prompt(lease)
+    context = _team_context_from_prompt(prompt)
+
+    assert context["agent"]["role_description"] == full_description
+    assert "UNTRUNCATED_ROLE_DESCRIPTION_SENTINEL" in prompt
+
+
 def test_build_prompt_includes_release_package_recovery_context(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
 
@@ -2319,6 +2419,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
 ) -> None:
     repo = _seed_team(tmp_path)
     _add_luke_reviewer(repo)
+    _seed_git_work_context(repo)
     state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
@@ -2328,6 +2429,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
                     "task_id": "task",
                     "summary": "Backend slice ready for review.",
                     "artifact_refs": ["artifact-space:/teams/team/projects/project/backend.tar.gz"],
+                    "branch_context_id": "ctx-task",
                     "git_refs": {
                         "agent_branch": "agents/session-backend/review",
                         "commit_sha": "abc123",
@@ -2396,6 +2498,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
         "artifact-space:/teams/team/projects/project/backend.tar.gz"
     ]
     assert deliverables["deliverable-stalled"]["git_refs"] == {
+        "branch_context_id": "ctx-task",
         "agent_branch": "agents/session-backend/review",
         "commit_sha": "abc123",
     }
@@ -2423,6 +2526,11 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
 ) -> None:
     repo = _seed_team(tmp_path)
     _add_luke_reviewer(repo)
+    _seed_git_work_context(
+        repo,
+        agent_branch="agents/session-backend/feature",
+        commit_sha="feedface",
+    )
     state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
@@ -2431,6 +2539,7 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
                     "id": "deliverable-feature",
                     "task_id": "task",
                     "summary": "Feature branch is ready for release review.",
+                    "branch_context_id": "ctx-task",
                     "git_refs": {
                         "feature_branch": "team/team/features/task-backend",
                         "commit_sha": "feedface",
@@ -2468,6 +2577,8 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
     deliverables = {item["id"]: item for item in fallback_summary["deliverables"]}
     assert deliverables["deliverable-feature"]["state"] == "pending"
     assert deliverables["deliverable-feature"]["git_refs"] == {
+        "branch_context_id": "ctx-task",
+        "agent_branch": "agents/session-backend/feature",
         "feature_branch": "team/team/features/task-backend",
         "commit_sha": "feedface",
     }
@@ -3518,6 +3629,22 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     project_repo = result["dispatches"][0]["project_repo"]
     assert project_repo["target_dir"] == "/home/agent/Truman"
     assert project_repo["base_branch"] == "main"
+    assert project_repo["branch_context_id"]
+    assert project_repo["agent_branch"] == "agents/session-backend/work-session-backend"
+    git_context = project_repo["git_work_contexts"][0]
+    assert git_context == {
+        "id": project_repo["branch_context_id"],
+        "branch_context_id": project_repo["branch_context_id"],
+        "agent_id": "backend",
+        "task_id": "task",
+        "agent_branch": "agents/session-backend/work-session-backend",
+        "base_branch": "main",
+        "dispatch_id": result["dispatches"][0]["dispatch_id"],
+        "worktree_path": "/home/agent/Truman",
+        "state": "active",
+    }
+    assert project_repo["branch_contexts_by_task_id"] == {"task": git_context}
+    assert result["git_work_contexts"] == [git_context]
     assert result["prepared_project_repos"] == [
         {
             "agent_id": "backend",
@@ -3531,10 +3658,18 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert result["failed_project_repo_preparations"] == []
     prompt = str(resumer.calls[0]["prompt"])
     assert '"project_repo"' in prompt
+    assert project_repo["branch_context_id"] in prompt
+    assert "agents/session-backend/work-session-backend" in prompt
     assert "/home/agent/Truman" in prompt
     assert "The project host checkout is not mounted in the guest" in prompt
+    assert "project_repo.git_work_contexts" in prompt
     assert session_store.calls[1]["metadata"]["team_addon"]["project_repo"] == project_repo
     assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
+    reread = TeamStateRepository(tmp_path).read()
+    assert set(reread.git_work_contexts) == {project_repo["branch_context_id"]}
+    assert reread.git_work_contexts[project_repo["branch_context_id"]].dispatch_id == (
+        result["dispatches"][0]["dispatch_id"]
+    )
 
 
 def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
@@ -3645,7 +3780,7 @@ def test_wake_due_agents_provider_ignores_stale_action_contract_metadata(
     assert result["success"] is True
     assert "action_contract" not in result["dispatches"][0]
     assert result["dispatches"][0]["team_mcp_tools"]["requested_tools"] == list(
-        ORDINARY_TEAM_MCP_TOOL_NAMES
+        ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES
     )
     assert file_copier.calls == []
     assert repo.read().agent_runtimes["backend"].active_dispatch_id is not None
@@ -3700,6 +3835,10 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert "a superior may set state: finished on a subordinate non-terminal task" in str(
         copied_file["content"]
     )
+    assert "your own full role_description is included in the wake prompt" in str(
+        copied_file["content"]
+    )
+    assert "Use team_get_my_identity when exact identity" in str(copied_file["content"])
     assert (
         session_store.calls[0]["metadata"]["team_addon"]["agent_guidance"]["guidance_version"]
         == TEAM_AGENT_GUIDANCE_VERSION
@@ -4837,6 +4976,10 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         "alpha-promotion",
         "alpha-release-promotion",
     }
+    assert set(project_state["git_work_contexts"]) == {"alpha-context"}
+    assert project_state["git_work_contexts"]["alpha-context"]["worktree_path"] == (
+        "/worktrees/alpha"
+    )
     assert project_state["release_packages"]["alpha-release"]["git_promotion_record_ids"] == [
         "alpha-release-promotion"
     ]
@@ -4947,6 +5090,10 @@ def test_team_state_query_filters_scoped_dependent_records(tmp_path: Path) -> No
         "alpha-promotion",
         "alpha-release-promotion",
     }
+    assert set(agent_state["git_work_contexts"]) == {"alpha-context"}
+    assert agent_state["git_work_contexts"]["alpha-context"]["agent_branch"] == (
+        "agents/session-alpha-dev/work-session-alpha-dev"
+    )
     assert agent_state["release_packages"]["alpha-release"]["git_promotion_record_ids"] == [
         "alpha-release-promotion"
     ]
@@ -5636,6 +5783,26 @@ def _multi_team_state() -> TeamState:
                 source_branch="team/beta/features/beta-task",
                 target_branch="team/beta/releases/beta-release",
                 promotion_kind="release",
+            ),
+        },
+        git_work_contexts={
+            "alpha-context": GitWorkContext(
+                id="alpha-context",
+                agent_id="alpha-dev",
+                task_id="alpha-task",
+                dispatch_id="alpha-dispatch",
+                agent_branch="agents/session-alpha-dev/work-session-alpha-dev",
+                base_branch="main",
+                worktree_path="/worktrees/alpha",
+            ),
+            "beta-context": GitWorkContext(
+                id="beta-context",
+                agent_id="beta-dev",
+                task_id="beta-task",
+                dispatch_id="beta-dispatch",
+                agent_branch="agents/session-beta-dev/work-session-beta-dev",
+                base_branch="main",
+                worktree_path="/worktrees/beta",
             ),
         },
         ephemeral_assignments={

@@ -26,7 +26,10 @@ test("regular workflow document patches preserve the current canvas viewport", (
     "function updateSelectedTriggerEnabled(",
   );
 
-  assert.match(applyBranch, /options: \{ autoFit\?: boolean \} = \{\}/);
+  assert.match(
+    applyBranch,
+    /options: \{ autoFit\?: boolean; markClean\?: boolean; nodeEditOrigins\?: Record<string, string> \} = \{\}/,
+  );
   assert.match(applyBranch, /if \(options\.autoFit\) \{\s+hasAutoFitRef\.current = false;\s+\}/);
   assert.doesNotMatch(patchBranch, /autoFit: true/);
   assert.doesNotMatch(saveBranch, /autoFit: true/);
