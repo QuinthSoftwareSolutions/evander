@@ -1009,6 +1009,7 @@ def _register_slice7_tools(
         artifact_paths: list[str] | None = None,
         artifact_refs: list[str] | None = None,
         artifact_space_ref: str | None = None,
+        branch_context_id: str | None = None,
         git_refs: dict[str, Any] | None = None,
         verification: dict[str, Any] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
@@ -1030,6 +1031,7 @@ def _register_slice7_tools(
                 artifact_paths=artifact_paths,
                 artifact_refs=artifact_refs,
                 artifact_space_ref=artifact_space_ref,
+                branch_context_id=branch_context_id,
                 git_refs=git_refs,
                 verification=verification,
                 request_id=request_id,
@@ -1049,9 +1051,11 @@ def _register_slice7_tools(
             "Submit a deliverable for the caller's owned task. Publishes any "
             "artifact_paths from /artifacts before recording state. Optional "
             "verification records status passed, failed, partial, not_run, or "
-            "unknown with a summary. git_refs are provenance only; call "
-            "team_publish_review_branch separately only when a durable review "
-            "branch is needed. Requires task_id, summary, and request_id."
+            "unknown with a summary. Git deliverables must include "
+            "branch_context_id; git_refs are provenance only and must match that "
+            "context. Call team_publish_review_branch separately only when a "
+            "durable review branch is needed. Requires task_id, summary, and "
+            "request_id."
         ),
     )
 
@@ -1090,8 +1094,9 @@ def _register_slice7_tools(
             "Submit one deliverable and explicit review requests atomically. "
             "Suppresses the normal superior deliverable notice and requires "
             "deliverable, reviews, and request_id. The deliverable may include "
-            "verification status and git_refs; git_refs do not publish a review "
-            "branch by themselves."
+            "verification status and git_refs. Git deliverables must include "
+            "deliverable.branch_context_id; git_refs do not publish a review "
+            "branch by themselves and must match that context."
         ),
     )
 

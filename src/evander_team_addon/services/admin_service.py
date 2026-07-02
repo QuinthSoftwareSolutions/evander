@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from ..git_naming import validate_branch_name
 from .domain import common as _team_common
 from ..repository import (
     TeamStateRepository,
@@ -26,6 +27,7 @@ from ..models import (
     GovernanceAgendaItemType,
     GovernanceGoal,
     GovernanceGroup,
+    GitWorkContext,
     PersistentAgent,
     Project,
     ProjectGitConfig,
@@ -790,6 +792,79 @@ class TeamAdminService:
             return state
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
+
+    def create_git_work_context_with_id(
+        self,
+        *,
+        context_id: str | None,
+        agent_id: str,
+        task_id: str,
+        agent_branch: str,
+        base_branch: str | None = None,
+        base_commit: str | None = None,
+        commit_sha: str | None = None,
+        dispatch_id: str | None = None,
+        worktree_path: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, str]:
+        normalized_context_id = _optional_text(context_id)
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_task_id = _required_text(task_id, "task_id")
+        normalized_agent_branch = validate_branch_name(
+            _required_text(agent_branch, "agent_branch")
+        )
+        normalized_base_branch = _optional_text(base_branch)
+        if normalized_base_branch is not None:
+            normalized_base_branch = validate_branch_name(normalized_base_branch)
+        normalized_base_commit = _optional_text(base_commit)
+        normalized_commit_sha = _optional_text(commit_sha)
+        normalized_dispatch_id = _optional_text(dispatch_id)
+        normalized_worktree_path = _optional_text(worktree_path)
+        created_context_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal created_context_id
+            agent = _require_present(state.agents, normalized_agent_id, "agent")
+            task = _require_present(state.tasks, normalized_task_id, "task")
+            if task.owner_agent_id != agent.id:
+                raise ValueError(
+                    f"agent {agent.id} cannot own Git work context for task {task.id}"
+                )
+            if agent.team_id is None:
+                raise ValueError(f"agent {agent.id} is not assigned to a team")
+            project = _require_present(state.projects, task.project_id, "project")
+            if project.team_id != agent.team_id:
+                raise ValueError(
+                    f"task {task.id} project {project.id} does not belong to "
+                    f"agent team {agent.team_id}"
+                )
+            effective_context_id = normalized_context_id or _generated_id(
+                prefix="gitctx",
+                labels=[normalized_agent_id, normalized_task_id, normalized_agent_branch],
+                existing_ids=state.git_work_contexts,
+            )
+            _require_absent(state.git_work_contexts, effective_context_id, "git work context")
+            created_context_id = effective_context_id
+            now = utc_now()
+            state.git_work_contexts[effective_context_id] = GitWorkContext(
+                id=effective_context_id,
+                agent_id=agent.id,
+                task_id=task.id,
+                dispatch_id=normalized_dispatch_id,
+                worktree_path=normalized_worktree_path,
+                base_branch=normalized_base_branch,
+                base_commit=normalized_base_commit,
+                agent_branch=normalized_agent_branch,
+                commit_sha=normalized_commit_sha,
+                created_at=now,
+                updated_at=now,
+            )
+            return state
+
+        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        if created_context_id is None:
+            raise RuntimeError("created Git work context could not be resolved")
+        return state, created_context_id
 
     def create_role(
         self,

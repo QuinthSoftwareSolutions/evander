@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-02 - Team Git Work Contexts
+
+- Added optional Team Git work contexts so Git deliverables must bind to a
+  server-owned branch context, while artifact-only and non-coding deliverables
+  continue to work without Git metadata.
+
 ## 2026-07-01 - Codex Optional Feature Compatibility
 
 - Made Codex `non_prefixed_mcp_tool_names` enablement conditional on the

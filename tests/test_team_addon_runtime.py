@@ -40,6 +40,7 @@ from evander_team_addon.models import (
     Deliverable,
     EphemeralAgentPolicy,
     EphemeralAssignment,
+    GitWorkContext,
     GitPromotionRecord,
     PersistentAgent,
     Project,
@@ -497,6 +498,28 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         expected_revision=4,
     )
     return repo
+
+
+def _seed_git_work_context(
+    repo: TeamStateRepository,
+    *,
+    context_id: str = "ctx-task",
+    agent_branch: str = "agents/session-backend/review",
+    commit_sha: str | None = "abc123",
+) -> None:
+    def _mutate(state: TeamState) -> TeamState:
+        state.git_work_contexts[context_id] = GitWorkContext(
+            id=context_id,
+            agent_id="backend",
+            task_id="task",
+            base_branch="main",
+            base_commit="base123",
+            agent_branch=agent_branch,
+            commit_sha=commit_sha,
+        )
+        return state
+
+    repo.update(_mutate)
 
 
 def _add_luke_reviewer(
@@ -2319,6 +2342,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
 ) -> None:
     repo = _seed_team(tmp_path)
     _add_luke_reviewer(repo)
+    _seed_git_work_context(repo)
     state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
@@ -2328,6 +2352,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
                     "task_id": "task",
                     "summary": "Backend slice ready for review.",
                     "artifact_refs": ["artifact-space:/teams/team/projects/project/backend.tar.gz"],
+                    "branch_context_id": "ctx-task",
                     "git_refs": {
                         "agent_branch": "agents/session-backend/review",
                         "commit_sha": "abc123",
@@ -2396,6 +2421,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
         "artifact-space:/teams/team/projects/project/backend.tar.gz"
     ]
     assert deliverables["deliverable-stalled"]["git_refs"] == {
+        "branch_context_id": "ctx-task",
         "agent_branch": "agents/session-backend/review",
         "commit_sha": "abc123",
     }
@@ -2423,6 +2449,11 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
 ) -> None:
     repo = _seed_team(tmp_path)
     _add_luke_reviewer(repo)
+    _seed_git_work_context(
+        repo,
+        agent_branch="agents/session-backend/feature",
+        commit_sha="feedface",
+    )
     state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
@@ -2431,6 +2462,7 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
                     "id": "deliverable-feature",
                     "task_id": "task",
                     "summary": "Feature branch is ready for release review.",
+                    "branch_context_id": "ctx-task",
                     "git_refs": {
                         "feature_branch": "team/team/features/task-backend",
                         "commit_sha": "feedface",
@@ -2468,6 +2500,8 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
     deliverables = {item["id"]: item for item in fallback_summary["deliverables"]}
     assert deliverables["deliverable-feature"]["state"] == "pending"
     assert deliverables["deliverable-feature"]["git_refs"] == {
+        "branch_context_id": "ctx-task",
+        "agent_branch": "agents/session-backend/feature",
         "feature_branch": "team/team/features/task-backend",
         "commit_sha": "feedface",
     }

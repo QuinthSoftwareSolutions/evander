@@ -341,6 +341,7 @@ def _manager_fallback_git_refs_row(deliverable: Deliverable) -> dict[str, Any]:
     refs = deliverable.git_refs
     row: dict[str, Any] = {}
     for field_name in (
+        "branch_context_id",
         "agent_branch",
         "review_branch",
         "feature_branch",

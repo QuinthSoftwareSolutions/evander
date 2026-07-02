@@ -82,6 +82,7 @@ from .domain.git_promotion import (
     _apply_git_feature_update,
     _apply_git_review_promotion,
 )
+from .domain.git_work_contexts import bind_deliverable_git_refs_to_work_context
 from .domain.operator_escalation import _apply_operator_escalation
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
@@ -710,6 +711,13 @@ class TeamAgentActionService:
                     )
                     if artifact_space_ref:
                         artifact_refs = _append_unique(artifact_refs, artifact_space_ref)
+                    bind_deliverable_git_refs_to_work_context(
+                        state_model,
+                        agent_id=agent.id,
+                        task_id=task.id,
+                        deliverable=deliverable_payload,
+                        dispatch_id=normalized_dispatch_id,
+                    )
                     git_refs = _deliverable_git_refs_from_payload(
                         deliverable_payload.get("git_refs")
                     )

@@ -664,9 +664,13 @@ fails the assignment rather than recording a branch the add-on cannot later
 promote.
 
 Persistent agents may include `git_refs` on deliverables when the project has
-Git configured. Those refs are not published automatically; a supervising agent,
-project lead, or manager requests publication with `team_publish_review_branch`,
-`team_update_feature_branch`, or `team_request_release`.
+Git configured and the runtime has created a Git work context for that task
+worktree. Git deliverables must include the context's `branch_context_id`; the
+server derives the accepted `git_refs.agent_branch` from that context and
+rejects mismatched agent-supplied branches. These refs are not published
+automatically; a supervising agent, project lead, or manager requests
+publication with `team_publish_review_branch`, `team_update_feature_branch`, or
+`team_request_release`.
 Deliverables may also include `verification` with `status` set to `passed`,
 `failed`, `partial`, `not_run`, or `unknown`, plus an optional summary and
 evidence refs. Use `not_run` when test tooling, services, or credentials were
@@ -800,6 +804,16 @@ branch → release branch → canonical push — using `GitPromotionRecord` rows
 `TeamState.git_promotions` and `team.git.promotion_requested` events. Team MCP
 tools record intent; the packaged pack routes each event on its
 `promotion_kind`:
+
+Git work contexts are optional Team state records for coding worktrees. They are
+created only by host/runtime setup for tasks that actually involve Git, and they
+bind an agent, task, optional dispatch, worktree path, base branch/base commit,
+expected agent branch, and last verified commit. Artifact-only deliverables,
+administrative work, customer-service work, operations work, and tasks with no
+deliverable do not need Git contexts. Once a deliverable includes Git metadata,
+`team_submit_deliverable` and `team_submit_deliverable_for_review` require a
+matching `branch_context_id` and reject missing, wrong-task, wrong-agent,
+wrong-dispatch, inactive, or mismatched branch contexts.
 
 - `review` — `team_publish_review_branch` can promote an ephemeral assignment
   branch after the assignment is completed or accepted with an `agent_branch`, or
