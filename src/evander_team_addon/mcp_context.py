@@ -99,6 +99,21 @@ class TeamMcpContextResolver:
             raise ToolError(f"{tool_name} requires an active Team dispatch lease")
         return caller
 
+    def require_persistent_read_context(
+        self,
+        *,
+        session_id: str | None,
+        tool_name: str,
+    ) -> TeamMcpCallerContext:
+        caller = self.resolve(session_id=session_id, tool_name=tool_name)
+        if caller.agent is None:
+            raise ToolError(f"{tool_name} requires a persistent Team agent session")
+        if caller.agent.status != AgentStatus.ACTIVE:
+            raise ToolError(f"{tool_name} requires an active Team agent")
+        if caller.agent.team_id is None:
+            raise ToolError(f"{tool_name} requires a Team-assigned persistent agent")
+        return caller
+
     def require_chat_reply_context(
         self,
         *,

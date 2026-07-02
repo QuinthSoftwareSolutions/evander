@@ -29,6 +29,7 @@ from .repository import (
     TeamStateRepository,
 )
 from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
+from .services.read_service import TeamReadService
 from .services.commands import (
     TeamAgentControlCommandService,
     TeamAgentMessageCommandService,
@@ -76,6 +77,23 @@ TEAM_REJECT_EPHEMERAL_RESULT_TOOL = "team_reject_ephemeral_result"
 TEAM_REPORT_EPHEMERAL_RESULT_TOOL = "team_report_ephemeral_result"
 TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL = "team_create_operator_directive"
 TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL = "team_mark_governance_agenda_handled"
+TEAM_LIST_TASKS_TOOL = "team_list_tasks"
+TEAM_GET_TASK_TOOL = "team_get_task"
+TEAM_LIST_INBOX_TOOL = "team_list_inbox"
+TEAM_GET_INBOX_ITEM_TOOL = "team_get_inbox_item"
+TEAM_LIST_CASES_TOOL = "team_list_cases"
+TEAM_GET_CASE_TOOL = "team_get_case"
+TEAM_LIST_DELIVERABLES_TOOL = "team_list_deliverables"
+TEAM_GET_DELIVERABLE_TOOL = "team_get_deliverable"
+TEAM_LIST_REVIEW_REQUESTS_TOOL = "team_list_review_requests"
+TEAM_GET_REVIEW_REQUEST_TOOL = "team_get_review_request"
+TEAM_LIST_RELEASE_PACKAGES_TOOL = "team_list_release_packages"
+TEAM_GET_RELEASE_PACKAGE_TOOL = "team_get_release_package"
+TEAM_LIST_AGENTS_TOOL = "team_list_agents"
+TEAM_GET_AGENT_TOOL = "team_get_agent"
+TEAM_LIST_PROJECTS_TOOL = "team_list_projects"
+TEAM_GET_PROJECT_TOOL = "team_get_project"
+TEAM_LIST_RUNTIME_ATTENTION_TOOL = "team_list_runtime_attention"
 
 ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_RECORD_NOTE_TOOL,
@@ -111,6 +129,25 @@ EPHEMERAL_WORKER_MCP_TOOL_NAMES = (TEAM_REPORT_EPHEMERAL_RESULT_TOOL,)
 GOVERNANCE_TEAM_MCP_TOOL_NAMES = (
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+)
+READ_TEAM_MCP_TOOL_NAMES = (
+    TEAM_LIST_TASKS_TOOL,
+    TEAM_GET_TASK_TOOL,
+    TEAM_LIST_INBOX_TOOL,
+    TEAM_GET_INBOX_ITEM_TOOL,
+    TEAM_LIST_CASES_TOOL,
+    TEAM_GET_CASE_TOOL,
+    TEAM_LIST_DELIVERABLES_TOOL,
+    TEAM_GET_DELIVERABLE_TOOL,
+    TEAM_LIST_REVIEW_REQUESTS_TOOL,
+    TEAM_GET_REVIEW_REQUEST_TOOL,
+    TEAM_LIST_RELEASE_PACKAGES_TOOL,
+    TEAM_GET_RELEASE_PACKAGE_TOOL,
+    TEAM_LIST_AGENTS_TOOL,
+    TEAM_GET_AGENT_TOOL,
+    TEAM_LIST_PROJECTS_TOOL,
+    TEAM_GET_PROJECT_TOOL,
+    TEAM_LIST_RUNTIME_ATTENTION_TOOL,
 )
 IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_RECORD_NOTE_TOOL,
@@ -176,6 +213,7 @@ MCP_TOOL_NAMES = (
     TEAM_REPORT_EPHEMERAL_RESULT_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+    *READ_TEAM_MCP_TOOL_NAMES,
 )
 
 
@@ -302,6 +340,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     )
     _register_slice8_tools(server, git_release_commands, resolver, context)
     _register_slice9_tools(server, ephemeral_commands, resolver, context)
+    _register_read_tools(server, resolver)
 
     for tool_name in ORDINARY_TEAM_MCP_TOOL_NAMES:
         if tool_name in IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES:
@@ -1600,6 +1639,472 @@ def _register_slice9_tools(
             "Worker-scoped Team ephemeral result report. Success requires "
             "summary and request_id; failure requires error and request_id."
         ),
+    )
+
+
+def _register_read_tools(server: FastMCP, resolver: TeamMcpContextResolver) -> None:
+    def team_list_tasks(
+        session_id: str | None = None,
+        project_id: str | None = None,
+        owner_agent_id: str | None = None,
+        state: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_TASKS_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_tasks(
+                project_id=project_id,
+                owner_agent_id=owner_agent_id,
+                state=state,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_tasks,
+        name=TEAM_LIST_TASKS_TOOL,
+        description="List visible Team tasks as compact rows with pagination.",
+    )
+
+    def team_get_task(task_id: str, session_id: str | None = None) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_TASK_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_task(task_id),
+            caller=caller,
+            record_name="task",
+            record_id=task_id,
+        )
+
+    server.add_tool(
+        team_get_task,
+        name=TEAM_GET_TASK_TOOL,
+        description="Get one visible Team task with derived graph context.",
+    )
+
+    def team_list_inbox(
+        session_id: str | None = None,
+        state: str | None = None,
+        include_handled: bool = False,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_INBOX_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_inbox(
+                state=state,
+                include_handled=include_handled,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_inbox,
+        name=TEAM_LIST_INBOX_TOOL,
+        description="List visible Team inbox items as compact rows with pagination.",
+    )
+
+    def team_get_inbox_item(
+        inbox_item_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_INBOX_ITEM_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_inbox_item(inbox_item_id),
+            caller=caller,
+            record_name="inbox_item",
+            record_id=inbox_item_id,
+        )
+
+    server.add_tool(
+        team_get_inbox_item,
+        name=TEAM_GET_INBOX_ITEM_TOOL,
+        description="Get one visible Team inbox item.",
+    )
+
+    def team_list_cases(
+        session_id: str | None = None,
+        project_id: str | None = None,
+        owner_agent_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_CASES_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_cases(
+                project_id=project_id,
+                owner_agent_id=owner_agent_id,
+                status=status,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_cases,
+        name=TEAM_LIST_CASES_TOOL,
+        description="List visible Team cases as compact rows with pagination.",
+    )
+
+    def team_get_case(case_id: str, session_id: str | None = None) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_CASE_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_case(case_id),
+            caller=caller,
+            record_name="case",
+            record_id=case_id,
+        )
+
+    server.add_tool(
+        team_get_case,
+        name=TEAM_GET_CASE_TOOL,
+        description="Get one visible Team case.",
+    )
+
+    def team_list_deliverables(
+        session_id: str | None = None,
+        task_id: str | None = None,
+        producer_agent_id: str | None = None,
+        state: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_DELIVERABLES_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_deliverables(
+                task_id=task_id,
+                producer_agent_id=producer_agent_id,
+                state=state,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_deliverables,
+        name=TEAM_LIST_DELIVERABLES_TOOL,
+        description="List visible Team deliverables as compact rows with pagination.",
+    )
+
+    def team_get_deliverable(
+        deliverable_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_DELIVERABLE_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_deliverable(deliverable_id),
+            caller=caller,
+            record_name="deliverable",
+            record_id=deliverable_id,
+        )
+
+    server.add_tool(
+        team_get_deliverable,
+        name=TEAM_GET_DELIVERABLE_TOOL,
+        description="Get one visible Team deliverable.",
+    )
+
+    def team_list_review_requests(
+        session_id: str | None = None,
+        deliverable_id: str | None = None,
+        reviewer_agent_id: str | None = None,
+        state: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_REVIEW_REQUESTS_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_review_requests(
+                deliverable_id=deliverable_id,
+                reviewer_agent_id=reviewer_agent_id,
+                state=state,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_review_requests,
+        name=TEAM_LIST_REVIEW_REQUESTS_TOOL,
+        description="List visible Team review requests as compact rows with pagination.",
+    )
+
+    def team_get_review_request(
+        review_request_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_REVIEW_REQUEST_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_review_request(review_request_id),
+            caller=caller,
+            record_name="review_request",
+            record_id=review_request_id,
+        )
+
+    server.add_tool(
+        team_get_review_request,
+        name=TEAM_GET_REVIEW_REQUEST_TOOL,
+        description="Get one visible Team review request.",
+    )
+
+    def team_list_release_packages(
+        session_id: str | None = None,
+        project_id: str | None = None,
+        state: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_RELEASE_PACKAGES_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_release_packages(
+                project_id=project_id,
+                state=state,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_release_packages,
+        name=TEAM_LIST_RELEASE_PACKAGES_TOOL,
+        description="List visible Team release packages as compact rows with pagination.",
+    )
+
+    def team_get_release_package(
+        release_package_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_RELEASE_PACKAGE_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_release_package(release_package_id),
+            caller=caller,
+            record_name="release_package",
+            record_id=release_package_id,
+        )
+
+    server.add_tool(
+        team_get_release_package,
+        name=TEAM_GET_RELEASE_PACKAGE_TOOL,
+        description="Get one visible Team release package.",
+    )
+
+    def team_list_agents(
+        session_id: str | None = None,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_AGENTS_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_agents(
+                team_id=team_id,
+                project_id=project_id,
+                status=status,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_agents,
+        name=TEAM_LIST_AGENTS_TOOL,
+        description="List visible Team agents as compact rows with pagination.",
+    )
+
+    def team_get_agent(agent_id: str, session_id: str | None = None) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_AGENT_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_agent(agent_id),
+            caller=caller,
+            record_name="agent",
+            record_id=agent_id,
+        )
+
+    server.add_tool(
+        team_get_agent,
+        name=TEAM_GET_AGENT_TOOL,
+        description="Get one visible Team agent.",
+    )
+
+    def team_list_projects(
+        session_id: str | None = None,
+        team_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_PROJECTS_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_projects(
+                team_id=team_id,
+                status=status,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_projects,
+        name=TEAM_LIST_PROJECTS_TOOL,
+        description="List visible Team projects as compact rows with pagination.",
+    )
+
+    def team_get_project(project_id: str, session_id: str | None = None) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_PROJECT_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_project(project_id),
+            caller=caller,
+            record_name="project",
+            record_id=project_id,
+        )
+
+    server.add_tool(
+        team_get_project,
+        name=TEAM_GET_PROJECT_TOOL,
+        description="Get one visible Team project.",
+    )
+
+    def team_list_runtime_attention(
+        session_id: str | None = None,
+        kind: str | None = None,
+        severity: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_RUNTIME_ATTENTION_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_runtime_attention(
+                kind=kind,
+                severity=severity,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_runtime_attention,
+        name=TEAM_LIST_RUNTIME_ATTENTION_TOOL,
+        description="List visible Team runtime attention rows with pagination.",
+    )
+
+
+def _read_service(caller: Any) -> TeamReadService:
+    return TeamReadService(state=caller.state, actor=caller.agent)
+
+
+def _team_read_list_result(result: Mapping[str, Any], *, caller: Any) -> dict[str, Any]:
+    return team_mcp_success(
+        revision=caller.state.revision,
+        progress_made=False,
+        agent_id=caller.agent_id,
+        **dict(result),
+    )
+
+
+def _team_read_get_result(
+    record: Mapping[str, Any] | None,
+    *,
+    caller: Any,
+    record_name: str,
+    record_id: str,
+) -> dict[str, Any]:
+    if record is None:
+        return team_mcp_failure(
+            revision=caller.state.revision,
+            agent_id=caller.agent_id,
+            errors=f"{record_name} {record_id} was not found or is outside the visible scope",
+            correction_context=caller.correction_context(),
+            record_name=record_name,
+            record_id=record_id,
+        )
+    return team_mcp_success(
+        revision=caller.state.revision,
+        progress_made=False,
+        agent_id=caller.agent_id,
+        record=dict(record),
     )
 
 

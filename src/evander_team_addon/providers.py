@@ -69,6 +69,7 @@ from .mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
+    READ_TEAM_MCP_TOOL_NAMES,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     TEAM_ASK_QUESTION_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
@@ -147,9 +148,10 @@ from .services.domain.review import _apply_review_request, _review_request_was_c
 from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
+from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 12
+TEAM_AGENT_GUIDANCE_VERSION = 13
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -3528,7 +3530,11 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         f"{display_line}\n"
         "Use the Team MCP tools granted to your session. Tool discovery is the "
         "source of truth for argument shapes; do not write local coordination "
-        "files, helper scripts, or finish commands.\n\n"
+        "files, helper scripts, or finish commands.\n"
+        "Wake prompts contain only current and salient Team context. Fetch older "
+        "or detailed visible records through the Team read tools instead of "
+        "assuming the prompt contains the full Team state. Read tools currently "
+        f"include: {', '.join(READ_TEAM_MCP_TOOL_NAMES)}.\n\n"
         "Core MCP surface:\n"
         f"- Use {TEAM_UPDATE_TASK_TOOL} for tasks you own. State, priority, title, "
         "and description edits are owner-only except that a superior may set "
@@ -3704,40 +3710,8 @@ def _team_agent_guidance_inactive_content(*, agent: Mapping[str, Any]) -> str:
 
 def _build_prompt(lease: Mapping[str, Any]) -> str:
     agent = lease["agent"]
-    context = {
-        "agent": _prompt_context_payload(_agent_prompt_payload(agent)),
-        "reason": lease["reason"],
-        "superior_id": lease["superior_agent_id"],
-        "subordinate_ids": lease["subordinate_agent_ids"],
-        "subordinates": _prompt_context_payload(lease.get("subordinates") or []),
-        "session_health": _prompt_context_payload(lease.get("session_health") or []),
-        "cases": _prompt_context_payload(lease.get("cases") or []),
-        "tasks": _prompt_context_payload(lease["tasks"]),
-        "inbox": _prompt_context_payload(lease["inbox"]),
-        "release_packages": _prompt_context_payload(lease.get("release_packages") or {}),
-        "runtime_attention": _prompt_context_payload(
-            _prompt_runtime_attention(lease.get("runtime_attention") or [])
-        ),
-        "operator_chat_participants": _prompt_context_payload(
-            lease.get("operator_chat_participants") or []
-        ),
-    }
-    manager_fallback_summary = lease.get("manager_fallback_summary")
-    if isinstance(manager_fallback_summary, Mapping):
-        prompt_summary = dict(manager_fallback_summary)
-        prompt_summary.pop("latest_failed_actions", None)
-        context["manager_fallback_summary"] = _prompt_context_payload(prompt_summary)
+    context = build_compact_wake_context(lease)
     project_repo = lease.get("project_repo")
-    if isinstance(project_repo, Mapping):
-        context["project_repo"] = _prompt_context_payload(dict(project_repo))
-    review_artifact_imports = lease.get("review_artifact_imports")
-    if isinstance(review_artifact_imports, list) and review_artifact_imports:
-        context["review_artifact_imports"] = _prompt_context_payload(review_artifact_imports)
-    review_artifact_import_errors = lease.get("review_artifact_import_errors")
-    if isinstance(review_artifact_import_errors, list) and review_artifact_import_errors:
-        context["review_artifact_import_errors"] = _prompt_context_payload(
-            review_artifact_import_errors
-        )
     runtime = lease.get("runtime")
     handoff_summary = (
         _optional_text(runtime.get("last_handoff_summary"))
@@ -3805,7 +3779,8 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         f"section {TEAM_AGENT_GUIDANCE_SECTION_ID}, version "
         f"{TEAM_AGENT_GUIDANCE_VERSION}. Use the Team context below and the MCP "
         "tools granted to this session. Tool discovery is authoritative for exact "
-        "arguments.\n\n"
+        "arguments. The Team context JSON is a compact current summary; use "
+        "Team read MCP tools to fetch detailed visible records when needed.\n\n"
         "Role-aware delegation: when creating tasks or requests for subordinates, "
         "use subordinates[].role_name and subordinates[].role_description. "
         f"Reviewer roles should generally receive {TEAM_REQUEST_REVIEW_TOOL} calls "
@@ -4766,7 +4741,7 @@ def _session_repository_for_manifest_updates(context: Any) -> Any | None:
 def _ordinary_team_tools_for_agent(agent: Mapping[str, Any]) -> list[str]:
     if _optional_text(agent.get("team_id")) is None:
         return []
-    return list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+    return [*ORDINARY_TEAM_MCP_TOOL_NAMES, *READ_TEAM_MCP_TOOL_NAMES]
 
 
 def _team_chat_mutation_allowed(message: object) -> bool:

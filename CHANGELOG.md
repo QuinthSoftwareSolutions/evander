@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-02 - Team Add-on Read Tools And Compact Context
+
+- Added Team MCP read tools for visible tasks, inbox, cases, deliverables,
+  reviews, releases, agents, projects, and runtime attention so agents can
+  fetch detail without receiving the full Team state in every wake prompt.
+- Reduced Team wake prompt context to current and salient compact summaries,
+  preserving detailed state behind policy-gated read tools.
+
 ## 2026-07-02 - Add-on Runtime Workflow Packs
 
 - Made Admin Web add-on enablement materialize advertised runtime workflow

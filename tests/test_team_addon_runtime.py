@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import build_admin_runtime
 from evander.config import GatewayConfig
 from evander.artifact_spaces import ArtifactSpaceStore
 from evander.events.internal import InternalEventBus, internal_event_store_path
@@ -23,6 +23,7 @@ from evander.workflow.runtime_config import load_trigger_orchestrator_worker_glo
 from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
+    READ_TEAM_MCP_TOOL_NAMES,
     TEAM_CREATE_CASE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
@@ -109,6 +110,11 @@ from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 from evander_team_addon.services.commands import TeamEphemeralCommandService
 from evander_team_addon.workflow_packs import team_runtime_v1
+
+ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES = (
+    *ORDINARY_TEAM_MCP_TOOL_NAMES,
+    *READ_TEAM_MCP_TOOL_NAMES,
+)
 
 
 def _command_service(repo: TeamStateRepository) -> TeamEphemeralCommandService:
@@ -1140,14 +1146,14 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "schema_version" not in guidance
     assert result["dispatches"][0]["team_mcp_tools"] == {
         "session_id": "session-backend",
-        "requested_tools": list(ORDINARY_TEAM_MCP_TOOL_NAMES),
+        "requested_tools": list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES),
         "already_allowed_tools": [],
-        "granted_tools": list(ORDINARY_TEAM_MCP_TOOL_NAMES),
+        "granted_tools": list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES),
         "removed_tools": [],
         "error": None,
     }
     assert session_store.sessions["session-backend"].allowed_tools == list(
-        ORDINARY_TEAM_MCP_TOOL_NAMES
+        ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES
     )
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == result["dispatches"][0]["dispatch_id"]
@@ -1260,11 +1266,11 @@ def test_wake_due_agents_provider_preserves_active_governance_tools(
     assert result["leased_count"] == 1
     assert result["dispatches"][0]["agent_id"] == "backend"
     team_tools = result["dispatches"][0]["team_mcp_tools"]
-    assert team_tools["requested_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
-    assert team_tools["granted_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
+    assert team_tools["requested_tools"] == list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES)
+    assert team_tools["granted_tools"] == list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES)
     assert team_tools["removed_tools"] == []
     assert session_store.sessions["session-backend"].allowed_tools == [
-        *ORDINARY_TEAM_MCP_TOOL_NAMES,
+        *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES,
         *GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ]
 
@@ -1935,15 +1941,15 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
     assert chat_dispatch["message_id"] == message.id
     assert chat_dispatch["team_chat_mcp_tools"] == {
         "session_id": "session-backend",
-        "requested_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_MCP_TOOL_NAMES],
+        "requested_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES],
         "already_allowed_tools": [],
-        "granted_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_MCP_TOOL_NAMES],
+        "granted_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES],
         "removed_tools": [],
         "error": None,
     }
     assert session_store.sessions["session-backend"].allowed_tools == [
         TEAM_REPLY_TO_CHAT_TOOL,
-        *ORDINARY_TEAM_MCP_TOOL_NAMES,
+        *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES,
     ]
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == dispatch_id
@@ -3679,7 +3685,7 @@ def test_wake_due_agents_provider_ignores_stale_action_contract_metadata(
     assert result["success"] is True
     assert "action_contract" not in result["dispatches"][0]
     assert result["dispatches"][0]["team_mcp_tools"]["requested_tools"] == list(
-        ORDINARY_TEAM_MCP_TOOL_NAMES
+        ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES
     )
     assert file_copier.calls == []
     assert repo.read().agent_runtimes["backend"].active_dispatch_id is not None
