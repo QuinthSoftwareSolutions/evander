@@ -522,6 +522,7 @@ def test_team_addon_get_my_identity_returns_complete_bounded_identity(
     worker_identity = _item(worker_result)
 
     assert worker_identity["id"] == "alpha-dev"
+    assert worker_identity["session_id"] == "session-alpha-dev"
     assert worker_identity["display_name"] == "Alpha Developer"
     assert worker_identity["role_name"] == "Developer"
     assert worker_identity["role_description"].startswith(
@@ -616,6 +617,7 @@ def test_team_addon_get_agent_visibility_is_team_scoped_not_project_scoped(
     _assert_read_success(observer_result)
     observer = _item(observer_result)
     assert observer["id"] == "alpha-observer"
+    assert "session_id" not in observer
     assert observer["display_name"] == "Alpha Observer"
     assert observer["role_permissions"] == ["request_release"]
     assert observer["effective_role_permissions"] == ["request_release"]

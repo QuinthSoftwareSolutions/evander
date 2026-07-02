@@ -22,6 +22,7 @@ from evander.repositories.skills_library import (
     SkillLibraryRepository,
     normalize_skill_names,
 )
+from evander.session_auth import ensure_session_mcp_auth_token
 from evander.managed_sections import normalize_managed_section_id
 from evander.vm.power_state import normalize_power_state
 
@@ -1006,6 +1007,7 @@ def _libvirt_create_vm(
             manifest.model = deps.resolve_agent_model_for_session(manifest)
         except ValueError:
             manifest.model = None
+    manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
     session_repository.upsert_session(manifest)
     sync_added_discord_session_cursors = getattr(
         deps, "sync_added_discord_session_cursors", None
@@ -1023,6 +1025,7 @@ def _libvirt_create_vm(
     run_env.update(vm_defaults.guest_environment())
     if manifest.model:
         run_env["AGENT_MODEL"] = manifest.model
+    run_env["EVANDER_MCP_SESSION_TOKEN"] = mcp_session_token
     if agent_provider:
         run_env["AGENT_PROVIDER"] = agent_provider
     managed_skills_root = _managed_codex_skills_root(deps, normalized_codex_skills)
@@ -1088,6 +1091,7 @@ def _libvirt_create_vm(
                 "VM_WAIT_SSH_TIMEOUT_SECONDS",
                 "MSSQL_SA_PASSWORD",
                 "HOST_REPO_CODEX_SKILLS_DIR",
+                "EVANDER_MCP_SESSION_TOKEN",
             )
             launch_step = process_helpers.sudo_env_command(
                 [str(setup_script), *setup_args], run_env, allowed_env_keys

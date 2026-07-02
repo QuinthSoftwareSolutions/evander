@@ -243,6 +243,7 @@ from evander.gateway.session_context import (
     _SESSION_ID_PARAMETER_DESCRIPTION,
     _ambient_session_id_from_context,
     _ambient_session_id_from_request,
+    _mcp_session_token_from_request,
     _resolve_bound_session_id,
     _resolve_session_id_from_context,
     _resolve_session_id_from_request,
@@ -258,6 +259,7 @@ from evander.gateway.tool_audit import (
     _tool_call_context,
     _tool_call_duration_ms,
 )
+from evander.session_auth import verify_mcp_session_token
 
 logger = logging.getLogger(__name__)
 
@@ -380,6 +382,7 @@ def _tool_call_context_from_request(
         request_id=request_id,
         correlation_id=correlation_id,
         transport_session_id=transport_session_id,
+        mcp_session_token=_mcp_session_token_from_request(request),
         workflow_run_id=workflow_run_id,
         mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
     )
@@ -540,7 +543,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
         transport_session_map[normalized_transport_session_id] = normalized_session_id
 
     def redacted_keys_for_session_id(session_id: str | None) -> set[str]:
-        token_redacted_keys = {"response_token", "issued_token", "token_hash"}
+        token_redacted_keys = {
+            "response_token",
+            "issued_token",
+            "token_hash",
+            "mcp_session_token",
+            "evander_mcp_session_token",
+        }
         if not session_id:
             return (
                 set(context.policy.policy_config.resolve_for_directory("root").redacted_keys)
@@ -587,6 +596,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         )
         arguments["session_id"] = resolved_session_id
         call_context.session_id = resolved_session_id
+
+    def _mcp_session_token_valid(session_id: str, supplied_token: str | None) -> bool:
+        session = context.session_repository.get_session(session_id)
+        if session is None:
+            return True
+        return verify_mcp_session_token(session, supplied_token)
 
     def audit_success(
         session_id: str,
@@ -892,6 +907,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.get_session(session_id)
         except PolicyError:
             return []
+        if not verify_mcp_session_token(session, _mcp_session_token_from_request(request)):
+            return []
 
         visible_tool_names = {
             tool_name_value(visibility.tool)
@@ -1193,6 +1210,32 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(call_context.session_id, tool_value, sanitized_arguments, str(exc))
             raise ToolError(str(exc)) from exc
 
+    def require_mcp_session_token(
+        *,
+        raw_tool_name: str,
+        sanitized_arguments: dict[str, Any],
+        call_context: _ToolCallAuditContext,
+    ) -> None:
+        if not call_context.session_id:
+            return
+        if _mcp_session_token_valid(
+            call_context.session_id,
+            call_context.mcp_session_token,
+        ):
+            return
+        tool_value: McpToolName = (
+            ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
+        )
+        message = "MCP session token is required for this session"
+        audit_failure(
+            call_context.session_id,
+            tool_value,
+            sanitized_arguments,
+            message,
+            error_class="auth_error",
+        )
+        raise ToolError(message)
+
     original_call_tool = server._tool_manager.call_tool
 
     async def audited_call_tool(*call_args: Any, **call_kwargs: Any) -> Any:
@@ -1252,6 +1295,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 )
             ]
             try:
+                require_mcp_session_token(
+                    raw_tool_name=raw_tool_name,
+                    sanitized_arguments=sanitized_arguments,
+                    call_context=call_context,
+                )
                 maybe_require_registered_addon_tool(
                     raw_tool_name=raw_tool_name,
                     sanitized_arguments=sanitized_arguments,

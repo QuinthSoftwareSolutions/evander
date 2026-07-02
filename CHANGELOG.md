@@ -10,6 +10,9 @@
   state.
 - Scoped Team agent read-tool visibility by team rather than project and kept
   direct superior identity available to the caller's own identity read.
+- Added per-session MCP proof tokens for newly provisioned sessions so
+  `session_id` alone cannot impersonate tokenized agents, and kept other Team
+  agents' backing session ids out of read-tool details.
 - Kept the waking agent's full role description in compact Team wake prompts
   while leaving other identity detail available through the identity read tool.
 - Reduced Team wake prompt context to current and salient compact summaries,
@@ -24,6 +27,8 @@
 - Blocked runtime workflow pack refreshes when the trigger-orchestrator add-on
   loader would not load the add-on, avoiding active workflow packs with
   unavailable add-on providers.
+- Removed disabled add-ons' runtime workflow pack references from
+  trigger-orchestrator config while leaving materialized pack files intact.
 
 ## 2026-07-02 - Team Git Work Contexts
 

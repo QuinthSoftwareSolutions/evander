@@ -56,6 +56,7 @@ class OperatorSteeringAdminService:
             gateway_url_with_session_context,
             safe_effect_execution_id,
         )
+        from evander.session_auth import session_mcp_auth_token
 
         session_id = session.session_id
         dispatch_id = context.dispatch_id
@@ -185,6 +186,7 @@ class OperatorSteeringAdminService:
                 session_id=session_id,
                 workflow_run_id=context.workflow_run_id,
                 mcp_tool_approval_lease_id=approval_lease_id,
+                mcp_session_token=session_mcp_auth_token(session),
             )
             if approval_lease_id
             else None

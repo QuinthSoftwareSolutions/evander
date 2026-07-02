@@ -42,6 +42,7 @@ from evander.models import WakeDispatchRecord, WakeResumePromptPayload
 from evander.orchestration.host_polling import single_instance_lock
 from evander.runtime import RuntimeContext
 from evander.session_expiry import SessionExpiredError, ensure_session_not_expired
+from evander.session_auth import session_mcp_auth_token
 from evander.worker_directory_context import WorkerDirectoryContextResolver
 
 logger = logging.getLogger(__name__)
@@ -702,6 +703,7 @@ class HostWakeDispatcher:
             mcp_gateway_url=gateway_url_with_session_context(
                 container_worker_guest_gateway_url(base_config),
                 session_id=session_id,
+                mcp_session_token=session_mcp_auth_token(session),
             ),
             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
         )

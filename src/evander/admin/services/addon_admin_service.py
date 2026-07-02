@@ -228,6 +228,18 @@ class AddonAdminService:
                 if runtime_pack is None:
                     continue
                 runtime_packs.append(runtime_pack)
+            disabled_runtime_pack_references: set[str] = set()
+            enabled_addon_id_set = set(normalized_ids)
+            for addon_id, registration in registrations_by_id.items():
+                if addon_id in enabled_addon_id_set:
+                    continue
+                runtime_pack = self._runtime_workflow_pack_payload(registration)
+                if runtime_pack is not None:
+                    disabled_runtime_pack_references.add(runtime_pack.reference)
+            next_worker_config = self._unlist_runtime_workflow_pack_references(
+                next_worker_config,
+                disabled_runtime_pack_references,
+            )
             self._validate_runtime_workflow_pack_materializations(
                 next_worker_config,
                 runtime_packs,
@@ -571,6 +583,27 @@ class AddonAdminService:
             )
             if pack_path.exists():
                 load_workflow_pack(self.project_dir, runtime_pack.reference)
+
+    def _unlist_runtime_workflow_pack_references(
+        self,
+        worker_config: dict[str, object],
+        references: set[str],
+    ) -> dict[str, object]:
+        if not references:
+            return worker_config
+        workflow_packs = worker_config.get("workflow_packs")
+        if not isinstance(workflow_packs, list):
+            return worker_config
+        remaining = [
+            item
+            for item in workflow_packs
+            if str(item or "").strip() not in references
+        ]
+        if len(remaining) == len(workflow_packs):
+            return worker_config
+        updated = dict(worker_config)
+        updated["workflow_packs"] = remaining
+        return updated
 
     def _required_restart_services(self, *, has_mcp_tools: bool) -> tuple[str, ...]:
         if has_mcp_tools:

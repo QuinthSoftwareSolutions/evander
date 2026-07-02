@@ -647,7 +647,7 @@ class TeamReadService:
         payload = self._agent_row(agent)
         payload.update(
             {
-                "session_id": agent.session_id,
+                "session_id": agent.session_id if full_identity else None,
                 "role_description": role.description if role is not None else "",
                 "role_permissions": self._agent_role_permission_values(
                     role,

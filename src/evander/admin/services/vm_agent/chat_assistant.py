@@ -24,6 +24,7 @@ from evander.admin.services.vm_agent.common import (
     timedelta,
     vm_helpers,
 )
+from evander.session_auth import ensure_session_mcp_auth_token, session_mcp_auth_token
 
 
 class VmAgentChatAssistantMixin:
@@ -396,6 +397,7 @@ class VmAgentChatAssistantMixin:
                     "expires_at": expires_at,
                 }
             )
+            manifest, _mcp_session_token = ensure_session_mcp_auth_token(manifest)
             repository.upsert_session(manifest)
             return
 
@@ -410,6 +412,7 @@ class VmAgentChatAssistantMixin:
             expires_at=expires_at,
             metadata=metadata,
         )
+        manifest, _mcp_session_token = ensure_session_mcp_auth_token(manifest)
         repository.upsert_session(manifest)
 
     def _ensure_chat_assistant_target(
@@ -537,6 +540,8 @@ class VmAgentChatAssistantMixin:
             },
         )
         from evander.effects.providers.agent_session import build_container_session_files
+        session = self._session_repository().get_session(session_id)
+        mcp_session_token = session_mcp_auth_token(session) if session is not None else None
 
         backend.write_files(
             session_id=session_id,
@@ -548,6 +553,7 @@ class VmAgentChatAssistantMixin:
                     dotnet=False,
                     nuget=False,
                     playwright=False,
+                    mcp_session_token=mcp_session_token,
                 ),
                 *_assistant_home_file_specs(self._deps.project_dir),
             ],

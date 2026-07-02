@@ -20,6 +20,7 @@ class _ToolCallAuditContext:
     request_id: str | None = None
     correlation_id: str | None = None
     transport_session_id: str | None = None
+    mcp_session_token: str | None = None
     workflow_run_id: str | None = None
     mcp_tool_approval_lease_id: str | None = None
     audit_emitted: bool = False

@@ -280,6 +280,45 @@ def test_admin_web_addon_management_materializes_runtime_workflow_pack_on_enable
     assert pack_payload["description"] == "Runtime pack from add-on."
 
 
+def test_admin_web_addon_management_unlists_runtime_workflow_pack_on_disable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module_root = _write_admin_addon_module(tmp_path, runtime_workflow_pack=True)
+    _write_disabled_addon_configs(tmp_path)
+    monkeypatch.syspath_prepend(module_root)
+    importlib.invalidate_caches()
+    sys.modules.pop("admin_addon", None)
+    client = TestClient(
+        create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon")))
+    )
+    state = client.get("/api/admin/addons").json()
+    client.post("/api/admin/privileged/unlock")
+    enabled = client.put(
+        "/api/admin/addons/enabled",
+        json={
+            "enabled_addon_ids": ["team-addon"],
+            "expected_revision": state["revision"],
+        },
+    )
+    assert enabled.status_code == 200
+
+    disabled = client.put(
+        "/api/admin/addons/enabled",
+        json={
+            "enabled_addon_ids": [],
+            "expected_revision": enabled.json()["revision"],
+        },
+    )
+
+    assert disabled.status_code == 200
+    trigger_config = json.loads(
+        (tmp_path / "config" / "trigger-orchestrator" / "config.json").read_text()
+    )
+    assert trigger_config["addon_loader"]["enabled_addon_ids"] == []
+    assert trigger_config["workflow_packs"] == []
+    assert (tmp_path / "config" / "workflow-packs" / "team-runtime.v1.json").exists()
+
+
 def test_admin_web_addon_management_does_not_overwrite_existing_runtime_pack_on_enable(
     tmp_path: Path, monkeypatch
 ) -> None:

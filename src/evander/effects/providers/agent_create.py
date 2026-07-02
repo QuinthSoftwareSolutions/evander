@@ -14,6 +14,7 @@ from evander.provider_config import (
     normalize_model_provider_mode_override,
 )
 from evander.services import parse_teams_target
+from evander.session_auth import ensure_session_mcp_auth_token
 from evander.vm.templates import resolve_libvirt_vm_template_selector
 
 from .agent_session import (
@@ -416,6 +417,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             web_search_enabled=effective_web_search_enabled,
             metadata=metadata,
         )
+        manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
         session_record = backend.prepare_session(
             session_id=session_id,
             metadata={
@@ -439,6 +441,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                     nuget=bool(payload.get("nuget", False)),
                     playwright=bool(payload.get("playwright", False)),
                     npm_registry_url=npm_registry_url,
+                    mcp_session_token=mcp_session_token,
                 ),
                 *codex_skill_files,
             ],

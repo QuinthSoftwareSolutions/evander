@@ -46,6 +46,7 @@ from evander.session_expiry import (
     ensure_session_not_expired,
     session_expired_message,
 )
+from evander.session_auth import session_mcp_auth_token
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +310,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 session_id=session_id,
                 workflow_run_id=workflow_run_id or None,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                mcp_session_token=session_mcp_auth_token(session),
             )
         effective_resume_thread_id = self._effective_record_resume_thread_id(
             record=record,
@@ -1073,6 +1075,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             session_id=session_id,
             workflow_run_id=workflow_run_id,
             mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+            mcp_session_token=session_mcp_auth_token(session),
         )
 
     def _session_context_for_libvirt_record(

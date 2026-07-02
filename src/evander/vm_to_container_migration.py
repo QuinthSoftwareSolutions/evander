@@ -20,6 +20,7 @@ from evander.effects.providers.agent_session import build_container_session_file
 from evander.execution.models import ExecutionBackendKind
 from evander.models import SessionManifest
 from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.session_auth import session_mcp_auth_token
 from evander.worker.models import DEFAULT_WORKER_ROOT, SAFE_ID_PATTERN
 
 CONTAINER_BACKEND = ExecutionBackendKind.CONTAINER_WORKER_VM.value
@@ -508,6 +509,7 @@ def refresh_container_session_files(
         dotnet=dotnet,
         nuget=nuget,
         playwright=playwright,
+        mcp_session_token=session_mcp_auth_token(session),
     )
     for record in files:
         destination = _container_destination_to_agent_home(

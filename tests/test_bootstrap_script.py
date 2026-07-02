@@ -93,8 +93,12 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert (
         'CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${CODEX_SESSION_ID}"' in script
     )
+    assert "append_evander_mcp_query() {" in script
+    assert 'CODEX_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"' in script
+    assert 'query["mcp_session_token"] = token' in script
     assert (
-        'CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${CODEX_SESSION_ID}"' in script
+        'CODEX_GATEWAY_URL="$(append_evander_mcp_query "${CODEX_GATEWAY_URL}" "${CODEX_SESSION_ID}" "${CODEX_MCP_SESSION_TOKEN}")'
+        in script
     )
     assert "if line.strip() not in {" in script
     assert "repair_missing_session_env_fi" in script
@@ -216,6 +220,13 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
         in script
     )
     assert 'CLAUDE_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"' in script
+    assert "append_evander_mcp_query() {" in script
+    assert 'CLAUDE_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"' in script
+    assert 'query["mcp_session_token"] = token' in script
+    assert (
+        'CLAUDE_GATEWAY_URL="$(append_evander_mcp_query "${CLAUDE_GATEWAY_URL}" "${CLAUDE_SESSION_ID}" "${CLAUDE_MCP_SESSION_TOKEN}")'
+        in script
+    )
     assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" in script
     assert "DISABLE_TELEMETRY" in script
     assert '"attribution": {' in script
