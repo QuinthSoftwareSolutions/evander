@@ -129,11 +129,18 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /expired_agent_session/);
   assert.match(script, /buildOrgFlowGraph/);
   assert.match(script, /team-org-flow:edit-agent/);
+  assert.match(script, /team-org-flow:canvas-menu/);
+  assert.match(script, /data-org-context-action/);
+  assert.match(script, /governance-add-team/);
+  assert.match(script, /data-core-agent-session-create/);
   assert.match(script, /aria-describedby/);
   assert.match(script, /Agent ID \$\{escapeHtml\(node\.agentData\.id\)\}\. Role/);
   assert.match(script, /orgInboxIndicatorItemData/);
   assert.match(script, /items: statusRequestItems\.map\(orgInboxIndicatorItemData\)/);
   assert.match(orgFlowScript, /team-org-flow:edit-agent/);
+  assert.match(orgFlowScript, /team-org-flow:canvas-menu/);
+  assert.match(orgFlowScript, /team-org-flow:agent-menu/);
+  assert.match(orgFlowScript, /team-org-flow:governance-menu/);
   assert.match(orgFlowScript, /aria-describedby/);
   assert.match(orgFlowScript, /"Agent ID "/);
   assert.match(orgFlowScript, /agent-inbox-popover/);
@@ -144,6 +151,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(orgFlowScript, /data-team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.team-org-flow-canvas/);
   assert.match(orgFlowStylesheet, /\.org-flow-governance-node/);
+  assert.match(stylesheet, /\.org-context-menu/);
+  assert.match(stylesheet, /\.org-action-form/);
   assert.match(stylesheet, /max-width:\s*min\(17rem,\s*calc\(100vw - 2rem\)\);/);
   assert.doesNotMatch(stylesheet, /min-width:\s*max-content/);
   assert.match(markup, /<section class="people-agents-panel" aria-labelledby="focused-teams-heading">/);
@@ -2015,6 +2024,28 @@ function applyMutation(state, pathname, payload) {
     };
     return;
   }
+  const governanceGroupUpdateMatch = pathname.match(
+    /^\/api\/addons\/team-addon\/governance-groups\/(.+)$/,
+  );
+  if (governanceGroupUpdateMatch) {
+    const groupId = decodeURIComponent(governanceGroupUpdateMatch[1]);
+    const group = state.governance_groups[groupId];
+    if (group) {
+      for (const key of [
+        "name",
+        "manager_agent_id",
+        "member_team_ids",
+        "goals",
+        "max_cost_usd",
+        "archived",
+      ]) {
+        if (Object.hasOwn(payload, key)) {
+          group[key] = payload[key];
+        }
+      }
+    }
+    return;
+  }
   if (pathname === "/api/addons/team-addon/projects") {
     const projectId =
       payload.id || generatedId("project", [payload.team_id, payload.name], state.projects);
@@ -2219,6 +2250,52 @@ async function waitForRevision(page, revision) {
 
 async function waitForSelectOption(page, selector, value) {
   await page.locator(`${selector} option[value="${value}"]`).waitFor({ state: "attached" });
+}
+
+async function rightClickBareOrgCanvas(page) {
+  const point = await page.locator("#team-org-page [data-team-org-flow-canvas]").evaluate((canvas) => {
+    const rect = canvas.getBoundingClientRect();
+    const left = Math.max(rect.left + 12, 0);
+    const right = Math.min(rect.right - 12, window.innerWidth - 1);
+    const top = Math.max(rect.top + 12, 0);
+    const bottom = Math.min(rect.bottom - 12, window.innerHeight - 1);
+    const isBareCanvasPoint = (x, y) => {
+      const target = document.elementFromPoint(x, y);
+      return (
+        target &&
+        canvas.contains(target) &&
+        !target.closest(".react-flow__node, .react-flow__controls, .react-flow__panel")
+      );
+    };
+    const candidates = [
+      [0.88, 0.88],
+      [0.5, 0.88],
+      [0.88, 0.5],
+      [0.5, 0.5],
+      [0.12, 0.88],
+      [0.88, 0.12],
+      [0.12, 0.5],
+      [0.5, 0.12],
+    ];
+    for (const [xFraction, yFraction] of candidates) {
+      const x = left + (right - left) * xFraction;
+      const y = top + (bottom - top) * yFraction;
+      if (isBareCanvasPoint(x, y)) {
+        return { x, y };
+      }
+    }
+    for (let row = 0; row <= 8; row += 1) {
+      for (let column = 0; column <= 8; column += 1) {
+        const x = left + ((right - left) * column) / 8;
+        const y = top + ((bottom - top) * row) / 8;
+        if (isBareCanvasPoint(x, y)) {
+          return { x, y };
+        }
+      }
+    }
+    throw new Error("No visible bare org canvas point found");
+  });
+  await page.mouse.click(point.x, point.y, { button: "right" });
 }
 
 async function waitForCondition(predicate, message, { timeoutMs = 2000, intervalMs = 25 } = {}) {
@@ -3029,6 +3106,136 @@ test("team add-on Org chart keeps governance groups above related team filters",
     state: "visible",
   });
   assert.equal(await page.locator("#team-org-page").getByRole("heading", { name: "Alpha Team" }).count(), 0);
+});
+
+test("team add-on Org chart context menu creates teams from the bare canvas", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openOrgChart(page);
+
+  await rightClickBareOrgCanvas(page);
+  await page.getByRole("menuitem", { name: "Create team" }).waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await page.locator("#org-context-menu").waitFor({ state: "hidden" });
+
+  await rightClickBareOrgCanvas(page);
+  await page.getByRole("menuitem", { name: "Create team" }).click();
+  const dialog = page.locator("#org-action-modal");
+  await dialog.locator("#org-action-modal-title", { hasText: "Create team" }).waitFor({
+    state: "visible",
+  });
+  await dialog.locator('[name="name"]').fill("Context Team");
+  await dialog.locator('[name="manager_session_id"]').fill("session-context-manager");
+  await dialog.locator('[name="manager_display_name"]').fill("Context Manager");
+  await dialog.getByRole("button", { name: "Create team" }).click();
+
+  await waitForRevision(page, 9);
+  await dialog.waitFor({ state: "hidden" });
+  const request = requests.find(
+    (entry) => entry.method === "POST" && entry.pathname === "/api/addons/team-addon/teams",
+  );
+  assert.ok(request);
+  assert.equal(request.payload.name, "Context Team");
+  assert.equal(request.payload.manager_session_id, "session-context-manager");
+  assert.equal(request.payload.manager_display_name, "Context Manager");
+});
+
+test("team add-on Org chart context menu edits governance team oversight", async (t) => {
+  const initialState = seededGitState();
+  initialState.governance_groups["platform-oversight"].member_team_ids = ["team-alpha"];
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await openOrgChart(page);
+  const governanceNode = page.locator("#team-org-page .org-flow-governance-node", {
+    hasText: "Platform Oversight",
+  });
+  await governanceNode.waitFor({ state: "visible" });
+
+  await governanceNode.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Add team to oversight" }).click();
+  let dialog = page.locator("#org-action-modal");
+  await dialog.locator("#org-action-modal-title", { hasText: "Add team oversight" }).waitFor({
+    state: "visible",
+  });
+  await dialog.locator('[name="team_id"]').selectOption("team-beta");
+  await dialog.getByRole("button", { name: "Add team" }).click();
+  await waitForRevision(page, 5);
+
+  let patchRequests = requests.filter(
+    (entry) =>
+      entry.method === "PATCH" &&
+      entry.pathname === "/api/addons/team-addon/governance-groups/platform-oversight",
+  );
+  assert.equal(patchRequests.length, 1);
+  assert.deepEqual(patchRequests[0].payload.member_team_ids, ["team-alpha", "team-beta"]);
+
+  await governanceNode.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Remove team from oversight" }).click();
+  dialog = page.locator("#org-action-modal");
+  await dialog.locator("#org-action-modal-title", { hasText: "Remove team oversight" }).waitFor({
+    state: "visible",
+  });
+  await dialog.locator('[name="team_id"]').selectOption("team-beta");
+  await dialog.getByRole("button", { name: "Remove team" }).click();
+  await waitForRevision(page, 6);
+
+  patchRequests = requests.filter(
+    (entry) =>
+      entry.method === "PATCH" &&
+      entry.pathname === "/api/addons/team-addon/governance-groups/platform-oversight",
+  );
+  assert.equal(patchRequests.length, 2);
+  assert.deepEqual(patchRequests[1].payload.member_team_ids, ["team-alpha"]);
+});
+
+test("team add-on Org chart context menu adds subordinate agents", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openOrgChart(page);
+  const backendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  await backendCard.waitFor({ state: "visible" });
+
+  await backendCard.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Add subordinate agent" }).click();
+  const dialog = page.locator("#org-action-modal");
+  await dialog.locator("#org-action-modal-title", { hasText: "Add subordinate agent" }).waitFor({
+    state: "visible",
+  });
+  const form = dialog.locator('form[data-org-action="add-subordinate-agent"]');
+  await waitForSelectOption(page, '#org-register-agent-form [name="existing_session_id"]', "session-existing-backend");
+  assert.equal(await form.locator('[name="reports_to_agent_id"]').inputValue(), "backend");
+  assert.equal(await form.locator('[name="team_id"]').inputValue(), "team");
+  assert.equal(await form.locator('[name="project_id"]').inputValue(), "project");
+  await form.locator('[name="role_id"]').selectOption("project__worker");
+  await form.locator('[name="existing_session_id"]').selectOption("session-existing-backend");
+  await form.locator('[name="display_name"]').fill("Context Worker");
+  await form.locator('[name="max_concurrent"]').fill("1");
+  await form.getByRole("button", { name: "Register agent" }).click();
+
+  await waitForRevision(page, 9);
+  const request = requests.find(
+    (entry) => entry.method === "POST" && entry.pathname === "/api/addons/team-addon/agents",
+  );
+  assert.ok(request);
+  assert.equal(request.payload.team_id, "team");
+  assert.equal(request.payload.project_id, "project");
+  assert.equal(request.payload.role_id, "project__worker");
+  assert.equal(request.payload.session_id, "session-existing-backend");
+  assert.equal(request.payload.display_name, "Context Worker");
+  assert.equal(request.payload.reports_to_agent_id, "backend");
+  assert.equal(request.payload.ephemeral_policy.max_concurrent, 1);
 });
 
 test("team add-on cost refresh ignores avatar file input drafts", async (t) => {

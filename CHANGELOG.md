@@ -7,6 +7,15 @@
 - Added an inline core agent creation dialog to Team registration and
   auto-register the created session as a Team agent when creation succeeds.
 
+## 2026-07-03 - Team Org Chart Context Menus
+
+- Added right-click org chart actions for creating teams from the canvas,
+  adding subordinate Team agents from agent cards, and adding or removing
+  teams from governance oversight.
+- Reused the Team agent session picker/create-session bridge from org-chart
+  subordinate registration so new subordinates can link existing sessions or
+  create a core session before Team registration.
+
 ## 2026-07-03 - Claude MCP Registration
 
 - Reconciled generated Claude MCP config into Claude Code's user MCP registry

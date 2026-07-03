@@ -142,9 +142,21 @@ function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
       }
       scrollInboxPopoverFromWheel(event, popover);
     };
+    const handleContextMenu = (event: MouseEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest(".react-flow__node, .react-flow__controls, .react-flow__panel")
+      ) {
+        return;
+      }
+      dispatchOrgFlowContextMenu("team-org-flow:canvas-menu", event);
+    };
     canvas.addEventListener("wheel", handleWheel, { capture: true, passive: false });
+    canvas.addEventListener("contextmenu", handleContextMenu, { capture: true });
     return () => {
       canvas.removeEventListener("wheel", handleWheel, { capture: true });
+      canvas.removeEventListener("contextmenu", handleContextMenu, { capture: true });
     };
   }, []);
 
@@ -168,6 +180,13 @@ function TeamOrgFlowCanvas({ payload }: { payload: OrgFlowPayload }) {
         panOnScroll
         zoomOnScroll
         zoomOnPinch
+        onPaneContextMenu={(event) => {
+          event.preventDefault();
+          dispatchOrgFlowContextMenu("team-org-flow:canvas-menu", event);
+        }}
+        onMoveStart={() => {
+          window.dispatchEvent(new CustomEvent("team-org-flow:dismiss-menu"));
+        }}
         fitView
         minZoom={0.25}
         maxZoom={1.5}
@@ -231,6 +250,9 @@ function AgentNode({ data }: { data: AgentNodeData }) {
       aria-label={`Edit ${data.label}`}
       aria-describedby={descriptionId}
       onClick={openAgent}
+      onContextMenu={(event) => {
+        dispatchOrgFlowContextMenu("team-org-flow:agent-menu", event, { agentId: data.agentId });
+      }}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") {
           return;
@@ -305,7 +327,13 @@ function TeamNode({ data }: { data: TeamNodeData }) {
 
 function GovernanceNode({ data }: { data: GovernanceNodeData }) {
   return (
-    <article className="org-flow-governance-node governance-item" data-governance-group-id={data.groupId}>
+    <article
+      className="org-flow-governance-node governance-item"
+      data-governance-group-id={data.groupId}
+      onContextMenu={(event) => {
+        dispatchOrgFlowContextMenu("team-org-flow:governance-menu", event, { groupId: data.groupId });
+      }}
+    >
       <div className="org-flow-governance-header">
         <div className="org-flow-governance-title">
           <p className="section-label">Governance</p>
@@ -524,6 +552,24 @@ function HtmlBlock({ html }: { html: string }) {
     return null;
   }
   return <div dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function dispatchOrgFlowContextMenu(
+  eventName: "team-org-flow:canvas-menu" | "team-org-flow:agent-menu" | "team-org-flow:governance-menu",
+  event: MouseEvent | React.MouseEvent,
+  detail: Record<string, string> = {},
+) {
+  event.preventDefault();
+  event.stopPropagation();
+  window.dispatchEvent(
+    new CustomEvent(eventName, {
+      detail: {
+        ...detail,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      },
+    }),
+  );
 }
 
 function renderTeamOrgFlow(payload: OrgFlowPayload | null) {

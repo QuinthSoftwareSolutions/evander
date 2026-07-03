@@ -169,6 +169,7 @@ let selectedTaskBoardProjectId = "";
 let activeAgentVoiceCall = null;
 let teamsCreateTeamPanelOpen = false;
 let governanceCreateGroupPanelOpen = false;
+let orgContextMenuState = null;
 const formDraftRegistry = new Map();
 let pendingConflictRetry = null;
 let coreAgentSessions = [];
@@ -841,6 +842,435 @@ function syncGovernanceCreateGroupPanel() {
   const open = governanceCreateGroupPanelOpen && activeTeamView === "governance";
   elements.governanceCreateGroupPanel.hidden = !open;
   elements.governanceCreateGroupToggle?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function orgContextPoint(detail) {
+  return {
+    x: Number(detail?.clientX) || 0,
+    y: Number(detail?.clientY) || 0,
+  };
+}
+
+function openOrgCanvasContextMenu(detail) {
+  const point = orgContextPoint(detail);
+  openOrgContextMenu({
+    kind: "canvas",
+    point,
+    items: [{ action: "create-team", label: "Create team" }],
+  });
+}
+
+function openOrgAgentContextMenu(detail) {
+  const agentId = text(detail?.agentId);
+  const point = orgContextPoint(detail);
+  openOrgContextMenu({
+    kind: "agent",
+    point,
+    agentId,
+    items: [
+      {
+        action: "add-subordinate-agent",
+        label: "Add subordinate agent",
+        disabled: !state.agents?.[agentId],
+      },
+    ],
+  });
+}
+
+function openOrgGovernanceContextMenu(detail) {
+  const groupId = text(detail?.groupId);
+  const group = state.governance_groups?.[groupId];
+  const point = orgContextPoint(detail);
+  openOrgContextMenu({
+    kind: "governance",
+    point,
+    groupId,
+    items: [
+      {
+        action: "governance-add-team",
+        label: "Add team to oversight",
+        disabled: !group || governanceOversightTeamOptions(group, "add").length === 0,
+      },
+      {
+        action: "governance-remove-team",
+        label: "Remove team from oversight",
+        disabled: !group || governanceOversightTeamOptions(group, "remove").length === 0,
+      },
+    ],
+  });
+}
+
+function ensureOrgContextMenu() {
+  let menu = document.querySelector("#org-context-menu");
+  if (menu) {
+    return menu;
+  }
+  menu = document.createElement("div");
+  menu.id = "org-context-menu";
+  menu.className = "org-context-menu";
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "Org chart actions");
+  menu.hidden = true;
+  menu.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-org-context-action]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (button.disabled) {
+      return;
+    }
+    const action = text(button.dataset.orgContextAction);
+    const context = orgContextMenuState ? { ...orgContextMenuState } : {};
+    closeOrgContextMenu();
+    handleOrgContextAction(action, context);
+  });
+  document.body.append(menu);
+  return menu;
+}
+
+function openOrgContextMenu({ kind, point, items, agentId = "", groupId = "" }) {
+  const menu = ensureOrgContextMenu();
+  orgContextMenuState = { kind, agentId: text(agentId), groupId: text(groupId) };
+  menu.innerHTML = items
+    .map(
+      (item) => `
+        <button
+          type="button"
+          role="menuitem"
+          class="org-context-menu-item"
+          data-org-context-action="${escapeAttr(item.action)}"
+          ${item.disabled ? "disabled" : ""}
+        >${escapeHtml(item.label)}</button>
+      `,
+    )
+    .join("");
+  menu.hidden = false;
+  positionOrgContextMenu(menu, point);
+  window.requestAnimationFrame(() => {
+    menu.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
+  });
+}
+
+function positionOrgContextMenu(menu, point) {
+  const viewportPadding = 8;
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  const rect = menu.getBoundingClientRect();
+  const maxLeft = Math.max(viewportPadding, window.innerWidth - rect.width - viewportPadding);
+  const maxTop = Math.max(viewportPadding, window.innerHeight - rect.height - viewportPadding);
+  const left = Math.min(Math.max(viewportPadding, Number(point?.x) || 0), maxLeft);
+  const top = Math.min(Math.max(viewportPadding, Number(point?.y) || 0), maxTop);
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.top = `${Math.round(top)}px`;
+}
+
+function closeOrgContextMenu() {
+  const menu = document.querySelector("#org-context-menu");
+  if (menu) {
+    menu.hidden = true;
+    menu.innerHTML = "";
+  }
+  orgContextMenuState = null;
+}
+
+function handleOrgContextAction(action, context) {
+  if (action === "create-team") {
+    openOrgCreateTeamDialog();
+    return;
+  }
+  if (action === "governance-add-team") {
+    openOrgGovernanceOversightDialog(context.groupId, "add");
+    return;
+  }
+  if (action === "governance-remove-team") {
+    openOrgGovernanceOversightDialog(context.groupId, "remove");
+    return;
+  }
+  if (action === "add-subordinate-agent") {
+    void openOrgSubordinateAgentDialog(context.agentId);
+  }
+}
+
+function ensureOrgActionDialog() {
+  let modal = document.querySelector("#org-action-modal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "org-action-modal";
+    modal.className = "edit-modal org-action-modal";
+    modal.hidden = true;
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-labelledby", "org-action-modal-title");
+    modal.innerHTML = `
+      <div class="edit-modal-backdrop" data-org-action-close></div>
+      <section class="edit-modal-panel org-action-modal-panel">
+        <div class="edit-modal-header">
+          <div>
+            <p class="section-label">Org chart</p>
+            <h2 id="org-action-modal-title">Org chart action</h2>
+          </div>
+          <button type="button" class="record-action" data-org-action-close>Close</button>
+        </div>
+        <div id="org-action-modal-body" class="org-action-modal-body"></div>
+      </section>
+    `;
+    document.body.append(modal);
+  }
+  return {
+    modal,
+    title: modal.querySelector("#org-action-modal-title"),
+    body: modal.querySelector("#org-action-modal-body"),
+  };
+}
+
+function showOrgActionDialog({ title, bodyHtml }) {
+  const dialog = ensureOrgActionDialog();
+  dialog.title.textContent = title;
+  dialog.body.innerHTML = bodyHtml;
+  fillSelectsIn(dialog.body);
+  decorateFieldTooltips(dialog.body);
+  dialog.modal.hidden = false;
+  window.requestAnimationFrame(() => {
+    dialog.body.querySelector("input:not([readonly]), select, textarea, button")?.focus();
+  });
+}
+
+function closeOrgActionDialog() {
+  const dialog = ensureOrgActionDialog();
+  const form = dialog.body.querySelector("form");
+  if (form) {
+    clearFormDraft(form);
+  }
+  dialog.modal.hidden = true;
+  dialog.body.innerHTML = "";
+}
+
+function openOrgCreateTeamDialog() {
+  showOrgActionDialog({
+    title: "Create team",
+    bodyHtml: `
+      <form
+        id="org-create-team-form"
+        class="org-action-form"
+        data-org-action-form
+        data-org-action="create-team"
+        data-form-id="create-team-from-teams-form"
+        data-endpoint="/teams"
+        data-method="POST"
+      >
+        <label>Name <input name="name" required /></label>
+        <label>
+          Manager existing agent
+          <select
+            name="manager_existing_agent_id"
+            data-options="agents"
+            data-placeholder="Select existing agent"
+            data-agent-source-picker
+            data-session-field="manager_session_id"
+            data-display-field="manager_display_name"
+            data-suggested-role="manager"
+          ></select>
+        </label>
+        <label>Manager session ID <input name="manager_session_id" required /></label>
+        <label>Manager display name <input name="manager_display_name" /></label>
+        <label>Manager role name <input name="manager_role_name" value="Manager" /></label>
+        <label>Operator communication target id <input name="operator_communication_target_id" /></label>
+        <label class="checkbox-label">
+          <input name="escalate_to_governance" type="checkbox" /> Escalate team escalations to governance
+        </label>
+        <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
+        <div class="org-action-form-actions">
+          <button type="submit">Create team</button>
+          <button type="button" class="secondary" data-org-action-close>Cancel</button>
+        </div>
+      </form>
+    `,
+  });
+}
+
+function openOrgGovernanceOversightDialog(groupId, mode) {
+  const group = state.governance_groups?.[text(groupId)];
+  if (!group) {
+    setStatus("Governance group is no longer available.", "error");
+    return;
+  }
+  const normalizedMode = mode === "remove" ? "remove" : "add";
+  const options = governanceOversightTeamOptions(group, normalizedMode);
+  const isRemove = normalizedMode === "remove";
+  const title = `${isRemove ? "Remove" : "Add"} team oversight`;
+  const emptyMessage = isRemove
+    ? "This governance group has no visible member teams to remove."
+    : "All visible teams are already in this governance group.";
+  const bodyHtml = options.length
+    ? `
+      <form
+        id="org-governance-oversight-form"
+        class="org-action-form"
+        data-org-action-form
+        data-org-action="governance-${normalizedMode}-team"
+        data-group-id="${escapeAttr(group.id)}"
+      >
+        <p class="meta-line">${escapeHtml(group.name)} (${escapeHtml(group.id)})</p>
+        <label>Team
+          <select name="team_id" required>
+            ${renderSelectOptions(options, { placeholder: "Select team" })}
+          </select>
+        </label>
+        <div class="org-action-form-actions">
+          <button type="submit">${isRemove ? "Remove team" : "Add team"}</button>
+          <button type="button" class="secondary" data-org-action-close>Cancel</button>
+        </div>
+      </form>
+    `
+    : `
+      <div class="org-action-empty">
+        <p class="empty-state">${escapeHtml(emptyMessage)}</p>
+        <div class="org-action-form-actions">
+          <button type="button" data-org-action-close>Close</button>
+        </div>
+      </div>
+    `;
+  showOrgActionDialog({ title, bodyHtml });
+}
+
+async function openOrgSubordinateAgentDialog(agentId) {
+  const superior = state.agents?.[text(agentId)];
+  if (!superior) {
+    setStatus("Agent is no longer available.", "error");
+    return;
+  }
+  const teamId = text(superior.team_id);
+  if (!teamId) {
+    setStatus("Teamless agents cannot have subordinate Team agents.", "error");
+    return;
+  }
+  const directoryPath = teamAgentDirectoryPath();
+  await loadCoreAgentSessions({ directoryPath, force: false, rerender: false });
+  showOrgActionDialog({
+    title: "Add subordinate agent",
+    bodyHtml: renderOrgSubordinateAgentForm(superior, directoryPath),
+  });
+}
+
+function renderOrgSubordinateAgentForm(superior, directoryPath) {
+  const teamId = text(superior.team_id);
+  const selectedProjectId = agentProjectIds(superior)[0] || "";
+  const superiorLabel = agentLabel(superior);
+  const defaultsOptions = teamAgentOptions(teamId).filter(([agentId]) => text(agentId) !== text(superior.id));
+  return `
+    <form
+      id="org-register-agent-form"
+      class="org-action-form"
+      data-org-action-form
+      data-org-action="add-subordinate-agent"
+      data-form-id="register-agent-form"
+      data-endpoint="/agents"
+      data-method="POST"
+      data-directory-path="${escapeAttr(directoryPath)}"
+    >
+      <input type="hidden" name="team_id" value="${escapeAttr(teamId)}" />
+      <input type="hidden" name="reports_to_agent_id" value="${escapeAttr(superior.id)}" />
+      <label>Reports to <input value="${escapeAttr(superiorLabel)} (${escapeAttr(superior.id)})" readonly /></label>
+      <label>
+        Existing agent defaults
+        <select
+          name="existing_agent_id"
+          data-agent-source-picker
+          data-display-field="display_name"
+          data-role-field="role_id"
+          data-project-field="project_id"
+          data-max-concurrent-field="max_concurrent"
+        >${renderSelectOptions(defaultsOptions, { placeholder: "Select existing agent" })}</select>
+      </label>
+      <label>Project
+        <select name="project_id">${renderSelectOptions(teamProjectOptions(teamId), { selectedValue: selectedProjectId, placeholder: "No project" })}</select>
+      </label>
+      <label>Role
+        <select name="role_id" required>${renderSelectOptions(teamRoleOptions(teamId), { placeholder: "Select role" })}</select>
+      </label>
+      <label>Existing session
+        <select
+          name="existing_session_id"
+          data-core-agent-session-picker
+          data-session-field="session_id"
+        >${renderCoreAgentSessionOptions()}</select>
+      </label>
+      <div class="org-agent-session-actions">
+        <button type="button" class="record-action" data-core-agent-session-refresh>Refresh sessions</button>
+        <button type="button" class="record-action" data-core-agent-session-create>Create new session</button>
+      </div>
+      <label>Session ID <input name="session_id" required /></label>
+      <label>Display name <input name="display_name" /></label>
+      <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
+      <div class="org-action-form-actions">
+        <button type="submit">Register agent</button>
+        <button type="button" class="secondary" data-org-action-close>Cancel</button>
+      </div>
+    </form>
+  `;
+}
+
+function governanceOversightTeamOptions(group, mode) {
+  const memberTeamIds = new Set(uniqueTextList(group?.member_team_ids || []));
+  const includeMember = mode === "remove";
+  return values(state.teams)
+    .filter(isVisibleTeam)
+    .filter((team) => memberTeamIds.has(text(team.id)) === includeMember)
+    .sort(byId)
+    .map((team) => [team.id, `${team.name || team.id} (${team.id})`]);
+}
+
+async function submitOrgActionForm(form) {
+  const action = text(form.dataset.orgAction);
+  if (action === "create-team" || action === "add-subordinate-agent") {
+    await submitOrgCreateForm(form);
+    return;
+  }
+  if (action === "governance-add-team" || action === "governance-remove-team") {
+    await submitOrgGovernanceOversightForm(form, action === "governance-remove-team");
+  }
+}
+
+async function submitOrgCreateForm(form) {
+  const data = formData(form);
+  const endpoint = endpointForForm(form, data);
+  const method = form.dataset.method || "POST";
+  if (!endpoint) {
+    return;
+  }
+  const saved = await submitMutation(form, endpoint, method, payloadForForm(form, data));
+  if (saved) {
+    closeOrgActionDialog();
+  }
+}
+
+async function submitOrgGovernanceOversightForm(form, removeTeam) {
+  const groupId = text(form.dataset.groupId);
+  const teamId = text(formData(form).team_id);
+  const group = state.governance_groups?.[groupId];
+  if (!group) {
+    setStatus("Governance group is no longer available.", "error");
+    return;
+  }
+  if (!teamId) {
+    setStatus("Team is required.", "error");
+    return;
+  }
+  const currentTeamIds = uniqueTextList(group.member_team_ids || []);
+  const nextTeamIds = removeTeam
+    ? currentTeamIds.filter((memberTeamId) => memberTeamId !== teamId)
+    : uniqueTextList([...currentTeamIds, teamId]);
+  const saved = await submitMutation(
+    form,
+    `/governance-groups/${encodeURIComponent(groupId)}`,
+    "PATCH",
+    { member_team_ids: nextTeamIds },
+  );
+  if (saved) {
+    closeOrgActionDialog();
+  }
 }
 
 function bindForms() {
@@ -1813,6 +2243,59 @@ function bindOrgFlowEvents() {
       return;
     }
     openEditDialog("agent", agentId);
+  });
+  window.addEventListener("team-org-flow:canvas-menu", (event) => {
+    openOrgCanvasContextMenu(event.detail);
+  });
+  window.addEventListener("team-org-flow:agent-menu", (event) => {
+    openOrgAgentContextMenu(event.detail);
+  });
+  window.addEventListener("team-org-flow:governance-menu", (event) => {
+    openOrgGovernanceContextMenu(event.detail);
+  });
+  window.addEventListener("team-org-flow:dismiss-menu", () => {
+    closeOrgContextMenu();
+  });
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("form[data-org-action-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    void submitOrgActionForm(form);
+  });
+
+  document.addEventListener("click", (event) => {
+    const closeTarget = event.target?.closest?.("[data-org-action-close]");
+    if (closeTarget) {
+      if (closeTarget.classList.contains("edit-modal-backdrop") && event.target !== closeTarget) {
+        return;
+      }
+      event.preventDefault();
+      closeOrgActionDialog();
+      return;
+    }
+
+    const menu = document.querySelector("#org-context-menu");
+    if (menu && !menu.hidden && !menu.contains(event.target)) {
+      closeOrgContextMenu();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+    const actionDialog = document.querySelector("#org-action-modal");
+    if (actionDialog && !actionDialog.hidden) {
+      closeOrgActionDialog();
+      return;
+    }
+    const menu = document.querySelector("#org-context-menu");
+    if (menu && !menu.hidden) {
+      closeOrgContextMenu();
+    }
   });
 }
 
@@ -10609,6 +11092,9 @@ async function submitCreateForm(form) {
   }
   if (saved && form.hasAttribute("data-team-inline-create-form")) {
     closeTeamInlineCreateFormFor(form);
+  }
+  if (saved && form.hasAttribute("data-org-action-form")) {
+    closeOrgActionDialog();
   }
   return saved;
 }
