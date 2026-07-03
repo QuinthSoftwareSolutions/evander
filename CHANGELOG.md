@@ -6,6 +6,8 @@
   sessions instead of requiring manual session ID entry.
 - Added an inline core agent creation dialog to Team registration and
   auto-register the created session as a Team agent when creation succeeds.
+- Guarded inline Team core-session creation with the Admin privileged-operation
+  lock and required an explicit session id before Team auto-registration.
 
 ## 2026-07-03 - Team Org Chart Context Menus
 

@@ -2227,7 +2227,12 @@ function applyMutation(state, pathname, payload) {
   }
 }
 
-async function openBrowserPage(t, port, contextOptions = {}) {
+async function openBrowserPage(
+  t,
+  port,
+  contextOptions = {},
+  path = "/addons/team-addon/?privileged_unlocked=true",
+) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
@@ -2236,7 +2241,7 @@ async function openBrowserPage(t, port, contextOptions = {}) {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
   });
-  await page.goto(`http://127.0.0.1:${port}/addons/team-addon/`, {
+  await page.goto(`http://127.0.0.1:${port}${path}`, {
     waitUntil: "domcontentloaded",
   });
   return page;
@@ -2879,6 +2884,13 @@ test("team add-on agent registration can create and auto-register a core session
   await createDialog.waitFor({ state: "visible" });
   await createDialog.locator("label", { hasText: "VM name" }).locator("input").fill("vm-team-created");
   await createDialog.getByRole("button", { name: "Create and register" }).click();
+  await createDialog.locator(".error-callout", { hasText: "Session id is required" }).waitFor({ state: "visible" });
+  assert.equal(
+    requests.some((request) => request.method === "POST" && request.pathname === "/api/admin/agents/create-operations"),
+    false,
+  );
+  await createDialog.locator('input[placeholder="Required"]').fill("session-team-created");
+  await createDialog.getByRole("button", { name: "Create and register" }).click();
 
   await waitForCondition(
     () =>
@@ -2894,13 +2906,52 @@ test("team add-on agent registration can create and auto-register a core session
   assert.ok(createRequest);
   assert.equal(createRequest.payload.backend, "libvirt_vm");
   assert.equal(createRequest.payload.vm_name, "vm-team-created");
+  assert.equal(createRequest.payload.session_id, "session-team-created");
 
   const registerRequest = requests.find((request) =>
     request.method === "POST" && request.pathname === "/api/addons/team-addon/agents"
   );
   assert.ok(registerRequest);
-  assert.equal(registerRequest.payload.session_id, "session-vm-team-created");
+  assert.equal(registerRequest.payload.session_id, "session-team-created");
   assert.equal(registerRequest.payload.display_name, "Created Core Agent");
+});
+
+test("team add-on agent registration keeps core creation locked with privileges locked", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+
+  await teamGroup.locator('[data-team-record-tab="agent"]').click();
+  await teamGroup.getByRole("button", { name: "Add agent" }).click();
+  const inlineAgentForm = teamGroup.locator('form[data-form-id="register-agent-form"]');
+  await inlineAgentForm.waitFor({ state: "visible" });
+  assert.equal(await inlineAgentForm.getByRole("button", { name: "Create new session" }).isDisabled(), true);
+
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new CustomEvent("team-agent-create:open", {
+        detail: { contextId: "locked-create", directoryPath: "root" },
+      }),
+    );
+  });
+  const createDialog = page.locator('[role="dialog"][aria-label="Create and register agent"]');
+  await createDialog.waitFor({ state: "visible" });
+  assert.equal(await createDialog.getByRole("button", { name: "Create and register" }).isDisabled(), true);
+  await page.waitForTimeout(100);
+  assert.equal(
+    requests.some((request) => request.method === "POST" && request.pathname === "/api/admin/agents/create-operations"),
+    false,
+  );
 });
 
 test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {

@@ -31,6 +31,8 @@ declare global {
 
 const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+const TEAM_SESSION_ID_REQUIRED_MESSAGE =
+  "Session id is required so the created core session can be registered in Team.";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -56,9 +58,14 @@ function dispatchCreated(detail: TeamAgentCreatedDetail) {
   window.dispatchEvent(new CustomEvent("team-agent-create:created", { detail }));
 }
 
+function privilegedUnlockedFromLocation(): boolean {
+  return new URLSearchParams(window.location.search).get("privileged_unlocked") === "true";
+}
+
 function TeamAgentCreateHost() {
   const [request, setRequest] = useState<TeamAgentCreateOpenDetail | null>(null);
   const [progress, setProgress] = useState("");
+  const privilegedUnlocked = privilegedUnlockedFromLocation();
 
   useEffect(() => {
     const openDialog = (detail?: TeamAgentCreateOpenDetail) => {
@@ -86,6 +93,12 @@ function TeamAgentCreateHost() {
   }
 
   async function handleCreate(payload: AgentCreateRequest) {
+    if (!privilegedUnlocked) {
+      throw new Error("Unlock privileged operations to create a core agent session.");
+    }
+    if (!payload.session_id?.trim()) {
+      throw new Error(TEAM_SESSION_ID_REQUIRED_MESSAGE);
+    }
     setProgress("Queueing core agent session.");
     const submitted = await submitAgentCreateOperation(payload);
     setProgress(`Creating ${submitted.target_name}.`);
@@ -110,7 +123,9 @@ function TeamAgentCreateHost() {
       description={progress || "Create a VM or container session, then Team registration will continue automatically."}
       submitLabel="Create and register"
       submittingLabel="Creating..."
-      privilegedUnlocked
+      privilegedUnlocked={privilegedUnlocked}
+      requireSessionId
+      requireSessionIdMessage={TEAM_SESSION_ID_REQUIRED_MESSAGE}
       closeOnSuccess
       onClose={() => {
         setRequest(null);

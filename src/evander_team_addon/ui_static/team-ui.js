@@ -1159,6 +1159,9 @@ function renderOrgSubordinateAgentForm(superior, directoryPath) {
   const selectedProjectId = agentProjectIds(superior)[0] || "";
   const superiorLabel = agentLabel(superior);
   const defaultsOptions = teamAgentOptions(teamId).filter(([agentId]) => text(agentId) !== text(superior.id));
+  const createSessionDisabled = teamPrivilegedUnlocked()
+    ? ""
+    : 'disabled title="Unlock privileged operations to create a core agent session."';
   return `
     <form
       id="org-register-agent-form"
@@ -1199,7 +1202,7 @@ function renderOrgSubordinateAgentForm(superior, directoryPath) {
       </label>
       <div class="org-agent-session-actions">
         <button type="button" class="record-action" data-core-agent-session-refresh>Refresh sessions</button>
-        <button type="button" class="record-action" data-core-agent-session-create>Create new session</button>
+        <button type="button" class="record-action" data-core-agent-session-create ${createSessionDisabled}>Create new session</button>
       </div>
       <label>Session ID <input name="session_id" required /></label>
       <label>Display name <input name="display_name" /></label>
@@ -1682,6 +1685,10 @@ function bindTeamAgentSessionControls() {
       return;
     }
     event.preventDefault();
+    if (!teamPrivilegedUnlocked()) {
+      setStatus("Unlock privileged operations to create a core agent session.", "warning");
+      return;
+    }
     const form = createButton.closest("form");
     if (!form) {
       setStatus("Agent registration form is unavailable.", "error");
@@ -1785,6 +1792,10 @@ function teamAgentDirectoryPath(form = null) {
   }
   const fromQuery = new URLSearchParams(window.location.search).get("directory_path");
   return text(fromQuery) || "root";
+}
+
+function teamPrivilegedUnlocked() {
+  return new URLSearchParams(window.location.search).get("privileged_unlocked") === "true";
 }
 
 function registeredTeamSessionIds() {
@@ -5697,6 +5708,9 @@ function renderTeamInlineAgentForm(teamId) {
   const formId = teamInlineCreateDomId(teamId, "agent");
   const normalizedTeamId = text(teamId);
   const visibleTeamId = isNoTeamRecord({ id: normalizedTeamId }) ? "" : normalizedTeamId;
+  const createSessionDisabled = teamPrivilegedUnlocked()
+    ? ""
+    : 'disabled title="Unlock privileged operations to create a core agent session."';
   return `
     <form
       id="${escapeAttr(formId)}"
@@ -5746,6 +5760,7 @@ function renderTeamInlineAgentForm(teamId) {
               class="secondary"
               data-core-agent-session-create
               data-tooltip-key="create_session"
+              ${createSessionDisabled}
             >Create new session</button>
           </div>
         </div>

@@ -25,6 +25,8 @@ type AgentCreateDialogProps = {
   closeLabel?: string;
   privilegedUnlocked?: boolean;
   closeOnSuccess?: boolean;
+  requireSessionId?: boolean;
+  requireSessionIdMessage?: string;
 };
 
 function CreateFieldLabel({ children, tooltip }: { children: ReactNode; tooltip: ReactNode }) {
@@ -82,6 +84,8 @@ export function AgentCreateDialog({
   closeLabel = "Close",
   privilegedUnlocked = true,
   closeOnSuccess = true,
+  requireSessionId = false,
+  requireSessionIdMessage = "Session id is required.",
 }: AgentCreateDialogProps) {
   const [createForm, setCreateForm] = useState<AgentCreateFormState>(() => emptyCreateForm());
   const [createOptions, setCreateOptions] = useState<AgentCreateOptionsResponse | null>(null);
@@ -129,6 +133,10 @@ export function AgentCreateDialog({
   async function handleSubmit() {
     if (createForm.backend === "libvirt_vm" && !createForm.vmName.trim()) {
       setInlineValidation("VM name is required.");
+      return;
+    }
+    if (requireSessionId && !createForm.sessionId.trim()) {
+      setInlineValidation(requireSessionIdMessage);
       return;
     }
     if (createForm.backend === "container_worker_vm" && !createForm.sessionId.trim()) {
@@ -256,7 +264,7 @@ export function AgentCreateDialog({
               <input
                 value={createForm.sessionId}
                 onChange={(event) => setCreateForm((current) => ({ ...current, sessionId: event.target.value }))}
-                placeholder={createForm.backend === "container_worker_vm" ? "Required" : "Optional"}
+                placeholder={requireSessionId || createForm.backend === "container_worker_vm" ? "Required" : "Optional"}
               />
             </label>
             <label className="field-stack">
