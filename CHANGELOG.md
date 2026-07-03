@@ -19,6 +19,7 @@
   create a core session before Team registration.
 - Fixed revision-conflict retry routing for org chart governance oversight
   actions.
+- Kept nested core-session creation dialogs above org chart action dialogs.
 
 ## 2026-07-03 - Claude MCP Registration
 

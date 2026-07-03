@@ -3343,6 +3343,27 @@ test("team add-on Org chart context menu adds subordinate agents", async (t) => 
   assert.equal(await form.locator('[name="reports_to_agent_id"]').inputValue(), "backend");
   assert.equal(await form.locator('[name="team_id"]').inputValue(), "team");
   assert.equal(await form.locator('[name="project_id"]').inputValue(), "project");
+
+  await form.getByRole("button", { name: "Create new session" }).click();
+  const createDialog = page.locator('[role="dialog"][aria-label="Create and register agent"]');
+  await createDialog.waitFor({ state: "visible" });
+  const createDialogBox = await createDialog.boundingBox();
+  assert.ok(createDialogBox);
+  const createDialogIsTopmost = await page.evaluate(
+    ({ x, y }) => {
+      const target = document.elementFromPoint(x, y);
+      return Boolean(target?.closest?.('[role="dialog"][aria-label="Create and register agent"]'));
+    },
+    {
+      x: createDialogBox.x + createDialogBox.width / 2,
+      y: createDialogBox.y + Math.min(60, createDialogBox.height / 2),
+    },
+  );
+  assert.equal(createDialogIsTopmost, true);
+  await createDialog.getByRole("button", { name: "Close" }).click();
+  await createDialog.waitFor({ state: "hidden" });
+  await dialog.waitFor({ state: "visible" });
+
   await form.locator('[name="role_id"]').selectOption("project__worker");
   await form.locator('[name="existing_session_id"]').selectOption("session-existing-backend");
   await form.locator('[name="display_name"]').fill("Context Worker");
