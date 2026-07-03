@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-03 - Team Org Chart Viewport
+
+- Kept the Team Add-on org chart canvas viewport stable across data-only edits
+  such as agent label saves, while still refitting when the graph layout
+  changes.
+
 ## 2026-07-03 - Team Agent Session Registration
 
 - Let Team Add-on agent registration select available core VM and container

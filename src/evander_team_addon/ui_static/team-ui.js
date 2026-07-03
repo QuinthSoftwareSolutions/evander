@@ -5035,15 +5035,21 @@ function buildOrgFlowGraph(focusedTeams) {
   return {
     nodes,
     edges,
-    fitKey: [
-      state.revision,
-      selectedOrgTeamId,
-      showArchived ? "archived" : "active",
-      costState.generated_at || "",
-      nodes.length,
-      edges.length,
-    ].join(":"),
+    fitKey: orgFlowLayoutFitKey(nodes, edges),
   };
+}
+
+function orgFlowLayoutFitKey(nodes, edges) {
+  return JSON.stringify({
+    scope: selectedOrgTeamId,
+    archived: showArchived,
+    nodes: nodes.map((node) => [
+      node.id,
+      Math.round(Number(node.position?.x) || 0),
+      Math.round(Number(node.position?.y) || 0),
+    ]),
+    edges: edges.map((edge) => [edge.source, edge.target, edge.className || ""]),
+  });
 }
 
 function layoutHierarchyRoots({ roots, nodes, edges, teamId, parentNodeId, startY, leftX, edgeKind }) {

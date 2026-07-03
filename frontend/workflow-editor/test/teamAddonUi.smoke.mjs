@@ -128,6 +128,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /session_is_expired/);
   assert.match(script, /expired_agent_session/);
   assert.match(script, /buildOrgFlowGraph/);
+  assert.match(script, /orgFlowLayoutFitKey\(nodes, edges\)/);
   assert.match(script, /team-org-flow:edit-agent/);
   assert.match(script, /team-org-flow:canvas-menu/);
   assert.match(script, /data-org-context-action/);
@@ -2310,6 +2311,29 @@ async function waitForSelectOption(page, selector, value) {
   await page.locator(`${selector} option[value="${value}"]`).waitFor({ state: "attached" });
 }
 
+async function orgChartViewportTransform(page) {
+  const viewport = page.locator("#team-org-page .react-flow__viewport");
+  await viewport.waitFor({ state: "visible" });
+  return viewport.evaluate((element) => getComputedStyle(element).transform);
+}
+
+async function zoomOrgChartCanvas(page) {
+  const canvas = page.locator("#team-org-page [data-team-org-flow-canvas]");
+  const box = await canvas.boundingBox();
+  assert.ok(box, "expected org chart canvas bounds");
+  const beforeTransform = await orgChartViewportTransform(page);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, -600);
+  await page.waitForFunction(
+    (expectedTransform) => {
+      const viewport = document.querySelector("#team-org-page .react-flow__viewport");
+      return Boolean(viewport) && getComputedStyle(viewport).transform !== expectedTransform;
+    },
+    beforeTransform,
+  );
+  return orgChartViewportTransform(page);
+}
+
 async function rightClickBareOrgCanvas(page) {
   const point = await page.locator("#team-org-page [data-team-org-flow-canvas]").evaluate((canvas) => {
     const rect = canvas.getBoundingClientRect();
@@ -3191,6 +3215,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
     state: "visible",
   });
 
+  const zoomedOrgViewport = await zoomOrgChartCanvas(page);
   await focusedBackendCard.click();
   await page.locator("#edit-modal-title", { hasText: "Edit agent backend" }).waitFor({
     state: "visible",
@@ -3209,6 +3234,12 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   assert.ok(editRequest);
   assert.equal(editRequest.payload.display_name, "Backend Worker Updated");
   assert.equal(Object.hasOwn(editRequest.payload, "project_id"), false);
+  await page.waitForTimeout(350);
+  assert.equal(
+    await orgChartViewportTransform(page),
+    zoomedOrgViewport,
+    "saving agent edits should not refit the org chart viewport",
+  );
 });
 
 test("team add-on Org chart draws edges and separates sibling agents", async (t) => {
