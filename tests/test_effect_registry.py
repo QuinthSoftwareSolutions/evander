@@ -2543,6 +2543,12 @@ def test_container_prompt_command_supports_claude_provider() -> None:
     assert "--output-format stream-json" in command
     assert "--verbose" in command
     assert "--mcp-config /home/agent/.claude/mcp-config.json" in command
+    assert "claude mcp remove -s user evander" in command
+    assert "claude mcp add --transport http -s user evander" in command
+    assert (
+        "evander_sync_claude_mcp_server /home/agent/.claude/mcp-config.json"
+        in command
+    )
     assert "printf '%s' 'check teams' | claude -p" in command
     assert "--mcp-config /home/agent/.claude/mcp-config.json 'check teams'" not in command
     assert "evander_claude_json_to_log" in command
@@ -2566,6 +2572,8 @@ def test_container_prompt_command_supports_claude_resume_modes() -> None:
 
     assert "printf '%s' 'check teams' | claude --resume claude-session-1 -p" in resume_thread
     assert "printf '%s' 'check teams' | claude --continue -p" in resume_last
+    assert "evander_sync_claude_mcp_server" in resume_thread
+    assert "evander_sync_claude_mcp_server" in resume_last
 
 
 def test_container_session_files_do_not_leak_azure_openai_settings() -> None:

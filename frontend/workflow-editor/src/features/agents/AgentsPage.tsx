@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
 
 import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
@@ -18,15 +17,20 @@ import {
 } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
-import { OptionMultiSelectEditor, StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
+import { StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
+import { AgentCreateDialog } from "./AgentCreateDialog";
+import {
+  createOperationIsActive,
+  createOperationMessage,
+  loadAgentCreateOperations,
+  submitAgentCreateOperation,
+  type AgentCreateSubmitMeta,
+} from "./agentCreateShared";
 import type {
   AgentActionResponse,
   AgentBackend,
   AgentCreateOperation,
-  AgentCreateOperationListResponse,
-  AgentCreateOperationResponse,
   AgentCreateRequest,
-  AgentCreateOptionsResponse,
   AgentExecutionRecord,
   AgentListResponse,
   AgentLogResponse,
@@ -111,35 +115,6 @@ type OperatorSteeringNoteMutationResponse = {
 type BackendFilter = "all" | AgentBackend;
 type StatusFilter = "active" | "inactive" | "all";
 
-type AgentCreateFormState = {
-  backend: AgentBackend;
-  vmName: string;
-  targetName: string;
-  sessionId: string;
-  ttlDuration: string;
-  model: string;
-  provider: string;
-  vmUser: string;
-  agentProvider: string;
-  modelProviderMode: string;
-  vmImage: string;
-  containerImage: string;
-  dotnet: boolean;
-  nuget: boolean;
-  mssql: boolean;
-  mssqlInitRoot: string;
-  playwright: boolean;
-  initialPolicy: AgentInitialPolicyFormState;
-};
-
-type AgentInitialPolicyFormState = {
-  labels: Record<string, string>;
-  webSearchEnabled: boolean;
-  allowedTools: string[];
-  allowedScriptNames: string[];
-  communicationTargetIds: string[];
-};
-
 type AgentPolicyFormState = {
   model: string;
   ttlHours: string;
@@ -195,39 +170,6 @@ function emptyLogState(text = "Loading..."): AgentLogViewState {
     hasMoreBefore: false,
     pendingLiveUpdate: false,
     updatedAt: null,
-  };
-}
-
-function emptyCreateForm(): AgentCreateFormState {
-  return {
-    backend: "libvirt_vm",
-    vmName: "",
-    targetName: "",
-    sessionId: "",
-    ttlDuration: "7d",
-    model: "",
-    provider: "",
-    vmUser: "agent",
-    agentProvider: "",
-    modelProviderMode: "",
-    vmImage: "",
-    containerImage: "",
-    dotnet: false,
-    nuget: false,
-    mssql: false,
-    mssqlInitRoot: "",
-    playwright: false,
-    initialPolicy: emptyInitialPolicyForm(),
-  };
-}
-
-function emptyInitialPolicyForm(): AgentInitialPolicyFormState {
-  return {
-    labels: {},
-    webSearchEnabled: false,
-    allowedTools: [],
-    allowedScriptNames: [],
-    communicationTargetIds: [],
   };
 }
 
@@ -302,42 +244,6 @@ function optionalNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function parseDurationSeconds(value: string): number | null {
-  const match = value
-    .trim()
-    .toLowerCase()
-    .match(
-      /^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)$/,
-    );
-  if (!match) return null;
-  const amount = Number(match[1]);
-  if (!Number.isInteger(amount) || amount <= 0) return null;
-  const unitSeconds: Record<string, number> = {
-    s: 1,
-    sec: 1,
-    secs: 1,
-    second: 1,
-    seconds: 1,
-    m: 60,
-    min: 60,
-    mins: 60,
-    minute: 60,
-    minutes: 60,
-    h: 60 * 60,
-    hr: 60 * 60,
-    hrs: 60 * 60,
-    hour: 60 * 60,
-    hours: 60 * 60,
-    d: 24 * 60 * 60,
-    day: 24 * 60 * 60,
-    days: 24 * 60 * 60,
-    w: 7 * 24 * 60 * 60,
-    week: 7 * 24 * 60 * 60,
-    weeks: 7 * 24 * 60 * 60,
-  };
-  return amount * unitSeconds[match[2]];
-}
-
 type AgentListLoadOptions = {
   summaryOnly?: boolean;
   dashboardCache?: boolean;
@@ -388,41 +294,6 @@ async function loadAgentList(
 
 async function loadSkillList(): Promise<SkillLibraryItem[]> {
   const payload = await fetchJson<SkillListResponse>("/api/admin/skills");
-  return payload.items;
-}
-
-async function loadAgentCreateOptions(
-  directoryPath: string,
-): Promise<AgentCreateOptionsResponse> {
-  const query = new URLSearchParams();
-  const trimmed = directoryPath.trim();
-  if (trimmed) query.set("directory_path", trimmed);
-  const suffix = query.toString();
-  return fetchJson<AgentCreateOptionsResponse>(
-    `/api/admin/agents/create-options${suffix ? `?${suffix}` : ""}`,
-  );
-}
-
-async function submitAgentCreateOperation(
-  createPayload: AgentCreateRequest,
-): Promise<AgentCreateOperation> {
-  const payload = await fetchJson<AgentCreateOperationResponse>(
-    "/api/admin/agents/create-operations",
-    {
-      method: "POST",
-      body: JSON.stringify(createPayload),
-    },
-  );
-  return payload.operation;
-}
-
-async function loadAgentCreateOperations(directoryPath: string): Promise<AgentCreateOperation[]> {
-  const query = new URLSearchParams({ limit: "30" });
-  const trimmed = directoryPath.trim();
-  if (trimmed) query.set("directory_path", trimmed);
-  const payload = await fetchJson<AgentCreateOperationListResponse>(
-    `/api/admin/agents/create-operations?${query.toString()}`,
-  );
   return payload.items;
 }
 
@@ -647,24 +518,6 @@ function agentTargetStateText(agent: AgentRecord): string {
   return `Worker: latest ${statusLabel(latestStatus)}`;
 }
 
-function createOperationIsActive(operation: AgentCreateOperation): boolean {
-  return operation.status === "queued" || operation.status === "running";
-}
-
-function createOperationMessage(operation: AgentCreateOperation): string {
-  if (operation.status === "succeeded") {
-    const message = operation.result?.message;
-    return typeof message === "string" && message.trim()
-      ? message
-      : `Created ${operation.target_name}`;
-  }
-  if (operation.status === "failed") {
-    return operation.error || "Agent create failed.";
-  }
-  if (operation.status === "running") return "Setting up agent target.";
-  return "Waiting to start.";
-}
-
 function hostRuntimeImage(host: Record<string, unknown> | null | undefined): RuntimeImageInfo | null {
   const value = host?.runtime_image;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -758,23 +611,6 @@ function runtimeImageListSummary(runtimeImage: RuntimeImageInfo | null): string 
   return runtimeImage.template_alias
     ? `VM template ${runtimeImage.template_alias} / ${imageRef}`
     : `VM image ref ${imageRef}`;
-}
-
-function CreateFieldLabel({ children, tooltip }: { children: ReactNode; tooltip: ReactNode }) {
-  const labelText = typeof children === "string" ? children : "Field";
-  return (
-    <span className="config-field-label">
-      <span>{children}</span>
-      <Tooltip
-        content={tooltip}
-        focusable
-        ariaLabel={`${labelText} help`}
-        triggerClassName="config-field-tooltip-trigger"
-      >
-        <span className="config-field-tooltip-icon" aria-hidden="true">i</span>
-      </Tooltip>
-    </span>
-  );
 }
 
 function recordEntries(value: Record<string, unknown> | null | undefined): Array<[string, string]> {
@@ -884,52 +720,6 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   };
 }
 
-function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): AgentCreateRequest {
-  const payload: AgentCreateRequest = {
-    backend: form.backend,
-    session_id: optionalText(form.sessionId),
-    directory_path: optionalText(directoryPath),
-  };
-  const ttlSeconds = parseDurationSeconds(form.ttlDuration);
-  if (ttlSeconds != null) payload.ttl_seconds = ttlSeconds;
-  const model = optionalText(form.model);
-  if (model) payload.model = model;
-  const agentProvider = optionalText(form.agentProvider);
-  if (agentProvider) payload.agent_provider = agentProvider;
-  const modelProviderMode = optionalText(form.modelProviderMode);
-  if (modelProviderMode) payload.model_provider_mode = modelProviderMode;
-  if (form.backend === "libvirt_vm") {
-    const provider = optionalText(form.provider);
-    payload.vm_name = optionalText(form.vmName);
-    if (provider) payload.provider = provider;
-    payload.vm_user = optionalText(form.vmUser) ?? "agent";
-    const vmImage = optionalText(form.vmImage);
-    if (vmImage) payload.vm_image = vmImage;
-    payload.dotnet = form.dotnet;
-    payload.nuget = form.nuget;
-    payload.mssql = form.mssql;
-    payload.mssql_init_root = form.mssql ? optionalText(form.mssqlInitRoot) : null;
-    payload.playwright = form.playwright;
-  } else {
-    payload.target_name = optionalText(form.targetName);
-    payload.container_image = optionalText(form.containerImage);
-  }
-  const initialPolicy = form.initialPolicy;
-  if (Object.keys(initialPolicy.labels).length > 0) {
-    payload.labels = initialPolicy.labels;
-  }
-  if (initialPolicy.webSearchEnabled) {
-    payload.web_search_enabled = true;
-  }
-  const allowedTools = dedupeStrings(initialPolicy.allowedTools);
-  if (allowedTools.length > 0) payload.allowed_tools = allowedTools;
-  const allowedScriptNames = dedupeStrings(initialPolicy.allowedScriptNames);
-  if (allowedScriptNames.length > 0) payload.allowed_script_names = allowedScriptNames;
-  const communicationTargetIds = dedupeStrings(initialPolicy.communicationTargetIds);
-  if (communicationTargetIds.length > 0) payload.communication_target_ids = communicationTargetIds;
-  return payload;
-}
-
 function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {
   const payload: AgentPolicyUpdateRequest = {
     model: optionalText(form.model),
@@ -1025,13 +815,8 @@ export function AgentsPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createOperations, setCreateOperations] = useState<AgentCreateOperation[]>([]);
-  const [createForm, setCreateForm] = useState<AgentCreateFormState>(() =>
-    emptyCreateForm(),
-  );
   const [skillOptions, setSkillOptions] = useState<SkillLibraryItem[]>([]);
-  const [createOptions, setCreateOptions] = useState<AgentCreateOptionsResponse | null>(null);
   const [showEditForm, setShowEditForm] = useState(false);
   const [editForm, setEditForm] = useState<AgentPolicyFormState>(() => emptyPolicyForm());
   const [showSkillInstallForm, setShowSkillInstallForm] = useState(false);
@@ -1039,7 +824,6 @@ export function AgentsPage() {
     emptySkillInstallForm(),
   );
   const [inlineValidation, setInlineValidation] = useState("");
-  const [createLabelsValidationError, setCreateLabelsValidationError] = useState<string | null>(null);
   const [labelsValidationError, setLabelsValidationError] = useState<string | null>(null);
   const [selectionHydrated, setSelectionHydrated] = useState(false);
   const logViewRef = useRef<HTMLPreElement | null>(null);
@@ -1108,26 +892,6 @@ export function AgentsPage() {
   }, [agentLog.text]);
 
   useEffect(() => {
-    if (!showCreateForm) {
-      setCreateForm(emptyCreateForm());
-      setCreateLabelsValidationError(null);
-    }
-  }, [showCreateForm]);
-
-  useEffect(() => {
-    setCreateForm((current) => ({
-      ...current,
-      agentProvider: "",
-      vmImage: "",
-      containerImage: "",
-      initialPolicy: {
-        ...current.initialPolicy,
-        communicationTargetIds: [],
-      },
-    }));
-  }, [selectedDirectoryPath]);
-
-  useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
       try {
@@ -1142,23 +906,6 @@ export function AgentsPage() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = async () => {
-      setCreateOptions(null);
-      try {
-        const options = await loadAgentCreateOptions(selectedDirectoryPath);
-        if (!cancelled) setCreateOptions(options);
-      } catch {
-        if (!cancelled) setCreateOptions(null);
-      }
-    };
-    void refresh();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedDirectoryPath]);
 
   const filteredItems = useMemo(() => {
     return [...items]
@@ -1726,11 +1473,6 @@ export function AgentsPage() {
     return Boolean(trimmed) && optionalNumber(trimmed) == null;
   }
 
-  function ttlDurationIsInvalid(value: string): boolean {
-    const trimmed = value.trim();
-    return !trimmed || parseDurationSeconds(trimmed) == null;
-  }
-
   function toggleInstallSkill(skillName: string, selected: boolean) {
     setSkillInstallForm((current) => {
       const selectedSkills = new Set(current.codexSkills);
@@ -1759,7 +1501,6 @@ export function AgentsPage() {
           : `Queued create for ${operation.target_name}.`,
       );
       setError(null);
-      setCreateForm(emptyCreateForm());
       if (operation.status === "succeeded") {
         await refreshLiveAgents();
         const agentId = operation.result?.agent_id;
@@ -1772,8 +1513,6 @@ export function AgentsPage() {
       setError(message);
       setStatus(null);
       setActionLog((current) => [{ at: new Date().toISOString(), message: `Create agent: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
-    } finally {
-      setCreateSubmitting(false);
     }
   }
 
@@ -1785,39 +1524,12 @@ export function AgentsPage() {
     });
   }
 
-  function handleCreateAgent() {
-    if (createForm.backend === "libvirt_vm" && !createForm.vmName.trim()) {
-      setInlineValidation("VM name is required.");
-      return;
-    }
-    if (createForm.backend === "container_worker_vm" && !createForm.sessionId.trim()) {
-      setInlineValidation("Session id is required for container workers.");
-      return;
-    }
-    if (ttlDurationIsInvalid(createForm.ttlDuration)) {
-      setInlineValidation(
-        "Session TTL must use seconds, minutes, hours, days, or weeks, for example 30m, 8h, 7d, or 2w.",
-      );
-      return;
-    }
-    if (createLabelsValidationError) {
-      setInlineValidation(createLabelsValidationError);
-      return;
-    }
-    const submittedForm = createForm;
-    const createPayload = buildCreatePayload(submittedForm, selectedDirectoryPath);
-    const targetLabel =
-      submittedForm.vmName.trim() ||
-      submittedForm.targetName.trim() ||
-      submittedForm.sessionId.trim() ||
-      "agent";
-    setCreateSubmitting(true);
+  function handleCreateAgentSubmit(createPayload: AgentCreateRequest, meta: AgentCreateSubmitMeta) {
     setInlineValidation("");
-    setShowCreateForm(false);
-    setStatus(`Queueing create for ${targetLabel}...`);
+    setStatus(`Queueing create for ${meta.targetLabel}...`);
     setError(null);
     setActionLog((current) => [
-      { at: new Date().toISOString(), message: `Create agent: submitting ${targetLabel}`, tone: "info" as const },
+      { at: new Date().toISOString(), message: `Create agent: submitting ${meta.targetLabel}`, tone: "info" as const },
       ...current,
     ].slice(0, 30));
     scheduleCreateAgent(createPayload);
@@ -1987,12 +1699,6 @@ export function AgentsPage() {
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
   const canEditPolicy = Boolean(selectedAgentPolicy);
   const canInstallSkills = canEditPolicy && skillOptions.length > 0;
-  const createProviderOptions = (createOptions?.agent_providers ?? []).filter((option) =>
-    option.execution_backends.includes(createForm.backend),
-  );
-  const showCreateModelProviderMode =
-    !createForm.agentProvider || createForm.agentProvider === "codex";
-  const createCommunicationTargetOptions = createOptions?.communication_targets ?? [];
   const operatorSteeringCanSubmit = Boolean(
     operatorSteeringContext &&
     canControlWorkflowRuns &&
@@ -2125,13 +1831,12 @@ export function AgentsPage() {
               type="button"
               className={`admin-action-button compact${showCreateForm ? "" : " primary"}`}
               onClick={() => {
-                setCreateForm(emptyCreateForm());
                 setShowCreateForm(true);
                 setShowEditForm(false);
                 setShowSkillInstallForm(false);
                 setInlineValidation("");
               }}
-              disabled={busyAction !== null || createSubmitting || !privilegedUnlocked}
+              disabled={busyAction !== null || !privilegedUnlocked}
             >
               Create
             </button>
@@ -2389,403 +2094,12 @@ export function AgentsPage() {
         {error ? <div className="callout error-callout">{error}</div> : null}
 
         {showCreateForm ? (
-          <div className="modal-backdrop" role="presentation">
-            <section className="modal-card agent-crud-modal" role="dialog" aria-modal="true" aria-label="Create agent">
-              <div className="modal-header">
-                <div>
-                  <h2>Create agent</h2>
-                </div>
-                <button className="admin-action-button compact" type="button" onClick={() => setShowCreateForm(false)} disabled={createSubmitting}>
-                  Close
-                </button>
-              </div>
-              <div className="modal-body">
-                {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
-                <div className="config-field-grid">
-                  <label className="field-stack">
-                    <CreateFieldLabel tooltip="Execution target for the agent. VM agent launches a libvirt VM; Container worker prepares a worker session that runs in a managed container.">
-                      Backend
-                    </CreateFieldLabel>
-                    <span className="select-field-control">
-                      <select
-                        value={createForm.backend}
-                        onChange={(event) => {
-                          const nextBackend = event.target.value as AgentBackend;
-                          setCreateForm((current) => {
-                            const stillValid = (createOptions?.agent_providers ?? []).some(
-                              (option) =>
-                                option.value === current.agentProvider &&
-                                option.execution_backends.includes(nextBackend),
-                            );
-                            const nextAgentProvider =
-                              current.agentProvider && stillValid ? current.agentProvider : "";
-                            return {
-                              ...current,
-                              backend: nextBackend,
-                              agentProvider: nextAgentProvider,
-                              modelProviderMode:
-                                nextAgentProvider && nextAgentProvider !== "codex"
-                                  ? ""
-                                  : current.modelProviderMode,
-                            };
-                          });
-                        }}
-                      >
-                        <option value="libvirt_vm">VM agent</option>
-                        <option value="container_worker_vm">Container worker</option>
-                      </select>
-                    </span>
-                  </label>
-                  <label className="field-stack">
-                    <CreateFieldLabel tooltip="Agent CLI to bootstrap and run in the target. Claude bootstraps Claude Code for VM agents; Directory default uses the configured provider default.">
-                      Agent provider
-                    </CreateFieldLabel>
-                    <span className="select-field-control">
-                      <select
-                        value={createForm.agentProvider}
-                        onChange={(event) =>
-                          setCreateForm((current) => {
-                            const nextAgentProvider = event.target.value;
-                            return {
-                              ...current,
-                              agentProvider: nextAgentProvider,
-                              modelProviderMode:
-                                nextAgentProvider && nextAgentProvider !== "codex"
-                                  ? ""
-                                  : current.modelProviderMode,
-                            };
-                          })
-                        }
-                      >
-                        <option value="">Directory default</option>
-                        {createProviderOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </span>
-                  </label>
-                  {showCreateModelProviderMode ? (
-                    <label className="field-stack">
-                      <CreateFieldLabel tooltip="Relay mode for Codex model requests. Leave blank to use the directory default; choose Local OpenAI for host-local Ollama.">
-                        Model relay
-                      </CreateFieldLabel>
-                      <span className="select-field-control">
-                        <select
-                          value={createForm.modelProviderMode}
-                          onChange={(event) =>
-                            setCreateForm((current) => ({
-                              ...current,
-                              modelProviderMode: event.target.value,
-                            }))
-                          }
-                        >
-                          <option value="">Directory default</option>
-                          {(createOptions?.model_provider_modes ?? []).map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </span>
-                    </label>
-                  ) : null}
-                  <label className="field-stack">
-                    <CreateFieldLabel tooltip="Host-side session id for policy, logs, model routing, and resume state. Required for container workers; VM agents can derive one from the VM name.">
-                      Session
-                    </CreateFieldLabel>
-                    <input
-                      value={createForm.sessionId}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, sessionId: event.target.value }))}
-                      placeholder={createForm.backend === "container_worker_vm" ? "Required" : "Optional"}
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <CreateFieldLabel tooltip="How long the created session remains active before expiry. Use s, m, h, d, or w, for example 30m, 8h, 7d, or 2w.">
-                      Session TTL
-                    </CreateFieldLabel>
-                    <input
-                      value={createForm.ttlDuration}
-                      onChange={(event) =>
-                        setCreateForm((current) => ({ ...current, ttlDuration: event.target.value }))
-                      }
-                      placeholder="7d"
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <CreateFieldLabel tooltip="Model stored on the session for runtime prompts and resumes. Leave blank to use the selected agent provider or directory default.">
-                      Model
-                    </CreateFieldLabel>
-                    <input
-                      value={createForm.model}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, model: event.target.value }))}
-                      placeholder={createForm.agentProvider === "claude" ? "claude-sonnet-4-6" : "Directory default"}
-                    />
-                  </label>
-                  {createForm.backend === "libvirt_vm" ? (
-                    <>
-                      <label className="field-stack">
-                        <CreateFieldLabel tooltip="Libvirt domain name to create for this VM-backed agent. It must be unique on the host.">
-                          VM name
-                        </CreateFieldLabel>
-                        <input
-                          value={createForm.vmName}
-                          onChange={(event) => setCreateForm((current) => ({ ...current, vmName: event.target.value }))}
-                        />
-                      </label>
-                      <label className="field-stack">
-                        <CreateFieldLabel tooltip="VM infrastructure provider, not the model provider. Leave blank to use the directory default, usually libvirt.">
-                          Provider
-                        </CreateFieldLabel>
-                        <input
-                          value={createForm.provider}
-                          onChange={(event) => setCreateForm((current) => ({ ...current, provider: event.target.value }))}
-                          placeholder="Directory default"
-                        />
-                      </label>
-                      <label className="field-stack">
-                        <CreateFieldLabel tooltip="Guest runtime user used for bootstraps and agent commands. Current standard VM images use agent.">
-                          VM user
-                        </CreateFieldLabel>
-                        <input
-                          value={createForm.vmUser}
-                          onChange={(event) => setCreateForm((current) => ({ ...current, vmUser: event.target.value }))}
-                        />
-                      </label>
-                      <label className="field-stack">
-                        <CreateFieldLabel tooltip="Approved libvirt template alias for the base qcow2 image. Leave blank to use the directory default.">
-                          VM image
-                        </CreateFieldLabel>
-                        <span className="select-field-control">
-                          <select
-                            value={createForm.vmImage}
-                            onChange={(event) =>
-                              setCreateForm((current) => ({ ...current, vmImage: event.target.value }))
-                            }
-                          >
-                            <option value="">
-                              {`Directory default (${createOptions?.libvirt.default_template ?? "default"})`}
-                            </option>
-                            {(createOptions?.libvirt.templates ?? []).map((template) => (
-                              <option key={template.alias} value={template.alias}>
-                                {template.alias}
-                              </option>
-                            ))}
-                          </select>
-                        </span>
-                      </label>
-                    </>
-                  ) : (
-                    <>
-                      <label className="field-stack">
-                        <CreateFieldLabel tooltip="Display and control-plane target name for this container-worker agent. Leave blank to reuse the session id.">
-                          Target name
-                        </CreateFieldLabel>
-                        <input
-                          value={createForm.targetName}
-                          onChange={(event) =>
-                            setCreateForm((current) => ({ ...current, targetName: event.target.value }))
-                          }
-                          placeholder="Optional"
-                        />
-                      </label>
-                      <label className="field-stack">
-                        <CreateFieldLabel tooltip="Approved container image alias for worker sessions. Leave blank to use the directory default runner image.">
-                          Container image selector
-                        </CreateFieldLabel>
-                        {createOptions ? (
-                          <span className="select-field-control">
-                            <select
-                              value={createForm.containerImage}
-                              onChange={(event) =>
-                                setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
-                              }
-                            >
-                              <option value="">
-                                {`Default image (${createOptions.container_worker.default_image ?? "default"})`}
-                              </option>
-                              {createOptions.container_worker.images.map((image) => (
-                                <option key={image.alias} value={image.alias}>
-                                  {image.alias}
-                                </option>
-                              ))}
-                            </select>
-                          </span>
-                        ) : (
-                          <input
-                            value={createForm.containerImage}
-                            onChange={(event) =>
-                              setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
-                            }
-                            placeholder="Alias or default image"
-                          />
-                        )}
-                      </label>
-                    </>
-                  )}
-                  {createForm.backend === "libvirt_vm" ? (
-                    <>
-                      <label className="checkbox-row agent-checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={createForm.dotnet}
-                          onChange={(event) => setCreateForm((current) => ({ ...current, dotnet: event.target.checked }))}
-                        />
-                        <CreateFieldLabel tooltip="Copy the host .NET SDK into the VM after launch.">
-                          .NET
-                        </CreateFieldLabel>
-                      </label>
-                      <label className="checkbox-row agent-checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={createForm.nuget}
-                          onChange={(event) => setCreateForm((current) => ({ ...current, nuget: event.target.checked }))}
-                        />
-                        <CreateFieldLabel tooltip="Configure the guest to restore packages through the host NuGet relay and cache.">
-                          NuGet
-                        </CreateFieldLabel>
-                      </label>
-                      <label className="checkbox-row agent-checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={createForm.mssql}
-                          onChange={(event) => setCreateForm((current) => ({ ...current, mssql: event.target.checked }))}
-                        />
-                        <CreateFieldLabel tooltip="Provision a guest-local SQL Server instance. Requires MSSQL_SA_PASSWORD on the host.">
-                          MSSQL
-                        </CreateFieldLabel>
-                      </label>
-                      <label className="checkbox-row agent-checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={createForm.playwright}
-                          onChange={(event) => setCreateForm((current) => ({ ...current, playwright: event.target.checked }))}
-                        />
-                        <CreateFieldLabel tooltip="Install host-seeded Node and Playwright browser dependencies in the VM.">
-                          Playwright
-                        </CreateFieldLabel>
-                      </label>
-                      <label className="field-stack">
-                        <CreateFieldLabel tooltip="Optional host directory copied into the SQL init folder. If init.sql exists there, it runs after SQL Server starts.">
-                          MSSQL init root
-                        </CreateFieldLabel>
-                        <input
-                          value={createForm.mssqlInitRoot}
-                          onChange={(event) => setCreateForm((current) => ({ ...current, mssqlInitRoot: event.target.value }))}
-                          disabled={!createForm.mssql}
-                        />
-                      </label>
-                    </>
-                  ) : null}
-                  <div className="field-stack wide-field">
-                    <CreateFieldLabel tooltip="Session policy values written when the agent is created. Empty rows are ignored.">
-                      Initial policy
-                    </CreateFieldLabel>
-                    <p className="field-description">
-                      Optional session policy values to apply when the agent is created. Blank rows are not sent.
-                    </p>
-                  </div>
-                  <div className="field-stack">
-                    <CreateFieldLabel tooltip="Key/value metadata stored on the session and shown in agent lists.">
-                      Labels
-                    </CreateFieldLabel>
-                    <StringMapEditor
-                      value={createForm.initialPolicy.labels}
-                      onChange={(nextValue) =>
-                        setCreateForm((current) => ({
-                          ...current,
-                          initialPolicy: { ...current.initialPolicy, labels: nextValue },
-                        }))
-                      }
-                      onValidationChange={setCreateLabelsValidationError}
-                      fieldLabel="Labels"
-                      emptyState="No labels are configured."
-                      addLabel="Add label"
-                      keyLabel="Key"
-                      valueLabel="Value"
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <CreateFieldLabel tooltip="MCP tools this session may call without being hidden by policy. Approval rules still apply.">
-                      Allowed tools
-                    </CreateFieldLabel>
-                    <StringListEditor
-                      values={createForm.initialPolicy.allowedTools}
-                      onChange={(nextValues) =>
-                        setCreateForm((current) => ({
-                          ...current,
-                          initialPolicy: { ...current.initialPolicy, allowedTools: nextValues },
-                        }))
-                      }
-                      addLabel="Add tool"
-                      itemLabel="Tool"
-                      placeholder="run_script"
-                      emptyState="No tools are allowed explicitly."
-                    />
-                  </div>
-                  <label className="checkbox-row agent-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={createForm.initialPolicy.webSearchEnabled}
-                      onChange={(event) =>
-                        setCreateForm((current) => ({
-                          ...current,
-                          initialPolicy: { ...current.initialPolicy, webSearchEnabled: event.target.checked },
-                        }))
-                      }
-                    />
-                    <CreateFieldLabel tooltip="Allow this session's agent runner to use live web search when the selected provider supports it.">
-                      Web search
-                    </CreateFieldLabel>
-                  </label>
-                  <div className="field-stack">
-                    <CreateFieldLabel tooltip="Script names this session may run through approved script execution paths.">
-                      Allowed scripts
-                    </CreateFieldLabel>
-                    <StringListEditor
-                      values={createForm.initialPolicy.allowedScriptNames}
-                      onChange={(nextValues) =>
-                        setCreateForm((current) => ({
-                          ...current,
-                          initialPolicy: { ...current.initialPolicy, allowedScriptNames: nextValues },
-                        }))
-                      }
-                      addLabel="Add script"
-                      itemLabel="Script"
-                      placeholder="collect-logs"
-                      emptyState="No scripts are allowed explicitly."
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <CreateFieldLabel tooltip="Directory communication targets the session may use for messaging. Only registered targets with session-compatible capabilities are selectable.">
-                      Communication targets
-                    </CreateFieldLabel>
-                    <OptionMultiSelectEditor
-                      values={createForm.initialPolicy.communicationTargetIds}
-                      options={createCommunicationTargetOptions}
-                      onChange={(nextValues) =>
-                        setCreateForm((current) => ({
-                          ...current,
-                          initialPolicy: { ...current.initialPolicy, communicationTargetIds: nextValues },
-                        }))
-                      }
-                      emptyState={
-                        createCommunicationTargetOptions.length
-                          ? "No communication targets selected."
-                          : "No session-capable communication targets are registered for this directory."
-                      }
-                    />
-                  </div>
-                </div>
-                <div className="inline-actions compact-actions">
-                  <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || createSubmitting} onClick={() => void handleCreateAgent()}>
-                    {createSubmitting ? "Queueing..." : "Create"}
-                  </button>
-                </div>
-              </div>
-            </section>
-          </div>
+          <AgentCreateDialog
+            directoryPath={selectedDirectoryPath}
+            privilegedUnlocked={privilegedUnlocked}
+            onClose={() => setShowCreateForm(false)}
+            onCreate={handleCreateAgentSubmit}
+          />
         ) : null}
 
         {showEditForm && selectedAgent ? (

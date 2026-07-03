@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-07-03 - Team Agent Session Registration
+
+- Let Team Add-on agent registration select available core VM and container
+  sessions instead of requiring manual session ID entry.
+- Added an inline core agent creation dialog to Team registration and
+  auto-register the created session as a Team agent when creation succeeds.
+- Guarded inline Team core-session creation with the Admin privileged-operation
+  lock and required an explicit session id before Team auto-registration.
+- Blocked Team-scoped core-session creation until the registration role,
+  project, and superior selections are valid for the target team.
+- Preserved the revision-conflict retry action when Team auto-registration
+  conflicts after the core session has already been created.
+
+## 2026-07-03 - Team Org Chart Context Menus
+
+- Added right-click org chart actions for creating teams from the canvas,
+  adding subordinate Team agents from agent cards, and adding or removing
+  teams from governance oversight.
+- Reused the Team agent session picker/create-session bridge from org-chart
+  subordinate registration so new subordinates can link existing sessions or
+  create a core session before Team registration.
+- Fixed revision-conflict retry routing for org chart governance oversight
+  actions.
+- Kept nested core-session creation dialogs above org chart action dialogs.
+
+## 2026-07-03 - Claude MCP Registration
+
+- Reconciled generated Claude MCP config into Claude Code's user MCP registry
+  before container and VM Claude prompt runs so resumed sessions keep Evander
+  MCP tools in their available toolset.
+
 ## 2026-07-02 - Team Add-on Read Tools And Compact Context
 
 - Added Team MCP read tools for visible tasks, inbox, cases, deliverables,

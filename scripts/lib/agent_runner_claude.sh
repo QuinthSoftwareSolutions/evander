@@ -133,6 +133,50 @@ CONFIG
   fi
 }
 
+_agent_runner_claude_register_mcp_server() {
+  local config_path="$1"
+  if [[ ! -f "${config_path}" ]]; then
+    return 0
+  fi
+  if ! command -v claude >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "warning: python3 is unavailable; skipping Claude MCP registration" >&2
+    return 0
+  fi
+  if ! claude mcp add --help >/dev/null 2>&1 </dev/null; then
+    return 0
+  fi
+
+  local mcp_url
+  if ! mcp_url="$(python3 - "${config_path}" <<'PY_EVANDER_CLAUDE_MCP_URL'
+import json
+import sys
+from pathlib import Path
+
+try:
+    config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    url = config.get("mcpServers", {}).get("evander", {}).get("url", "")
+except Exception:
+    url = ""
+if isinstance(url, str):
+    print(url)
+PY_EVANDER_CLAUDE_MCP_URL
+)"; then
+    echo "warning: unable to read Claude MCP config at ${config_path}" >&2
+    return 0
+  fi
+  if [[ -z "${mcp_url}" ]]; then
+    return 0
+  fi
+
+  claude mcp remove -s user evander >/dev/null 2>&1 </dev/null || true
+  if ! claude mcp add --transport http -s user evander "${mcp_url}" >/dev/null 2>&1 </dev/null; then
+    echo "warning: unable to register Claude MCP server evander" >&2
+  fi
+}
+
 _agent_runner_claude_common_args() {
   local -n dest_ref="$1"
   local mode="$2"
@@ -222,6 +266,7 @@ _agent_runner_claude_common_args() {
   local mcp_config_path
   mcp_config_path="$(_agent_runner_claude_mcp_config_path)" || return 1
   if [[ -n "${mcp_config_path}" ]]; then
+    _agent_runner_claude_register_mcp_server "${mcp_config_path}"
     dest_ref+=(--mcp-config "${mcp_config_path}")
   fi
   if [[ "${mode}" == "resume-last" ]]; then

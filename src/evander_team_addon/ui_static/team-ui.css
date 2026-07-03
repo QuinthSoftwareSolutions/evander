@@ -137,6 +137,8 @@ textarea {
 }
 
 .status-message {
+  position: relative;
+  z-index: 1100;
   min-height: 2rem;
   margin-bottom: 0.85rem;
   border: 1px solid transparent;
@@ -942,6 +944,24 @@ button.team-record-kind-tab strong {
 
 .team-inline-create-fields label {
   min-width: 0;
+}
+
+.team-agent-session-controls {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.team-agent-session-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.team-agent-session-actions button {
+  min-height: 2rem;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
 }
 
 .team-inline-create-fields textarea,
@@ -3027,6 +3047,48 @@ button.record-action:hover {
   color: var(--accent-strong);
 }
 
+.org-context-menu[hidden] {
+  display: none;
+}
+
+.org-context-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 13rem;
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+
+.org-context-menu-item {
+  width: 100%;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  padding: 0.48rem 0.6rem;
+  font-size: 0.86rem;
+  font-weight: 700;
+  text-align: left;
+}
+
+.org-context-menu-item:hover:not(:disabled),
+.org-context-menu-item:focus-visible {
+  background: rgba(23, 111, 122, 0.1);
+  color: var(--accent-strong);
+}
+
+.org-context-menu-item:disabled {
+  cursor: default;
+  color: var(--muted);
+  opacity: 0.62;
+}
+
 .avatar-editor,
 .voice-profile-editor {
   display: grid;
@@ -3959,6 +4021,36 @@ form {
   padding: 0.45rem 0.75rem;
   font-size: 0.86rem;
   font-weight: 700;
+}
+
+.org-action-modal-body {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.org-action-form {
+  border-top: 0;
+}
+
+.org-action-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.org-agent-session-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.org-action-empty {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.8rem;
 }
 
 .review-decision-form {

@@ -660,13 +660,43 @@ function PlaceholderView({ title, description }: { title: string; description: s
   );
 }
 
-function AddonView({ tab }: { tab: AdminTabDefinition }) {
+function addonUiPathWithDirectory(
+  uiPath: string,
+  selectedDirectoryPath: string,
+  privilegedUnlocked: boolean,
+): string {
+  const directoryPath = selectedDirectoryPath.trim() || "root";
+  try {
+    const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+    const url = new URL(uiPath, base);
+    url.searchParams.set("directory_path", directoryPath);
+    url.searchParams.set("privileged_unlocked", privilegedUnlocked ? "true" : "false");
+    if (/^[a-z][a-z0-9+.-]*:/i.test(uiPath)) {
+      return url.toString();
+    }
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    const [withoutHash, hash = ""] = uiPath.split("#", 2);
+    const separator = withoutHash.includes("?") ? "&" : "?";
+    return `${withoutHash}${separator}directory_path=${encodeURIComponent(directoryPath)}&privileged_unlocked=${privilegedUnlocked ? "true" : "false"}${hash ? `#${hash}` : ""}`;
+  }
+}
+
+function AddonView({
+  tab,
+  selectedDirectoryPath,
+  privilegedUnlocked,
+}: {
+  tab: AdminTabDefinition;
+  selectedDirectoryPath: string;
+  privilegedUnlocked: boolean;
+}) {
   if (tab.uiPath) {
     return (
       <iframe
         className="admin-addon-frame"
         title={tab.label}
-        src={tab.uiPath}
+        src={addonUiPathWithDirectory(tab.uiPath, selectedDirectoryPath, privilegedUnlocked)}
         sandbox="allow-forms allow-modals allow-same-origin allow-scripts"
       />
     );
@@ -2078,7 +2108,11 @@ export default function AdminRoot() {
             ) : renderedTab === "tool-calls" ? (
               <ToolCallsPage />
             ) : activeTab.key.startsWith("addon:") ? (
-              <AddonView tab={activeTab} />
+              <AddonView
+                tab={activeTab}
+                selectedDirectoryPath={selectedDirectoryPath}
+                privilegedUnlocked={privilegeUnlocked}
+              />
             ) : (
               <PlaceholderView title={activeTab.label} description={activeTab.description} />
             )}

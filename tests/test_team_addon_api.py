@@ -1691,6 +1691,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "submitReviewDecision" in script.text
     assert "bindWorkspaceReviewDecisionForms" in script.text
     assert "bindExistingAgentPickers" in script.text
+    assert "bindTeamAgentSessionControls" in script.text
+    assert "data-core-agent-session-picker" in script.text
+    assert "team-agent-create:created" in script.text
     assert "data-team-inline-create-toggle" in script.text
     assert "data-team-inline-create-form" in script.text
     assert "projectLeadAgentOptionsForTeam" in script.text
@@ -1775,6 +1778,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".edit-modal" in stylesheet.text
     assert ".record-actions" in stylesheet.text
     assert ".team-inline-create-form" in stylesheet.text
+    assert ".team-agent-session-controls" in stylesheet.text
     assert ".projects-workbench" in stylesheet.text
     assert ".projects-focus-row" in stylesheet.text
     assert ".project-review-profile-form" in stylesheet.text
@@ -1797,6 +1801,15 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert org_flow_stylesheet.status_code == 200
     assert ".team-org-flow-canvas" in org_flow_stylesheet.text
     assert ".org-flow-governance-node" in org_flow_stylesheet.text
+
+    agent_create_script = enabled.get("/addons/team-addon/team-agent-create.js")
+    assert agent_create_script.status_code == 200
+    assert "team-agent-create:created" in agent_create_script.text
+    assert "Create and register agent" in agent_create_script.text
+
+    agent_create_stylesheet = enabled.get("/addons/team-addon/team-agent-create.css")
+    assert agent_create_stylesheet.status_code == 200
+    assert ".agent-crud-modal" in agent_create_stylesheet.text
     assert ".agent-inbox-indicator" in stylesheet.text
     assert ".agent-inbox-icon" in stylesheet.text
     assert ".agent-inbox-popover" in stylesheet.text
@@ -1810,6 +1823,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     html = enabled.get("/addons/team-addon/")
     assert html.status_code == 200
     assert 'name="max_cost_usd"' in html.text
+    assert "team-agent-create.js" in html.text
+    assert "team-agent-create.css" in html.text
 
 
 def test_team_addon_admin_api_governance_group_flow(tmp_path: Path) -> None:

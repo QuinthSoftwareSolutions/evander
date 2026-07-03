@@ -10,7 +10,14 @@ from starlette.routing import Route
 from evander.addons import AddonContext
 
 _STATIC_ASSET_NAMES = frozenset(
-    {"team-ui.css", "team-ui.js", "team-org-flow.css", "team-org-flow.js"}
+    {
+        "team-ui.css",
+        "team-ui.js",
+        "team-org-flow.css",
+        "team-org-flow.js",
+        "team-agent-create.css",
+        "team-agent-create.js",
+    }
 )
 
 
