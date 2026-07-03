@@ -944,6 +944,24 @@ button.team-record-kind-tab strong {
   min-width: 0;
 }
 
+.team-agent-session-controls {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.team-agent-session-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.team-agent-session-actions button {
+  min-height: 2rem;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+}
+
 .team-inline-create-fields textarea,
 .team-inline-create-fields label:has(textarea) {
   grid-column: 1 / -1;

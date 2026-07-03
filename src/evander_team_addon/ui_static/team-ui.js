@@ -171,6 +171,10 @@ let teamsCreateTeamPanelOpen = false;
 let governanceCreateGroupPanelOpen = false;
 const formDraftRegistry = new Map();
 let pendingConflictRetry = null;
+let coreAgentSessions = [];
+let coreAgentSessionsDirectoryPath = "";
+let coreAgentSessionsLoading = null;
+const pendingTeamAgentCreateForms = new Map();
 
 const runtimeFilterChoices = [
   ["all", "All"],
@@ -333,6 +337,8 @@ const fieldTooltips = {
   "register-agent-form:team_id": "Team this persistent agent belongs to.",
   "register-agent-form:project_id": "Project this agent works in. Project agents must belong to the selected team.",
   "register-agent-form:role_id": "First-class role assigned to this agent.",
+  "register-agent-form:existing_session_id": "Known core VM or container-worker session to link to this Team agent.",
+  "register-agent-form:create_session": "Create a new core VM or container-worker session, then register it as this Team agent.",
   "register-agent-form:session_id": "Session ID used when this agent is woken or resumed.",
   "register-agent-form:display_name": "Optional display name. If blank, the generated agent ID is shown.",
   "register-agent-form:reports_to_agent_id": "Supervisor for routing, permissions, status requests, and hierarchy display.",
@@ -458,6 +464,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindForms();
   bindRecordEditing();
   bindExistingAgentPickers();
+  bindTeamAgentSessionControls();
   bindProjectLeadSelects();
   bindAgentEditTeamScopedSelects();
   bindRuntimeFilters();
@@ -1222,6 +1229,42 @@ function bindExistingAgentPickers() {
   });
 }
 
+function bindTeamAgentSessionControls() {
+  document.addEventListener("change", (event) => {
+    const select = event.target?.closest?.("[data-core-agent-session-picker]");
+    if (!select) {
+      return;
+    }
+    applyCoreAgentSessionSelection(select);
+  });
+
+  document.addEventListener("click", (event) => {
+    const refreshButton = event.target?.closest?.("[data-core-agent-session-refresh]");
+    if (refreshButton) {
+      event.preventDefault();
+      const form = refreshButton.closest("form");
+      void refreshCoreAgentSessionsForForm(form, { force: true });
+      return;
+    }
+
+    const createButton = event.target?.closest?.("[data-core-agent-session-create]");
+    if (!createButton) {
+      return;
+    }
+    event.preventDefault();
+    const form = createButton.closest("form");
+    if (!form) {
+      setStatus("Agent registration form is unavailable.", "error");
+      return;
+    }
+    openCoreAgentCreateDialogForForm(form);
+  });
+
+  window.addEventListener("team-agent-create:created", (event) => {
+    void completeTeamAgentCreateRegistration(event.detail || {});
+  });
+}
+
 function applyExistingAgentDefaults(select) {
   const sourceAgent = state.agents[text(select.value)];
   const form = select.form;
@@ -1238,6 +1281,209 @@ function applyExistingAgentDefaults(select) {
     setFieldValue(form, select.dataset.maxConcurrentField, String(ephemeralCapacity(sourceAgent)));
   }
 
+}
+
+function applyCoreAgentSessionSelection(select) {
+  const form = select.form;
+  if (!form) {
+    return;
+  }
+  const sessionId = text(select.value);
+  setFieldValue(form, select.dataset.sessionField || "session_id", sessionId);
+  if (!sessionId) {
+    return;
+  }
+  const session = coreAgentSessions.find((item) => item.session_id === sessionId);
+  if (session && !fieldText(form, "display_name")) {
+    setFieldValue(form, "display_name", session.display_name || session.target_name || session.session_id);
+  }
+}
+
+function openCoreAgentCreateDialogForForm(form) {
+  const contextId = formIdentifier(form) || `register-agent-${Date.now()}`;
+  if (!form.id) {
+    form.id = contextId;
+  }
+  pendingTeamAgentCreateForms.set(contextId, form.id);
+  const detail = {
+    contextId,
+    directoryPath: teamAgentDirectoryPath(form),
+  };
+  if (typeof window.openTeamAgentCreateDialog === "function") {
+    window.openTeamAgentCreateDialog(detail);
+    return;
+  }
+  window.dispatchEvent(new CustomEvent("team-agent-create:open", { detail }));
+}
+
+async function completeTeamAgentCreateRegistration(detail) {
+  const contextId = text(detail.contextId);
+  const sessionId = text(detail.sessionId);
+  if (!sessionId) {
+    setStatus("Created agent session did not return a session ID.", "error");
+    return;
+  }
+  const formId = pendingTeamAgentCreateForms.get(contextId);
+  const form = formId ? document.getElementById(formId) : null;
+  pendingTeamAgentCreateForms.delete(contextId);
+  if (!form) {
+    setStatus(`Created session ${sessionId}, but the Team registration form is no longer open.`, "warning");
+    return;
+  }
+  setFieldValue(form, "session_id", sessionId);
+  const existingSessionSelect = form.elements?.existing_session_id;
+  if (existingSessionSelect) {
+    existingSessionSelect.dataset.currentValue = sessionId;
+  }
+  await loadCoreAgentSessions({
+    directoryPath: teamAgentDirectoryPath(form),
+    force: true,
+    rerender: false,
+  });
+  refreshCoreAgentSessionPicker(form, sessionId);
+  setStatus(`Created session ${sessionId}; registering Team agent.`, "loading");
+  const saved = await submitCreateForm(form);
+  if (!saved) {
+    setStatus(`Created session ${sessionId}; review the Team registration error and submit again.`, "warning");
+  }
+}
+
+function teamAgentDirectoryPath(form = null) {
+  const fromForm = text(form?.dataset?.directoryPath);
+  if (fromForm) {
+    return fromForm;
+  }
+  const fromQuery = new URLSearchParams(window.location.search).get("directory_path");
+  return text(fromQuery) || "root";
+}
+
+function registeredTeamSessionIds() {
+  return new Set(values(state.agents).map((agent) => text(agent.session_id)).filter(Boolean));
+}
+
+function normalizeCoreAgentSession(item) {
+  const sessionId = text(item?.session_id);
+  if (!sessionId) {
+    return null;
+  }
+  const backend = text(item?.backend);
+  const targetName = text(item?.target_name) || text(item?.agent_id) || text(item?.vm_name) || sessionId;
+  return {
+    session_id: sessionId,
+    agent_id: text(item?.agent_id),
+    backend,
+    target_name: targetName,
+    status: text(item?.status),
+    directory_path: text(item?.directory_path),
+    display_name: [targetName, backendLabelForCoreAgentSession(backend)].filter(Boolean).join(" - "),
+  };
+}
+
+function backendLabelForCoreAgentSession(backend) {
+  if (backend === "container_worker_vm") {
+    return "container";
+  }
+  if (backend === "libvirt_vm") {
+    return "VM";
+  }
+  return backend;
+}
+
+async function loadCoreAgentSessions({ directoryPath = "root", force = false, rerender = false } = {}) {
+  const normalizedDirectoryPath = text(directoryPath) || "root";
+  if (
+    !force &&
+    coreAgentSessionsDirectoryPath === normalizedDirectoryPath &&
+    coreAgentSessions.length > 0
+  ) {
+    return coreAgentSessions;
+  }
+  if (coreAgentSessionsLoading) {
+    return coreAgentSessionsLoading;
+  }
+  const query = new URLSearchParams({
+    directory_path: normalizedDirectoryPath,
+    direct_only: "true",
+    include_inactive: "true",
+    backend: "all",
+    summary_only: "false",
+    reconcile_containers: "true",
+    omit_vm_state: "false",
+  });
+  coreAgentSessionsLoading = (async () => {
+    const response = await teamFetch(`/api/admin/agents?${query.toString()}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    coreAgentSessions = (payload.items || [])
+      .map(normalizeCoreAgentSession)
+      .filter(Boolean)
+      .sort((left, right) =>
+        text(left.target_name).localeCompare(text(right.target_name), undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }) || text(left.session_id).localeCompare(text(right.session_id)),
+      );
+    coreAgentSessionsDirectoryPath = normalizedDirectoryPath;
+    return coreAgentSessions;
+  })();
+  try {
+    return await coreAgentSessionsLoading;
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Agent sessions could not be loaded.", "error");
+    return coreAgentSessions;
+  } finally {
+    coreAgentSessionsLoading = null;
+    if (rerender) {
+      renderAgents();
+      decorateFieldTooltips(document);
+    }
+  }
+}
+
+async function refreshCoreAgentSessionsForForm(form, { force = false } = {}) {
+  if (!form) {
+    setStatus("Agent registration form is unavailable.", "error");
+    return;
+  }
+  await loadCoreAgentSessions({
+    directoryPath: teamAgentDirectoryPath(form),
+    force,
+    rerender: false,
+  });
+  refreshCoreAgentSessionPicker(form);
+}
+
+function refreshCoreAgentSessionPicker(form, selectedValue = "") {
+  const select = form?.elements?.existing_session_id;
+  if (!select?.matches?.("[data-core-agent-session-picker]")) {
+    return;
+  }
+  const nextValue = text(selectedValue) || text(select.value) || text(select.dataset.currentValue);
+  select.innerHTML = renderCoreAgentSessionOptions(nextValue);
+  if (nextValue && Array.from(select.options).some((option) => option.value === nextValue)) {
+    select.value = nextValue;
+  }
+}
+
+function renderCoreAgentSessionOptions(selectedValue = "") {
+  const registeredSessions = registeredTeamSessionIds();
+  const options = coreAgentSessions
+    .filter((session) => session.session_id === selectedValue || !registeredSessions.has(session.session_id))
+    .map((session) => [
+      session.session_id,
+      `${session.target_name} (${session.session_id})${session.backend ? ` - ${backendLabelForCoreAgentSession(session.backend)}` : ""}`,
+    ]);
+  if (coreAgentSessionsLoading) {
+    return renderSelectOptions(options, { selectedValue, placeholder: "Loading sessions..." });
+  }
+  return renderSelectOptions(options, {
+    selectedValue,
+    placeholder: options.length ? "Select existing session" : "No unregistered sessions found",
+  });
 }
 
 function bindProjectLeadSelects() {
@@ -4996,7 +5242,31 @@ function renderTeamInlineAgentForm(teamId) {
         </label>
         <label>Project <select name="project_id">${renderSelectOptions(teamProjectOptions(teamId), { placeholder: "No project" })}</select></label>
         <label>Role <select name="role_id">${renderSelectOptions(teamRoleOptions(teamId), { placeholder: "No role" })}</select></label>
-        <label>Session ID <input name="session_id" required /></label>
+        <div class="team-agent-session-controls">
+          <label>
+            Agent session
+            <select
+              name="existing_session_id"
+              data-core-agent-session-picker
+              data-session-field="session_id"
+            >${renderCoreAgentSessionOptions()}</select>
+          </label>
+          <div class="team-agent-session-actions">
+            <button
+              type="button"
+              class="secondary"
+              data-core-agent-session-refresh
+              data-tooltip-key="existing_session_id"
+            >Refresh sessions</button>
+            <button
+              type="button"
+              class="secondary"
+              data-core-agent-session-create
+              data-tooltip-key="create_session"
+            >Create new session</button>
+          </div>
+        </div>
+        <label>Manual session ID <input name="session_id" required placeholder="Select or create a session" /></label>
         <label>Display name <input name="display_name" /></label>
         <label>Reports to <select name="reports_to_agent_id">${renderSelectOptions(teamAgentOptions(teamId), { placeholder: "No superior" })}</select></label>
         <label>Max ephemeral agents <input name="max_concurrent" type="number" min="0" value="0" /></label>
@@ -5109,15 +5379,25 @@ function toggleTeamInlineCreateForm(teamId, kind) {
     return;
   }
   const key = teamInlineCreateKey(normalizedTeamId, normalizedKind);
+  let refreshAgentSessions = false;
   if (openTeamInlineCreateForms.has(key)) {
     openTeamInlineCreateForms.delete(key);
   } else {
     openTeamInlineCreateForms.add(key);
     expandedTeamRecordGroupIds.add(normalizedTeamId);
     teamRecordGroupTabs[normalizedTeamId] = normalizedKind;
+    if (normalizedKind === "agent") {
+      refreshAgentSessions = true;
+    }
   }
   renderAgents();
   decorateFieldTooltips(document);
+  if (refreshAgentSessions) {
+    void refreshCoreAgentSessionsForForm(
+      document.getElementById(teamInlineCreateDomId(normalizedTeamId, "agent")),
+      { force: false },
+    );
+  }
 }
 
 function closeTeamInlineCreateForm(teamId, kind, { rerender = true } = {}) {
@@ -10330,6 +10610,7 @@ async function submitCreateForm(form) {
   if (saved && form.hasAttribute("data-team-inline-create-form")) {
     closeTeamInlineCreateFormFor(form);
   }
+  return saved;
 }
 
 async function submitTaskUpdate(form) {

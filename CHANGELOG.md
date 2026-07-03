@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-03 - Team Agent Session Registration
+
+- Let Team Add-on agent registration select available core VM and container
+  sessions instead of requiring manual session ID entry.
+- Added an inline core agent creation dialog to Team registration and
+  auto-register the created session as a Team agent when creation succeeds.
+
 ## 2026-07-03 - Claude MCP Registration
 
 - Reconciled generated Claude MCP config into Claude Code's user MCP registry

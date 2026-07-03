@@ -46,6 +46,8 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.css").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-org-flow.js").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-org-flow.css").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-agent-create.js").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-agent-create.css").is_file()
 
     addon = importlib.import_module("evander_team_addon").register_addon()
     assert addon.mcp_tools is not None

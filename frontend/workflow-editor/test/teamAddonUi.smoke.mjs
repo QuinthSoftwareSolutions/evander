@@ -1235,6 +1235,7 @@ async function createTeamAddonServer(
     costsBeforeResponse = null,
     costsDelayMs = 0,
     costsPayload = null,
+    coreAgentItems = null,
     initialState = null,
     timelinePayload = null,
   } = {},
@@ -1248,6 +1249,31 @@ async function createTeamAddonServer(
   const openStateStreams = new Set();
   let conflictSent = false;
   const template = autoDevSquadTemplate();
+  const coreAgents = coreAgentItems ?? [
+    {
+      agent_id: "vm-existing-backend",
+      backend: "libvirt_vm",
+      target_name: "vm-existing-backend",
+      session_id: "session-existing-backend",
+      directory_path: "root",
+      status: "running",
+      updated_at: "2026-06-09T00:00:00Z",
+      capabilities: {},
+      host: {},
+    },
+    {
+      agent_id: "worker-existing-reviewer",
+      backend: "container_worker_vm",
+      target_name: "worker-existing-reviewer",
+      session_id: "session-existing-reviewer",
+      directory_path: "root",
+      status: "running",
+      updated_at: "2026-06-09T00:00:00Z",
+      capabilities: {},
+      host: {},
+    },
+  ];
+  const coreCreateOperations = new Map();
 
   const server = createHttpServer(async (request, response) => {
     try {
@@ -1272,6 +1298,14 @@ async function createTeamAddonServer(
       }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-org-flow.css") {
         await serveStatic(response, "team-org-flow.css", "text/css; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-agent-create.js") {
+        await serveStatic(response, "team-agent-create.js", "application/javascript; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-agent-create.css") {
+        await serveStatic(response, "team-agent-create.css", "text/css; charset=utf-8");
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/state") {
@@ -1510,6 +1544,100 @@ async function createTeamAddonServer(
           clearInterval(interval);
           openChatStreams.delete(streamRecord);
         });
+        return;
+      }
+
+      if (request.method === "GET" && pathname === "/api/admin/agents") {
+        requests.push({ method: request.method, pathname, search: url.search });
+        jsonResponse(response, {
+          items: coreAgents,
+          directory_path: url.searchParams.get("directory_path") || "root",
+          direct_only: true,
+          backend: "all",
+          summary_only: false,
+          reconcile_containers: true,
+          omit_vm_state: false,
+        });
+        return;
+      }
+      if (request.method === "GET" && pathname === "/api/admin/agents/create-options") {
+        requests.push({ method: request.method, pathname, search: url.search });
+        jsonResponse(response, {
+          directory_path: url.searchParams.get("directory_path") || "root",
+          backends: ["libvirt_vm", "container_worker_vm"],
+          agent_providers: [
+            { value: "codex", label: "Codex", execution_backends: ["libvirt_vm", "container_worker_vm"] },
+            { value: "claude", label: "Claude", execution_backends: ["libvirt_vm"] },
+          ],
+          model_provider_modes: [
+            { value: "openai", label: "OpenAI relay" },
+            { value: "local_openai", label: "Local OpenAI" },
+          ],
+          communication_targets: [],
+          libvirt: {
+            default_template: "default",
+            templates: [{ alias: "default", image_ref: "/var/lib/libvirt/images/default.qcow2" }],
+          },
+          container_worker: {
+            default_image: "runner",
+            images: [{ alias: "runner", image_ref: "evander-runner:latest" }],
+          },
+        });
+        return;
+      }
+      if (request.method === "POST" && pathname === "/api/admin/agents/create-operations") {
+        const payload = await requestJson(request);
+        requests.push({ method: request.method, pathname, payload });
+        const operationId = `create-${coreCreateOperations.size + 1}`;
+        const backend = payload.backend || "libvirt_vm";
+        const targetName = payload.vm_name || payload.target_name || payload.session_id || "agent-created";
+        const sessionId = payload.session_id || `session-${targetName}`;
+        const operation = {
+          operation_id: operationId,
+          status: "succeeded",
+          backend,
+          target_name: targetName,
+          session_id: sessionId,
+          directory_path: payload.directory_path || "root",
+          owner_id: null,
+          owner_pid: null,
+          result: {
+            success: true,
+            agent_id: targetName,
+            session_id: sessionId,
+            message: `Created ${targetName}`,
+          },
+          error: null,
+          created_at: "2026-06-09T00:00:00Z",
+          started_at: "2026-06-09T00:00:00Z",
+          finished_at: "2026-06-09T00:00:01Z",
+          updated_at: "2026-06-09T00:00:01Z",
+        };
+        coreCreateOperations.set(operationId, operation);
+        coreAgents.unshift({
+          agent_id: targetName,
+          backend,
+          target_name: targetName,
+          session_id: sessionId,
+          directory_path: payload.directory_path || "root",
+          status: "running",
+          updated_at: "2026-06-09T00:00:01Z",
+          capabilities: {},
+          host: {},
+        });
+        jsonResponse(response, { operation }, 202);
+        return;
+      }
+      const coreCreateOperationMatch = pathname.match(/^\/api\/admin\/agents\/create-operations\/([^/]+)$/);
+      if (request.method === "GET" && coreCreateOperationMatch) {
+        const operationId = decodeURIComponent(coreCreateOperationMatch[1]);
+        requests.push({ method: request.method, pathname, search: url.search });
+        const operation = coreCreateOperations.get(operationId);
+        if (!operation) {
+          jsonResponse(response, { error: "operation not found" }, 404);
+          return;
+        }
+        jsonResponse(response, { operation });
         return;
       }
 
@@ -2595,6 +2723,107 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   assert.equal(mutationRequests[3].payload.display_name, "Backend Agent");
   assert.equal(mutationRequests[3].payload.reports_to_agent_id, managerId);
   assert.equal(mutationRequests[3].payload.ephemeral_policy.max_concurrent, 2);
+});
+
+test("team add-on agent registration can select an existing core session", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+
+  await teamGroup.locator('[data-team-record-tab="agent"]').click();
+  await teamGroup.getByRole("button", { name: "Add agent" }).click();
+  const inlineAgentForm = teamGroup.locator('form[data-form-id="register-agent-form"]');
+  await inlineAgentForm.waitFor({ state: "visible" });
+  await waitForSelectOption(page, 'form[data-form-id="register-agent-form"] [name="existing_session_id"]', "session-existing-backend");
+
+  await inlineAgentForm.locator('[name="project_id"]').selectOption("project");
+  await inlineAgentForm.locator('[name="role_id"]').selectOption("project__backend");
+  await inlineAgentForm.locator('[name="existing_session_id"]').selectOption("session-existing-backend");
+  await inlineAgentForm.locator('[name="display_name"]').fill("Existing Core Agent");
+  await inlineAgentForm.locator('[name="reports_to_agent_id"]').selectOption("lead");
+  await inlineAgentForm.getByRole("button", { name: "Register agent" }).click();
+
+  await waitForCondition(
+    () => requests.some((request) => request.method === "POST" && request.pathname === "/api/addons/team-addon/agents"),
+    "expected Team agent registration request",
+  );
+
+  const registerRequest = requests.find((request) =>
+    request.method === "POST" && request.pathname === "/api/addons/team-addon/agents"
+  );
+  assert.ok(registerRequest);
+  assert.equal(registerRequest.payload.session_id, "session-existing-backend");
+  assert.equal(registerRequest.payload.display_name, "Existing Core Agent");
+  assert.ok(
+    requests.some((request) =>
+      request.method === "GET" &&
+      request.pathname === "/api/admin/agents" &&
+      request.search.includes("directory_path=root")
+    ),
+  );
+});
+
+test("team add-on agent registration can create and auto-register a core session", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+
+  await teamGroup.locator('[data-team-record-tab="agent"]').click();
+  await teamGroup.getByRole("button", { name: "Add agent" }).click();
+  const inlineAgentForm = teamGroup.locator('form[data-form-id="register-agent-form"]');
+  await inlineAgentForm.waitFor({ state: "visible" });
+  await inlineAgentForm.locator('[name="project_id"]').selectOption("project");
+  await inlineAgentForm.locator('[name="role_id"]').selectOption("project__backend");
+  await inlineAgentForm.locator('[name="display_name"]').fill("Created Core Agent");
+  await inlineAgentForm.locator('[name="reports_to_agent_id"]').selectOption("lead");
+
+  await inlineAgentForm.getByRole("button", { name: "Create new session" }).click();
+  const createDialog = page.locator('[role="dialog"][aria-label="Create and register agent"]');
+  await createDialog.waitFor({ state: "visible" });
+  await createDialog.locator("label", { hasText: "VM name" }).locator("input").fill("vm-team-created");
+  await createDialog.getByRole("button", { name: "Create and register" }).click();
+
+  await waitForCondition(
+    () =>
+      requests.some((request) => request.method === "POST" && request.pathname === "/api/admin/agents/create-operations") &&
+      requests.some((request) => request.method === "POST" && request.pathname === "/api/addons/team-addon/agents"),
+    "expected core create and Team registration requests",
+    { timeoutMs: 5000 },
+  );
+
+  const createRequest = requests.find((request) =>
+    request.method === "POST" && request.pathname === "/api/admin/agents/create-operations"
+  );
+  assert.ok(createRequest);
+  assert.equal(createRequest.payload.backend, "libvirt_vm");
+  assert.equal(createRequest.payload.vm_name, "vm-team-created");
+
+  const registerRequest = requests.find((request) =>
+    request.method === "POST" && request.pathname === "/api/addons/team-addon/agents"
+  );
+  assert.ok(registerRequest);
+  assert.equal(registerRequest.payload.session_id, "session-vm-team-created");
+  assert.equal(registerRequest.payload.display_name, "Created Core Agent");
 });
 
 test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
@@ -3975,7 +4204,9 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   await page.getByText("Saved revision 7.").waitFor({ state: "visible" });
 
   const mutationRequests = requests.filter(
-    (request) => request.pathname !== "/api/addons/team-addon/projects/git/import",
+    (request) =>
+      request.pathname.startsWith("/api/addons/team-addon/") &&
+      request.pathname !== "/api/addons/team-addon/projects/git/import",
   );
   assert.deepEqual(
     mutationRequests.map((request) => [request.method, request.pathname, request.payload.expected_revision]),
