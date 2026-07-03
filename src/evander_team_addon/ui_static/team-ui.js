@@ -1228,12 +1228,12 @@ function governanceOversightTeamOptions(group, mode) {
 async function submitOrgActionForm(form) {
   const action = text(form.dataset.orgAction);
   if (action === "create-team" || action === "add-subordinate-agent") {
-    await submitOrgCreateForm(form);
-    return;
+    return await submitOrgCreateForm(form);
   }
   if (action === "governance-add-team" || action === "governance-remove-team") {
-    await submitOrgGovernanceOversightForm(form, action === "governance-remove-team");
+    return await submitOrgGovernanceOversightForm(form, action === "governance-remove-team");
   }
+  return false;
 }
 
 async function submitOrgCreateForm(form) {
@@ -1241,12 +1241,13 @@ async function submitOrgCreateForm(form) {
   const endpoint = endpointForForm(form, data);
   const method = form.dataset.method || "POST";
   if (!endpoint) {
-    return;
+    return false;
   }
   const saved = await submitMutation(form, endpoint, method, payloadForForm(form, data));
   if (saved) {
     closeOrgActionDialog();
   }
+  return saved;
 }
 
 async function submitOrgGovernanceOversightForm(form, removeTeam) {
@@ -1255,11 +1256,11 @@ async function submitOrgGovernanceOversightForm(form, removeTeam) {
   const group = state.governance_groups?.[groupId];
   if (!group) {
     setStatus("Governance group is no longer available.", "error");
-    return;
+    return false;
   }
   if (!teamId) {
     setStatus("Team is required.", "error");
-    return;
+    return false;
   }
   const currentTeamIds = uniqueTextList(group.member_team_ids || []);
   const nextTeamIds = removeTeam
@@ -1274,6 +1275,7 @@ async function submitOrgGovernanceOversightForm(form, removeTeam) {
   if (saved) {
     closeOrgActionDialog();
   }
+  return saved;
 }
 
 function bindForms() {
@@ -11461,6 +11463,9 @@ function retryModeForForm(form) {
   if (form === elements.editForm || text(form?.dataset?.editType)) {
     return "edit";
   }
+  if (form?.hasAttribute?.("data-org-action-form")) {
+    return "org-action";
+  }
   const formId = formIdentifier(form);
   if (formId === "update-task-form") {
     return "task-update";
@@ -11497,6 +11502,8 @@ async function retryPendingConflictSave() {
     await submitTaskUpdate(form);
   } else if (retry.mode === "review-decision") {
     await submitReviewDecision(form);
+  } else if (retry.mode === "org-action") {
+    await submitOrgActionForm(form);
   } else {
     await submitCreateForm(form);
   }

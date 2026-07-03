@@ -137,6 +137,8 @@ textarea {
 }
 
 .status-message {
+  position: relative;
+  z-index: 1100;
   min-height: 2rem;
   margin-bottom: 0.85rem;
   border: 1px solid transparent;

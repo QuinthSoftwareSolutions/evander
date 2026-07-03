@@ -1240,6 +1240,7 @@ async function createTeamAddonServer(
   t,
   {
     conflictOnFirstTeamCreate = false,
+    conflictOnFirstGovernanceGroupUpdate = false,
     conversationsBeforeResponse = null,
     costsBeforeResponse = null,
     costsDelayMs = 0,
@@ -1257,6 +1258,7 @@ async function createTeamAddonServer(
   const openChatStreams = new Set();
   const openStateStreams = new Set();
   let conflictSent = false;
+  let governanceGroupUpdateConflictSent = false;
   const template = autoDevSquadTemplate();
   const coreAgents = coreAgentItems ?? [
     {
@@ -1695,6 +1697,34 @@ async function createTeamAddonServer(
             error: "stale team add-on state revision: expected 0, current 1",
             expected_revision: 0,
             current_revision: 1,
+          },
+          409,
+        );
+        return;
+      }
+
+      if (
+        conflictOnFirstGovernanceGroupUpdate &&
+        request.method === "PATCH" &&
+        /^\/api\/addons\/team-addon\/governance-groups\/[^/]+$/.test(pathname) &&
+        !governanceGroupUpdateConflictSent
+      ) {
+        governanceGroupUpdateConflictSent = true;
+        const previousRevision = payload.expected_revision;
+        state.revision += 1;
+        const groupId = decodeURIComponent(pathname.split("/").pop() || "");
+        if (state.governance_groups[groupId]) {
+          state.governance_groups[groupId].goals = [
+            ...(state.governance_groups[groupId].goals || []),
+            { id: "operator-conflict-goal", description: "Concurrent governance edit" },
+          ];
+        }
+        jsonResponse(
+          response,
+          {
+            error: `stale team add-on state revision: expected ${previousRevision}, current ${state.revision}`,
+            expected_revision: previousRevision,
+            current_revision: state.revision,
           },
           409,
         );
@@ -3243,6 +3273,50 @@ test("team add-on Org chart context menu edits governance team oversight", async
   );
   assert.equal(patchRequests.length, 2);
   assert.deepEqual(patchRequests[1].payload.member_team_ids, ["team-alpha"]);
+});
+
+test("team add-on Org chart governance context menu retries after revision conflict", async (t) => {
+  const initialState = seededGitState();
+  initialState.governance_groups["platform-oversight"].member_team_ids = ["team-alpha"];
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState,
+    conflictOnFirstGovernanceGroupUpdate: true,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await openOrgChart(page);
+  const governanceNode = page.locator("#team-org-page .org-flow-governance-node", {
+    hasText: "Platform Oversight",
+  });
+  await governanceNode.waitFor({ state: "visible" });
+
+  await governanceNode.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Add team to oversight" }).click();
+  const dialog = page.locator("#org-action-modal");
+  const form = dialog.locator('form[data-org-action="governance-add-team"]');
+  await form.locator('[name="team_id"]').selectOption("team-beta");
+  await dialog.getByRole("button", { name: "Add team" }).click();
+
+  await page.getByText(/Revision conflict/).waitFor({ state: "visible" });
+  await waitForRevision(page, 5);
+  await dialog.waitFor({ state: "visible" });
+  assert.equal(await form.locator('[name="team_id"]').inputValue(), "team-beta");
+
+  await page.getByRole("button", { name: "Retry save" }).click();
+  await waitForRevision(page, 6);
+  await dialog.waitFor({ state: "hidden" });
+
+  const patchRequests = requests.filter(
+    (entry) =>
+      entry.method === "PATCH" &&
+      entry.pathname === "/api/addons/team-addon/governance-groups/platform-oversight",
+  );
+  assert.equal(patchRequests.length, 2);
+  assert.deepEqual(patchRequests[0].payload.member_team_ids, ["team-alpha", "team-beta"]);
+  assert.equal(patchRequests[0].payload.expected_revision, 4);
+  assert.deepEqual(patchRequests[1].payload.member_team_ids, ["team-alpha", "team-beta"]);
+  assert.equal(patchRequests[1].payload.expected_revision, 5);
 });
 
 test("team add-on Org chart context menu adds subordinate agents", async (t) => {

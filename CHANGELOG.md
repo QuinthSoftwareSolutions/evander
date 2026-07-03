@@ -17,6 +17,8 @@
 - Reused the Team agent session picker/create-session bridge from org-chart
   subordinate registration so new subordinates can link existing sessions or
   create a core session before Team registration.
+- Fixed revision-conflict retry routing for org chart governance oversight
+  actions.
 
 ## 2026-07-03 - Claude MCP Registration
 
