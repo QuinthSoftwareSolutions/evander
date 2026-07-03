@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-03 - Claude MCP Registration
+
+- Reconciled generated Claude MCP config into Claude Code's user MCP registry
+  before container and VM Claude prompt runs so resumed sessions keep Evander
+  MCP tools in their available toolset.
+
 ## 2026-07-02 - Team Add-on Read Tools And Compact Context
 
 - Added Team MCP read tools for visible tasks, inbox, cases, deliverables,

@@ -22,11 +22,18 @@ def test_claude_runner_streams_prompt_on_stdin_and_writes_mcp_config(
     home = tmp_path / "home"
     home.mkdir()
     args_log = tmp_path / "claude-args.log"
+    mcp_args_log = tmp_path / "claude-mcp-args.log"
     stdin_log = tmp_path / "claude-stdin.log"
     _write_executable(
         fake_bin / "claude",
         f"""#!/usr/bin/env bash
 set -euo pipefail
+if [ "${{1:-}}" = "mcp" ]; then
+  for arg in "$@"; do
+    printf '%s\\n' "$arg" >> "{mcp_args_log}"
+  done
+  exit 0
+fi
 for arg in "$@"; do
   printf '%s\\n' "$arg" >> "{args_log}"
 done
@@ -79,3 +86,21 @@ EOF
     assert mcp_config["mcpServers"]["evander"]["url"] == (
         "http://gateway.test:8000/mcp?session_id=session-1"
     )
+    assert mcp_args_log.read_text(encoding="utf-8").splitlines() == [
+        "mcp",
+        "add",
+        "--help",
+        "mcp",
+        "remove",
+        "-s",
+        "user",
+        "evander",
+        "mcp",
+        "add",
+        "--transport",
+        "http",
+        "-s",
+        "user",
+        "evander",
+        "http://gateway.test:8000/mcp?session_id=session-1",
+    ]
