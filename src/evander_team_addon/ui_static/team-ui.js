@@ -1738,7 +1738,81 @@ function applyCoreAgentSessionSelection(select) {
   }
 }
 
+function validateTeamAgentSessionCreateRegistration(form) {
+  if (formSemanticIdentifier(form) !== "register-agent-form") {
+    return true;
+  }
+  const data = formData(form);
+  const teamId = normalizedAgentRegistrationTeamId(data.team_id);
+  if (!teamId) {
+    return true;
+  }
+  if (!state.teams?.[teamId]) {
+    return rejectCoreAgentSessionCreate(form, "team_id", "Select a valid team before creating a core agent session.");
+  }
+  const roleId = text(data.role_id);
+  if (!roleId) {
+    return rejectCoreAgentSessionCreate(form, "role_id", "Select a role before creating a core agent session.");
+  }
+  const role = state.roles?.[roleId];
+  if (!role || text(role.team_id) !== teamId) {
+    return rejectCoreAgentSessionCreate(
+      form,
+      "role_id",
+      "Select a valid role for this team before creating a core agent session.",
+    );
+  }
+  const projectId = text(data.project_id);
+  if (projectId) {
+    const project = state.projects?.[projectId];
+    if (!project || text(project.team_id) !== teamId) {
+      return rejectCoreAgentSessionCreate(
+        form,
+        "project_id",
+        "Select a valid project for this team before creating a core agent session.",
+      );
+    }
+  }
+  const roleProjectId = text(role.project_id);
+  if (roleProjectId && roleProjectId !== projectId) {
+    return rejectCoreAgentSessionCreate(
+      form,
+      "project_id",
+      "Select the project required by the selected role before creating a core agent session.",
+    );
+  }
+  const reportsToAgentId = text(data.reports_to_agent_id);
+  if (reportsToAgentId) {
+    const superior = state.agents?.[reportsToAgentId];
+    if (!superior || text(superior.team_id) !== teamId) {
+      return rejectCoreAgentSessionCreate(
+        form,
+        "reports_to_agent_id",
+        "Select a valid superior agent for this team before creating a core agent session.",
+      );
+    }
+  }
+  return true;
+}
+
+function normalizedAgentRegistrationTeamId(teamId) {
+  const normalizedTeamId = text(teamId);
+  return normalizedTeamId === noTeamRecordId ? "" : normalizedTeamId;
+}
+
+function rejectCoreAgentSessionCreate(form, fieldName, message) {
+  setStatus(message, "error");
+  const field = form.elements?.[fieldName];
+  if (field) {
+    field.focus?.();
+  }
+  return false;
+}
+
 function openCoreAgentCreateDialogForForm(form) {
+  if (!validateTeamAgentSessionCreateRegistration(form)) {
+    return;
+  }
   const contextId = formIdentifier(form) || `register-agent-${Date.now()}`;
   if (!form.id) {
     form.id = contextId;
@@ -1781,8 +1855,8 @@ async function completeTeamAgentCreateRegistration(detail) {
   });
   refreshCoreAgentSessionPicker(form, sessionId);
   setStatus(`Created session ${sessionId}; registering Team agent.`, "loading");
-  const saved = await submitCreateForm(form);
-  if (!saved) {
+  const result = await submitCreateForm(form, { detailedResult: true });
+  if (!result.saved && result.failureReason !== "conflict") {
     setStatus(`Created session ${sessionId}; review the Team registration error and submit again.`, "warning");
   }
 }
@@ -11065,12 +11139,12 @@ function fillSelectsIn(root) {
   });
 }
 
-async function submitCreateForm(form) {
+async function submitCreateForm(form, { detailedResult = false } = {}) {
   const data = formData(form);
   const endpoint = endpointForForm(form, data);
   const method = form.dataset.method || "POST";
   if (!endpoint) {
-    return;
+    return submitMutationResult(false, "validation", detailedResult);
   }
   const formId = formSemanticIdentifier(form);
   const existingProjectIds =
@@ -11078,7 +11152,8 @@ async function submitCreateForm(form) {
       ? new Set(values(state.projects).map((project) => project.id))
       : null;
   const payload = payloadForForm(form, data);
-  const saved = await submitMutation(form, endpoint, method, payload);
+  const result = await submitMutation(form, endpoint, method, payload, { detailedResult });
+  const saved = mutationResultSaved(result);
   if (saved && existingProjectIds) {
     const createdProjects = values(state.projects)
       .filter((project) => !existingProjectIds.has(project.id))
@@ -11113,7 +11188,7 @@ async function submitCreateForm(form) {
   if (saved && form.hasAttribute("data-org-action-form")) {
     closeOrgActionDialog();
   }
-  return saved;
+  return result;
 }
 
 async function submitTaskUpdate(form) {
@@ -11225,7 +11300,7 @@ function setGitImportStatus(element, message) {
   element.textContent = message || "";
 }
 
-async function submitMutation(form, endpoint, method, payload, { resetOnSuccess = true } = {}) {
+async function submitMutation(form, endpoint, method, payload, { resetOnSuccess = true, detailedResult = false } = {}) {
   rememberFormDraft(form);
   const drafts = captureFormDrafts();
   const body = mutationBodyWithConflictMetadata(endpoint, method, payload);
@@ -11257,7 +11332,7 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
         options: { resetOnSuccess },
         currentRevision: current,
       });
-      return false;
+      return submitMutationResult(false, "conflict", detailedResult);
     }
 
     if (!response.ok) {
@@ -11292,13 +11367,25 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
     } else {
       setStatus(`Saved revision ${state.revision}.`, "ok");
     }
-    return true;
+    return submitMutationResult(true, "", detailedResult);
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Save failed.", "error");
-    return false;
+    return submitMutationResult(false, "error", detailedResult);
   } finally {
     setFormBusy(form, false);
   }
+}
+
+function submitMutationResult(saved, failureReason, detailedResult) {
+  const result = {
+    saved: Boolean(saved),
+    failureReason: saved ? "" : text(failureReason),
+  };
+  return detailedResult ? result : result.saved;
+}
+
+function mutationResultSaved(result) {
+  return typeof result === "object" && result !== null ? Boolean(result.saved) : Boolean(result);
 }
 
 function isScopedMutationResponse(result) {

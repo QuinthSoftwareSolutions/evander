@@ -1240,6 +1240,7 @@ async function createTeamAddonServer(
   t,
   {
     conflictOnFirstTeamCreate = false,
+    conflictOnFirstAgentRegistration = false,
     conflictOnFirstGovernanceGroupUpdate = false,
     conversationsBeforeResponse = null,
     costsBeforeResponse = null,
@@ -1258,6 +1259,7 @@ async function createTeamAddonServer(
   const openChatStreams = new Set();
   const openStateStreams = new Set();
   let conflictSent = false;
+  let agentRegistrationConflictSent = false;
   let governanceGroupUpdateConflictSent = false;
   const template = autoDevSquadTemplate();
   const coreAgents = coreAgentItems ?? [
@@ -1719,6 +1721,27 @@ async function createTeamAddonServer(
             { id: "operator-conflict-goal", description: "Concurrent governance edit" },
           ];
         }
+        jsonResponse(
+          response,
+          {
+            error: `stale team add-on state revision: expected ${previousRevision}, current ${state.revision}`,
+            expected_revision: previousRevision,
+            current_revision: state.revision,
+          },
+          409,
+        );
+        return;
+      }
+
+      if (
+        conflictOnFirstAgentRegistration &&
+        request.method === "POST" &&
+        pathname === "/api/addons/team-addon/agents" &&
+        !agentRegistrationConflictSent
+      ) {
+        agentRegistrationConflictSent = true;
+        const previousRevision = payload.expected_revision;
+        state.revision += 1;
         jsonResponse(
           response,
           {
@@ -2944,6 +2967,90 @@ test("team add-on agent registration can create and auto-register a core session
   assert.ok(registerRequest);
   assert.equal(registerRequest.payload.session_id, "session-team-created");
   assert.equal(registerRequest.payload.display_name, "Created Core Agent");
+});
+
+test("team add-on agent registration blocks core creation until Team fields are valid", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+
+  await teamGroup.locator('[data-team-record-tab="agent"]').click();
+  await teamGroup.getByRole("button", { name: "Add agent" }).click();
+  const inlineAgentForm = teamGroup.locator('form[data-form-id="register-agent-form"]');
+  await inlineAgentForm.waitFor({ state: "visible" });
+  await inlineAgentForm.getByRole("button", { name: "Create new session" }).click();
+
+  await page.getByText("Select a role before creating a core agent session.").waitFor({ state: "visible" });
+  await page.waitForTimeout(100);
+  assert.equal(
+    await page.locator('[role="dialog"][aria-label="Create and register agent"]').isVisible().catch(() => false),
+    false,
+  );
+  assert.equal(
+    requests.some((request) => request.method === "POST" && request.pathname === "/api/admin/agents/create-operations"),
+    false,
+  );
+});
+
+test("team add-on agent auto-registration preserves conflict retry after core creation", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+    conflictOnFirstAgentRegistration: true,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+
+  await teamGroup.locator('[data-team-record-tab="agent"]').click();
+  await teamGroup.getByRole("button", { name: "Add agent" }).click();
+  const inlineAgentForm = teamGroup.locator('form[data-form-id="register-agent-form"]');
+  await inlineAgentForm.waitFor({ state: "visible" });
+  await inlineAgentForm.locator('[name="project_id"]').selectOption("project");
+  await inlineAgentForm.locator('[name="role_id"]').selectOption("project__backend");
+  await inlineAgentForm.locator('[name="display_name"]').fill("Conflict Core Agent");
+  await inlineAgentForm.locator('[name="reports_to_agent_id"]').selectOption("lead");
+
+  await inlineAgentForm.getByRole("button", { name: "Create new session" }).click();
+  const createDialog = page.locator('[role="dialog"][aria-label="Create and register agent"]');
+  await createDialog.waitFor({ state: "visible" });
+  await createDialog.locator("label", { hasText: "VM name" }).locator("input").fill("vm-team-conflict");
+  await createDialog.locator('input[placeholder="Required"]').fill("session-team-conflict");
+  await createDialog.getByRole("button", { name: "Create and register" }).click();
+
+  await page.getByText(/Revision conflict/).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Retry save" }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Retry save" }).click();
+  await waitForRevision(page, 10);
+
+  const createRequests = requests.filter(
+    (request) => request.method === "POST" && request.pathname === "/api/admin/agents/create-operations",
+  );
+  assert.equal(createRequests.length, 1);
+  const registrationRequests = requests.filter(
+    (request) => request.method === "POST" && request.pathname === "/api/addons/team-addon/agents",
+  );
+  assert.equal(registrationRequests.length, 2);
+  assert.equal(registrationRequests[0].payload.session_id, "session-team-conflict");
+  assert.equal(registrationRequests[0].payload.expected_revision, 8);
+  assert.equal(registrationRequests[1].payload.session_id, "session-team-conflict");
+  assert.equal(registrationRequests[1].payload.expected_revision, 9);
 });
 
 test("team add-on agent registration keeps core creation locked with privileges locked", async (t) => {

@@ -8,6 +8,10 @@
   auto-register the created session as a Team agent when creation succeeds.
 - Guarded inline Team core-session creation with the Admin privileged-operation
   lock and required an explicit session id before Team auto-registration.
+- Blocked Team-scoped core-session creation until the registration role,
+  project, and superior selections are valid for the target team.
+- Preserved the revision-conflict retry action when Team auto-registration
+  conflicts after the core session has already been created.
 
 ## 2026-07-03 - Team Org Chart Context Menus
 
