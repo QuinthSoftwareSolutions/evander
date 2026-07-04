@@ -14,6 +14,9 @@
   container-worker MSSQL provisioning before restoring seed data.
 - Fixed MSSQL Seed MCP tools so connected MCP callers can omit the legacy
   `session_id` argument and use the session bound to their MCP transport.
+- Fixed MSSQL Seed settings writes so malformed payloads are rejected without
+  replacing state and sidecar/token environment changes require Admin Owner
+  permission.
 
 ## 2026-07-04 - Admin Web UI-Only Lock
 

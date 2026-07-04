@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import json
 from typing import Any
 
 from pydantic import ValidationError
@@ -9,6 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from evander.addons import AddonContext
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 
 from .state import MssqlSeedStateError, MssqlSeedStore
 
@@ -43,7 +45,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
 
     async def put_settings(request: Request) -> JSONResponse:
-        payload = await _read_payload(request)
+        permission_error = _require_settings_write_permission(context, request)
+        if permission_error is not None:
+            return permission_error
+        try:
+            payload = await _read_payload(request)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         try:
             state = store.replace_settings(
                 sidecars=_object_or_array(payload.get("sidecars"), "sidecars"),
@@ -85,9 +93,25 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 async def _read_payload(request: Request) -> dict[str, Any]:
     try:
         payload = await request.json()
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Request body must be valid JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Request body must be a JSON object")
+    return payload
+
+
+def _require_settings_write_permission(
+    context: AddonContext, request: Request
+) -> JSONResponse | None:
+    auth = context.auth
+    require_permission = getattr(auth, "require_permission", None)
+    if not callable(require_permission):
+        return JSONResponse({"error": "Admin owner permission is required"}, status_code=403)
+    try:
+        require_permission(request, ADMIN_OWNER_PERMISSION)
+    except PermissionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=403)
+    return None
 
 
 def _object_or_array(value: Any, field_name: str) -> dict[str, Any] | list[Any]:

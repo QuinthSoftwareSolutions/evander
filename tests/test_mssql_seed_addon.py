@@ -4,10 +4,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+from starlette.applications import Starlette
+from starlette.testclient import TestClient
+
 from evander.addons import AddonContext
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.config import GatewayConfig
 from evander.models import SessionManifest
 from evander.worker.models import WorkerMssqlDatabaseRecord
+from evander_mssql_seed_addon.api import admin_api_routes
 from evander_mssql_seed_addon.mcp import (
     LIST_DATABASES_TOOL,
     PROVISION_DATABASE_TOOL,
@@ -100,6 +105,35 @@ class FakeSidecarClient:
         return {"status": "restored", "file_count": 2}
 
 
+class FakeAdminAuth:
+    def __init__(self, *, allowed: bool = True) -> None:
+        self.allowed = allowed
+        self.required_permissions: list[str] = []
+
+    def require_permission(self, request, permission: str) -> None:
+        del request
+        self.required_permissions.append(permission)
+        if not self.allowed:
+            raise PermissionError(f"Missing required permission: {permission}")
+
+
+def _settings_api_client(tmp_path: Path, *, auth: FakeAdminAuth) -> TestClient:
+    return TestClient(
+        Starlette(
+            routes=list(
+                admin_api_routes(
+                    AddonContext(
+                        addon_id="mssql-seed-addon",
+                        runtime_dir=tmp_path,
+                        addon_runtime_dir=tmp_path / "addons" / "mssql-seed-addon",
+                        auth=auth,
+                    )
+                )
+            )
+        )
+    )
+
+
 def test_store_replaces_settings_and_tracks_seeded_databases(tmp_path: Path) -> None:
     store = MssqlSeedStore(tmp_path)
 
@@ -122,6 +156,60 @@ def test_store_replaces_settings_and_tracks_seeded_databases(tmp_path: Path) -> 
     assert sorted(state.sidecars) == ["worker-a"]
     assert sorted(state.seeds) == ["app-demo"]
     assert state.seeds["app-demo"].backup_path.endswith("app-demo.bak")
+
+
+def test_settings_api_rejects_malformed_payload_without_replacing_state(
+    tmp_path: Path,
+) -> None:
+    store = MssqlSeedStore(tmp_path)
+    store.replace_settings(
+        sidecars={"worker-a": {"base_url": "http://worker:11990", "token_env": "SEED_TOKEN"}},
+        seeds={"app-demo": {"sidecar_id": "worker-a", "backup_path": "/seed/app-demo.bak"}},
+    )
+    auth = FakeAdminAuth()
+    client = _settings_api_client(tmp_path, auth=auth)
+
+    malformed = client.put(
+        "/settings",
+        content=b"{",
+        headers={"content-type": "application/json"},
+    )
+    non_object = client.put("/settings", json=[])
+
+    assert malformed.status_code == 400
+    assert "valid JSON" in malformed.json()["error"]
+    assert non_object.status_code == 400
+    assert non_object.json()["error"] == "Request body must be a JSON object"
+    state = store.read()
+    assert sorted(state.sidecars) == ["worker-a"]
+    assert sorted(state.seeds) == ["app-demo"]
+    assert auth.required_permissions == [ADMIN_OWNER_PERMISSION, ADMIN_OWNER_PERMISSION]
+
+
+def test_settings_api_requires_admin_owner_permission(tmp_path: Path) -> None:
+    store = MssqlSeedStore(tmp_path)
+    store.replace_settings(
+        sidecars={"worker-a": {"base_url": "http://worker:11990", "token_env": "SEED_TOKEN"}},
+        seeds={"app-demo": {"sidecar_id": "worker-a", "backup_path": "/seed/app-demo.bak"}},
+    )
+    auth = FakeAdminAuth(allowed=False)
+    client = _settings_api_client(tmp_path, auth=auth)
+
+    response = client.put(
+        "/settings",
+        json={
+            "sidecars": {
+                "evil": {"base_url": "http://attacker.invalid", "token_env": "HOST_SECRET"}
+            },
+            "seeds": {"evil": {"sidecar_id": "evil", "backup_path": "/seed/evil.bak"}},
+        },
+    )
+
+    assert response.status_code == 403
+    assert auth.required_permissions == [ADMIN_OWNER_PERMISSION]
+    state = store.read()
+    assert sorted(state.sidecars) == ["worker-a"]
+    assert sorted(state.seeds) == ["app-demo"]
 
 
 def test_mcp_seed_provision_uses_core_mssql_provisioning_before_restore(
