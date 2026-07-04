@@ -1754,6 +1754,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "ensureStateStream" in script.text
     assert "/state/stream" in script.text
     assert "applyStateSnapshot" in script.text
+    assert "teamViewCacheGeneration += 1" in script.text
+    assert "loadedTeamViews.clear()" in script.text
+    assert "loadView(activeTeamView, { force: true, preserveForms: true })" in script.text
     assert "restoreFormDrafts(drafts)" in script.text
     assert "chatReadMarkers" in script.text
     assert "chatConversationHasUnread" in script.text
@@ -1805,6 +1808,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     agent_create_script = enabled.get("/addons/team-addon/team-agent-create.js")
     assert agent_create_script.status_code == 200
     assert "team-agent-create:created" in agent_create_script.text
+    assert "admin-privileged-operations" in agent_create_script.text
     assert "Create and register agent" in agent_create_script.text
 
     agent_create_stylesheet = enabled.get("/addons/team-addon/team-agent-create.css")

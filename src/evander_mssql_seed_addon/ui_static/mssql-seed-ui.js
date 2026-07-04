@@ -5,7 +5,7 @@ const state = {
 };
 
 const pageParams = new URLSearchParams(window.location.search);
-const privilegedUnlocked = pageParams.get("privileged_unlocked") === "true";
+let privilegedUnlocked = pageParams.get("privileged_unlocked") === "true";
 const lockedSettingsMessage = "Unlock privileged operations to edit MSSQL seed settings.";
 
 const els = {
@@ -58,6 +58,26 @@ function applySettingsLockState() {
     button.title = locked ? lockedSettingsMessage : "";
   });
 }
+
+function setPrivilegedUnlocked(unlocked) {
+  const nextUnlocked = Boolean(unlocked);
+  if (privilegedUnlocked === nextUnlocked) {
+    return;
+  }
+  privilegedUnlocked = nextUnlocked;
+  renderSettings();
+}
+
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin) {
+    return;
+  }
+  const data = event.data || {};
+  if (data.type !== "admin-privileged-operations") {
+    return;
+  }
+  setPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
+});
 
 function editableCell(value, placeholder, onInput) {
   const td = document.createElement("td");

@@ -241,7 +241,7 @@ R.useTransition = function() {
 };
 R.version = "18.3.1";
 as.exports = R;
-var O = as.exports;
+var D = as.exports;
 /**
  * @license React
  * react-jsx-runtime.production.min.js
@@ -251,7 +251,7 @@ var O = as.exports;
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
-var Hc = O, Qc = Symbol.for("react.element"), Wc = Symbol.for("react.fragment"), Kc = Object.prototype.hasOwnProperty, Yc = Hc.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentOwner, Xc = { key: !0, ref: !0, __self: !0, __source: !0 };
+var Hc = D, Qc = Symbol.for("react.element"), Wc = Symbol.for("react.fragment"), Kc = Object.prototype.hasOwnProperty, Yc = Hc.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentOwner, Xc = { key: !0, ref: !0, __self: !0, __source: !0 };
 function ys(e, t, n) {
   var r, l = {}, i = null, o = null;
   n !== void 0 && (i = "" + n), t.key !== void 0 && (i = "" + t.key), t.ref !== void 0 && (o = t.ref);
@@ -481,7 +481,7 @@ var Gc = ks.exports;
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
-var Zc = O, xe = Gc;
+var Zc = D, xe = Gc;
 function S(e) {
   for (var t = "https://reactjs.org/docs/error-decoder.html?invariant=" + e, n = 1; n < arguments.length; n++) t += "&args[]=" + encodeURIComponent(arguments[n]);
   return "Minified React error #" + e + "; visit " + t + " for the full message or use the non-minified dev environment for full errors and additional helpful warnings.";
@@ -2753,7 +2753,7 @@ function Xe(e, t) {
 function ft(e, t, n) {
   var r = e.updateQueue;
   if (r === null) return null;
-  if (r = r.shared, D & 2) {
+  if (r = r.shared, O & 2) {
     var l = r.pending;
     return l === null ? t.next = t : (t.next = l.next, l.next = t), r.pending = t, Je(e, n);
   }
@@ -4618,16 +4618,16 @@ function Ku(e) {
     L = t.return;
   }
 }
-var Ud = Math.ceil, nl = be.ReactCurrentDispatcher, To = be.ReactCurrentOwner, Le = be.ReactCurrentBatchConfig, D = 0, te = null, Z = null, re = 0, we = 0, Xt = yt(0), q = 0, qn = null, Rt = 0, gl = 0, zo = 0, In = null, me = null, Ro = 0, sn = 1 / 0, Qe = null, rl = !1, Bi = null, dt = null, xr = !1, ot = null, ll = 0, Dn = 0, Hi = null, Mr = -1, Ir = 0;
+var Ud = Math.ceil, nl = be.ReactCurrentDispatcher, To = be.ReactCurrentOwner, Le = be.ReactCurrentBatchConfig, O = 0, te = null, Z = null, re = 0, we = 0, Xt = yt(0), q = 0, qn = null, Rt = 0, gl = 0, zo = 0, In = null, me = null, Ro = 0, sn = 1 / 0, Qe = null, rl = !1, Bi = null, dt = null, xr = !1, ot = null, ll = 0, Dn = 0, Hi = null, Mr = -1, Ir = 0;
 function fe() {
-  return D & 6 ? G() : Mr !== -1 ? Mr : Mr = G();
+  return O & 6 ? G() : Mr !== -1 ? Mr : Mr = G();
 }
 function pt(e) {
-  return e.mode & 1 ? D & 2 && re !== 0 ? re & -re : Sd.transition !== null ? (Ir === 0 && (Ir = Ws()), Ir) : (e = F, e !== 0 || (e = window.event, e = e === void 0 ? 16 : qs(e.type)), e) : 1;
+  return e.mode & 1 ? O & 2 && re !== 0 ? re & -re : Sd.transition !== null ? (Ir === 0 && (Ir = Ws()), Ir) : (e = F, e !== 0 || (e = window.event, e = e === void 0 ? 16 : qs(e.type)), e) : 1;
 }
 function Fe(e, t, n, r) {
   if (50 < Dn) throw Dn = 0, Hi = null, Error(S(185));
-  er(e, n, r), (!(D & 2) || e !== te) && (e === te && (!(D & 2) && (gl |= n), q === 4 && lt(e, re)), ye(e, r), n === 1 && D === 0 && !(t.mode & 1) && (sn = G() + 500, pl && wt()));
+  er(e, n, r), (!(O & 2) || e !== te) && (e === te && (!(O & 2) && (gl |= n), q === 4 && lt(e, re)), ye(e, r), n === 1 && O === 0 && !(t.mode & 1) && (sn = G() + 500, pl && wt()));
 }
 function ye(e, t) {
   var n = e.callbackNode;
@@ -4636,7 +4636,7 @@ function ye(e, t) {
   if (r === 0) n !== null && tu(n), e.callbackNode = null, e.callbackPriority = 0;
   else if (t = r & -r, e.callbackPriority !== t) {
     if (n != null && tu(n), t === 1) e.tag === 0 ? kd(Yu.bind(null, e)) : ga(Yu.bind(null, e)), vd(function() {
-      !(D & 6) && wt();
+      !(O & 6) && wt();
     }), n = null;
     else {
       switch (Ks(r)) {
@@ -4661,7 +4661,7 @@ function ye(e, t) {
   }
 }
 function sc(e, t) {
-  if (Mr = -1, Ir = 0, D & 6) throw Error(S(327));
+  if (Mr = -1, Ir = 0, O & 6) throw Error(S(327));
   var n = e.callbackNode;
   if (en() && e.callbackNode !== n) return null;
   var r = $r(e, e === te ? re : 0);
@@ -4669,8 +4669,8 @@ function sc(e, t) {
   if (r & 30 || r & e.expiredLanes || t) t = il(e, r);
   else {
     t = r;
-    var l = D;
-    D |= 2;
+    var l = O;
+    O |= 2;
     var i = cc();
     (te !== e || re !== t) && (Qe = null, sn = G() + 500, Pt(e, t));
     do
@@ -4681,7 +4681,7 @@ function sc(e, t) {
         ac(e, u);
       }
     while (!0);
-    go(), nl.current = i, D = l, Z !== null ? t = 0 : (te = null, re = 0, t = q);
+    go(), nl.current = i, O = l, Z !== null ? t = 0 : (te = null, re = 0, t = q);
   }
   if (t !== 0) {
     if (t === 2 && (l = vi(e), l !== 0 && (r = l, t = Qi(e, l))), t === 1) throw n = qn, Pt(e, 0), lt(e, r), ye(e, G()), n;
@@ -4769,7 +4769,7 @@ function lt(e, t) {
   }
 }
 function Yu(e) {
-  if (D & 6) throw Error(S(327));
+  if (O & 6) throw Error(S(327));
   en();
   var t = $r(e, 0);
   if (!(t & 1)) return ye(e, G()), null;
@@ -4783,23 +4783,23 @@ function Yu(e) {
   return e.finishedWork = e.current.alternate, e.finishedLanes = t, Et(e, me, Qe), ye(e, G()), null;
 }
 function Mo(e, t) {
-  var n = D;
-  D |= 1;
+  var n = O;
+  O |= 1;
   try {
     return e(t);
   } finally {
-    D = n, D === 0 && (sn = G() + 500, pl && wt());
+    O = n, O === 0 && (sn = G() + 500, pl && wt());
   }
 }
 function Mt(e) {
-  ot !== null && ot.tag === 0 && !(D & 6) && en();
-  var t = D;
-  D |= 1;
+  ot !== null && ot.tag === 0 && !(O & 6) && en();
+  var t = O;
+  O |= 1;
   var n = Le.transition, r = F;
   try {
     if (Le.transition = null, F = 1, e) return e();
   } finally {
-    F = r, Le.transition = n, D = t, !(D & 6) && wt();
+    F = r, Le.transition = n, O = t, !(O & 6) && wt();
   }
 }
 function Io() {
@@ -4935,8 +4935,8 @@ function Do() {
   (q === 0 || q === 3 || q === 2) && (q = 4), te === null || !(Rt & 268435455) && !(gl & 268435455) || lt(te, re);
 }
 function il(e, t) {
-  var n = D;
-  D |= 2;
+  var n = O;
+  O |= 2;
   var r = cc();
   (te !== e || re !== t) && (Qe = null, Pt(e, t));
   do
@@ -4947,7 +4947,7 @@ function il(e, t) {
       ac(e, l);
     }
   while (!0);
-  if (go(), D = n, nl.current = r, Z !== null) throw Error(S(261));
+  if (go(), O = n, nl.current = r, Z !== null) throw Error(S(261));
   return te = null, re = 0, q;
 }
 function Vd() {
@@ -4999,7 +4999,7 @@ function Bd(e, t, n, r) {
   do
     en();
   while (ot !== null);
-  if (D & 6) throw Error(S(327));
+  if (O & 6) throw Error(S(327));
   n = e.finishedWork;
   var l = e.finishedLanes;
   if (n === null) return null;
@@ -5012,8 +5012,8 @@ function Bd(e, t, n, r) {
     i = Le.transition, Le.transition = null;
     var o = F;
     F = 1;
-    var u = D;
-    D |= 4, To.current = null, Od(e, n), oc(n, e), sd(xi), Br = !!Si, xi = Si = null, e.current = n, Fd(n), pf(), D = u, F = o, Le.transition = i;
+    var u = O;
+    O |= 4, To.current = null, Od(e, n), oc(n, e), sd(xi), Br = !!Si, xi = Si = null, e.current = n, Fd(n), pf(), O = u, F = o, Le.transition = i;
   } else e.current = n;
   if (xr && (xr = !1, ot = e, ll = l), i = e.pendingLanes, i === 0 && (dt = null), vf(n.stateNode), ye(e, G()), t !== null) for (r = e.onRecoverableError, n = 0; n < t.length; n++) l = t[n], r(l.value, { componentStack: l.stack, digest: l.digest });
   if (rl) throw rl = !1, e = Bi, Bi = null, e;
@@ -5025,9 +5025,9 @@ function en() {
     try {
       if (Le.transition = null, F = 16 > e ? 16 : e, ot === null) var r = !1;
       else {
-        if (e = ot, ot = null, ll = 0, D & 6) throw Error(S(331));
-        var l = D;
-        for (D |= 4, L = e.current; L !== null; ) {
+        if (e = ot, ot = null, ll = 0, O & 6) throw Error(S(331));
+        var l = O;
+        for (O |= 4, L = e.current; L !== null; ) {
           var i = L, o = i.child;
           if (L.flags & 16) {
             var u = i.deletions;
@@ -5117,7 +5117,7 @@ function en() {
             L = u.return;
           }
         }
-        if (D = l, wt(), Be && typeof Be.onPostCommitFiberRoot == "function") try {
+        if (O = l, wt(), Be && typeof Be.onPostCommitFiberRoot == "function") try {
           Be.onPostCommitFiberRoot(sl, e);
         } catch {
         }
@@ -5554,7 +5554,7 @@ Ys = function(e) {
       var t = e.stateNode;
       if (t.current.memoizedState.isDehydrated) {
         var n = _n(t.pendingLanes);
-        n !== 0 && (lo(t, n | 1), ye(t, G()), !(D & 6) && (sn = G() + 500, wt()));
+        n !== 0 && (lo(t, n | 1), ye(t, G()), !(O & 6) && (sn = G() + 500, wt()));
       }
       break;
     case 13:
@@ -5710,7 +5710,7 @@ function ep({
   ariaLabel: o,
   inline: u = !0
 }) {
-  const s = O.useRef(null), c = O.useRef(null), h = O.useRef(null), [v, f] = O.useState(!1), [w, k] = O.useState({}), [E, M] = O.useState("bottom"), d = O.useCallback(() => {
+  const s = D.useRef(null), c = D.useRef(null), h = D.useRef(null), [v, f] = D.useState(!1), [w, k] = D.useState({}), [E, M] = D.useState("bottom"), d = D.useCallback(() => {
     const g = c.current, C = h.current;
     if (!g || !C || typeof window > "u")
       return;
@@ -5727,7 +5727,7 @@ function ep({
       "--admin-tooltip-arrow-left": `${j}px`
     });
   }, []);
-  O.useLayoutEffect(() => {
+  D.useLayoutEffect(() => {
     if (!v)
       return;
     d();
@@ -5857,8 +5857,8 @@ function ns({
   validateItem: h,
   normalizeItem: v
 }) {
-  const f = O.useId(), w = ts(e, v), k = qu(w), [E, M] = O.useState(() => w.map((x) => ql(x))), d = O.useRef(k), a = O.useRef(null);
-  O.useEffect(() => {
+  const f = D.useId(), w = ts(e, v), k = qu(w), [E, M] = D.useState(() => w.map((x) => ql(x))), d = D.useRef(k), a = D.useRef(null);
+  D.useEffect(() => {
     Cc(d, a, k) && M(w.map((x) => ql(x)));
   }, [w, k]);
   function p(x) {
@@ -5937,8 +5937,8 @@ function rp({
   keyLabel: c = "Key",
   valueLabel: h = "Value"
 }) {
-  const v = JSON.stringify(e ?? {}), [f, w] = O.useState(() => bu(e)), [k, E] = O.useState(null), M = O.useRef(v), d = O.useRef(null);
-  O.useEffect(() => {
+  const v = JSON.stringify(e ?? {}), [f, w] = D.useState(() => bu(e)), [k, E] = D.useState(null), M = D.useRef(v), d = D.useRef(null);
+  D.useEffect(() => {
     Cc(M, d, v) && (w(bu(e)), E(null));
   }, [v, e]);
   function a(g) {
@@ -5956,7 +5956,7 @@ function rp({
       return g instanceof Error ? g.message : String(g);
     }
   })();
-  return O.useEffect(() => {
+  return D.useEffect(() => {
     n == null || n(p);
   }, [n, p]), /* @__PURE__ */ m.jsxs("div", { className: ["structured-input-editor", i].filter(Boolean).join(" "), children: [
     o ? /* @__PURE__ */ m.jsx("div", { className: "structured-input-description", children: o }) : null,
@@ -6327,8 +6327,8 @@ function wp({
   requireSessionId: h = !1,
   requireSessionIdMessage: v = "Session id is required."
 }) {
-  const [f, w] = O.useState(() => rs()), [k, E] = O.useState(null), [M, d] = O.useState(""), [a, p] = O.useState(null), [g, C] = O.useState(!1);
-  O.useEffect(() => {
+  const [f, w] = D.useState(() => rs()), [k, E] = D.useState(null), [M, d] = D.useState(""), [a, p] = D.useState(null), [g, C] = D.useState(!1);
+  D.useEffect(() => {
     let y = !1;
     return E(null), w((A) => ({
       ...A,
@@ -6350,7 +6350,7 @@ function wp({
       y = !0;
     };
   }, [e]);
-  const _ = O.useMemo(
+  const _ = D.useMemo(
     () => ((k == null ? void 0 : k.agent_providers) ?? []).filter(
       (y) => y.execution_backends.includes(f.backend)
     ),
@@ -6741,47 +6741,58 @@ function _p() {
   return new URLSearchParams(window.location.search).get("privileged_unlocked") === "true";
 }
 function Np() {
-  var o;
-  const [e, t] = O.useState(null), [n, r] = O.useState(""), l = _p();
-  if (O.useEffect(() => {
-    const u = (c) => {
+  var u;
+  const [e, t] = D.useState(null), [n, r] = D.useState(""), [l, i] = D.useState(_p);
+  if (D.useEffect(() => {
+    const s = (c) => {
+      var v;
+      if (c.origin !== window.location.origin)
+        return;
+      const h = c.data || {};
+      h.type === "admin-privileged-operations" && i(!!((v = h.privileged_operations) != null && v.unlocked));
+    };
+    return window.addEventListener("message", s), () => {
+      window.removeEventListener("message", s);
+    };
+  }, []), D.useEffect(() => {
+    const s = (h) => {
       r(""), t({
-        contextId: (c == null ? void 0 : c.contextId) ?? null,
-        directoryPath: (c == null ? void 0 : c.directoryPath) ?? "root"
+        contextId: (h == null ? void 0 : h.contextId) ?? null,
+        directoryPath: (h == null ? void 0 : h.directoryPath) ?? "root"
       });
     };
-    window.openTeamAgentCreateDialog = u;
-    const s = (c) => {
-      u(c.detail ?? {});
+    window.openTeamAgentCreateDialog = s;
+    const c = (h) => {
+      s(h.detail ?? {});
     };
-    return window.addEventListener("team-agent-create:open", s), () => {
-      window.openTeamAgentCreateDialog === u && delete window.openTeamAgentCreateDialog, window.removeEventListener("team-agent-create:open", s);
+    return window.addEventListener("team-agent-create:open", c), () => {
+      window.openTeamAgentCreateDialog === s && delete window.openTeamAgentCreateDialog, window.removeEventListener("team-agent-create:open", c);
     };
   }, []), !e)
     return null;
-  async function i(u) {
-    var v;
+  async function o(s) {
+    var f;
     if (!l)
       throw new Error("Unlock privileged operations to create a core agent session.");
-    if (!((v = u.session_id) != null && v.trim()))
+    if (!((f = s.session_id) != null && f.trim()))
       throw new Error(os);
     r("Queueing core agent session.");
-    const s = await cp(u);
-    r(`Creating ${s.target_name}.`);
-    const c = await Ep(s), h = pp(c);
-    if (!h)
-      throw new Error(`Created ${c.target_name}, but the create operation did not return a session id.`);
+    const c = await cp(s);
+    r(`Creating ${c.target_name}.`);
+    const h = await Ep(c), v = pp(h);
+    if (!v)
+      throw new Error(`Created ${h.target_name}, but the create operation did not return a session id.`);
     r("Registering Team agent."), Cp({
       contextId: (e == null ? void 0 : e.contextId) ?? null,
-      sessionId: h,
-      targetName: c.target_name,
-      operation: c
+      sessionId: v,
+      targetName: h.target_name,
+      operation: h
     });
   }
   return /* @__PURE__ */ m.jsx(
     wp,
     {
-      directoryPath: ((o = e.directoryPath) == null ? void 0 : o.trim()) || "root",
+      directoryPath: ((u = e.directoryPath) == null ? void 0 : u.trim()) || "root",
       title: "Create and register agent",
       description: n || "Create a VM or container session, then Team registration will continue automatically.",
       submitLabel: "Create and register",
@@ -6793,7 +6804,7 @@ function Np() {
       onClose: () => {
         t(null), r("");
       },
-      onCreate: i
+      onCreate: o
     }
   );
 }

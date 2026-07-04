@@ -106,16 +106,29 @@
     return_content: true
     status_code: 200
 
+- name: Resolve MSSQL seed sidecar verification host
+  ansible.builtin.set_fact:
+    evander_worker_mssql_seed_sidecar_probe_host: "{{ '127.0.0.1' if evander_worker_mssql_seed_sidecar_bind_host in ['', '0.0.0.0', '::'] else evander_worker_mssql_seed_sidecar_bind_host }}"
+  vars:
+    evander_worker_mssql_seed_sidecar_bind_host: "{{ evander_worker_mssql_seed_sidecar_host | default('') | string | trim | regex_replace('^\\[(.*)\\]$', '\\1') }}"
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
+- name: Resolve MSSQL seed sidecar verification URL host
+  ansible.builtin.set_fact:
+    evander_worker_mssql_seed_sidecar_probe_url_host: >-
+      {{ '[' ~ evander_worker_mssql_seed_sidecar_probe_host ~ ']' if ':' in evander_worker_mssql_seed_sidecar_probe_host else evander_worker_mssql_seed_sidecar_probe_host }}
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
 - name: Wait for MSSQL seed sidecar listener
   ansible.builtin.wait_for:
-    host: "127.0.0.1"
+    host: "{{ evander_worker_mssql_seed_sidecar_probe_host }}"
     port: "{{ evander_worker_mssql_seed_sidecar_port }}"
     timeout: 30
   when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
 
 - name: Verify MSSQL seed sidecar health endpoint
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ evander_worker_mssql_seed_sidecar_port }}/healthz"
+    url: "http://{{ evander_worker_mssql_seed_sidecar_probe_url_host }}:{{ evander_worker_mssql_seed_sidecar_port }}/healthz"
     method: GET
     return_content: true
     status_code: 200

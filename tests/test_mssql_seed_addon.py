@@ -169,6 +169,8 @@ def test_mssql_seed_ui_guards_settings_mutations_when_locked() -> None:
     ).read_text(encoding="utf-8")
 
     assert 'pageParams.get("privileged_unlocked") === "true"' in ui_js
+    assert 'data.type !== "admin-privileged-operations"' in ui_js
+    assert "setPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));" in ui_js
     assert "button.disabled = locked;" in ui_js
     assert "async function saveSettings() {\n  if (!requireSettingsUnlocked())" in ui_js
     assert 'method: "PUT"' in ui_js

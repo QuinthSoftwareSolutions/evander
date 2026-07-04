@@ -576,7 +576,6 @@ def _load_registration_from_package_module(
         raise ValueError(f"Could not load add-on package module {module_name!r} from {module_path}")
     module = util.module_from_spec(spec)
     alias_root = module_name.split(".", 1)[0]
-    module_alias_snapshot = _snapshot_module_import_aliases(alias_root)
     _clear_addon_package_import(alias_root)
     sys.modules[loaded_module_name] = module
     _install_addon_package_declared_aliases(
@@ -584,14 +583,11 @@ def _load_registration_from_package_module(
         module_name=module_name,
         module=module,
     )
-    try:
-        spec.loader.exec_module(module)
-        register = getattr(module, "register_addon", None)
-        if callable(register):
-            return register()
-        return module
-    finally:
-        _restore_module_import_aliases(alias_root, module_alias_snapshot)
+    spec.loader.exec_module(module)
+    register = getattr(module, "register_addon", None)
+    if callable(register):
+        return register()
+    return module
 
 
 def _addon_package_module_location(
@@ -627,25 +623,6 @@ def _clear_addon_package_import(root_module_name: str) -> None:
     for module_name in list(sys.modules):
         if module_name == root_module_name or module_name.startswith(prefix):
             sys.modules.pop(module_name, None)
-
-
-def _snapshot_module_import_aliases(root_module_name: str) -> dict[str, types.ModuleType]:
-    prefix = f"{root_module_name}."
-    return {
-        module_name: module
-        for module_name, module in sys.modules.items()
-        if module_name == root_module_name or module_name.startswith(prefix)
-    }
-
-
-def _restore_module_import_aliases(
-    root_module_name: str, snapshot: Mapping[str, types.ModuleType]
-) -> None:
-    prefix = f"{root_module_name}."
-    for module_name in list(sys.modules):
-        if module_name == root_module_name or module_name.startswith(prefix):
-            sys.modules.pop(module_name, None)
-    sys.modules.update(snapshot)
 
 
 def _install_addon_package_parent_modules(

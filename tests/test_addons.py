@@ -250,7 +250,15 @@ from my_addon.api import DISPLAY_NAME
 
 
 def register_addon():
-    return {"addon_id": "absolute-addon", "display_name": DISPLAY_NAME}
+    def lazy_value():
+        from my_addon.helper import HELPER_VALUE
+        return HELPER_VALUE
+
+    return {
+        "addon_id": "absolute-addon",
+        "display_name": DISPLAY_NAME,
+        "metadata": {"lazy_value": lazy_value},
+    }
 """,
         encoding="utf-8",
     )
@@ -258,7 +266,12 @@ def register_addon():
         'DISPLAY_NAME = "Absolute Add-on"\n',
         encoding="utf-8",
     )
-    sys.modules.pop("my_addon", None)
+    (module_dir / "helper.py").write_text(
+        'HELPER_VALUE = "Lazy Absolute Add-on"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delitem(sys.modules, "my_addon", raising=False)
+    monkeypatch.delitem(sys.modules, "my_addon.helper", raising=False)
     stale_api = type(sys)("my_addon.api")
     stale_api.DISPLAY_NAME = "Stale Add-on"
     monkeypatch.setitem(sys.modules, "my_addon.api", stale_api)
@@ -270,8 +283,11 @@ def register_addon():
     assert records[0].registration.addon_id == "absolute-addon"
     assert records[0].registration.display_name == "Absolute Add-on"
     assert records[0].error is None
-    assert "my_addon" not in sys.modules
-    assert sys.modules["my_addon.api"] is stale_api
+    assert records[0].registration.metadata["lazy_value"]() == "Lazy Absolute Add-on"
+    assert "my_addon" in sys.modules
+    assert sys.modules["my_addon.api"] is not stale_api
+    assert sys.modules["my_addon.api"].DISPLAY_NAME == "Absolute Add-on"
+    assert sys.modules["my_addon.helper"].HELPER_VALUE == "Lazy Absolute Add-on"
 
 
 def test_discover_addons_reports_invalid_package_manifests(tmp_path: Path) -> None:

@@ -469,6 +469,18 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "evander-worker-daemon.service" in verification
     assert "evander-worker-egress-policy.service" in verification
     assert "evander-mssql-seed-sidecar.service" in verification
+    assert "Resolve MSSQL seed sidecar verification host" in verification
+    assert "evander_worker_mssql_seed_sidecar_probe_host" in verification
+    assert "evander_worker_mssql_seed_sidecar_probe_url_host" in verification
+    assert (
+        "evander_worker_mssql_seed_sidecar_bind_host in ['', '0.0.0.0', '::']"
+        in verification
+    )
+    assert "host: \"{{ evander_worker_mssql_seed_sidecar_probe_host }}\"" in verification
+    assert (
+        "http://{{ evander_worker_mssql_seed_sidecar_probe_url_host }}:"
+        "{{ evander_worker_mssql_seed_sidecar_port }}/healthz"
+    ) in verification
     assert "Verify MSSQL seed sidecar health endpoint" in verification
     assert "docker ps" not in verification
     assert "Verify Docker is usable by the worker user" in verification

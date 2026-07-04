@@ -139,7 +139,8 @@ let chatStreamErrorRefreshPending = false;
 let bootstrapLoaded = false;
 const loadedTeamViews = new Set();
 const loadingTeamViews = new Map();
-const pendingForcedTeamViewLoads = new Set();
+const pendingForcedTeamViewLoads = new Map();
+let teamViewCacheGeneration = 0;
 let stateStream = null;
 let stateStreamErrorRefreshPending = false;
 let chatReadMarkers = readChatReadMarkers();
@@ -2659,7 +2660,7 @@ async function loadBootstrap() {
   return payload;
 }
 
-async function loadView(view, { force = false } = {}) {
+async function loadView(view, { force = false, preserveForms = false } = {}) {
   const normalizedView = normalizedTeamView(view);
   if (!force && loadedTeamViews.has(normalizedView)) {
     renderShell();
@@ -2669,23 +2670,29 @@ async function loadView(view, { force = false } = {}) {
   if (loadingTeamViews.has(normalizedView)) {
     const existingLoad = loadingTeamViews.get(normalizedView);
     if (force) {
-      pendingForcedTeamViewLoads.add(normalizedView);
+      const pending = pendingForcedTeamViewLoads.get(normalizedView) || { preserveForms: false };
+      pending.preserveForms = pending.preserveForms || preserveForms;
+      pendingForcedTeamViewLoads.set(normalizedView, pending);
       return existingLoad.finally(() => {
-        if (!pendingForcedTeamViewLoads.delete(normalizedView)) {
+        const pendingLoad = pendingForcedTeamViewLoads.get(normalizedView);
+        if (!pendingLoad) {
           return null;
         }
-        return loadView(normalizedView, { force: true });
+        pendingForcedTeamViewLoads.delete(normalizedView);
+        return loadView(normalizedView, { force: true, preserveForms: pendingLoad.preserveForms });
       });
     }
     return existingLoad;
   }
   if (normalizedView === "chat") {
-    const promise = loadChatView({ force }).finally(() => {
+    const loadGeneration = teamViewCacheGeneration;
+    const promise = loadChatView({ force, preserveForms, loadGeneration }).finally(() => {
       loadingTeamViews.delete(normalizedView);
     });
     loadingTeamViews.set(normalizedView, promise);
     return promise;
   }
+  const loadGeneration = teamViewCacheGeneration;
   const promise = (async () => {
     const response = await teamFetch(`${API_BASE}/views/${encodeURIComponent(normalizedView)}`, {
       headers: { Accept: "application/json" },
@@ -2694,10 +2701,17 @@ async function loadView(view, { force = false } = {}) {
       throw new Error(await responseText(response));
     }
     const payload = await response.json();
+    if (loadGeneration !== teamViewCacheGeneration) {
+      return payload;
+    }
     applyViewPayload(payload);
     loadedTeamViews.add(normalizedView);
     if (normalizedView === activeTeamView) {
+      const drafts = preserveForms ? captureFormDrafts() : null;
       render();
+      if (drafts) {
+        restoreFormDrafts(drafts);
+      }
       scheduleAuxiliaryLoadsForView(normalizedView);
     }
     return payload;
@@ -2708,7 +2722,11 @@ async function loadView(view, { force = false } = {}) {
   return promise;
 }
 
-async function loadChatView({ force = false } = {}) {
+async function loadChatView({
+  force = false,
+  preserveForms = false,
+  loadGeneration = teamViewCacheGeneration,
+} = {}) {
   if (!force && loadedTeamViews.has("chat")) {
     renderShell();
     renderChat();
@@ -2718,7 +2736,11 @@ async function loadChatView({ force = false } = {}) {
   const requestId = ++chatRequestId;
   chatState = { ...chatState, loading: true, error: null };
   if (activeTeamView === "chat") {
+    const drafts = preserveForms ? captureFormDrafts() : null;
     renderChat();
+    if (drafts) {
+      restoreFormDrafts(drafts);
+    }
   }
   try {
     const query = new URLSearchParams({ include_selected_messages: "1" });
@@ -2735,12 +2757,19 @@ async function loadChatView({ force = false } = {}) {
     if (requestId !== chatRequestId) {
       return payload;
     }
+    if (loadGeneration !== teamViewCacheGeneration) {
+      return payload;
+    }
+    const drafts = preserveForms && activeTeamView === "chat" ? captureFormDrafts() : null;
     applyViewPayload(payload);
     applyChatCollectionPayload(payload.data?.chat || {}, requestId, {
       selectedConversationId: selectedChatConversationId,
       preserveSelection: true,
     });
     loadedTeamViews.add("chat");
+    if (drafts) {
+      restoreFormDrafts(drafts);
+    }
     return payload;
   } catch (error) {
     if (requestId !== chatRequestId) {
@@ -2752,7 +2781,11 @@ async function loadChatView({ force = false } = {}) {
       error: error instanceof Error ? error.message : "Chat view failed to load.",
     };
     if (activeTeamView === "chat") {
+      const drafts = preserveForms ? captureFormDrafts() : null;
       renderChat();
+      if (drafts) {
+        restoreFormDrafts(drafts);
+      }
     }
     throw error;
   }
@@ -2891,8 +2924,9 @@ function handleStateStreamSnapshot(payload) {
       return;
     }
     state = normalizeState({ ...state, revision: payload.revision });
-    loadedTeamViews.delete(activeTeamView);
-    void loadView(activeTeamView, { force: true });
+    teamViewCacheGeneration += 1;
+    loadedTeamViews.clear();
+    void loadView(activeTeamView, { force: true, preserveForms: true });
     return;
   }
   applyStateSnapshot(payload);
