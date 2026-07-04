@@ -3093,10 +3093,13 @@ test("team add-on agent registration keeps core creation locked with privileges 
   await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
 
   await teamGroup.locator('[data-team-record-tab="agent"]').click();
-  await teamGroup.getByRole("button", { name: "Add agent" }).click();
-  const inlineAgentForm = teamGroup.locator('form[data-form-id="register-agent-form"]');
-  await inlineAgentForm.waitFor({ state: "visible" });
-  assert.equal(await inlineAgentForm.getByRole("button", { name: "Create new session" }).isDisabled(), true);
+  const addAgentButton = teamGroup.getByRole("button", { name: "Add agent" });
+  await addAgentButton.waitFor({ state: "visible" });
+  assert.equal(await addAgentButton.isDisabled(), true);
+  assert.equal(await addAgentButton.getAttribute("title"), "Unlock privileged operations to add Team records.");
+  await addAgentButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  assert.equal(await teamGroup.locator('form[data-form-id="register-agent-form"]').count(), 0);
 
   await page.evaluate(() => {
     window.dispatchEvent(
@@ -3113,6 +3116,69 @@ test("team add-on agent registration keeps core creation locked with privileges 
     requests.some((request) => request.method === "POST" && request.pathname === "/api/admin/agents/create-operations"),
     false,
   );
+});
+
+test("team add-on locked mode disables mutation entry points", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+
+  const createTeamButton = page.locator("#team-tab-create-team-action");
+  await createTeamButton.waitFor({ state: "visible" });
+  assert.equal(await createTeamButton.isDisabled(), true);
+  assert.equal(await createTeamButton.getAttribute("title"), "Unlock privileged operations to create teams.");
+  await createTeamButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  await page.locator("#teams-create-team-panel").waitFor({ state: "hidden" });
+
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await teamGroup.locator('[data-team-record-tab="agent"]').click();
+  const addAgentButton = teamGroup.getByRole("button", { name: "Add agent" });
+  await addAgentButton.waitFor({ state: "visible" });
+  assert.equal(await addAgentButton.isDisabled(), true);
+  assert.equal(await addAgentButton.getAttribute("title"), "Unlock privileged operations to add Team records.");
+  await addAgentButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  assert.equal(await teamGroup.locator('form[data-form-id="register-agent-form"]').count(), 0);
+
+  await page.locator("#team-view-projects-tab").click();
+  await page.locator("#team-projects-page").waitFor({ state: "visible" });
+  const projectCreateButton = page.locator("[data-project-create-toggle]");
+  await projectCreateButton.waitFor({ state: "visible" });
+  assert.equal(await projectCreateButton.isDisabled(), true);
+  assert.equal(await projectCreateButton.getAttribute("title"), "Unlock privileged operations to create projects.");
+  await projectCreateButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  await page.locator("#create-project-from-projects-form").waitFor({ state: "hidden" });
+
+  await openOrgChart(page);
+  const backendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  await backendCard.waitFor({ state: "visible" });
+  await backendCard.click({ button: "right" });
+  const subordinateMenuItem = page.getByRole("menuitem", { name: "Add subordinate agent" });
+  await subordinateMenuItem.waitFor({ state: "visible" });
+  assert.equal(await subordinateMenuItem.isDisabled(), true);
+  assert.equal(
+    await subordinateMenuItem.getAttribute("title"),
+    "Unlock privileged operations to add subordinate agents.",
+  );
+  await subordinateMenuItem.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator("#org-action-modal").isVisible().catch(() => false), false);
+
+  const mutationRequests = requests.filter((request) => request.method !== "GET");
+  assert.deepEqual(mutationRequests, []);
 });
 
 test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
@@ -3482,6 +3548,7 @@ test("team add-on Org chart context menu adds subordinate agents", async (t) => 
   assert.equal(await form.locator('[name="team_id"]').inputValue(), "team");
   assert.equal(await form.locator('[name="project_id"]').inputValue(), "project");
 
+  await form.locator('[name="role_id"]').selectOption("project__worker");
   await form.getByRole("button", { name: "Create new session" }).click();
   const createDialog = page.locator('[role="dialog"][aria-label="Create and register agent"]');
   await createDialog.waitFor({ state: "visible" });
@@ -3502,7 +3569,6 @@ test("team add-on Org chart context menu adds subordinate agents", async (t) => 
   await createDialog.waitFor({ state: "hidden" });
   await dialog.waitFor({ state: "visible" });
 
-  await form.locator('[name="role_id"]').selectOption("project__worker");
   await form.locator('[name="existing_session_id"]').selectOption("session-existing-backend");
   await form.locator('[name="display_name"]').fill("Context Worker");
   await form.locator('[name="max_concurrent"]').fill("1");

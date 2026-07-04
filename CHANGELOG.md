@@ -26,6 +26,13 @@
 - Extended the Admin Web published-artifacts API with recursive artifact-space
   filtering so paging totals and result pages match the selected space.
 
+## 2026-07-04 - Team Add-on Locked Mode
+
+- Fixed Team Add-on locked mode so mutation entry points, including org chart
+  context menu actions, create panels, edit saves, chat sends, voice calls,
+  stand-downs, avatar changes, and governance/action handling, are disabled and
+  guarded until privileged operations are unlocked.
+
 ## 2026-07-03 - Team Org Chart Viewport
 
 - Kept the Team Add-on org chart canvas viewport stable across data-only edits
