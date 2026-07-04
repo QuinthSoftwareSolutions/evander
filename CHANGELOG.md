@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-04 - Add-on Package Discovery
+
+- Added local add-on package discovery from the git-ignored project-root
+  `addons/` directory so copied packages appear on the Admin Web Add-ons page
+  without hand-editing runtime config.
+- Kept copied add-on packages available but disabled by default, preserving
+  legacy load-all behavior for explicitly configured modules and entry points.
+- Documented `addon_loader.package_dirs` and kept `runtime/addons/<addon_id>/`
+  reserved for add-on private state.
+
 ## 2026-07-04 - MSSQL Seed Add-on
 
 - Added an optional MSSQL Seed add-on with Admin Web configuration for

@@ -216,7 +216,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     auth = AdminWebAuth(AdminWebConfig.from_env(), user_store=admin_user_store)
     dashboard_cache = AdminWebJsonResponseCache()
     try:
-        addon_catalog = load_addons(service.config.addon_loader)
+        addon_catalog = load_addons(service.config.addon_loader, base_dir=service.project_dir)
     except Exception:
         addon_catalog = LoadedAddonCatalog(registrations=(), loaded_addons=())
     service.vm_agent_admin.mark_abandoned_agent_create_operations_failed()

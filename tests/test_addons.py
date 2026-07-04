@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import tomllib
 from pathlib import Path
@@ -26,7 +27,9 @@ from evander.workflow.plugins import load_provider_plugins
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_load_addons_defaults_to_empty_catalog() -> None:
+def test_load_addons_defaults_to_empty_catalog(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
     catalog = load_addons()
 
     assert catalog.registrations == ()
@@ -118,6 +121,144 @@ def register_addon():
     assert catalog.loaded_addons == ("custom_addon",)
     assert catalog.registrations[0].addon_id == "custom-addon"
     assert catalog.registrations[0].admin_navigation is not None
+
+
+def test_discover_addons_scans_package_manifests_from_base_dir(tmp_path: Path) -> None:
+    package_dir = tmp_path / "addons" / "package-addon"
+    package_dir.mkdir(parents=True)
+    (package_dir / "addon.json").write_text(
+        json.dumps({"addon_id": "package-addon", "module": "package_addon"}),
+        encoding="utf-8",
+    )
+    (package_dir / "package_addon.py").write_text(
+        """
+def register_addon():
+    return {"addon_id": "package-addon", "display_name": "Package Add-on"}
+""",
+        encoding="utf-8",
+    )
+    sys.modules.pop("package_addon", None)
+
+    records = discover_addons(AddonLoaderConfig(), base_dir=tmp_path)
+
+    assert len(records) == 1
+    assert records[0].source == "package:addons/package-addon"
+    assert records[0].source_type == "package"
+    assert records[0].registration is not None
+    assert records[0].registration.addon_id == "package-addon"
+    assert records[0].error is None
+
+
+def test_load_addons_does_not_enable_scanned_packages_by_default(tmp_path: Path) -> None:
+    package_dir = tmp_path / "addons" / "package-addon"
+    package_dir.mkdir(parents=True)
+    (package_dir / "addon.json").write_text(
+        json.dumps({"addon_id": "package-addon", "module": "package_addon"}),
+        encoding="utf-8",
+    )
+    (package_dir / "package_addon.py").write_text(
+        """
+def register_addon():
+    return {"addon_id": "package-addon", "display_name": "Package Add-on"}
+""",
+        encoding="utf-8",
+    )
+    sys.modules.pop("package_addon", None)
+
+    catalog = load_addons(AddonLoaderConfig(), base_dir=tmp_path)
+
+    assert catalog.registrations == ()
+    assert catalog.loaded_addons == ()
+
+
+def test_load_addons_can_enable_scanned_package_by_id(tmp_path: Path) -> None:
+    package_dir = tmp_path / "addons" / "package-addon"
+    package_dir.mkdir(parents=True)
+    (package_dir / "addon.json").write_text(
+        json.dumps({"addon_id": "package-addon", "module": "package_addon"}),
+        encoding="utf-8",
+    )
+    (package_dir / "package_addon.py").write_text(
+        """
+def register_addon():
+    return {"addon_id": "package-addon", "display_name": "Package Add-on"}
+""",
+        encoding="utf-8",
+    )
+    sys.modules.pop("package_addon", None)
+
+    catalog = load_addons(
+        AddonLoaderConfig(enabled_addon_ids=["package-addon"]),
+        base_dir=tmp_path,
+    )
+
+    assert catalog.loaded_addons == ("package:addons/package-addon",)
+    assert catalog.registrations[0].addon_id == "package-addon"
+
+
+def test_discover_addons_reports_invalid_package_manifests(tmp_path: Path) -> None:
+    package_dir = tmp_path / "addons" / "broken-addon"
+    package_dir.mkdir(parents=True)
+
+    records = discover_addons(AddonLoaderConfig(), base_dir=tmp_path)
+
+    assert len(records) == 1
+    assert records[0].source == "package:addons/broken-addon"
+    assert records[0].source_type == "package"
+    assert records[0].registration is None
+    assert records[0].error is not None
+    assert "Missing add-on package manifest" in records[0].error
+
+
+def test_explicit_module_takes_precedence_over_scanned_package_duplicate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module_root = tmp_path / "plugins"
+    module_root.mkdir()
+    (module_root / "explicit_addon.py").write_text(
+        """
+def register_addon():
+    return {"addon_id": "duplicate-addon", "display_name": "Explicit Add-on"}
+""",
+        encoding="utf-8",
+    )
+    package_dir = tmp_path / "addons" / "duplicate-addon"
+    package_dir.mkdir(parents=True)
+    (package_dir / "addon.json").write_text(
+        json.dumps({"addon_id": "duplicate-addon", "module": "package_addon"}),
+        encoding="utf-8",
+    )
+    (package_dir / "package_addon.py").write_text(
+        """
+def register_addon():
+    return {"addon_id": "duplicate-addon", "display_name": "Package Add-on"}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(module_root))
+    importlib.invalidate_caches()
+    sys.modules.pop("explicit_addon", None)
+    sys.modules.pop("package_addon", None)
+
+    records = discover_addons(
+        AddonLoaderConfig(modules=["explicit_addon"]),
+        base_dir=tmp_path,
+    )
+    catalog = load_addons(
+        AddonLoaderConfig(
+            modules=["explicit_addon"],
+            enabled_addon_ids=["duplicate-addon"],
+        ),
+        base_dir=tmp_path,
+    )
+
+    assert records[0].source == "explicit_addon"
+    assert records[0].error is None
+    assert records[1].source == "package:addons/duplicate-addon"
+    assert records[1].error is not None
+    assert "already discovered from explicit_addon" in records[1].error
+    assert catalog.loaded_addons == ("explicit_addon",)
+    assert catalog.registrations[0].display_name == "Explicit Add-on"
 
 
 def test_discover_addons_reports_candidates_without_enabled_filter(

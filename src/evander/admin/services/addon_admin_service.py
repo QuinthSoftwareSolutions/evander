@@ -64,7 +64,7 @@ class AddonAdminService:
         configured_node_types, workflow_reference_error = self._configured_workflow_node_types(
             worker_payload.config
         )
-        candidates = discover_addons(host_loader)
+        candidates = discover_addons(host_loader, base_dir=self.project_dir)
         loaded_addon_ids, catalog_error = self._loaded_addon_ids()
         enabled_addon_ids = self._explicit_enabled_addon_ids(host_loader, candidates)
         enabled_set = set(enabled_addon_ids)
@@ -199,7 +199,7 @@ class AddonAdminService:
                     details={"current_revision": current_revision},
                 )
 
-            candidates = discover_addons(host_config.addon_loader)
+            candidates = discover_addons(host_config.addon_loader, base_dir=self.project_dir)
             known_ids = {
                 candidate.registration.addon_id
                 for candidate in candidates
@@ -216,6 +216,7 @@ class AddonAdminService:
             }
             next_loader = AddonLoaderConfig(
                 modules=list(host_config.addon_loader.modules),
+                package_dirs=list(host_config.addon_loader.package_dirs),
                 enabled_entry_points=host_config.addon_loader.enabled_entry_points,
                 enabled_addon_ids=normalized_ids,
             )
@@ -289,7 +290,7 @@ class AddonAdminService:
                     "Add-on configuration changed before refresh. Reload add-ons before trying again.",
                     details={"current_revision": current_revision},
                 )
-            candidates = discover_addons(host_config.addon_loader)
+            candidates = discover_addons(host_config.addon_loader, base_dir=self.project_dir)
             registration = next(
                 (
                     candidate.registration
@@ -362,6 +363,8 @@ class AddonAdminService:
         for candidate in candidates:
             if candidate.registration is None:
                 continue
+            if loader.enabled_addon_ids is None and candidate.source_type == "package":
+                continue
             addon_id = candidate.registration.addon_id
             if addon_id in seen:
                 continue
@@ -371,7 +374,7 @@ class AddonAdminService:
 
     def _loaded_addon_ids(self) -> tuple[list[str], str | None]:
         try:
-            catalog = load_addons(self.config.addon_loader)
+            catalog = load_addons(self.config.addon_loader, base_dir=self.project_dir)
         except Exception as exc:
             return [], str(exc)
         return [registration.addon_id for registration in catalog.registrations], None
@@ -380,7 +383,7 @@ class AddonAdminService:
         self, worker_loader: AddonLoaderConfig
     ) -> tuple[set[str], str | None]:
         try:
-            catalog = load_addons(worker_loader)
+            catalog = load_addons(worker_loader, base_dir=self.project_dir)
         except Exception as exc:
             return set(), str(exc)
         return {registration.addon_id for registration in catalog.registrations}, None

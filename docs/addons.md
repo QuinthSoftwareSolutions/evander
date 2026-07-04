@@ -32,11 +32,30 @@ Add-on discovery is configured with `addon_loader`:
 {
   "addon_loader": {
     "modules": ["my_company.evander_team_addon"],
+    "package_dirs": ["addons"],
     "enabled_entry_points": false,
     "enabled_addon_ids": null
   }
 }
 ```
+
+Evander also scans local add-on package directories. By default, `addons/` at
+the project root is scanned. This path is operator-local and ignored by Git.
+Each immediate child directory is treated as a package candidate when it
+contains `addon.json`:
+
+```json
+{
+  "addon_id": "example-addon",
+  "module": "example_addon"
+}
+```
+
+The package directory is added to Python's import path before `module` is
+loaded, so a copied package can carry its own Python module. Scanned packages
+appear on the Admin Web **Add-ons** page automatically, but are not loaded by
+default; enable them through Admin Web so `addon_loader.enabled_addon_ids`
+contains the add-on id before restarting the listed services.
 
 External packages can also expose Python entry points in the
 `evander.addons` group. Entry-point loading is disabled by default and
