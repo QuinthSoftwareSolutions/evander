@@ -3,7 +3,10 @@ from __future__ import annotations
 import httpx
 from starlette.testclient import TestClient
 
-from evander_mssql_seed_addon.client import MssqlSeedSidecarClient
+from evander_mssql_seed_addon.client import (
+    DEFAULT_RESTORE_TIMEOUT_SECONDS,
+    MssqlSeedSidecarClient,
+)
 from evander_mssql_seed_addon.sidecar import (
     MssqlSeedRestoreRequest,
     MssqlSeedRestoreService,
@@ -111,3 +114,13 @@ def test_sidecar_client_sends_configured_bearer_token(monkeypatch) -> None:
     assert result == {"status": "restored", "file_count": 2}
     assert requests[0]["path"] == "/v1/databases/restore"
     assert requests[0]["authorization"] == "Bearer abc123"
+
+
+def test_sidecar_client_uses_long_restore_timeout_by_default() -> None:
+    client = MssqlSeedSidecarClient(
+        base_url="http://worker:11990",
+        token_env="SEED_TOKEN",
+    )
+
+    assert client.timeout_seconds == DEFAULT_RESTORE_TIMEOUT_SECONDS
+    assert client.timeout_seconds >= 3600.0

@@ -156,7 +156,8 @@ evander-mssql-seed-sidecar --host 0.0.0.0 --port 11990
 
 Operators configure:
 
-- sidecars with `sidecar_id`, `base_url`, and `token_env`
+- sidecars with `sidecar_id`, `base_url`, `token_env`, and optional
+  `restore_timeout_seconds` for large `.bak` restores
 - approved seeds with `seed_alias`, `sidecar_id`, and absolute worker-side
   `backup_path`
 

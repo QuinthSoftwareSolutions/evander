@@ -455,7 +455,9 @@ evander_worker_mssql_seed_sidecar_backup_dir: "/var/lib/evander/mssql-seeds"
 Point the add-on sidecar catalog at
 `http://<worker-private-ip>:{{ evander_worker_mssql_seed_sidecar_port }}` and use
 `EVANDER_MSSQL_SEED_SIDECAR_TOKEN` as the token env name. Keep the sidecar port
-reachable only from the control plane.
+reachable only from the control plane. The optional `restore_timeout_seconds`
+sidecar setting defaults to 3600 seconds so larger `.bak` restores can complete
+before the MCP call times out.
 
 The host-side backend records the control-plane mapping in:
 

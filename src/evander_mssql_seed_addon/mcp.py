@@ -77,6 +77,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         restore = MssqlSeedSidecarClient(
             base_url=sidecar.base_url,
             token_env=sidecar.token_env,
+            timeout_seconds=sidecar.restore_timeout_seconds,
         ).restore_database(
             session_id=session_id,
             logical_name=logical_name,

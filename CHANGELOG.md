@@ -17,6 +17,9 @@
 - Fixed MSSQL Seed settings writes so malformed payloads are rejected without
   replacing state and sidecar/token environment changes require Admin Owner
   permission.
+- Fixed MSSQL Seed UI locked mode so settings controls cannot save while the
+  Admin shell is read-only, and made seed restore timeouts configurable with a
+  one-hour default for larger backups.
 
 ## 2026-07-04 - Admin Web UI-Only Lock
 

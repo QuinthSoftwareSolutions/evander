@@ -5,6 +5,8 @@ from typing import Any
 
 import httpx
 
+DEFAULT_RESTORE_TIMEOUT_SECONDS = 3600.0
+
 
 class MssqlSeedSidecarClientError(RuntimeError):
     pass
@@ -16,7 +18,7 @@ class MssqlSeedSidecarClient:
         *,
         base_url: str,
         token_env: str,
-        timeout_seconds: float = 60.0,
+        timeout_seconds: float = DEFAULT_RESTORE_TIMEOUT_SECONDS,
         client: httpx.Client | None = None,
     ) -> None:
         self.base_url = str(base_url or "").strip().rstrip("/")

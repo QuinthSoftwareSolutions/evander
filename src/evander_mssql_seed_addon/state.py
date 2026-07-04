@@ -27,6 +27,7 @@ class MssqlSeedSidecarConfig(BaseModel):
     sidecar_id: str
     base_url: str
     token_env: str = "EVANDER_MSSQL_SEED_SIDECAR_TOKEN"
+    restore_timeout_seconds: float = 3600.0
     description: str | None = None
 
     @field_validator("sidecar_id", mode="before")
@@ -53,6 +54,19 @@ class MssqlSeedSidecarConfig(BaseModel):
         if not SAFE_ID_PATTERN.fullmatch(text):
             raise ValueError("token_env must contain only letters, numbers, dots, underscores, or dashes")
         return text
+
+    @field_validator("restore_timeout_seconds", mode="before")
+    @classmethod
+    def normalize_restore_timeout_seconds(cls, value: object) -> float:
+        if value is None or str(value).strip() == "":
+            return 3600.0
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("restore_timeout_seconds must be a number") from exc
+        if timeout <= 0:
+            raise ValueError("restore_timeout_seconds must be positive")
+        return timeout
 
     @field_validator("description", mode="before")
     @classmethod

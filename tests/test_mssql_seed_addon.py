@@ -21,6 +21,8 @@ from evander_mssql_seed_addon.mcp import (
 )
 from evander_mssql_seed_addon.state import MssqlSeedStore
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 
 class FakeServer:
     def __init__(self) -> None:
@@ -95,10 +97,12 @@ class FakeBackend:
 
 class FakeSidecarClient:
     calls: list[dict[str, object]] = []
+    timeouts: list[float] = []
 
-    def __init__(self, *, base_url: str, token_env: str) -> None:
+    def __init__(self, *, base_url: str, token_env: str, timeout_seconds: float) -> None:
         assert base_url == "http://worker:11990"
         assert token_env == "SEED_TOKEN"
+        self.timeouts.append(timeout_seconds)
 
     def restore_database(self, **kwargs):
         self.calls.append(dict(kwargs))
@@ -156,6 +160,18 @@ def test_store_replaces_settings_and_tracks_seeded_databases(tmp_path: Path) -> 
     assert sorted(state.sidecars) == ["worker-a"]
     assert sorted(state.seeds) == ["app-demo"]
     assert state.seeds["app-demo"].backup_path.endswith("app-demo.bak")
+    assert state.sidecars["worker-a"].restore_timeout_seconds == 3600.0
+
+
+def test_mssql_seed_ui_guards_settings_mutations_when_locked() -> None:
+    ui_js = (
+        PROJECT_ROOT / "src" / "evander_mssql_seed_addon" / "ui_static" / "mssql-seed-ui.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'pageParams.get("privileged_unlocked") === "true"' in ui_js
+    assert "button.disabled = locked;" in ui_js
+    assert "async function saveSettings() {\n  if (!requireSettingsUnlocked())" in ui_js
+    assert 'method: "PUT"' in ui_js
 
 
 def test_settings_api_rejects_malformed_payload_without_replacing_state(
@@ -163,7 +179,13 @@ def test_settings_api_rejects_malformed_payload_without_replacing_state(
 ) -> None:
     store = MssqlSeedStore(tmp_path)
     store.replace_settings(
-        sidecars={"worker-a": {"base_url": "http://worker:11990", "token_env": "SEED_TOKEN"}},
+        sidecars={
+            "worker-a": {
+                "base_url": "http://worker:11990",
+                "token_env": "SEED_TOKEN",
+                "restore_timeout_seconds": 7200,
+            }
+        },
         seeds={"app-demo": {"sidecar_id": "worker-a", "backup_path": "/seed/app-demo.bak"}},
     )
     auth = FakeAdminAuth()
@@ -189,7 +211,13 @@ def test_settings_api_rejects_malformed_payload_without_replacing_state(
 def test_settings_api_requires_admin_owner_permission(tmp_path: Path) -> None:
     store = MssqlSeedStore(tmp_path)
     store.replace_settings(
-        sidecars={"worker-a": {"base_url": "http://worker:11990", "token_env": "SEED_TOKEN"}},
+        sidecars={
+            "worker-a": {
+                "base_url": "http://worker:11990",
+                "token_env": "SEED_TOKEN",
+                "restore_timeout_seconds": 7200,
+            }
+        },
         seeds={"app-demo": {"sidecar_id": "worker-a", "backup_path": "/seed/app-demo.bak"}},
     )
     auth = FakeAdminAuth(allowed=False)
@@ -218,7 +246,13 @@ def test_mcp_seed_provision_uses_core_mssql_provisioning_before_restore(
 ) -> None:
     store = MssqlSeedStore(tmp_path)
     store.replace_settings(
-        sidecars={"worker-a": {"base_url": "http://worker:11990", "token_env": "SEED_TOKEN"}},
+        sidecars={
+            "worker-a": {
+                "base_url": "http://worker:11990",
+                "token_env": "SEED_TOKEN",
+                "restore_timeout_seconds": 7200,
+            }
+        },
         seeds={"app-demo": {"sidecar_id": "worker-a", "backup_path": "/seed/app-demo.bak"}},
     )
     session = SessionManifest(
@@ -244,6 +278,7 @@ def test_mcp_seed_provision_uses_core_mssql_provisioning_before_restore(
 
     FakeBackend.calls = []
     FakeSidecarClient.calls = []
+    FakeSidecarClient.timeouts = []
     monkeypatch.setattr("evander_mssql_seed_addon.mcp.ContainerWorkerVmExecutionBackend", FakeBackend)
     monkeypatch.setattr("evander_mssql_seed_addon.mcp.MssqlSeedSidecarClient", FakeSidecarClient)
 
@@ -265,6 +300,7 @@ def test_mcp_seed_provision_uses_core_mssql_provisioning_before_restore(
     )
 
     assert runtime.policy.required == [("session-1", PROVISION_DATABASE_TOOL)]
+    assert FakeSidecarClient.timeouts == [7200.0]
     assert FakeBackend.calls == [("session-1", "app")]
     assert FakeSidecarClient.calls == [
         {
@@ -287,6 +323,7 @@ def test_mcp_seed_provision_uses_core_mssql_provisioning_before_restore(
     )
 
     assert runtime.policy.required[-1] == ("session-1", RESET_DATABASE_TOOL)
+    assert FakeSidecarClient.timeouts[-1] == 7200.0
     assert FakeBackend.calls[-1] == ("session-1", "app")
     assert FakeSidecarClient.calls[-1]["backup_path"] == "/seed/app-demo.bak"
     assert reset["seed_restore"]["reset_count"] == 1
@@ -334,6 +371,7 @@ def test_mcp_seed_tools_resolve_session_from_bound_mcp_transport(
 
     FakeBackend.calls = []
     FakeSidecarClient.calls = []
+    FakeSidecarClient.timeouts = []
     monkeypatch.setattr(
         "evander_mssql_seed_addon.mcp.ContainerWorkerVmExecutionBackend",
         FakeBackend,
@@ -371,6 +409,7 @@ def test_mcp_seed_tools_resolve_session_from_bound_mcp_transport(
         ("session-1", RESET_DATABASE_TOOL),
     ]
     assert FakeBackend.calls == [("session-1", "app"), ("session-1", "app")]
+    assert FakeSidecarClient.timeouts == [3600.0, 3600.0]
     assert result["session_id"] == "session-1"
     assert listed["databases"][0]["logical_name"] == "app"
     assert reset["seed_restore"]["reset_count"] == 1
