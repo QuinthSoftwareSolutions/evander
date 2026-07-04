@@ -73,6 +73,9 @@ class _PrivilegedFakeAuth:
     def require(self, _request: Request) -> dict[str, str]:
         return {"sid": "test-session", "sub": "test"}
 
+    def require_permission(self, _request: Request, _permission, directory_path=None) -> None:
+        return None
+
     def privileged_for_request(self, _request: Request) -> bool:
         return True
 

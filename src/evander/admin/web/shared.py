@@ -1127,10 +1127,18 @@ class AdminWebAuth:
 
 
 def request_has_privileged_operations(
-    *, auth: AdminWebAuth, service: Any, request: Request
+    *,
+    auth: AdminWebAuth,
+    service: Any,
+    request: Request,
+    required_permission: object | None = None,
+    directory_path: object | None = None,
 ) -> bool:
     try:
-        auth.require(request)
+        if required_permission is None:
+            auth.require(request)
+        else:
+            auth.require_permission(request, required_permission, directory_path=directory_path)
     except PermissionError:
         return False
     return True

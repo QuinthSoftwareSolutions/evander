@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from evander.admin.composition import AdminRuntimeComponents
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.admin.web.shared import AdminWebAuth, json_error, request_has_privileged_operations
 from evander.messaging.teams_auth import (
     AuthorizationPendingError,
@@ -201,7 +202,12 @@ def teams_auth_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> li
 
     async def login(request: Request) -> JSONResponse:
         auth.require(request)
-        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+        if not request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
             return json_error("Privileged operations are locked.", status_code=403)
         directory_path = _directory_path_from_request(service, request)
         try:
@@ -223,7 +229,12 @@ def teams_auth_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> li
 
     async def complete(request: Request) -> JSONResponse:
         auth.require(request)
-        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+        if not request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
             return json_error("Privileged operations are locked.", status_code=403)
         try:
             payload = await request.json()
@@ -297,7 +308,12 @@ def teams_auth_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> li
 
     async def logout(request: Request) -> JSONResponse:
         auth.require(request)
-        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+        if not request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
             return json_error("Privileged operations are locked.", status_code=403)
         directory_path = _directory_path_from_request(service, request)
         try:

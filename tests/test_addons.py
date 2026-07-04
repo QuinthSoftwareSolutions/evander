@@ -234,6 +234,46 @@ def register_addon():
     ]
 
 
+def test_package_addon_supports_absolute_imports_within_declared_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_dir = tmp_path / "addons" / "absolute-addon"
+    module_dir = package_dir / "my_addon"
+    module_dir.mkdir(parents=True)
+    (package_dir / "addon.json").write_text(
+        json.dumps({"addon_id": "absolute-addon", "module": "my_addon"}),
+        encoding="utf-8",
+    )
+    (module_dir / "__init__.py").write_text(
+        """
+from my_addon.api import DISPLAY_NAME
+
+
+def register_addon():
+    return {"addon_id": "absolute-addon", "display_name": DISPLAY_NAME}
+""",
+        encoding="utf-8",
+    )
+    (module_dir / "api.py").write_text(
+        'DISPLAY_NAME = "Absolute Add-on"\n',
+        encoding="utf-8",
+    )
+    sys.modules.pop("my_addon", None)
+    stale_api = type(sys)("my_addon.api")
+    stale_api.DISPLAY_NAME = "Stale Add-on"
+    monkeypatch.setitem(sys.modules, "my_addon.api", stale_api)
+
+    records = discover_addons(AddonLoaderConfig(), base_dir=tmp_path)
+
+    assert len(records) == 1
+    assert records[0].registration is not None
+    assert records[0].registration.addon_id == "absolute-addon"
+    assert records[0].registration.display_name == "Absolute Add-on"
+    assert records[0].error is None
+    assert "my_addon" not in sys.modules
+    assert sys.modules["my_addon.api"] is stale_api
+
+
 def test_discover_addons_reports_invalid_package_manifests(tmp_path: Path) -> None:
     package_dir = tmp_path / "addons" / "broken-addon"
     package_dir.mkdir(parents=True)

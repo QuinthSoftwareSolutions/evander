@@ -383,7 +383,7 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
     "/addons/team-addon/",
   );
   assert.equal(initialFrameUrl.searchParams.get("directory_path"), "root");
-  assert.equal(initialFrameUrl.searchParams.has("privileged_unlocked"), false);
+  assert.equal(initialFrameUrl.searchParams.get("privileged_unlocked"), "false");
   await assert.doesNotReject(() => page.frameLocator('iframe[title="Teams"]').getByText("Team Add-on").waitFor({ state: "visible" }));
 
   await page.getByRole("button", { name: "Unlock", exact: true }).click();

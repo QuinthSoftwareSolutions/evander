@@ -139,6 +139,7 @@ let chatStreamErrorRefreshPending = false;
 let bootstrapLoaded = false;
 const loadedTeamViews = new Set();
 const loadingTeamViews = new Map();
+const pendingForcedTeamViewLoads = new Set();
 let stateStream = null;
 let stateStreamErrorRefreshPending = false;
 let chatReadMarkers = readChatReadMarkers();
@@ -2666,7 +2667,17 @@ async function loadView(view, { force = false } = {}) {
     return null;
   }
   if (loadingTeamViews.has(normalizedView)) {
-    return loadingTeamViews.get(normalizedView);
+    const existingLoad = loadingTeamViews.get(normalizedView);
+    if (force) {
+      pendingForcedTeamViewLoads.add(normalizedView);
+      return existingLoad.finally(() => {
+        if (!pendingForcedTeamViewLoads.delete(normalizedView)) {
+          return null;
+        }
+        return loadView(normalizedView, { force: true });
+      });
+    }
+    return existingLoad;
   }
   if (normalizedView === "chat") {
     const promise = loadChatView({ force }).finally(() => {

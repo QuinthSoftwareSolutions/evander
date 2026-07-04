@@ -11407,6 +11407,106 @@ def test_request_has_privileged_operations_is_auth_only() -> None:
     assert calls == ["require"]
 
 
+def test_request_has_privileged_operations_can_require_permission() -> None:
+    calls: list[tuple[str, object, object | None]] = []
+
+    def require_permission(_request, permission, directory_path=None):
+        calls.append(("require_permission", permission, directory_path))
+
+    service = SimpleNamespace(operations_admin=SimpleNamespace())
+    auth = SimpleNamespace(require_permission=require_permission)
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+
+    assert (
+        request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+            directory_path="root/team-a",
+        )
+        is True
+    )
+    assert calls == [("require_permission", ADMIN_OWNER_PERMISSION, "root/team-a")]
+
+    def deny_permission(_request, _permission, directory_path=None):
+        raise PermissionError("denied")
+
+    denied_auth = SimpleNamespace(require_permission=deny_permission)
+    assert (
+        request_has_privileged_operations(
+            auth=denied_auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        )
+        is False
+    )
+
+
+def test_admin_web_global_policy_writes_require_admin_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    catalog_path = tmp_path / "runtime" / "pricing.json"
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    initial_catalog = _pricing_catalog_payload(version="initial-pricing", model="initial-model")
+    catalog_path.write_text(json.dumps(initial_catalog), encoding="utf-8")
+    monkeypatch.setenv("EVANDER_MODEL_PRICING_PATH", str(catalog_path))
+    clear_model_pricing_catalog_cache()
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
+    admin_client = TestClient(app)
+    regular_client = TestClient(app)
+    assert (
+        admin_client.post(
+            "/api/auth/login", json={"username": "admin", "password": "admin-pass"}
+        ).status_code
+        == 200
+    )
+    created = admin_client.post(
+        "/api/admin/users",
+        json={
+            "login": "operator@example.com",
+            "role": "regular",
+            "password": "operator-pass",
+        },
+    )
+    assert created.status_code == 200
+    assert (
+        regular_client.post(
+            "/api/auth/login",
+            json={"username": "operator@example.com", "password": "operator-pass"},
+        ).status_code
+        == 200
+    )
+
+    pricing_revision = regular_client.get("/api/configuration/model-pricing").json()["revision"]
+    pricing_response = regular_client.put(
+        "/api/configuration/model-pricing",
+        json={
+            "catalog": _pricing_catalog_payload(version="updated-pricing", model="updated-model"),
+            "expected_revision": pricing_revision,
+        },
+    )
+    chat_response = regular_client.put(
+        "/api/chat/settings",
+        json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
+    )
+    mcp_tools = regular_client.get("/api/admin/mcp-tools?directory_path=root").json()
+    mcp_response = regular_client.put(
+        "/api/admin/mcp-tools?directory_path=root",
+        json={"expected_revision": mcp_tools["revision"], "mcp_tool_policies": {}},
+    )
+
+    assert pricing_response.status_code == 403
+    assert chat_response.status_code == 403
+    assert mcp_response.status_code == 403
+    assert json.loads(catalog_path.read_text(encoding="utf-8")) == initial_catalog
+    clear_model_pricing_catalog_cache()
+
+
 def test_admin_web_unlock_endpoint_does_not_start_privileged_helper(
     tmp_path: Path,
     monkeypatch,

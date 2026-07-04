@@ -682,12 +682,14 @@ function PlaceholderView({ title, description }: { title: string; description: s
 function addonUiPathWithDirectory(
   uiPath: string,
   selectedDirectoryPath: string,
+  privilegedUnlocked: boolean,
 ): string {
   const directoryPath = selectedDirectoryPath.trim() || "root";
   try {
     const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
     const url = new URL(uiPath, base);
     url.searchParams.set("directory_path", directoryPath);
+    url.searchParams.set("privileged_unlocked", privilegedUnlocked ? "true" : "false");
     if (/^[a-z][a-z0-9+.-]*:/i.test(uiPath)) {
       return url.toString();
     }
@@ -695,7 +697,7 @@ function addonUiPathWithDirectory(
   } catch {
     const [withoutHash, hash = ""] = uiPath.split("#", 2);
     const separator = withoutHash.includes("?") ? "&" : "?";
-    return `${withoutHash}${separator}directory_path=${encodeURIComponent(directoryPath)}${hash ? `#${hash}` : ""}`;
+    return `${withoutHash}${separator}directory_path=${encodeURIComponent(directoryPath)}&privileged_unlocked=${privilegedUnlocked ? "true" : "false"}${hash ? `#${hash}` : ""}`;
   }
 }
 
@@ -709,7 +711,15 @@ function AddonView({
   privilegedUnlocked: boolean;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const iframeSrc = addonUiPathWithDirectory(tab.uiPath ?? "", selectedDirectoryPath);
+  const iframeSrcKey = `${tab.uiPath ?? ""}\n${selectedDirectoryPath}`;
+  const iframeSrcRef = useRef<{ key: string; value: string } | null>(null);
+  if (iframeSrcRef.current?.key !== iframeSrcKey) {
+    iframeSrcRef.current = {
+      key: iframeSrcKey,
+      value: addonUiPathWithDirectory(tab.uiPath ?? "", selectedDirectoryPath, privilegedUnlocked),
+    };
+  }
+  const iframeSrc = iframeSrcRef.current.value;
 
   function postPrivilegeState() {
     iframeRef.current?.contentWindow?.postMessage(

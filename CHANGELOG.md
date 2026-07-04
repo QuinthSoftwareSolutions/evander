@@ -7,6 +7,8 @@
 - Changed the Team Add-on state stream to publish lightweight revision events
   so connected UI tabs refresh only the active view instead of forcing full
   state snapshots on every poll.
+- Queued Team Add-on active-view reloads when newer revision events arrive
+  during an in-flight refresh so the UI does not settle on skipped stale data.
 - Kept Admin Web Lock/Unlock changes from remounting add-on iframes and taught
   the Team Add-on UI to update locked controls from same-origin privilege
   messages while preserving selected Teams records.
@@ -23,6 +25,8 @@
 - Fixed local add-on package imports so packages that reuse module names such as
   `addon` load from their own package directories instead of `sys.modules`
   cache entries from earlier packages.
+- Fixed scanned package-style add-ons so absolute imports inside the declared
+  package work while preserving same-name package isolation.
 
 ## 2026-07-04 - MSSQL Seed Add-on
 
@@ -55,6 +59,10 @@
 - Kept backend writes governed by authentication, permissions, and revision
   checks, with the compatibility privilege endpoints now recording lightweight
   per-session UI state only.
+- Preserved the `privileged_unlocked` add-on iframe query parameter for bundled
+  add-ons that still read unlock state from the initial URL.
+- Added explicit Admin Owner permission gates to helper-only global/sensitive
+  writes that previously relied only on authenticated UI lock state.
 - Aligned workflow-pack and add-on runtime pack refresh coverage with the
   UI-only lock behavior while preserving revision and disabled-add-on checks.
 

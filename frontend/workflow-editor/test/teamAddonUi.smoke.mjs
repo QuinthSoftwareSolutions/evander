@@ -99,6 +99,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /ensureStateStream/);
   assert.match(script, /\/state\/stream/);
   assert.match(script, /applyStateSnapshot/);
+  assert.match(script, /pendingForcedTeamViewLoads/);
+  assert.match(script, /return loadView\(normalizedView, \{ force: true \}\)/);
   assert.match(script, /chatReadMarkers/);
   assert.match(script, /chatConversationHasUnread/);
   assert.match(script, /team-view-tab-badge/);

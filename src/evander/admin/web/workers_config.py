@@ -16,6 +16,7 @@ from evander.admin.payloads import AdminRevisionConflict
 from evander.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.config_tooltips import CONFIG_FIELD_TOOLTIPS
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.admin.web.shared import AdminWebAuth, request_has_privileged_operations
 from evander.config import (
     AdoWorkerGlobalConfig,
@@ -1397,7 +1398,12 @@ def worker_config_routes(
         return JSONResponse(service.model_usage_admin.read_model_pricing_catalog_status())
 
     async def put_model_pricing_catalog(request: Request) -> JSONResponse:
-        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+        if not request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
             return _error_response("Privileged operations are locked.", status_code=403)
         try:
             payload = await _json_body(request)
@@ -1487,6 +1493,7 @@ def worker_config_routes(
                             auth=auth,
                             service=service,
                             request=request,
+                            required_permission=ADMIN_OWNER_PERMISSION,
                         ):
                             return _error_response(
                                 "Privileged operations are locked.", status_code=403

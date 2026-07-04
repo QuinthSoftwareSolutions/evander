@@ -575,12 +575,23 @@ def _load_registration_from_package_module(
     if spec is None or spec.loader is None:
         raise ValueError(f"Could not load add-on package module {module_name!r} from {module_path}")
     module = util.module_from_spec(spec)
+    alias_root = module_name.split(".", 1)[0]
+    module_alias_snapshot = _snapshot_module_import_aliases(alias_root)
+    _clear_addon_package_import(alias_root)
     sys.modules[loaded_module_name] = module
-    spec.loader.exec_module(module)
-    register = getattr(module, "register_addon", None)
-    if callable(register):
-        return register()
-    return module
+    _install_addon_package_declared_aliases(
+        root_module_name=root_module_name,
+        module_name=module_name,
+        module=module,
+    )
+    try:
+        spec.loader.exec_module(module)
+        register = getattr(module, "register_addon", None)
+        if callable(register):
+            return register()
+        return module
+    finally:
+        _restore_module_import_aliases(alias_root, module_alias_snapshot)
 
 
 def _addon_package_module_location(
@@ -618,6 +629,25 @@ def _clear_addon_package_import(root_module_name: str) -> None:
             sys.modules.pop(module_name, None)
 
 
+def _snapshot_module_import_aliases(root_module_name: str) -> dict[str, types.ModuleType]:
+    prefix = f"{root_module_name}."
+    return {
+        module_name: module
+        for module_name, module in sys.modules.items()
+        if module_name == root_module_name or module_name.startswith(prefix)
+    }
+
+
+def _restore_module_import_aliases(
+    root_module_name: str, snapshot: Mapping[str, types.ModuleType]
+) -> None:
+    prefix = f"{root_module_name}."
+    for module_name in list(sys.modules):
+        if module_name == root_module_name or module_name.startswith(prefix):
+            sys.modules.pop(module_name, None)
+    sys.modules.update(snapshot)
+
+
 def _install_addon_package_parent_modules(
     root_module_name: str, package_dir: Path, module_name: str
 ) -> None:
@@ -635,6 +665,21 @@ def _install_addon_package_parent_modules(
         parent_module.__path__ = [str(current_path)]
         parent_module.__package__ = current_name
         sys.modules[current_name] = parent_module
+
+
+def _install_addon_package_declared_aliases(
+    *, root_module_name: str, module_name: str, module: types.ModuleType
+) -> None:
+    declared_name = ""
+    synthetic_name = root_module_name
+    parts = module_name.split(".")
+    for part in parts[:-1]:
+        declared_name = f"{declared_name}.{part}" if declared_name else part
+        synthetic_name = f"{synthetic_name}.{part}"
+        synthetic_parent = sys.modules.get(synthetic_name)
+        if synthetic_parent is not None:
+            sys.modules[declared_name] = synthetic_parent
+    sys.modules[module_name] = module
 
 
 def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:

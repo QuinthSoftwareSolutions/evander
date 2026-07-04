@@ -12,6 +12,7 @@ from starlette.routing import BaseRoute, Route
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 from evander.admin.web.cache import AdminWebJsonResponseCache
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.admin.web.shared import (
     AdminWebAuth,
     json_error,
@@ -929,7 +930,12 @@ def session_approval_routes(
 
     async def update_mcp_tools(request: Request) -> JSONResponse:
         directory_path = str(request.query_params.get("directory_path") or "root").strip() or "root"
-        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+        if not request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
             return json_error("Privileged operations are locked.", status_code=403)
         try:
             payload = await request.json()
