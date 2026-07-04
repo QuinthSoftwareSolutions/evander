@@ -4655,23 +4655,11 @@ def test_admin_web_manages_workflow_packs_with_privileged_revision_checks(
     client = TestClient(create_app(service))
     pack_list_revision = _workflow_pack_list_revision(client, workflow_pack="pack-a.v1.json")
 
-    locked_response = client.post(
-        "/api/workflow-editor/packs",
-        json={
-            "pack_id": "custom-pack",
-            "pack_version": "v1",
-            "expected_revision": pack_list_revision,
-        },
-    )
-    assert locked_response.status_code == 403
-
-    _unlock_privileged_operations(client)
     create_response = client.post(
         "/api/workflow-editor/packs",
         json={
             "pack_id": "custom-pack",
             "pack_version": "v1",
-            "description": "Created through Admin Web.",
             "expected_revision": pack_list_revision,
         },
     )

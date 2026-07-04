@@ -9,6 +9,7 @@ from evander.config import GatewayConfig
 from evander.models import SessionManifest
 from evander.worker.models import WorkerMssqlDatabaseRecord
 from evander_mssql_seed_addon.mcp import (
+    LIST_DATABASES_TOOL,
     PROVISION_DATABASE_TOOL,
     RESET_DATABASE_TOOL,
     register_mcp_tools,
@@ -202,3 +203,87 @@ def test_mcp_seed_provision_uses_core_mssql_provisioning_before_restore(
     assert FakeSidecarClient.calls[-1]["backup_path"] == "/seed/app-demo.bak"
     assert reset["seed_restore"]["reset_count"] == 1
     assert store.get_database("session-1", "app").reset_count == 1
+
+
+def test_mcp_seed_tools_resolve_session_from_bound_mcp_transport(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    store = MssqlSeedStore(tmp_path)
+    store.replace_settings(
+        sidecars={"worker-a": {"base_url": "http://worker:11990", "token_env": "SEED_TOKEN"}},
+        seeds={"app-demo": {"sidecar_id": "worker-a", "backup_path": "/seed/app-demo.bak"}},
+    )
+    session = SessionManifest(
+        session_id="session-1",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        directory_path="root",
+    )
+    runtime = SimpleNamespace(
+        policy=FakePolicy(session),
+        provider_config=FakeProviderConfig(
+            GatewayConfig(
+                runtime_dir=tmp_path,
+                execution_backend="container_worker_vm",
+                container_worker_base_url="http://worker:11888",
+                container_worker_mssql_enabled=True,
+            )
+        ),
+        audit=FakeAudit(),
+        session_repository=FakeSessionRepository(session),
+    )
+    server = FakeServer()
+    server._evander_transport_session_map = {"transport-1": "session-1"}
+    ctx = SimpleNamespace(
+        request_context=SimpleNamespace(
+            request=SimpleNamespace(
+                query_params={},
+                headers={"mcp-session-id": "transport-1"},
+            )
+        )
+    )
+
+    FakeBackend.calls = []
+    FakeSidecarClient.calls = []
+    monkeypatch.setattr(
+        "evander_mssql_seed_addon.mcp.ContainerWorkerVmExecutionBackend",
+        FakeBackend,
+    )
+    monkeypatch.setattr(
+        "evander_mssql_seed_addon.mcp.MssqlSeedSidecarClient",
+        FakeSidecarClient,
+    )
+
+    register_mcp_tools(
+        server,
+        AddonContext(
+            addon_id="mssql-seed-addon",
+            runtime_dir=tmp_path,
+            addon_runtime_dir=tmp_path / "addons" / "mssql-seed-addon",
+            config=runtime.provider_config.config,
+            service=runtime,
+        ),
+    )
+
+    result = server.tools["mssql_seed_provision_database"](
+        logical_name="app",
+        seed_alias="app-demo",
+        ctx=ctx,
+    )
+    listed = server.tools["mssql_seed_list_databases"](ctx=ctx)
+    reset = server.tools["mssql_seed_reset_database"](
+        logical_name="app",
+        ctx=ctx,
+    )
+
+    assert runtime.policy.required == [
+        ("session-1", PROVISION_DATABASE_TOOL),
+        ("session-1", LIST_DATABASES_TOOL),
+        ("session-1", RESET_DATABASE_TOOL),
+    ]
+    assert FakeBackend.calls == [("session-1", "app"), ("session-1", "app")]
+    assert result["session_id"] == "session-1"
+    assert listed["databases"][0]["logical_name"] == "app"
+    assert reset["seed_restore"]["reset_count"] == 1
+    assert runtime.audit.events[-1].session_id == "session-1"

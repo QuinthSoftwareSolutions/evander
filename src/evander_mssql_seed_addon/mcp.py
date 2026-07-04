@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.addons import AddonContext
 from evander.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
+from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.models import AuditEvent
 from evander.policy import PolicyError
 
@@ -35,15 +36,22 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     def _runtime() -> Any:
         return context.service
 
-    def _require_tool(session_id: str | None, tool_name: str) -> str:
-        normalized_session_id = str(session_id or "").strip()
-        if not normalized_session_id:
-            raise ToolError("session_id is required")
+    def _transport_session_map() -> dict[str, str] | None:
+        value = getattr(server, "_evander_transport_session_map", None)
+        return value if isinstance(value, dict) else None
+
+    def _resolve_session_id(session_id: str | None, ctx: Context | None) -> str:
+        return _resolve_session_id_from_context(
+            session_id,
+            ctx,
+            transport_session_map=_transport_session_map(),
+        )
+
+    def _require_tool(session_id: str, tool_name: str) -> None:
         runtime = _runtime()
         if runtime is None or not hasattr(runtime, "policy"):
             raise ToolError("MSSQL seed MCP tools require a runtime policy context")
-        runtime.policy.require_tool(normalized_session_id, tool_name)
-        return normalized_session_id
+        runtime.policy.require_tool(session_id, tool_name)
 
     def _backend_for_session(session_id: str) -> ContainerWorkerVmExecutionBackend:
         runtime = _runtime()
@@ -115,6 +123,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         logical_name: str,
         seed_alias: str,
         session_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         resolved_session_id = str(session_id or "").strip()
         args = {
@@ -123,7 +132,9 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             "seed_alias": seed_alias,
         }
         try:
-            resolved_session_id = _require_tool(resolved_session_id, PROVISION_DATABASE_TOOL)
+            resolved_session_id = _resolve_session_id(resolved_session_id, ctx)
+            args["session_id"] = resolved_session_id
+            _require_tool(resolved_session_id, PROVISION_DATABASE_TOOL)
             payload, _database = _restore_seed(
                 session_id=resolved_session_id,
                 logical_name=logical_name,
@@ -146,11 +157,14 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     def mssql_seed_reset_database(
         logical_name: str,
         session_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         resolved_session_id = str(session_id or "").strip()
         args = {"session_id": resolved_session_id, "logical_name": logical_name}
         try:
-            resolved_session_id = _require_tool(resolved_session_id, RESET_DATABASE_TOOL)
+            resolved_session_id = _resolve_session_id(resolved_session_id, ctx)
+            args["session_id"] = resolved_session_id
+            _require_tool(resolved_session_id, RESET_DATABASE_TOOL)
             existing = store.get_database(resolved_session_id, logical_name)
             payload, _database = _restore_seed(
                 session_id=resolved_session_id,
@@ -171,11 +185,16 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             raise ToolError(str(exc)) from exc
 
     @server.tool()
-    def mssql_seed_list_databases(session_id: str | None = None) -> dict[str, Any]:
+    def mssql_seed_list_databases(
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
         resolved_session_id = str(session_id or "").strip()
         args = {"session_id": resolved_session_id}
         try:
-            resolved_session_id = _require_tool(resolved_session_id, LIST_DATABASES_TOOL)
+            resolved_session_id = _resolve_session_id(resolved_session_id, ctx)
+            args["session_id"] = resolved_session_id
+            _require_tool(resolved_session_id, LIST_DATABASES_TOOL)
             databases = [
                 database.model_dump(mode="json")
                 for database in store.list_databases(session_id=resolved_session_id)

@@ -12,6 +12,8 @@
   verification.
 - Added MCP tools for seeded MSSQL provision, reset, and listing that reuse Core
   container-worker MSSQL provisioning before restoring seed data.
+- Fixed MSSQL Seed MCP tools so connected MCP callers can omit the legacy
+  `session_id` argument and use the session bound to their MCP transport.
 
 ## 2026-07-04 - Admin Web UI-Only Lock
 
@@ -21,6 +23,8 @@
 - Kept backend writes governed by authentication, permissions, and revision
   checks, with the compatibility privilege endpoints now recording lightweight
   per-session UI state only.
+- Aligned workflow-pack and add-on runtime pack refresh coverage with the
+  UI-only lock behavior while preserving revision and disabled-add-on checks.
 
 ## 2026-07-04 - Artifact Space Filtering
 

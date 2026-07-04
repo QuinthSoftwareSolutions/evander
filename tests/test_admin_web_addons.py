@@ -432,12 +432,11 @@ def test_admin_web_addon_runtime_workflow_pack_refresh_overwrites_existing_pack(
     )
     state = client.get("/api/admin/addons").json()
 
-    locked = client.post(
+    disabled_response = client.post(
         "/api/admin/addons/team-addon/runtime-workflow-pack/refresh",
         json={"expected_revision": state["revision"]},
     )
-    assert locked.status_code == 403
-    client.post("/api/admin/privileged/unlock")
+    assert disabled_response.status_code == 400
     enabled_response = client.put(
         "/api/admin/addons/enabled",
         json={
