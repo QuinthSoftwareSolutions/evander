@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-04 - Team Add-on First-Load Responsiveness
+
+- Reduced Team Add-on first-load pressure by building scoped view payloads
+  directly instead of serializing full Team state and filtering afterward.
+- Changed the Team Add-on state stream to publish lightweight revision events
+  so connected UI tabs refresh only the active view instead of forcing full
+  state snapshots on every poll.
+- Kept Admin Web Lock/Unlock changes from remounting add-on iframes and taught
+  the Team Add-on UI to update locked controls from same-origin privilege
+  messages while preserving selected Teams records.
+
 ## 2026-07-04 - Add-on Package Discovery
 
 - Added local add-on package discovery from the git-ignored project-root

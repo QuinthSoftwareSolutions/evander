@@ -149,6 +149,7 @@ let costsRequestId = 0;
 let showArchived = false;
 let showHandledGovernanceAgenda = false;
 let activeTeamView = readStoredTeamView();
+let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
@@ -484,6 +485,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindTimelineFilters();
   bindTimelinePagination();
   bindPageLifecycle();
+  bindPrivilegeMessages();
   decorateFieldTooltips(document);
   void bootTeamAddon();
 });
@@ -1969,8 +1971,36 @@ function teamAgentDirectoryPath(form = null) {
   return text(fromQuery) || "root";
 }
 
-function teamPrivilegedUnlocked() {
+function readTeamPrivilegedUnlockedFromLocation() {
   return new URLSearchParams(window.location.search).get("privileged_unlocked") === "true";
+}
+
+function teamPrivilegedUnlocked() {
+  return teamPrivilegeUnlocked;
+}
+
+function setTeamPrivilegedUnlocked(unlocked) {
+  const nextUnlocked = Boolean(unlocked);
+  if (teamPrivilegeUnlocked === nextUnlocked) {
+    return;
+  }
+  const drafts = captureFormDrafts();
+  teamPrivilegeUnlocked = nextUnlocked;
+  render();
+  restoreFormDrafts(drafts);
+}
+
+function bindPrivilegeMessages() {
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) {
+      return;
+    }
+    const data = event.data || {};
+    if (data.type !== "admin-privileged-operations") {
+      return;
+    }
+    setTeamPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
+  });
 }
 
 function teamMutationLocked() {
@@ -2841,6 +2871,22 @@ function applyStateSnapshot(payload) {
   void loadTimeline();
 }
 
+function handleStateStreamSnapshot(payload) {
+  if (!payload || payload.revision === undefined || payload.revision === null) {
+    return;
+  }
+  if (payload.response_scope === "revision" || !payload.teams) {
+    if (Number(payload.revision) <= Number(state.revision || 0)) {
+      return;
+    }
+    state = normalizeState({ ...state, revision: payload.revision });
+    loadedTeamViews.delete(activeTeamView);
+    void loadView(activeTeamView, { force: true });
+    return;
+  }
+  applyStateSnapshot(payload);
+}
+
 function ensureStateStream() {
   if (stateStream || typeof EventSource === "undefined") {
     return;
@@ -2853,7 +2899,7 @@ function ensureStateStream() {
       return;
     }
     try {
-      applyStateSnapshot(JSON.parse(event.data || "{}"));
+      handleStateStreamSnapshot(JSON.parse(event.data || "{}"));
       stateStreamErrorRefreshPending = false;
     } catch {
       // Ignore malformed stream events; EventSource will keep the connection alive.
@@ -2864,7 +2910,7 @@ function ensureStateStream() {
       return;
     }
     stateStreamErrorRefreshPending = true;
-    void loadState({ preserveForms: true }).finally(() => {
+    void loadView(activeTeamView, { force: true }).finally(() => {
       if (stateStream === stream) {
         stateStreamErrorRefreshPending = false;
       }

@@ -55,17 +55,23 @@ from .models import (
     ProjectGoal,
     ProjectStatus,
     ReviewProfileCriterion,
+    RolePermission,
     TeamCaseStatus,
     TeamRecordState,
     TeamInboxItemState,
     TeamInboxPriority,
     TeamTaskState,
     TeamState,
+    _agent_payload_with_role,
+    agent_activity_summaries_payload,
     agent_project_assignment_payloads,
     agent_project_ids,
     current_failed_action_records,
     project_assignments_for_agent,
     effective_role_permissions,
+    release_package_payload_with_derived,
+    runtime_operations_payload,
+    task_payload_with_derived,
     team_state_payload,
 )
 from .costs import TeamCostService
@@ -324,15 +330,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 request,
                 state,
                 view=view,
-                session_records=_session_records_by_id(_session_repository_from_context(context)),
-                agent_execution_records=_agent_execution_records_by_session(context.service),
+                session_repository=_session_repository_from_context(context),
             )
         )
 
     async def stream_state(request: Request) -> StreamingResponse:
         return StreamingResponse(
             _state_snapshot_events(
-                lambda: _state_payload(request, repository.read()),
+                lambda: _state_revision_payload(repository.read()),
                 request,
             ),
             media_type="text/event-stream",
@@ -2238,6 +2243,14 @@ def _mutation_view_response_payload(
     return payload
 
 
+def _state_revision_payload(state: TeamState) -> dict[str, Any]:
+    return {
+        "response_scope": "revision",
+        "revision": state.revision,
+        "generated_at": utc_now().isoformat(),
+    }
+
+
 def _session_repository_from_context(context: AddonContext) -> Any | None:
     service = getattr(context, "service", None)
     runtime = getattr(service, "runtime", None)
@@ -2360,6 +2373,7 @@ def _view_payload_for_request(
     view: str,
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
+    session_repository: Any | None = None,
 ) -> dict[str, Any]:
     generated_at = utc_now().isoformat()
     if view == "chat":
@@ -2420,6 +2434,7 @@ def _view_payload_for_request(
             ids_by_collection=ids_by_collection,
             session_records=session_records,
             agent_execution_records=agent_execution_records,
+            session_repository=session_repository,
         )
     }
     if view == "timeline":
@@ -2466,19 +2481,111 @@ def _state_slice_payload_for_request(
     ids_by_collection: Mapping[str, set[str]] | None = None,
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
+    session_repository: Any | None = None,
 ) -> dict[str, Any]:
-    payload = _team_state_payload_for_request(
-        auth,
-        request,
+    del auth, request
+    scoped_ids = ids_by_collection or {}
+    payload = state.model_dump(
+        mode="json",
+        include={"schema_version", "revision", "updated_at"},
+    )
+    payload["available_role_permissions"] = [permission.value for permission in RolePermission]
+    for collection in TEAM_STATE_COLLECTION_KEYS:
+        if collection not in collections:
+            continue
+        payload[collection] = _state_collection_slice_payload(
+            state,
+            collection,
+            allowed_ids=scoped_ids.get(collection),
+        )
+    agent_ids = _state_slice_agent_ids(state, collections, scoped_ids)
+    scoped_session_records = session_records
+    if scoped_session_records is None:
+        scoped_session_records = _session_records_for_agent_ids(
+            session_repository,
+            state,
+            agent_ids,
+        )
+    runtime_agent_ids = None if agent_ids == set(state.agents) else agent_ids
+    runtime_operations = runtime_operations_payload(
         state,
-        session_records=session_records,
+        session_records=scoped_session_records,
         agent_execution_records=agent_execution_records,
+        agent_ids=runtime_agent_ids,
     )
-    return _filter_state_payload(
+    payload["runtime_operations"] = runtime_operations
+    payload["agent_activity_summaries"] = agent_activity_summaries_payload(
+        state,
+        runtime_operations=runtime_operations,
+        agent_ids=runtime_agent_ids,
+    )
+    for agent_id, summary in payload["agent_activity_summaries"].items():
+        agent_payload = payload.get("agents", {}).get(agent_id)
+        if isinstance(agent_payload, dict):
+            agent_payload["activity_summary"] = summary
+    _add_team_resource_tokens_for_collections(
         payload,
+        state,
         collections=collections,
-        ids_by_collection=ids_by_collection or {},
+        ids_by_collection=scoped_ids,
     )
+    return payload
+
+
+def _state_collection_slice_payload(
+    state: TeamState,
+    collection: str,
+    *,
+    allowed_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    value = getattr(state, collection, {})
+    if not isinstance(value, Mapping):
+        return {}
+    rows: dict[str, Any] = {}
+    for item_id, item in value.items():
+        if allowed_ids is not None and item_id not in allowed_ids:
+            continue
+        if collection == "agents":
+            rows[item_id] = _agent_payload_with_role(state, item)
+        elif collection == "tasks":
+            rows[item_id] = task_payload_with_derived(state, item)
+        elif collection == "release_packages":
+            rows[item_id] = release_package_payload_with_derived(state, item)
+        elif hasattr(item, "model_dump"):
+            rows[item_id] = item.model_dump(mode="json")
+        else:
+            rows[item_id] = item
+    return rows
+
+
+def _state_slice_agent_ids(
+    state: TeamState,
+    collections: set[str],
+    ids_by_collection: Mapping[str, set[str]],
+) -> set[str]:
+    if "agents" in collections:
+        allowed_ids = ids_by_collection.get("agents")
+        if allowed_ids is not None:
+            return {agent_id for agent_id in allowed_ids if agent_id in state.agents}
+        return set(state.agents)
+    return set()
+
+
+def _session_records_for_agent_ids(
+    repository: Any | None,
+    state: TeamState,
+    agent_ids: set[str],
+) -> dict[str, Any] | None:
+    records = _session_records_by_id(repository)
+    if records is None or not agent_ids:
+        return None
+    session_ids: set[str] = set()
+    for agent_id in sorted(agent_ids):
+        agent = state.agents.get(agent_id)
+        session_id = str(getattr(agent, "session_id", "") or "").strip() if agent else ""
+        if session_id:
+            session_ids.add(session_id)
+    return {session_id: records[session_id] for session_id in session_ids if session_id in records}
 
 
 def _filter_state_payload(
@@ -2520,6 +2627,29 @@ def _filter_state_payload(
 
 def _add_team_resource_tokens(payload: dict[str, Any], state: TeamState) -> None:
     tokens = _team_resource_tokens(state)
+    payload["resource_tokens"] = tokens
+    for collection, collection_tokens in tokens.items():
+        rows = payload.get(collection)
+        if not isinstance(rows, dict):
+            continue
+        for item_id, token in collection_tokens.items():
+            row = rows.get(item_id)
+            if isinstance(row, dict):
+                row["resource_token"] = token
+
+
+def _add_team_resource_tokens_for_collections(
+    payload: dict[str, Any],
+    state: TeamState,
+    *,
+    collections: set[str],
+    ids_by_collection: Mapping[str, set[str]],
+) -> None:
+    tokens = _team_resource_tokens_for_collections(
+        state,
+        collections,
+        ids_by_collection=ids_by_collection,
+    )
     payload["resource_tokens"] = tokens
     for collection, collection_tokens in tokens.items():
         rows = payload.get(collection)

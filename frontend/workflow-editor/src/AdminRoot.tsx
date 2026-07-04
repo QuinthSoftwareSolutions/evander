@@ -682,14 +682,12 @@ function PlaceholderView({ title, description }: { title: string; description: s
 function addonUiPathWithDirectory(
   uiPath: string,
   selectedDirectoryPath: string,
-  privilegedUnlocked: boolean,
 ): string {
   const directoryPath = selectedDirectoryPath.trim() || "root";
   try {
     const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
     const url = new URL(uiPath, base);
     url.searchParams.set("directory_path", directoryPath);
-    url.searchParams.set("privileged_unlocked", privilegedUnlocked ? "true" : "false");
     if (/^[a-z][a-z0-9+.-]*:/i.test(uiPath)) {
       return url.toString();
     }
@@ -697,7 +695,7 @@ function addonUiPathWithDirectory(
   } catch {
     const [withoutHash, hash = ""] = uiPath.split("#", 2);
     const separator = withoutHash.includes("?") ? "&" : "?";
-    return `${withoutHash}${separator}directory_path=${encodeURIComponent(directoryPath)}&privileged_unlocked=${privilegedUnlocked ? "true" : "false"}${hash ? `#${hash}` : ""}`;
+    return `${withoutHash}${separator}directory_path=${encodeURIComponent(directoryPath)}${hash ? `#${hash}` : ""}`;
   }
 }
 
@@ -710,12 +708,31 @@ function AddonView({
   selectedDirectoryPath: string;
   privilegedUnlocked: boolean;
 }) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const iframeSrc = addonUiPathWithDirectory(tab.uiPath ?? "", selectedDirectoryPath);
+
+  function postPrivilegeState() {
+    iframeRef.current?.contentWindow?.postMessage(
+      {
+        type: "admin-privileged-operations",
+        privileged_operations: { unlocked: privilegedUnlocked },
+      },
+      window.location.origin,
+    );
+  }
+
+  useEffect(() => {
+    postPrivilegeState();
+  }, [privilegedUnlocked, iframeSrc]);
+
   if (tab.uiPath) {
     return (
       <iframe
+        ref={iframeRef}
         className="admin-addon-frame"
         title={tab.label}
-        src={addonUiPathWithDirectory(tab.uiPath, selectedDirectoryPath, privilegedUnlocked)}
+        src={iframeSrc}
+        onLoad={postPrivilegeState}
         sandbox="allow-forms allow-modals allow-same-origin allow-scripts"
       />
     );

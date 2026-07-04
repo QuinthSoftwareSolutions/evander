@@ -357,7 +357,9 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
       },
     ],
   });
-  await page.route("**/addons/team-addon/", async (route) => {
+  let addonFrameRequests = 0;
+  await page.route("**/addons/team-addon/**", async (route) => {
+    addonFrameRequests += 1;
     await route.fulfill({
       status: 200,
       contentType: "text/html",
@@ -373,11 +375,21 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
   const frame = page.locator('iframe.admin-addon-frame[title="Teams"]');
   await frame.waitFor({ state: "visible" });
   assert.equal(await frame.getAttribute("sandbox"), "allow-forms allow-modals allow-same-origin allow-scripts");
+  const initialFrameSrc = await frame.getAttribute("src");
+  assert.ok(initialFrameSrc);
+  const initialFrameUrl = new URL(initialFrameSrc, `http://127.0.0.1:${address.port}`);
   assert.equal(
-    new URL(await frame.getAttribute("src"), `http://127.0.0.1:${address.port}`).pathname,
+    initialFrameUrl.pathname,
     "/addons/team-addon/",
   );
+  assert.equal(initialFrameUrl.searchParams.get("directory_path"), "root");
+  assert.equal(initialFrameUrl.searchParams.has("privileged_unlocked"), false);
   await assert.doesNotReject(() => page.frameLocator('iframe[title="Teams"]').getByText("Team Add-on").waitFor({ state: "visible" }));
+
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await assert.doesNotReject(() => page.getByRole("button", { name: "Lock", exact: true }).waitFor({ state: "visible" }));
+  assert.equal(await frame.getAttribute("src"), initialFrameSrc);
+  assert.equal(addonFrameRequests, 1);
 });
 
 test("admin shell shows unread user notifications from the header", async (t) => {

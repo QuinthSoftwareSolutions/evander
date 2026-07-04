@@ -3216,6 +3216,79 @@ test("team add-on locked mode disables mutation entry points", async (t) => {
   assert.deepEqual(mutationRequests, []);
 });
 
+test("team add-on privilege messages update controls without losing selected manager", async (t) => {
+  const initialState = seededOrgChartState();
+  const standDown = {
+    id: "stand-down-manager",
+    agent_id: "manager",
+    source: "operator",
+    reason: "Pause manager wakeups",
+    set_by: "operator",
+    set_at: "2026-06-11T08:50:00Z",
+    cleared_by: null,
+    cleared_at: null,
+    active: true,
+    inherited: false,
+    root_agent_id: "manager",
+  };
+  initialState.stand_downs = { [standDown.id]: standDown };
+  initialState.agents.manager.stand_down_active = true;
+  initialState.agents.manager.effective_stand_downs = [standDown];
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await teamGroup.locator('[data-select-agent-id="manager"]').click();
+
+  const detail = page.locator("#team-people-page .agent-detail", { hasText: "Ops Manager" });
+  await detail.waitFor({ state: "visible" });
+  const revokeButton = detail.locator('[data-stand-down-revoke-agent-id="manager"]');
+  await revokeButton.waitFor({ state: "visible" });
+  assert.equal(await revokeButton.isDisabled(), true);
+  const requestCountBeforeMessage = requests.length;
+
+  await page.evaluate(() => {
+    window.postMessage(
+      {
+        type: "admin-privileged-operations",
+        privileged_operations: { unlocked: true },
+      },
+      window.location.origin,
+    );
+  });
+  await page.waitForFunction(() => {
+    const detail = document.querySelector("#team-people-page .agent-detail");
+    const button = detail?.querySelector('[data-stand-down-revoke-agent-id="manager"]');
+    return Boolean(detail?.textContent?.includes("Ops Manager") && button && !button.disabled);
+  });
+  assert.equal(await detail.locator(".agent-detail-title h3").innerText(), "Ops Manager");
+  assert.equal(requests.length, requestCountBeforeMessage);
+
+  await page.evaluate(() => {
+    window.postMessage(
+      {
+        type: "admin-privileged-operations",
+        privileged_operations: { unlocked: false },
+      },
+      window.location.origin,
+    );
+  });
+  await page.waitForFunction(() => {
+    const detail = document.querySelector("#team-people-page .agent-detail");
+    const button = detail?.querySelector('[data-stand-down-revoke-agent-id="manager"]');
+    return Boolean(detail?.textContent?.includes("Ops Manager") && button?.disabled);
+  });
+});
+
 test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.project_ids.push("other-project");

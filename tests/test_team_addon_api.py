@@ -2116,6 +2116,57 @@ def test_team_addon_admin_api_runtime_operations_use_admin_web_addon_service_ada
     assert backend_health["agent_latest_execution_id"] == "exec-backend"
 
 
+def test_team_addon_view_payload_avoids_agent_execution_inventory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+    )
+    service = build_admin_runtime(_write_config(tmp_path, enable_team_addon=True))
+
+    def fail_agent_inventory(self, **_kwargs):
+        del self
+        raise AssertionError("scoped Team views must not list every agent execution")
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_agents",
+        MethodType(fail_agent_inventory, service.vm_agent_admin),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/addons/team-addon/views/people")
+
+    assert response.status_code == 200
+    state = response.json()["data"]["state"]
+    session_health = {
+        row["agent_id"]: row for row in state["runtime_operations"]["session_health"]
+    }
+    assert session_health["backend"]["session_present"] is True
+    assert session_health["backend"]["status"] == "active"
+    assert "agent_execution_status" not in session_health["backend"]
+
+
+def test_team_addon_state_stream_payload_is_revision_scoped(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    payload = team_addon_api._state_revision_payload(repo.read())
+
+    assert payload["response_scope"] == "revision"
+    assert payload["revision"] == repo.read().revision
+    assert "teams" not in payload
+    assert "runtime_operations" not in payload
+
+
 def test_team_addon_admin_api_costs_smoke(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     _seed_runtime_operations_state(runtime_dir)
