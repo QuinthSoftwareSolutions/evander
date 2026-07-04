@@ -33,6 +33,9 @@ def artifact_routes(service: AdminRuntimeComponents) -> list[BaseRoute]:
                 published_before=published_before,
                 limit=limit,
                 cursor=params.get("cursor") or None,
+                space_path=params.get("space_path") or None,
+                space_recursive=_parse_bool(params.get("space_recursive"), default=True),
+                subject=params.get("subject") or None,
             )
         except ValueError as exc:
             return json_error(str(exc))

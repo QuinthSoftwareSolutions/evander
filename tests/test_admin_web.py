@@ -75,6 +75,7 @@ from evander.daemons.effect_orchestrator import (
     SqliteGateExecutionStore,
 )
 from evander.daemons.trigger_orchestrator import TriggerOrchestratorWorker
+from evander.artifact_spaces import ArtifactSpaceStore
 from evander.communication_artifact_links import (
     issue_communication_artifact_download_link,
 )
@@ -6393,6 +6394,98 @@ def test_admin_web_lists_resolves_and_downloads_published_artifacts(tmp_path: Pa
     assert (
         download_response.headers["content-disposition"] == 'attachment; filename="report.tar.gz"'
     )
+
+
+def test_admin_web_filters_published_artifacts_by_artifact_space(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    archive = tmp_path / "artifact.tar.gz"
+    archive.write_bytes(b"published archive")
+    artifact_store = PublishedArtifactStore(runtime_dir)
+    artifact_store.publish_archive(
+        key="runs/team/report",
+        session_id="session-1",
+        archive_path=archive,
+        published_at=datetime(2026, 5, 20, 8, 0, tzinfo=timezone.utc),
+    )
+    artifact_store.publish_archive(
+        key="runs/team/backend/report",
+        session_id="session-2",
+        archive_path=archive,
+        published_at=datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),
+    )
+    artifact_store.publish_archive(
+        key="runs/other/report",
+        session_id="session-3",
+        archive_path=archive,
+        published_at=datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc),
+    )
+    artifact_store.publish_archive(
+        key="runs/unspaced/report",
+        session_id="session-4",
+        archive_path=archive,
+        published_at=datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc),
+    )
+    space_store = ArtifactSpaceStore(runtime_dir)
+    space_store.ensure_space(path="/teams/team")
+    space_store.ensure_space(path="/teams/team/projects/backend")
+    space_store.ensure_space(path="/teams/other")
+    space_store.publish_version(
+        space_path="/teams/team",
+        artifact_id="team-report",
+        artifact_key="runs/team/report",
+    )
+    space_store.publish_version(
+        space_path="/teams/team/projects/backend",
+        artifact_id="backend-report",
+        artifact_key="runs/team/backend/report",
+    )
+    space_store.publish_version(
+        space_path="/teams/other",
+        artifact_id="other-report",
+        artifact_key="runs/other/report",
+    )
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    all_response = client.get("/api/admin/artifacts")
+    recursive_response = client.get(
+        "/api/admin/artifacts",
+        params={"space_path": "/teams/team", "limit": "1"},
+    )
+    recursive_next_response = client.get(
+        "/api/admin/artifacts",
+        params={"space_path": "/teams/team", "limit": "1", "cursor": "1"},
+    )
+    direct_response = client.get(
+        "/api/admin/artifacts",
+        params={"space_path": "/teams/team", "space_recursive": "false"},
+    )
+    key_response = client.get(
+        "/api/admin/artifacts",
+        params={"space_path": "/teams/team", "key": "runs/team/backend/report"},
+    )
+    unspaced_key_response = client.get(
+        "/api/admin/artifacts",
+        params={"space_path": "/teams/team", "key": "runs/unspaced/report"},
+    )
+
+    assert all_response.status_code == 200
+    assert all_response.json()["total"] == 4
+    assert recursive_response.status_code == 200
+    assert recursive_response.json()["total"] == 2
+    assert recursive_response.json()["items"][0]["key"] == "runs/team/backend/report"
+    assert recursive_response.json()["next_cursor"] == "1"
+    assert recursive_next_response.status_code == 200
+    assert recursive_next_response.json()["items"][0]["key"] == "runs/team/report"
+    assert recursive_next_response.json()["next_cursor"] is None
+    assert direct_response.status_code == 200
+    assert [item["key"] for item in direct_response.json()["items"]] == ["runs/team/report"]
+    assert key_response.status_code == 200
+    assert [item["key"] for item in key_response.json()["items"]] == [
+        "runs/team/backend/report"
+    ]
+    assert unspaced_key_response.status_code == 200
+    assert unspaced_key_response.json()["total"] == 0
 
 
 def test_admin_web_artifact_key_ending_download_resolves_metadata(

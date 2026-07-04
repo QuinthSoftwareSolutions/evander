@@ -10,6 +10,13 @@
 - Added MCP tools for seeded MSSQL provision, reset, and listing that reuse Core
   container-worker MSSQL provisioning before restoring seed data.
 
+## 2026-07-04 - Artifact Space Filtering
+
+- Added an artifact-space tree to the Admin Web Artifacts filter sidebar and
+  let operators filter published artifacts by selected formal artifact space.
+- Extended the Admin Web published-artifacts API with recursive artifact-space
+  filtering so paging totals and result pages match the selected space.
+
 ## 2026-07-03 - Team Org Chart Viewport
 
 - Kept the Team Add-on org chart canvas viewport stable across data-only edits
