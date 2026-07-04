@@ -880,22 +880,6 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
         "payload_mode": "exact",
     }
 
-    locked_response = asyncio.run(
-        update_mcp_tools(
-            _admin_json_request(
-                method="PUT",
-                path="/api/admin/mcp-tools",
-                query_string=b"directory_path=root",
-                payload={
-                    "expected_revision": initial_payload["revision"],
-                    "mcp_tool_policies": {},
-                },
-            )
-        )
-    )
-    assert locked_response.status_code == 403
-
-    service.operations_admin.unlock_privileged_operations()
     update_request = _admin_json_request(
         method="PUT",
         path="/api/admin/mcp-tools",
@@ -918,7 +902,6 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
             },
         },
     )
-    auth.mark_privileged_for_request(update_request)
     update_response = asyncio.run(update_mcp_tools(update_request))
 
     assert update_response.status_code == 200

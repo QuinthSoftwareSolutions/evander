@@ -44,7 +44,6 @@ from evander.admin.web.shared import (
     AdminWebAuth,
     AdminWebConfig,
     json_error,
-    request_has_privileged_operations,
 )
 from evander.admin.web.pr_integration import pr_integration_routes
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION, USERS_MANAGE_PERMISSION
@@ -223,7 +222,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     service.vm_agent_admin.mark_abandoned_agent_create_operations_failed()
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
-        return request_has_privileged_operations(auth=auth, service=service, request=request)
+        return auth.privileged_for_request(request)
 
     def _role_for_permissions(permissions: list[str] | tuple[str, ...]) -> str:
         if ADMIN_OWNER_PERMISSION in permissions or USERS_MANAGE_PERMISSION in permissions:
@@ -324,8 +323,6 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         return JSONResponse(payload)
 
     async def logout(request: Request) -> JSONResponse:
-        if auth.privileged_for_request(request):
-            service.operations_admin.lock_privileged_operations()
         auth.logout(request)
         permissions = (
             list(auth.effective_permissions(auth.config.username))
@@ -465,14 +462,10 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
 
     async def unlock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
-        try:
-            message = service.operations_admin.unlock_privileged_operations()
-        except ValueError as exc:
-            return json_error(str(exc))
         auth.mark_privileged_for_request(request)
         return JSONResponse(
             {
-                "message": message,
+                "message": "Privileged operations unlocked.",
                 "privileged_operations": {
                     "unlocked": privileged_operations_unlocked_for_request(request)
                 },
@@ -481,7 +474,6 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
 
     async def lock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
-        service.operations_admin.lock_privileged_operations()
         auth.clear_privileged_for_request(request)
         return JSONResponse(
             {

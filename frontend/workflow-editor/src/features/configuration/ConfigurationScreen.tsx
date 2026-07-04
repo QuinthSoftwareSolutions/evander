@@ -158,7 +158,7 @@ const MODEL_PRICING_FALLBACK_ERROR = {
     rules: [],
   },
   editable: false,
-  write_requires_privileged_unlock: true,
+  write_requires_privileged_unlock: false,
   error: "Model pricing catalog status is unavailable.",
   error_class: null,
 } satisfies ModelPricingCatalogStatus;

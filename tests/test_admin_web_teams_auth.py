@@ -218,16 +218,10 @@ def test_admin_web_teams_auth_routes_use_focused_admin_services(
         ("normalize_directory_reference", "root/team-a"),
         ("status", "root/team-a"),
         ("list",),
-        ("privileged_helper_required",),
-        ("privileged_operations_unlocked",),
         ("normalize_directory_reference", "root/team-a"),
         ("login", "root/team-a"),
-        ("privileged_helper_required",),
-        ("privileged_operations_unlocked",),
         ("normalize_directory_reference", "root/team-a"),
         ("complete", "root/team-a", 5.0, "TEST-CODE"),
-        ("privileged_helper_required",),
-        ("privileged_operations_unlocked",),
         ("normalize_directory_reference", "root/team-a"),
         ("logout", "root/team-a"),
         ("normalize_directory_reference", "root/team-a"),
@@ -507,7 +501,7 @@ def test_admin_web_teams_auth_requires_auth_when_enabled(
     assert login.json()["error"] == "Authentication required"
 
 
-def test_admin_web_teams_auth_mutations_are_locked_until_privileged_unlock(
+def test_admin_web_teams_auth_mutations_do_not_require_privileged_unlock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
@@ -516,46 +510,51 @@ def test_admin_web_teams_auth_mutations_are_locked_until_privileged_unlock(
     service = build_admin_runtime(write_config(tmp_path))
     calls: list[str] = []
 
-    def fail_login(self, *, directory: str = "root"):
+    def fake_login(self, *, directory: str = "root"):
         calls.append("login")
-        raise AssertionError("login should not run while privileged operations are locked")
+        return {
+            "tenant_id": "tenant-123",
+            "scopes": ["scope-a"],
+            "message": "Use code TEST-CODE",
+            "user_code": "TEST-CODE",
+            "metadata": {"identity_id": "teams-identity"},
+        }
 
-    def fail_complete(self, login_session, *, directory: str = "root", timeout_seconds=None):
+    def fake_complete(self, login_session, *, directory: str = "root", timeout_seconds=None):
         calls.append("complete")
-        raise AssertionError("complete should not run while privileged operations are locked")
+        assert login_session["user_code"] == "TEST-CODE"
+        return {"directory_path": directory, "status": "authenticated", "authenticated": True}
 
-    def fail_logout(self, *, directory: str = "root"):
+    def fake_logout(self, *, directory: str = "root"):
         calls.append("logout")
-        raise AssertionError("logout should not run while privileged operations are locked")
+        return {"directory_path": directory, "status": "logged_out", "authenticated": False}
 
     monkeypatch.setattr(
-        service.operations_admin, "teams_auth_login", MethodType(fail_login, service.operations_admin)
+        service.operations_admin, "teams_auth_login", MethodType(fake_login, service.operations_admin)
     )
     monkeypatch.setattr(
         service.operations_admin,
         "teams_auth_complete_login",
-        MethodType(fail_complete, service.operations_admin),
+        MethodType(fake_complete, service.operations_admin),
     )
     monkeypatch.setattr(
-        service.operations_admin, "teams_auth_logout", MethodType(fail_logout, service.operations_admin)
+        service.operations_admin, "teams_auth_logout", MethodType(fake_logout, service.operations_admin)
     )
 
     client = TestClient(create_app(service))
 
     login = client.post("/api/teams-auth/login")
+    login_session_id = login.json()["login_session_id"]
     complete = client.post(
         "/api/teams-auth/complete",
-        json={"login_session_id": "opaque-session", "timeout_seconds": 1},
+        json={"login_session_id": login_session_id, "timeout_seconds": 1},
     )
     logout = client.post("/api/teams-auth/logout")
 
-    assert login.status_code == 403
-    assert login.json()["error"] == "Privileged operations are locked."
-    assert complete.status_code == 403
-    assert complete.json()["error"] == "Privileged operations are locked."
-    assert logout.status_code == 403
-    assert logout.json()["error"] == "Privileged operations are locked."
-    assert calls == []
+    assert login.status_code == 200
+    assert complete.status_code == 200
+    assert logout.status_code == 200
+    assert calls == ["login", "complete", "logout"]
 
 
 @pytest.mark.parametrize(

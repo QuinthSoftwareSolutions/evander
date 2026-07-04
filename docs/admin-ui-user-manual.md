@@ -77,8 +77,8 @@ Every Admin UI section uses the same shell:
 - The left navigation opens each major operator section. It can be collapsed to short labels with
   the section toggle.
 - The selected directory is shared by directory-scoped views. It defaults to `root`.
-- Privileged operations are locked by default. Unlock before creating, deleting, starting,
-  stopping, approving, denying, saving policy, or editing workflow state.
+- Privileged operations are locked by default in the UI. Unlock before creating, deleting,
+  starting, stopping, approving, denying, saving policy, or editing workflow state.
 - Deep links use hash routes, for example `/#workflow`, `/#sessions`, `/#tool-calls`, and
   `/#configuration`.
 - A deployment banner appears when the host reports an active or stale deployment/update status.
@@ -103,8 +103,10 @@ Approvals, VMs, Issues, Sessions, MCP Tools, Tool Calls, Configuration, Users, W
 
 ### Unlock Privileged Operations
 
-Use **Unlock** in the header before performing mutations. Locked mode is useful for read-only
-inspection because destructive or sensitive actions are disabled.
+Use **Unlock** in the header before performing mutations. Locked mode is a local UI safety
+guard for read-only inspection: destructive or sensitive controls are disabled until you unlock.
+Backend writes are still protected by authentication, permissions, and revision checks rather
+than by the header lock state.
 
 Privileged actions include:
 

@@ -1697,7 +1697,7 @@ function ProductContextPanel({
 }
 
 export function OperationsDashboard() {
-  const { selectedDirectoryPath, setSelectedDirectoryPath } = useAdminUi();
+  const { selectedDirectoryPath, setSelectedDirectoryPath, privilegedUnlocked } = useAdminUi();
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [newsIndex, setNewsIndex] = useState(0);
   const [state, setState] = useState<DashboardState>(() => createDashboardPendingState());
@@ -2143,7 +2143,7 @@ export function OperationsDashboard() {
                     },
                     {
                       label: "Privileges",
-                      value: adminState.privileged_operations.unlocked ? "Unlocked" : "Locked",
+                      value: privilegedUnlocked ? "Unlocked" : "Locked",
                     },
                   ]}
                 />

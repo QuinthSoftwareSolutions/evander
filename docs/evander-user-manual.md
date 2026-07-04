@@ -192,7 +192,7 @@ Once signed in, the shared shell is the same across pages so you can move betwee
 1. Header: shows active section, directory, current user, theme, privilege lock, directory chooser, and sign-out.
 2. Navigation: opens all major operator pages such as Dashboard, Agents, Sessions, Approvals, Tool Calls, Workflow, Configuration, Users, Reports, and Workers.
 3. Directory scope: shown in the header and applied to many lists and actions.
-4. Privilege lock icon/state: `locked` means read-only mode. Mutations are blocked until you unlock.
+4. Privilege lock icon/state: `locked` means local read-only UI mode. Mutation controls are disabled until you unlock.
 5. Deployment banner: if present, gives platform-level health or update context.
 6. Assistant launcher: optional lower-corner tool when enabled by your deployment.
 7. Page content: the page you selected in navigation.
@@ -227,9 +227,11 @@ If you are uncertain, pause and recheck in section 2.4 before creating agents, c
 
 ### 2.5 Unlock Privileged Operations
 
-Evander uses a deliberate safety gate before changes.
+Evander uses a deliberate UI safety gate before changes.
 
-When the lock is closed, the interface is in read-only mode.
+When the lock is closed, the interface is in read-only mode. This is a local UI guard against
+accidental edits; backend writes are still governed by authentication, permissions, and revision
+checks.
 
 - Safe for review, triage, filtering, and inspection.
 - Not safe to run changes through.
@@ -828,7 +830,7 @@ What to read in the detail card:
 If a row is missing, check these first:
 
 1. Directory context.
-2. Lock state is irrelevant for reading but required for editing.
+2. Lock state is irrelevant for reading but controls whether edit controls are enabled.
 3. Manual filters or stale search text.
 4. Active list vs Expired list.
 
@@ -4019,7 +4021,7 @@ Evander uses revision checks to avoid silent overwrite.
 1. A save can fail if another operator changed the same configuration in between your edit and save.
 2. In that case, the UI asks you to reload and reapply your intended edits.
 3. Communication or high-risk edits should be done one domain at a time.
-4. Locking, unlocking, and privilege mode are still required for writes.
+4. Unlock in the UI before editing so the intended controls are enabled.
 5. Keep local edits short and re-open read-only if a page feels stale.
 
 Safe save habits:
@@ -5028,7 +5030,7 @@ If the UI does not match the behavior described here, treat the live UI and host
 This usually means one of these is true:
 
 1. The page is scoped to a different directory than the one you selected.
-2. Your account currently has read-only mode or locked privileges.
+2. The UI is in read-only mode or the account lacks permission for that surface.
 3. A service used by that page is not running or not reachable.
 4. A feature is not available for your deployment (for example add-on-specific pages).
 
@@ -5423,7 +5425,7 @@ For optional add-on mode, this map also includes:
 
 Permission is easiest to think of in layers.
 
-- **Read mode (default safe mode):** view-only for almost all pages. Good for investigation.
+- **Read mode (default safe mode):** local view-only mode for almost all pages. Good for investigation.
 - **Unlocked mode:** allows create, edit, and lifecycle actions on the current surface if your user has permission.
 - **Workflow write access:** required for graph edits, and includes read access.
 - **Approval/decision rights:** required for queue action and direct review decisions.

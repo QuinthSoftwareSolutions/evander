@@ -7,6 +7,7 @@ import { chromium } from "playwright";
 import { createServer } from "vite";
 
 const WORKFLOW_SIDEBAR_STORAGE_KEY = "admin-web:workflow:sections-collapsed";
+const PRIVILEGE_UNLOCKED_STORAGE_KEY = "admin-web:privileges-unlocked";
 const THEME_STORAGE_KEY = "admin-web:theme";
 
 function jsonResponse(payload, status = 200) {
@@ -305,6 +306,40 @@ test("admin shell persisted collapsed navigation remains usable", async (t) => {
   await page.waitForFunction(() => window.location.hash === "#approvals");
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
   assert.equal(await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY), "true");
+});
+
+test("admin shell lock toggle is local UI state", async (t) => {
+  const { address, page } = await createAdminPage(t);
+  const privilegedRequests = [];
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.startsWith("/api/admin/privileged/")) {
+      privilegedRequests.push(pathname);
+    }
+  });
+  await page.addInitScript(
+    (storageKey) => window.sessionStorage.removeItem(storageKey),
+    PRIVILEGE_UNLOCKED_STORAGE_KEY,
+  );
+
+  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await assert.doesNotReject(() => page.getByRole("button", { name: "Lock", exact: true }).waitFor({ state: "visible" }));
+  assert.equal(
+    await page.evaluate((storageKey) => window.sessionStorage.getItem(storageKey), PRIVILEGE_UNLOCKED_STORAGE_KEY),
+    "true",
+  );
+
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await assert.doesNotReject(() => page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ state: "visible" }));
+  assert.equal(
+    await page.evaluate((storageKey) => window.sessionStorage.getItem(storageKey), PRIVILEGE_UNLOCKED_STORAGE_KEY),
+    "false",
+  );
+  assert.deepEqual(privilegedRequests, []);
 });
 
 test("admin shell renders enabled add-on navigation in an iframe", async (t) => {

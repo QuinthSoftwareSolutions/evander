@@ -117,9 +117,9 @@ def _expected_chat_session_resolve_call(*, user_id: str, thread_id: str) -> dict
         "assistant_scope": "admin_chat",
         "settings": {
             "enabled": True,
-            "read_only": True,
+            "read_only": False,
             "default_model": "gpt-test",
-            "default_profile": "read-only",
+            "default_profile": "full-admin",
         },
         "thread_id": thread_id,
         "user_message_id": None,
@@ -166,10 +166,10 @@ def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: P
             "thread_id": alice_session["thread_id"],
             "user_message_id": response.json()["messages"][0]["id"],
             "content": "hello",
-            "assistant_capability_mode": "read-only",
+            "assistant_capability_mode": "full-access",
         }
     ]
-    assert response.json()["assistant_capability_mode"] == "read-only"
+    assert response.json()["assistant_capability_mode"] == "full-access"
 
     denied_transcript = bob.get(f"/api/chat/transcript/{alice_session['thread_id']}")
     assert denied_transcript.status_code == 404
@@ -246,7 +246,7 @@ def test_chat_session_start_prewarms_assistant_session_with_effective_settings(
 
     session = response.json()
     assert session["user_id"] == "alice"
-    assert session["assistant_capability_mode"] == "read-only"
+    assert session["assistant_capability_mode"] == "full-access"
     assert session["assistant_session"]["status"] == "preparing"
     _wait_for(lambda: _assistant_session(alice, session["thread_id"])["status"] == "ready")
     assert service.vm_agent_admin.resolve_calls == [
@@ -286,11 +286,11 @@ def test_chat_session_start_schedules_prewarm_without_synchronous_resolution(
     assert scheduled[0]["thread_id"] == session["thread_id"]
 
 
-def test_chat_session_start_preserves_full_access_settings_for_privileged_request(
+def test_chat_session_start_preserves_full_access_settings_for_authorized_request(
     tmp_path: Path,
 ) -> None:
     service = FakeAdminService(tmp_path)
-    alice = TestClient(Starlette(routes=chat_routes(service, PrivilegedFakeAuth({"username": "alice"}))))
+    alice = _client_for_user(service, {"username": "alice"})
 
     response = alice.post("/api/chat/session")
     assert response.status_code == 200
@@ -300,19 +300,7 @@ def test_chat_session_start_preserves_full_access_settings_for_privileged_reques
     assert session["assistant_capability_mode"] == "full-access"
     _wait_for(lambda: _assistant_session(alice, session["thread_id"])["status"] == "ready")
     assert service.vm_agent_admin.resolve_calls == [
-        {
-            "user_id": "alice",
-            "backend": "libvirt_vm",
-            "assistant_scope": "admin_chat",
-            "settings": {
-                "enabled": True,
-                "read_only": False,
-                "default_model": "gpt-test",
-                "default_profile": "full-admin",
-            },
-            "thread_id": session["thread_id"],
-            "user_message_id": None,
-        }
+        _expected_chat_session_resolve_call(user_id="alice", thread_id=session["thread_id"])
     ]
 
 

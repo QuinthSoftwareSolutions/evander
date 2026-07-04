@@ -10576,7 +10576,7 @@ def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
     assert payload["catalog"]["version"] == payload["version"]
     assert payload["catalog"]["currency"] == "usd"
     assert payload["editable"] is True
-    assert payload["write_requires_privileged_unlock"] is True
+    assert payload["write_requires_privileged_unlock"] is False
     first_rule = payload["rules"][0]
     assert isinstance(first_rule["id"], str)
     assert first_rule["id"]
@@ -10610,7 +10610,7 @@ def test_admin_web_model_pricing_catalog_status_reports_env_override(
     assert payload["catalog"]["rules"][0]["models"] == ["test-model"]
     assert payload["catalog"]["rules"][0]["model_patterns"] == []
     assert payload["editable"] is True
-    assert payload["write_requires_privileged_unlock"] is True
+    assert payload["write_requires_privileged_unlock"] is False
 
 
 def test_admin_web_model_pricing_catalog_status_reports_invalid_catalog(
@@ -10640,10 +10640,10 @@ def test_admin_web_model_pricing_catalog_status_reports_invalid_catalog(
         "rules": [],
     }
     assert payload["editable"] is True
-    assert payload["write_requires_privileged_unlock"] is True
+    assert payload["write_requires_privileged_unlock"] is False
 
 
-def test_admin_web_model_pricing_catalog_write_requires_unlock_and_revision(
+def test_admin_web_model_pricing_catalog_write_requires_revision(
     tmp_path: Path, monkeypatch
 ) -> None:
     catalog_path = tmp_path / "runtime" / "pricing.json"
@@ -10661,13 +10661,6 @@ def test_admin_web_model_pricing_catalog_write_requires_unlock_and_revision(
     initial_revision = initial_response.json()["revision"]
     updated_catalog = _pricing_catalog_payload(version="updated-pricing", model="updated-model")
 
-    locked = client.put(
-        "/api/configuration/model-pricing",
-        json={"catalog": updated_catalog, "expected_revision": initial_revision},
-    )
-    assert locked.status_code == 403
-
-    _unlock_privileged_operations(client)
     missing_revision = client.put(
         "/api/configuration/model-pricing", json={"catalog": updated_catalog}
     )
@@ -11306,7 +11299,7 @@ def test_admin_web_communications_tab_preserves_assistant_settings_when_absent(
     assert service.operations_admin.read_assistant_settings()["enabled"] is True
 
 
-def test_admin_web_chat_settings_write_requires_privileged_unlock(
+def test_admin_web_chat_settings_write_requires_authentication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -11317,21 +11310,18 @@ def test_admin_web_chat_settings_write_requires_privileged_unlock(
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
+    unauthenticated = client.put(
+        "/api/chat/settings",
+        json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
+    )
+    assert unauthenticated.status_code == 401
+    assert service.operations_admin.read_assistant_settings()["enabled"] is False
+
     login = client.post(
         "/api/auth/login",
         json={"username": "operator", "password": "swordfish"},
     )
     assert login.status_code == 200
-
-    locked = client.put(
-        "/api/chat/settings",
-        json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
-    )
-    assert locked.status_code == 403
-    assert service.operations_admin.read_assistant_settings()["enabled"] is False
-
-    unlock = client.post("/api/admin/privileged/unlock")
-    assert unlock.status_code == 200
     saved = client.put(
         "/api/chat/settings",
         json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
@@ -11393,35 +11383,8 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
     assert providers_result.data.config == {"openai_api_base_url": "http://relay.internal/v1"}
 
 
-def test_admin_web_can_toggle_privileged_operations_state(tmp_path: Path, monkeypatch) -> None:
+def test_admin_web_can_toggle_privileged_operations_state(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    state = {"unlocked": False}
-
-    def unlock(self):
-        state["unlocked"] = True
-        return "Privileged operations unlocked."
-
-    def lock(self):
-        state["unlocked"] = False
-
-    def unlocked(self):
-        return state["unlocked"]
-
-    monkeypatch.setattr(
-        service.operations_admin,
-        "unlock_privileged_operations",
-        MethodType(unlock, service.operations_admin),
-    )
-    monkeypatch.setattr(
-        service.operations_admin,
-        "lock_privileged_operations",
-        MethodType(lock, service.operations_admin),
-    )
-    monkeypatch.setattr(
-        service.operations_admin,
-        "privileged_operations_unlocked",
-        MethodType(unlocked, service.operations_admin),
-    )
 
     client = TestClient(create_app(service))
 
@@ -11439,37 +11402,42 @@ def test_admin_web_can_toggle_privileged_operations_state(tmp_path: Path, monkey
     assert relocked_response.json()["privileged_operations"]["unlocked"] is False
 
 
-def test_request_has_privileged_operations_uses_admin_service_facade() -> None:
+def test_request_has_privileged_operations_is_auth_only() -> None:
     calls: list[str] = []
 
     operations_admin = SimpleNamespace(
-        privileged_helper_required=lambda: calls.append("required") or True,
-        privileged_operations_unlocked=lambda: calls.append("unlocked") or True,
+        privileged_helper_required=lambda: calls.append("required") or False,
+        privileged_operations_unlocked=lambda: calls.append("unlocked") or False,
     )
     service = SimpleNamespace(operations_admin=operations_admin)
-    auth = SimpleNamespace(privileged_for_request=lambda _request: True)
+    auth = SimpleNamespace(require=lambda _request: calls.append("require") or {"sid": "test"})
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
 
     assert (
         request_has_privileged_operations(auth=auth, service=service, request=request) is True
     )
-    assert calls == ["required", "unlocked"]
+    assert calls == ["require"]
 
 
-def test_admin_web_unlocks_without_starting_helper_when_helper_is_not_required(
+def test_admin_web_unlock_endpoint_does_not_start_privileged_helper(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
 
-    def fail_unlock(self):
-        raise AssertionError("web unlock should not require the privileged helper when disabled")
+    def fail_privileged_helper_call(self):
+        raise AssertionError("web lock endpoints should not start or inspect the privileged helper")
 
-    monkeypatch.setattr(
-        service.operations_admin,
+    for method_name in (
+        "unlock_privileged_operations",
+        "lock_privileged_operations",
         "privileged_operations_unlocked",
-        MethodType(fail_unlock, service.operations_admin),
-    )
+    ):
+        monkeypatch.setattr(
+            service.operations_admin,
+            method_name,
+            MethodType(fail_privileged_helper_call, service.operations_admin),
+        )
 
     client = TestClient(create_app(service))
 
@@ -13559,7 +13527,9 @@ def test_admin_web_issue_detail_uses_cached_proxy_data_without_remote_credential
     assert payload["state"] == "In Progress"
 
 
-def test_admin_web_operator_steering_note_flow_requires_unlock(tmp_path: Path) -> None:
+def test_admin_web_operator_steering_note_flow_allows_authorized_write_without_unlock(
+    tmp_path: Path,
+) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -13590,19 +13560,6 @@ def test_admin_web_operator_steering_note_flow_requires_unlock(tmp_path: Path) -
     assert context_payload["context"]["session_id"] == "session-steer"
     assert context_payload["context"]["dispatch_id"] == "dispatch-steer"
 
-    locked_create = client.post(
-        "/api/operator-steering/notes",
-        json={
-            "session_id": "session-steer",
-            "dispatch_id": "dispatch-steer",
-            "worker_execution_id": "worker-steer",
-            "message": "Move from exploration to implementation.",
-        },
-    )
-    assert locked_create.status_code == 403
-    assert locked_create.json()["error"] == "Privileged operations are locked."
-
-    _unlock_privileged_operations(client)
     created = client.post(
         "/api/operator-steering/notes",
         json={

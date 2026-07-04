@@ -155,6 +155,7 @@ function normalizePermissionList(...values: Array<ReadonlyArray<string> | string
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const WORKFLOW_SIDEBAR_STORAGE_KEY = "admin-web:workflow:sections-collapsed";
 const DIRECTORY_STORAGE_KEY = "admin-web:selected-directory";
+const PRIVILEGE_UNLOCKED_STORAGE_KEY = "admin-web:privileges-unlocked";
 const THEME_STORAGE_KEY = "admin-web:theme";
 const BOOTSTRAPPED_ADMIN_BRANDING = initialAdminBranding();
 
@@ -636,6 +637,24 @@ function LoginBackgroundCanvas({ theme }: { theme: AdminTheme }) {
   }, [theme]);
 
   return <canvas ref={canvasRef} className="admin-login-flow-canvas" aria-hidden="true" />;
+}
+
+function readStoredPrivilegeUnlocked(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.sessionStorage.getItem(PRIVILEGE_UNLOCKED_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredPrivilegeUnlocked(unlocked: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(PRIVILEGE_UNLOCKED_STORAGE_KEY, String(unlocked));
+  } catch {
+    // Best-effort UI preference persistence.
+  }
 }
 
 function getInitialTheme(): AdminTheme {
@@ -1315,6 +1334,7 @@ export default function AdminRoot() {
   const [session, setSession] = useState<AdminSession | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
+  const [privilegeUnlocked, setPrivilegeUnlocked] = useState<boolean>(() => readStoredPrivilegeUnlocked());
   const [selectedTab, setSelectedTab] = useState<AdminTab>(() => currentTab(window.location.hash));
   const [workflowHasUnsavedChanges, setWorkflowHasUnsavedChanges] = useState(false);
   const [adminState, setAdminState] = useState<AdminState | null>(null);
@@ -1650,6 +1670,7 @@ export default function AdminRoot() {
       }
       setSession(payload);
       setAdminState(null);
+      setPrivilegeLock(false);
     } finally {
       setAuthBusy(false);
     }
@@ -1668,42 +1689,10 @@ export default function AdminRoot() {
     window.location.assign(loginUrl.toString());
   }
 
-  async function setPrivilegeLock(unlock: boolean) {
-    setAuthBusy(true);
-    try {
-      const response = await fetch(`${API_BASE}/api/admin/privileged/${unlock ? "unlock" : "lock"}`, {
-        method: "POST",
-        credentials: "same-origin",
-      });
-      const payload = (await response.json()) as
-        | ({ message: string; privileged_operations: { unlocked: boolean } } & { error?: string })
-        | { error: string };
-      if (!response.ok) {
-        throw new Error("error" in payload ? payload.error : "Privilege update failed.");
-      }
-      const privilegeState = "privileged_operations" in payload ? payload.privileged_operations : { unlocked: unlock };
-      setAdminState((current) =>
-        current
-          ? {
-              ...current,
-              privileged_operations: privilegeState,
-            }
-          : current,
-      );
-      setSession((current) =>
-        current
-          ? {
-              ...current,
-              privileged_operations: privilegeState,
-            }
-          : current,
-      );
-      setSessionError(null);
-    } catch (error) {
-      setSessionError(error instanceof Error ? error.message : "Privilege update failed.");
-    } finally {
-      setAuthBusy(false);
-    }
+  function setPrivilegeLock(unlock: boolean) {
+    setPrivilegeUnlocked(unlock);
+    writeStoredPrivilegeUnlocked(unlock);
+    setSessionError(null);
   }
 
   async function refreshUserNotifications() {
@@ -1784,7 +1773,6 @@ export default function AdminRoot() {
     ? selectedTab
     : visibleTabs[0]?.key ?? "workflow";
   const activeTab = visibleTabs.find((tab) => tab.key === renderedTab) ?? TABS[TABS.length - 1];
-  const privilegeUnlocked = adminState?.privileged_operations.unlocked ?? session?.privileged_operations.unlocked ?? false;
   const currentUserRole = adminState?.role ?? session?.role ?? null;
   const currentUserRootPermissions = normalizePermissionList(session?.effective_permissions, session?.permissions);
   const currentUserPermissions = normalizePermissionList(session?.permissions, adminState?.permissions);

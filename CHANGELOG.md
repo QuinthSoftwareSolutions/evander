@@ -10,6 +10,15 @@
 - Added MCP tools for seeded MSSQL provision, reset, and listing that reuse Core
   container-worker MSSQL provisioning before restoring seed data.
 
+## 2026-07-04 - Admin Web UI-Only Lock
+
+- Changed the Admin Web Lock/Unlock control into a local UI read-only guard so
+  toggling it no longer performs a backend privilege round trip or grants a
+  single global editing session.
+- Kept backend writes governed by authentication, permissions, and revision
+  checks, with the compatibility privilege endpoints now recording lightweight
+  per-session UI state only.
+
 ## 2026-07-04 - Artifact Space Filtering
 
 - Added an artifact-space tree to the Admin Web Artifacts filter sidebar and
