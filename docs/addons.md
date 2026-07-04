@@ -128,7 +128,25 @@ stores sidecar and seed catalog state under
 `runtime/addons/mssql-seed-addon/state.json`.
 
 The restore sidecar runs near the worker SQL Server instance and needs SQL
-Server admin access plus a bearer token:
+Server admin access plus a bearer token. For worker-VM deployments, enable it
+through the worker inventory. The sidecar is disabled by default and is only
+installed/started when both worker MSSQL and
+`evander_worker_mssql_seed_sidecar_enabled` are true:
+
+```yaml
+evander_worker_mssql_enabled: true
+evander_worker_mssql_seed_sidecar_enabled: true
+evander_worker_mssql_seed_sidecar_token: "{{ vault_evander_worker_mssql_seed_sidecar_token }}"
+evander_worker_mssql_seed_sidecar_port: 11990
+evander_worker_mssql_seed_sidecar_backup_dir: "/var/lib/evander/mssql-seeds"
+```
+
+The worker playbook renders `config/mssql-seed-sidecar.env`, installs
+`evander-mssql-seed-sidecar.service`, creates the backup directory for approved
+`.bak` files, and verifies `/healthz`. Restrict network reachability so only
+the control plane can call the sidecar port.
+
+For a manual foreground run, use:
 
 ```bash
 EVANDER_MSSQL_SEED_SIDECAR_TOKEN='...' \

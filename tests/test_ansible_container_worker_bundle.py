@@ -179,6 +179,9 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "evander_worker_mssql_enabled: false" in text
     assert "evander_worker_mssql_container_host" in text
     assert "EVANDER_WORKER_MSSQL_ADMIN_PASSWORD" in text
+    assert "evander_worker_mssql_seed_sidecar_enabled: false" in text
+    assert "evander_worker_mssql_seed_sidecar_port: 11990" in text
+    assert "vault_evander_worker_mssql_seed_sidecar_token" in text
 
 
 def test_worker_defaults_derive_control_plane_identity_from_hostvars() -> None:
@@ -333,6 +336,42 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     assert "{% endfor %}{{ \"\" }}\nRestart=on-failure" in unit
 
 
+def test_worker_service_role_installs_optional_mssql_seed_sidecar() -> None:
+    role = ROOT / "ansible" / "roles" / "container_worker_service"
+    tasks = (role / "tasks" / "main.yml").read_text(encoding="utf-8")
+    unit = (role / "templates" / "evander-mssql-seed-sidecar.service.j2").read_text(
+        encoding="utf-8"
+    )
+    env = (role / "templates" / "mssql-seed-sidecar.env.j2").read_text(encoding="utf-8")
+    defaults = (
+        ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml"
+    ).read_text(encoding="utf-8")
+    worker_playbook = (ROOT / "ansible" / "worker.yml").read_text(encoding="utf-8")
+
+    assert "evander_worker_mssql_seed_sidecar_active" in tasks
+    assert "and (evander_worker_mssql_enabled | bool)" in tasks
+    assert "config/mssql-seed-sidecar.env" in tasks
+    assert "evander-mssql-seed-sidecar.service" in tasks
+    assert "Ensure MSSQL seed backup directory exists" in tasks
+    assert "owner: mssql" in tasks
+    assert "Disable inactive MSSQL seed sidecar service" in tasks
+    assert "no_log: true" in tasks
+    assert "EnvironmentFile={{ evander_deploy_path }}/config/mssql-seed-sidecar.env" in unit
+    assert ".venv/bin/evander-mssql-seed-sidecar" in unit
+    assert "--host {{ evander_worker_mssql_seed_sidecar_host }}" in unit
+    assert "--port {{ evander_worker_mssql_seed_sidecar_port }}" in unit
+    assert "--token-env {{ evander_worker_mssql_seed_sidecar_token_env }}" in unit
+    assert "--mssql-admin-password-env {{ evander_worker_mssql_admin_password_env }}" in unit
+    assert "--mssql-sqlcmd-path {{ evander_worker_mssql_sqlcmd_path }}" in unit
+    assert "--mssql-data-dir {{ evander_worker_mssql_seed_sidecar_data_dir }}" in unit
+    assert "{{ evander_worker_mssql_seed_sidecar_token_env }}" in env
+    assert "{{ evander_worker_mssql_admin_password_env }}" in env
+    assert "src/evander_mssql_seed_addon" in defaults
+    assert "config/mssql-seed-sidecar.env" in defaults
+    assert "Assert MSSQL seed sidecar configuration is complete" in worker_playbook
+    assert "evander_worker_mssql_enabled | bool" in worker_playbook
+
+
 def test_worker_mssql_role_installs_sql_server_and_verifies_sqlcmd() -> None:
     role = (
         ROOT / "ansible" / "roles" / "worker_mssql" / "tasks" / "main.yml"
@@ -429,6 +468,8 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "evander-worker-egress-policy.service" in egress
     assert "evander-worker-daemon.service" in verification
     assert "evander-worker-egress-policy.service" in verification
+    assert "evander-mssql-seed-sidecar.service" in verification
+    assert "Verify MSSQL seed sidecar health endpoint" in verification
     assert "docker ps" not in verification
     assert "Verify Docker is usable by the worker user" in verification
     assert "/healthz" in verification

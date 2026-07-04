@@ -7,6 +7,9 @@
 - Added `evander-mssql-seed-sidecar` so container-worker MSSQL databases can be
   restored or reset from approved backups without adding seed-restore semantics
   to the Core worker API.
+- Added worker Ansible installation for `evander-mssql-seed-sidecar.service`,
+  including env rendering, seed backup directory creation, and health
+  verification.
 - Added MCP tools for seeded MSSQL provision, reset, and listing that reuse Core
   container-worker MSSQL provisioning before restoring seed data.
 

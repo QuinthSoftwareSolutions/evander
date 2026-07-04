@@ -172,6 +172,22 @@
         fail_msg: "evander_worker_root and evander_worker_runtime_dir must be absolute paths."
         success_msg: Worker state paths are absolute.
 
+    - name: Assert MSSQL seed sidecar configuration is complete
+      ansible.builtin.assert:
+        that:
+          - evander_worker_mssql_enabled | bool
+          - (evander_worker_mssql_seed_sidecar_token | default('') | string | length) > 0
+          - (evander_worker_mssql_seed_sidecar_port | int) > 0
+          - (evander_worker_mssql_seed_sidecar_port | int) <= 65535
+          - evander_worker_mssql_seed_sidecar_backup_dir is match('^/')
+          - evander_worker_mssql_seed_sidecar_data_dir is match('^/')
+        fail_msg: >-
+          evander_worker_mssql_seed_sidecar_enabled requires worker MSSQL,
+          a non-empty evander_worker_mssql_seed_sidecar_token, a valid sidecar
+          port, and absolute backup/data directories.
+        success_msg: MSSQL seed sidecar configuration is complete.
+      when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
   roles:
     - role: worker_apt_proxy
     - role: host_prereqs
