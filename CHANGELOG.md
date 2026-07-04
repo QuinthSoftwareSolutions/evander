@@ -36,6 +36,13 @@
   stand-downs, avatar changes, and governance/action handling, are disabled and
   guarded until privileged operations are unlocked.
 
+## 2026-07-03 - Agent Create Dialog Layout
+
+- Grouped create-time capabilities in the agent create dialog, moved Web
+  search into that group, nested the MSSQL init root behind the MSSQL toggle,
+  kept .NET, NuGet, and Playwright available for container workers, and
+  replaced communication target checkboxes with a scan-friendly table.
+
 ## 2026-07-03 - Team Org Chart Viewport
 
 - Kept the Team Add-on org chart canvas viewport stable across data-only edits

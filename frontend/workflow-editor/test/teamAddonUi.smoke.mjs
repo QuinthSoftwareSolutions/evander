@@ -1587,7 +1587,17 @@ async function createTeamAddonServer(
             { value: "openai", label: "OpenAI relay" },
             { value: "local_openai", label: "Local OpenAI" },
           ],
-          communication_targets: [],
+          communication_targets: [
+            {
+              value: "team-alerts",
+              label: "team-alerts (teams, read, reply, write)",
+              metadata: {
+                provider: "teams",
+                target_shape: "teams_channel",
+                policy_capabilities: ["read", "reply", "write"],
+              },
+            },
+          ],
           libvirt: {
             default_template: "default",
             templates: [{ alias: "default", image_ref: "/var/lib/libvirt/images/default.qcow2" }],
@@ -2959,6 +2969,31 @@ test("team add-on agent registration can create and auto-register a core session
   await inlineAgentForm.getByRole("button", { name: "Create new session" }).click();
   const createDialog = page.locator('[role="dialog"][aria-label="Create and register agent"]');
   await createDialog.waitFor({ state: "visible" });
+  await createDialog.locator(".agent-capability-group").waitFor({ state: "visible" });
+  assert.equal(await createDialog.locator(".agent-capability-option").count(), 5);
+  for (const label of [".NET", "NuGet", "MSSQL", "Playwright", "Web search"]) {
+    await createDialog.locator(".agent-capability-option", { hasText: label }).waitFor({ state: "visible" });
+  }
+  const backendSelect = createDialog.locator("label", { hasText: "Backend" }).locator("select");
+  await backendSelect.selectOption("container_worker_vm");
+  assert.equal(await createDialog.locator(".agent-capability-option").count(), 4);
+  for (const label of [".NET", "NuGet", "Playwright", "Web search"]) {
+    await createDialog.locator(".agent-capability-option", { hasText: label }).waitFor({ state: "visible" });
+  }
+  assert.equal(await createDialog.locator(".agent-capability-option", { hasText: "MSSQL" }).count(), 0);
+  await backendSelect.selectOption("libvirt_vm");
+  assert.equal(await createDialog.locator(".agent-capability-option").count(), 5);
+  assert.equal(await createDialog.getByRole("textbox", { name: /MSSQL init root/ }).isVisible().catch(() => false), false);
+  const mssqlCapability = createDialog.locator(".agent-capability-option", { hasText: "MSSQL" });
+  await mssqlCapability.locator('input[type="checkbox"]').check();
+  await createDialog.locator(".agent-capability-detail-row").getByRole("textbox", { name: /MSSQL init root/ }).waitFor({ state: "visible" });
+  await mssqlCapability.locator('input[type="checkbox"]').uncheck();
+  await createDialog.getByRole("textbox", { name: /MSSQL init root/ }).waitFor({ state: "hidden" });
+  const communicationTargetTable = createDialog.locator(".agent-communication-target-table");
+  await communicationTargetTable.waitFor({ state: "visible" });
+  await communicationTargetTable.getByRole("columnheader", { name: "Provider" }).waitFor({ state: "visible" });
+  await communicationTargetTable.getByRole("cell", { name: "Teams", exact: true }).waitFor({ state: "visible" });
+  assert.equal(await communicationTargetTable.locator('tbody input[type="checkbox"]').count(), 1);
   await createDialog.locator("label", { hasText: "VM name" }).locator("input").fill("vm-team-created");
   await createDialog.getByRole("button", { name: "Create and register" }).click();
   await createDialog.locator(".error-callout", { hasText: "Session id is required" }).waitFor({ state: "visible" });
