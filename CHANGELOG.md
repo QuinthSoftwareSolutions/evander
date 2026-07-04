@@ -198,6 +198,10 @@
   Web session and workflow-event token env vars, legacy Git mirror metadata,
   sudo-owned setup secret files, and same-host container worker launch flags.
 
+- Fixed same-host container worker setup so the worker daemon unit binds to the
+  configured `container_worker_base_url`, and moved the default local worker
+  URL to `127.0.0.1:11890` to avoid the DIDWW bridge default port.
+
 - Fixed the Admin Web frontend-not-built fallback page so it preserves the
   injected branding bootstrap payload.
 

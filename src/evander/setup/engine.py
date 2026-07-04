@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -32,12 +33,14 @@ DEFAULT_ADMIN_PORT = "8100"
 DEFAULT_ADMIN_HOST = "127.0.0.1"
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_AUTH_MODE = "local_password"
-DEFAULT_CONTAINER_WORKER_URL = "http://127.0.0.1:11888"
+DEFAULT_CONTAINER_WORKER_HOST = "127.0.0.1"
+DEFAULT_CONTAINER_WORKER_PORT = "11890"
+DEFAULT_CONTAINER_WORKER_URL = (
+    f"http://{DEFAULT_CONTAINER_WORKER_HOST}:{DEFAULT_CONTAINER_WORKER_PORT}"
+)
 DEFAULT_CONTAINER_WORKER_TOKEN_ENV = "EVANDER_WORKER_TOKEN"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11435/v1"
 LOCAL_CONTAINER_WORKER_SERVICE = "evander-worker-daemon.service"
-LOCAL_CONTAINER_WORKER_HOST = "127.0.0.1"
-LOCAL_CONTAINER_WORKER_PORT = "11888"
 LOCAL_CONTAINER_WORKER_ROOT = Path("/var/lib/agent-worker")
 LOCAL_CONTAINER_WORKER_RUNTIME_DIR = LOCAL_CONTAINER_WORKER_ROOT / "runtime"
 
@@ -969,6 +972,7 @@ class SetupManager:
         git_ssh_alias = os.environ.get("EVANDER_GIT_SSH_ALIAS", "").strip() or "evander-git-host"
         git_ssh_source_dir = _home_for_user(run_user) / ".ssh"
         allowed_git_source_prefix = f"ssh://{git_ssh_alias}{git_root}/"
+        worker_host, worker_port = _local_container_worker_bind(state)
         return "\n".join(
             [
                 "[Unit]",
@@ -985,8 +989,8 @@ class SetupManager:
                 f"EnvironmentFile=-{self.secret_file_path(state)}",
                 (
                     f"ExecStart={self.project_dir}/.venv/bin/evander-worker-daemon "
-                    f"--host {LOCAL_CONTAINER_WORKER_HOST} "
-                    f"--port {LOCAL_CONTAINER_WORKER_PORT} "
+                    f"--host {worker_host} "
+                    f"--port {worker_port} "
                     f"--runtime-dir {LOCAL_CONTAINER_WORKER_RUNTIME_DIR} "
                     f"--worker-root {LOCAL_CONTAINER_WORKER_ROOT} "
                     "--sandbox-profile default "
@@ -1108,6 +1112,27 @@ def _same_host_container_worker_selected(state: SetupState) -> bool:
         str(state.execution.get("execution_backend") or "") == "container_worker_vm"
         and str(state.execution.get("model") or "") == "container_same_host"
     )
+
+
+def _local_container_worker_bind(state: SetupState) -> tuple[str, int]:
+    raw_url = (
+        str(state.execution.get("container_worker_base_url") or "").strip()
+        or DEFAULT_CONTAINER_WORKER_URL
+    )
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(
+            "container_worker_base_url must be an http(s) URL for same-host worker setup"
+        )
+    if not parsed.hostname:
+        raise ValueError("container_worker_base_url must include a host")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("container_worker_base_url has an invalid port") from exc
+    if port is None:
+        raise ValueError("container_worker_base_url must include an explicit port")
+    return parsed.hostname, port
 
 
 def _setup_run_user() -> str:
