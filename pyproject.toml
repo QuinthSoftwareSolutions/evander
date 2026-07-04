@@ -36,6 +36,7 @@ builtin = "evander.providers.builtin:register_providers"
 team = "evander_team_addon:register_addon"
 bokio = "evander_bokio_addon:register_addon"
 skatteverket = "evander_skatteverket_addon:register_addon"
+mssql_seed = "evander_mssql_seed_addon:register_addon"
 
 [project.scripts]
 evander-gateway = "evander.gateway:main"
@@ -52,6 +53,7 @@ evander-discord-wake = "evander.messaging.discord_wake:main"
 evander-effect-orchestrator = "evander.daemons.effect_orchestrator:main"
 evander-scheduled-wake = "evander.messaging.scheduled_wake:main"
 evander-worker-daemon = "evander.worker_daemon:main"
+evander-mssql-seed-sidecar = "evander_mssql_seed_addon.sidecar:main"
 evander-cli = "evander.cli:app"
 evander-admin-web = "evander.admin.web.app:main"
 
@@ -66,6 +68,7 @@ evander = ["templates/*.md", "workflow/builtin_packs/*.json"]
 evander_team_addon = ["ui_static/*"]
 evander_bokio_addon = ["ui_static/*"]
 evander_skatteverket_addon = ["ui_static/*"]
+evander_mssql_seed_addon = ["ui_static/*"]
 
 [tool.ruff]
 line-length = 100

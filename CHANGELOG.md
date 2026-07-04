@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-04 - MSSQL Seed Add-on
+
+- Added an optional MSSQL Seed add-on with Admin Web configuration for
+  sidecars and approved `.bak` seed aliases.
+- Added `evander-mssql-seed-sidecar` so container-worker MSSQL databases can be
+  restored or reset from approved backups without adding seed-restore semantics
+  to the Core worker API.
+- Added MCP tools for seeded MSSQL provision, reset, and listing that reuse Core
+  container-worker MSSQL provisioning before restoring seed data.
+
 ## 2026-07-03 - Team Org Chart Viewport
 
 - Kept the Team Add-on org chart canvas viewport stable across data-only edits

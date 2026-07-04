@@ -428,6 +428,17 @@ database, and returns a scoped connection string for normal app/test commands in
 calling session. `DELETE /v1/sessions/{session_id}` drops all worker-recorded SQL databases and the
 session login before removing durable files; SQL cleanup failure blocks session-file deletion.
 
+For `.bak` seed data and rollback-style resets, use the optional
+`evander_mssql_seed_addon` rather than extending the worker daemon contract. The
+add-on keeps a control-plane catalog of approved seed aliases, calls the Core
+worker MSSQL provisioning path to create or reconcile the session-owned database,
+and then asks a worker-side `evander-mssql-seed-sidecar` to restore the approved
+backup into that database. The sidecar exposes only `/healthz` and
+`POST /v1/databases/restore`, requires a bearer token, validates Evander-owned
+database/login names, and reattaches the already-created session login after
+restore. Agents use `mssql_seed_provision_database` to create a seeded database
+and `mssql_seed_reset_database` to restore it back to the approved initial seed.
+
 The host-side backend records the control-plane mapping in:
 
 ```text

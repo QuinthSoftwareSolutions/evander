@@ -102,6 +102,61 @@ store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
 Removing `runtime/addons/<addon_id>/` must not corrupt Truman core state.
 
+## MSSQL Seed Add-on Guidance
+
+The bundled `evander_mssql_seed_addon` package provides an optional seed-restore
+layer for container-agent MSSQL workflows. It is intentionally an add-on rather
+than a Core bootstrap feature: Core still owns session creation, worker MSSQL
+database provisioning, and cleanup, while the add-on restores an
+operator-approved `.bak` file into that Core-owned database.
+
+Enable it with:
+
+```json
+{
+  "addon_loader": {
+    "modules": ["evander_mssql_seed_addon"],
+    "enabled_entry_points": false,
+    "enabled_addon_ids": ["mssql-seed-addon"]
+  }
+}
+```
+
+When enabled, Admin Web shows an `MSSQL Seeds` tab backed by
+`/api/addons/mssql-seed-addon/...` and `/addons/mssql-seed-addon/`. The add-on
+stores sidecar and seed catalog state under
+`runtime/addons/mssql-seed-addon/state.json`.
+
+The restore sidecar runs near the worker SQL Server instance and needs SQL
+Server admin access plus a bearer token:
+
+```bash
+EVANDER_MSSQL_SEED_SIDECAR_TOKEN='...' \
+EVANDER_WORKER_MSSQL_ADMIN_PASSWORD='...' \
+evander-mssql-seed-sidecar --host 0.0.0.0 --port 11990
+```
+
+Operators configure:
+
+- sidecars with `sidecar_id`, `base_url`, and `token_env`
+- approved seeds with `seed_alias`, `sidecar_id`, and absolute worker-side
+  `backup_path`
+
+Agents do not receive arbitrary backup paths. Sessions that are allowed to use
+the add-on MCP tools call:
+
+- `mssql_seed_provision_database` with `logical_name` and `seed_alias`
+- `mssql_seed_reset_database` with `logical_name`
+- `mssql_seed_list_databases`
+
+Provisioning first calls the Core container-worker `mssql_provision_database`
+path, so the worker records the physical database and session login. The add-on
+then asks the sidecar to run `RESTORE DATABASE ... WITH REPLACE` into that
+database and reattach the session login as `db_owner` inside the restored
+database. Reset uses the same restore path against the tracked seed alias.
+Worker session deletion still uses Core worker MSSQL cleanup for databases and
+logins.
+
 ## Skatteverket Add-on Guidance
 
 The bundled `evander_skatteverket_addon` package provides an optional

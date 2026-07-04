@@ -1813,6 +1813,7 @@ The following environment variables are consumed directly by scripts as runtime 
 | `scripts/bootstrap_mssql_tools_vm.sh` | `SSH_KEY_PATH`, `HOST_MSSQL_TOOLS_ROOT`, `HOST_MSSQL_ODBC_ROOT` |
 | `scripts/bootstrap_mssql_vm.sh` | `MSSQL_PID`, `MSSQL_SA_PASSWORD`, `SSH_KEY_PATH` |
 | `evander-worker-daemon --mssql-enabled` | `EVANDER_WORKER_MSSQL_ADMIN_PASSWORD` |
+| `evander-mssql-seed-sidecar` | `EVANDER_MSSQL_SEED_SIDECAR_TOKEN`, `EVANDER_WORKER_MSSQL_ADMIN_PASSWORD`, `EVANDER_WORKER_MSSQL_ADMIN_USER`, `EVANDER_WORKER_MSSQL_ADMIN_HOST`, `EVANDER_WORKER_MSSQL_PORT`, `EVANDER_WORKER_MSSQL_SQLCMD_PATH`, `EVANDER_MSSQL_SEED_DATA_DIR` |
 | `scripts/bootstrap_nuget_vm.sh` | `SSH_KEY_PATH`, `NUGET_RELAY_BASE_URL`, `NUGET_FALLBACK_PACKAGES`, `NUGET_PACKAGES_DIR`, `NUGET_HTTP_CACHE_DIR` |
 | `scripts/bootstrap_playwright_vm.sh` | `SSH_KEY_PATH`, `HOST_NODE_ROOT`, `HOST_PLAYWRIGHT_NODE_MODULES`, `HOST_PLAYWRIGHT_BROWSERS` |
 | `scripts/bootstrap_python_packages_vm.sh` | `SSH_KEY_PATH`, `HOST_PYTHON_BIN`, `GUEST_PYTHON_BIN`, `GUEST_WHEELHOUSE_DIR` |
