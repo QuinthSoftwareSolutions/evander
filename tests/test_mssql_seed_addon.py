@@ -327,7 +327,19 @@ def test_mcp_seed_provision_uses_core_mssql_provisioning_before_restore(
     assert FakeBackend.calls[-1] == ("session-1", "app")
     assert FakeSidecarClient.calls[-1]["backup_path"] == "/seed/app-demo.bak"
     assert reset["seed_restore"]["reset_count"] == 1
-    assert store.get_database("session-1", "app").reset_count == 1
+    reset_record = store.get_database("session-1", "app")
+    assert reset_record.reset_count == 1
+    assert reset_record.last_reset_at is not None
+
+    server.tools["mssql_seed_provision_database"](
+        logical_name="app",
+        seed_alias="app-demo",
+        session_id="session-1",
+    )
+
+    provisioned_again = store.get_database("session-1", "app")
+    assert provisioned_again.reset_count == 1
+    assert provisioned_again.last_reset_at == reset_record.last_reset_at
 
 
 def test_mcp_seed_tools_resolve_session_from_bound_mcp_transport(

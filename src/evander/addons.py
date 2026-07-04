@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from importlib import import_module, invalidate_caches
+import hashlib
+from importlib import import_module, util
 from importlib.metadata import EntryPoint, entry_points
 import json
 from pathlib import Path, PurePosixPath
 import re
 import sys
+import types
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -531,8 +533,11 @@ def _load_registration_from_package_manifest(
     module_name = str(manifest.get("module") or "").strip()
     if not module_name:
         raise ValueError(f"{manifest_path} must declare a non-empty module")
-    _ensure_addon_package_python_path(package_dir)
-    return _load_registration_from_module(module_name)
+    return _load_registration_from_package_module(
+        package_dir=package_dir,
+        module_name=module_name,
+        manifest_path=manifest_path,
+    )
 
 
 def _load_addon_package_manifest(manifest_path: Path) -> Mapping[str, Any]:
@@ -547,11 +552,89 @@ def _load_addon_package_manifest(manifest_path: Path) -> Mapping[str, Any]:
     return payload
 
 
-def _ensure_addon_package_python_path(package_dir: Path) -> None:
-    text = str(package_dir.resolve(strict=False))
-    if text not in sys.path:
-        sys.path.insert(0, text)
-        invalidate_caches()
+def _load_registration_from_package_module(
+    *,
+    package_dir: Path,
+    module_name: str,
+    manifest_path: Path,
+) -> Any:
+    module_path, submodule_search_locations = _addon_package_module_location(
+        package_dir=package_dir,
+        module_name=module_name,
+        manifest_path=manifest_path,
+    )
+    root_module_name = _addon_package_import_root(package_dir)
+    _clear_addon_package_import(root_module_name)
+    _install_addon_package_parent_modules(root_module_name, package_dir, module_name)
+    loaded_module_name = f"{root_module_name}.{module_name}"
+    spec = util.spec_from_file_location(
+        loaded_module_name,
+        module_path,
+        submodule_search_locations=submodule_search_locations,
+    )
+    if spec is None or spec.loader is None:
+        raise ValueError(f"Could not load add-on package module {module_name!r} from {module_path}")
+    module = util.module_from_spec(spec)
+    sys.modules[loaded_module_name] = module
+    spec.loader.exec_module(module)
+    register = getattr(module, "register_addon", None)
+    if callable(register):
+        return register()
+    return module
+
+
+def _addon_package_module_location(
+    *,
+    package_dir: Path,
+    module_name: str,
+    manifest_path: Path,
+) -> tuple[Path, list[str] | None]:
+    parts = module_name.split(".")
+    if not parts or any(not part.isidentifier() for part in parts):
+        raise ValueError(f"{manifest_path} declares invalid module name {module_name!r}")
+    module_path = package_dir.joinpath(*parts)
+    package_init = module_path / "__init__.py"
+    if package_init.is_file():
+        return package_init, [str(module_path)]
+    module_file = module_path.with_suffix(".py")
+    if module_file.is_file():
+        return module_file, None
+    raise ValueError(
+        f"{manifest_path} declares module {module_name!r}, but it was not found under {package_dir}"
+    )
+
+
+def _addon_package_import_root(package_dir: Path) -> str:
+    digest = hashlib.sha256(
+        str(package_dir.resolve(strict=False)).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"_evander_addon_package_{digest}"
+
+
+def _clear_addon_package_import(root_module_name: str) -> None:
+    prefix = f"{root_module_name}."
+    for module_name in list(sys.modules):
+        if module_name == root_module_name or module_name.startswith(prefix):
+            sys.modules.pop(module_name, None)
+
+
+def _install_addon_package_parent_modules(
+    root_module_name: str, package_dir: Path, module_name: str
+) -> None:
+    root_module = types.ModuleType(root_module_name)
+    root_module.__path__ = [str(package_dir)]
+    root_module.__package__ = root_module_name
+    sys.modules[root_module_name] = root_module
+
+    current_path = package_dir
+    current_name = root_module_name
+    for part in module_name.split(".")[:-1]:
+        current_path = current_path / part
+        current_name = f"{current_name}.{part}"
+        parent_module = types.ModuleType(current_name)
+        parent_module.__path__ = [str(current_path)]
+        parent_module.__package__ = current_name
+        sys.modules[current_name] = parent_module
 
 
 def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:

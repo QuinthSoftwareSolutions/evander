@@ -101,7 +101,11 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             server=record.server,
             port=record.port,
             restored_at=now if previous is None else previous.restored_at,
-            last_reset_at=now if tool_name == RESET_DATABASE_TOOL else None,
+            last_reset_at=(
+                now
+                if tool_name == RESET_DATABASE_TOOL
+                else None if previous is None else previous.last_reset_at
+            ),
             reset_count=0 if previous is None else previous.reset_count,
         )
         if tool_name == RESET_DATABASE_TOOL:

@@ -196,6 +196,44 @@ def register_addon():
     assert catalog.registrations[0].addon_id == "package-addon"
 
 
+def test_package_addons_with_same_module_name_are_imported_from_each_package(
+    tmp_path: Path,
+) -> None:
+    for package_name, display_name in (
+        ("alpha-addon", "Alpha Add-on"),
+        ("bravo-addon", "Bravo Add-on"),
+    ):
+        package_dir = tmp_path / "addons" / package_name
+        package_dir.mkdir(parents=True)
+        (package_dir / "addon.json").write_text(
+            json.dumps({"addon_id": package_name, "module": "addon"}),
+            encoding="utf-8",
+        )
+        (package_dir / "addon.py").write_text(
+            f"""
+def register_addon():
+    return {{"addon_id": {package_name!r}, "display_name": {display_name!r}}}
+""",
+            encoding="utf-8",
+        )
+    sys.modules.pop("addon", None)
+
+    records = discover_addons(AddonLoaderConfig(), base_dir=tmp_path)
+    catalog = load_addons(
+        AddonLoaderConfig(enabled_addon_ids=["alpha-addon", "bravo-addon"]),
+        base_dir=tmp_path,
+    )
+
+    assert [record.registration.addon_id for record in records if record.registration] == [
+        "alpha-addon",
+        "bravo-addon",
+    ]
+    assert [registration.display_name for registration in catalog.registrations] == [
+        "Alpha Add-on",
+        "Bravo Add-on",
+    ]
+
+
 def test_discover_addons_reports_invalid_package_manifests(tmp_path: Path) -> None:
     package_dir = tmp_path / "addons" / "broken-addon"
     package_dir.mkdir(parents=True)

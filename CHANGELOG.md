@@ -9,6 +9,9 @@
   legacy load-all behavior for explicitly configured modules and entry points.
 - Documented `addon_loader.package_dirs` and kept `runtime/addons/<addon_id>/`
   reserved for add-on private state.
+- Fixed local add-on package imports so packages that reuse module names such as
+  `addon` load from their own package directories instead of `sys.modules`
+  cache entries from earlier packages.
 
 ## 2026-07-04 - MSSQL Seed Add-on
 
@@ -30,6 +33,8 @@
 - Fixed MSSQL Seed UI locked mode so settings controls cannot save while the
   Admin shell is read-only, and made seed restore timeouts configurable with a
   one-hour default for larger backups.
+- Fixed idempotent MSSQL seed provision calls so they preserve tracked
+  `last_reset_at` metadata after a database has been reset.
 
 ## 2026-07-04 - Admin Web UI-Only Lock
 
