@@ -22,6 +22,11 @@ class FakeAuth:
     def require(self, _request: Request) -> dict[str, Any]:
         return self.payload
 
+    def require_permission(
+        self, _request: Request, _permission: object, directory_path: object | None = None
+    ) -> None:
+        del directory_path
+
     def authentication_payload(self, _request: Request) -> dict[str, Any]:
         return self.payload
 

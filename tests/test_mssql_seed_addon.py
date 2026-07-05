@@ -4,12 +4,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from mcp.server.fastmcp.exceptions import ToolError
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from evander.addons import AddonContext
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.config import GatewayConfig
+from evander.execution.container_worker_client import ContainerWorkerClientError
 from evander.models import SessionManifest
 from evander.worker.models import WorkerMssqlDatabaseRecord
 from evander_mssql_seed_addon.api import admin_api_routes
@@ -19,7 +22,7 @@ from evander_mssql_seed_addon.mcp import (
     RESET_DATABASE_TOOL,
     register_mcp_tools,
 )
-from evander_mssql_seed_addon.state import MssqlSeedStore
+from evander_mssql_seed_addon.state import MssqlSeedDatabaseRecord, MssqlSeedStore
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -107,6 +110,15 @@ class FakeSidecarClient:
     def restore_database(self, **kwargs):
         self.calls.append(dict(kwargs))
         return {"status": "restored", "file_count": 2}
+
+
+class FailingBackend:
+    def __init__(self, *, config: GatewayConfig) -> None:
+        assert config.execution_backend == "container_worker_vm"
+
+    def provision_mssql_database(self, *, session_id: str, logical_name: str):
+        del session_id, logical_name
+        raise ContainerWorkerClientError("EVANDER_WORKER_TOKEN is not configured")
 
 
 class FakeAdminAuth:
@@ -342,6 +354,91 @@ def test_mcp_seed_provision_uses_core_mssql_provisioning_before_restore(
     provisioned_again = store.get_database("session-1", "app")
     assert provisioned_again.reset_count == 1
     assert provisioned_again.last_reset_at == reset_record.last_reset_at
+
+
+def test_mcp_seed_worker_provision_errors_are_wrapped_and_audited(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    store = MssqlSeedStore(tmp_path)
+    store.replace_settings(
+        sidecars={"worker-a": {"base_url": "http://worker:11990", "token_env": "SEED_TOKEN"}},
+        seeds={"app-demo": {"sidecar_id": "worker-a", "backup_path": "/seed/app-demo.bak"}},
+    )
+    session = SessionManifest(
+        session_id="session-1",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        directory_path="root",
+    )
+    runtime = SimpleNamespace(
+        policy=FakePolicy(session),
+        provider_config=FakeProviderConfig(
+            GatewayConfig(
+                runtime_dir=tmp_path,
+                execution_backend="container_worker_vm",
+                container_worker_base_url="http://worker:11888",
+                container_worker_mssql_enabled=True,
+            )
+        ),
+        audit=FakeAudit(),
+        session_repository=FakeSessionRepository(session),
+    )
+    server = FakeServer()
+    monkeypatch.setattr(
+        "evander_mssql_seed_addon.mcp.ContainerWorkerVmExecutionBackend",
+        FailingBackend,
+    )
+
+    register_mcp_tools(
+        server,
+        AddonContext(
+            addon_id="mssql-seed-addon",
+            runtime_dir=tmp_path,
+            addon_runtime_dir=tmp_path / "addons" / "mssql-seed-addon",
+            config=runtime.provider_config.config,
+            service=runtime,
+        ),
+    )
+
+    with pytest.raises(ToolError, match="EVANDER_WORKER_TOKEN"):
+        server.tools["mssql_seed_provision_database"](
+            logical_name="app",
+            seed_alias="app-demo",
+            session_id="session-1",
+        )
+
+    assert runtime.audit.events[-1].decision == "denied"
+    assert runtime.audit.events[-1].tool_name == PROVISION_DATABASE_TOOL
+    assert "EVANDER_WORKER_TOKEN" in runtime.audit.events[-1].reason
+
+    store.upsert_database(
+        MssqlSeedDatabaseRecord(
+            session_id="session-1",
+            logical_name="app",
+            seed_alias="app-demo",
+            sidecar_id="worker-a",
+            database_name="asb_session_app_hash",
+            username="asb_login_session",
+            server="172.17.0.1",
+            port=1433,
+            restored_at=datetime.now(UTC).isoformat(),
+        )
+    )
+
+    with pytest.raises(ToolError, match="EVANDER_WORKER_TOKEN"):
+        server.tools["mssql_seed_reset_database"](
+            logical_name="app",
+            session_id="session-1",
+        )
+
+    assert runtime.policy.required == [
+        ("session-1", PROVISION_DATABASE_TOOL),
+        ("session-1", RESET_DATABASE_TOOL),
+    ]
+    assert runtime.audit.events[-1].decision == "denied"
+    assert runtime.audit.events[-1].tool_name == RESET_DATABASE_TOOL
+    assert "EVANDER_WORKER_TOKEN" in runtime.audit.events[-1].reason
 
 
 def test_mcp_seed_tools_resolve_session_from_bound_mcp_transport(

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-05 - Add-on Discovery and MSSQL Seed Guards
+
+- Preserved already-imported bundled add-on module identities during manifest
+  discovery so future imports and monkeypatches keep hitting the public package.
+- Wrapped MSSQL seed worker provisioning failures in audited `ToolError`
+  responses for both provision and reset tool calls.
+- Treated missing Admin Web permission adapters as unavailable privileged
+  contexts instead of raising `AttributeError`.
+
 ## 2026-07-04 - Team Add-on Payload Windowing
 
 - Added server-side pagination for the Team Add-on timeline API and tab so the

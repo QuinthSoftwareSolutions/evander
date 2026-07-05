@@ -973,8 +973,9 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
         worker_config: TriggerOrchestratorWorkerGlobalConfig,
         runtime,
         provider_config_resolver=None,
+        addon_base_dir=None,
     ):
-        _ = config, runtime, provider_config_resolver
+        _ = config, runtime, provider_config_resolver, addon_base_dir
         build_calls.append(tuple(worker_config.provider_modules))
         if worker_config.provider_modules and len(build_calls) == 2:
             raise RuntimeError("temporary provider_loader reload failure")

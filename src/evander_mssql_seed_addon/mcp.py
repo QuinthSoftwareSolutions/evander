@@ -7,6 +7,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.addons import AddonContext
 from evander.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
+from evander.execution.container_worker_client import ContainerWorkerClientError
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.models import AuditEvent
 from evander.policy import PolicyError
@@ -152,6 +153,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             PolicyError,
             ToolError,
             ValueError,
+            ContainerWorkerClientError,
             MssqlSeedStateError,
             MssqlSeedSidecarClientError,
         ) as exc:
@@ -183,6 +185,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             PolicyError,
             ToolError,
             ValueError,
+            ContainerWorkerClientError,
             MssqlSeedStateError,
             MssqlSeedSidecarClientError,
         ) as exc:

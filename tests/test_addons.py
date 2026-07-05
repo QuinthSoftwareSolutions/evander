@@ -116,6 +116,32 @@ def test_bundled_addon_manifests_are_scannable_from_src() -> None:
     )
 
 
+def test_discover_addons_preserves_imported_bundled_package_alias(monkeypatch) -> None:
+    public_module = importlib.import_module("evander_mssql_seed_addon")
+    public_mcp_module = importlib.import_module("evander_mssql_seed_addon.mcp")
+
+    def patched_register_addon() -> AddonRegistration:
+        return AddonRegistration(
+            addon_id="mssql-seed-addon",
+            display_name="Patched MSSQL Seed Add-on",
+        )
+
+    monkeypatch.setattr(public_module, "register_addon", patched_register_addon)
+
+    records = discover_addons(AddonLoaderConfig(package_dirs=["src"]), base_dir=PROJECT_ROOT)
+    discovered = {
+        record.registration.addon_id: record
+        for record in records
+        if record.registration is not None
+    }
+
+    assert discovered["mssql-seed-addon"].registration.display_name == (
+        "Patched MSSQL Seed Add-on"
+    )
+    assert sys.modules["evander_mssql_seed_addon"] is public_module
+    assert sys.modules["evander_mssql_seed_addon.mcp"] is public_mcp_module
+
+
 def test_addon_mcp_tool_registrar_returns_registered_names(tmp_path: Path) -> None:
     calls: list[tuple[object, str]] = []
 

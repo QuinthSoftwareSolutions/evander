@@ -1138,7 +1138,10 @@ def request_has_privileged_operations(
         if required_permission is None:
             auth.require(request)
         else:
-            auth.require_permission(request, required_permission, directory_path=directory_path)
+            require_permission = getattr(auth, "require_permission", None)
+            if not callable(require_permission):
+                return False
+            require_permission(request, required_permission, directory_path=directory_path)
     except PermissionError:
         return False
     return True

@@ -11770,6 +11770,17 @@ def test_request_has_privileged_operations_can_require_permission() -> None:
         is False
     )
 
+    minimal_auth = SimpleNamespace(require=lambda _request: {"sid": "test"})
+    assert (
+        request_has_privileged_operations(
+            auth=minimal_auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        )
+        is False
+    )
+
 
 def test_admin_web_global_policy_writes_require_admin_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

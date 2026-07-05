@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -105,7 +106,10 @@ def test_bundled_skatteverket_addon_packaging_contract_is_declared() -> None:
     package_data = pyproject["tool"]["setuptools"]["package-data"]
 
     assert addon_entry_points["skatteverket"] == "evander_skatteverket_addon:register_addon"
-    assert package_data["evander_skatteverket_addon"] == ["ui_static/*"]
+    assert package_data["evander_skatteverket_addon"] == ["addon.json", "ui_static/*"]
+    assert json.loads(
+        (PROJECT_ROOT / "src/evander_skatteverket_addon/addon.json").read_text(encoding="utf-8")
+    ) == {"addon_id": "skatteverket-addon", "module": "evander_skatteverket_addon"}
     assert (PROJECT_ROOT / "src/evander_skatteverket_addon/ui_static/index.html").is_file()
 
 

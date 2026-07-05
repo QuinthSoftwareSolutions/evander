@@ -414,6 +414,10 @@ def _load_registration_from_entry_point(addon_entry_point: EntryPoint) -> Any:
 
 def _load_registration_from_module(module_name: str) -> Any:
     module = import_module(module_name)
+    return _load_registration_from_module_object(module)
+
+
+def _load_registration_from_module_object(module: types.ModuleType) -> Any:
     register = getattr(module, "register_addon", None)
     if callable(register):
         return register()
@@ -567,6 +571,13 @@ def _load_registration_from_package_module(
         module_name=module_name,
         manifest_path=manifest_path,
     )
+    found_existing, registration = _load_existing_package_module_registration(
+        module_name=module_name,
+        module_path=module_path,
+    )
+    if found_existing:
+        return registration
+
     root_module_name = _addon_package_import_root(package_dir)
     _clear_addon_package_import(root_module_name)
     _install_addon_package_parent_modules(root_module_name, package_dir, module_name)
@@ -580,18 +591,66 @@ def _load_registration_from_package_module(
         raise ValueError(f"Could not load add-on package module {module_name!r} from {module_path}")
     module = util.module_from_spec(spec)
     alias_root = module_name.split(".", 1)[0]
-    _clear_addon_package_import(alias_root)
-    sys.modules[loaded_module_name] = module
-    _install_addon_package_declared_aliases(
-        root_module_name=root_module_name,
-        module_name=module_name,
-        module=module,
-    )
-    spec.loader.exec_module(module)
-    register = getattr(module, "register_addon", None)
-    if callable(register):
-        return register()
-    return module
+    alias_snapshot = _snapshot_existing_declared_aliases(alias_root)
+    try:
+        _clear_addon_package_import(alias_root)
+        sys.modules[loaded_module_name] = module
+        _install_addon_package_declared_aliases(
+            root_module_name=root_module_name,
+            module_name=module_name,
+            module=module,
+        )
+        spec.loader.exec_module(module)
+        return _load_registration_from_module_object(module)
+    finally:
+        _restore_existing_declared_aliases(alias_root, alias_snapshot)
+
+
+def _load_existing_package_module_registration(
+    *, module_name: str, module_path: Path
+) -> tuple[bool, Any]:
+    module = sys.modules.get(module_name)
+    if module is None or not isinstance(module, types.ModuleType):
+        return False, None
+    if not _module_file_matches(module, module_path):
+        return False, None
+    return True, _load_registration_from_module_object(module)
+
+
+def _module_file_matches(module: types.ModuleType, expected_path: Path) -> bool:
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        return False
+    try:
+        return Path(module_file).resolve(strict=False) == expected_path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+
+
+def _snapshot_existing_declared_aliases(
+    alias_root: str,
+) -> dict[str, types.ModuleType] | None:
+    if alias_root not in sys.modules:
+        return None
+    prefix = f"{alias_root}."
+    return {
+        module_name: module
+        for module_name, module in sys.modules.items()
+        if module_name == alias_root or module_name.startswith(prefix)
+        if isinstance(module, types.ModuleType)
+    }
+
+
+def _restore_existing_declared_aliases(
+    alias_root: str, snapshot: dict[str, types.ModuleType] | None
+) -> None:
+    if snapshot is None:
+        return
+    prefix = f"{alias_root}."
+    for module_name in list(sys.modules):
+        if module_name == alias_root or module_name.startswith(prefix):
+            sys.modules.pop(module_name, None)
+    sys.modules.update(snapshot)
 
 
 def _addon_package_module_location(
