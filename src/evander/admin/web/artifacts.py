@@ -9,7 +9,7 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from evander.admin.composition import AdminRuntimeComponents
-from evander.admin.web.shared import json_error
+from evander.admin.web.shared import AdminWebAuth, json_error
 from evander.artifact_spaces import ArtifactSpaceConflictError
 from evander.communication_artifact_links import (
     CommunicationArtifactLinkError,
@@ -20,9 +20,13 @@ from evander.communication_artifact_links import (
 from evander.communication_artifacts import CommunicationArtifactStore
 
 
-def artifact_routes(service: AdminRuntimeComponents) -> list[BaseRoute]:
+def artifact_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[BaseRoute]:
     async def list_artifacts(request: Request) -> JSONResponse:
         params = request.query_params
+        try:
+            subject = _request_artifact_space_subject(auth, request)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=401)
         try:
             published_after = _parse_datetime(params.get("published_after"))
             published_before = _parse_datetime(params.get("published_before"))
@@ -35,7 +39,7 @@ def artifact_routes(service: AdminRuntimeComponents) -> list[BaseRoute]:
                 cursor=params.get("cursor") or None,
                 space_path=params.get("space_path") or None,
                 space_recursive=_parse_bool(params.get("space_recursive"), default=True),
-                subject=params.get("subject") or None,
+                subject=subject,
             )
         except ValueError as exc:
             return json_error(str(exc))
@@ -124,10 +128,14 @@ def artifact_routes(service: AdminRuntimeComponents) -> list[BaseRoute]:
     async def list_artifact_spaces(request: Request) -> JSONResponse:
         params = request.query_params
         try:
+            subject = _request_artifact_space_subject(auth, request)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=401)
+        try:
             payload = service.artifact_admin.list_artifact_spaces(
                 path=params.get("path") or None,
                 recursive=_parse_bool(params.get("recursive"), default=True),
-                subject=params.get("subject") or None,
+                subject=subject,
                 include_versions=_parse_bool(params.get("include_versions"), default=False),
             )
         except ValueError as exc:
@@ -142,18 +150,23 @@ def artifact_routes(service: AdminRuntimeComponents) -> list[BaseRoute]:
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object")
         try:
+            subject = _request_artifact_space_subject(auth, request)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=401)
+        try:
             result = service.artifact_admin.create_artifact_space(
                 path=_required_string(payload.get("path"), "path"),
                 display_name=_optional_string(payload.get("display_name")),
                 metadata=_optional_object(payload.get("metadata"), "metadata"),
                 grants=_optional_object(payload.get("grants"), "grants"),
-                subject=_optional_string(payload.get("subject")),
+                subject=subject,
                 expected_revision=_optional_int(payload.get("expected_revision")),
             )
         except ArtifactSpaceConflictError as exc:
             return _artifact_space_conflict_response(exc)
         except (PermissionError, ValueError) as exc:
-            return json_error(str(exc))
+            status_code = 403 if isinstance(exc, PermissionError) else 400
+            return json_error(str(exc), status_code=status_code)
         return JSONResponse(result, status_code=201)
 
     async def publish_artifact_space_version(request: Request) -> JSONResponse:
@@ -164,11 +177,15 @@ def artifact_routes(service: AdminRuntimeComponents) -> list[BaseRoute]:
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object")
         try:
+            subject = _request_artifact_space_subject(auth, request)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=401)
+        try:
             result = service.artifact_admin.publish_artifact_space_version(
                 space_path=_required_string(payload.get("space_path"), "space_path"),
                 artifact_id=_required_string(payload.get("artifact_id"), "artifact_id"),
                 artifact_key=_required_string(payload.get("artifact_key"), "artifact_key"),
-                subject=_optional_string(payload.get("subject")),
+                subject=subject,
                 metadata=_optional_object(payload.get("metadata"), "metadata"),
                 expected_revision=_optional_int(payload.get("expected_revision")),
                 require_existing_artifact=_parse_bool(
@@ -181,21 +198,27 @@ def artifact_routes(service: AdminRuntimeComponents) -> list[BaseRoute]:
         except FileNotFoundError as exc:
             return json_error(str(exc), status_code=404)
         except (PermissionError, ValueError) as exc:
-            return json_error(str(exc))
+            status_code = 403 if isinstance(exc, PermissionError) else 400
+            return json_error(str(exc), status_code=status_code)
         return JSONResponse(result, status_code=201)
 
     async def latest_artifact_space_versions(request: Request) -> JSONResponse:
         params = request.query_params
         try:
+            subject = _request_artifact_space_subject(auth, request)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=401)
+        try:
             payload = service.artifact_admin.latest_artifact_space_versions(
                 space_path=_required_string(params.get("space_path"), "space_path"),
                 artifact_id=params.get("artifact_id") or None,
-                subject=params.get("subject") or None,
+                subject=subject,
             )
         except FileNotFoundError as exc:
             return json_error(str(exc), status_code=404)
         except (PermissionError, ValueError) as exc:
-            return json_error(str(exc))
+            status_code = 403 if isinstance(exc, PermissionError) else 400
+            return json_error(str(exc), status_code=status_code)
         return JSONResponse(payload)
 
     return [
@@ -221,6 +244,14 @@ def artifact_routes(service: AdminRuntimeComponents) -> list[BaseRoute]:
         Route("/api/admin/artifact-downloads/{key:path}", download_artifact, methods=["GET"]),
         Route("/api/admin/artifacts/{key:path}", get_artifact, methods=["GET"]),
     ]
+
+
+def _request_artifact_space_subject(auth: AdminWebAuth, request: Request) -> str:
+    session = auth.require(request)
+    subject = str(session.get("sub") or session.get("login") or "").strip()
+    if not subject:
+        raise PermissionError("Authenticated session subject is required")
+    return subject
 
 
 def _parse_datetime(value: Any) -> datetime | None:

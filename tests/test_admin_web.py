@@ -11232,6 +11232,48 @@ def test_admin_web_people_communications_saves_communication_artifact_link_field
     assert provider_config["communication_artifact_link_ttl_seconds"] == 3600
 
 
+def test_admin_web_people_communications_tab_save_rolls_back_on_later_domain_failure(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    client = TestClient(create_app(service))
+    providers_before = service.operations_admin.read_directory_domain_config("root", "providers")
+    assert providers_before.ok is True
+    assert providers_before.data is not None
+
+    response = client.put(
+        "/api/configuration/domains/people_communications?directory_path=root",
+        json={
+            "config": {
+                "contacts": {
+                    "ops": {
+                        "name": "Ops Duty",
+                        "email_addresses": ["ops@example.com"],
+                        "phone_numbers": [],
+                    }
+                },
+                "communication_artifact_link_ttl_seconds": 0,
+            },
+            "expected_revision": _configuration_expected_revision(
+                client, "root", "people_communications"
+            ),
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["source_domain"] == "providers"
+    assert "rollback_errors" not in response.json()
+    contacts = service.operations_admin.read_directory_domain_config("root", "contacts")
+    providers = service.operations_admin.read_directory_domain_config("root", "providers")
+    assert contacts.ok is True
+    assert contacts.data is not None
+    assert contacts.data.exists is False
+    assert contacts.data.config is None
+    assert providers.ok is True
+    assert providers.data is not None
+    assert providers.data.config == providers_before.data.config
+
+
 def test_admin_web_configuration_tab_save_removed_fields_clears_child_domain_override(
     tmp_path: Path,
 ) -> None:

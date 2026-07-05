@@ -188,7 +188,7 @@ def test_artifact_space_effects_and_queries(tmp_path: Path) -> None:
 def test_artifact_space_admin_api(tmp_path: Path) -> None:
     from starlette.testclient import TestClient
 
-    from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+    from evander.admin.composition import build_admin_runtime
     from evander.admin.web.app import create_app
 
     config_path = tmp_path / "gateway.yaml"
@@ -261,3 +261,93 @@ def test_artifact_space_admin_api(tmp_path: Path) -> None:
     )
     assert latest.status_code == 200
     assert latest.json()["versions"][0]["artifact_key"] == "uploads/spec"
+
+
+def test_artifact_space_admin_api_uses_session_subject_for_grants(tmp_path: Path) -> None:
+    from starlette.testclient import TestClient
+
+    from evander.admin.composition import build_admin_runtime
+    from evander.admin.web.app import create_app
+
+    config_path = tmp_path / "gateway.yaml"
+    runtime_dir = tmp_path / "runtime"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'runtime_dir: "{runtime_dir}"',
+                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
+                f'session_store_path: "{runtime_dir / "sessions.json"}"',
+                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    PublishedArtifactStore(runtime_dir).publish_single_file(
+        key="uploads/secret",
+        session_id="session-1",
+        filename="secret.txt",
+        content=b"secret",
+    )
+    store = ArtifactSpaceStore(runtime_dir)
+    store.ensure_space(
+        path="/teams/secret",
+        grants={
+            "read_subjects": ["allowed-subject"],
+            "write_subjects": ["allowed-subject"],
+            "manage_subjects": ["allowed-subject"],
+        },
+    )
+    store.publish_version(
+        space_path="/teams/secret",
+        artifact_id="secret",
+        artifact_key="uploads/secret",
+        created_by_subject="allowed-subject",
+    )
+    client = TestClient(create_app(build_admin_runtime(config_path)))
+
+    listed_spaces = client.get(
+        "/api/admin/artifact-spaces",
+        params={
+            "path": "/teams/secret",
+            "recursive": "true",
+            "include_versions": "true",
+            "subject": "allowed-subject",
+        },
+    )
+    listed_artifacts = client.get(
+        "/api/admin/artifacts",
+        params={"space_path": "/teams/secret", "subject": "allowed-subject"},
+    )
+    latest = client.get(
+        "/api/admin/artifact-space-versions/latest",
+        params={
+            "space_path": "/teams/secret",
+            "artifact_id": "secret",
+            "subject": "allowed-subject",
+        },
+    )
+    publish = client.post(
+        "/api/admin/artifact-space-versions",
+        json={
+            "space_path": "/teams/secret",
+            "artifact_id": "secret-copy",
+            "artifact_key": "uploads/secret",
+            "subject": "allowed-subject",
+        },
+    )
+    create_child = client.post(
+        "/api/admin/artifact-spaces",
+        json={"path": "/teams/secret/child", "subject": "allowed-subject"},
+    )
+
+    assert listed_spaces.status_code == 200
+    assert listed_spaces.json()["spaces"] == []
+    assert listed_spaces.json()["versions"] == []
+    assert listed_artifacts.status_code == 200
+    assert listed_artifacts.json()["total"] == 0
+    assert latest.status_code == 403
+    assert publish.status_code == 403
+    assert create_child.status_code == 403
+    state = store.read()
+    assert "/teams/secret/child" not in state.spaces
+    assert len(state.versions_for_space("/teams/secret")) == 1

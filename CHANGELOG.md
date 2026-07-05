@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-05 - Admin Web Review Fixes
+
+- Derived artifact-space grant subjects from the authenticated Admin Web
+  session instead of caller-supplied request fields.
+- Rolled back grouped configuration tab writes when a later source domain
+  rejects the save, preventing partial persistence on failed saves.
+
 ## 2026-07-05 - Admin Web Bundle and Team Stream Fixes
 
 - Pointed the checked-in Admin Web dist index at the generated JavaScript

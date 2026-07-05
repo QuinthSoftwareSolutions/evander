@@ -1285,6 +1285,66 @@ def _tab_fields_by_source_domain(tab_key: str) -> dict[str, set[str]]:
     return fields_by_source
 
 
+def _restore_tab_source_payloads(
+    service: AdminRuntimeComponents,
+    directory_path: str,
+    domain_snapshots: dict[str, dict[str, Any]],
+    source_domains: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    rollback_errors: list[dict[str, Any]] = []
+    for source_domain in reversed(source_domains):
+        snapshot = domain_snapshots[source_domain]
+        raw = snapshot["raw"]
+        try:
+            if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
+                path = service.operations_admin.assistant_settings_path()
+                if raw["exists"]:
+                    service.operations_admin.write_assistant_settings(dict(raw["config"]))
+                elif path.exists():
+                    path.unlink()
+                continue
+
+            restore_payload = dict(raw["config"]) if raw["exists"] else {}
+            result = service.operations_admin.write_directory_domain_config(
+                directory_path,
+                source_domain,
+                restore_payload,
+            )
+            if not result.ok:
+                rollback_errors.append(
+                    {
+                        "source_domain": source_domain,
+                        "write_result": _normalize_admin_result(result),
+                    }
+                )
+        except Exception as exc:
+            rollback_errors.append({"source_domain": source_domain, "error": str(exc)})
+    return rollback_errors
+
+
+def _tab_source_write_error_response(
+    *,
+    source_domain: str,
+    rollback_errors: list[dict[str, Any]],
+    write_result: dict[str, Any] | None = None,
+    message: str | None = None,
+) -> JSONResponse:
+    payload: dict[str, Any] = {
+        "write_result": write_result
+        or {
+            "ok": False,
+            "data": None,
+            "errors": [{"code": "validation_error", "message": message or "write failed"}],
+            "validation_diagnostics": [],
+        },
+        "source_domain": source_domain,
+        "tab_snapshot": None,
+    }
+    if rollback_errors:
+        payload["rollback_errors"] = rollback_errors
+    return JSONResponse(payload, status_code=400)
+
+
 def worker_config_routes(
     service: AdminRuntimeComponents,
     auth: AdminWebAuth,
@@ -1512,6 +1572,7 @@ def worker_config_routes(
                             "tab_snapshot": current_tab_snapshot,
                         },
                     )
+                merged_payloads_by_source: dict[str, dict[str, Any]] = {}
                 for source_domain, source_payload in payloads_by_source.items():
                     if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
                         if not request_has_privileged_operations(
@@ -1526,10 +1587,7 @@ def worker_config_routes(
                         existing_settings = domain_snapshots[source_domain]["raw"]["config"]
                         merged_settings = dict(existing_settings)
                         merged_settings.update(source_payload)
-                        try:
-                            service.operations_admin.write_assistant_settings(merged_settings)
-                        except Exception as exc:
-                            return _error_response(str(exc), status_code=400)
+                        merged_payloads_by_source[source_domain] = merged_settings
                         continue
                     existing_config = dict(domain_snapshots[source_domain]["raw"]["config"])
                     merged_payload = {
@@ -1538,17 +1596,40 @@ def worker_config_routes(
                         if field_name not in tab_fields_by_source[source_domain]
                     }
                     merged_payload.update(source_payload)
+                    merged_payloads_by_source[source_domain] = merged_payload
+
+                touched_source_domains = tuple(merged_payloads_by_source)
+                for source_domain, merged_payload in merged_payloads_by_source.items():
+                    if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
+                        try:
+                            service.operations_admin.write_assistant_settings(merged_payload)
+                        except Exception as exc:
+                            rollback_errors = _restore_tab_source_payloads(
+                                service,
+                                directory_path,
+                                domain_snapshots,
+                                touched_source_domains,
+                            )
+                            return _tab_source_write_error_response(
+                                source_domain=source_domain,
+                                message=str(exc),
+                                rollback_errors=rollback_errors,
+                            )
+                        continue
                     result = service.operations_admin.write_directory_domain_config(
                         directory_path, source_domain, merged_payload
                     )
                     if not result.ok:
-                        return JSONResponse(
-                            {
-                                "write_result": _normalize_admin_result(result),
-                                "source_domain": source_domain,
-                                "tab_snapshot": None,
-                            },
-                            status_code=400,
+                        rollback_errors = _restore_tab_source_payloads(
+                            service,
+                            directory_path,
+                            domain_snapshots,
+                            touched_source_domains,
+                        )
+                        return _tab_source_write_error_response(
+                            source_domain=source_domain,
+                            write_result=_normalize_admin_result(result),
+                            rollback_errors=rollback_errors,
                         )
                 refreshed_domain_snapshots = {
                     source_domain: _domain_snapshot(service, directory_path, source_domain)

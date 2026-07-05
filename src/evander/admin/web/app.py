@@ -598,7 +598,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(workflow_event_routes(service, auth))
     routes.extend(workflow_webhook_routes(service))
     routes.extend(operator_steering_routes(service, auth))
-    routes.extend(artifact_routes(service))
+    routes.extend(artifact_routes(service, auth))
     addon_service = AdminWebAddonServiceAdapter(service)
     for addon in addon_catalog.registrations:
         context = AddonContext(
