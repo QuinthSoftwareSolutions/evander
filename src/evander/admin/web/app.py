@@ -44,6 +44,7 @@ from evander.admin.web.shared import (
     AZURE_SSO_START_PATH,
     AdminWebAuth,
     AdminWebConfig,
+    DEFAULT_ADMIN_WEB_BRANDING_ASSET_DIR,
     json_error,
 )
 from evander.admin.web.pr_integration import pr_integration_routes
@@ -194,8 +195,10 @@ def _index_html(dist_dir: Path, *, branding_payload: dict[str, object]) -> str:
 
 
 def _branding_payload_with_hashed_defaults(
-    payload: dict[str, object], dist_dir: Path
+    payload: dict[str, object], dist_dir: Path, branding_asset_dir: Path | None
 ) -> dict[str, object]:
+    if not _uses_default_branding_asset_dir(branding_asset_dir):
+        return payload
     replacements = {
         api_url: hashed_url
         for api_url, asset_name in _DEFAULT_BRANDING_ASSETS.items()
@@ -212,6 +215,14 @@ def _branding_payload_with_hashed_defaults(
             if isinstance(value, str) and value in replacements:
                 logo[url_name] = replacements[value]
     return payload
+
+
+def _uses_default_branding_asset_dir(branding_asset_dir: Path | None) -> bool:
+    if branding_asset_dir is None:
+        return False
+    return branding_asset_dir.expanduser().resolve(
+        strict=False
+    ) == DEFAULT_ADMIN_WEB_BRANDING_ASSET_DIR.resolve(strict=False)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -275,7 +286,9 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         return "regular"
 
     def branding_payload() -> dict[str, object]:
-        return _branding_payload_with_hashed_defaults(auth.config.branding.to_payload(), dist_dir)
+        return _branding_payload_with_hashed_defaults(
+            auth.config.branding.to_payload(), dist_dir, auth.config.branding_asset_dir
+        )
 
     async def health(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True})

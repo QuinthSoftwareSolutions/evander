@@ -17,6 +17,9 @@
 - Taught Admin Web to use Vite manifest-resolved hashed default branding assets
   when the frontend build is available and to serve hashed `/assets/...` files
   with long immutable cache headers.
+- Kept manifest rewrites scoped to the bundled branding asset directory so
+  deployments with custom `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` files keep
+  serving their configured logo assets.
 
 ## 2026-07-04 - Configuration Page Reorganization
 
