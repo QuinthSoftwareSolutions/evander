@@ -10314,14 +10314,50 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
 
     assert response.status_code == 200
     payload = response.json()
-    assert isinstance(payload["tab_snapshots"]["communications"]["revision"], str)
+    expected_tab_keys = [
+        "people_communications",
+        "models_assistant_knowledge",
+        "agent_runtime_launch",
+        "code_issues_prs",
+        "access_approvals_audit",
+        "network_relays_packages",
+        "automation_assignment",
+        "advanced_raw",
+    ]
+    assert [tab["key"] for tab in payload["tabs"]] == expected_tab_keys
+    assert [tab["title"] for tab in payload["tabs"]] == [
+        "People & Communications",
+        "Models, Assistant & Knowledge",
+        "Agent Runtime & Launch",
+        "Code, Issues & Pull Requests",
+        "Access, Approvals & Audit",
+        "Network, Relays & Package Access",
+        "Automation & Assignment",
+        "Advanced & Raw",
+    ]
+    assert "communications" not in payload["tab_snapshots"]
+    assert "providers" not in payload["tab_snapshots"]
+    assert isinstance(payload["tab_snapshots"]["people_communications"]["revision"], str)
     assert isinstance(payload["snapshots"]["providers"]["revision"], str)
-    communications = next(tab for tab in payload["tabs"] if tab["key"] == "communications")
-    assert communications["title"] == "Communications"
-    assert any(section["title"] == "Discord" for section in communications["sections"])
+    people = next(tab for tab in payload["tabs"] if tab["key"] == "people_communications")
+    assert people["title"] == "People & Communications"
+    assert {section["title"] for section in people["sections"]} == {
+        "Contacts",
+        "Communication targets",
+        "Approval notification targets",
+        "Discord",
+        "Teams",
+        "Email mailboxes",
+        "Email access and sending policy",
+        "Phone calls",
+        "Communication files",
+        "Communication artifact links",
+    }
+    contacts = next(section for section in people["sections"] if section["title"] == "Contacts")
+    assert {field["field_name"] for field in contacts["fields"]} == {"contacts"}
     communication_targets = next(
         section
-        for section in communications["sections"]
+        for section in people["sections"]
         if section["title"] == "Communication targets"
     )
     target_fields = {field["field_name"]: field for field in communication_targets["fields"]}
@@ -10329,10 +10365,31 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert target_fields["targets"]["kind"] == "json"
     assert target_fields["targets"]["root_starts_editable"] is True
     assert "workflow notification" in target_fields["targets"]["tooltip"]
+    approval_notifications = next(
+        section
+        for section in people["sections"]
+        if section["title"] == "Approval notification targets"
+    )
+    approval_notification_fields = {
+        field["field_name"]: field for field in approval_notifications["fields"]
+    }
+    assert approval_notification_fields["approval_notification_target_ids"]["kind"] == "string_list"
+    assert approval_notification_fields["approval_notification_target_ids"]["options"] == [
+        "backup-approvals",
+        "ops-approvals",
+    ]
+    assert (
+        "approval request notifications"
+        in approval_notification_fields["approval_notification_target_ids"]["tooltip"]
+    )
+    assert (
+        "known notify-capable communication targets"
+        in approval_notification_fields["approval_notification_target_ids"]["tooltip"]
+    )
 
-    providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
+    models = next(tab for tab in payload["tabs"] if tab["key"] == "models_assistant_knowledge")
     openai_section = next(
-        section for section in providers["sections"] if section["title"] == "LLM providers"
+        section for section in models["sections"] if section["title"] == "LLM providers"
     )
     openai_fields = {field["field_name"]: field for field in openai_section["fields"]}
     assert {
@@ -10369,7 +10426,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert "Azure OpenAI" in openai_fields["azure_openai_endpoint"]["tooltip"]
     assert "Anthropic" in openai_fields["anthropic_api_base_url"]["tooltip"]
     assistant = next(
-        section for section in communications["sections"] if section["title"] == "Assistant"
+        section for section in models["sections"] if section["title"] == "Assistant"
     )
     assistant_fields = {field["field_name"]: field for field in assistant["fields"]}
     assert assistant_fields["enabled"]["scope"] == "global"
@@ -10385,15 +10442,43 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     ]
     assert "allowed_mcp_tool_profile" not in assistant_fields
     assert assistant_fields["custom_system_instructions"]["kind"] == "multiline_text"
-    provider_fields = {
+    semantic_store = next(
+        section for section in models["sections"] if section["title"] == "Semantic store"
+    )
+    assert {field["field_name"] for field in semantic_store["fields"]} == {
+        "semantic_store_provider",
+        "qdrant_base_url",
+        "qdrant_api_key_env",
+        "semantic_embedding_provider",
+        "semantic_embedding_model",
+        "semantic_embedding_dimensions",
+        "semantic_vector_distance",
+    }
+    all_fields = {
         field["field_name"]: field
         for tab in payload["tabs"]
-        if tab["key"] == "providers"
         for section in tab["sections"]
         for field in section["fields"]
     }
+
+    runtime = next(tab for tab in payload["tabs"] if tab["key"] == "agent_runtime_launch")
+    agent_execution = next(
+        section for section in runtime["sections"] if section["title"] == "Agent execution"
+    )
+    agent_execution_fields = {field["field_name"]: field for field in agent_execution["fields"]}
+    assert agent_execution_fields["execution_backend"]["label"] == "Execution backend"
+    assert "Value: one of" in agent_execution_fields["execution_backend"]["tooltip"]
+    container_worker = next(
+        section
+        for section in runtime["sections"]
+        if section["title"] == "Container worker settings"
+    )
+    container_worker_fields = {field["field_name"] for field in container_worker["fields"]}
+    assert "container_worker_base_url" in container_worker_fields
+    assert "container_worker_images" in container_worker_fields
+    assert "container_worker_mssql_enabled" in container_worker_fields
     agent_prompt = next(
-        section for section in providers["sections"] if section["title"] == "Agent prompt"
+        section for section in runtime["sections"] if section["title"] == "Agent prompt"
     )
     agent_prompt_fields = {field["field_name"]: field for field in agent_prompt["fields"]}
     assert set(agent_prompt_fields) == {
@@ -10408,84 +10493,68 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert agent_prompt_fields["agent_context_retry_enabled"]["kind"] == "bool"
     assert agent_prompt_fields["agent_context_retry_max_attempts"]["kind"] == "int"
     assert agent_prompt_fields["agent_context_retry_target_chars"]["kind"] == "int"
-    assert "container worker service" in provider_fields["container_worker_base_url"]["tooltip"]
+    assert "container worker service" in all_fields["container_worker_base_url"]["tooltip"]
     assert (
         "Fallback runner container image"
-        in provider_fields["container_worker_default_image"]["tooltip"]
+        in all_fields["container_worker_default_image"]["tooltip"]
     )
-    assert "catalog" in provider_fields["container_worker_images"]["tooltip"]
+    assert "catalog" in all_fields["container_worker_images"]["tooltip"]
     assert (
         "runtime dispatch never pulls or builds images"
-        in provider_fields["container_worker_images"]["tooltip"]
+        in all_fields["container_worker_images"]["tooltip"]
     )
-    assert "Value: one of" in provider_fields["execution_backend"]["tooltip"]
+    agent_defaults = next(
+        section for section in runtime["sections"] if section["title"] == "Agent defaults"
+    )
+    assert {field["field_name"] for field in agent_defaults["fields"]} == {
+        "default_model",
+        "post_exec_verification_prompt",
+    }
+    guest_heartbeat = next(
+        section for section in runtime["sections"] if section["title"] == "Guest heartbeat"
+    )
+    assert {field["field_name"] for field in guest_heartbeat["fields"]} == {
+        "enable_guest_heartbeat",
+        "guest_heartbeat_prompt",
+    }
+
     for tab in payload["tabs"]:
         for section in tab["sections"]:
             for field in section["fields"]:
                 assert field["tooltip"], f"{tab['key']}.{field['field_name']} is missing a tooltip"
                 assert "Value:" in field["tooltip"]
-    access_policy = next(tab for tab in payload["tabs"] if tab["key"] == "access_policy")
-    approval_notifications = next(
-        section
-        for section in access_policy["sections"]
-        if section["title"] == "Approval notifications"
+
+    email_mailboxes = next(
+        section for section in people["sections"] if section["title"] == "Email mailboxes"
     )
-    approval_notification_fields = {
-        field["field_name"]: field for field in approval_notifications["fields"]
+    assert {field["field_name"] for field in email_mailboxes["fields"]} == {
+        "email_mailboxes",
+        "email_provider_timeout_seconds",
     }
-    assert approval_notification_fields["approval_notification_target_ids"]["kind"] == "string_list"
-    assert approval_notification_fields["approval_notification_target_ids"]["options"] == [
-        "backup-approvals",
-        "ops-approvals",
-    ]
-    assert (
-        "approval request notifications"
-        in approval_notification_fields["approval_notification_target_ids"]["tooltip"]
+    email_policy = next(
+        section
+        for section in people["sections"]
+        if section["title"] == "Email access and sending policy"
     )
-    assert (
-        "known notify-capable communication targets"
-        in approval_notification_fields["approval_notification_target_ids"]["tooltip"]
-    )
+    assert {field["field_name"] for field in email_policy["fields"]} == {
+        "email_draft_domain_allowlist",
+        "email_draft_recipient_allowlist",
+        "email_folder_allowlist_by_mailbox",
+        "email_mailbox_allowlist",
+        "email_send_enabled",
+    }
     communication_files = next(
         section
-        for section in access_policy["sections"]
+        for section in people["sections"]
         if section["title"] == "Communication files"
     )
     communication_file_fields = {field["field_name"] for field in communication_files["fields"]}
     assert "communication_file_receive_enabled" in communication_file_fields
     assert "communication_file_require_approval_for_send" in communication_file_fields
-    tool_argument_policy = next(
-        section
-        for section in access_policy["sections"]
-        if section["title"] == "Tool argument policy"
-    )
-    tool_argument_policy_fields = {
-        field["field_name"]: field for field in tool_argument_policy["fields"]
-    }
-    assert tool_argument_policy_fields["tool_argument_policies"]["kind"] == "json"
-    assert tool_argument_policy_fields["tool_argument_policies"]["label"] == (
-        "Tool argument policy"
-    )
-    assert "MCP tool name" in tool_argument_policy_fields["tool_argument_policies"]["tooltip"]
-    providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
-    agent_execution = next(
-        section for section in providers["sections"] if section["title"] == "Agent execution"
-    )
-    agent_execution_fields = {field["field_name"]: field for field in agent_execution["fields"]}
-    assert agent_execution_fields["execution_backend"]["label"] == "Execution backend"
-    container_worker = next(
-        section
-        for section in providers["sections"]
-        if section["title"] == "Container worker settings"
-    )
-    container_worker_fields = {field["field_name"] for field in container_worker["fields"]}
-    assert "container_worker_base_url" in container_worker_fields
-    assert "container_worker_images" in container_worker_fields
-    assert "container_worker_mssql_enabled" in container_worker_fields
     communication_artifacts = next(
         section
-        for section in providers["sections"]
-        if section["title"] == "Communication artifacts"
+        for section in people["sections"]
+        if section["title"] == "Communication artifact links"
     )
     communication_artifact_fields = {
         field["field_name"]: field for field in communication_artifacts["fields"]
@@ -10512,20 +10581,31 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert communication_artifact_fields["communication_artifact_link_ttl_seconds"]["kind"] == (
         "int"
     )
-    semantic_store = next(
-        section for section in providers["sections"] if section["title"] == "Semantic store"
+
+    access_policy = next(tab for tab in payload["tabs"] if tab["key"] == "access_approvals_audit")
+    tool_argument_policy = next(
+        section
+        for section in access_policy["sections"]
+        if section["title"] == "Tool argument policy"
     )
-    assert {field["field_name"] for field in semantic_store["fields"]} == {
-        "semantic_store_provider",
-        "qdrant_base_url",
-        "qdrant_api_key_env",
-        "semantic_embedding_provider",
-        "semantic_embedding_model",
-        "semantic_embedding_dimensions",
-        "semantic_vector_distance",
+    tool_argument_policy_fields = {
+        field["field_name"]: field for field in tool_argument_policy["fields"]
     }
+    assert tool_argument_policy_fields["tool_argument_policies"]["kind"] == "json"
+    assert tool_argument_policy_fields["tool_argument_policies"]["label"] == (
+        "Tool argument policy"
+    )
+    assert "MCP tool name" in tool_argument_policy_fields["tool_argument_policies"]["tooltip"]
+    approval_timing = next(
+        section for section in access_policy["sections"] if section["title"] == "Approval timing"
+    )
+    assert {field["field_name"] for field in approval_timing["fields"]} == {
+        "approval_ttl_seconds",
+        "default_session_ttl_seconds",
+    }
+
     phone_calls = next(
-        section for section in providers["sections"] if section["title"] == "Phone calls"
+        section for section in people["sections"] if section["title"] == "Phone calls"
     )
     assert {field["field_name"] for field in phone_calls["fields"]} == {
         "phone_call_backend",
@@ -10545,14 +10625,57 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert phone_call_fields["didww_from_number"]["label"] == "DIDWW from number"
     assert phone_call_fields["didww_sip_bridge_url"]["label"] == "DIDWW SIP bridge URL"
     assert phone_call_fields["inbound_phone_routes"]["label"] == "Inbound phone routes"
-    contacts = next(tab for tab in payload["tabs"] if tab["key"] == "contacts")
-    contact_list = next(
-        section for section in contacts["sections"] if section["title"] == "Contact list"
-    )
-    assert {field["field_name"] for field in contact_list["fields"]} == {
-        "contacts",
+
+    code = next(tab for tab in payload["tabs"] if tab["key"] == "code_issues_prs")
+    assert {section["title"] for section in code["sections"]} == {
+        "Azure DevOps",
+        "GitHub",
+        "ADO worker filters",
+        "ADO worker repo metadata",
+        "ADO PR automation",
+        "Git transport",
+        "Issue setup Azure DevOps",
+        "PR feedback approval",
+        "PR template",
     }
-    assert "communications" in payload["tab_snapshots"]
+    pr_template = next(section for section in code["sections"] if section["title"] == "PR template")
+    pr_template_fields = {field["field_name"]: field for field in pr_template["fields"]}
+    assert pr_template_fields["pr_template_markdown"]["kind"] == "multiline_text"
+    assert pr_template_fields["pr_template_markdown"]["root_starts_editable"] is True
+    pr_feedback = next(
+        section for section in code["sections"] if section["title"] == "PR feedback approval"
+    )
+    assert {field["field_name"] for field in pr_feedback["fields"]} == {
+        "pr_reply_require_approval"
+    }
+
+    network = next(tab for tab in payload["tabs"] if tab["key"] == "network_relays_packages")
+    http_target_relay = next(
+        section for section in network["sections"] if section["title"] == "HTTP target relay"
+    )
+    assert {field["field_name"] for field in http_target_relay["fields"]} == {
+        "http_target_relay_host",
+        "http_target_relay_port",
+        "http_target_relay_timeout_seconds",
+    }
+    nuget = next(section for section in network["sections"] if section["title"] == "NuGet")
+    assert {field["field_name"] for field in nuget["fields"]} == {
+        "nuget_relay_host",
+        "nuget_relay_port",
+        "nuget_azure_feed_base_url",
+        "nuget_azure_pat_env",
+        "nuget_public_feed_base_url",
+        "nuget_relay_timeout_seconds",
+    }
+
+    automation = next(tab for tab in payload["tabs"] if tab["key"] == "automation_assignment")
+    assert {section["title"] for section in automation["sections"]} == {"Capacity", "Roles"}
+    advanced = next(tab for tab in payload["tabs"] if tab["key"] == "advanced_raw")
+    provider_state = next(
+        section for section in advanced["sections"] if section["title"] == "Provider state"
+    )
+    assert {field["field_name"] for field in provider_state["fields"]} == {"provider_state"}
+    assert "people_communications" in payload["tab_snapshots"]
     assert payload["selected_directory"]["path"] == "root"
 
 
@@ -10801,7 +10924,7 @@ def test_admin_web_model_pricing_catalog_write_invalidates_cached_default_catalo
     clear_model_pricing_catalog_cache()
 
 
-def test_admin_web_contacts_tab_save_preserves_user_contact_links(
+def test_admin_web_people_communications_tab_save_preserves_user_contact_links(
     tmp_path: Path,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
@@ -10823,7 +10946,7 @@ def test_admin_web_contacts_tab_save_preserves_user_contact_links(
     client = TestClient(create_app(service))
 
     response = client.put(
-        "/api/configuration/domains/contacts?directory_path=root",
+        "/api/configuration/domains/people_communications?directory_path=root",
         json={
             "config": {
                 "contacts": {
@@ -10844,7 +10967,9 @@ def test_admin_web_contacts_tab_save_preserves_user_contact_links(
                     },
                 }
             },
-            "expected_revision": _configuration_expected_revision(client, "root", "contacts"),
+            "expected_revision": _configuration_expected_revision(
+                client, "root", "people_communications"
+            ),
         },
     )
 
@@ -10868,7 +10993,7 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
     assert create_response.status_code == 200
 
     communications_response = client.put(
-        "/api/configuration/domains/communications?directory_path=root/ops",
+        "/api/configuration/domains/people_communications?directory_path=root/ops",
         json={
             "config": {
                 "discord_backend": "stub",
@@ -10876,21 +11001,23 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
                 "discord_resume_prompt": "Resume this session.",
             },
             "expected_revision": _configuration_expected_revision(
-                client, "root/ops", "communications"
+                client, "root/ops", "people_communications"
             ),
         },
     )
-    providers_response = client.put(
-        "/api/configuration/domains/providers?directory_path=root/ops",
+    code_response = client.put(
+        "/api/configuration/domains/code_issues_prs?directory_path=root/ops",
         json={
             "config": {"github_token_env": "GITHUB_TOKEN_OPS"},
-            "expected_revision": _configuration_expected_revision(client, "root/ops", "providers"),
+            "expected_revision": _configuration_expected_revision(
+                client, "root/ops", "code_issues_prs"
+            ),
         },
     )
     state_response = client.get("/api/configuration/state?directory_path=root/ops")
 
     assert communications_response.status_code == 200
-    assert providers_response.status_code == 200
+    assert code_response.status_code == 200
     assert state_response.status_code == 200
     overrides = state_response.json()["directory_overrides"]
     assert overrides["directory_path"] == "root/ops"
@@ -10911,7 +11038,9 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
     assert "assistant_settings" not in overrides["overrides"]
 
 
-def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Path) -> None:
+def test_admin_web_people_communications_tab_save_splits_underlying_domains(
+    tmp_path: Path,
+) -> None:
     client = TestClient(
         create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
@@ -10923,14 +11052,16 @@ def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Pa
     assert create_response.status_code == 200
 
     response = client.put(
-        "/api/configuration/domains/communications?directory_path=ops",
+        "/api/configuration/domains/people_communications?directory_path=ops",
         json={
             "config": {
                 "discord_backend": "stub",
                 "discord_operator_channel_allowlist": ["chan-1", "chan-2"],
                 "discord_resume_prompt": "Resume this session.",
             },
-            "expected_revision": _configuration_expected_revision(client, "ops", "communications"),
+            "expected_revision": _configuration_expected_revision(
+                client, "ops", "people_communications"
+            ),
         },
     )
 
@@ -10943,7 +11074,7 @@ def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Pa
     assert snapshot["raw"]["config"]["discord_resume_prompt"] == "Resume this session."
 
 
-def test_admin_web_provider_integrations_saves_communication_artifact_link_fields(
+def test_admin_web_people_communications_saves_communication_artifact_link_fields(
     tmp_path: Path,
 ) -> None:
     client = TestClient(
@@ -10951,14 +11082,16 @@ def test_admin_web_provider_integrations_saves_communication_artifact_link_field
     )
 
     response = client.put(
-        "/api/configuration/domains/providers?directory_path=root",
+        "/api/configuration/domains/people_communications?directory_path=root",
         json={
             "config": {
                 "communication_artifact_public_base_url": "https://admin.example.test",
                 "communication_artifact_link_secret_env": "TEAM_ARTIFACT_LINK_SECRET",
                 "communication_artifact_link_ttl_seconds": 3600,
             },
-            "expected_revision": _configuration_expected_revision(client, "root", "providers"),
+            "expected_revision": _configuration_expected_revision(
+                client, "root", "people_communications"
+            ),
         },
     )
 
@@ -11015,12 +11148,12 @@ def test_admin_web_configuration_tab_save_removed_fields_clears_child_domain_ove
     assert child_target_write.ok is True
 
     response = client.put(
-        "/api/configuration/domains/communications?directory_path=root/ops",
+        "/api/configuration/domains/people_communications?directory_path=root/ops",
         json={
             "config": {"targets": target_payload},
             "removed_fields": ["teams_delegated_scopes"],
             "expected_revision": _configuration_expected_revision(
-                client, "root/ops", "communications"
+                client, "root/ops", "people_communications"
             ),
         },
     )
@@ -11056,21 +11189,21 @@ def test_admin_web_configuration_tab_save_rejects_missing_and_stale_revision(
         json={"parent_path": "root", "name": "ops"},
     )
     assert create_response.status_code == 200
-    initial_revision = _configuration_expected_revision(client, "ops", "communications")
+    initial_revision = _configuration_expected_revision(client, "ops", "people_communications")
 
     missing = client.put(
-        "/api/configuration/domains/communications?directory_path=ops",
+        "/api/configuration/domains/people_communications?directory_path=ops",
         json={"config": {"discord_backend": "stub"}},
     )
     first_save = client.put(
-        "/api/configuration/domains/communications?directory_path=ops",
+        "/api/configuration/domains/people_communications?directory_path=ops",
         json={
             "config": {"discord_backend": "stub"},
             "expected_revision": initial_revision,
         },
     )
     stale = client.put(
-        "/api/configuration/domains/communications?directory_path=ops",
+        "/api/configuration/domains/people_communications?directory_path=ops",
         json={
             "config": {"discord_operator_channel_allowlist": ["chan-2"]},
             "expected_revision": initial_revision,
@@ -11086,14 +11219,14 @@ def test_admin_web_configuration_tab_save_rejects_missing_and_stale_revision(
     )
 
 
-def test_admin_web_communications_tab_saves_sqlite_communication_targets(
+def test_admin_web_people_communications_tab_saves_sqlite_communication_targets(
     tmp_path: Path,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
     root_response = client.put(
-        "/api/configuration/domains/communications?directory_path=root",
+        "/api/configuration/domains/people_communications?directory_path=root",
         json={
             "config": {
                 "targets": [
@@ -11106,7 +11239,9 @@ def test_admin_web_communications_tab_saves_sqlite_communication_targets(
                     }
                 ]
             },
-            "expected_revision": _configuration_expected_revision(client, "root", "communications"),
+            "expected_revision": _configuration_expected_revision(
+                client, "root", "people_communications"
+            ),
         },
     )
     create_response = client.post(
@@ -11114,7 +11249,7 @@ def test_admin_web_communications_tab_saves_sqlite_communication_targets(
         json={"parent_path": "root", "name": "ops"},
     )
     child_response = client.put(
-        "/api/configuration/domains/communications?directory_path=root/ops",
+        "/api/configuration/domains/people_communications?directory_path=root/ops",
         json={
             "config": {
                 "targets": [
@@ -11129,7 +11264,7 @@ def test_admin_web_communications_tab_saves_sqlite_communication_targets(
                 ]
             },
             "expected_revision": _configuration_expected_revision(
-                client, "root/ops", "communications"
+                client, "root/ops", "people_communications"
             ),
         },
     )
@@ -11139,7 +11274,7 @@ def test_admin_web_communications_tab_saves_sqlite_communication_targets(
     assert create_response.status_code == 200
     assert child_response.status_code == 200
     payload = state_response.json()
-    communications = payload["tab_snapshots"]["communications"]
+    communications = payload["tab_snapshots"]["people_communications"]
     assert communications["raw"]["config"]["targets"][0] == {
         "id": "discord-ops",
         "provider": "discord",
@@ -11159,7 +11294,9 @@ def test_admin_web_communications_tab_saves_sqlite_communication_targets(
     }
 
 
-def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -> None:
+def test_admin_web_models_assistant_knowledge_tab_saves_assistant_settings(
+    tmp_path: Path,
+) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
@@ -11167,7 +11304,7 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
     assert unlock.status_code == 200
 
     response = client.put(
-        "/api/configuration/domains/communications?directory_path=root",
+        "/api/configuration/domains/models_assistant_knowledge?directory_path=root",
         json={
             "config": {
                 "enabled": True,
@@ -11177,7 +11314,9 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
                 "default_profile": "full-admin",
                 "custom_system_instructions": "Use the admin context.",
             },
-            "expected_revision": _configuration_expected_revision(client, "root", "communications"),
+            "expected_revision": _configuration_expected_revision(
+                client, "root", "models_assistant_knowledge"
+            ),
         },
     )
 
@@ -11198,7 +11337,7 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
     assert service.operations_admin.assistant_settings_path().exists()
 
 
-def test_admin_web_communications_tab_assistant_only_save_preserves_directory_domains(
+def test_admin_web_models_assistant_knowledge_tab_save_preserves_directory_domains(
     tmp_path: Path,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
@@ -11211,14 +11350,16 @@ def test_admin_web_communications_tab_assistant_only_save_preserves_directory_do
     assert create_response.status_code == 200
 
     communications_response = client.put(
-        "/api/configuration/domains/communications?directory_path=ops",
+        "/api/configuration/domains/people_communications?directory_path=ops",
         json={
             "config": {
                 "discord_backend": "stub",
                 "discord_operator_channel_allowlist": ["chan-1"],
                 "discord_resume_prompt": "Resume this session.",
             },
-            "expected_revision": _configuration_expected_revision(client, "ops", "communications"),
+            "expected_revision": _configuration_expected_revision(
+                client, "ops", "people_communications"
+            ),
         },
     )
     assert communications_response.status_code == 200
@@ -11227,10 +11368,12 @@ def test_admin_web_communications_tab_assistant_only_save_preserves_directory_do
     assert unlock.status_code == 200
 
     assistant_response = client.put(
-        "/api/configuration/domains/communications?directory_path=ops",
+        "/api/configuration/domains/models_assistant_knowledge?directory_path=ops",
         json={
             "config": {"enabled": True, "read_only": True, "default_model": "gpt-test"},
-            "expected_revision": _configuration_expected_revision(client, "ops", "communications"),
+            "expected_revision": _configuration_expected_revision(
+                client, "ops", "models_assistant_knowledge"
+            ),
         },
     )
     assert assistant_response.status_code == 200
@@ -11273,7 +11416,7 @@ def test_admin_web_assistant_settings_migrates_legacy_write_tool_profile(
     assert "allowed_mcp_tool_profile" not in settings
 
 
-def test_admin_web_communications_tab_preserves_assistant_settings_when_absent(
+def test_admin_web_people_communications_tab_preserves_assistant_settings_when_absent(
     tmp_path: Path,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
@@ -11288,10 +11431,12 @@ def test_admin_web_communications_tab_preserves_assistant_settings_when_absent(
     client = TestClient(create_app(service))
 
     response = client.put(
-        "/api/configuration/domains/communications?directory_path=root",
+        "/api/configuration/domains/people_communications?directory_path=root",
         json={
             "config": {"discord_backend": "stub"},
-            "expected_revision": _configuration_expected_revision(client, "root", "communications"),
+            "expected_revision": _configuration_expected_revision(
+                client, "root", "people_communications"
+            ),
         },
     )
 
@@ -11353,10 +11498,12 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
     assert provider_response.status_code == 200
 
     communications_response = client.put(
-        "/api/configuration/domains/communications?directory_path=ops",
+        "/api/configuration/domains/people_communications?directory_path=ops",
         json={
             "config": {"discord_backend": "stub"},
-            "expected_revision": _configuration_expected_revision(client, "ops", "communications"),
+            "expected_revision": _configuration_expected_revision(
+                client, "ops", "people_communications"
+            ),
         },
     )
     assert communications_response.status_code == 200
@@ -11370,10 +11517,13 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
     }
 
     clear_response = client.put(
-        "/api/configuration/domains/communications?directory_path=ops",
+        "/api/configuration/domains/people_communications?directory_path=ops",
         json={
             "config": {},
-            "expected_revision": _configuration_expected_revision(client, "ops", "communications"),
+            "removed_fields": ["discord_backend"],
+            "expected_revision": _configuration_expected_revision(
+                client, "ops", "people_communications"
+            ),
         },
     )
     assert clear_response.status_code == 200
@@ -11382,6 +11532,46 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
     assert providers_result.ok is True
     assert providers_result.data is not None
     assert providers_result.data.config == {"openai_api_base_url": "http://relay.internal/v1"}
+
+
+def test_admin_web_models_tab_save_preserves_other_provider_area_fields(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.operations_admin.write_directory_domain_config(
+        "root",
+        "providers",
+        {
+            "discord_backend": "stub",
+            "execution_backend": "container_worker_vm",
+            "github_token_env": "GITHUB_TOKEN_OPS",
+            "nuget_public_feed_base_url": "https://nuget.example/v3/index.json",
+            "openai_api_base_url": "http://old-relay.internal/v1",
+        },
+    )
+    client = TestClient(create_app(service))
+
+    response = client.put(
+        "/api/configuration/domains/models_assistant_knowledge?directory_path=root",
+        json={
+            "config": {"model_provider_mode": "local_openai"},
+            "expected_revision": _configuration_expected_revision(
+                client, "root", "models_assistant_knowledge"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    providers_result = service.operations_admin.read_directory_domain_config("root", "providers")
+    assert providers_result.ok is True
+    assert providers_result.data is not None
+    assert providers_result.data.config == {
+        "discord_backend": "stub",
+        "execution_backend": "container_worker_vm",
+        "github_token_env": "GITHUB_TOKEN_OPS",
+        "model_provider_mode": "local_openai",
+        "nuget_public_feed_base_url": "https://nuget.example/v3/index.json",
+    }
 
 
 def test_admin_web_can_toggle_privileged_operations_state(tmp_path: Path) -> None:

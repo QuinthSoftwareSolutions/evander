@@ -14,7 +14,7 @@ Read this with:
 
 ## 15.1 Communication Targets
 
-A communication target is a named destination in **Configuration > Communication targets**.
+A communication target is a named destination in **Configuration > People & Communications > Communication targets**.
 
 Targets are scoped by directory and can be inherited from the root directory.
 
@@ -132,12 +132,12 @@ Use this when you need to add a new destination or correct an existing one.
 Prerequisites:
 
 1. Correct directory selected.
-2. Communication targets section opened in `Configuration`.
+2. Communication targets section opened in `Configuration > People & Communications`.
 3. Privileges unlocked for configuration saves.
 
 Steps:
 
-1. Open **Configuration > Communication targets**.
+1. Open **Configuration > People & Communications > Communication targets**.
 2. Click **Add communication target**.
 3. Enter:
    1. `id` and clear display name.
@@ -154,7 +154,7 @@ Steps:
 
 Expected result:
 
-1. The target appears in `Communication` targets for the directory.
+1. The target appears in communication targets for the directory.
 2. The target only works for the selected capabilities.
 3. Sessions with matching allowlists can now read/write using that target.
 
@@ -171,12 +171,12 @@ Use this when approval events need to land in a team channel instead of generic 
 Prerequisites:
 
 1. At least one notify-capable communication target is defined.
-2. Access to `approval_notification_target_ids` in Configuration.
+2. Access to approval notification targets in Configuration > People & Communications.
 3. Privileges unlocked for policy edits.
 
 Steps:
 
-1. Open `Configuration` and go to Access Policy (or policy tab view).
+1. Open `Configuration > People & Communications > Approval notification targets`.
 2. Confirm the selected directory is correct.
 3. Open the approval notification target chooser.
 4. Add one or more notify-capable targets (for example an operator channel).

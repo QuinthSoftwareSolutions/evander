@@ -828,7 +828,7 @@ the candidate set with `status`, branch/time filters, `top`, `skip`, or
 
 `effect:communication:send-message` sends a plain message through a declared
 directory-scoped communication target managed from Admin Web Configuration ->
-Communications and stored in `runtime/communication-targets.db`. The target must
+People & Communications and stored in `runtime/communication-targets.db`. The target must
 include the `write` capability for a top-level message, or the `reply` capability
 when `thread_id` is set. Teams targets can address
 `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user as
@@ -1517,7 +1517,7 @@ Storage paths:
 | `runtime/directories.json` (or `directories_store_path`) | Directory tree metadata, canonical ownership, configured domains | `src/evander/directories.py`, `src/evander/admin/directory.py`, `src/evander/ownership.py` |
 | `runtime/directory-config/root/.../<domain>.json` | Raw per-domain overlay payloads for directories listed in `directories.json` metadata | `src/evander/directory_config.py` |
 | `runtime/assistant-settings.json` | Admin assistant and workflow generation settings | Admin Web Chat and Workflow generator |
-| `runtime/communication-targets.db` | SQLite-backed communication target overlays keyed by directory and target ID | `src/evander/messaging/targets.py`, Admin Web Configuration -> Communications, workflow notification/message effects |
+| `runtime/communication-targets.db` | SQLite-backed communication target overlays keyed by directory and target ID | `src/evander/messaging/targets.py`, Admin Web Configuration -> People & Communications, workflow notification/message effects |
 
 Supported directory config domains:
 
@@ -1576,7 +1576,7 @@ Resolution behavior:
 Approval notification policy:
 
 - `approval_notification_target_ids` is a list of host-owned communication target IDs. The targets
-  are configured in Admin Web under Configuration -> Communications and stored in
+  are configured in Admin Web under Configuration -> People & Communications and stored in
   `runtime/communication-targets.db`; each selected target must include the `notify` capability.
 - Directory policy sets the inherited baseline. Session policy can add more target IDs for one
   session, and a live workflow-run approval lease can add run-scoped targets for that run. The

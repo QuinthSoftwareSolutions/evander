@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-04 - Configuration Page Reorganization
+
+- Reorganized Admin Web Configuration into operator-facing areas for people and
+  communications, models and Assistant behavior, agent runtime, code/issues/PRs,
+  access and audit policy, network/package relays, automation assignment, and
+  advanced state.
+- Moved email, approval notification targets, phone calls, communication files,
+  and communication artifact link settings into People & Communications so
+  related messaging settings are no longer split across unrelated tabs.
+- Moved model pricing into the Models, Assistant & Knowledge area alongside
+  model routing and Assistant settings.
+
 ## 2026-07-04 - Admin Dashboard Poll Backpressure
 
 - Paused Admin Web dashboard and shell background polling while the document is

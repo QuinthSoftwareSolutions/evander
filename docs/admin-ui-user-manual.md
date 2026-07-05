@@ -405,11 +405,11 @@ Common tasks:
 
 1. Choose the directory in the shell.
 2. Open **Configuration**.
-3. Select a configuration domain from the left list.
+3. Select a configuration area from the left list.
 4. Review the effective values, explicit overrides, parent defaults, validation messages, and raw
    override JSON.
 5. Unlock privileges before saving.
-6. Edit only the fields for the selected domain.
+6. Edit only the fields for the selected area.
 7. Use field tooltips to confirm each setting's meaning and source domain.
 8. Click the save icon in the toolbar.
 9. If the save fails because the config changed on the server, reload and reapply the intended
@@ -417,15 +417,20 @@ Common tasks:
 
 Specialized configuration areas:
 
-- **Teams delegated auth**: inspect Teams auth status for the selected directory, start device-code
-  sign-in, refresh status, or sign out.
-- **Contacts**: maintain named contact entries with descriptions, email addresses, and phone
-  numbers for directory-scoped use.
-- **Communication targets**: declare inherited and explicit messaging targets used by workflow
-  notification/message effects and by the provider-neutral communication message trigger when the
-  target has `read` capability.
-- **Approval notification targets**: choose notify-capable communication targets for approval
-  notifications.
+- **People & Communications**: maintain contacts, communication targets, approval notification
+  targets, Discord, Teams, email, phone-call, and communication-file settings together.
+- **Models, Assistant & Knowledge**: edit model routing, Assistant behavior, model pricing,
+  semantic-store, and embedding settings.
+- **Agent Runtime & Launch**: control execution backend, container worker, prompt delivery,
+  launch defaults, and guest heartbeat behavior.
+- **Code, Issues & Pull Requests**: configure Azure DevOps, GitHub, ADO worker filters, Git
+  transport, PR feedback approval, and PR templates.
+- **Access, Approvals & Audit**: keep core approval timing, MCP tool policies, tool argument
+  guardrails, and audit redaction together.
+- **Network, Relays & Package Access**: configure VM network, gateway, relay endpoints, NuGet,
+  and npm audit facade settings.
+- **Automation & Assignment**: set issue intake capacity and assignment roles.
+- **Advanced & Raw**: inspect advanced provider state and support diagnostics.
 - **Directory override JSON**: copy the unified explicit overrides for review, diffing, or support.
 - **Effective config** and **Parent defaults**: compare the live inherited result to the parent
   baseline before saving a local override.
