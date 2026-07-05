@@ -155,7 +155,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `provider_loader.provider_modules` | `config/trigger-orchestrator/config.json` | Additional provider plugin Python modules to load after selected profile modules. |
 | `provider_loader.provider_entry_points_enabled` | `config/trigger-orchestrator/config.json` | Enables provider plugin discovery via Python entry points. |
 | `addon_loader.modules` | Host config and `config/trigger-orchestrator/config.json` | Explicit add-on Python modules. Admin Web uses host config for add-on routes/navigation; workflow workers use their config to include add-on provider contributions. |
-| `addon_loader.package_dirs` | Host config and `config/trigger-orchestrator/config.json` | Local add-on package directories to scan. Defaults to `["addons"]`, resolved from the Evander project root for Admin Web and normal services. Each package is an immediate child directory with an `addon.json` manifest. |
+| `addon_loader.package_dirs` | Host config and `config/trigger-orchestrator/config.json` | Local add-on package directories to scan. Defaults to `["addons", "src"]`, resolved from the Evander project root for Admin Web and normal services. Each package is an immediate child directory with an `addon.json` manifest; directories without that manifest are ignored. |
 | `addon_loader.enabled_entry_points` | Host config and `config/trigger-orchestrator/config.json` | Enables add-on discovery through Python entry points in `evander.addons`. Defaults to `false`. |
 | `addon_loader.enabled_addon_ids` | Host config and `config/trigger-orchestrator/config.json` | Optional allowlist of add-on ids to load from configured modules, entry points, or scanned packages. When omitted, explicit modules and enabled entry points preserve the legacy load-all behavior, while scanned packages remain available but disabled. |
 
@@ -164,9 +164,16 @@ keeps host and trigger-orchestrator add-on loader settings aligned. Changes are
 restart-gated; restart Admin Web, trigger/effect orchestrators, and gateway when
 MCP tools are involved.
 
-For the bundled Team Add-on, prefer explicit module loading:
-`addon_loader.modules: ["evander_team_addon"]`. Configure this in the host
-config to expose Admin Web routes/navigation, and in
+The bundled add-ons ship `addon.json` manifests beside their package
+`__init__.py` files, so they use the same scanned-package shape as local copied
+add-ons in a source checkout. Enable them from Admin Web or set
+`addon_loader.enabled_addon_ids` to add-on ids such as `team-addon`,
+`skatteverket-addon`, `bokio-addon`, or `mssql-seed-addon`. Explicit
+`addon_loader.modules` entries and `evander.addons` entry points remain
+supported compatibility paths.
+
+For the bundled Team Add-on, configure the same add-on loader in the host config
+to expose Admin Web routes/navigation, and in
 `config/trigger-orchestrator/config.json` to make `effect:team:*` and
 `query:team:*` workflow providers available to the trigger/effect workers. The
 team runtime loop is still opt-in; write the current-schema payload from
@@ -174,23 +181,19 @@ team runtime loop is still opt-in; write the current-schema payload from
 workflow pack and list that file in `workflow_packs` only on deployments that
 want autonomous team wakeups.
 
-For the bundled Skatteverket Add-on, use explicit module loading with
-`addon_loader.modules: ["evander_skatteverket_addon"]` and
-`addon_loader.enabled_addon_ids: ["skatteverket-addon"]`. Configure this in the
-host config to expose the Skatteverket Admin Web tab and MCP tools, and in
-`config/trigger-orchestrator/config.json` to make `query:skatteverket:*` and
-`effect:skatteverket:*` workflow providers available. Its state is stored under
+For the bundled Skatteverket Add-on, enabling `skatteverket-addon` exposes the
+Skatteverket Admin Web tab and MCP tools, and makes `query:skatteverket:*` and
+`effect:skatteverket:*` workflow providers available when the trigger
+orchestrator uses the same add-on loader. Its state is stored under
 `runtime/addons/skatteverket-addon/state.db`; production API credentials remain
 host-side and are referenced by environment variable names in add-on connection
 metadata.
 
-For the bundled Bokio Add-on, use explicit module loading with
-`addon_loader.modules: ["evander_bokio_addon"]` and
-`addon_loader.enabled_addon_ids: ["bokio-addon"]`. Configure this in the host
-config to expose the Bokio Admin Web tab and MCP tools, and in
-`config/trigger-orchestrator/config.json` to make `query:bokio:*` and
-`effect:bokio:*` workflow providers available. Set `BOKIO_COMPANY_ID` and
-`BOKIO_INTEGRATION_TOKEN` in the host service environment; optional
+For the bundled Bokio Add-on, enabling `bokio-addon` exposes the Bokio Admin Web
+tab and MCP tools, and makes `query:bokio:*` and `effect:bokio:*` workflow
+providers available when the trigger orchestrator uses the same add-on loader.
+Set `BOKIO_COMPANY_ID` and `BOKIO_INTEGRATION_TOKEN` in the host service
+environment; optional
 `provider_state.bokio.company_id_env` and
 `provider_state.bokio.integration_token_env` can point the add-on at different
 environment variable names without storing the token value in config.

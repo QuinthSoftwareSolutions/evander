@@ -25,6 +25,12 @@ from evander.addons import (
 from evander.workflow.plugins import load_provider_plugins
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BUNDLED_ADDON_MANIFESTS = {
+    "team-addon": "evander_team_addon",
+    "bokio-addon": "evander_bokio_addon",
+    "skatteverket-addon": "evander_skatteverket_addon",
+    "mssql-seed-addon": "evander_mssql_seed_addon",
+}
 
 
 def test_load_addons_defaults_to_empty_catalog(tmp_path: Path, monkeypatch) -> None:
@@ -43,7 +49,10 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     package_data = pyproject["tool"]["setuptools"]["package-data"]
 
     assert addon_entry_points["team"] == "evander_team_addon:register_addon"
-    assert package_data["evander_team_addon"] == ["ui_static/*"]
+    assert package_data["evander_team_addon"] == ["addon.json", "ui_static/*"]
+    assert json.loads(
+        (PROJECT_ROOT / "src/evander_team_addon/addon.json").read_text(encoding="utf-8")
+    ) == {"addon_id": "team-addon", "module": "evander_team_addon"}
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/index.html").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.js").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.css").is_file()
@@ -63,10 +72,48 @@ def test_bundled_bokio_addon_packaging_contract_is_declared() -> None:
     package_data = pyproject["tool"]["setuptools"]["package-data"]
 
     assert addon_entry_points["bokio"] == "evander_bokio_addon:register_addon"
-    assert package_data["evander_bokio_addon"] == ["ui_static/*"]
+    assert package_data["evander_bokio_addon"] == ["addon.json", "ui_static/*"]
+    assert json.loads(
+        (PROJECT_ROOT / "src/evander_bokio_addon/addon.json").read_text(encoding="utf-8")
+    ) == {"addon_id": "bokio-addon", "module": "evander_bokio_addon"}
     assert (PROJECT_ROOT / "src/evander_bokio_addon/ui_static/index.html").is_file()
     assert (PROJECT_ROOT / "src/evander_bokio_addon/ui_static/bokio-ui.js").is_file()
     assert (PROJECT_ROOT / "src/evander_bokio_addon/ui_static/bokio-ui.css").is_file()
+
+
+def test_bundled_addon_manifests_are_scannable_from_src() -> None:
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = pyproject["tool"]["setuptools"]["package-data"]
+
+    records = discover_addons(AddonLoaderConfig(package_dirs=["src"]), base_dir=PROJECT_ROOT)
+    discovered = {
+        record.registration.addon_id: record
+        for record in records
+        if record.registration is not None
+    }
+
+    assert set(discovered) == set(BUNDLED_ADDON_MANIFESTS)
+    for addon_id, module_name in BUNDLED_ADDON_MANIFESTS.items():
+        manifest_path = PROJECT_ROOT / "src" / module_name / "addon.json"
+        assert json.loads(manifest_path.read_text(encoding="utf-8")) == {
+            "addon_id": addon_id,
+            "module": module_name,
+        }
+        assert package_data[module_name] == ["addon.json", "ui_static/*"]
+        assert discovered[addon_id].source == f"package:src/{module_name}"
+        assert discovered[addon_id].error is None
+
+    catalog = load_addons(
+        AddonLoaderConfig(
+            package_dirs=["src"],
+            enabled_addon_ids=list(BUNDLED_ADDON_MANIFESTS),
+        ),
+        base_dir=PROJECT_ROOT,
+    )
+
+    assert {registration.addon_id for registration in catalog.registrations} == set(
+        BUNDLED_ADDON_MANIFESTS
+    )
 
 
 def test_addon_mcp_tool_registrar_returns_registered_names(tmp_path: Path) -> None:
@@ -290,9 +337,59 @@ def register_addon():
     assert sys.modules["my_addon.helper"].HELPER_VALUE == "Lazy Absolute Add-on"
 
 
+def test_package_addon_can_declare_package_directory_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_dir = tmp_path / "addons" / "source_style_addon"
+    package_dir.mkdir(parents=True)
+    (package_dir / "addon.json").write_text(
+        json.dumps({"addon_id": "source-style-addon", "module": "source_style_addon"}),
+        encoding="utf-8",
+    )
+    (package_dir / "__init__.py").write_text(
+        """
+from source_style_addon.api import DISPLAY_NAME
+
+
+def register_addon():
+    return {"addon_id": "source-style-addon", "display_name": DISPLAY_NAME}
+""",
+        encoding="utf-8",
+    )
+    (package_dir / "api.py").write_text(
+        'DISPLAY_NAME = "Source Style Add-on"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delitem(sys.modules, "source_style_addon", raising=False)
+    monkeypatch.delitem(sys.modules, "source_style_addon.api", raising=False)
+
+    records = discover_addons(AddonLoaderConfig(), base_dir=tmp_path)
+    catalog = load_addons(
+        AddonLoaderConfig(enabled_addon_ids=["source-style-addon"]),
+        base_dir=tmp_path,
+    )
+
+    assert len(records) == 1
+    assert records[0].registration is not None
+    assert records[0].registration.addon_id == "source-style-addon"
+    assert records[0].registration.display_name == "Source Style Add-on"
+    assert records[0].error is None
+    assert catalog.loaded_addons == ("package:addons/source_style_addon",)
+    assert catalog.registrations[0].addon_id == "source-style-addon"
+
+
+def test_discover_addons_ignores_directories_without_package_manifests(tmp_path: Path) -> None:
+    (tmp_path / "addons" / "not-an-addon").mkdir(parents=True)
+
+    records = discover_addons(AddonLoaderConfig(), base_dir=tmp_path)
+
+    assert records == ()
+
+
 def test_discover_addons_reports_invalid_package_manifests(tmp_path: Path) -> None:
     package_dir = tmp_path / "addons" / "broken-addon"
     package_dir.mkdir(parents=True)
+    (package_dir / "addon.json").write_text("{", encoding="utf-8")
 
     records = discover_addons(AddonLoaderConfig(), base_dir=tmp_path)
 
@@ -301,7 +398,7 @@ def test_discover_addons_reports_invalid_package_manifests(tmp_path: Path) -> No
     assert records[0].source_type == "package"
     assert records[0].registration is None
     assert records[0].error is not None
-    assert "Missing add-on package manifest" in records[0].error
+    assert "Invalid add-on package manifest" in records[0].error
 
 
 def test_explicit_module_takes_precedence_over_scanned_package_duplicate(
@@ -346,13 +443,40 @@ def register_addon():
         base_dir=tmp_path,
     )
 
+    assert len(records) == 1
     assert records[0].source == "explicit_addon"
     assert records[0].error is None
-    assert records[1].source == "package:addons/duplicate-addon"
-    assert records[1].error is not None
-    assert "already discovered from explicit_addon" in records[1].error
     assert catalog.loaded_addons == ("explicit_addon",)
     assert catalog.registrations[0].display_name == "Explicit Add-on"
+
+
+def test_discover_addons_reports_duplicate_scanned_package_ids(tmp_path: Path) -> None:
+    for package_name, display_name in (
+        ("alpha-addon", "Alpha Add-on"),
+        ("bravo-addon", "Bravo Add-on"),
+    ):
+        package_dir = tmp_path / "addons" / package_name
+        package_dir.mkdir(parents=True)
+        (package_dir / "addon.json").write_text(
+            json.dumps({"addon_id": "duplicate-addon", "module": "package_addon"}),
+            encoding="utf-8",
+        )
+        (package_dir / "package_addon.py").write_text(
+            f"""
+def register_addon():
+    return {{"addon_id": "duplicate-addon", "display_name": {display_name!r}}}
+""",
+            encoding="utf-8",
+        )
+
+    records = discover_addons(AddonLoaderConfig(), base_dir=tmp_path)
+
+    assert len(records) == 2
+    assert records[0].source == "package:addons/alpha-addon"
+    assert records[0].error is None
+    assert records[1].source == "package:addons/bravo-addon"
+    assert records[1].error is not None
+    assert "already discovered from package:addons/alpha-addon" in records[1].error
 
 
 def test_discover_addons_reports_candidates_without_enabled_filter(
@@ -372,7 +496,11 @@ def register_addon():
     sys.modules.pop("custom_addon", None)
 
     records = discover_addons(
-        AddonLoaderConfig(modules=["custom_addon"], enabled_addon_ids=[])
+        AddonLoaderConfig(
+            modules=["custom_addon"],
+            package_dirs=[],
+            enabled_addon_ids=[],
+        )
     )
 
     assert len(records) == 1
@@ -384,7 +512,9 @@ def register_addon():
 
 
 def test_discover_addons_reports_load_errors() -> None:
-    records = discover_addons(AddonLoaderConfig(modules=["missing_addon_module"]))
+    records = discover_addons(
+        AddonLoaderConfig(modules=["missing_addon_module"], package_dirs=[])
+    )
 
     assert len(records) == 1
     assert records[0].registration is None

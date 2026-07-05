@@ -31,18 +31,19 @@ Add-on discovery is configured with `addon_loader`:
 ```json
 {
   "addon_loader": {
-    "modules": ["my_company.evander_team_addon"],
-    "package_dirs": ["addons"],
+    "modules": [],
+    "package_dirs": ["addons", "src"],
     "enabled_entry_points": false,
     "enabled_addon_ids": null
   }
 }
 ```
 
-Evander also scans local add-on package directories. By default, `addons/` at
-the project root is scanned. This path is operator-local and ignored by Git.
-Each immediate child directory is treated as a package candidate when it
-contains `addon.json`:
+Evander scans local add-on package directories. By default, `addons/` and
+`src/` at the project root are scanned. `addons/` is operator-local and ignored
+by Git; `src/` lets bundled add-ons use the same manifest shape as copied
+packages. Each immediate child directory is treated as a package candidate when
+it contains `addon.json`:
 
 ```json
 {
@@ -51,11 +52,14 @@ contains `addon.json`:
 }
 ```
 
-The package directory is added to Python's import path before `module` is
-loaded, so a copied package can carry its own Python module. Scanned packages
-appear on the Admin Web **Add-ons** page automatically, but are not loaded by
-default; enable them through Admin Web so `addon_loader.enabled_addon_ids`
-contains the add-on id before restarting the listed services.
+The declared `module` is loaded from that package directory, so a copied package
+can carry its own Python module. The module can either live inside the package
+directory, such as `addons/example-addon/example_addon/__init__.py`, or be the
+package directory itself, such as `addons/example_addon/__init__.py` with
+`"module": "example_addon"`. Scanned packages appear on the Admin Web
+**Add-ons** page automatically, but are not loaded by default; enable them
+through Admin Web so `addon_loader.enabled_addon_ids` contains the add-on id
+before restarting the listed services.
 
 External packages can also expose Python entry points in the
 `evander.addons` group. Entry-point loading is disabled by default and
@@ -291,12 +295,13 @@ schemas belong in that package. Only generic hooks that are useful to other
 add-ons should be proposed for Truman core.
 
 The bundled `evander_team_addon` package provides the initial state-model layer
-for this pattern. It is still disabled by default; enable it with
-`addon_loader.modules: ["evander_team_addon"]` or by enabling the
-`evander.addons` entry-point group. For the bundled add-on, explicit
-module loading is the recommended operator path because entry-point loading is
-disabled by default. Its canonical state lives in relational SQLite under
-`runtime/addons/team-addon/state.db`; a legacy
+for this pattern. It ships an `addon.json` manifest beside its `__init__.py`, so
+it uses the same scanned-package contract as copied add-ons in a source
+checkout. It is still disabled by default; enable `team-addon` from Admin Web
+or set `addon_loader.enabled_addon_ids: ["team-addon"]`. Explicit
+`addon_loader.modules: ["evander_team_addon"]` and `evander.addons` entry-point
+loading remain supported compatibility paths. Its canonical state lives in
+relational SQLite under `runtime/addons/team-addon/state.db`; a legacy
 `runtime/addons/team-addon/state.json` file is imported once when the database
 is first initialized. Truman session metadata remains a non-canonical
 integration index.
@@ -973,15 +978,15 @@ promises.
 
 Use this checklist when enabling the bundled Team Add-on on a deployment:
 
-1. Confirm the installed package includes `evander_team_addon` and its
-   `ui_static` files.
+1. Confirm the installed package includes `evander_team_addon`, its
+   `addon.json` manifest, and its `ui_static` files.
 2. Enable Admin Web routes/navigation in the host config or legacy gateway
    config:
 
    ```json
    {
      "addon_loader": {
-       "modules": ["evander_team_addon"],
+       "package_dirs": ["addons", "src"],
        "enabled_entry_points": false,
        "enabled_addon_ids": ["team-addon"]
      }

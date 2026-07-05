@@ -50,6 +50,9 @@
   package work while preserving same-name package isolation.
 - Kept scanned package aliases available after registration so route and MCP
   handlers can perform lazy absolute imports from their package.
+- Added `addon.json` manifests to bundled add-ons and scanned source-tree
+  manifests from `src/` so bundled packages model the same registration contract
+  future local add-ons should use.
 
 ## 2026-07-04 - MSSQL Seed Add-on
 

@@ -18,7 +18,7 @@ from evander.storage import JsonObjectStore
 
 _ADDON_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _ADDON_PACKAGE_MANIFEST = "addon.json"
-DEFAULT_ADDON_PACKAGE_DIRS = ("addons",)
+DEFAULT_ADDON_PACKAGE_DIRS = ("addons", "src")
 
 
 class AddonLoaderConfig(BaseModel):
@@ -309,14 +309,16 @@ def discover_addons(
             )
         )
 
-    seen_sources_by_id: dict[str, str] = {}
+    seen_records_by_id: dict[str, DiscoveredAddon] = {}
     normalized: list[DiscoveredAddon] = []
     for record in records:
         if record.registration is None:
             normalized.append(record)
             continue
-        previous_source = seen_sources_by_id.get(record.registration.addon_id)
-        if previous_source is not None:
+        previous_record = seen_records_by_id.get(record.registration.addon_id)
+        if previous_record is not None:
+            if record.source_type == "package" and previous_record.source_type != "package":
+                continue
             normalized.append(
                 DiscoveredAddon(
                     source=record.source,
@@ -325,12 +327,12 @@ def discover_addons(
                     registration=record.registration,
                     error=(
                         f"Duplicate add-on id {record.registration.addon_id!r}; "
-                        f"already discovered from {previous_source}"
+                        f"already discovered from {previous_record.source}"
                     ),
                 )
             )
             continue
-        seen_sources_by_id[record.registration.addon_id] = record.source
+        seen_records_by_id[record.registration.addon_id] = record
         normalized.append(record)
     return tuple(normalized)
 
@@ -483,6 +485,8 @@ def _iter_addon_package_manifests(
         package_children = (child for child in root.iterdir() if child.is_dir())
         for package_dir in sorted(package_children, key=_path_sort_key):
             manifest_path = package_dir / _ADDON_PACKAGE_MANIFEST
+            if not manifest_path.is_file():
+                continue
             records.append(
                 (
                     package_dir,
@@ -599,6 +603,10 @@ def _addon_package_module_location(
     parts = module_name.split(".")
     if not parts or any(not part.isidentifier() for part in parts):
         raise ValueError(f"{manifest_path} declares invalid module name {module_name!r}")
+    if len(parts) == 1 and parts[0] == package_dir.name:
+        package_init = package_dir / "__init__.py"
+        if package_init.is_file():
+            return package_init, [str(package_dir)]
     module_path = package_dir.joinpath(*parts)
     package_init = module_path / "__init__.py"
     if package_init.is_file():

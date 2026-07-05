@@ -65,10 +65,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 evander = ["templates/*.md", "workflow/builtin_packs/*.json"]
-evander_team_addon = ["ui_static/*"]
-evander_bokio_addon = ["ui_static/*"]
-evander_skatteverket_addon = ["ui_static/*"]
-evander_mssql_seed_addon = ["ui_static/*"]
+evander_team_addon = ["addon.json", "ui_static/*"]
+evander_bokio_addon = ["addon.json", "ui_static/*"]
+evander_skatteverket_addon = ["addon.json", "ui_static/*"]
+evander_mssql_seed_addon = ["addon.json", "ui_static/*"]
 
 [tool.ruff]
 line-length = 100
