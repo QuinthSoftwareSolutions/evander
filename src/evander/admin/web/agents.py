@@ -155,15 +155,63 @@ def agent_routes(
     _auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[BaseRoute]:
-    def require_owner_privileged(request: Request) -> JSONResponse | None:
+    def require_privileged_unlocked(request: Request) -> JSONResponse | None:
+        if request_has_privileged_operations(auth=_auth, service=service, request=request):
+            return None
+        return json_error("Privileged operations are locked.", status_code=403)
+
+    def require_owner_privileged(
+        request: Request, *, directory_path: str | None = None
+    ) -> JSONResponse | None:
         if request_has_privileged_operations(
             auth=_auth,
             service=service,
             request=request,
             required_permission=ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
         ):
             return None
         return json_error("Privileged operations are locked.", status_code=403)
+
+    def payload_directory_path(payload: dict[str, Any]) -> str:
+        return str(payload.get("directory_path") or "root").strip() or "root"
+
+    def agent_directory_path(agent_id: str, *, backend: str | None = None) -> str:
+        selected_backend = str(backend or "all").strip() or "all"
+        if selected_backend in {"all", "libvirt_vm"}:
+            direct_session = service.runtime.session_repository.get_session(agent_id)
+            if direct_session is not None:
+                return str(direct_session.directory_path or "root").strip() or "root"
+            matches = service.runtime.session_repository.list_sessions_for_vm(agent_id)
+            if len(matches) == 1:
+                return str(matches[0].directory_path or "root").strip() or "root"
+            if len(matches) > 1:
+                session_ids = ", ".join(sorted(session.session_id for session in matches))
+                raise ValueError(
+                    f"VM {agent_id!r} is associated with multiple sessions: {session_ids}"
+                )
+            summaries = service.vm_agent_admin.list_vms(
+                include_inactive=True,
+                omit_state=True,
+                directory_path=None,
+                direct_only=False,
+            )
+            for summary in summaries:
+                if summary.vm_name == agent_id:
+                    return str(next(iter(summary.directory_paths), "root") or "root").strip() or "root"
+
+        if selected_backend in {"all", "container_worker_vm"}:
+            resolve_container = getattr(
+                service.vm_agent_admin, "resolve_container_agent_session", None
+            )
+            if callable(resolve_container):
+                session, record = resolve_container(agent_id, require_session=False)
+                if session is not None:
+                    return str(session.directory_path or "root").strip() or "root"
+                if record is not None:
+                    return str(getattr(record, "directory_path", None) or "root").strip() or "root"
+
+        return "root"
 
     async def list_agents(request: Request) -> JSONResponse:
         directory_path = _string_query(request, "directory_path")
@@ -289,10 +337,14 @@ def agent_routes(
         return JSONResponse(_jsonable(options))
 
     async def create_agent(request: Request) -> JSONResponse:
-        if error_response := require_owner_privileged(request):
+        if error_response := require_privileged_unlocked(request):
             return error_response
         try:
             payload = await _json_body(request)
+            if error_response := require_owner_privileged(
+                request, directory_path=payload_directory_path(payload)
+            ):
+                return error_response
             result = await run_in_threadpool(service.vm_agent_admin.create_admin_agent, payload)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -302,10 +354,14 @@ def agent_routes(
         return JSONResponse(_jsonable(result), status_code=status_code)
 
     async def submit_create_operation(request: Request) -> JSONResponse:
-        if error_response := require_owner_privileged(request):
+        if error_response := require_privileged_unlocked(request):
             return error_response
         try:
             payload = await _json_body(request)
+            if error_response := require_owner_privileged(
+                request, directory_path=payload_directory_path(payload)
+            ):
+                return error_response
             operation = await run_in_threadpool(service.vm_agent_admin.submit_admin_agent_create, payload)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -341,11 +397,18 @@ def agent_routes(
         return JSONResponse({"operation": _jsonable(operation)})
 
     async def patch_agent(request: Request) -> JSONResponse:
-        if error_response := require_owner_privileged(request):
+        if error_response := require_privileged_unlocked(request):
             return error_response
         agent_id = request.path_params["agent_id"]
         backend = _string_query(request, "backend")
         try:
+            if error_response := require_owner_privileged(
+                request,
+                directory_path=await run_in_threadpool(
+                    agent_directory_path, agent_id, backend=backend
+                ),
+            ):
+                return error_response
             payload = await _json_body(request)
             result = await run_in_threadpool(
                 service.vm_agent_admin.update_admin_agent,
@@ -360,11 +423,18 @@ def agent_routes(
         return JSONResponse(_jsonable(result), status_code=200)
 
     async def delete_agent(request: Request) -> JSONResponse:
-        if error_response := require_owner_privileged(request):
+        if error_response := require_privileged_unlocked(request):
             return error_response
         agent_id = request.path_params["agent_id"]
         backend = _string_query(request, "backend")
         try:
+            if error_response := require_owner_privileged(
+                request,
+                directory_path=await run_in_threadpool(
+                    agent_directory_path, agent_id, backend=backend
+                ),
+            ):
+                return error_response
             result = await run_in_threadpool(
                 service.vm_agent_admin.delete_admin_agent,
                 agent_id,
@@ -378,12 +448,19 @@ def agent_routes(
         return JSONResponse(_jsonable(result), status_code=status_code)
 
     async def mutate_agent(request: Request) -> JSONResponse:
-        if error_response := require_owner_privileged(request):
+        if error_response := require_privileged_unlocked(request):
             return error_response
         agent_id = request.path_params["agent_id"]
         action = request.path_params["action"]
         backend = _string_query(request, "backend")
         try:
+            if error_response := require_owner_privileged(
+                request,
+                directory_path=await run_in_threadpool(
+                    agent_directory_path, agent_id, backend=backend
+                ),
+            ):
+                return error_response
             payload = await _json_body(request)
             result = await run_in_threadpool(
                 service.vm_agent_admin.run_admin_agent_action,

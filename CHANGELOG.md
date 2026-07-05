@@ -4,6 +4,9 @@
 
 - Blocked IPv4-mapped metadata IP addresses in workflow HTTP request destination checks.
 - Scoped Admin Web approval decision and revoke authorization to the approval request directory.
+- Scoped Admin Web VM, issue, agent, and directory-creation owner checks to the
+  target directory so child-directory owners can mutate their own scope after
+  unlock.
 
 ## 2026-07-05 - Tokenized Relay Security Fixes
 

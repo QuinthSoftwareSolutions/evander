@@ -1530,14 +1530,16 @@ def worker_config_routes(
         return JSONResponse(status)
 
     async def create_directory(request: Request) -> JSONResponse:
-        access_error = _require_config_mutation_access(request)
-        if access_error is not None:
-            return access_error
         try:
             payload = await _json_body(request)
         except ValueError as exc:
             return _error_response(str(exc), status_code=400)
         parent_path = str(payload.get("parent_path") or "root").strip() or "root"
+        access_error = _require_config_mutation_access(
+            request, directory_path=parent_path
+        )
+        if access_error is not None:
+            return access_error
         name = str(payload.get("name") or "").strip()
         if not name:
             return _error_response("name is required", status_code=400)

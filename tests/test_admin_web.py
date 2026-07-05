@@ -12210,14 +12210,16 @@ _ADMIN_VM_ISSUE_MUTATION_CASES = (
 )
 
 
-def _admin_route_issue_record(issue_id: str = "issue-1") -> LocalIssueRecord:
+def _admin_route_issue_record(
+    issue_id: str = "issue-1", *, directory_path: str = "root"
+) -> LocalIssueRecord:
     return LocalIssueRecord(
         issue_id=issue_id,
         issue_number="1",
         title="Issue",
         body="Body",
         yaml_path="/tmp/issue.yaml",
-        directory_path="root",
+        directory_path=directory_path,
     )
 
 
@@ -12257,12 +12259,57 @@ def _regular_admin_web_client(
     return client
 
 
+def _scoped_owner_admin_web_client(
+    monkeypatch: pytest.MonkeyPatch,
+    service: AdminRuntimeComponents,
+    *,
+    directory_path: str = "root/ops",
+) -> TestClient:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.remove_user_group_assignment(
+        login="ops-owner@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="ops-owner@example.com", group_id=OWNER_GROUP_ID, directory_path=directory_path
+    )
+    store.set_local_password(login="ops-owner@example.com", password="ops-pass")
+    client = TestClient(app)
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "ops-owner@example.com", "password": "ops-pass"},
+    )
+    assert login.status_code == 200
+    _unlock_privileged_operations(client)
+    return client
+
+
 def _install_admin_agent_mutation_stub(
     service: AdminRuntimeComponents,
     monkeypatch: pytest.MonkeyPatch,
     case: str,
     calls: list[str],
+    *,
+    directory_path: str = "root",
 ) -> None:
+    if case in {"patch", "delete", "action", "prompt"}:
+        service.runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id="session-1",
+                vm_id="vm-1",
+                vm_provider="libvirt",
+                vm_provider_id="vm-1",
+                directory_path=directory_path,
+                allowed_tools=[],
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+
     if case == "create":
 
         def create_admin_agent(self, payload):
@@ -12368,7 +12415,22 @@ def _install_vm_issue_mutation_stub(
     monkeypatch: pytest.MonkeyPatch,
     case: str,
     calls: list[str],
+    *,
+    directory_path: str = "root",
 ) -> None:
+    if case in {"issue-update", "issue-delete", "issue-create-vm"}:
+
+        def resolve_local_issue_record(_service, issue_identifier):
+            return _admin_route_issue_record(
+                issue_identifier, directory_path=directory_path
+            )
+
+        monkeypatch.setattr(
+            vms_issues_module,
+            "_resolve_local_issue_record",
+            resolve_local_issue_record,
+        )
+
     if case == "vm-create":
 
         def create_vm(self, **payload):
@@ -12397,7 +12459,7 @@ def _install_vm_issue_mutation_stub(
                     vm_name="vm-1",
                     issue_number="ISSUE-1",
                     session_ids=[],
-                    directory_paths=["root"],
+                    directory_paths=[directory_path],
                     libvirt_state="stopped",
                     agent_state="idle",
                 )
@@ -12429,7 +12491,7 @@ def _install_vm_issue_mutation_stub(
         def create_local_issue(self, **_payload):
             del self
             calls.append("create_local_issue")
-            return _admin_route_issue_record()
+            return _admin_route_issue_record(directory_path=directory_path)
 
         monkeypatch.setattr(
             service.issue_git_admin,
@@ -12459,7 +12521,9 @@ def _install_vm_issue_mutation_stub(
         def update_local_issue(self, issue_identifier, **_payload):
             del self
             calls.append(f"update_local_issue:{issue_identifier}")
-            return _admin_route_issue_record(issue_identifier)
+            return _admin_route_issue_record(
+                issue_identifier, directory_path=directory_path
+            )
 
         monkeypatch.setattr(
             service.issue_git_admin,
@@ -12615,6 +12679,140 @@ def test_admin_web_vm_issue_mutations_reject_non_owner(
 
     _assert_admin_mutation_forbidden(response)
     assert calls == []
+
+
+def test_admin_web_directory_create_authorizes_scoped_owner_on_parent_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    client = _scoped_owner_admin_web_client(monkeypatch, service)
+
+    response = client.post(
+        "/api/configuration/directories",
+        json={"parent_path": "root/ops", "name": "new"},
+    )
+
+    assert response.status_code == 200
+    assert service.directory_admin.get("root/ops/new").ok is True
+
+
+@pytest.mark.parametrize(
+    ("case", "method", "path", "payload", "expected_status"),
+    (
+        (
+            "vm-create",
+            "POST",
+            "/api/admin/vms",
+            {"vm_name": "vm-1", "directory_path": "root/ops"},
+            201,
+        ),
+        ("vm-action", "POST", "/api/admin/vms/vm-1/actions/start?directory_path=root/ops", {}, 200),
+        (
+            "issue-create",
+            "POST",
+            "/api/admin/issues",
+            {"title": "Issue", "body": "Body", "directory_path": "root/ops"},
+            201,
+        ),
+        (
+            "issue-update",
+            "PUT",
+            "/api/admin/issues/issue-1",
+            {"title": "Updated", "body": "Body", "state": "New"},
+            200,
+        ),
+        ("issue-delete", "DELETE", "/api/admin/issues/issue-1", None, 200),
+        ("issue-create-vm", "POST", "/api/admin/issues/issue-1/create-vm", {}, 200),
+    ),
+)
+def test_admin_web_vm_issue_mutations_authorize_scoped_owner_at_target_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+    expected_status: int,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    calls: list[str] = []
+    _install_vm_issue_mutation_stub(
+        service, monkeypatch, case, calls, directory_path="root/ops"
+    )
+    client = _scoped_owner_admin_web_client(monkeypatch, service)
+
+    response = _invoke_admin_mutation(client, method=method, path=path, payload=payload)
+
+    assert response.status_code == expected_status
+    assert calls
+
+
+@pytest.mark.parametrize(
+    ("case", "method", "path", "payload", "expected_status"),
+    (
+        (
+            "create",
+            "POST",
+            "/api/admin/agents",
+            {
+                "backend": "container_worker_vm",
+                "session_id": "session-1",
+                "directory_path": "root/ops",
+            },
+            201,
+        ),
+        (
+            "submit-create-operation",
+            "POST",
+            "/api/admin/agents/create-operations",
+            {
+                "backend": "container_worker_vm",
+                "session_id": "session-1",
+                "directory_path": "root/ops",
+            },
+            202,
+        ),
+        (
+            "patch",
+            "PATCH",
+            "/api/admin/agents/session-1?backend=libvirt_vm",
+            {"model": "gpt-5"},
+            200,
+        ),
+        ("delete", "DELETE", "/api/admin/agents/session-1?backend=libvirt_vm", None, 200),
+        ("action", "POST", "/api/admin/agents/vm-1/actions/start?backend=libvirt_vm", {}, 200),
+        (
+            "prompt",
+            "POST",
+            "/api/admin/agents/vm-1/actions/prompt-agent?backend=libvirt_vm",
+            {"prompt": "Continue"},
+            200,
+        ),
+    ),
+)
+def test_admin_web_agent_mutations_authorize_scoped_owner_at_target_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+    expected_status: int,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    calls: list[str] = []
+    _install_admin_agent_mutation_stub(
+        service, monkeypatch, case, calls, directory_path="root/ops"
+    )
+    client = _scoped_owner_admin_web_client(monkeypatch, service)
+
+    response = _invoke_admin_mutation(client, method=method, path=path, payload=payload)
+
+    assert response.status_code == expected_status
+    assert calls
 
 
 def test_admin_web_rejects_start_when_vm_session_model_is_missing(
