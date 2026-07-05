@@ -245,6 +245,21 @@ TEAM_RESOURCE_TOKEN_COLLECTIONS = (
 )
 
 
+def _team_costs_payload(
+    context: AddonContext,
+    repository: TeamStateRepository,
+    *,
+    backfill_transcripts: bool,
+) -> dict[str, Any]:
+    state = repository.read()
+    service = TeamCostService(
+        runtime_dir=context.runtime_dir,
+        state=state,
+        session_repository=_session_repository_from_context(context),
+    )
+    return service.costs_payload(backfill_transcripts=backfill_transcripts)
+
+
 def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     repository = TeamStateRepository(context.runtime_dir)
     admin_service = TeamAdminService(repository)
@@ -411,14 +426,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return JSONResponse(payload)
 
     async def get_costs(request: Request) -> JSONResponse:
-        state = repository.read()
         backfill = _query_bool(request, "backfill")
-        service = TeamCostService(
-            runtime_dir=context.runtime_dir,
-            state=state,
-            session_repository=_session_repository_from_context(context),
+        payload = await run_in_threadpool(
+            _team_costs_payload,
+            context,
+            repository,
+            backfill_transcripts=backfill is True,
         )
-        return JSONResponse(service.costs_payload(backfill_transcripts=backfill is not False))
+        return JSONResponse(payload)
+
+    async def backfill_costs(request: Request) -> JSONResponse:
+        payload = await run_in_threadpool(
+            _team_costs_payload,
+            context,
+            repository,
+            backfill_transcripts=True,
+        )
+        return JSONResponse(payload)
 
     async def create_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -2020,6 +2044,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ),
         Route("/timeline", _with_errors(get_timeline), methods=["GET"]),
         Route("/costs", _with_errors(get_costs), methods=["GET"]),
+        Route("/costs/backfill", _with_errors(backfill_costs), methods=["POST"]),
         Route("/teams", _with_errors(create_team), methods=["POST"]),
         Route("/teams/{team_id}", _with_errors(patch_team), methods=["PATCH"]),
         Route("/governance-groups", _with_errors(create_governance_group), methods=["POST"]),

@@ -148,6 +148,8 @@ let timelineLoading = false;
 let timelineRequestId = 0;
 let timelinePage = 1;
 let costsRequestId = 0;
+let costBackfillRequestId = 0;
+let costBackfillLoading = false;
 let showArchived = false;
 let showHandledGovernanceAgenda = false;
 let activeTeamView = readStoredTeamView();
@@ -1581,6 +1583,13 @@ function bindRecordEditing() {
       return;
     }
 
+    const costBackfillButton = event.target.closest("[data-cost-backfill-refresh]");
+    if (costBackfillButton) {
+      event.preventDefault();
+      void refreshCostBackfill();
+      return;
+    }
+
     const agentCallMuteButton = event.target.closest("[data-agent-call-mute]");
     if (agentCallMuteButton) {
       event.preventDefault();
@@ -2974,7 +2983,7 @@ function closeStateStream() {
 async function loadCosts() {
   const requestId = ++costsRequestId;
   try {
-    const response = await teamFetch(`${API_BASE}/costs`, {
+    const response = await teamFetch(`${API_BASE}/costs?backfill=false`, {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -2999,6 +3008,50 @@ async function loadCosts() {
     });
     render();
     restoreFormDrafts(drafts);
+  }
+}
+
+async function refreshCostBackfill() {
+  if (costBackfillLoading) {
+    return;
+  }
+  const requestId = ++costBackfillRequestId;
+  let drafts = captureFormDrafts();
+  costBackfillLoading = true;
+  setStatus("Refreshing transcript costs.", "loading");
+  render();
+  restoreFormDrafts(drafts);
+  try {
+    const response = await teamFetch(`${API_BASE}/costs/backfill`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== costBackfillRequestId) {
+      return;
+    }
+    drafts = captureFormDrafts();
+    costBackfillLoading = false;
+    costState = normalizeCosts(payload);
+    render();
+    restoreFormDrafts(drafts);
+    setStatus("", "");
+  } catch (error) {
+    if (requestId !== costBackfillRequestId) {
+      return;
+    }
+    drafts = captureFormDrafts();
+    costBackfillLoading = false;
+    costState = normalizeCosts({
+      ...costState,
+      error: error instanceof Error ? error.message : "Cost transcript refresh failed.",
+    });
+    render();
+    restoreFormDrafts(drafts);
+    setStatus(error instanceof Error ? error.message : "Cost transcript refresh failed.", "error");
   }
 }
 
@@ -4311,6 +4364,21 @@ function renderTeamCostCounter(teamId) {
       : "";
   }
   return renderCostCounter(cost, { label: "Estimated team cost", compact: false });
+}
+
+function renderCostBackfillControl() {
+  const disabled = costBackfillLoading ? " disabled" : "";
+  const label = costBackfillLoading ? "Refreshing transcript costs" : "Refresh transcript costs";
+  const backfill = costState.backfill || null;
+  const detail = backfill
+    ? `${text(backfill.coverage_status || "partial")} coverage, ${numberOrZero(backfill.records_imported)} imported, ${numberOrZero(backfill.duplicate_records)} duplicate`
+    : "Manual refresh checks transcript-backed Claude usage.";
+  return `
+    <div class="record-actions cost-refresh-actions">
+      <button type="button" data-cost-backfill-refresh${disabled}>${escapeHtml(label)}</button>
+      <span class="meta-line">${escapeHtml(detail)}</span>
+    </div>
+  `;
 }
 
 function teamCostForTeam(teamId) {
@@ -6675,6 +6743,7 @@ function renderTeamRecordDetailContent(team) {
       <section class="agent-detail-section">
         <h3>Team cost</h3>
         ${renderTeamCostCounter(team.id) || "<p class=\"empty-state\">No cost estimate available.</p>"}
+        ${renderCostBackfillControl()}
       </section>
     </div>
   `;

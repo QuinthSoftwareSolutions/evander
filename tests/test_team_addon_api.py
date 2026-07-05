@@ -1716,7 +1716,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
-    assert "teamFetch(`${API_BASE}/costs`" in script.text
+    assert "teamFetch(`${API_BASE}/costs?backfill=false`" in script.text
+    assert "teamFetch(`${API_BASE}/costs/backfill`" in script.text
+    assert "data-cost-backfill-refresh" in script.text
     assert "renderTeamCostCounter" in script.text
     assert "renderTeamCostBlockedNotice" in script.text
     assert "Blocked: estimated cost cap reached" in script.text
@@ -2205,6 +2207,103 @@ def test_team_addon_admin_api_costs_smoke(tmp_path: Path) -> None:
     assert payload["team_costs"]["team"]["events_count"] == 1
     assert payload["project_costs"]["project"]["events_count"] == 1
     assert payload["project_costs"]["project"]["estimated_cost"] is not None
+
+
+def test_team_addon_admin_api_costs_default_skips_backfill_and_uses_threadpool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    cost_calls: list[bool] = []
+    threadpool_calls: list[dict[str, object]] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append({"func": getattr(func, "__name__", ""), "kwargs": dict(kwargs)})
+        return func(*args, **kwargs)
+
+    def fake_costs_payload(self, *, backfill_transcripts: bool = False):
+        cost_calls.append(backfill_transcripts)
+        return {
+            "generated_at": "2026-06-16T12:00:00+00:00",
+            "coverage_status": "complete",
+            "coverage_reasons": [],
+            "team_costs": {},
+            "governance_group_costs": {},
+            "project_costs": {},
+            "unattributed_costs": None,
+            "source_counts": {},
+            "events_count": 0,
+            "priced_events_count": 0,
+            "unpriced_events_count": 0,
+        }
+
+    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
+    client = _client(tmp_path)
+
+    response = client.get("/api/addons/team-addon/costs")
+
+    assert response.status_code == 200
+    assert cost_calls == [False]
+    assert threadpool_calls == [
+        {"func": "_team_costs_payload", "kwargs": {"backfill_transcripts": False}}
+    ]
+    assert "backfill" not in response.json()
+
+
+def test_team_addon_admin_api_costs_backfill_endpoint_runs_backfill_in_threadpool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    cost_calls: list[bool] = []
+    threadpool_calls: list[dict[str, object]] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append({"func": getattr(func, "__name__", ""), "kwargs": dict(kwargs)})
+        return func(*args, **kwargs)
+
+    def fake_costs_payload(self, *, backfill_transcripts: bool = False):
+        cost_calls.append(backfill_transcripts)
+        return {
+            "generated_at": "2026-06-16T12:00:00+00:00",
+            "coverage_status": "complete",
+            "coverage_reasons": [],
+            "team_costs": {},
+            "governance_group_costs": {},
+            "project_costs": {},
+            "unattributed_costs": None,
+            "source_counts": {},
+            "events_count": 0,
+            "priced_events_count": 0,
+            "unpriced_events_count": 0,
+            "backfill": {
+                "coverage_status": "complete",
+                "sources_checked": 0,
+                "sources_missing": 0,
+                "files_scanned": 0,
+                "records_seen": 0,
+                "records_imported": 0,
+                "duplicate_records": 0,
+                "records_skipped": 0,
+                "errors": [],
+            },
+        }
+
+    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
+    client = _client(tmp_path)
+
+    response = client.post("/api/addons/team-addon/costs/backfill")
+
+    assert response.status_code == 200
+    assert cost_calls == [True]
+    assert threadpool_calls == [
+        {"func": "_team_costs_payload", "kwargs": {"backfill_transcripts": True}}
+    ]
+    assert response.json()["backfill"]["coverage_status"] == "complete"
 
 
 def test_team_addon_admin_api_dismisses_failed_action_attention(tmp_path: Path) -> None:

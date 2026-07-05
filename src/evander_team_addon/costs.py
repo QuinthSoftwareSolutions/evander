@@ -5,12 +5,14 @@ import os
 import re
 import shlex
 import subprocess
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from evander.model_usage.models import (
@@ -36,9 +38,12 @@ DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
 TRANSCRIPT_SOURCE_NAME = "claude_transcript_backfill"
 DEFAULT_REMOTE_AGENT_HOME = "/home/agent"
 REMOTE_TRANSCRIPT_SCAN_TIMEOUT_SECONDS = 20
+REMOTE_TRANSCRIPT_STALE_HOST_TTL_SECONDS = 300
 SSH_CONNECT_TIMEOUT_SECONDS = 5
 _SSH_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _SSH_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_REMOTE_TRANSCRIPT_FAILURES: dict[tuple[str, str, str], float] = {}
+_REMOTE_TRANSCRIPT_FAILURES_LOCK = Lock()
 
 _REMOTE_CLAUDE_TRANSCRIPT_SCAN_SCRIPT = r"""
 import json
@@ -317,7 +322,7 @@ class TeamCostService:
         self._context_cache: dict[str, ModelUsageCorrelationContext | None] = {}
         self._request_attribution_cache: dict[tuple[str, str], TeamCostAttribution] = {}
 
-    def costs_payload(self, *, backfill_transcripts: bool = True) -> dict[str, Any]:
+    def costs_payload(self, *, backfill_transcripts: bool = False) -> dict[str, Any]:
         backfill_result = (
             self.backfill_claude_transcripts() if backfill_transcripts else None
         )
@@ -759,9 +764,23 @@ def _backfill_remote_claude_transcripts(
     result: ClaudeTranscriptBackfillResult,
 ) -> None:
     files_seen = 0
+    retry_after_seconds = _remote_transcript_circuit_retry_after_seconds(source)
+    if retry_after_seconds is not None:
+        result.errors.append(
+            {
+                "session_id": source.session_id,
+                "remote_host": source.remote_host,
+                "error": (
+                    "remote transcript scan skipped after recent failure; "
+                    f"retry in {max(1, int(retry_after_seconds) + 1)}s"
+                ),
+            }
+        )
+        return
     try:
         entries = _scan_remote_claude_transcripts(source)
     except Exception as exc:
+        _record_remote_transcript_scan_failure(source)
         result.errors.append(
             {
                 "session_id": source.session_id,
@@ -770,6 +789,7 @@ def _backfill_remote_claude_transcripts(
             }
         )
         return
+    _clear_remote_transcript_scan_failure(source)
 
     for entry in entries:
         if entry.kind == "file":
@@ -807,6 +827,57 @@ def _backfill_remote_claude_transcripts(
 
     if files_seen == 0:
         result.sources_missing += 1
+
+
+def _remote_transcript_circuit_key(
+    source: ClaudeTranscriptSource,
+) -> tuple[str, str, str] | None:
+    host = _optional_text(source.remote_host)
+    if host is None:
+        return None
+    user = _optional_text(source.remote_user) or "agent"
+    remote_home = _optional_text(source.remote_agent_home) or DEFAULT_REMOTE_AGENT_HOME
+    return (user, host, remote_home)
+
+
+def _remote_transcript_circuit_retry_after_seconds(
+    source: ClaudeTranscriptSource,
+) -> float | None:
+    key = _remote_transcript_circuit_key(source)
+    if key is None:
+        return None
+    now = time.monotonic()
+    with _REMOTE_TRANSCRIPT_FAILURES_LOCK:
+        retry_at = _REMOTE_TRANSCRIPT_FAILURES.get(key)
+        if retry_at is None:
+            return None
+        if retry_at <= now:
+            _REMOTE_TRANSCRIPT_FAILURES.pop(key, None)
+            return None
+        return retry_at - now
+
+
+def _record_remote_transcript_scan_failure(source: ClaudeTranscriptSource) -> None:
+    key = _remote_transcript_circuit_key(source)
+    if key is None:
+        return
+    with _REMOTE_TRANSCRIPT_FAILURES_LOCK:
+        _REMOTE_TRANSCRIPT_FAILURES[key] = (
+            time.monotonic() + REMOTE_TRANSCRIPT_STALE_HOST_TTL_SECONDS
+        )
+
+
+def _clear_remote_transcript_scan_failure(source: ClaudeTranscriptSource) -> None:
+    key = _remote_transcript_circuit_key(source)
+    if key is None:
+        return
+    with _REMOTE_TRANSCRIPT_FAILURES_LOCK:
+        _REMOTE_TRANSCRIPT_FAILURES.pop(key, None)
+
+
+def _reset_remote_transcript_scan_failures_for_tests() -> None:
+    with _REMOTE_TRANSCRIPT_FAILURES_LOCK:
+        _REMOTE_TRANSCRIPT_FAILURES.clear()
 
 
 def _scan_remote_claude_transcripts(

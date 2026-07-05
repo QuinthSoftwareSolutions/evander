@@ -41,6 +41,9 @@
 - Kept Admin Web Lock/Unlock changes from remounting add-on iframes and taught
   the Team Add-on UI to update locked controls from same-origin privilege
   messages while preserving selected Teams records.
+- Stopped Team Add-on cost loads from running transcript backfill on page load,
+  added an explicit transcript-cost refresh path, and circuit-broke repeated
+  remote transcript scans for stale hosts.
 
 ## 2026-07-04 - Add-on Package Discovery
 
