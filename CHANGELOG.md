@@ -13,32 +13,6 @@
 - Refetched the corrected timeline page after server-windowed view payloads
   clamp an out-of-range page.
 
-## 2026-07-04 - Admin Web Branding Asset Caching
-
-- Resized and compressed the bundled Evander and Quinth Software Solutions
-  branding PNGs so header and sign-in logos no longer ship multi-megabyte
-  source images.
-- Taught Admin Web to use Vite manifest-resolved hashed default branding assets
-  when the frontend build is available and to serve hashed `/assets/...` files
-  with long immutable cache headers.
-- Kept manifest rewrites scoped to the bundled branding asset directory so
-  deployments with custom `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` files keep
-  serving their configured logo assets.
-
-## 2026-07-04 - Configuration Page Reorganization
-
-- Reorganized Admin Web Configuration into operator-facing areas for people and
-  communications, models and Assistant behavior, agent runtime, code/issues/PRs,
-  access and audit policy, network/package relays, automation assignment, and
-  advanced state.
-- Moved email, approval notification targets, phone calls, communication files,
-  and communication artifact link settings into People & Communications so
-  related messaging settings are no longer split across unrelated tabs.
-- Moved model pricing into the Models, Assistant & Knowledge area alongside
-  model routing and Assistant settings.
-- Kept approval-required tool policy, VM provider defaults, and libvirt VM
-  template fields editable in the reorganized Configuration areas.
-
 ## 2026-07-04 - Admin Dashboard Poll Backpressure
 
 - Paused Admin Web dashboard and shell background polling while the document is
@@ -50,6 +24,18 @@
 - Compacted dashboard agent-inventory responses to omit deep inventory,
   execution, metadata, and session-policy details outside non-dashboard
   `summary_only=true` reads.
+
+## 2026-07-04 - Admin Web Branding Asset Caching
+
+- Resized and compressed the bundled Evander and Quinth Software Solutions
+  branding PNGs so header and sign-in logos no longer ship multi-megabyte
+  source images.
+- Taught Admin Web to use Vite manifest-resolved hashed default branding assets
+  when the frontend build is available and to serve hashed `/assets/...` files
+  with long immutable cache headers.
+- Kept manifest rewrites scoped to the bundled branding asset directory so
+  deployments with custom `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` files keep
+  serving their configured logo assets.
 
 ## 2026-07-04 - Admin Sessions List Payload
 
@@ -81,6 +67,20 @@
   blocking refresh available through `GET /v1/telemetry?refresh=1`.
 - Guarded worker storage telemetry cache writes so an older background scan
   cannot overwrite a newer explicit refresh result.
+
+## 2026-07-04 - Configuration Page Reorganization
+
+- Reorganized Admin Web Configuration into operator-facing areas for people and
+  communications, models and Assistant behavior, agent runtime, code/issues/PRs,
+  access and audit policy, network/package relays, automation assignment, and
+  advanced state.
+- Moved email, approval notification targets, phone calls, communication files,
+  and communication artifact link settings into People & Communications so
+  related messaging settings are no longer split across unrelated tabs.
+- Moved model pricing into the Models, Assistant & Knowledge area alongside
+  model routing and Assistant settings.
+- Kept approval-required tool policy, VM provider defaults, and libvirt VM
+  template fields editable in the reorganized Configuration areas.
 
 ## 2026-07-04 - Team Add-on First-Load Responsiveness
 
