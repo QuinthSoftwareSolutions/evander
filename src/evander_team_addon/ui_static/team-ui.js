@@ -139,6 +139,8 @@ let chatStreamErrorRefreshPending = false;
 let bootstrapLoaded = false;
 const loadedTeamViews = new Set();
 const loadingTeamViews = new Map();
+const pendingForcedTeamViewLoads = new Map();
+let teamViewCacheGeneration = 0;
 let stateStream = null;
 let stateStreamErrorRefreshPending = false;
 let chatReadMarkers = readChatReadMarkers();
@@ -146,9 +148,12 @@ let timelineLoading = false;
 let timelineRequestId = 0;
 let timelinePage = 1;
 let costsRequestId = 0;
+let costBackfillRequestId = 0;
+let costBackfillLoading = false;
 let showArchived = false;
 let showHandledGovernanceAgenda = false;
 let activeTeamView = readStoredTeamView();
+let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
@@ -484,6 +489,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindTimelineFilters();
   bindTimelinePagination();
   bindPageLifecycle();
+  bindPrivilegeMessages();
   decorateFieldTooltips(document);
   void bootTeamAddon();
 });
@@ -530,6 +536,10 @@ function emptyTimelineState() {
     description: "Derived timeline from the current TeamState snapshot.",
     filters: {},
     timestampless_count: 0,
+    total_count: 0,
+    limit: 10,
+    offset: 0,
+    has_more: false,
     entries: [],
   };
 }
@@ -856,7 +866,14 @@ function openOrgCanvasContextMenu(detail) {
   openOrgContextMenu({
     kind: "canvas",
     point,
-    items: [{ action: "create-team", label: "Create team" }],
+    items: [
+      {
+        action: "create-team",
+        label: "Create team",
+        disabled: teamMutationLocked(),
+        disabledReason: lockedMutationMessage("create teams"),
+      },
+    ],
   });
 }
 
@@ -871,7 +888,10 @@ function openOrgAgentContextMenu(detail) {
       {
         action: "add-subordinate-agent",
         label: "Add subordinate agent",
-        disabled: !state.agents?.[agentId],
+        disabled: teamMutationLocked() || !state.agents?.[agentId],
+        disabledReason: teamMutationLocked()
+          ? lockedMutationMessage("add subordinate agents")
+          : "Agent is no longer available.",
       },
     ],
   });
@@ -889,12 +909,18 @@ function openOrgGovernanceContextMenu(detail) {
       {
         action: "governance-add-team",
         label: "Add team to oversight",
-        disabled: !group || governanceOversightTeamOptions(group, "add").length === 0,
+        disabled: teamMutationLocked() || !group || governanceOversightTeamOptions(group, "add").length === 0,
+        disabledReason: teamMutationLocked()
+          ? lockedMutationMessage("edit governance oversight")
+          : "No visible teams are available to add.",
       },
       {
         action: "governance-remove-team",
         label: "Remove team from oversight",
-        disabled: !group || governanceOversightTeamOptions(group, "remove").length === 0,
+        disabled: teamMutationLocked() || !group || governanceOversightTeamOptions(group, "remove").length === 0,
+        disabledReason: teamMutationLocked()
+          ? lockedMutationMessage("edit governance oversight")
+          : "No visible member teams are available to remove.",
       },
     ],
   });
@@ -942,6 +968,7 @@ function openOrgContextMenu({ kind, point, items, agentId = "", groupId = "" }) 
           class="org-context-menu-item"
           data-org-context-action="${escapeAttr(item.action)}"
           ${item.disabled ? "disabled" : ""}
+          ${item.disabledReason ? `title="${escapeAttr(item.disabledReason)}"` : ""}
         >${escapeHtml(item.label)}</button>
       `,
     )
@@ -977,18 +1004,30 @@ function closeOrgContextMenu() {
 
 function handleOrgContextAction(action, context) {
   if (action === "create-team") {
+    if (!guardTeamMutation("create teams")) {
+      return;
+    }
     openOrgCreateTeamDialog();
     return;
   }
   if (action === "governance-add-team") {
+    if (!guardTeamMutation("edit governance oversight")) {
+      return;
+    }
     openOrgGovernanceOversightDialog(context.groupId, "add");
     return;
   }
   if (action === "governance-remove-team") {
+    if (!guardTeamMutation("edit governance oversight")) {
+      return;
+    }
     openOrgGovernanceOversightDialog(context.groupId, "remove");
     return;
   }
   if (action === "add-subordinate-agent") {
+    if (!guardTeamMutation("add subordinate agents")) {
+      return;
+    }
     void openOrgSubordinateAgentDialog(context.agentId);
   }
 }
@@ -1031,6 +1070,7 @@ function showOrgActionDialog({ title, bodyHtml }) {
   dialog.body.innerHTML = bodyHtml;
   fillSelectsIn(dialog.body);
   decorateFieldTooltips(dialog.body);
+  applyLockedMutationControls(dialog.modal);
   dialog.modal.hidden = false;
   window.requestAnimationFrame(() => {
     dialog.body.querySelector("input:not([readonly]), select, textarea, button")?.focus();
@@ -1161,7 +1201,7 @@ function renderOrgSubordinateAgentForm(superior, directoryPath) {
   const defaultsOptions = teamAgentOptions(teamId).filter(([agentId]) => text(agentId) !== text(superior.id));
   const createSessionDisabled = teamPrivilegedUnlocked()
     ? ""
-    : 'disabled title="Unlock privileged operations to create a core agent session."';
+    : lockedAttrs("create a core agent session");
   return `
     <form
       id="org-register-agent-form"
@@ -1226,6 +1266,9 @@ function governanceOversightTeamOptions(group, mode) {
 }
 
 async function submitOrgActionForm(form) {
+  if (!guardTeamMutation("save changes")) {
+    return false;
+  }
   const action = text(form.dataset.orgAction);
   if (action === "create-team" || action === "add-subordinate-agent") {
     return await submitOrgCreateForm(form);
@@ -1337,6 +1380,9 @@ function bindForms() {
       return;
     }
     event.preventDefault();
+    if (!guardTeamMutation("import Git repositories")) {
+      return;
+    }
     const form = button.closest("form");
     if (!form) {
       setStatus("Git import form is unavailable.", "error");
@@ -1349,6 +1395,9 @@ function bindForms() {
     const addButton = event.target?.closest?.("[data-review-profile-criterion-add]");
     if (addButton) {
       event.preventDefault();
+      if (!guardTeamMutation("edit review profile criteria")) {
+        return;
+      }
       addReviewProfileCriterionRow(addButton.closest("[data-review-profile-criteria-editor]"));
       return;
     }
@@ -1358,6 +1407,9 @@ function bindForms() {
       return;
     }
     event.preventDefault();
+    if (!guardTeamMutation("edit review profile criteria")) {
+      return;
+    }
     removeReviewProfileCriterionRow(removeButton);
   });
 
@@ -1379,6 +1431,9 @@ function bindRecordEditing() {
     const openCreateTeamButton = event.target.closest("[data-teams-create-team-open]");
     if (openCreateTeamButton) {
       event.preventDefault();
+      if (!guardTeamMutation("create teams")) {
+        return;
+      }
       openTeamsCreateTeamPanel();
       return;
     }
@@ -1393,6 +1448,9 @@ function bindRecordEditing() {
     const governanceCreateGroupButton = event.target.closest("[data-governance-create-toggle]");
     if (governanceCreateGroupButton) {
       event.preventDefault();
+      if (!guardTeamMutation("create governance groups")) {
+        return;
+      }
       toggleGovernanceCreateGroupPanel();
       return;
     }
@@ -1433,6 +1491,9 @@ function bindRecordEditing() {
     const inlineCreateToggle = event.target.closest("[data-team-inline-create-toggle]");
     if (inlineCreateToggle) {
       event.preventDefault();
+      if (!guardTeamMutation("add Team records")) {
+        return;
+      }
       toggleTeamInlineCreateForm(
         inlineCreateToggle.dataset.teamRecordGroupId,
         inlineCreateToggle.dataset.teamRecordKind,
@@ -1474,6 +1535,9 @@ function bindRecordEditing() {
     const agentCallButton = event.target.closest("[data-agent-call-agent-id]");
     if (agentCallButton) {
       event.preventDefault();
+      if (!guardTeamMutation("start voice calls")) {
+        return;
+      }
       void startAgentVoiceCall(agentCallButton, agentCallButton.dataset.agentCallAgentId);
       return;
     }
@@ -1485,6 +1549,9 @@ function bindRecordEditing() {
         setStatus("This chat history is read-only.", "error");
         return;
       }
+      if (!guardTeamMutation("start chats")) {
+        return;
+      }
       chatNewPickerOpen = !chatNewPickerOpen;
       renderChat();
       return;
@@ -1493,6 +1560,9 @@ function bindRecordEditing() {
     const chatAgentButton = event.target.closest("[data-chat-agent-id]");
     if (chatAgentButton) {
       event.preventDefault();
+      if (!guardTeamMutation("start chats")) {
+        return;
+      }
       void createOrFocusChat(chatAgentButton.dataset.chatAgentId);
       return;
     }
@@ -1517,9 +1587,22 @@ function bindRecordEditing() {
       return;
     }
 
+    const costBackfillButton = event.target.closest("[data-cost-backfill-refresh]");
+    if (costBackfillButton) {
+      event.preventDefault();
+      if (!guardTeamMutation("refresh transcript costs")) {
+        return;
+      }
+      void refreshCostBackfill();
+      return;
+    }
+
     const agentCallMuteButton = event.target.closest("[data-agent-call-mute]");
     if (agentCallMuteButton) {
       event.preventDefault();
+      if (!guardTeamMutation("change voice calls")) {
+        return;
+      }
       toggleAgentVoiceMute(agentCallMuteButton);
       return;
     }
@@ -1527,6 +1610,9 @@ function bindRecordEditing() {
     const agentCallEndButton = event.target.closest("[data-agent-call-end]");
     if (agentCallEndButton) {
       event.preventDefault();
+      if (!guardTeamMutation("end voice calls")) {
+        return;
+      }
       void endAgentVoiceCall(agentCallEndButton);
       return;
     }
@@ -1534,6 +1620,9 @@ function bindRecordEditing() {
     const contextRotationButton = event.target.closest("[data-context-rotation-agent-id]");
     if (contextRotationButton) {
       event.preventDefault();
+      if (!guardTeamMutation("clear agent context")) {
+        return;
+      }
       void requestContextRotation(
         contextRotationButton,
         contextRotationButton.dataset.contextRotationAgentId,
@@ -1544,6 +1633,9 @@ function bindRecordEditing() {
     const standDownButton = event.target.closest("[data-stand-down-agent-id]");
     if (standDownButton) {
       event.preventDefault();
+      if (!guardTeamMutation("stand down agents")) {
+        return;
+      }
       void requestAgentStandDown(
         standDownButton,
         standDownButton.dataset.standDownAgentId,
@@ -1554,6 +1646,9 @@ function bindRecordEditing() {
     const standDownRevokeButton = event.target.closest("[data-stand-down-revoke-agent-id]");
     if (standDownRevokeButton) {
       event.preventDefault();
+      if (!guardTeamMutation("revoke stand-downs")) {
+        return;
+      }
       void revokeAgentStandDown(
         standDownRevokeButton,
         standDownRevokeButton.dataset.standDownRevokeAgentId,
@@ -1564,6 +1659,9 @@ function bindRecordEditing() {
     const dismissActionButton = event.target.closest("[data-dismiss-action-id]");
     if (dismissActionButton) {
       event.preventDefault();
+      if (!guardTeamMutation("dismiss failed actions")) {
+        return;
+      }
       void dismissActionRecordAttention(
         dismissActionButton,
         dismissActionButton.dataset.dismissActionId,
@@ -1574,6 +1672,9 @@ function bindRecordEditing() {
     const governanceAgendaHandleButton = event.target.closest("[data-governance-agenda-handle-id]");
     if (governanceAgendaHandleButton) {
       event.preventDefault();
+      if (!guardTeamMutation("mark governance agenda handled")) {
+        return;
+      }
       void markGovernanceAgendaHandled(
         governanceAgendaHandleButton,
         governanceAgendaHandleButton.dataset.governanceAgendaHandleId,
@@ -1584,6 +1685,9 @@ function bindRecordEditing() {
     const avatarGenerateButton = event.target.closest("[data-avatar-generate-agent-id]");
     if (avatarGenerateButton) {
       event.preventDefault();
+      if (!guardTeamMutation("generate avatar previews")) {
+        return;
+      }
       void generateAvatarPreview(avatarGenerateButton);
       return;
     }
@@ -1591,6 +1695,9 @@ function bindRecordEditing() {
     const avatarAcceptButton = event.target.closest("[data-avatar-accept-agent-id]");
     if (avatarAcceptButton) {
       event.preventDefault();
+      if (!guardTeamMutation("accept avatar previews")) {
+        return;
+      }
       void acceptAvatarPreview(avatarAcceptButton);
       return;
     }
@@ -1598,6 +1705,9 @@ function bindRecordEditing() {
     const avatarUploadButton = event.target.closest("[data-avatar-upload-agent-id]");
     if (avatarUploadButton) {
       event.preventDefault();
+      if (!guardTeamMutation("upload avatars")) {
+        return;
+      }
       void uploadAgentAvatar(avatarUploadButton);
       return;
     }
@@ -1605,6 +1715,9 @@ function bindRecordEditing() {
     const avatarRemoveButton = event.target.closest("[data-avatar-remove-agent-id]");
     if (avatarRemoveButton) {
       event.preventDefault();
+      if (!guardTeamMutation("remove avatars")) {
+        return;
+      }
       void removeAgentAvatar(avatarRemoveButton);
       return;
     }
@@ -1626,6 +1739,9 @@ function bindRecordEditing() {
     if (!editButton) {
       return;
     }
+    if (!guardTeamMutation("edit Team records")) {
+      return;
+    }
     openEditDialog(editButton.dataset.editType, editButton.dataset.editId);
   });
 
@@ -1645,6 +1761,9 @@ function bindRecordEditing() {
       return;
     }
     event.preventDefault();
+    if (!guardTeamMutation("edit Team records")) {
+      return;
+    }
     openEditDialog(editTarget.dataset.editType, editTarget.dataset.editId);
   });
 
@@ -1870,8 +1989,131 @@ function teamAgentDirectoryPath(form = null) {
   return text(fromQuery) || "root";
 }
 
-function teamPrivilegedUnlocked() {
+function readTeamPrivilegedUnlockedFromLocation() {
   return new URLSearchParams(window.location.search).get("privileged_unlocked") === "true";
+}
+
+function teamPrivilegedUnlocked() {
+  return teamPrivilegeUnlocked;
+}
+
+function setTeamPrivilegedUnlocked(unlocked) {
+  const nextUnlocked = Boolean(unlocked);
+  if (teamPrivilegeUnlocked === nextUnlocked) {
+    return;
+  }
+  const drafts = captureFormDrafts();
+  teamPrivilegeUnlocked = nextUnlocked;
+  render();
+  restoreFormDrafts(drafts);
+}
+
+function bindPrivilegeMessages() {
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) {
+      return;
+    }
+    const data = event.data || {};
+    if (data.type !== "admin-privileged-operations") {
+      return;
+    }
+    setTeamPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
+  });
+}
+
+function teamMutationLocked() {
+  return !teamPrivilegedUnlocked();
+}
+
+function lockedMutationMessage(action = "make changes") {
+  const normalizedAction = text(action) || "make changes";
+  return `Unlock privileged operations to ${normalizedAction}.`;
+}
+
+function lockedAttrs(action = "make changes") {
+  if (!teamMutationLocked()) {
+    return "";
+  }
+  const message = lockedMutationMessage(action);
+  return `disabled aria-disabled="true" title="${escapeAttr(message)}"`;
+}
+
+function guardTeamMutation(action = "make changes") {
+  if (!teamMutationLocked()) {
+    return true;
+  }
+  setStatus(lockedMutationMessage(action), "warning");
+  return false;
+}
+
+const lockedMutationControlSelectors = [
+  ["[data-teams-create-team-open]", "create teams"],
+  ["[data-project-create-toggle]", "create projects"],
+  ["[data-project-review-profile-create-toggle]", "create review profiles"],
+  ["[data-governance-create-toggle]", "create governance groups"],
+  ["[data-team-inline-create-toggle]", "add Team records"],
+  ["[data-core-agent-session-create]", "create a core agent session"],
+  ["[data-git-import-button]", "import Git repositories"],
+  ["[data-review-profile-criterion-add]", "edit review profile criteria"],
+  ["[data-review-profile-criterion-remove]", "edit review profile criteria"],
+  ["[data-context-rotation-agent-id]", "clear agent context"],
+  ["[data-stand-down-agent-id]", "stand down agents"],
+  ["[data-stand-down-revoke-agent-id]", "revoke stand-downs"],
+  ["[data-dismiss-action-id]", "dismiss failed actions"],
+  ["[data-governance-agenda-handle-id]", "mark governance agenda handled"],
+  ["[data-avatar-generate-agent-id]", "generate avatar previews"],
+  ["[data-avatar-accept-agent-id]", "accept avatar previews"],
+  ["[data-avatar-upload-agent-id]", "upload avatars"],
+  ["[data-avatar-remove-agent-id]", "remove avatars"],
+  ["[data-cost-backfill-refresh]", "refresh transcript costs"],
+  ["[data-chat-new]", "start chats"],
+  ["[data-chat-agent-id]", "start chats"],
+  ["[data-agent-call-agent-id]", "start voice calls"],
+  ["[data-agent-call-mute]", "change voice calls"],
+  ["[data-agent-call-end]", "end voice calls"],
+  ["button.status-action", "retry saves"],
+  ["form[data-endpoint] button[type='submit']", "save changes"],
+  ["form[data-template-endpoint] button[type='submit']", "save changes"],
+  ["form[data-team-inline-create-form] button[type='submit']", "save changes"],
+  ["form[data-delegated-create-form] button[type='submit']", "save changes"],
+  ["form[data-org-action-form] button[type='submit']", "save changes"],
+  ["form[data-review-decision-form] button[type='submit']", "record review decisions"],
+  ["#update-task-form button[type='submit']", "update tasks"],
+  ["#decide-review-form button[type='submit']", "record review decisions"],
+  ["#edit-record-form button[type='submit']", "save changes"],
+  ["form[data-chat-message-form] button[type='submit']", "send chat messages"],
+];
+
+function applyLockedMutationControls(root = document) {
+  if (!teamMutationLocked()) {
+    return;
+  }
+  for (const [selector, action] of lockedMutationControlSelectors) {
+    const controls = [];
+    if (root?.matches?.(selector)) {
+      controls.push(root);
+    }
+    root?.querySelectorAll?.(selector).forEach((control) => controls.push(control));
+    controls.forEach((control) => lockMutationControl(control, action));
+  }
+}
+
+function lockMutationControl(control, action = "make changes") {
+  if (!control) {
+    return;
+  }
+  const message = lockedMutationMessage(action);
+  if (
+    control instanceof HTMLButtonElement ||
+    control instanceof HTMLInputElement ||
+    control instanceof HTMLSelectElement ||
+    control instanceof HTMLTextAreaElement
+  ) {
+    control.disabled = true;
+  }
+  control.setAttribute("aria-disabled", "true");
+  control.setAttribute("title", message);
+  control.classList?.add?.("is-locked");
 }
 
 function registeredTeamSessionIds() {
@@ -2208,6 +2450,9 @@ function bindProjectFocus() {
     const createToggle = event.target?.closest?.("[data-project-create-toggle]");
     if (createToggle) {
       event.preventDefault();
+      if (!guardTeamMutation("create projects")) {
+        return;
+      }
       projectCreateFormOpen = !projectCreateFormOpen;
       syncProjectCreatePanel();
       if (projectCreateFormOpen) {
@@ -2241,6 +2486,9 @@ function bindProjectFocus() {
     const reviewProfileCreateToggle = event.target?.closest?.("[data-project-review-profile-create-toggle]");
     if (reviewProfileCreateToggle) {
       event.preventDefault();
+      if (!guardTeamMutation("create review profiles")) {
+        return;
+      }
       const projectId = text(reviewProfileCreateToggle.dataset.projectId);
       projectReviewProfileCreateProjectId =
         text(projectReviewProfileCreateProjectId) === projectId ? null : projectId;
@@ -2429,7 +2677,7 @@ async function loadBootstrap() {
   return payload;
 }
 
-async function loadView(view, { force = false } = {}) {
+async function loadView(view, { force = false, preserveForms = false } = {}) {
   const normalizedView = normalizedTeamView(view);
   if (!force && loadedTeamViews.has(normalizedView)) {
     renderShell();
@@ -2437,27 +2685,51 @@ async function loadView(view, { force = false } = {}) {
     return null;
   }
   if (loadingTeamViews.has(normalizedView)) {
-    return loadingTeamViews.get(normalizedView);
+    const existingLoad = loadingTeamViews.get(normalizedView);
+    if (force) {
+      const pending = pendingForcedTeamViewLoads.get(normalizedView) || { preserveForms: false };
+      pending.preserveForms = pending.preserveForms || preserveForms;
+      pendingForcedTeamViewLoads.set(normalizedView, pending);
+      return existingLoad.finally(() => {
+        const pendingLoad = pendingForcedTeamViewLoads.get(normalizedView);
+        if (!pendingLoad) {
+          return null;
+        }
+        pendingForcedTeamViewLoads.delete(normalizedView);
+        return loadView(normalizedView, { force: true, preserveForms: pendingLoad.preserveForms });
+      });
+    }
+    return existingLoad;
   }
   if (normalizedView === "chat") {
-    const promise = loadChatView({ force }).finally(() => {
+    const loadGeneration = teamViewCacheGeneration;
+    const promise = loadChatView({ force, preserveForms, loadGeneration }).finally(() => {
       loadingTeamViews.delete(normalizedView);
     });
     loadingTeamViews.set(normalizedView, promise);
     return promise;
   }
+  const loadGeneration = teamViewCacheGeneration;
   const promise = (async () => {
-    const response = await teamFetch(`${API_BASE}/views/${encodeURIComponent(normalizedView)}`, {
+    const query = normalizedView === "timeline" ? timelineSearchParams() : new URLSearchParams();
+    const response = await teamFetch(`${API_BASE}/views/${encodeURIComponent(normalizedView)}${query.toString() ? `?${query.toString()}` : ""}`, {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
       throw new Error(await responseText(response));
     }
     const payload = await response.json();
+    if (loadGeneration !== teamViewCacheGeneration) {
+      return payload;
+    }
     applyViewPayload(payload);
     loadedTeamViews.add(normalizedView);
     if (normalizedView === activeTeamView) {
+      const drafts = preserveForms ? captureFormDrafts() : null;
       render();
+      if (drafts) {
+        restoreFormDrafts(drafts);
+      }
       scheduleAuxiliaryLoadsForView(normalizedView);
     }
     return payload;
@@ -2468,7 +2740,11 @@ async function loadView(view, { force = false } = {}) {
   return promise;
 }
 
-async function loadChatView({ force = false } = {}) {
+async function loadChatView({
+  force = false,
+  preserveForms = false,
+  loadGeneration = teamViewCacheGeneration,
+} = {}) {
   if (!force && loadedTeamViews.has("chat")) {
     renderShell();
     renderChat();
@@ -2478,7 +2754,11 @@ async function loadChatView({ force = false } = {}) {
   const requestId = ++chatRequestId;
   chatState = { ...chatState, loading: true, error: null };
   if (activeTeamView === "chat") {
+    const drafts = preserveForms ? captureFormDrafts() : null;
     renderChat();
+    if (drafts) {
+      restoreFormDrafts(drafts);
+    }
   }
   try {
     const query = new URLSearchParams({ include_selected_messages: "1" });
@@ -2495,12 +2775,19 @@ async function loadChatView({ force = false } = {}) {
     if (requestId !== chatRequestId) {
       return payload;
     }
+    if (loadGeneration !== teamViewCacheGeneration) {
+      return payload;
+    }
+    const drafts = preserveForms && activeTeamView === "chat" ? captureFormDrafts() : null;
     applyViewPayload(payload);
     applyChatCollectionPayload(payload.data?.chat || {}, requestId, {
       selectedConversationId: selectedChatConversationId,
       preserveSelection: true,
     });
     loadedTeamViews.add("chat");
+    if (drafts) {
+      restoreFormDrafts(drafts);
+    }
     return payload;
   } catch (error) {
     if (requestId !== chatRequestId) {
@@ -2512,7 +2799,11 @@ async function loadChatView({ force = false } = {}) {
       error: error instanceof Error ? error.message : "Chat view failed to load.",
     };
     if (activeTeamView === "chat") {
+      const drafts = preserveForms ? captureFormDrafts() : null;
       renderChat();
+      if (drafts) {
+        restoreFormDrafts(drafts);
+      }
     }
     throw error;
   }
@@ -2569,9 +2860,6 @@ function scheduleAuxiliaryLoadsForView(view) {
   if (view !== "chat") {
     void loadCosts();
   }
-  if (view === "timeline") {
-    void loadTimeline();
-  }
 }
 
 function scheduleIdleViewPrefetch() {
@@ -2626,6 +2914,16 @@ async function loadState({ preserveForms = false } = {}) {
   }
 }
 
+async function reloadActiveTeamView({ preserveForms = false } = {}) {
+  invalidateLoadedTeamViews();
+  await loadView(activeTeamView, { force: true, preserveForms });
+}
+
+function invalidateLoadedTeamViews() {
+  teamViewCacheGeneration += 1;
+  loadedTeamViews.clear();
+}
+
 function applyStateSnapshot(payload) {
   if (!payload || payload.revision === undefined || payload.revision === null) {
     return;
@@ -2642,6 +2940,23 @@ function applyStateSnapshot(payload) {
   void loadTimeline();
 }
 
+function handleStateStreamSnapshot(payload) {
+  if (!payload || payload.revision === undefined || payload.revision === null) {
+    return;
+  }
+  if (payload.response_scope === "revision" || !payload.teams) {
+    if (Number(payload.revision) <= Number(state.revision || 0)) {
+      return;
+    }
+    state = normalizeState({ ...state, revision: payload.revision });
+    teamViewCacheGeneration += 1;
+    loadedTeamViews.clear();
+    void loadView(activeTeamView, { force: true, preserveForms: true });
+    return;
+  }
+  applyStateSnapshot(payload);
+}
+
 function ensureStateStream() {
   if (stateStream || typeof EventSource === "undefined") {
     return;
@@ -2654,7 +2969,7 @@ function ensureStateStream() {
       return;
     }
     try {
-      applyStateSnapshot(JSON.parse(event.data || "{}"));
+      handleStateStreamSnapshot(JSON.parse(event.data || "{}"));
       stateStreamErrorRefreshPending = false;
     } catch {
       // Ignore malformed stream events; EventSource will keep the connection alive.
@@ -2665,7 +2980,7 @@ function ensureStateStream() {
       return;
     }
     stateStreamErrorRefreshPending = true;
-    void loadState({ preserveForms: true }).finally(() => {
+    void loadView(activeTeamView, { force: true }).finally(() => {
       if (stateStream === stream) {
         stateStreamErrorRefreshPending = false;
       }
@@ -2684,7 +2999,7 @@ function closeStateStream() {
 async function loadCosts() {
   const requestId = ++costsRequestId;
   try {
-    const response = await teamFetch(`${API_BASE}/costs`, {
+    const response = await teamFetch(`${API_BASE}/costs?backfill=false`, {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -2709,6 +3024,50 @@ async function loadCosts() {
     });
     render();
     restoreFormDrafts(drafts);
+  }
+}
+
+async function refreshCostBackfill() {
+  if (costBackfillLoading) {
+    return;
+  }
+  const requestId = ++costBackfillRequestId;
+  let drafts = captureFormDrafts();
+  costBackfillLoading = true;
+  setStatus("Refreshing transcript costs.", "loading");
+  render();
+  restoreFormDrafts(drafts);
+  try {
+    const response = await teamFetch(`${API_BASE}/costs/backfill`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== costBackfillRequestId) {
+      return;
+    }
+    drafts = captureFormDrafts();
+    costBackfillLoading = false;
+    costState = normalizeCosts(payload);
+    render();
+    restoreFormDrafts(drafts);
+    setStatus("", "");
+  } catch (error) {
+    if (requestId !== costBackfillRequestId) {
+      return;
+    }
+    drafts = captureFormDrafts();
+    costBackfillLoading = false;
+    costState = normalizeCosts({
+      ...costState,
+      error: error instanceof Error ? error.message : "Cost transcript refresh failed.",
+    });
+    render();
+    restoreFormDrafts(drafts);
+    setStatus(error instanceof Error ? error.message : "Cost transcript refresh failed.", "error");
   }
 }
 
@@ -3126,6 +3485,9 @@ function applyChatSnapshot(payload, expectedConversationId) {
 }
 
 async function createOrFocusChat(agentId) {
+  if (!guardTeamMutation("start chats")) {
+    return;
+  }
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
     return;
@@ -3170,6 +3532,9 @@ async function createOrFocusChat(agentId) {
 }
 
 async function submitChatMessage(form) {
+  if (!guardTeamMutation("send chat messages")) {
+    return;
+  }
   const conversation = selectedChatConversation();
   if (!conversation || chatSending) {
     return;
@@ -3248,6 +3613,7 @@ function renderShell() {
   updatePlanningFilterControls();
   syncTeamsCreateTeamPanel();
   syncGovernanceCreateGroupPanel();
+  applyLockedMutationControls();
 }
 
 function render() {
@@ -3315,6 +3681,7 @@ function renderActiveView(view = activeTeamView) {
     default:
       break;
   }
+  applyLockedMutationControls();
 }
 
 function renderActiveViewLoading(view = activeTeamView) {
@@ -4013,6 +4380,21 @@ function renderTeamCostCounter(teamId) {
       : "";
   }
   return renderCostCounter(cost, { label: "Estimated team cost", compact: false });
+}
+
+function renderCostBackfillControl() {
+  const buttonAttrs = lockedAttrs("refresh transcript costs") || (costBackfillLoading ? "disabled" : "");
+  const label = costBackfillLoading ? "Refreshing transcript costs" : "Refresh transcript costs";
+  const backfill = costState.backfill || null;
+  const detail = backfill
+    ? `${text(backfill.coverage_status || "partial")} coverage, ${numberOrZero(backfill.records_imported)} imported, ${numberOrZero(backfill.duplicate_records)} duplicate`
+    : "Manual refresh checks transcript-backed Claude usage.";
+  return `
+    <div class="record-actions cost-refresh-actions">
+      <button type="button" data-cost-backfill-refresh${buttonAttrs ? ` ${buttonAttrs}` : ""}>${escapeHtml(label)}</button>
+      <span class="meta-line">${escapeHtml(detail)}</span>
+    </div>
+  `;
 }
 
 function teamCostForTeam(teamId) {
@@ -5035,15 +5417,21 @@ function buildOrgFlowGraph(focusedTeams) {
   return {
     nodes,
     edges,
-    fitKey: [
-      state.revision,
-      selectedOrgTeamId,
-      showArchived ? "archived" : "active",
-      costState.generated_at || "",
-      nodes.length,
-      edges.length,
-    ].join(":"),
+    fitKey: orgFlowLayoutFitKey(nodes, edges),
   };
+}
+
+function orgFlowLayoutFitKey(nodes, edges) {
+  return JSON.stringify({
+    scope: selectedOrgTeamId,
+    archived: showArchived,
+    nodes: nodes.map((node) => [
+      node.id,
+      Math.round(Number(node.position?.x) || 0),
+      Math.round(Number(node.position?.y) || 0),
+    ]),
+    edges: edges.map((edge) => [edge.source, edge.target, edge.className || ""]),
+  });
 }
 
 function layoutHierarchyRoots({ roots, nodes, edges, teamId, parentNodeId, startY, leftX, edgeKind }) {
@@ -5471,52 +5859,56 @@ function renderHierarchyNode(node, options = {}) {
 }
 
 function renderAgents() {
-  const allAgents = values(state.agents).sort(byId);
-  const agents = allAgents.filter(isVisibleAgent);
-  if (activeTeamView === "people") {
-    renderPeopleAgents(allAgents, agents);
-    return;
-  }
-  renderIntoActiveTargets("[data-agent-detail-view]", "");
-  renderIntoActiveTargets("[data-teams-records-view]", "");
-  if (!allAgents.length) {
-    renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No agents registered.</p>`);
-    return;
-  }
-  if (!agents.length) {
-    renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No visible agents.</p>`);
-    return;
-  }
-  renderIntoActiveTargets("[data-agents-view]", `
-    <ul class="agent-list">
-      ${agents
-        .map((agent) => {
-          const details = agentCardData(agent);
-          return `
-              <li class="agent-item">
-                <div class="agent-line">
-                  <div class="agent-title-with-avatar">
-                    ${renderAgentAvatar(details)}
-                    <strong>${escapeHtml(details.label)}</strong>
+  try {
+    const allAgents = values(state.agents).sort(byId);
+    const agents = allAgents.filter(isVisibleAgent);
+    if (activeTeamView === "people") {
+      renderPeopleAgents(allAgents, agents);
+      return;
+    }
+    renderIntoActiveTargets("[data-agent-detail-view]", "");
+    renderIntoActiveTargets("[data-teams-records-view]", "");
+    if (!allAgents.length) {
+      renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No agents registered.</p>`);
+      return;
+    }
+    if (!agents.length) {
+      renderIntoActiveTargets("[data-agents-view]", `<p class="empty-state">No visible agents.</p>`);
+      return;
+    }
+    renderIntoActiveTargets("[data-agents-view]", `
+      <ul class="agent-list">
+        ${agents
+          .map((agent) => {
+            const details = agentCardData(agent);
+            return `
+                <li class="agent-item">
+                  <div class="agent-line">
+                    <div class="agent-title-with-avatar">
+                      ${renderAgentAvatar(details)}
+                      <strong>${escapeHtml(details.label)}</strong>
+                    </div>
+                    <div class="record-actions">
+                      ${renderAgentRosterStatusPill(details)}
+                      ${renderAgentStandDownControls(details.id, details)}
+                      <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
+                      ${editButton("agent", details.id)}
+                    </div>
                   </div>
-                  <div class="record-actions">
-                    ${renderAgentRosterStatusPill(details)}
-                    ${renderAgentStandDownControls(details.id, details)}
-                    <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
-                    ${editButton("agent", details.id)}
-                  </div>
-                </div>
-              <div class="meta-line">${escapeHtml(details.role)} - ${escapeHtml(details.id)}</div>
-              <div class="meta-line">Reports to ${escapeHtml(details.reportsToLabel)} - ${details.taskStats.openCount} open task(s) - max ephemeral ${details.ephemeralCapacity}</div>
-              ${details.standDownActive ? `<div class="meta-line">${escapeHtml(agentStandDownSummary(details))}</div>` : ""}
-              ${renderAgentOpenTasks(details.taskStats.openTasks)}
-              ${renderAgentInbox(agent.id)}
-            </li>
-          `;
-        })
-        .join("")}
-    </ul>
-  `);
+                <div class="meta-line">${escapeHtml(details.role)} - ${escapeHtml(details.id)}</div>
+                <div class="meta-line">Reports to ${escapeHtml(details.reportsToLabel)} - ${details.taskStats.openCount} open task(s) - max ephemeral ${details.ephemeralCapacity}</div>
+                ${details.standDownActive ? `<div class="meta-line">${escapeHtml(agentStandDownSummary(details))}</div>` : ""}
+                ${renderAgentOpenTasks(details.taskStats.openTasks)}
+                ${renderAgentInbox(agent.id)}
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    `);
+  } finally {
+    applyLockedMutationControls();
+  }
 }
 
 function renderPeopleAgents(allAgents, agents) {
@@ -5786,7 +6178,7 @@ function renderTeamInlineAgentForm(teamId) {
   const visibleTeamId = isNoTeamRecord({ id: normalizedTeamId }) ? "" : normalizedTeamId;
   const createSessionDisabled = teamPrivilegedUnlocked()
     ? ""
-    : 'disabled title="Unlock privileged operations to create a core agent session."';
+    : lockedAttrs("create a core agent session");
   return `
     <form
       id="${escapeAttr(formId)}"
@@ -6367,6 +6759,7 @@ function renderTeamRecordDetailContent(team) {
       <section class="agent-detail-section">
         <h3>Team cost</h3>
         ${renderTeamCostCounter(team.id) || "<p class=\"empty-state\">No cost estimate available.</p>"}
+        ${renderCostBackfillControl()}
       </section>
     </div>
   `;
@@ -6436,6 +6829,7 @@ function renderChat() {
   renderChatConversationList();
   renderChatThread();
   updateTeamViewTabs();
+  applyLockedMutationControls();
 }
 
 function readChatReadMarkers() {
@@ -10133,7 +10527,7 @@ function bindTimelinePagination() {
     } else {
       return;
     }
-    renderTimeline();
+    void loadTimeline();
   });
 }
 
@@ -10153,6 +10547,50 @@ async function loadTimeline() {
     return;
   }
   const requestId = ++timelineRequestId;
+  const search = timelineSearchParams();
+
+  timelineLoading = true;
+  setTimelineStatus("Loading derived timeline.", "loading");
+
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/timeline${search.toString() ? `?${search.toString()}` : ""}`,
+      {
+        headers: { Accept: "application/json" },
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== timelineRequestId) {
+      return;
+    }
+    timelineState = normalizeTimeline(payload);
+    if (
+      activeTeamView === "timeline" &&
+      Number(timelineState.total_count || 0) > 0 &&
+      Number(timelineState.offset || 0) >= Number(timelineState.total_count || 0)
+    ) {
+      timelinePage = Math.max(1, Math.ceil(Number(timelineState.total_count || 0) / timelinePageSize));
+      void loadTimeline();
+      return;
+    }
+    timelineLoading = false;
+    refreshSelects();
+    renderTimeline();
+    setTimelineStatus(describeTimelineStatus(timelineState), "ok");
+  } catch (error) {
+    if (requestId !== timelineRequestId) {
+      return;
+    }
+    timelineLoading = false;
+    setTimelineStatus(error instanceof Error ? error.message : "Timeline failed to load.", "error");
+    renderTimeline();
+  }
+}
+
+function timelineSearchParams() {
   const filters = readTimelineFilters();
   const search = new URLSearchParams();
   if (filters.team_id) {
@@ -10173,37 +10611,9 @@ async function loadTimeline() {
   if (filters.attention_needed !== null && filters.attention_needed !== undefined) {
     search.set("attention_needed", filters.attention_needed ? "true" : "false");
   }
-
-  timelineLoading = true;
-  setTimelineStatus("Loading derived timeline.", "loading");
-
-  try {
-    const response = await teamFetch(
-      `${API_BASE}/timeline${search.toString() ? `?${search.toString()}` : ""}`,
-      {
-        headers: { Accept: "application/json" },
-      },
-    );
-    if (!response.ok) {
-      throw new Error(await responseText(response));
-    }
-    const payload = await response.json();
-    if (requestId !== timelineRequestId) {
-      return;
-    }
-    timelineState = normalizeTimeline(payload);
-    timelineLoading = false;
-    refreshSelects();
-    renderTimeline();
-    setTimelineStatus(describeTimelineStatus(timelineState), "ok");
-  } catch (error) {
-    if (requestId !== timelineRequestId) {
-      return;
-    }
-    timelineLoading = false;
-    setTimelineStatus(error instanceof Error ? error.message : "Timeline failed to load.", "error");
-    renderTimeline();
-  }
+  search.set("limit", String(timelinePageSize));
+  search.set("offset", String(Math.max(0, (Math.max(1, timelinePage) - 1) * timelinePageSize)));
+  return search;
 }
 
 function normalizeTimeline(payload) {
@@ -10264,16 +10674,26 @@ function renderTimeline() {
   }
 
   const entries = (timelineState.entries || []).slice().sort(compareTimelineEntriesNewestFirst);
+  const totalCount = Number.isFinite(Number(timelineState.total_count))
+    ? Number(timelineState.total_count)
+    : entries.length;
+  const limit = Number.isFinite(Number(timelineState.limit)) && Number(timelineState.limit) > 0
+    ? Number(timelineState.limit)
+    : timelinePageSize;
+  let pageWasClamped = false;
   if (activeTeamView === "timeline") {
-    const pageCount = Math.max(1, Math.ceil(entries.length / timelinePageSize));
-    timelinePage = Math.min(Math.max(1, timelinePage), pageCount);
+    const pageCount = Math.max(1, Math.ceil(totalCount / limit));
+    const nextPage = Math.min(Math.max(1, timelinePage), pageCount);
+    pageWasClamped = nextPage !== timelinePage;
+    timelinePage = nextPage;
+    refetchTimelineAfterPageClamp({ pageWasClamped, totalCount, entries });
   }
-  const summaryParts = [`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`];
+  const summaryParts = [`${totalCount} ${totalCount === 1 ? "entry" : "entries"}`];
   if (timelineState.timestampless_count) {
     summaryParts.push(`${timelineState.timestampless_count} timestamp unavailable`);
   }
-  if (activeTeamView === "timeline" && entries.length > timelinePageSize) {
-    summaryParts.push(`page ${timelinePage} of ${Math.ceil(entries.length / timelinePageSize)}`);
+  if (activeTeamView === "timeline" && totalCount > limit) {
+    summaryParts.push(`page ${timelinePage} of ${Math.ceil(totalCount / limit)}`);
   }
   document.querySelectorAll("[data-timeline-summary]").forEach((summary) => {
     summary.textContent = targetIsActive(summary) ? summaryParts.join(" · ") : "";
@@ -10301,13 +10721,30 @@ function renderTimeline() {
   `);
 }
 
+function refetchTimelineAfterPageClamp({ pageWasClamped, totalCount, entries }) {
+  if (!pageWasClamped || timelineLoading || totalCount <= 0 || entries.length) {
+    return;
+  }
+  timelineLoading = true;
+  setTimelineStatus("Loading derived timeline.", "loading");
+  void loadTimeline();
+}
+
 function renderFocusedTimeline(entries) {
-  const pageCount = Math.max(1, Math.ceil(entries.length / timelinePageSize));
+  const totalCount = Number.isFinite(Number(timelineState.total_count))
+    ? Number(timelineState.total_count)
+    : entries.length;
+  const limit = Number.isFinite(Number(timelineState.limit)) && Number(timelineState.limit) > 0
+    ? Number(timelineState.limit)
+    : timelinePageSize;
+  const offset = Number.isFinite(Number(timelineState.offset))
+    ? Number(timelineState.offset)
+    : (Math.max(1, timelinePage) - 1) * limit;
+  const pageCount = Math.max(1, Math.ceil(totalCount / limit));
   timelinePage = Math.min(Math.max(1, timelinePage), pageCount);
-  const start = (timelinePage - 1) * timelinePageSize;
-  const pageEntries = entries.slice(start, start + timelinePageSize);
-  const pagination = entries.length > timelinePageSize
-    ? renderTimelinePagination(pageCount, start, pageEntries.length, entries.length)
+  const pageEntries = entries;
+  const pagination = totalCount > limit
+    ? renderTimelinePagination(pageCount, offset, pageEntries.length, totalCount)
     : "";
 
   renderIntoActiveTargets("[data-timeline-view]", `
@@ -11140,6 +11577,9 @@ function fillSelectsIn(root) {
 }
 
 async function submitCreateForm(form, { detailedResult = false } = {}) {
+  if (!guardTeamMutation("save changes")) {
+    return submitMutationResult(false, "locked", detailedResult);
+  }
   const data = formData(form);
   const endpoint = endpointForForm(form, data);
   const method = form.dataset.method || "POST";
@@ -11192,6 +11632,9 @@ async function submitCreateForm(form, { detailedResult = false } = {}) {
 }
 
 async function submitTaskUpdate(form) {
+  if (!guardTeamMutation("update tasks")) {
+    return;
+  }
   const data = formData(form);
   const taskId = text(data.task_id);
   if (!taskId) {
@@ -11218,6 +11661,9 @@ async function submitTaskUpdate(form) {
 }
 
 async function importGitRepoForForm(form, button) {
+  if (!guardTeamMutation("import Git repositories")) {
+    return false;
+  }
   const data = formData(form);
   const repoSource = text(data.host_repo_path) || text(data.canonical_origin_url);
   if (!repoSource) {
@@ -11301,6 +11747,9 @@ function setGitImportStatus(element, message) {
 }
 
 async function submitMutation(form, endpoint, method, payload, { resetOnSuccess = true, detailedResult = false } = {}) {
+  if (!guardTeamMutation("save changes")) {
+    return submitMutationResult(false, "locked", detailedResult);
+  }
   rememberFormDraft(form);
   const drafts = captureFormDrafts();
   const body = mutationBodyWithConflictMetadata(endpoint, method, payload);
@@ -11320,7 +11769,7 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       showRevisionConflictRecoveryStatus({
@@ -11564,6 +12013,9 @@ function retryModeForForm(form) {
 }
 
 async function retryPendingConflictSave() {
+  if (!guardTeamMutation("retry saves")) {
+    return;
+  }
   const retry = pendingConflictRetry;
   if (!retry) {
     setStatus("No preserved save is available to retry.", "error");
@@ -11597,6 +12049,9 @@ async function retryPendingConflictSave() {
 }
 
 async function uploadAgentAvatar(button) {
+  if (!guardTeamMutation("upload avatars")) {
+    return;
+  }
   const form = button.closest("form");
   const agentId = text(button.dataset.avatarUploadAgentId);
   const file = form?.elements.avatar_file?.files?.[0] || null;
@@ -11611,6 +12066,9 @@ async function uploadAgentAvatar(button) {
 }
 
 async function generateAvatarPreview(button) {
+  if (!guardTeamMutation("generate avatar previews")) {
+    return;
+  }
   const form = button.closest("form");
   const agentId = text(button.dataset.avatarGenerateAgentId);
   if (!form || !agentId) {
@@ -11660,6 +12118,9 @@ async function generateAvatarPreview(button) {
 }
 
 async function acceptAvatarPreview(button) {
+  if (!guardTeamMutation("accept avatar previews")) {
+    return;
+  }
   const form = button.closest("form");
   const agentId = text(button.dataset.avatarAcceptAgentId);
   const previewId = text(button.dataset.avatarPreviewId);
@@ -11677,6 +12138,9 @@ async function acceptAvatarPreview(button) {
 }
 
 async function removeAgentAvatar(button) {
+  if (!guardTeamMutation("remove avatars")) {
+    return;
+  }
   const form = button.closest("form");
   const agentId = text(button.dataset.avatarRemoveAgentId);
   if (!form || !agentId) {
@@ -11693,6 +12157,9 @@ async function removeAgentAvatar(button) {
 }
 
 async function submitAvatarFormData(form, endpoint, body) {
+  if (!guardTeamMutation("upload avatars")) {
+    return false;
+  }
   const drafts = captureFormDrafts();
   setFormBusy(form, true);
   setStatus("Saving avatar.", "loading");
@@ -11707,7 +12174,7 @@ async function submitAvatarFormData(form, endpoint, body) {
     });
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; review and submit again.`, "warning");
@@ -11743,6 +12210,9 @@ async function submitAvatarJson(form, endpoint, method, payload, agentId) {
 }
 
 async function requestContextRotation(button, agentId) {
+  if (!guardTeamMutation("clear agent context")) {
+    return;
+  }
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
     setStatus("No agent selected.", "error");
@@ -11760,6 +12230,7 @@ async function requestContextRotation(button, agentId) {
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
+          "X-Team-Addon-Response-Scope": "view",
         },
         body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {
           reason: "manual operator request",
@@ -11769,7 +12240,7 @@ async function requestContextRotation(button, agentId) {
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; request context clearing again.`, "warning");
@@ -11793,6 +12264,9 @@ async function requestContextRotation(button, agentId) {
 }
 
 async function startAgentVoiceCall(button, agentId) {
+  if (!guardTeamMutation("start voice calls")) {
+    return;
+  }
   const normalizedAgentId = text(agentId);
   const conversationId = text(button?.dataset?.agentCallConversationId);
   if (!normalizedAgentId || !state.agents[normalizedAgentId]) {
@@ -12005,6 +12479,9 @@ async function recordAgentVoiceEvent(voiceSessionId, payload) {
 }
 
 async function endAgentVoiceCall(button) {
+  if (!guardTeamMutation("end voice calls")) {
+    return;
+  }
   const call = activeAgentVoiceCall;
   if (!call) {
     return;
@@ -12183,6 +12660,9 @@ function cleanupAgentVoiceCall(call) {
 }
 
 function toggleAgentVoiceMute() {
+  if (!guardTeamMutation("change voice calls")) {
+    return;
+  }
   const call = activeAgentVoiceCall;
   if (!call?.mediaStream) {
     return;
@@ -12413,6 +12893,9 @@ function agentVoiceTranscriptExcerpt(call, { limit = 12 } = {}) {
 }
 
 async function requestAgentStandDown(button, agentId) {
+  if (!guardTeamMutation("stand down agents")) {
+    return;
+  }
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
     setStatus("No agent selected.", "error");
@@ -12445,7 +12928,7 @@ async function requestAgentStandDown(button, agentId) {
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; stand down again.`, "warning");
@@ -12469,6 +12952,9 @@ async function requestAgentStandDown(button, agentId) {
 }
 
 async function revokeAgentStandDown(button, agentId) {
+  if (!guardTeamMutation("revoke stand-downs")) {
+    return;
+  }
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
     setStatus("No agent selected.", "error");
@@ -12494,7 +12980,7 @@ async function revokeAgentStandDown(button, agentId) {
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; revoke again.`, "warning");
@@ -12518,6 +13004,9 @@ async function revokeAgentStandDown(button, agentId) {
 }
 
 async function dismissActionRecordAttention(button, actionRecordId) {
+  if (!guardTeamMutation("dismiss failed actions")) {
+    return;
+  }
   if (!actionRecordId) {
     setStatus("No action record selected.", "error");
     return;
@@ -12544,7 +13033,7 @@ async function dismissActionRecordAttention(button, actionRecordId) {
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; review and dismiss again.`, "warning");
@@ -12568,6 +13057,9 @@ async function dismissActionRecordAttention(button, actionRecordId) {
 }
 
 async function markGovernanceAgendaHandled(button, agendaItemId) {
+  if (!guardTeamMutation("mark governance agenda handled")) {
+    return;
+  }
   if (!agendaItemId) {
     setStatus("No governance agenda item selected.", "error");
     return;
@@ -12592,7 +13084,7 @@ async function markGovernanceAgendaHandled(button, agendaItemId) {
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; mark handled again.`, "warning");
@@ -12914,6 +13406,9 @@ function gitToBareRepo(git) {
 }
 
 async function submitReviewDecision(form) {
+  if (!guardTeamMutation("record review decisions")) {
+    return;
+  }
   const data = formData(form);
   const reviewId = text(data.review_request_id || form.dataset.reviewRequestId);
   if (!reviewId) {
@@ -12940,6 +13435,9 @@ async function submitReviewDecision(form) {
 }
 
 function openEditDialog(type, id) {
+  if (!guardTeamMutation("edit Team records")) {
+    return;
+  }
   const record = recordForEdit(type, id);
   if (!record || !elements.editModal || !elements.editForm || !elements.editFormBody) {
     setStatus("Record is no longer available.", "error");
@@ -12970,6 +13468,9 @@ function closeEditDialog() {
 }
 
 async function submitEditForm(form) {
+  if (!guardTeamMutation("save changes")) {
+    return;
+  }
   const type = text(form.dataset.editType);
   const id = text(form.dataset.editId);
   if (!type || !id) {
@@ -13550,6 +14051,9 @@ function setFormBusy(form, busy) {
   form.querySelectorAll("button, input, select, textarea").forEach((field) => {
     field.disabled = busy;
   });
+  if (!busy) {
+    applyLockedMutationControls(form);
+  }
 }
 
 function setStatus(message, level, action = null) {
@@ -13563,6 +14067,9 @@ function setStatus(message, level, action = null) {
     button.className = "status-action";
     button.textContent = action.label;
     button.addEventListener("click", action.onClick);
+    if (teamMutationLocked()) {
+      lockMutationControl(button, "retry saves");
+    }
     elements.statusMessage.append(" ");
     elements.statusMessage.appendChild(button);
   }

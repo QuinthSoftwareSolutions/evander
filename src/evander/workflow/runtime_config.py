@@ -194,10 +194,14 @@ def _compile_worker_global_config(
 
 def compile_worker_global_config_with_diagnostics(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
+    *,
+    project_dir: Path | None = None,
 ) -> tuple[TriggerOrchestratorWorkerGlobalConfig, list[WorkflowValidationDiagnostic]]:
     transforms = resolve_workflow_transforms(worker_config.workflow_transforms)
     compiled, diagnostics = compile_trigger_orchestrator_config_with_diagnostics(
-        worker_config, transforms=transforms
+        worker_config,
+        transforms=transforms,
+        addon_base_dir=project_dir,
     )
     return compiled, diagnostics
 

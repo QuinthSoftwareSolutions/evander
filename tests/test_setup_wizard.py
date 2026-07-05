@@ -38,6 +38,7 @@ def test_setup_checklist_requires_provider_secret_without_storing_value(tmp_path
     checklist = {item.id: item for item in manager.checklist(state)}
     assert checklist["ai_providers"].status == "needs input"
     assert "missing secrets: openai" in checklist["ai_providers"].summary
+    assert state.execution["container_worker_base_url"] == "http://127.0.0.1:11890"
 
     state = manager.configure_ai_providers(
         manager.load_state(),
@@ -298,13 +299,41 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
     assert "User=operator" in unit
     assert "SupplementaryGroups=docker" in unit
     assert f"EnvironmentFile=-{tmp_path / 'local-secrets.env'}" in unit
-    assert "evander-worker-daemon --host 127.0.0.1 --port 11888" in unit
+    assert "evander-worker-daemon --host 127.0.0.1 --port 11890" in unit
     assert "--runtime-dir /var/lib/agent-worker/runtime" in unit
     assert "--worker-root /var/lib/agent-worker" in unit
     assert "--container-user " in unit
     assert f"--allowed-git-source-prefix ssh://evander-git-host{ROOT / 'git-remotes'}/" in unit
     assert "--git-ssh-source-dir /home/operator/.ssh" in unit
     assert "Requires=docker.service" in unit
+
+
+def test_setup_local_container_worker_unit_uses_configured_base_url(tmp_path: Path) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.secret_file = str(tmp_path / "local-secrets.env")
+    state.execution = {
+        "execution_backend": "container_worker_vm",
+        "model": "container_same_host",
+        "container_worker_base_url": "http://127.0.0.1:11990",
+    }
+
+    unit = manager._local_container_worker_unit_content(state, run_user="operator")
+
+    assert "evander-worker-daemon --host 127.0.0.1 --port 11990" in unit
+
+
+def test_setup_local_container_worker_unit_requires_explicit_port(tmp_path: Path) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.execution = {
+        "execution_backend": "container_worker_vm",
+        "model": "container_same_host",
+        "container_worker_base_url": "http://127.0.0.1",
+    }
+
+    with pytest.raises(ValueError, match="explicit port"):
+        manager._local_container_worker_unit_content(state, run_user="operator")
 
 
 def test_setup_builds_admin_frontend_assets_when_references_are_missing(

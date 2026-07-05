@@ -58,6 +58,7 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
   const requestedEndpoints = [];
   const uploadRequests = [];
   const initialArtifact = artifactRecord("existing/artifact");
+  const spaceArtifact = artifactRecord("team/backend/report");
   const uploadedArtifact = artifactRecord("uploads/example");
   let artifactItems = [initialArtifact];
 
@@ -119,6 +120,37 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
       validation_diagnostics: [],
     },
   };
+  const artifactSpacesResponse = {
+    success: true,
+    revision: 4,
+    count: 4,
+    spaces: [
+      {
+        path: "/",
+        parent_path: null,
+        display_name: "Root",
+        metadata: {},
+      },
+      {
+        path: "/teams",
+        parent_path: "/",
+        display_name: "Teams",
+        metadata: {},
+      },
+      {
+        path: "/teams/team",
+        parent_path: "/teams",
+        display_name: "Team",
+        metadata: {},
+      },
+      {
+        path: "/teams/team/projects/backend",
+        parent_path: "/teams/team",
+        display_name: "Backend",
+        metadata: {},
+      },
+    ],
+  };
 
   await t.after(async () => {
     await page.close().catch(() => {});
@@ -164,12 +196,25 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
       return;
     }
 
+    if (pathname === "/api/admin/artifact-spaces") {
+      assert.equal(url.searchParams.get("recursive"), "true");
+      assert.equal(url.searchParams.get("include_versions"), "false");
+      await route.fulfill(jsonResponse(artifactSpacesResponse));
+      return;
+    }
+
     if (pathname === "/api/admin/artifacts") {
+      const spacePath = url.searchParams.get("space_path");
+      const items = spacePath === "/teams/team" ? [spaceArtifact] : artifactItems;
+      if (spacePath) {
+        assert.equal(spacePath, "/teams/team");
+        assert.equal(url.searchParams.get("space_recursive"), "true");
+      }
       await route.fulfill(
         jsonResponse({
-          items: artifactItems,
+          items,
           limit: 50,
-          total: artifactItems.length,
+          total: items.length,
           next_cursor: null,
         }),
       );
@@ -215,6 +260,27 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
 
   await page.getByRole("heading", { name: "Artifacts", exact: true }).waitFor({ state: "visible" });
   await page.getByRole("heading", { name: "Published artifacts" }).waitFor({ state: "visible" });
+  await page.waitForFunction(
+    () => document.querySelector(".artifacts-table tbody tr strong")?.textContent === "existing/artifact",
+    undefined,
+    { timeout: 5000 },
+  );
+  await page.locator(".artifact-space-tree-button", { hasText: "/teams/team" }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".artifacts-table tbody tr strong")?.textContent === "team/backend/report",
+    undefined,
+    { timeout: 5000 },
+  );
+  assert.ok(
+    requestedEndpoints.some((endpoint) => endpoint.includes("space_path=%2Fteams%2Fteam")),
+    "expected artifact space filter request",
+  );
+  await page.locator(".artifact-space-tree-all").click();
+  await page.waitForFunction(
+    () => document.querySelector(".artifacts-table tbody tr strong")?.textContent === "existing/artifact",
+    undefined,
+    { timeout: 5000 },
+  );
   await page.getByRole("button", { name: "Upload artifact" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Upload artifact" });

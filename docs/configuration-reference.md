@@ -155,17 +155,25 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `provider_loader.provider_modules` | `config/trigger-orchestrator/config.json` | Additional provider plugin Python modules to load after selected profile modules. |
 | `provider_loader.provider_entry_points_enabled` | `config/trigger-orchestrator/config.json` | Enables provider plugin discovery via Python entry points. |
 | `addon_loader.modules` | Host config and `config/trigger-orchestrator/config.json` | Explicit add-on Python modules. Admin Web uses host config for add-on routes/navigation; workflow workers use their config to include add-on provider contributions. |
+| `addon_loader.package_dirs` | Host config and `config/trigger-orchestrator/config.json` | Local add-on package directories to scan. Defaults to `["addons", "src"]`, resolved from the Evander project root for Admin Web and normal services. Each package is an immediate child directory with an `addon.json` manifest; directories without that manifest are ignored. |
 | `addon_loader.enabled_entry_points` | Host config and `config/trigger-orchestrator/config.json` | Enables add-on discovery through Python entry points in `evander.addons`. Defaults to `false`. |
-| `addon_loader.enabled_addon_ids` | Host config and `config/trigger-orchestrator/config.json` | Optional allowlist of add-on ids to load from configured modules/entry points. |
+| `addon_loader.enabled_addon_ids` | Host config and `config/trigger-orchestrator/config.json` | Optional allowlist of add-on ids to load from configured modules, entry points, or scanned packages. When omitted, explicit modules and enabled entry points preserve the legacy load-all behavior, while scanned packages remain available but disabled. |
 
 The Admin Web **Add-ons** page can toggle `addon_loader.enabled_addon_ids` and
 keeps host and trigger-orchestrator add-on loader settings aligned. Changes are
 restart-gated; restart Admin Web, trigger/effect orchestrators, and gateway when
 MCP tools are involved.
 
-For the bundled Team Add-on, prefer explicit module loading:
-`addon_loader.modules: ["evander_team_addon"]`. Configure this in the host
-config to expose Admin Web routes/navigation, and in
+The bundled add-ons ship `addon.json` manifests beside their package
+`__init__.py` files, so they use the same scanned-package shape as local copied
+add-ons in a source checkout. Enable them from Admin Web or set
+`addon_loader.enabled_addon_ids` to add-on ids such as `team-addon`,
+`skatteverket-addon`, `bokio-addon`, or `mssql-seed-addon`. Explicit
+`addon_loader.modules` entries and `evander.addons` entry points remain
+supported compatibility paths.
+
+For the bundled Team Add-on, configure the same add-on loader in the host config
+to expose Admin Web routes/navigation, and in
 `config/trigger-orchestrator/config.json` to make `effect:team:*` and
 `query:team:*` workflow providers available to the trigger/effect workers. The
 team runtime loop is still opt-in; write the current-schema payload from
@@ -173,23 +181,19 @@ team runtime loop is still opt-in; write the current-schema payload from
 workflow pack and list that file in `workflow_packs` only on deployments that
 want autonomous team wakeups.
 
-For the bundled Skatteverket Add-on, use explicit module loading with
-`addon_loader.modules: ["evander_skatteverket_addon"]` and
-`addon_loader.enabled_addon_ids: ["skatteverket-addon"]`. Configure this in the
-host config to expose the Skatteverket Admin Web tab and MCP tools, and in
-`config/trigger-orchestrator/config.json` to make `query:skatteverket:*` and
-`effect:skatteverket:*` workflow providers available. Its state is stored under
+For the bundled Skatteverket Add-on, enabling `skatteverket-addon` exposes the
+Skatteverket Admin Web tab and MCP tools, and makes `query:skatteverket:*` and
+`effect:skatteverket:*` workflow providers available when the trigger
+orchestrator uses the same add-on loader. Its state is stored under
 `runtime/addons/skatteverket-addon/state.db`; production API credentials remain
 host-side and are referenced by environment variable names in add-on connection
 metadata.
 
-For the bundled Bokio Add-on, use explicit module loading with
-`addon_loader.modules: ["evander_bokio_addon"]` and
-`addon_loader.enabled_addon_ids: ["bokio-addon"]`. Configure this in the host
-config to expose the Bokio Admin Web tab and MCP tools, and in
-`config/trigger-orchestrator/config.json` to make `query:bokio:*` and
-`effect:bokio:*` workflow providers available. Set `BOKIO_COMPANY_ID` and
-`BOKIO_INTEGRATION_TOKEN` in the host service environment; optional
+For the bundled Bokio Add-on, enabling `bokio-addon` exposes the Bokio Admin Web
+tab and MCP tools, and makes `query:bokio:*` and `effect:bokio:*` workflow
+providers available when the trigger orchestrator uses the same add-on loader.
+Set `BOKIO_COMPANY_ID` and `BOKIO_INTEGRATION_TOKEN` in the host service
+environment; optional
 `provider_state.bokio.company_id_env` and
 `provider_state.bokio.integration_token_env` can point the add-on at different
 environment variable names without storing the token value in config.
@@ -824,7 +828,7 @@ the candidate set with `status`, branch/time filters, `top`, `skip`, or
 
 `effect:communication:send-message` sends a plain message through a declared
 directory-scoped communication target managed from Admin Web Configuration ->
-Communications and stored in `runtime/communication-targets.db`. The target must
+People & Communications and stored in `runtime/communication-targets.db`. The target must
 include the `write` capability for a top-level message, or the `reply` capability
 when `thread_id` is set. Teams targets can address
 `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user as
@@ -1240,7 +1244,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `audit_log_path` | legacy gateway YAML | `src/evander/runtime.py` audit logger destination. |
 | `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/evander/runtime.py` persistent JSON stores. |
 | `directories_store_path` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/directories.py`, directory admin/config services. |
-| `addon_loader` | host config, legacy gateway YAML, and trigger-orchestrator config | Optional add-on module/entry-point loading for Admin Web routes/navigation and workflow-provider contributions. Add-ons are disabled by default. |
+| `addon_loader` | host config, legacy gateway YAML, and trigger-orchestrator config | Optional add-on module, package-directory, and entry-point loading for Admin Web routes/navigation and workflow-provider contributions. Scanned package add-ons are disabled until listed in `enabled_addon_ids`. |
 | `enable_directory_scoped_config` | legacy gateway YAML | `src/evander/admin/directory.py`, Admin Web directory edit surfaces, `src/evander/daemons/ado_issue_worker.py`, and `src/evander/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
 | `approval_ttl_seconds` | legacy gateway YAML | `src/evander/policy.py` approval expiry computation. |
 | `default_session_ttl_seconds` | legacy gateway YAML | `src/evander/cli.py` session creation defaults. |
@@ -1513,7 +1517,7 @@ Storage paths:
 | `runtime/directories.json` (or `directories_store_path`) | Directory tree metadata, canonical ownership, configured domains | `src/evander/directories.py`, `src/evander/admin/directory.py`, `src/evander/ownership.py` |
 | `runtime/directory-config/root/.../<domain>.json` | Raw per-domain overlay payloads for directories listed in `directories.json` metadata | `src/evander/directory_config.py` |
 | `runtime/assistant-settings.json` | Admin assistant and workflow generation settings | Admin Web Chat and Workflow generator |
-| `runtime/communication-targets.db` | SQLite-backed communication target overlays keyed by directory and target ID | `src/evander/messaging/targets.py`, Admin Web Configuration -> Communications, workflow notification/message effects |
+| `runtime/communication-targets.db` | SQLite-backed communication target overlays keyed by directory and target ID | `src/evander/messaging/targets.py`, Admin Web Configuration -> People & Communications, workflow notification/message effects |
 
 Supported directory config domains:
 
@@ -1572,7 +1576,7 @@ Resolution behavior:
 Approval notification policy:
 
 - `approval_notification_target_ids` is a list of host-owned communication target IDs. The targets
-  are configured in Admin Web under Configuration -> Communications and stored in
+  are configured in Admin Web under Configuration -> People & Communications and stored in
   `runtime/communication-targets.db`; each selected target must include the `notify` capability.
 - Directory policy sets the inherited baseline. Session policy can add more target IDs for one
   session, and a live workflow-run approval lease can add run-scoped targets for that run. The
@@ -1813,6 +1817,8 @@ The following environment variables are consumed directly by scripts as runtime 
 | `scripts/bootstrap_mssql_tools_vm.sh` | `SSH_KEY_PATH`, `HOST_MSSQL_TOOLS_ROOT`, `HOST_MSSQL_ODBC_ROOT` |
 | `scripts/bootstrap_mssql_vm.sh` | `MSSQL_PID`, `MSSQL_SA_PASSWORD`, `SSH_KEY_PATH` |
 | `evander-worker-daemon --mssql-enabled` | `EVANDER_WORKER_MSSQL_ADMIN_PASSWORD` |
+| `evander-mssql-seed-sidecar` | `EVANDER_MSSQL_SEED_SIDECAR_HOST`, `EVANDER_MSSQL_SEED_SIDECAR_PORT`, `EVANDER_MSSQL_SEED_SIDECAR_TOKEN_ENV`, `EVANDER_MSSQL_SEED_SIDECAR_TOKEN`, `EVANDER_WORKER_MSSQL_ADMIN_PASSWORD_ENV`, `EVANDER_WORKER_MSSQL_ADMIN_PASSWORD`, `EVANDER_WORKER_MSSQL_ADMIN_USER`, `EVANDER_WORKER_MSSQL_ADMIN_HOST`, `EVANDER_WORKER_MSSQL_PORT`, `EVANDER_WORKER_MSSQL_SQLCMD_PATH`, `EVANDER_MSSQL_SEED_DATA_DIR` |
+| `ansible/worker.yml` MSSQL seed sidecar | `vault_evander_worker_mssql_seed_sidecar_token`, `evander_worker_mssql_seed_sidecar_*` inventory variables |
 | `scripts/bootstrap_nuget_vm.sh` | `SSH_KEY_PATH`, `NUGET_RELAY_BASE_URL`, `NUGET_FALLBACK_PACKAGES`, `NUGET_PACKAGES_DIR`, `NUGET_HTTP_CACHE_DIR` |
 | `scripts/bootstrap_playwright_vm.sh` | `SSH_KEY_PATH`, `HOST_NODE_ROOT`, `HOST_PLAYWRIGHT_NODE_MODULES`, `HOST_PLAYWRIGHT_BROWSERS` |
 | `scripts/bootstrap_python_packages_vm.sh` | `SSH_KEY_PATH`, `HOST_PYTHON_BIN`, `GUEST_PYTHON_BIN`, `GUEST_WHEELHOUSE_DIR` |

@@ -20,6 +20,14 @@
     daemon_reload: true
   when: evander_legacy_worker_daemon_unit_remove.changed
 
+- name: Resolve MSSQL seed sidecar activation
+  ansible.builtin.set_fact:
+    evander_worker_mssql_seed_sidecar_active: >-
+      {{
+        (evander_worker_mssql_seed_sidecar_enabled | default(false) | bool)
+        and (evander_worker_mssql_enabled | bool)
+      }}
+
 - name: Render worker daemon environment
   ansible.builtin.template:
     src: worker-daemon.env.j2
@@ -54,3 +62,65 @@
         else 'started'
       }}
     daemon_reload: true
+
+- name: Install MSSQL seed sidecar
+  when: evander_worker_mssql_seed_sidecar_active | bool
+  block:
+    - name: Ensure MSSQL seed backup directory exists
+      ansible.builtin.file:
+        path: "{{ evander_worker_mssql_seed_sidecar_backup_dir }}"
+        state: directory
+        owner: mssql
+        group: "{{ evander_run_user }}"
+        mode: "0750"
+
+    - name: Render MSSQL seed sidecar environment
+      ansible.builtin.template:
+        src: mssql-seed-sidecar.env.j2
+        dest: "{{ evander_deploy_path }}/config/mssql-seed-sidecar.env"
+        owner: "{{ evander_run_user }}"
+        group: "{{ evander_run_user }}"
+        mode: "0600"
+      no_log: true
+      register: evander_mssql_seed_sidecar_env_render
+
+    - name: Install MSSQL seed sidecar systemd unit
+      ansible.builtin.template:
+        src: evander-mssql-seed-sidecar.service.j2
+        dest: /etc/systemd/system/evander-mssql-seed-sidecar.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: evander_mssql_seed_sidecar_unit_render
+
+    - name: Reconcile MSSQL seed sidecar service
+      ansible.builtin.systemd:
+        name: evander-mssql-seed-sidecar.service
+        enabled: true
+        state: >-
+          {{
+            'restarted'
+            if (
+              evander_mssql_seed_sidecar_env_render.changed
+              or evander_mssql_seed_sidecar_unit_render.changed
+              or (evander_run_user_membership_changed | default(false))
+            )
+            else 'started'
+          }}
+        daemon_reload: true
+
+- name: Check existing MSSQL seed sidecar systemd unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/evander-mssql-seed-sidecar.service
+  register: evander_mssql_seed_sidecar_unit_stat
+  when: not (evander_worker_mssql_seed_sidecar_active | bool)
+
+- name: Disable inactive MSSQL seed sidecar service
+  ansible.builtin.systemd:
+    name: evander-mssql-seed-sidecar.service
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  when:
+    - not (evander_worker_mssql_seed_sidecar_active | bool)
+    - evander_mssql_seed_sidecar_unit_stat.stat.exists | default(false)

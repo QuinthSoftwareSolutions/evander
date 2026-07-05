@@ -40,28 +40,30 @@ type EffectiveToolPolicy = SessionEffectiveToolPolicy & {
 type SessionRecord = {
   session_id: string;
   vm_id: string | null;
+  vm_provider?: string | null;
+  vm_provider_id?: string | null;
   model: string | null;
   directory_path: string;
-  allowed_tools: string[];
+  allowed_tools?: string[];
   approval_required_tools?: string[];
   approval_tool_settings?: Record<string, ApprovalGrantSettings>;
-  approval_notification_target_ids: string[];
-  approval_notification_target_options: Array<{ value: string; label: string }>;
+  approval_notification_target_ids?: string[];
+  approval_notification_target_options?: Array<{ value: string; label: string }>;
   effective_tool_policy?: EffectiveToolPolicy | null;
-  allowed_script_names: string[];
-  discord_channel_allowlist: string[];
-  teams_channel_allowlist: string[];
-  communication_file_receive_enabled: boolean;
-  communication_file_send_enabled: boolean;
-  communication_file_max_bytes: number | null;
-  communication_file_allowed_mime_types: string[];
-  communication_file_allowed_extensions: string[];
-  communication_file_blocked_extensions: string[];
-  communication_file_require_approval_for_send: boolean;
-  web_search_enabled: boolean;
+  allowed_script_names?: string[];
+  discord_channel_allowlist?: string[];
+  teams_channel_allowlist?: string[];
+  communication_file_receive_enabled?: boolean;
+  communication_file_send_enabled?: boolean;
+  communication_file_max_bytes?: number | null;
+  communication_file_allowed_mime_types?: string[];
+  communication_file_allowed_extensions?: string[];
+  communication_file_blocked_extensions?: string[];
+  communication_file_require_approval_for_send?: boolean;
+  web_search_enabled?: boolean;
   expires_at: string;
   created_at: string;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   runtime_image?: RuntimeImageInfo | null;
   issue_number?: string | null;
   is_expired: boolean;
@@ -91,12 +93,14 @@ type ContainerSessionLifecycle = {
 
 type SessionListResponse = {
   items: SessionRecord[];
-  active_items: SessionRecord[];
-  expired_items: SessionRecord[];
   counts: {
     total: number;
     active: number;
     expired: number;
+  };
+  status_ids: {
+    active: string[];
+    expired: string[];
   };
 };
 
@@ -573,6 +577,8 @@ function matchesFilter(item: SessionRecord, query: string): boolean {
   return [
     item.session_id,
     item.vm_id ?? "",
+    item.vm_provider ?? "",
+    item.vm_provider_id ?? "",
     item.issue_number ?? "",
     item.directory_path,
     item.model ?? "",
@@ -596,6 +602,12 @@ function runtimeImageSearchText(item: SessionRecord): string {
     runtimeImage.image_ref ?? "",
     runtimeImage.missing_reason ?? "",
   ].join(" ");
+}
+
+function sessionItemsForTab(response: SessionListResponse | null, tab: TabKey): SessionRecord[] {
+  if (!response) return [];
+  const ids = new Set(tab === "active" ? response.status_ids.active : response.status_ids.expired);
+  return response.items.filter((item) => ids.has(item.session_id));
 }
 
 function runtimeImagePrimaryText(session: SessionRecord): string {
@@ -716,7 +728,7 @@ function formatWakeCompletionEvidence(evidence: Record<string, unknown> | undefi
 }
 
 function pickSessionIdForTab(response: SessionListResponse, tab: TabKey, preferredSessionId?: string): string {
-  const tabItems = tab === "active" ? response.active_items : response.expired_items;
+  const tabItems = sessionItemsForTab(response, tab);
   if (preferredSessionId && tabItems.some((item) => item.session_id === preferredSessionId)) {
     return preferredSessionId;
   }
@@ -729,10 +741,10 @@ function sessionIdFromHash(): string {
 
 function tabForSessionId(response: SessionListResponse | null, sessionId: string): TabKey | null {
   if (!response || !sessionId) return null;
-  if (response.active_items.some((item) => item.session_id === sessionId)) {
+  if (response.status_ids.active.includes(sessionId)) {
     return "active";
   }
-  if (response.expired_items.some((item) => item.session_id === sessionId)) {
+  if (response.status_ids.expired.includes(sessionId)) {
     return "expired";
   }
   return null;
@@ -1193,7 +1205,9 @@ export function SessionsScreen() {
       if (nextSelected) {
         return nextSelected;
       }
-      return payload.active_items[0]?.session_id ?? payload.expired_items[0]?.session_id ?? "";
+      return sessionItemsForTab(payload, "active")[0]?.session_id
+        ?? sessionItemsForTab(payload, "expired")[0]?.session_id
+        ?? "";
     });
     return payload;
   }
@@ -1227,12 +1241,12 @@ export function SessionsScreen() {
     if (deepLinkSessionId) {
       return;
     }
-    const nextItems = activeTab === "active" ? response?.active_items ?? [] : response?.expired_items ?? [];
+    const nextItems = sessionItemsForTab(response, activeTab);
     if (selectedSessionId && nextItems.some((item) => item.session_id === selectedSessionId)) {
       return;
     }
     setSelectedSessionId(nextItems[0]?.session_id ?? "");
-  }, [activeTab, deepLinkSessionId, response?.active_items, response?.expired_items, selectedSessionId]);
+  }, [activeTab, deepLinkSessionId, response, selectedSessionId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setWakeVisibilityNowMs(Date.now()), 60_000);
@@ -1297,11 +1311,11 @@ export function SessionsScreen() {
           setModelDraft(payload.session.model ?? "");
         }
         if (toolsBoundSessionId !== sessionId) {
-          setToolsDraft(sortTools(payload.session.allowed_tools));
+          setToolsDraft(sortTools(payload.session.allowed_tools ?? []));
           setToolsDirty(false);
           setToolsBoundSessionId(sessionId);
         } else if (!toolsDirty) {
-          setToolsDraft(sortTools(payload.session.allowed_tools));
+          setToolsDraft(sortTools(payload.session.allowed_tools ?? []));
         }
         if (policyBoundSessionId !== sessionId) {
           setPolicyDraft(policyDraftFromSession(payload.session));
@@ -1336,11 +1350,11 @@ export function SessionsScreen() {
   }, [selectedSessionId]);
 
   const visibleItems = useMemo(() => {
-    const source = activeTab === "active" ? response?.active_items ?? [] : response?.expired_items ?? [];
+    const source = sessionItemsForTab(response, activeTab);
     return source
       .filter((item) => matchesFilter(item, sessionFilter))
       .sort((left, right) => sessionListCollator.compare(left.session_id, right.session_id));
-  }, [activeTab, response?.active_items, response?.expired_items, sessionFilter]);
+  }, [activeTab, response, sessionFilter]);
 
   useEffect(() => {
     if (!response) {
@@ -1352,10 +1366,13 @@ export function SessionsScreen() {
     setSelectedSessionId(visibleItems[0]?.session_id ?? "");
   }, [response, selectedSessionId, visibleItems]);
 
-  const selectedSession = useMemo(
-    () => response?.items.find((item) => item.session_id === selectedSessionId) ?? detail?.session ?? null,
-    [detail?.session, response?.items, selectedSessionId],
-  );
+  const selectedSession = useMemo(() => {
+    const listItem = response?.items.find((item) => item.session_id === selectedSessionId) ?? null;
+    if (detail?.session.session_id === selectedSessionId) {
+      return listItem ? { ...detail.session, ...listItem } : detail.session;
+    }
+    return listItem;
+  }, [detail?.session, response?.items, selectedSessionId]);
 
   const visibleWakeScheduleItems = useMemo(
     () => filterVisibleWakeSchedules(detail?.wake_schedules ?? [], {

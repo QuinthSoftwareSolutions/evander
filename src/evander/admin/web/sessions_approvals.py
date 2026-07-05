@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import OrderedDict
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
@@ -12,6 +14,7 @@ from starlette.routing import BaseRoute, Route
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 from evander.admin.web.cache import AdminWebJsonResponseCache
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.admin.web.shared import (
     AdminWebAuth,
     json_error,
@@ -437,6 +440,25 @@ def _json_revision(payload: Any) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+class _SessionPolicySummaryCache:
+    def __init__(self, *, max_entries: int = 256) -> None:
+        self._max_entries = max(1, max_entries)
+        self._entries: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        payload = self._entries.get(key)
+        if payload is None:
+            return None
+        self._entries.move_to_end(key)
+        return deepcopy(payload)
+
+    def put(self, key: str, payload: dict[str, Any]) -> None:
+        self._entries[key] = deepcopy(payload)
+        self._entries.move_to_end(key)
+        while len(self._entries) > self._max_entries:
+            self._entries.popitem(last=False)
+
+
 def _rule_effective_settings(rule: McpToolPolicyRule | None) -> ApprovalGrantSettings:
     settings = ApprovalGrantSettings()
     if rule is not None and rule.default_settings is not None:
@@ -514,15 +536,75 @@ def _approval_actor_from_request(
     ).strip()
 
 
-def _session_payload(service: AdminRuntimeComponents, summary: SessionSummary) -> dict[str, Any]:
+def _compact_session_payload(summary: SessionSummary) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "session_id": summary.session_id,
+        "vm_id": summary.vm_id,
+        "vm_provider": summary.vm_provider,
+        "vm_provider_id": summary.vm_provider_id,
+        "model": summary.model,
+        "directory_path": summary.directory_path,
+        "expires_at": _iso(summary.expires_at),
+        "created_at": _iso(summary.created_at),
+        "issue_number": summary.issue_number,
+        "is_expired": summary.is_expired,
+        "container_lifecycle": (
+            None
+            if summary.container_lifecycle is None
+            else summary.container_lifecycle.model_dump(mode="json")
+        ),
+    }
+    return payload
+
+
+def _session_policy_summary_payload(
+    service: AdminRuntimeComponents,
+    summary: SessionSummary,
+    *,
+    cache: _SessionPolicySummaryCache | None = None,
+) -> dict[str, Any]:
+    effective_policy = service.runtime.policy_config.resolve_for_session_manifest(summary)
+    cache_key = _json_revision(
+        {
+            "session": summary.model_dump(mode="json"),
+            "effective_policy": effective_policy.model_dump(mode="json"),
+        }
+    )
+    if cache is not None:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    tool_summary = service.runtime.policy.allowed_tool_summary_for_session(
+        summary,
+        effective_policy=effective_policy,
+    )
+    payload = {
+        "tool_summary": tool_summary,
+        "effective_tool_policy": service.vm_agent_admin.effective_tool_policy_payload(
+            summary,
+            effective_policy=effective_policy,
+            tool_summary=tool_summary,
+        ),
+    }
+    if cache is not None:
+        cache.put(cache_key, payload)
+    return deepcopy(payload)
+
+
+def _session_payload(
+    service: AdminRuntimeComponents,
+    summary: SessionSummary,
+    *,
+    policy_cache: _SessionPolicySummaryCache | None = None,
+) -> dict[str, Any]:
     payload = summary.model_dump(mode="json")
     payload["allowed_tools"] = [tool_name_value(tool) for tool in summary.allowed_tools]
-    payload["tool_summary"] = service.runtime.policy.allowed_tool_summary_for_session(summary)
+    payload.update(_session_policy_summary_payload(service, summary, cache=policy_cache))
     payload["approval_notification_target_options"] = [
         option.model_dump(mode="json")
         for option in service.vm_agent_admin.approval_notification_target_options(summary)
     ]
-    payload["effective_tool_policy"] = service.vm_agent_admin.effective_tool_policy_payload(summary)
     payload["runtime_image"] = service.vm_agent_admin.session_runtime_image_payload(summary)
     return payload
 
@@ -581,6 +663,8 @@ def session_approval_routes(
     auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[BaseRoute]:
+    policy_summary_cache = _SessionPolicySummaryCache()
+
     async def approvals_index(request: Request) -> JSONResponse:
         params = request.query_params
         try:
@@ -711,13 +795,15 @@ def session_approval_routes(
         expired_items = [item for item in items if item.is_expired]
         return JSONResponse(
             {
-                "items": [_session_payload(service, item) for item in items],
-                "active_items": [_session_payload(service, item) for item in active_items],
-                "expired_items": [_session_payload(service, item) for item in expired_items],
+                "items": [_compact_session_payload(item) for item in items],
                 "counts": {
                     "total": len(items),
                     "active": len(active_items),
                     "expired": len(expired_items),
+                },
+                "status_ids": {
+                    "active": [item.session_id for item in active_items],
+                    "expired": [item.session_id for item in expired_items],
                 },
             }
         )
@@ -737,7 +823,7 @@ def session_approval_routes(
             return json_error(str(exc), status_code=404)
         return JSONResponse(
             {
-                "session": _session_payload(service, summary),
+                "session": _session_payload(service, summary, policy_cache=policy_summary_cache),
                 "wake_schedules": [_wake_schedule_payload(item) for item in wake_schedules],
                 "summary_json": _iso(summary.model_dump(mode="json")),
             }
@@ -786,7 +872,7 @@ def session_approval_routes(
             return json_error(str(exc), status_code=404 if "Unknown" in str(exc) else 400)
         payload = {
             **result.model_dump(mode="json"),
-            "session": _session_payload(service, summary),
+            "session": _session_payload(service, summary, policy_cache=policy_summary_cache),
         }
         if not result.success:
             payload["error"] = result.message
@@ -812,7 +898,7 @@ def session_approval_routes(
         return JSONResponse(
             {
                 **result.model_dump(mode="json"),
-                "session": _session_payload(service, summary),
+                "session": _session_payload(service, summary, policy_cache=policy_summary_cache),
             }
         )
 
@@ -837,7 +923,7 @@ def session_approval_routes(
         return JSONResponse(
             {
                 **result.model_dump(mode="json"),
-                "session": _session_payload(service, summary),
+                "session": _session_payload(service, summary, policy_cache=policy_summary_cache),
             }
         )
 
@@ -857,7 +943,7 @@ def session_approval_routes(
         return JSONResponse(
             {
                 **result.model_dump(mode="json"),
-                "session": _session_payload(service, summary),
+                "session": _session_payload(service, summary, policy_cache=policy_summary_cache),
             }
         )
 
@@ -929,7 +1015,12 @@ def session_approval_routes(
 
     async def update_mcp_tools(request: Request) -> JSONResponse:
         directory_path = str(request.query_params.get("directory_path") or "root").strip() or "root"
-        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+        if not request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
             return json_error("Privileged operations are locked.", status_code=403)
         try:
             payload = await request.json()

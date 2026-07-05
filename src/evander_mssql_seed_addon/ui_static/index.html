@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MSSQL Seeds</title>
+    <link rel="stylesheet" href="./mssql-seed-ui.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page__header">
+        <div>
+          <h1>MSSQL Seeds</h1>
+          <p>Approved backup seeds and restore sidecars for container-agent databases.</p>
+        </div>
+        <button id="refreshButton" type="button">Refresh</button>
+      </header>
+
+      <section class="panel">
+        <div class="panel__header">
+          <h2>Sidecars</h2>
+          <button id="addSidecarButton" type="button">Add sidecar</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Sidecar ID</th>
+                <th>Base URL</th>
+                <th>Token env</th>
+                <th>Restore timeout</th>
+                <th>Description</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="sidecarsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel__header">
+          <h2>Seeds</h2>
+          <button id="addSeedButton" type="button">Add seed</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Alias</th>
+                <th>Sidecar</th>
+                <th>Backup path</th>
+                <th>Description</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="seedsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel__header">
+          <h2>Tracked databases</h2>
+          <button id="refreshDatabasesButton" type="button">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Session</th>
+                <th>Logical name</th>
+                <th>Seed</th>
+                <th>Database</th>
+                <th>Resets</th>
+                <th>Last reset</th>
+              </tr>
+            </thead>
+            <tbody id="databasesBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="actions">
+        <span id="statusMessage" role="status"></span>
+        <button id="saveButton" type="button">Save settings</button>
+      </footer>
+    </main>
+
+    <script src="./mssql-seed-ui.js"></script>
+  </body>
+</html>

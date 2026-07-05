@@ -82,8 +82,12 @@ class TriggerOrchestratorWorker:
         runtime: RuntimeContext,
         provider_config_resolver: ProviderConfigResolver | None = None,
         wiring: TriggerWorkerWiring | None = None,
+        project_dir: Path | None = None,
     ) -> None:
         self.config = config
+        self.project_dir = (
+            Path(project_dir) if project_dir is not None else config.runtime_dir.parent
+        )
         selected_config = core_config or worker_config
         if selected_config is None:
             raise ValueError(
@@ -106,6 +110,7 @@ class TriggerOrchestratorWorker:
             worker_config=self.worker_config,
             runtime=runtime,
             provider_config_resolver=provider_config_resolver,
+            addon_base_dir=self.project_dir,
         )
         self.provider_config_resolver = resolved_wiring.provider_config_resolver
         self.event_queue = resolved_wiring.event_queue
@@ -152,6 +157,7 @@ class TriggerOrchestratorWorker:
                         worker_config=latest_config,
                         runtime=self.runtime,
                         provider_config_resolver=self.provider_config_resolver,
+                        addon_base_dir=self.project_dir,
                     )
                 except Exception:
                     logger.exception(
@@ -481,6 +487,7 @@ def build_trigger_orchestrator_worker(
         worker_config=worker_config,
         config_reloader=config_reloader,
         runtime=runtime,
+        project_dir=resolved_project_dir,
     )
 
 

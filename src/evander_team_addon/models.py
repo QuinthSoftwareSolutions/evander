@@ -2688,13 +2688,19 @@ def agent_activity_summaries_payload(
     *,
     runtime_operations: Mapping[str, Any] | None = None,
     now: datetime | None = None,
+    agent_ids: set[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     generated_at = (now or utc_now()).isoformat()
     if runtime_operations is None:
-        runtime_operations = runtime_operations_payload(state, now=now)
+        runtime_operations = runtime_operations_payload(state, now=now, agent_ids=agent_ids)
     runtime_agent_rows = _activity_rows_by_agent(runtime_operations.get("agents"))
     session_health_rows = _activity_rows_by_agent(runtime_operations.get("session_health"))
     attention_rows = _activity_attention_rows_by_agent(runtime_operations.get("attention"))
+    included_agent_ids = (
+        sorted(agent_id for agent_id in agent_ids if agent_id in state.agents)
+        if agent_ids is not None
+        else sorted(state.agents)
+    )
     return {
         agent_id: _agent_activity_summary_payload(
             state,
@@ -2704,7 +2710,7 @@ def agent_activity_summaries_payload(
             session_health_row=session_health_rows.get(agent_id),
             attention_rows=attention_rows.get(agent_id, []),
         )
-        for agent_id in sorted(state.agents)
+        for agent_id in included_agent_ids
     }
 
 
@@ -3323,13 +3329,16 @@ def runtime_operations_payload(
     now: datetime | None = None,
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
+    agent_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     effective_now = _ensure_utc(now or utc_now())
+    included_agent_ids = set(agent_ids) if agent_ids is not None else None
     session_health = team_session_health_payload(
         state,
         session_records=session_records,
         agent_execution_records=agent_execution_records,
         now=effective_now,
+        agent_ids=included_agent_ids,
     )
     session_health_by_agent = {
         row["agent_id"]: row for row in session_health if row.get("agent_id")
@@ -3342,8 +3351,13 @@ def runtime_operations_payload(
             session_health=session_health_by_agent.get(agent.id),
         )
         for agent in sorted(state.agents.values(), key=lambda item: item.id)
+        if included_agent_ids is None or agent.id in included_agent_ids
     ]
-    attention = _runtime_attention_payload(state, session_health=session_health)
+    attention = _runtime_attention_payload(
+        state,
+        session_health=session_health,
+        agent_ids=included_agent_ids,
+    )
     return {
         "generated_at": effective_now.isoformat(),
         "agents": agents,
@@ -3723,6 +3737,7 @@ def _runtime_attention_payload(
     state: TeamState,
     *,
     session_health: list[dict[str, Any]] | None = None,
+    agent_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     rows.extend(_expired_session_rows(state, session_health or []))
@@ -3733,8 +3748,15 @@ def _runtime_attention_payload(
     rows.extend(_failed_promotion_rows(state))
     rows.extend(_blocked_release_rows(state))
     rows.extend(_ephemeral_assignment_rows(state))
+    if agent_ids is not None:
+        rows = [row for row in rows if _runtime_attention_row_in_agent_scope(row, agent_ids)]
     rows.sort(key=lambda row: (_severity_rank(row["severity"]), row["kind"], row["id"]))
     return rows
+
+
+def _runtime_attention_row_in_agent_scope(row: Mapping[str, Any], agent_ids: set[str]) -> bool:
+    agent_id = _optional_text(row.get("agent_id"))
+    return agent_id is not None and agent_id in agent_ids
 
 
 def _expired_session_rows(

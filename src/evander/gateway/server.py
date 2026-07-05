@@ -840,12 +840,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
     )
 
     addon_mcp_tool_names: list[str] = []
-    addon_catalog = load_addons(context.config.addon_loader)
+    addon_base_dir = context.config.runtime_dir.parent
+    addon_catalog = load_addons(context.config.addon_loader, base_dir=addon_base_dir)
     for addon in addon_catalog.registrations:
         addon_context = AddonContext(
             addon_id=addon.addon_id,
             runtime_dir=context.config.runtime_dir,
             addon_runtime_dir=addon_runtime_dir(context.config.runtime_dir, addon.addon_id),
+            project_dir=addon_base_dir,
             config=context.config,
             service=context,
         )

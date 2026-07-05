@@ -35,7 +35,7 @@ def test_teams_docs_cover_host_delegated_identity_binding() -> None:
     assert "trigger:teams:new-message" in readme
     assert "trigger:communication:new-message" in readme
     assert "device code flow" in operations
-    assert "Admin Web -> Configuration -> Communications" in operations
+    assert "Admin Web -> Configuration -> People & Communications" in operations
     assert "teams-auth login" in operations
     assert "host-only" in operations
     assert "teams_graph_access_token_env" in operations

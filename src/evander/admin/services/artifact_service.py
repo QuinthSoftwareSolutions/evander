@@ -41,6 +41,9 @@ class ArtifactAdminService:
         published_before: datetime | None = None,
         limit: int = 50,
         cursor: str | None = None,
+        space_path: str | None = None,
+        space_recursive: bool = True,
+        subject: str | None = None,
     ) -> PublishedArtifactListPayload:
         normalized_limit = max(1, min(int(limit or 50), 200))
         try:
@@ -54,6 +57,13 @@ class ArtifactAdminService:
             published_after=published_after,
             published_before=published_before,
         )
+        if space_path:
+            artifact_keys = self._artifact_keys_for_space_filter(
+                space_path,
+                recursive=space_recursive,
+                subject=subject,
+            )
+            records = [record for record in records if record.key in artifact_keys]
         page = records[offset : offset + normalized_limit]
         next_offset = offset + normalized_limit
         return PublishedArtifactListPayload(
@@ -86,6 +96,31 @@ class ArtifactAdminService:
             artifact_path=artifact_path,
             metadata=metadata,
         )
+
+    def _artifact_keys_for_space_filter(
+        self,
+        space_path: str,
+        *,
+        recursive: bool,
+        subject: str | None,
+    ) -> set[str]:
+        state = ArtifactSpaceStore(self._runtime_dir).read()
+        root_path = normalize_space_path(space_path)
+        readable_paths: set[str] = set()
+        for space in state.spaces.values():
+            matches = space.path == root_path or (
+                recursive and space.path.startswith(root_path.rstrip("/") + "/")
+            )
+            if not matches:
+                continue
+            if not space.grants.allows(subject, "read"):
+                continue
+            readable_paths.add(space.path)
+        return {
+            version.artifact_key
+            for version in state.versions.values()
+            if version.space_path in readable_paths
+        }
 
     def list_artifact_spaces(
         self,

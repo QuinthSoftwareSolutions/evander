@@ -363,6 +363,7 @@ class ApprovalAuditAdminService:
         q: str | None = None,
         limit: int | None = None,
         recent_only: bool = False,
+        index_only: bool = False,
     ) -> ToolCallAuditListPayload:
         normalized_limit = 100 if limit is None else max(1, min(int(limit), 500))
         normalized_status = tool_call_normalize_status(status)
@@ -380,9 +381,12 @@ class ApprovalAuditAdminService:
             q=q,
             limit=normalized_limit,
             recent_only=recent_only,
+            allow_import=not index_only,
         )
         if indexed_page is not None:
             return indexed_page
+        if index_only:
+            return ToolCallAuditListPayload(limit=normalized_limit)
         if recent_only and tool_call_audit_tail_scan_supported(
             session_id=session_id,
             tool_name=tool_name,
@@ -479,44 +483,53 @@ class ApprovalAuditAdminService:
         q: str | None,
         limit: int,
         recent_only: bool,
+        allow_import: bool = True,
     ) -> ToolCallAuditListPayload | None:
         index = self.tool_call_audit_index
         if index is None:
             return None
         recent_tail_partial = False
         try:
-            full_import_complete = index.import_is_complete(self.config.audit_log_path)
-            use_index = full_import_complete
+            if allow_import:
+                full_import_complete = index.import_is_complete(self.config.audit_log_path)
+                use_index = full_import_complete
 
-            if created_after is not None:
-                import_result = index.import_from_jsonl_tail(
-                    self.config.audit_log_path,
-                    created_after=created_after,
-                    max_lines=DEFAULT_TAIL_IMPORT_MAX_LINES,
-                )
-                use_index = (
-                    full_import_complete
-                    or import_result.complete
-                    or import_result.reached_time_boundary
-                )
-            elif recent_only or not any(
-                str(value or "").strip()
-                for value in (session_id, tool_name, status, directory_path, created_before, q)
-            ):
-                import_result = index.import_from_jsonl_tail(
-                    self.config.audit_log_path,
-                    max_lines=tool_call_recent_scan_max_lines(limit),
-                )
-                recent_tail_partial = recent_only and not (
-                    full_import_complete or import_result.complete
-                )
-                use_index = full_import_complete or import_result.complete or recent_only
-            elif not full_import_complete:
-                index.import_from_jsonl(self.config.audit_log_path, max_lines=1_000)
-                use_index = index.import_is_complete(self.config.audit_log_path)
+                if created_after is not None:
+                    import_result = index.import_from_jsonl_tail(
+                        self.config.audit_log_path,
+                        created_after=created_after,
+                        max_lines=DEFAULT_TAIL_IMPORT_MAX_LINES,
+                    )
+                    use_index = (
+                        full_import_complete
+                        or import_result.complete
+                        or import_result.reached_time_boundary
+                    )
+                elif recent_only or not any(
+                    str(value or "").strip()
+                    for value in (
+                        session_id,
+                        tool_name,
+                        status,
+                        directory_path,
+                        created_before,
+                        q,
+                    )
+                ):
+                    import_result = index.import_from_jsonl_tail(
+                        self.config.audit_log_path,
+                        max_lines=tool_call_recent_scan_max_lines(limit),
+                    )
+                    recent_tail_partial = recent_only and not (
+                        full_import_complete or import_result.complete
+                    )
+                    use_index = full_import_complete or import_result.complete or recent_only
+                elif not full_import_complete:
+                    index.import_from_jsonl(self.config.audit_log_path, max_lines=1_000)
+                    use_index = index.import_is_complete(self.config.audit_log_path)
 
-            if not use_index:
-                return None
+                if not use_index:
+                    return None
 
             page = index.query_tool_calls(
                 session_id=session_id,

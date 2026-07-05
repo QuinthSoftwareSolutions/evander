@@ -31,12 +31,35 @@ Add-on discovery is configured with `addon_loader`:
 ```json
 {
   "addon_loader": {
-    "modules": ["my_company.evander_team_addon"],
+    "modules": [],
+    "package_dirs": ["addons", "src"],
     "enabled_entry_points": false,
     "enabled_addon_ids": null
   }
 }
 ```
+
+Evander scans local add-on package directories. By default, `addons/` and
+`src/` at the project root are scanned. `addons/` is operator-local and ignored
+by Git; `src/` lets bundled add-ons use the same manifest shape as copied
+packages. Each immediate child directory is treated as a package candidate when
+it contains `addon.json`:
+
+```json
+{
+  "addon_id": "example-addon",
+  "module": "example_addon"
+}
+```
+
+The declared `module` is loaded from that package directory, so a copied package
+can carry its own Python module. The module can either live inside the package
+directory, such as `addons/example-addon/example_addon/__init__.py`, or be the
+package directory itself, such as `addons/example_addon/__init__.py` with
+`"module": "example_addon"`. Scanned packages appear on the Admin Web
+**Add-ons** page automatically, but are not loaded by default; enable them
+through Admin Web so `addon_loader.enabled_addon_ids` contains the add-on id
+before restarting the listed services.
 
 External packages can also expose Python entry points in the
 `evander.addons` group. Entry-point loading is disabled by default and
@@ -101,6 +124,80 @@ store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
 Removing `runtime/addons/<addon_id>/` must not corrupt Truman core state.
+
+## MSSQL Seed Add-on Guidance
+
+The bundled `evander_mssql_seed_addon` package provides an optional seed-restore
+layer for container-agent MSSQL workflows. It is intentionally an add-on rather
+than a Core bootstrap feature: Core still owns session creation, worker MSSQL
+database provisioning, and cleanup, while the add-on restores an
+operator-approved `.bak` file into that Core-owned database.
+
+Enable it with:
+
+```json
+{
+  "addon_loader": {
+    "modules": ["evander_mssql_seed_addon"],
+    "enabled_entry_points": false,
+    "enabled_addon_ids": ["mssql-seed-addon"]
+  }
+}
+```
+
+When enabled, Admin Web shows an `MSSQL Seeds` tab backed by
+`/api/addons/mssql-seed-addon/...` and `/addons/mssql-seed-addon/`. The add-on
+stores sidecar and seed catalog state under
+`runtime/addons/mssql-seed-addon/state.json`.
+
+The restore sidecar runs near the worker SQL Server instance and needs SQL
+Server admin access plus a bearer token. For worker-VM deployments, enable it
+through the worker inventory. The sidecar is disabled by default and is only
+installed/started when both worker MSSQL and
+`evander_worker_mssql_seed_sidecar_enabled` are true:
+
+```yaml
+evander_worker_mssql_enabled: true
+evander_worker_mssql_seed_sidecar_enabled: true
+evander_worker_mssql_seed_sidecar_token: "{{ vault_evander_worker_mssql_seed_sidecar_token }}"
+evander_worker_mssql_seed_sidecar_port: 11990
+evander_worker_mssql_seed_sidecar_backup_dir: "/var/lib/evander/mssql-seeds"
+```
+
+The worker playbook renders `config/mssql-seed-sidecar.env`, installs
+`evander-mssql-seed-sidecar.service`, creates the backup directory for approved
+`.bak` files, and verifies `/healthz`. Restrict network reachability so only
+the control plane can call the sidecar port.
+
+For a manual foreground run, use:
+
+```bash
+EVANDER_MSSQL_SEED_SIDECAR_TOKEN='...' \
+EVANDER_WORKER_MSSQL_ADMIN_PASSWORD='...' \
+evander-mssql-seed-sidecar --host 0.0.0.0 --port 11990
+```
+
+Operators configure:
+
+- sidecars with `sidecar_id`, `base_url`, `token_env`, and optional
+  `restore_timeout_seconds` for large `.bak` restores
+- approved seeds with `seed_alias`, `sidecar_id`, and absolute worker-side
+  `backup_path`
+
+Agents do not receive arbitrary backup paths. Sessions that are allowed to use
+the add-on MCP tools call:
+
+- `mssql_seed_provision_database` with `logical_name` and `seed_alias`
+- `mssql_seed_reset_database` with `logical_name`
+- `mssql_seed_list_databases`
+
+Provisioning first calls the Core container-worker `mssql_provision_database`
+path, so the worker records the physical database and session login. The add-on
+then asks the sidecar to run `RESTORE DATABASE ... WITH REPLACE` into that
+database and reattach the session login as `db_owner` inside the restored
+database. Reset uses the same restore path against the tracked seed alias.
+Worker session deletion still uses Core worker MSSQL cleanup for databases and
+logins.
 
 ## Skatteverket Add-on Guidance
 
@@ -198,12 +295,13 @@ schemas belong in that package. Only generic hooks that are useful to other
 add-ons should be proposed for Truman core.
 
 The bundled `evander_team_addon` package provides the initial state-model layer
-for this pattern. It is still disabled by default; enable it with
-`addon_loader.modules: ["evander_team_addon"]` or by enabling the
-`evander.addons` entry-point group. For the bundled add-on, explicit
-module loading is the recommended operator path because entry-point loading is
-disabled by default. Its canonical state lives in relational SQLite under
-`runtime/addons/team-addon/state.db`; a legacy
+for this pattern. It ships an `addon.json` manifest beside its `__init__.py`, so
+it uses the same scanned-package contract as copied add-ons in a source
+checkout. It is still disabled by default; enable `team-addon` from Admin Web
+or set `addon_loader.enabled_addon_ids: ["team-addon"]`. Explicit
+`addon_loader.modules: ["evander_team_addon"]` and `evander.addons` entry-point
+loading remain supported compatibility paths. Its canonical state lives in
+relational SQLite under `runtime/addons/team-addon/state.db`; a legacy
 `runtime/addons/team-addon/state.json` file is imported once when the database
 is first initialized. Truman session metadata remains a non-canonical
 integration index.
@@ -880,15 +978,15 @@ promises.
 
 Use this checklist when enabling the bundled Team Add-on on a deployment:
 
-1. Confirm the installed package includes `evander_team_addon` and its
-   `ui_static` files.
+1. Confirm the installed package includes `evander_team_addon`, its
+   `addon.json` manifest, and its `ui_static` files.
 2. Enable Admin Web routes/navigation in the host config or legacy gateway
    config:
 
    ```json
    {
      "addon_loader": {
-       "modules": ["evander_team_addon"],
+       "package_dirs": ["addons", "src"],
        "enabled_entry_points": false,
        "enabled_addon_ids": ["team-addon"]
      }

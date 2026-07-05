@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
-import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
+import { ApiError, fetchJson, fetchJsonConditional, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { useDocumentVisible } from "../admin/visibility";
 import { DownloadIcon } from "../admin/PageActionIcons";
 import {
   DashboardApprovalsIcon,
@@ -146,33 +147,35 @@ type SessionRecord = {
   vm_id: string | null;
   model: string | null;
   directory_path: string;
-  allowed_tools: string[];
+  allowed_tools?: string[];
   approval_required_tools?: string[];
-  allowed_script_names: string[];
-  discord_channel_allowlist: string[];
-  teams_channel_allowlist: string[];
-  communication_file_receive_enabled: boolean;
-  communication_file_send_enabled: boolean;
-  communication_file_max_bytes: number | null;
-  communication_file_allowed_mime_types: string[];
-  communication_file_allowed_extensions: string[];
-  communication_file_blocked_extensions: string[];
-  communication_file_require_approval_for_send: boolean;
+  allowed_script_names?: string[];
+  discord_channel_allowlist?: string[];
+  teams_channel_allowlist?: string[];
+  communication_file_receive_enabled?: boolean;
+  communication_file_send_enabled?: boolean;
+  communication_file_max_bytes?: number | null;
+  communication_file_allowed_mime_types?: string[];
+  communication_file_allowed_extensions?: string[];
+  communication_file_blocked_extensions?: string[];
+  communication_file_require_approval_for_send?: boolean;
   expires_at: string;
   created_at: string;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   issue_number?: string | null;
   is_expired: boolean;
 };
 
 type SessionListResponse = {
   items: SessionRecord[];
-  active_items: SessionRecord[];
-  expired_items: SessionRecord[];
   counts: {
     total: number;
     active: number;
     expired: number;
+  };
+  status_ids: {
+    active: string[];
+    expired: string[];
   };
 };
 
@@ -539,23 +542,31 @@ type DashboardState = {
 };
 
 type DashboardRemoteKey = Exclude<keyof DashboardState, "lastRefreshedAt">;
+const DASHBOARD_NOT_MODIFIED = Symbol("dashboard-not-modified");
+type DashboardNotModified = typeof DASHBOARD_NOT_MODIFIED;
+type DashboardLoadValue<T> = T | DashboardNotModified;
 
 type DashboardLoadTask<T> = {
   key: DashboardRemoteKey;
-  request: (signal: AbortSignal) => Promise<T>;
+  request: (signal: AbortSignal) => Promise<DashboardLoadValue<T>>;
   missing?: string;
   missingIfEmpty?: (value: T) => string | null;
 };
 
+type DashboardResponseCacheEntry = {
+  etag: string | null;
+  data: unknown;
+};
+
 type DashboardPillTone = "pass" | "fail" | "missing" | "running" | "idle";
 
-function createRemotePendingState<T>(): RemoteState<T> {
+function createRemotePendingState<T>(current?: RemoteState<T>): RemoteState<T> {
   return {
     loading: true,
     error: null,
     missing: null,
-    data: null,
-    updatedAt: null,
+    data: current?.data ?? null,
+    updatedAt: current?.updatedAt ?? null,
   };
 }
 
@@ -581,11 +592,11 @@ function createDashboardPendingState(): DashboardState {
 function createDirectoryDashboardPendingState(current: DashboardState): DashboardState {
   return {
     ...current,
-    agents: createRemotePendingState(),
-    approvals: createRemotePendingState(),
-    sessions: createRemotePendingState(),
-    toolCalls: createRemotePendingState(),
-    workflowCatalog: createRemotePendingState(),
+    agents: createRemotePendingState(current.agents),
+    approvals: createRemotePendingState(current.approvals),
+    sessions: createRemotePendingState(current.sessions),
+    toolCalls: createRemotePendingState(current.toolCalls),
+    workflowCatalog: createRemotePendingState(current.workflowCatalog),
     lastRefreshedAt: null,
   };
 }
@@ -593,11 +604,11 @@ function createDirectoryDashboardPendingState(current: DashboardState): Dashboar
 function createGlobalDashboardPendingState(current: DashboardState): DashboardState {
   return {
     ...current,
-    workers: createRemotePendingState(),
-    workflowRuns: createRemotePendingState(),
-    workflowActivity: createRemotePendingState(),
-    capacityHealth: createRemotePendingState(),
-    workflowDocument: createRemotePendingState(),
+    workers: createRemotePendingState(current.workers),
+    workflowRuns: createRemotePendingState(current.workflowRuns),
+    workflowActivity: createRemotePendingState(current.workflowActivity),
+    capacityHealth: createRemotePendingState(current.capacityHealth),
+    workflowDocument: createRemotePendingState(current.workflowDocument),
     lastRefreshedAt: null,
   };
 }
@@ -651,6 +662,16 @@ function remoteFromResult<T>(
     error: failure.error,
     missing: failure.error ? null : failure.missing ?? missing,
     data: null,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function remoteFromNotModified<T>(current: RemoteState<T>): RemoteState<T> {
+  return {
+    ...current,
+    loading: false,
+    error: null,
+    missing: current.missing,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -780,6 +801,11 @@ function sessionTone(response: SessionListResponse | null | undefined): Dashboar
 
 function sessionItemTone(session: SessionRecord): DashboardPillTone {
   return session.is_expired ? "missing" : "pass";
+}
+
+function sessionItemsForStatus(response: SessionListResponse, status: "active" | "expired"): SessionRecord[] {
+  const ids = new Set(response.status_ids[status]);
+  return response.items.filter((item) => ids.has(item.session_id));
 }
 
 function workflowDocumentTone(document: WorkflowEditorDocument | null | undefined): DashboardPillTone {
@@ -1431,6 +1457,7 @@ function dashboardAgentInventoryUrl(directoryPath: string, refreshKey: number | 
     include_inactive: true,
     backend: "all",
     summary_only: true,
+    _dashboard_agent_inventory: true,
     reconcile_containers: false,
     omit_vm_state: true,
     ...dashboardCacheParams(refreshKey),
@@ -1697,7 +1724,8 @@ function ProductContextPanel({
 }
 
 export function OperationsDashboard() {
-  const { selectedDirectoryPath, setSelectedDirectoryPath } = useAdminUi();
+  const { selectedDirectoryPath, setSelectedDirectoryPath, privilegedUnlocked } = useAdminUi();
+  const documentVisible = useDocumentVisible();
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [newsIndex, setNewsIndex] = useState(0);
   const [state, setState] = useState<DashboardState>(() => createDashboardPendingState());
@@ -1706,6 +1734,36 @@ export function OperationsDashboard() {
   const globalLoadIdRef = useRef(0);
   const releaseLoadIdRef = useRef(0);
   const agentInventoryLoadIdRef = useRef(0);
+  const dashboardResponseCacheRef = useRef<Record<string, DashboardResponseCacheEntry>>({});
+
+  async function fetchDashboardJson<T>(
+    key: DashboardRemoteKey,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<DashboardLoadValue<T>> {
+    const cacheKey = `${key}\n${path}`;
+    const cached = dashboardResponseCacheRef.current[cacheKey];
+    const result = await fetchJsonConditional<T>(
+      path,
+      signal ? { signal } : undefined,
+      cached?.etag ?? null,
+    );
+    if (result.status === "not_modified") {
+      if (cached) {
+        dashboardResponseCacheRef.current[cacheKey] = {
+          ...cached,
+          etag: result.etag,
+        };
+        return cached.data as T;
+      }
+      return DASHBOARD_NOT_MODIFIED;
+    }
+    dashboardResponseCacheRef.current[cacheKey] = {
+      etag: result.etag,
+      data: result.data,
+    };
+    return result.data;
+  }
 
   function startDashboardLoad(
     loadIdRef: MutableRefObject<number>,
@@ -1727,6 +1785,16 @@ export function OperationsDashboard() {
         .request(controller.signal)
         .then((value) => {
           if (!isCurrentLoad()) return;
+          if (value === DASHBOARD_NOT_MODIFIED) {
+            setState(
+              (current) =>
+                ({
+                  ...current,
+                  [task.key]: remoteFromNotModified(current[task.key] as RemoteState<any>),
+                }) as DashboardState,
+            );
+            return;
+          }
           const result: PromiseSettledResult<any> = { status: "fulfilled", value };
           setState(
             (current) =>
@@ -1756,19 +1824,23 @@ export function OperationsDashboard() {
   }
 
   useEffect(() => {
+    if (!documentVisible) {
+      return;
+    }
     const cacheParams = dashboardCacheParams(refreshNonce);
     const directoryTasks: DashboardLoadTask<any>[] = [
       {
         key: "approvals",
         request: (signal) =>
-          fetchJson<ApprovalIndexResponse>(
+          fetchDashboardJson<ApprovalIndexResponse>(
+            "approvals",
             `/api/admin/approvals${makeQuery({
               statuses: "pending",
               directory_path: selectedDirectoryPath,
               direct_only: true,
               ...cacheParams,
             })}`,
-            { signal },
+            signal,
           ),
         missing: "No approval requests are waiting for review.",
         missingIfEmpty: (value) => (value.health.total === 0 ? "No approval requests are waiting for review." : null),
@@ -1776,14 +1848,15 @@ export function OperationsDashboard() {
       {
         key: "sessions",
         request: (signal) =>
-          fetchJson<SessionListResponse>(
+          fetchDashboardJson<SessionListResponse>(
+            "sessions",
             `/api/admin/sessions${makeQuery({
               include_expired: true,
               directory_path: selectedDirectoryPath,
               direct_only: true,
               ...cacheParams,
             })}`,
-            { signal },
+            signal,
           ),
         missing: "No sessions are active or expired in the current directory scope.",
         missingIfEmpty: (value) =>
@@ -1792,14 +1865,15 @@ export function OperationsDashboard() {
       {
         key: "toolCalls",
         request: (signal) =>
-          fetchJson<ToolCallsResponse>(
+          fetchDashboardJson<ToolCallsResponse>(
+            "toolCalls",
             `/api/admin/tool-calls${makeQuery({
               directory_path: selectedDirectoryPath,
               direct_only: true,
               limit: 5,
               ...cacheParams,
             })}`,
-            { signal },
+            signal,
           ),
         missing: "No tool-call audit entries were returned.",
         missingIfEmpty: (value) => (value.items.length === 0 ? "No tool-call audit entries were returned." : null),
@@ -1807,9 +1881,10 @@ export function OperationsDashboard() {
       {
         key: "workflowCatalog",
         request: (signal) =>
-          fetchJson<WorkflowEditorCatalog>(
+          fetchDashboardJson<WorkflowEditorCatalog>(
+            "workflowCatalog",
             `/api/workflow-editor/catalog${makeQuery({ directory_path: selectedDirectoryPath, ...cacheParams })}`,
-            { signal },
+            signal,
           ),
         missing: "No catalog nodes are available for this directory.",
         missingIfEmpty: (value) => (value.nodes.length === 0 ? "No catalog nodes are available for this directory." : null),
@@ -1817,9 +1892,12 @@ export function OperationsDashboard() {
     ];
 
     return startDashboardLoad(directoryLoadIdRef, directoryTasks, createDirectoryDashboardPendingState);
-  }, [selectedDirectoryPath, refreshNonce]);
+  }, [documentVisible, selectedDirectoryPath, refreshNonce]);
 
   useEffect(() => {
+    if (!documentVisible) {
+      return;
+    }
     const controller = new AbortController();
     const loadId = agentInventoryLoadIdRef.current + 1;
     agentInventoryLoadIdRef.current = loadId;
@@ -1847,10 +1925,19 @@ export function OperationsDashboard() {
       }
 
       try {
-        const value = await fetchJson<AgentListResponse>(dashboardAgentInventoryUrl(selectedDirectoryPath, refreshKey), {
-          signal: controller.signal,
-        });
+        const value = await fetchDashboardJson<AgentListResponse>(
+          "agents",
+          dashboardAgentInventoryUrl(selectedDirectoryPath, refreshKey),
+          controller.signal,
+        );
         if (!isCurrentLoad()) return;
+        if (value === DASHBOARD_NOT_MODIFIED) {
+          setState((current) => ({
+            ...current,
+            agents: remoteFromNotModified(current.agents),
+          }));
+          return;
+        }
         const result: PromiseSettledResult<AgentListResponse> = { status: "fulfilled", value };
         setState((current) => ({
           ...current,
@@ -1886,49 +1973,59 @@ export function OperationsDashboard() {
         window.clearTimeout(timer);
       }
     };
-  }, [selectedDirectoryPath, refreshNonce]);
+  }, [documentVisible, selectedDirectoryPath, refreshNonce]);
 
   useEffect(() => {
+    if (!documentVisible) {
+      return;
+    }
     const cacheParams = dashboardCacheParams(refreshNonce);
     const globalTasks: DashboardLoadTask<any>[] = [
       {
         key: "workers",
-        request: (signal) => fetchJson<WorkerListResponse>(`/api/workers${makeQuery(cacheParams)}`, { signal }),
+        request: (signal) => fetchDashboardJson<WorkerListResponse>("workers", `/api/workers${makeQuery(cacheParams)}`, signal),
         missing: "No workers are reporting.",
         missingIfEmpty: (value) => (value.workers.length === 0 ? "No workers are reporting." : null),
       },
       {
         key: "workflowRuns",
-        request: (signal) => fetchJson<WorkflowRunSnapshot>(`/api/workflow-editor/runs${makeQuery(cacheParams)}`, { signal }),
+        request: (signal) =>
+          fetchDashboardJson<WorkflowRunSnapshot>("workflowRuns", `/api/workflow-editor/runs${makeQuery(cacheParams)}`, signal),
         missing: "No workflow runs have been observed yet.",
         missingIfEmpty: (value) => (value.runs.length === 0 ? "No workflow runs have been observed yet." : null),
       },
       {
         key: "workflowActivity",
         request: (signal) =>
-          fetchJson<WorkflowGraphActivityReport>(
+          fetchDashboardJson<WorkflowGraphActivityReport>(
+            "workflowActivity",
             `/api/admin/reports/workflow-graph-activity${makeQuery({ limit: 5, ...cacheParams })}`,
-            { signal },
+            signal,
           ),
         missing: "No workflow graph activity is available yet.",
         missingIfEmpty: (value) => (value.graphs.length === 0 ? "No workflow graph activity is available yet." : null),
       },
       {
         key: "capacityHealth",
-        request: (signal) => fetchJson<CapacityHealthPayload>(`/api/admin/capacity-health${makeQuery(cacheParams)}`, { signal }),
+        request: (signal) =>
+          fetchDashboardJson<CapacityHealthPayload>("capacityHealth", `/api/admin/capacity-health${makeQuery(cacheParams)}`, signal),
       },
       {
         key: "workflowDocument",
-        request: (signal) => fetchJson<WorkflowEditorDocument>(`/api/workflow-editor/document${makeQuery(cacheParams)}`, { signal }),
+        request: (signal) =>
+          fetchDashboardJson<WorkflowEditorDocument>("workflowDocument", `/api/workflow-editor/document${makeQuery(cacheParams)}`, signal),
         missing: "No workflow document has been created yet.",
         missingIfEmpty: (value) => (!value.config_exists && !value.layout_exists ? "No workflow document has been created yet." : null),
       },
     ];
 
     return startDashboardLoad(globalLoadIdRef, globalTasks, createGlobalDashboardPendingState);
-  }, [refreshNonce]);
+  }, [documentVisible, refreshNonce]);
 
   useEffect(() => {
+    if (!documentVisible) {
+      return;
+    }
     const controller = new AbortController();
     const loadId = releaseLoadIdRef.current + 1;
     releaseLoadIdRef.current = loadId;
@@ -1979,7 +2076,7 @@ export function OperationsDashboard() {
     return () => {
       controller.abort();
     };
-  }, [refreshNonce]);
+  }, [documentVisible, refreshNonce]);
 
   async function loadNewsEntry(targetIndex: number) {
     if (targetIndex < 0) {
@@ -2143,7 +2240,7 @@ export function OperationsDashboard() {
                     },
                     {
                       label: "Privileges",
-                      value: adminState.privileged_operations.unlocked ? "Unlocked" : "Locked",
+                      value: privilegedUnlocked ? "Unlocked" : "Locked",
                     },
                   ]}
                 />
@@ -2532,14 +2629,14 @@ export function OperationsDashboard() {
                       {
                         label: "Wake cue",
                         value:
-                          sessions.active_items.map(sessionWakeCue).find(Boolean) ??
-                          sessions.expired_items.map(sessionWakeCue).find(Boolean) ??
+                          sessionItemsForStatus(sessions, "active").map(sessionWakeCue).find(Boolean) ??
+                          sessionItemsForStatus(sessions, "expired").map(sessionWakeCue).find(Boolean) ??
                           "No wake-schedule cue exposed by the list payload.",
                       },
                     ]}
                   />
                   <DashboardCompactRows>
-                    {sessions.active_items.slice(0, 3).map((session) => (
+                    {sessionItemsForStatus(sessions, "active").slice(0, 3).map((session) => (
                       <DashboardCompactRow
                         key={session.session_id}
                         title={session.session_id}

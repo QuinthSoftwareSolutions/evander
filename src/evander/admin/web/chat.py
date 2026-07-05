@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from evander.admin.composition import AdminRuntimeComponents
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.admin.web.shared import (
     AdminWebAuth,
     json_error,
@@ -517,7 +518,12 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
         settings = service.operations_admin.read_assistant_settings()
         if bool(settings.get("read_only")):
             return "read-only"
-        if request_has_privileged_operations(auth=auth, service=service, request=request):
+        if request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
             return "full-access"
         return "read-only"
 
@@ -787,7 +793,12 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
 
     async def put_settings(request: Request) -> JSONResponse:
         auth.require(request)
-        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+        if not request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
             return json_error("Privileged operations are locked.", status_code=403)
         try:
             payload = await request.json()

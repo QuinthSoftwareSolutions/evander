@@ -22,6 +22,19 @@
       }}
     success_msg: "evander-worker-daemon.service is enabled and running."
 
+- name: Verify MSSQL seed sidecar service is active
+  ansible.builtin.assert:
+    that:
+      - "ansible_facts.services['evander-mssql-seed-sidecar.service'].status == 'enabled'"
+      - "ansible_facts.services['evander-mssql-seed-sidecar.service'].state == 'running'"
+    fail_msg: >-
+      evander-mssql-seed-sidecar.service should be enabled and running when
+      evander_worker_mssql_seed_sidecar_enabled=true. actual={{
+        ansible_facts.services.get('evander-mssql-seed-sidecar.service', {})
+      }}
+    success_msg: "evander-mssql-seed-sidecar.service is enabled and running."
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
 - name: Check worker egress policy service enabled state
   ansible.builtin.command:
     argv:
@@ -93,6 +106,34 @@
     return_content: true
     status_code: 200
 
+- name: Resolve MSSQL seed sidecar verification host
+  ansible.builtin.set_fact:
+    evander_worker_mssql_seed_sidecar_probe_host: "{{ '127.0.0.1' if evander_worker_mssql_seed_sidecar_bind_host in ['', '0.0.0.0', '::'] else evander_worker_mssql_seed_sidecar_bind_host }}"
+  vars:
+    evander_worker_mssql_seed_sidecar_bind_host: "{{ evander_worker_mssql_seed_sidecar_host | default('') | string | trim | regex_replace('^\\[(.*)\\]$', '\\1') }}"
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
+- name: Resolve MSSQL seed sidecar verification URL host
+  ansible.builtin.set_fact:
+    evander_worker_mssql_seed_sidecar_probe_url_host: >-
+      {{ '[' ~ evander_worker_mssql_seed_sidecar_probe_host ~ ']' if ':' in evander_worker_mssql_seed_sidecar_probe_host else evander_worker_mssql_seed_sidecar_probe_host }}
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
+- name: Wait for MSSQL seed sidecar listener
+  ansible.builtin.wait_for:
+    host: "{{ evander_worker_mssql_seed_sidecar_probe_host }}"
+    port: "{{ evander_worker_mssql_seed_sidecar_port }}"
+    timeout: 30
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
+- name: Verify MSSQL seed sidecar health endpoint
+  ansible.builtin.uri:
+    url: "http://{{ evander_worker_mssql_seed_sidecar_probe_url_host }}:{{ evander_worker_mssql_seed_sidecar_port }}/healthz"
+    method: GET
+    return_content: true
+    status_code: 200
+  when: evander_worker_mssql_seed_sidecar_enabled | default(false) | bool
+
 - name: Emit worker deployment verification summary
   ansible.builtin.debug:
     msg:
@@ -102,3 +143,4 @@
       - "sandbox profile: {{ evander_worker_sandbox_profile }}"
       - "container user: {{ evander_effective_worker_container_user }}"
       - "worker egress policy: {{ evander_worker_egress_policy_enabled }}"
+      - "mssql seed sidecar: {{ evander_worker_mssql_seed_sidecar_enabled | default(false) }}"

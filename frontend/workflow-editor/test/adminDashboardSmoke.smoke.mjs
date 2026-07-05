@@ -451,12 +451,14 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
 
   const sessionsResponse = {
     items: [sessionRecord, sessionExpiredRecord],
-    active_items: [sessionRecord],
-    expired_items: [sessionExpiredRecord],
     counts: {
       total: 2,
       active: 1,
       expired: 1,
+    },
+    status_ids: {
+      active: [sessionRecord.session_id],
+      expired: [sessionExpiredRecord.session_id],
     },
   };
 

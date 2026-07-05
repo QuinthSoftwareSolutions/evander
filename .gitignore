@@ -2,6 +2,7 @@
 __pycache__/
 .pytest_cache/
 runtime/
+/addons/
 # Host-local runtime config/state generated outside runtime/ by older/local setups.
 /host-config.json
 /approvals.json

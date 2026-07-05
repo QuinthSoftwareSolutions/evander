@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from importlib import import_module
+import hashlib
+from importlib import import_module, util
 from importlib.metadata import EntryPoint, entry_points
+import json
 from pathlib import Path, PurePosixPath
 import re
+import sys
+import types
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -13,16 +17,19 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from evander.storage import JsonObjectStore
 
 _ADDON_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_ADDON_PACKAGE_MANIFEST = "addon.json"
+DEFAULT_ADDON_PACKAGE_DIRS = ("addons", "src")
 
 
 class AddonLoaderConfig(BaseModel):
     modules: list[str] = Field(default_factory=list)
+    package_dirs: list[str] = Field(default_factory=lambda: list(DEFAULT_ADDON_PACKAGE_DIRS))
     enabled_entry_points: bool = False
     enabled_addon_ids: list[str] | None = None
 
-    @field_validator("modules", mode="before")
+    @field_validator("modules", "package_dirs", mode="before")
     @classmethod
-    def normalize_modules(cls, value: object) -> object:
+    def normalize_string_list(cls, value: object) -> object:
         if value is None:
             return []
         if isinstance(value, str):
@@ -140,6 +147,16 @@ class DiscoveredAddon:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class _AddonRegistrationSpec:
+    source: str
+    source_type: str
+    load: Callable[[], Any]
+    entry_point_name: str | None = None
+    default_enabled: bool = True
+    manifest_path: Path | None = None
+
+
 def validate_addon_id(value: str) -> str:
     addon_id = str(value or "").strip()
     if not _ADDON_ID_PATTERN.fullmatch(addon_id):
@@ -195,42 +212,55 @@ def addon_json_object_store(
     )
 
 
-def load_addons(config: AddonLoaderConfig | Mapping[str, Any] | None = None) -> LoadedAddonCatalog:
+def load_addons(
+    config: AddonLoaderConfig | Mapping[str, Any] | None = None,
+    *,
+    base_dir: str | Path | None = None,
+) -> LoadedAddonCatalog:
     loader_config = (
         config
         if isinstance(config, AddonLoaderConfig)
         else AddonLoaderConfig.model_validate(config or {})
     )
-    registration_specs: list[tuple[str, Any]] = []
-    for module_name in loader_config.modules:
-        registration_specs.append((module_name, _load_registration_from_module(module_name)))
-    if loader_config.enabled_entry_points:
-        for discovered in _iter_addon_entry_points():
-            registration_specs.append(
-                (f"entry_point:{discovered.value}", _load_registration_from_entry_point(discovered))
-            )
+    registration_specs = _addon_registration_specs(loader_config, base_dir=base_dir)
 
     registrations: list[AddonRegistration] = []
     loaded_sources: list[str] = []
-    seen_addon_ids: dict[str, str] = {}
+    seen_addon_ids: dict[str, _AddonRegistrationSpec] = {}
     enabled_filter = (
         set(loader_config.enabled_addon_ids)
         if loader_config.enabled_addon_ids is not None
         else None
     )
-    for source, raw_registration in registration_specs:
-        registration = _coerce_registration(source=source, value=raw_registration)
+    for spec in registration_specs:
+        if not spec.default_enabled and enabled_filter is None:
+            continue
+        if (
+            spec.source_type == "package"
+            and enabled_filter is not None
+            and not _addon_package_might_be_enabled(spec, enabled_filter)
+        ):
+            continue
+        try:
+            raw_registration = spec.load()
+            registration = _coerce_registration(source=spec.source, value=raw_registration)
+        except Exception:
+            if spec.source_type == "package":
+                continue
+            raise
         if enabled_filter is not None and registration.addon_id not in enabled_filter:
             continue
-        previous_source = seen_addon_ids.get(registration.addon_id)
-        if previous_source is not None:
+        previous_spec = seen_addon_ids.get(registration.addon_id)
+        if previous_spec is not None:
+            if spec.source_type == "package" and previous_spec.source_type != "package":
+                continue
             raise ValueError(
-                f"Duplicate add-on id {registration.addon_id!r} from {source}; "
-                f"already loaded from {previous_source}"
+                f"Duplicate add-on id {registration.addon_id!r} from {spec.source}; "
+                f"already loaded from {previous_spec.source}"
             )
-        seen_addon_ids[registration.addon_id] = source
+        seen_addon_ids[registration.addon_id] = spec
         registrations.append(registration)
-        loaded_sources.append(source)
+        loaded_sources.append(spec.source)
 
     if enabled_filter is not None:
         missing = sorted(enabled_filter - set(seen_addon_ids))
@@ -245,6 +275,8 @@ def load_addons(config: AddonLoaderConfig | Mapping[str, Any] | None = None) -> 
 
 def discover_addons(
     config: AddonLoaderConfig | Mapping[str, Any] | None = None,
+    *,
+    base_dir: str | Path | None = None,
 ) -> tuple[DiscoveredAddon, ...]:
     loader_config = (
         config
@@ -252,59 +284,41 @@ def discover_addons(
         else AddonLoaderConfig.model_validate(config or {})
     )
     records: list[DiscoveredAddon] = []
-    for module_name in loader_config.modules:
-        source = str(module_name).strip()
-        if not source:
-            continue
+    for spec in _addon_registration_specs(loader_config, base_dir=base_dir):
         try:
             registration = _coerce_registration(
-                source=source, value=_load_registration_from_module(source)
+                source=spec.source,
+                value=spec.load(),
             )
         except Exception as exc:
-            records.append(DiscoveredAddon(source=source, source_type="module", error=str(exc)))
+            records.append(
+                DiscoveredAddon(
+                    source=spec.source,
+                    source_type=spec.source_type,
+                    entry_point_name=spec.entry_point_name,
+                    error=str(exc),
+                )
+            )
             continue
         records.append(
             DiscoveredAddon(
-                source=source,
-                source_type="module",
+                source=spec.source,
+                source_type=spec.source_type,
+                entry_point_name=spec.entry_point_name,
                 registration=registration,
             )
         )
 
-    if loader_config.enabled_entry_points:
-        for discovered in _iter_addon_entry_points():
-            source = f"entry_point:{discovered.value}"
-            try:
-                registration = _coerce_registration(
-                    source=source, value=_load_registration_from_entry_point(discovered)
-                )
-            except Exception as exc:
-                records.append(
-                    DiscoveredAddon(
-                        source=source,
-                        source_type="entry_point",
-                        entry_point_name=discovered.name,
-                        error=str(exc),
-                    )
-                )
-                continue
-            records.append(
-                DiscoveredAddon(
-                    source=source,
-                    source_type="entry_point",
-                    entry_point_name=discovered.name,
-                    registration=registration,
-                )
-            )
-
-    seen_sources_by_id: dict[str, str] = {}
+    seen_records_by_id: dict[str, DiscoveredAddon] = {}
     normalized: list[DiscoveredAddon] = []
     for record in records:
         if record.registration is None:
             normalized.append(record)
             continue
-        previous_source = seen_sources_by_id.get(record.registration.addon_id)
-        if previous_source is not None:
+        previous_record = seen_records_by_id.get(record.registration.addon_id)
+        if previous_record is not None:
+            if record.source_type == "package" and previous_record.source_type != "package":
+                continue
             normalized.append(
                 DiscoveredAddon(
                     source=record.source,
@@ -313,12 +327,12 @@ def discover_addons(
                     registration=record.registration,
                     error=(
                         f"Duplicate add-on id {record.registration.addon_id!r}; "
-                        f"already discovered from {previous_source}"
+                        f"already discovered from {previous_record.source}"
                     ),
                 )
             )
             continue
-        seen_sources_by_id[record.registration.addon_id] = record.source
+        seen_records_by_id[record.registration.addon_id] = record
         normalized.append(record)
     return tuple(normalized)
 
@@ -400,10 +414,316 @@ def _load_registration_from_entry_point(addon_entry_point: EntryPoint) -> Any:
 
 def _load_registration_from_module(module_name: str) -> Any:
     module = import_module(module_name)
+    return _load_registration_from_module_object(module)
+
+
+def _load_registration_from_module_object(module: types.ModuleType) -> Any:
     register = getattr(module, "register_addon", None)
     if callable(register):
         return register()
     return module
+
+
+def _addon_registration_specs(
+    loader_config: AddonLoaderConfig,
+    *,
+    base_dir: str | Path | None = None,
+) -> list[_AddonRegistrationSpec]:
+    specs: list[_AddonRegistrationSpec] = []
+    for module_name in loader_config.modules:
+        source = str(module_name).strip()
+        if not source:
+            continue
+        specs.append(
+            _AddonRegistrationSpec(
+                source=source,
+                source_type="module",
+                load=lambda source=source: _load_registration_from_module(source),
+            )
+        )
+    if loader_config.enabled_entry_points:
+        for discovered in _iter_addon_entry_points():
+            specs.append(
+                _AddonRegistrationSpec(
+                    source=f"entry_point:{discovered.value}",
+                    source_type="entry_point",
+                    entry_point_name=discovered.name,
+                    load=lambda discovered=discovered: _load_registration_from_entry_point(
+                        discovered
+                    ),
+                )
+            )
+    for package_dir, manifest_path, source in _iter_addon_package_manifests(
+        loader_config.package_dirs, base_dir=base_dir
+    ):
+        specs.append(
+            _AddonRegistrationSpec(
+                source=source,
+                source_type="package",
+                default_enabled=False,
+                manifest_path=manifest_path,
+                load=lambda package_dir=package_dir, manifest_path=manifest_path: (
+                    _load_registration_from_package_manifest(
+                        package_dir=package_dir,
+                        manifest_path=manifest_path,
+                    )
+                ),
+            )
+        )
+    return specs
+
+
+def _iter_addon_package_manifests(
+    package_dirs: Sequence[str],
+    *,
+    base_dir: str | Path | None = None,
+) -> tuple[tuple[Path, Path, str], ...]:
+    base_path = Path(base_dir).expanduser() if base_dir is not None else None
+    records: list[tuple[Path, Path, str]] = []
+    for raw_package_dir in package_dirs:
+        root = Path(raw_package_dir).expanduser()
+        if not root.is_absolute() and base_path is not None:
+            root = base_path / root
+        if not root.exists() or not root.is_dir():
+            continue
+        package_children = (child for child in root.iterdir() if child.is_dir())
+        for package_dir in sorted(package_children, key=_path_sort_key):
+            manifest_path = package_dir / _ADDON_PACKAGE_MANIFEST
+            if not manifest_path.is_file():
+                continue
+            records.append(
+                (
+                    package_dir,
+                    manifest_path,
+                    f"package:{_display_package_dir(package_dir, base_path=base_path)}",
+                )
+            )
+    return tuple(records)
+
+
+def _path_sort_key(path: Path) -> str:
+    return path.name.casefold()
+
+
+def _display_package_dir(package_dir: Path, *, base_path: Path | None) -> str:
+    if base_path is not None:
+        try:
+            return package_dir.relative_to(base_path).as_posix()
+        except ValueError:
+            pass
+    return package_dir.as_posix()
+
+
+def _addon_package_might_be_enabled(
+    spec: _AddonRegistrationSpec, enabled_filter: set[str]
+) -> bool:
+    if spec.manifest_path is None:
+        return True
+    try:
+        addon_id = _addon_package_manifest_addon_id(spec.manifest_path)
+    except Exception:
+        return True
+    return addon_id is None or addon_id in enabled_filter
+
+
+def _addon_package_manifest_addon_id(manifest_path: Path) -> str | None:
+    manifest = _load_addon_package_manifest(manifest_path)
+    addon_id = str(manifest.get("addon_id") or "").strip()
+    return validate_addon_id(addon_id) if addon_id else None
+
+
+def _load_registration_from_package_manifest(
+    *,
+    package_dir: Path,
+    manifest_path: Path,
+) -> Any:
+    manifest = _load_addon_package_manifest(manifest_path)
+    module_name = str(manifest.get("module") or "").strip()
+    if not module_name:
+        raise ValueError(f"{manifest_path} must declare a non-empty module")
+    return _load_registration_from_package_module(
+        package_dir=package_dir,
+        module_name=module_name,
+        manifest_path=manifest_path,
+    )
+
+
+def _load_addon_package_manifest(manifest_path: Path) -> Mapping[str, Any]:
+    if not manifest_path.is_file():
+        raise ValueError(f"Missing add-on package manifest: {manifest_path}")
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid add-on package manifest {manifest_path}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Add-on package manifest {manifest_path} must be a JSON object")
+    return payload
+
+
+def _load_registration_from_package_module(
+    *,
+    package_dir: Path,
+    module_name: str,
+    manifest_path: Path,
+) -> Any:
+    module_path, submodule_search_locations = _addon_package_module_location(
+        package_dir=package_dir,
+        module_name=module_name,
+        manifest_path=manifest_path,
+    )
+    found_existing, registration = _load_existing_package_module_registration(
+        module_name=module_name,
+        module_path=module_path,
+    )
+    if found_existing:
+        return registration
+
+    root_module_name = _addon_package_import_root(package_dir)
+    _clear_addon_package_import(root_module_name)
+    _install_addon_package_parent_modules(root_module_name, package_dir, module_name)
+    loaded_module_name = f"{root_module_name}.{module_name}"
+    spec = util.spec_from_file_location(
+        loaded_module_name,
+        module_path,
+        submodule_search_locations=submodule_search_locations,
+    )
+    if spec is None or spec.loader is None:
+        raise ValueError(f"Could not load add-on package module {module_name!r} from {module_path}")
+    module = util.module_from_spec(spec)
+    alias_root = module_name.split(".", 1)[0]
+    alias_snapshot = _snapshot_existing_declared_aliases(alias_root)
+    try:
+        _clear_addon_package_import(alias_root)
+        sys.modules[loaded_module_name] = module
+        _install_addon_package_declared_aliases(
+            root_module_name=root_module_name,
+            module_name=module_name,
+            module=module,
+        )
+        spec.loader.exec_module(module)
+        return _load_registration_from_module_object(module)
+    finally:
+        _restore_existing_declared_aliases(alias_root, alias_snapshot)
+
+
+def _load_existing_package_module_registration(
+    *, module_name: str, module_path: Path
+) -> tuple[bool, Any]:
+    module = sys.modules.get(module_name)
+    if module is None or not isinstance(module, types.ModuleType):
+        return False, None
+    if not _module_file_matches(module, module_path):
+        return False, None
+    return True, _load_registration_from_module_object(module)
+
+
+def _module_file_matches(module: types.ModuleType, expected_path: Path) -> bool:
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        return False
+    try:
+        return Path(module_file).resolve(strict=False) == expected_path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+
+
+def _snapshot_existing_declared_aliases(
+    alias_root: str,
+) -> dict[str, types.ModuleType] | None:
+    if alias_root not in sys.modules:
+        return None
+    prefix = f"{alias_root}."
+    return {
+        module_name: module
+        for module_name, module in sys.modules.items()
+        if module_name == alias_root or module_name.startswith(prefix)
+        if isinstance(module, types.ModuleType)
+    }
+
+
+def _restore_existing_declared_aliases(
+    alias_root: str, snapshot: dict[str, types.ModuleType] | None
+) -> None:
+    if snapshot is None:
+        return
+    prefix = f"{alias_root}."
+    for module_name in list(sys.modules):
+        if module_name == alias_root or module_name.startswith(prefix):
+            sys.modules.pop(module_name, None)
+    sys.modules.update(snapshot)
+
+
+def _addon_package_module_location(
+    *,
+    package_dir: Path,
+    module_name: str,
+    manifest_path: Path,
+) -> tuple[Path, list[str] | None]:
+    parts = module_name.split(".")
+    if not parts or any(not part.isidentifier() for part in parts):
+        raise ValueError(f"{manifest_path} declares invalid module name {module_name!r}")
+    if len(parts) == 1 and parts[0] == package_dir.name:
+        package_init = package_dir / "__init__.py"
+        if package_init.is_file():
+            return package_init, [str(package_dir)]
+    module_path = package_dir.joinpath(*parts)
+    package_init = module_path / "__init__.py"
+    if package_init.is_file():
+        return package_init, [str(module_path)]
+    module_file = module_path.with_suffix(".py")
+    if module_file.is_file():
+        return module_file, None
+    raise ValueError(
+        f"{manifest_path} declares module {module_name!r}, but it was not found under {package_dir}"
+    )
+
+
+def _addon_package_import_root(package_dir: Path) -> str:
+    digest = hashlib.sha256(
+        str(package_dir.resolve(strict=False)).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"_evander_addon_package_{digest}"
+
+
+def _clear_addon_package_import(root_module_name: str) -> None:
+    prefix = f"{root_module_name}."
+    for module_name in list(sys.modules):
+        if module_name == root_module_name or module_name.startswith(prefix):
+            sys.modules.pop(module_name, None)
+
+
+def _install_addon_package_parent_modules(
+    root_module_name: str, package_dir: Path, module_name: str
+) -> None:
+    root_module = types.ModuleType(root_module_name)
+    root_module.__path__ = [str(package_dir)]
+    root_module.__package__ = root_module_name
+    sys.modules[root_module_name] = root_module
+
+    current_path = package_dir
+    current_name = root_module_name
+    for part in module_name.split(".")[:-1]:
+        current_path = current_path / part
+        current_name = f"{current_name}.{part}"
+        parent_module = types.ModuleType(current_name)
+        parent_module.__path__ = [str(current_path)]
+        parent_module.__package__ = current_name
+        sys.modules[current_name] = parent_module
+
+
+def _install_addon_package_declared_aliases(
+    *, root_module_name: str, module_name: str, module: types.ModuleType
+) -> None:
+    declared_name = ""
+    synthetic_name = root_module_name
+    parts = module_name.split(".")
+    for part in parts[:-1]:
+        declared_name = f"{declared_name}.{part}" if declared_name else part
+        synthetic_name = f"{synthetic_name}.{part}"
+        synthetic_parent = sys.modules.get(synthetic_name)
+        if synthetic_parent is not None:
+            sys.modules[declared_name] = synthetic_parent
+    sys.modules[module_name] = module
 
 
 def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:

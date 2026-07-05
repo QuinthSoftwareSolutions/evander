@@ -48,6 +48,26 @@ def _write_config(tmp_path: Path, *, module_name: str) -> Path:
     return config_path
 
 
+def _write_config_without_addons(tmp_path: Path) -> Path:
+    runtime_dir = tmp_path / "runtime"
+    config_path = tmp_path / "gateway.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'runtime_dir: "{runtime_dir}"',
+                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
+                f'session_store_path: "{runtime_dir / "sessions.json"}"',
+                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
+                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
+                f'email_store_path: "{runtime_dir / "emails.json"}"',
+                f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
 def _write_admin_addon_module(
     tmp_path: Path,
     *,
@@ -125,6 +145,43 @@ def register_addon():
         encoding="utf-8",
     )
     return str(module_root)
+
+
+def _write_admin_addon_package(tmp_path: Path, *, module_name: str = "admin_package") -> None:
+    package_dir = tmp_path / "addons" / "team-addon"
+    package_dir.mkdir(parents=True)
+    (package_dir / "addon.json").write_text(
+        json.dumps({"addon_id": "team-addon", "module": module_name}),
+        encoding="utf-8",
+    )
+    (package_dir / f"{module_name}.py").write_text(
+        """
+from starlette.responses import HTMLResponse, JSONResponse
+from starlette.routing import Route
+
+async def ping(request):
+    return JSONResponse({"ok": True})
+
+async def ui(_request):
+    return HTMLResponse("<!doctype html><title>Team Add-on</title><main>Team Add-on</main>")
+
+def register_addon():
+    return {
+        "addon_id": "team-addon",
+        "display_name": "Team Add-on",
+        "admin_navigation": {
+            "label": "Teams",
+            "short_label": "Teams",
+            "description": "Team-oriented add-on surface.",
+            "ui_path": "/addons/team-addon/",
+        },
+        "admin_api_routes": [Route("/ping", ping, methods=["GET"])],
+        "admin_ui_routes": [Route("/", ui, methods=["GET"])],
+    }
+""",
+        encoding="utf-8",
+    )
+    sys.modules.pop(module_name, None)
 
 
 def _write_disabled_addon_configs(tmp_path: Path, *, module_name: str = "admin_addon") -> None:
@@ -232,6 +289,30 @@ def test_admin_web_addon_management_disables_addon_after_restart(
         (tmp_path / "config" / "trigger-orchestrator" / "config.json").read_text()
     )
     assert trigger_config["addon_loader"]["enabled_addon_ids"] == []
+
+
+def test_admin_web_addon_management_discovers_root_addon_packages_without_config(
+    tmp_path: Path,
+) -> None:
+    _write_admin_addon_package(tmp_path)
+    client = TestClient(create_app(build_admin_runtime(_write_config_without_addons(tmp_path))))
+
+    state_response = client.get("/api/admin/addons")
+
+    assert state_response.status_code == 200
+    state = state_response.json()
+    assert state["explicit_enabled_addon_ids"] == []
+    assert state["loaded_addon_ids"] == []
+    addon = state["addons"][0]
+    assert addon["addon_id"] == "team-addon"
+    assert addon["display_name"] == "Team Add-on"
+    assert addon["source"] == "package:addons/team-addon"
+    assert addon["source_type"] == "package"
+    assert addon["enabled"] is False
+    assert addon["loaded"] is False
+    assert addon["configurable"] is True
+    assert addon["has_admin_ui"] is True
+    assert addon["has_admin_api"] is True
 
 
 def test_admin_web_addon_management_materializes_runtime_workflow_pack_on_enable(
@@ -432,12 +513,11 @@ def test_admin_web_addon_runtime_workflow_pack_refresh_overwrites_existing_pack(
     )
     state = client.get("/api/admin/addons").json()
 
-    locked = client.post(
+    disabled_response = client.post(
         "/api/admin/addons/team-addon/runtime-workflow-pack/refresh",
         json={"expected_revision": state["revision"]},
     )
-    assert locked.status_code == 403
-    client.post("/api/admin/privileged/unlock")
+    assert disabled_response.status_code == 400
     enabled_response = client.put(
         "/api/admin/addons/enabled",
         json={
@@ -526,7 +606,7 @@ def test_addon_management_uses_unlocked_worker_config_write_inside_outer_lock(
     registration = AddonRegistration(addon_id="team-addon", display_name="Team Add-on")
     monkeypatch.setattr(
         "evander.admin.services.addon_admin_service.discover_addons",
-        lambda _loader: [
+        lambda _loader, **_kwargs: [
             DiscoveredAddon(
                 source="admin_addon",
                 source_type="module",
@@ -536,7 +616,7 @@ def test_addon_management_uses_unlocked_worker_config_write_inside_outer_lock(
     )
     monkeypatch.setattr(
         "evander.admin.services.addon_admin_service.load_addons",
-        lambda _loader: LoadedAddonCatalog(
+        lambda _loader, **_kwargs: LoadedAddonCatalog(
             registrations=(registration,),
             loaded_addons=("team-addon",),
         ),

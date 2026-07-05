@@ -65,7 +65,24 @@ function privilegedUnlockedFromLocation(): boolean {
 function TeamAgentCreateHost() {
   const [request, setRequest] = useState<TeamAgentCreateOpenDetail | null>(null);
   const [progress, setProgress] = useState("");
-  const privilegedUnlocked = privilegedUnlockedFromLocation();
+  const [privilegedUnlocked, setPrivilegedUnlocked] = useState(privilegedUnlockedFromLocation);
+
+  useEffect(() => {
+    const listener = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) {
+        return;
+      }
+      const data = event.data || {};
+      if (data.type !== "admin-privileged-operations") {
+        return;
+      }
+      setPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
+    };
+    window.addEventListener("message", listener);
+    return () => {
+      window.removeEventListener("message", listener);
+    };
+  }, []);
 
   useEffect(() => {
     const openDialog = (detail?: TeamAgentCreateOpenDetail) => {

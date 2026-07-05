@@ -28,6 +28,7 @@ from evander.admin.composition import AdminRuntimeComponents, build_admin_runtim
 from evander.admin.release_metadata import NEWS_ASSET_BASE_PATH, NEWS_ASSET_DIRECTORY
 from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.web.frontend_assets import (
+    admin_frontend_hashed_asset_url,
     admin_frontend_assets_ready,
     admin_frontend_dist_dir,
 )
@@ -43,8 +44,8 @@ from evander.admin.web.shared import (
     AZURE_SSO_START_PATH,
     AdminWebAuth,
     AdminWebConfig,
+    DEFAULT_ADMIN_WEB_BRANDING_ASSET_DIR,
     json_error,
-    request_has_privileged_operations,
 )
 from evander.admin.web.pr_integration import pr_integration_routes
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION, USERS_MANAGE_PERMISSION
@@ -61,6 +62,17 @@ from evander.admin.web.workflow import workflow_routes, workflow_run_events
 from evander.admin.web.workflow_events import workflow_event_routes
 from evander.admin.web.workflow_webhooks import workflow_webhook_routes
 from evander.admin.web.workers_config import worker_config_routes
+
+
+_HASHED_FRONTEND_ASSET_RE = re.compile(r"^assets/[^/]+-[A-Za-z0-9_-]{6,}\.[A-Za-z0-9]+$")
+_IMMUTABLE_STATIC_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_HTML_CACHE_CONTROL = "no-cache"
+_DEFAULT_BRANDING_ASSETS = {
+    f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/evander-logo-light.png": "evander-logo-light.png",
+    f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/evander-logo-dark.png": "evander-logo-dark.png",
+    f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/qss-light.png": "qss-light.png",
+    f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/qss-dark.png": "qss-dark.png",
+}
 
 
 class AdminWebAddonServiceAdapter:
@@ -182,6 +194,37 @@ def _index_html(dist_dir: Path, *, branding_payload: dict[str, object]) -> str:
     return f"{bootstrap_script}\n{html}"
 
 
+def _branding_payload_with_hashed_defaults(
+    payload: dict[str, object], dist_dir: Path, branding_asset_dir: Path | None
+) -> dict[str, object]:
+    if not _uses_default_branding_asset_dir(branding_asset_dir):
+        return payload
+    replacements = {
+        api_url: hashed_url
+        for api_url, asset_name in _DEFAULT_BRANDING_ASSETS.items()
+        if (hashed_url := admin_frontend_hashed_asset_url(dist_dir, asset_name)) is not None
+    }
+    if not replacements:
+        return payload
+    for logo_name in ("header_logo", "product_logo", "company_logo"):
+        logo = payload.get(logo_name)
+        if not isinstance(logo, dict):
+            continue
+        for url_name in ("light_url", "dark_url"):
+            value = logo.get(url_name)
+            if isinstance(value, str) and value in replacements:
+                logo[url_name] = replacements[value]
+    return payload
+
+
+def _uses_default_branding_asset_dir(branding_asset_dir: Path | None) -> bool:
+    if branding_asset_dir is None:
+        return False
+    return branding_asset_dir.expanduser().resolve(
+        strict=False
+    ) == DEFAULT_ADMIN_WEB_BRANDING_ASSET_DIR.resolve(strict=False)
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, auth: AdminWebAuth) -> None:
         super().__init__(app)
@@ -208,6 +251,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class AdminWebStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: dict[str, Any]) -> Response:
+        response = await super().get_response(path, scope)
+        normalized_path = path.replace("\\", "/").lstrip("/")
+        content_type = response.headers.get("content-type", "")
+        if response.status_code in {200, 304} and _HASHED_FRONTEND_ASSET_RE.match(normalized_path):
+            response.headers["Cache-Control"] = _IMMUTABLE_STATIC_CACHE_CONTROL
+        elif "text/html" in content_type.lower():
+            response.headers["Cache-Control"] = _HTML_CACHE_CONTROL
+        return response
+
+
 def create_app(service: AdminRuntimeComponents) -> Starlette:
     dist_dir = _dist_dir()
     admin_user_store = AdminWebUserStore(
@@ -217,18 +272,23 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     auth = AdminWebAuth(AdminWebConfig.from_env(), user_store=admin_user_store)
     dashboard_cache = AdminWebJsonResponseCache()
     try:
-        addon_catalog = load_addons(service.config.addon_loader)
+        addon_catalog = load_addons(service.config.addon_loader, base_dir=service.project_dir)
     except Exception:
         addon_catalog = LoadedAddonCatalog(registrations=(), loaded_addons=())
     service.vm_agent_admin.mark_abandoned_agent_create_operations_failed()
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
-        return request_has_privileged_operations(auth=auth, service=service, request=request)
+        return auth.privileged_for_request(request)
 
     def _role_for_permissions(permissions: list[str] | tuple[str, ...]) -> str:
         if ADMIN_OWNER_PERMISSION in permissions or USERS_MANAGE_PERMISSION in permissions:
             return "admin"
         return "regular"
+
+    def branding_payload() -> dict[str, object]:
+        return _branding_payload_with_hashed_defaults(
+            auth.config.branding.to_payload(), dist_dir, auth.config.branding_asset_dir
+        )
 
     async def health(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True})
@@ -270,7 +330,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
                 if auth.config.auth_mode == "azure_sso"
                 else None,
                 "privileged_operations": {"unlocked": False},
-                "branding": auth.config.branding.to_payload(),
+                "branding": branding_payload(),
             }
         )
         auth.attach_session_cookie(response, token)
@@ -321,11 +381,10 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         payload["privileged_operations"] = {
             "unlocked": privileged_operations_unlocked_for_request(request)
         }
+        payload["branding"] = branding_payload()
         return JSONResponse(payload)
 
     async def logout(request: Request) -> JSONResponse:
-        if auth.privileged_for_request(request):
-            service.operations_admin.lock_privileged_operations()
         auth.logout(request)
         permissions = (
             list(auth.effective_permissions(auth.config.username))
@@ -359,7 +418,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
                 if auth.config.auth_mode == "azure_sso"
                 else None,
                 "privileged_operations": {"unlocked": False},
-                "branding": auth.config.branding.to_payload(),
+                "branding": branding_payload(),
             }
         )
         auth.clear_session_cookie(response)
@@ -408,7 +467,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         return JSONResponse(service.operations_admin.read_deployment_status().model_dump(mode="json"))
 
     async def get_branding(_: Request) -> JSONResponse:
-        return JSONResponse(auth.config.branding.to_payload())
+        return JSONResponse(branding_payload())
 
     async def get_branding_asset(request: Request) -> FileResponse | JSONResponse:
         asset_root = auth.config.branding_asset_dir
@@ -465,14 +524,10 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
 
     async def unlock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
-        try:
-            message = service.operations_admin.unlock_privileged_operations()
-        except ValueError as exc:
-            return json_error(str(exc))
         auth.mark_privileged_for_request(request)
         return JSONResponse(
             {
-                "message": message,
+                "message": "Privileged operations unlocked.",
                 "privileged_operations": {
                     "unlocked": privileged_operations_unlocked_for_request(request)
                 },
@@ -481,7 +536,6 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
 
     async def lock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
-        service.operations_admin.lock_privileged_operations()
         auth.clear_privileged_for_request(request)
         return JSONResponse(
             {
@@ -492,7 +546,8 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
 
     async def index(_: Request) -> Response:
         return HTMLResponse(
-            _index_html(dist_dir, branding_payload=auth.config.branding.to_payload())
+            _index_html(dist_dir, branding_payload=branding_payload()),
+            headers={"Cache-Control": _HTML_CACHE_CONTROL},
         )
 
     routes = [
@@ -543,7 +598,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(workflow_event_routes(service, auth))
     routes.extend(workflow_webhook_routes(service))
     routes.extend(operator_steering_routes(service, auth))
-    routes.extend(artifact_routes(service))
+    routes.extend(artifact_routes(service, auth))
     addon_service = AdminWebAddonServiceAdapter(service)
     for addon in addon_catalog.registrations:
         context = AddonContext(
@@ -564,7 +619,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     if dist_dir.exists():
         routes.append(Route("/", index, methods=["GET"]))
         routes.append(Route("/index.html", index, methods=["GET"]))
-        routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True)))
+        routes.append(Mount("/", app=AdminWebStaticFiles(directory=dist_dir, html=True)))
     else:
         routes.append(Route("/", index, methods=["GET"]))
         routes.append(Route("/index.html", index, methods=["GET"]))

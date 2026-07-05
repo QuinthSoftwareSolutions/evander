@@ -192,7 +192,7 @@ Once signed in, the shared shell is the same across pages so you can move betwee
 1. Header: shows active section, directory, current user, theme, privilege lock, directory chooser, and sign-out.
 2. Navigation: opens all major operator pages such as Dashboard, Agents, Sessions, Approvals, Tool Calls, Workflow, Configuration, Users, Reports, and Workers.
 3. Directory scope: shown in the header and applied to many lists and actions.
-4. Privilege lock icon/state: `locked` means read-only mode. Mutations are blocked until you unlock.
+4. Privilege lock icon/state: `locked` means local read-only UI mode. Mutation controls are disabled until you unlock.
 5. Deployment banner: if present, gives platform-level health or update context.
 6. Assistant launcher: optional lower-corner tool when enabled by your deployment.
 7. Page content: the page you selected in navigation.
@@ -227,9 +227,11 @@ If you are uncertain, pause and recheck in section 2.4 before creating agents, c
 
 ### 2.5 Unlock Privileged Operations
 
-Evander uses a deliberate safety gate before changes.
+Evander uses a deliberate UI safety gate before changes.
 
-When the lock is closed, the interface is in read-only mode.
+When the lock is closed, the interface is in read-only mode. This is a local UI guard against
+accidental edits; backend writes are still governed by authentication, permissions, and revision
+checks.
 
 - Safe for review, triage, filtering, and inspection.
 - Not safe to run changes through.
@@ -828,7 +830,7 @@ What to read in the detail card:
 If a row is missing, check these first:
 
 1. Directory context.
-2. Lock state is irrelevant for reading but required for editing.
+2. Lock state is irrelevant for reading but controls whether edit controls are enabled.
 3. Manual filters or stale search text.
 4. Active list vs Expired list.
 
@@ -3659,7 +3661,7 @@ Read this with:
 
 ### 15.1 Communication Targets
 
-A communication target is a named destination in **Configuration > Communication targets**.
+A communication target is a named destination in **Configuration > People & Communications > Communication targets**.
 
 Targets are scoped by directory and can be inherited from the root directory.
 
@@ -3777,12 +3779,12 @@ Use this when you need to add a new destination or correct an existing one.
 Prerequisites:
 
 1. Correct directory selected.
-2. Communication targets section opened in `Configuration`.
+2. **People & Communications > Communication targets** section opened in `Configuration`.
 3. Privileges unlocked for configuration saves.
 
 Steps:
 
-1. Open **Configuration > Communication targets**.
+1. Open **Configuration > People & Communications > Communication targets**.
 2. Click **Add communication target**.
 3. Enter:
    1. `id` and clear display name.
@@ -3816,12 +3818,12 @@ Use this when approval events need to land in a team channel instead of generic 
 Prerequisites:
 
 1. At least one notify-capable communication target is defined.
-2. Access to `approval_notification_target_ids` in Configuration.
+2. Access to `approval_notification_target_ids` in **Configuration > People & Communications**.
 3. Privileges unlocked for policy edits.
 
 Steps:
 
-1. Open `Configuration` and go to Access Policy (or policy tab view).
+1. Open `Configuration` and go to **People & Communications > Approval notification targets**.
 2. Confirm the selected directory is correct.
 3. Open the approval notification target chooser.
 4. Add one or more notify-capable targets (for example an operator channel).
@@ -3958,19 +3960,26 @@ For who can edit configuration, see section 17. For worker-level service impact,
 
 ### 16.1 Configuration Domains
 
-Think of configuration as grouped into domains that each control a different operational surface.
+Think of configuration as grouped into operator-facing areas that each control a recognizable
+workflow surface.
 
-1. Policy controls common safety defaults such as session expiry and approval behavior.
-2. Providers control integrations like OpenAI routing, NuGet, GitHub, Azure DevOps, Teams, and container worker settings.
-3. Contacts and communication targets define who appears in provider actions and who is reachable.
-4. Email covers mailbox definitions and mailbox runtime behavior.
-5. Wake covers wake prompts used by scheduled and PR-based resume paths.
-6. ADO worker settings control repository and feedback poll behavior for Azure DevOps completion and feedback streams.
-7. Issue setup controls issue workflow defaults such as git host, git user, and model fallback behavior.
-8. VM controls relay and network defaults and the VM template selection catalog.
-9. PR template defines the standard markdown that can be prepended when automation writes pull requests.
-10. Model pricing controls local usage estimate rates and labels used in usage reporting.
-11. Admin Web branding controls browser title, header text, and logo presentation.
+1. **People & Communications** controls contacts, targets, approval notifications, Discord,
+   Teams, email, phone calls, and communication files.
+2. **Models, Assistant & Knowledge** controls model routing, Assistant behavior, model pricing,
+   semantic store, and embedding settings.
+3. **Agent Runtime & Launch** controls execution backend, container worker settings, prompt
+   delivery, launch defaults, and guest heartbeat behavior.
+4. **Code, Issues & Pull Requests** controls Git transport, Azure DevOps, GitHub, ADO worker
+   filters, PR feedback approval, and PR templates.
+5. **Access, Approvals & Audit** controls approval-required tools, approval timing, MCP tool
+   policy, tool argument guardrails, and audit redaction.
+6. **Network, Relays & Package Access** controls VM provider defaults, libvirt templates, VM
+   network, gateway, relay endpoints, NuGet, and npm audit facade settings.
+7. **Automation & Assignment** controls issue intake capacity and assignment roles.
+8. **Advanced & Raw** contains provider-specific JSON state and support diagnostics.
+
+The page may still show underlying domains in diagnostics and raw override views. Those labels are
+storage details; use the operator-facing areas above when deciding where to change a setting.
 
 Add-on loader settings are not edited in the selected directory's Configuration page. Optional tabs
 and add-on workflow provider blocks come from host `addon_loader` configuration and worker
@@ -4019,7 +4028,7 @@ Evander uses revision checks to avoid silent overwrite.
 1. A save can fail if another operator changed the same configuration in between your edit and save.
 2. In that case, the UI asks you to reload and reapply your intended edits.
 3. Communication or high-risk edits should be done one domain at a time.
-4. Locking, unlocking, and privilege mode are still required for writes.
+4. Unlock in the UI before editing so the intended controls are enabled.
 5. Keep local edits short and re-open read-only if a page feels stale.
 
 Safe save habits:
@@ -5028,7 +5037,7 @@ If the UI does not match the behavior described here, treat the live UI and host
 This usually means one of these is true:
 
 1. The page is scoped to a different directory than the one you selected.
-2. Your account currently has read-only mode or locked privileges.
+2. The UI is in read-only mode or the account lacks permission for that surface.
 3. A service used by that page is not running or not reachable.
 4. A feature is not available for your deployment (for example add-on-specific pages).
 
@@ -5423,7 +5432,7 @@ For optional add-on mode, this map also includes:
 
 Permission is easiest to think of in layers.
 
-- **Read mode (default safe mode):** view-only for almost all pages. Good for investigation.
+- **Read mode (default safe mode):** local view-only mode for almost all pages. Good for investigation.
 - **Unlocked mode:** allows create, edit, and lifecycle actions on the current surface if your user has permission.
 - **Workflow write access:** required for graph edits, and includes read access.
 - **Approval/decision rights:** required for queue action and direct review decisions.

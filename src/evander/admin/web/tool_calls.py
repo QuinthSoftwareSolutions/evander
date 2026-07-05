@@ -62,6 +62,7 @@ def tool_call_routes(
 ) -> list[Route]:
     async def list_tool_calls(request: Request) -> JSONResponse:
         params = request.query_params
+        dashboard_requested = _dashboard_cache_requested(params.get(DASHBOARD_CACHE_PARAM))
         try:
             entries = await run_in_threadpool(
                 service.approval_audit_admin.list_tool_call_audit_entries,
@@ -76,8 +77,9 @@ def tool_call_routes(
                 limit=_parse_int(params.get("limit")),
                 recent_only=_parse_bool(
                     params.get("recent_only"),
-                    default=_dashboard_cache_requested(params.get(DASHBOARD_CACHE_PARAM)),
+                    default=dashboard_requested,
                 ),
+                index_only=dashboard_requested,
             )
         except ValueError as exc:
             return json_error(str(exc))

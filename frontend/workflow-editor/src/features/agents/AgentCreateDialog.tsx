@@ -2,11 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 import { Tooltip } from "../admin/Tooltip";
-import { OptionMultiSelectEditor, StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
-import type { AgentBackend, AgentCreateOptionsResponse, AgentCreateRequest } from "../admin/types";
+import { StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
+import type {
+  AgentBackend,
+  AgentCreateCommunicationTargetOption,
+  AgentCreateOptionsResponse,
+  AgentCreateRequest,
+} from "../admin/types";
 import {
   agentCreateTargetLabel,
   buildCreatePayload,
+  dedupeStrings,
   emptyCreateForm,
   loadAgentCreateOptions,
   parseDurationSeconds,
@@ -46,6 +52,141 @@ function CreateFieldLabel({ children, tooltip }: { children: ReactNode; tooltip:
   );
 }
 
+function metadataString(option: AgentCreateCommunicationTargetOption, key: string): string {
+  const value = option.metadata?.[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function metadataStringList(option: AgentCreateCommunicationTargetOption, key: string): string[] {
+  const value = option.metadata?.[key];
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter(Boolean);
+}
+
+function formatCommunicationTargetToken(value: string, fallback = "Unknown"): string {
+  const trimmed = value.trim();
+  if (!trimmed) return fallback;
+  return trimmed
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function communicationTargetDetail(option: AgentCreateCommunicationTargetOption): string | null {
+  const description = option.description?.trim();
+  if (description) return description;
+  const label = option.label.trim();
+  const value = option.value.trim();
+  if (label && label !== value && !label.startsWith(`${value} (`)) {
+    return label;
+  }
+  return null;
+}
+
+type CommunicationTargetCheckboxTableProps = {
+  values: readonly string[];
+  options: readonly AgentCreateCommunicationTargetOption[];
+  onChange: (nextValues: string[]) => void;
+  emptyState: string;
+};
+
+function CommunicationTargetCheckboxTable({
+  values,
+  options,
+  onChange,
+  emptyState,
+}: CommunicationTargetCheckboxTableProps) {
+  const normalizedValues = dedupeStrings([...values]);
+  const selectedValues = new Set(normalizedValues);
+  const knownValues = new Set(options.map((option) => option.value));
+  const unknownValues = normalizedValues.filter((value) => !knownValues.has(value));
+  const rows = [
+    ...options.map((option) => ({
+      value: option.value,
+      detail: communicationTargetDetail(option),
+      provider: formatCommunicationTargetToken(metadataString(option, "provider")),
+      shape: formatCommunicationTargetToken(metadataString(option, "target_shape")),
+      capabilities: metadataStringList(option, "policy_capabilities"),
+      unknown: false,
+    })),
+    ...unknownValues.map((value) => ({
+      value,
+      detail: "Selected target is no longer in the directory options.",
+      provider: "Unknown",
+      shape: "Unknown",
+      capabilities: [],
+      unknown: true,
+    })),
+  ];
+
+  function setTargetChecked(value: string, checked: boolean) {
+    const nextValues = checked
+      ? [...normalizedValues.filter((entry) => entry !== value), value]
+      : normalizedValues.filter((entry) => entry !== value);
+    onChange(nextValues);
+  }
+
+  return (
+    <div className="agent-communication-target-selector">
+      {rows.length > 0 ? (
+        <div className="agent-communication-target-table-wrap">
+          <table className="agent-communication-target-table">
+            <thead>
+              <tr>
+                <th scope="col">Select</th>
+                <th scope="col">Target</th>
+                <th scope="col">Provider</th>
+                <th scope="col">Shape</th>
+                <th scope="col">Capabilities</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const checked = selectedValues.has(row.value);
+                return (
+                  <tr key={row.value} className={checked ? "selected" : ""}>
+                    <td className="agent-communication-target-select-cell">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => setTargetChecked(row.value, event.target.checked)}
+                        aria-label={`Allow communication target ${row.value}`}
+                      />
+                    </td>
+                    <td>
+                      <div className="agent-communication-target-name">
+                        <strong>{row.value}</strong>
+                        {row.detail ? <span>{row.detail}</span> : null}
+                        {row.unknown ? <span className="agent-communication-target-warning">Unknown target</span> : null}
+                      </div>
+                    </td>
+                    <td>{row.provider}</td>
+                    <td>{row.shape}</td>
+                    <td>
+                      {row.capabilities.length > 0 ? (
+                        <span className="agent-communication-target-capabilities">
+                          {row.capabilities.map((capability) => (
+                            <span key={capability}>{capability}</span>
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="muted-text">None</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {normalizedValues.length === 0 ? <div className="empty-state">{emptyState}</div> : null}
+    </div>
+  );
+}
+
 function resetBackendSensitiveFields(
   form: AgentCreateFormState,
   nextBackend: AgentBackend,
@@ -60,6 +201,8 @@ function resetBackendSensitiveFields(
   return {
     ...form,
     backend: nextBackend,
+    mssql: nextBackend === "libvirt_vm" ? form.mssql : false,
+    mssqlInitRoot: nextBackend === "libvirt_vm" ? form.mssqlInitRoot : "",
     agentProvider: nextAgentProvider,
     modelProviderMode:
       nextAgentProvider && nextAgentProvider !== "codex"
@@ -390,60 +533,85 @@ export function AgentCreateDialog({
                 </label>
               </>
             )}
-            {createForm.backend === "libvirt_vm" ? (
-              <>
-                <label className="checkbox-row agent-checkbox-row">
+            <fieldset className="agent-capability-group">
+              <legend>
+                <CreateFieldLabel tooltip="Optional capabilities to enable when the agent is created.">
+                  Capabilities
+                </CreateFieldLabel>
+              </legend>
+              <div className="agent-capability-grid">
+                <label className="checkbox-row agent-capability-option">
                   <input
                     type="checkbox"
                     checked={createForm.dotnet}
                     onChange={(event) => setCreateForm((current) => ({ ...current, dotnet: event.target.checked }))}
                   />
-                  <CreateFieldLabel tooltip="Copy the host .NET SDK into the VM after launch.">
+                  <CreateFieldLabel tooltip="Seed .NET support for the session. VM agents copy the host SDK; container workers point at the seeded worker cache mount.">
                     .NET
                   </CreateFieldLabel>
                 </label>
-                <label className="checkbox-row agent-checkbox-row">
+                <label className="checkbox-row agent-capability-option">
                   <input
                     type="checkbox"
                     checked={createForm.nuget}
                     onChange={(event) => setCreateForm((current) => ({ ...current, nuget: event.target.checked }))}
                   />
-                  <CreateFieldLabel tooltip="Configure the guest to restore packages through the host NuGet relay and cache.">
+                  <CreateFieldLabel tooltip="Configure package restore through the host NuGet relay and session cache.">
                     NuGet
                   </CreateFieldLabel>
                 </label>
-                <label className="checkbox-row agent-checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={createForm.mssql}
-                    onChange={(event) => setCreateForm((current) => ({ ...current, mssql: event.target.checked }))}
-                  />
-                  <CreateFieldLabel tooltip="Provision a guest-local SQL Server instance. Requires MSSQL_SA_PASSWORD on the host.">
-                    MSSQL
-                  </CreateFieldLabel>
-                </label>
-                <label className="checkbox-row agent-checkbox-row">
+                {createForm.backend === "libvirt_vm" ? (
+                  <label className="checkbox-row agent-capability-option">
+                    <input
+                      type="checkbox"
+                      checked={createForm.mssql}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, mssql: event.target.checked }))}
+                    />
+                    <CreateFieldLabel tooltip="Provision a guest-local SQL Server instance for VM agents. Container worker SQL uses session-owned MCP provisioning instead.">
+                      MSSQL
+                    </CreateFieldLabel>
+                  </label>
+                ) : null}
+                <label className="checkbox-row agent-capability-option">
                   <input
                     type="checkbox"
                     checked={createForm.playwright}
                     onChange={(event) => setCreateForm((current) => ({ ...current, playwright: event.target.checked }))}
                   />
-                  <CreateFieldLabel tooltip="Install host-seeded Node and Playwright browser dependencies in the VM.">
+                  <CreateFieldLabel tooltip="Seed Playwright support for the session. VM agents install browser dependencies; container workers point at the seeded browser cache.">
                     Playwright
                   </CreateFieldLabel>
                 </label>
-                <label className="field-stack">
-                  <CreateFieldLabel tooltip="Optional host directory copied into the SQL init folder. If init.sql exists there, it runs after SQL Server starts.">
-                    MSSQL init root
-                  </CreateFieldLabel>
+                <label className="checkbox-row agent-capability-option">
                   <input
-                    value={createForm.mssqlInitRoot}
-                    onChange={(event) => setCreateForm((current) => ({ ...current, mssqlInitRoot: event.target.value }))}
-                    disabled={!createForm.mssql}
+                    type="checkbox"
+                    checked={createForm.initialPolicy.webSearchEnabled}
+                    onChange={(event) =>
+                      setCreateForm((current) => ({
+                        ...current,
+                        initialPolicy: { ...current.initialPolicy, webSearchEnabled: event.target.checked },
+                      }))
+                    }
                   />
+                  <CreateFieldLabel tooltip="Allow this session's agent runner to use live web search when the selected provider supports it.">
+                    Web search
+                  </CreateFieldLabel>
                 </label>
-              </>
-            ) : null}
+              </div>
+              {createForm.backend === "libvirt_vm" && createForm.mssql ? (
+                <div className="agent-capability-detail-row">
+                  <label className="field-stack agent-capability-mssql-root">
+                    <CreateFieldLabel tooltip="Optional host directory copied into the SQL init folder. If init.sql exists there, it runs after SQL Server starts.">
+                      MSSQL init root
+                    </CreateFieldLabel>
+                    <input
+                      value={createForm.mssqlInitRoot}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, mssqlInitRoot: event.target.value }))}
+                    />
+                  </label>
+                </div>
+              ) : null}
+            </fieldset>
             <div className="field-stack wide-field">
               <CreateFieldLabel tooltip="Session policy values written when the agent is created. Empty rows are ignored.">
                 Initial policy
@@ -490,21 +658,6 @@ export function AgentCreateDialog({
                 emptyState="No tools are allowed explicitly."
               />
             </div>
-            <label className="checkbox-row agent-checkbox-row">
-              <input
-                type="checkbox"
-                checked={createForm.initialPolicy.webSearchEnabled}
-                onChange={(event) =>
-                  setCreateForm((current) => ({
-                    ...current,
-                    initialPolicy: { ...current.initialPolicy, webSearchEnabled: event.target.checked },
-                  }))
-                }
-              />
-              <CreateFieldLabel tooltip="Allow this session's agent runner to use live web search when the selected provider supports it.">
-                Web search
-              </CreateFieldLabel>
-            </label>
             <div className="field-stack">
               <CreateFieldLabel tooltip="Script names this session may run through approved script execution paths.">
                 Allowed scripts
@@ -523,11 +676,11 @@ export function AgentCreateDialog({
                 emptyState="No scripts are allowed explicitly."
               />
             </div>
-            <div className="field-stack">
+            <div className="field-stack wide-field agent-communication-targets-field">
               <CreateFieldLabel tooltip="Directory communication targets the session may use for messaging. Only registered targets with session-compatible capabilities are selectable.">
                 Communication targets
               </CreateFieldLabel>
-              <OptionMultiSelectEditor
+              <CommunicationTargetCheckboxTable
                 values={createForm.initialPolicy.communicationTargetIds}
                 options={createCommunicationTargetOptions}
                 onChange={(nextValues) =>

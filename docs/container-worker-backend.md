@@ -102,6 +102,10 @@ existing tar-copy/load deployment model and does not do worker-side remote manif
 That remote skip path is deferred because it needs a separate trusted manifest storage/read path on
 the worker, while the host-side cache already avoids the expensive local `docker build`/`docker
 save` path when inputs are unchanged. It intentionally does not install the control-plane services.
+When worker MSSQL is enabled and `evander_worker_mssql_seed_sidecar_enabled` is true, the same
+worker playbook also renders `config/mssql-seed-sidecar.env`, installs
+`evander-mssql-seed-sidecar.service`, creates the configured seed backup directory, and verifies the
+sidecar health endpoint. The sidecar is disabled by default.
 
 ## Cleanup Visibility
 
@@ -398,6 +402,9 @@ synchronously and does not persist a worker-side queue. `cleanup_failure_status`
 `unsupported` because cleanup-failure history is not persisted separately from the live job records.
 The host-side Admin Web capacity-health endpoint uses this telemetry when it can reach a configured
 worker; otherwise it reports missing or permission-denied worker telemetry explicitly.
+Worker session storage telemetry is cached inside the daemon with stale-while-revalidate behavior:
+normal `GET /v1/telemetry` calls return cached or warming storage data quickly, while
+`GET /v1/telemetry?refresh=1` performs a blocking deep storage scan for explicit refresh.
 
 For `container_worker_vm`, `effect:agent:clone-repo` does not send upstream GitHub or Azure DevOps
 URLs to the clone API. The control plane resolves and refreshes a deterministic bare mirror under
@@ -427,6 +434,33 @@ database, and returns a scoped connection string for normal app/test commands in
 `mssql_list_databases` and `mssql_drop_database` operate only on databases recorded as owned by the
 calling session. `DELETE /v1/sessions/{session_id}` drops all worker-recorded SQL databases and the
 session login before removing durable files; SQL cleanup failure blocks session-file deletion.
+
+For `.bak` seed data and rollback-style resets, use the optional
+`evander_mssql_seed_addon` rather than extending the worker daemon contract. The
+add-on keeps a control-plane catalog of approved seed aliases, calls the Core
+worker MSSQL provisioning path to create or reconcile the session-owned database,
+and then asks a worker-side `evander-mssql-seed-sidecar` to restore the approved
+backup into that database. The sidecar exposes only `/healthz` and
+`POST /v1/databases/restore`, requires a bearer token, validates Evander-owned
+database/login names, and reattaches the already-created session login after
+restore. Agents use `mssql_seed_provision_database` to create a seeded database
+and `mssql_seed_reset_database` to restore it back to the approved initial seed.
+Enable the worker service with:
+
+```yaml
+evander_worker_mssql_enabled: true
+evander_worker_mssql_seed_sidecar_enabled: true
+evander_worker_mssql_seed_sidecar_token: "{{ vault_evander_worker_mssql_seed_sidecar_token }}"
+evander_worker_mssql_seed_sidecar_port: 11990
+evander_worker_mssql_seed_sidecar_backup_dir: "/var/lib/evander/mssql-seeds"
+```
+
+Point the add-on sidecar catalog at
+`http://<worker-private-ip>:{{ evander_worker_mssql_seed_sidecar_port }}` and use
+`EVANDER_MSSQL_SEED_SIDECAR_TOKEN` as the token env name. Keep the sidecar port
+reachable only from the control plane. The optional `restore_timeout_seconds`
+sidecar setting defaults to 3600 seconds so larger `.bak` restores can complete
+before the MCP call times out.
 
 The host-side backend records the control-plane mapping in:
 

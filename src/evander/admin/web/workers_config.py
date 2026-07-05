@@ -16,6 +16,7 @@ from evander.admin.payloads import AdminRevisionConflict
 from evander.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.config_tooltips import CONFIG_FIELD_TOOLTIPS
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.admin.web.shared import AdminWebAuth, request_has_privileged_operations
 from evander.config import (
     AdoWorkerGlobalConfig,
@@ -81,6 +82,210 @@ _ASSISTANT_SETTINGS_FIELDS: tuple[tuple[str, str], ...] = (
 )
 _COMMUNICATION_TARGET_FIELDS: tuple[tuple[str, str], ...] = (
     (COMMUNICATION_TARGETS_DOMAIN, "targets"),
+)
+_EMAIL_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("email", "email_mailboxes"),
+    ("email", "email_provider_timeout_seconds"),
+)
+_EMAIL_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("policy", "email_draft_domain_allowlist"),
+    ("policy", "email_draft_recipient_allowlist"),
+    ("policy", "email_folder_allowlist_by_mailbox"),
+    ("policy", "email_mailbox_allowlist"),
+    ("policy", "email_send_enabled"),
+)
+_APPROVAL_TIMING_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("policy", "approval_ttl_seconds"),
+    ("policy", "default_session_ttl_seconds"),
+)
+_APPROVAL_NOTIFICATION_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("policy", "approval_notification_target_ids"),
+)
+_APPROVAL_REQUIRED_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("policy", "approval_required_tools"),
+)
+_MCP_TOOL_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("policy", "mcp_tool_policies"),
+)
+_TOOL_ARGUMENT_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("policy", "tool_argument_policies"),
+)
+_AUDIT_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("policy", "redacted_keys"),
+)
+_PR_REPLY_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("policy", "pr_reply_require_approval"),
+)
+_AGENT_PROMPT_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "agent_prompt_token_secret_env"),
+    ("providers", "agent_prompt_token_ttl_seconds"),
+    ("providers", "agent_prompt_queue_max_retries"),
+    ("providers", "agent_context_retry_enabled"),
+    ("providers", "agent_context_retry_max_attempts"),
+    ("providers", "agent_context_retry_target_chars"),
+)
+_AZURE_DEVOPS_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "azure_devops_organization_url"),
+    ("providers", "azure_devops_pat_env"),
+    ("providers", "azure_devops_pr_pat_env"),
+    ("providers", "azure_devops_project"),
+)
+_AGENT_EXECUTION_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "execution_backend"),
+)
+_CONTAINER_WORKER_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "container_worker_base_url"),
+    ("providers", "container_worker_token_env"),
+    ("providers", "container_worker_default_image"),
+    ("providers", "container_worker_images"),
+    ("providers", "container_worker_job_timeout_seconds"),
+    ("providers", "container_worker_request_timeout_seconds"),
+    ("providers", "container_worker_workspace_persistence"),
+    ("providers", "container_worker_guest_openai_base_url"),
+    ("providers", "container_worker_guest_anthropic_base_url"),
+    ("providers", "container_worker_guest_gateway_url"),
+    ("providers", "container_worker_guest_http_target_relay_base_url"),
+    ("providers", "container_worker_guest_nuget_relay_base_url"),
+    ("providers", "container_worker_guest_pypi_index_url"),
+    ("providers", "container_worker_guest_npm_registry_url"),
+    ("providers", "container_worker_mssql_enabled"),
+    ("providers", "container_worker_mssql_host"),
+    ("providers", "container_worker_mssql_port"),
+)
+_GITHUB_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "github_token_env"),
+)
+_HTTP_TARGET_RELAY_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "http_target_relay_timeout_seconds"),
+)
+_NUGET_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "nuget_azure_feed_base_url"),
+    ("providers", "nuget_azure_pat_env"),
+    ("providers", "nuget_public_feed_base_url"),
+    ("providers", "nuget_relay_timeout_seconds"),
+)
+_NPM_AUDIT_FACADE_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "npm_audit_facade_audit_registry_url"),
+    ("providers", "npm_audit_facade_package_registry_url"),
+    ("providers", "npm_audit_facade_timeout_seconds"),
+)
+_LLM_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "model_provider_mode"),
+    ("providers", "openai_api_base_url"),
+    ("providers", "openai_api_key_env"),
+    ("providers", "openai_relay_timeout_seconds"),
+    ("providers", "local_openai_api_base_url"),
+    ("providers", "local_openai_api_key"),
+    ("providers", "local_openai_provider_name"),
+    ("providers", "azure_openai_endpoint"),
+    ("providers", "azure_openai_auth_mode"),
+    ("providers", "azure_openai_api_key_env"),
+    ("providers", "azure_openai_api_version"),
+    ("providers", "azure_openai_model_deployments"),
+    ("providers", "anthropic_api_base_url"),
+    ("providers", "anthropic_api_key_env"),
+    ("providers", "anthropic_api_version"),
+    ("providers", "anthropic_relay_timeout_seconds"),
+    ("providers", "openai_realtime_model"),
+    ("providers", "openai_realtime_api_key_env"),
+    ("providers", "openai_realtime_api_base_url"),
+    ("providers", "voice_media_controller_url"),
+    ("providers", "voice_media_controller_token_env"),
+    ("providers", "voice_media_controller_request_timeout_seconds"),
+)
+_SEMANTIC_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "semantic_store_provider"),
+    ("providers", "qdrant_base_url"),
+    ("providers", "qdrant_api_key_env"),
+    ("providers", "semantic_embedding_provider"),
+    ("providers", "semantic_embedding_model"),
+    ("providers", "semantic_embedding_dimensions"),
+    ("providers", "semantic_vector_distance"),
+)
+_PHONE_CALL_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "phone_call_backend"),
+    ("providers", "retell_api_base_url"),
+    ("providers", "retell_api_key_env"),
+    ("providers", "retell_from_number"),
+    ("providers", "retell_default_agent_id"),
+    ("providers", "retell_request_timeout_seconds"),
+    ("providers", "didww_sip_bridge_url"),
+    ("providers", "didww_sip_bridge_token_env"),
+    ("providers", "didww_from_number"),
+    ("providers", "inbound_phone_routes"),
+)
+_PROVIDER_STATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "provider_state"),
+)
+_VM_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("vm", "provider"),
+    ("vm", "provider_defaults"),
+    ("vm", "azure"),
+)
+_VM_LIBVIRT_TEMPLATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("vm", "libvirt_vm_default_template"),
+    ("vm", "libvirt_vm_templates"),
+)
+_VM_NETWORK_FIELDS: tuple[tuple[str, str], ...] = (
+    ("vm", "bind_network_cidr"),
+)
+_VM_GATEWAY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("vm", "gateway_url"),
+)
+_VM_HTTP_TARGET_RELAY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("vm", "http_target_relay_host"),
+    ("vm", "http_target_relay_port"),
+)
+_VM_NUGET_RELAY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("vm", "nuget_relay_host"),
+    ("vm", "nuget_relay_port"),
+)
+_VM_NPM_AUDIT_FACADE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("vm", "npm_audit_facade_host"),
+    ("vm", "npm_audit_facade_port"),
+)
+_VM_OPENAI_RELAY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("vm", "openai_relay_host"),
+    ("vm", "openai_relay_port"),
+)
+_ISSUE_SETUP_AGENT_DEFAULT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("issue_setup", "default_model"),
+    ("issue_setup", "post_exec_verification_prompt"),
+)
+_ISSUE_SETUP_GIT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("issue_setup", "git_host"),
+    ("issue_setup", "git_root"),
+    ("issue_setup", "git_ssh_alias"),
+    ("issue_setup", "git_user"),
+)
+_ISSUE_SETUP_GUEST_HEARTBEAT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("issue_setup", "enable_guest_heartbeat"),
+    ("issue_setup", "guest_heartbeat_prompt"),
+)
+_ISSUE_SETUP_AZURE_DEVOPS_FIELDS: tuple[tuple[str, str], ...] = (
+    ("issue_setup", "issue_setup_azure_devops_pr_pat_env"),
+)
+_ADO_WORKER_FILTER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("ado_worker", "ado_area_filters"),
+    ("ado_worker", "ado_team_filters"),
+)
+_ADO_WORKER_REPO_FIELDS: tuple[tuple[str, str], ...] = (
+    ("ado_worker", "ado_repo_source"),
+)
+_ADO_WORKER_AUTOMATION_FIELDS: tuple[tuple[str, str], ...] = (
+    ("ado_worker", "create_prs_as_draft"),
+    ("ado_worker", "create_prs_automatically"),
+)
+_AUTOMATION_CAPACITY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("automation", "approved_issue_cap"),
+)
+_AUTOMATION_ROLE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("automation", "originator_roles"),
+    ("automation", "prioritizer_roles"),
+    ("automation", "worker_roles"),
+)
+_PR_TEMPLATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("pr_template", "pr_template_markdown"),
 )
 _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
     "default_profile": "assistant capability profile",
@@ -169,99 +374,102 @@ _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
     ),
 }
 _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
-    "communications": (
+    "people_communications": (
+        ("contacts", "contacts"),
+        *_COMMUNICATION_TARGET_FIELDS,
+        *_APPROVAL_NOTIFICATION_POLICY_FIELDS,
         *_DISCORD_CONFIG_FIELDS,
         *_TEAMS_PROVIDER_CONFIG_FIELDS,
-        *_COMMUNICATION_TARGET_FIELDS,
+        *_EMAIL_PROVIDER_FIELDS,
+        *_EMAIL_POLICY_FIELDS,
+        *_PHONE_CALL_PROVIDER_FIELDS,
+        *_COMMUNICATION_FILE_POLICY_FIELDS,
+        *_COMMUNICATION_ARTIFACT_PROVIDER_FIELDS,
+    ),
+    "models_assistant_knowledge": (
+        *_LLM_PROVIDER_FIELDS,
         *_ASSISTANT_SETTINGS_FIELDS,
+        *_SEMANTIC_PROVIDER_FIELDS,
     ),
-    "access_policy": tuple(
-        ("policy", field_name)
-        for field_name in sorted(
-            DIRECTORY_CONFIG_DOMAIN_FIELDS["policy"]
-            - {name for source_domain, name in _DISCORD_CONFIG_FIELDS if source_domain == "policy"}
-        )
+    "agent_runtime_launch": (
+        *_AGENT_EXECUTION_PROVIDER_FIELDS,
+        *_CONTAINER_WORKER_PROVIDER_FIELDS,
+        *_AGENT_PROMPT_PROVIDER_FIELDS,
+        *_ISSUE_SETUP_AGENT_DEFAULT_FIELDS,
+        *_ISSUE_SETUP_GUEST_HEARTBEAT_FIELDS,
     ),
-    "providers": tuple(
-        ("providers", field_name)
-        for field_name in sorted(
-            DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"]
-            - {
-                name
-                for source_domain, name in (*_DISCORD_CONFIG_FIELDS, *_TEAMS_PROVIDER_CONFIG_FIELDS)
-                if source_domain == "providers"
-            }
-        )
+    "code_issues_prs": (
+        *_AZURE_DEVOPS_PROVIDER_FIELDS,
+        *_GITHUB_PROVIDER_FIELDS,
+        *_ADO_WORKER_FILTER_FIELDS,
+        *_ADO_WORKER_REPO_FIELDS,
+        *_ADO_WORKER_AUTOMATION_FIELDS,
+        *_ISSUE_SETUP_GIT_FIELDS,
+        *_ISSUE_SETUP_AZURE_DEVOPS_FIELDS,
+        *_PR_REPLY_POLICY_FIELDS,
+        *_PR_TEMPLATE_FIELDS,
     ),
-    "email": tuple(
-        ("email", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])
+    "access_approvals_audit": (
+        *_APPROVAL_REQUIRED_POLICY_FIELDS,
+        *_APPROVAL_TIMING_POLICY_FIELDS,
+        *_MCP_TOOL_POLICY_FIELDS,
+        *_TOOL_ARGUMENT_POLICY_FIELDS,
+        *_AUDIT_POLICY_FIELDS,
     ),
-    "contacts": (("contacts", "contacts"),),
-    "vm_runtime": tuple(
-        ("vm", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["vm"])
+    "network_relays_packages": (
+        *_VM_PROVIDER_FIELDS,
+        *_VM_LIBVIRT_TEMPLATE_FIELDS,
+        *_VM_NETWORK_FIELDS,
+        *_VM_GATEWAY_FIELDS,
+        *_VM_HTTP_TARGET_RELAY_FIELDS,
+        *_HTTP_TARGET_RELAY_PROVIDER_FIELDS,
+        *_VM_OPENAI_RELAY_FIELDS,
+        *_VM_NUGET_RELAY_FIELDS,
+        *_NUGET_PROVIDER_FIELDS,
+        *_VM_NPM_AUDIT_FACADE_FIELDS,
+        *_NPM_AUDIT_FACADE_PROVIDER_FIELDS,
     ),
-    "issue_setup": tuple(
-        ("issue_setup", field_name)
-        for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["issue_setup"])
+    "automation_assignment": (
+        *_AUTOMATION_CAPACITY_FIELDS,
+        *_AUTOMATION_ROLE_FIELDS,
     ),
-    "ado_worker": tuple(
-        ("ado_worker", field_name)
-        for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["ado_worker"])
-    ),
-    "automation": tuple(
-        ("automation", field_name)
-        for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["automation"])
-    ),
-    "pr_template": tuple(
-        ("pr_template", field_name)
-        for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["pr_template"])
+    "advanced_raw": (
+        *_PROVIDER_STATE_FIELDS,
     ),
 }
 _DIRECTORY_CONFIG_UI_TAB_TITLES: dict[str, str] = {
-    "communications": "Communications",
-    "access_policy": "Access Policy",
-    "providers": "Provider Integrations",
-    "email": "Email",
-    "contacts": "Contacts",
-    "vm_runtime": "VM Runtime",
-    "issue_setup": "Issue Setup",
-    "ado_worker": "ADO Worker",
-    "automation": "Automation",
-    "pr_template": "PR Template",
+    "people_communications": "People & Communications",
+    "models_assistant_knowledge": "Models, Assistant & Knowledge",
+    "agent_runtime_launch": "Agent Runtime & Launch",
+    "code_issues_prs": "Code, Issues & Pull Requests",
+    "access_approvals_audit": "Access, Approvals & Audit",
+    "network_relays_packages": "Network, Relays & Package Access",
+    "automation_assignment": "Automation & Assignment",
+    "advanced_raw": "Advanced & Raw",
 }
 _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
     str, tuple[tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]], ...]
 ] = {
-    "communications": (
+    "people_communications": (
+        ("Contacts", (("contacts", "contacts"),), ()),
+        ("Communication targets", _COMMUNICATION_TARGET_FIELDS, ()),
+        (
+            "Approval notification targets",
+            _APPROVAL_NOTIFICATION_POLICY_FIELDS,
+            (),
+        ),
         ("Discord", _DISCORD_CONFIG_FIELDS, ("discord_",)),
         ("Teams", _TEAMS_PROVIDER_CONFIG_FIELDS, ("teams_",)),
-        ("Communication targets", _COMMUNICATION_TARGET_FIELDS, ()),
-        ("Assistant", _ASSISTANT_SETTINGS_FIELDS, ()),
-    ),
-    "access_policy": (
+        ("Email mailboxes", _EMAIL_PROVIDER_FIELDS, ("email_",)),
         (
-            "Session defaults",
-            (
-                ("policy", "approval_ttl_seconds"),
-                ("policy", "default_session_ttl_seconds"),
-            ),
-            (),
-        ),
-        (
-            "Approval notifications",
-            (("policy", "approval_notification_target_ids"),),
-            (),
-        ),
-        (
-            "Email",
-            (
-                ("policy", "email_draft_domain_allowlist"),
-                ("policy", "email_draft_recipient_allowlist"),
-                ("policy", "email_folder_allowlist_by_mailbox"),
-                ("policy", "email_mailbox_allowlist"),
-                ("policy", "email_send_enabled"),
-            ),
+            "Email access and sending policy",
+            _EMAIL_POLICY_FIELDS,
             ("email_",),
+        ),
+        (
+            "Phone calls",
+            _PHONE_CALL_PROVIDER_FIELDS,
+            ("retell_", "didww_", "phone_call_backend"),
         ),
         (
             "Communication files",
@@ -269,280 +477,93 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ("communication_file_",),
         ),
         (
+            "Communication artifact links",
+            _COMMUNICATION_ARTIFACT_PROVIDER_FIELDS,
+            ("communication_artifact_",),
+        ),
+    ),
+    "models_assistant_knowledge": (
+        ("LLM providers", _LLM_PROVIDER_FIELDS, ("openai_", "voice_media_")),
+        ("Assistant", _ASSISTANT_SETTINGS_FIELDS, ()),
+        ("Semantic store", _SEMANTIC_PROVIDER_FIELDS, ("semantic_", "qdrant_")),
+    ),
+    "agent_runtime_launch": (
+        ("Agent execution", _AGENT_EXECUTION_PROVIDER_FIELDS, ()),
+        ("Container worker settings", _CONTAINER_WORKER_PROVIDER_FIELDS, ("container_worker_",)),
+        (
+            "Agent prompt",
+            _AGENT_PROMPT_PROVIDER_FIELDS,
+            ("agent_prompt_token_", "agent_prompt_queue_", "agent_context_retry_"),
+        ),
+        ("Agent defaults", _ISSUE_SETUP_AGENT_DEFAULT_FIELDS, ()),
+        ("Guest heartbeat", _ISSUE_SETUP_GUEST_HEARTBEAT_FIELDS, ("guest_",)),
+    ),
+    "code_issues_prs": (
+        ("Azure DevOps", _AZURE_DEVOPS_PROVIDER_FIELDS, ("azure_devops_",)),
+        ("GitHub", _GITHUB_PROVIDER_FIELDS, ("github_",)),
+        ("ADO worker filters", _ADO_WORKER_FILTER_FIELDS, ("ado_",)),
+        ("ADO worker repo metadata", _ADO_WORKER_REPO_FIELDS, ("ado_",)),
+        ("ADO PR automation", _ADO_WORKER_AUTOMATION_FIELDS, ("ado_",)),
+        ("Git transport", _ISSUE_SETUP_GIT_FIELDS, ("git_",)),
+        (
+            "Issue setup Azure DevOps",
+            _ISSUE_SETUP_AZURE_DEVOPS_FIELDS,
+            ("issue_setup_", "azure_devops_"),
+        ),
+        ("PR feedback approval", _PR_REPLY_POLICY_FIELDS, ()),
+        ("PR template", _PR_TEMPLATE_FIELDS, ()),
+    ),
+    "access_approvals_audit": (
+        (
+            "Approval requirements",
+            _APPROVAL_REQUIRED_POLICY_FIELDS,
+            (),
+        ),
+        (
             "MCP tool policy",
-            (("policy", "mcp_tool_policies"),),
+            _MCP_TOOL_POLICY_FIELDS,
             (),
         ),
         (
             "Tool argument policy",
-            (("policy", "tool_argument_policies"),),
+            _TOOL_ARGUMENT_POLICY_FIELDS,
             (),
         ),
-        ("PR feedback", (("policy", "pr_reply_require_approval"),), ()),
-        ("Audit", (("policy", "redacted_keys"),), ()),
+        (
+            "Approval timing",
+            _APPROVAL_TIMING_POLICY_FIELDS,
+            (),
+        ),
+        ("Audit redaction", _AUDIT_POLICY_FIELDS, ()),
     ),
-    "providers": (
-        (
-            "Agent prompt",
-            (
-                ("providers", "agent_prompt_token_secret_env"),
-                ("providers", "agent_prompt_token_ttl_seconds"),
-                ("providers", "agent_prompt_queue_max_retries"),
-                ("providers", "agent_context_retry_enabled"),
-                ("providers", "agent_context_retry_max_attempts"),
-                ("providers", "agent_context_retry_target_chars"),
-            ),
-            ("agent_prompt_token_", "agent_prompt_queue_", "agent_context_retry_"),
-        ),
-        (
-            "Azure DevOps",
-            (
-                ("providers", "azure_devops_organization_url"),
-                ("providers", "azure_devops_pat_env"),
-                ("providers", "azure_devops_pr_pat_env"),
-                ("providers", "azure_devops_project"),
-            ),
-            ("azure_devops_",),
-        ),
-        (
-            "Agent execution",
-            (
-                ("providers", "execution_backend"),
-            ),
-            (),
-        ),
-        (
-            "Container worker settings",
-            (
-                ("providers", "container_worker_base_url"),
-                ("providers", "container_worker_token_env"),
-                ("providers", "container_worker_default_image"),
-                ("providers", "container_worker_images"),
-                ("providers", "container_worker_job_timeout_seconds"),
-                ("providers", "container_worker_request_timeout_seconds"),
-                ("providers", "container_worker_workspace_persistence"),
-                ("providers", "container_worker_guest_openai_base_url"),
-                ("providers", "container_worker_guest_anthropic_base_url"),
-                ("providers", "container_worker_guest_gateway_url"),
-                ("providers", "container_worker_guest_http_target_relay_base_url"),
-                ("providers", "container_worker_guest_nuget_relay_base_url"),
-                ("providers", "container_worker_guest_pypi_index_url"),
-                ("providers", "container_worker_guest_npm_registry_url"),
-                ("providers", "container_worker_mssql_enabled"),
-                ("providers", "container_worker_mssql_host"),
-                ("providers", "container_worker_mssql_port"),
-            ),
-            ("container_worker_",),
-        ),
-        (
-            "Communication artifacts",
-            _COMMUNICATION_ARTIFACT_PROVIDER_FIELDS,
-            ("communication_artifact_",),
-        ),
-        ("GitHub", (("providers", "github_token_env"),), ("github_",)),
+    "network_relays_packages": (
+        ("VM provider", _VM_PROVIDER_FIELDS, ()),
+        ("Libvirt templates", _VM_LIBVIRT_TEMPLATE_FIELDS, ("libvirt_vm_",)),
+        ("Network", _VM_NETWORK_FIELDS, ()),
+        ("Gateway", _VM_GATEWAY_FIELDS, ()),
         (
             "HTTP target relay",
-            (("providers", "http_target_relay_timeout_seconds"),),
+            (*_VM_HTTP_TARGET_RELAY_FIELDS, *_HTTP_TARGET_RELAY_PROVIDER_FIELDS),
             ("http_target_relay_",),
         ),
+        ("OpenAI relay", _VM_OPENAI_RELAY_FIELDS, ("openai_relay_",)),
         (
             "NuGet",
-            (
-                ("providers", "nuget_azure_feed_base_url"),
-                ("providers", "nuget_azure_pat_env"),
-                ("providers", "nuget_public_feed_base_url"),
-                ("providers", "nuget_relay_timeout_seconds"),
-            ),
-            ("nuget_",),
+            (*_VM_NUGET_RELAY_FIELDS, *_NUGET_PROVIDER_FIELDS),
+            ("nuget_", "nuget_relay_"),
         ),
         (
             "NPM audit facade",
-            (
-                ("providers", "npm_audit_facade_audit_registry_url"),
-                ("providers", "npm_audit_facade_package_registry_url"),
-                ("providers", "npm_audit_facade_timeout_seconds"),
-            ),
+            (*_VM_NPM_AUDIT_FACADE_FIELDS, *_NPM_AUDIT_FACADE_PROVIDER_FIELDS),
             ("npm_audit_facade_",),
         ),
-        (
-            "LLM providers",
-            (
-                ("providers", "model_provider_mode"),
-                ("providers", "openai_api_base_url"),
-                ("providers", "openai_api_key_env"),
-                ("providers", "openai_relay_timeout_seconds"),
-                ("providers", "local_openai_api_base_url"),
-                ("providers", "local_openai_api_key"),
-                ("providers", "local_openai_provider_name"),
-                ("providers", "azure_openai_endpoint"),
-                ("providers", "azure_openai_auth_mode"),
-                ("providers", "azure_openai_api_key_env"),
-                ("providers", "azure_openai_api_version"),
-                ("providers", "azure_openai_model_deployments"),
-                ("providers", "anthropic_api_base_url"),
-                ("providers", "anthropic_api_key_env"),
-                ("providers", "anthropic_api_version"),
-                ("providers", "anthropic_relay_timeout_seconds"),
-                ("providers", "openai_realtime_model"),
-                ("providers", "openai_realtime_api_key_env"),
-                ("providers", "openai_realtime_api_base_url"),
-                ("providers", "voice_media_controller_url"),
-                ("providers", "voice_media_controller_token_env"),
-                ("providers", "voice_media_controller_request_timeout_seconds"),
-            ),
-            ("openai_", "voice_media_"),
-        ),
-        (
-            "Semantic store",
-            (
-                ("providers", "semantic_store_provider"),
-                ("providers", "qdrant_base_url"),
-                ("providers", "qdrant_api_key_env"),
-                ("providers", "semantic_embedding_provider"),
-                ("providers", "semantic_embedding_model"),
-                ("providers", "semantic_embedding_dimensions"),
-                ("providers", "semantic_vector_distance"),
-            ),
-            ("semantic_", "qdrant_"),
-        ),
-        (
-            "Phone calls",
-            (
-                ("providers", "phone_call_backend"),
-                ("providers", "retell_api_base_url"),
-                ("providers", "retell_api_key_env"),
-                ("providers", "retell_from_number"),
-                ("providers", "retell_default_agent_id"),
-                ("providers", "retell_request_timeout_seconds"),
-                ("providers", "didww_sip_bridge_url"),
-                ("providers", "didww_sip_bridge_token_env"),
-                ("providers", "didww_from_number"),
-                ("providers", "inbound_phone_routes"),
-            ),
-            ("retell_", "didww_", "phone_call_backend"),
-        ),
-        ("State", (("providers", "provider_state"),), ()),
     ),
-    "contacts": (
-        (
-            "Contact list",
-            (("contacts", "contacts"),),
-            (),
-        ),
+    "automation_assignment": (
+        ("Capacity", _AUTOMATION_CAPACITY_FIELDS, ()),
+        ("Roles", _AUTOMATION_ROLE_FIELDS, ()),
     ),
-    "email": (
-        (
-            "Mailboxes",
-            (
-                ("email", "email_mailboxes"),
-                ("email", "email_provider_timeout_seconds"),
-            ),
-            ("email_",),
-        ),
-    ),
-    "vm_runtime": (
-        ("Network", (("vm", "bind_network_cidr"),), ()),
-        ("Gateway", (("vm", "gateway_url"),), ()),
-        (
-            "HTTP target relay",
-            (
-                ("vm", "http_target_relay_host"),
-                ("vm", "http_target_relay_port"),
-            ),
-            ("http_target_relay_",),
-        ),
-        (
-            "NuGet relay",
-            (
-                ("vm", "nuget_relay_host"),
-                ("vm", "nuget_relay_port"),
-            ),
-            ("nuget_relay_",),
-        ),
-        (
-            "NPM audit facade",
-            (
-                ("vm", "npm_audit_facade_host"),
-                ("vm", "npm_audit_facade_port"),
-            ),
-            ("npm_audit_facade_",),
-        ),
-        (
-            "OpenAI relay",
-            (
-                ("vm", "openai_relay_host"),
-                ("vm", "openai_relay_port"),
-            ),
-            ("openai_relay_",),
-        ),
-    ),
-    "issue_setup": (
-        (
-            "Agent defaults",
-            (
-                ("issue_setup", "default_model"),
-                ("issue_setup", "post_exec_verification_prompt"),
-            ),
-            (),
-        ),
-        (
-            "Git transport",
-            (
-                ("issue_setup", "git_host"),
-                ("issue_setup", "git_root"),
-                ("issue_setup", "git_ssh_alias"),
-                ("issue_setup", "git_user"),
-            ),
-            ("git_",),
-        ),
-        (
-            "Guest heartbeat",
-            (
-                ("issue_setup", "enable_guest_heartbeat"),
-                ("issue_setup", "guest_heartbeat_prompt"),
-            ),
-            ("guest_",),
-        ),
-        (
-            "Azure DevOps",
-            (("issue_setup", "issue_setup_azure_devops_pr_pat_env"),),
-            ("issue_setup_", "azure_devops_"),
-        ),
-    ),
-    "ado_worker": (
-        (
-            "Filters",
-            (
-                ("ado_worker", "ado_area_filters"),
-                ("ado_worker", "ado_team_filters"),
-            ),
-            ("ado_",),
-        ),
-        (
-            "Repo metadata",
-            (("ado_worker", "ado_repo_source"),),
-            ("ado_",),
-        ),
-        (
-            "Automation",
-            (
-                ("ado_worker", "create_prs_as_draft"),
-                ("ado_worker", "create_prs_automatically"),
-            ),
-            ("ado_",),
-        ),
-    ),
-    "automation": (
-        ("Capacity", (("automation", "approved_issue_cap"),), ()),
-        (
-            "Roles",
-            (
-                ("automation", "originator_roles"),
-                ("automation", "prioritizer_roles"),
-                ("automation", "worker_roles"),
-            ),
-            (),
-        ),
+    "advanced_raw": (
+        ("Provider state", _PROVIDER_STATE_FIELDS, ()),
     ),
 }
 _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS: tuple[str, ...] = (
@@ -851,27 +872,40 @@ def _directory_tab_underlying_domains(tab_key: str) -> tuple[str, ...]:
 
 
 def _directory_tab_help_text(tab_key: str) -> str | None:
-    if tab_key == "communications":
-        return "Messaging integrations for Discord and Teams, including routing, read reactions, and wake prompts."
-    if tab_key == "access_policy":
+    if tab_key == "people_communications":
         return (
-            "Directory-level guardrails for approvals, approval notifications, "
-            "recipients, mailboxes, communication files, tool arguments, and audit redaction defaults."
+            "Contacts, messaging targets, Teams and Discord, email, phone calls, "
+            "notifications, and communication file controls."
         )
-    if tab_key == "contacts":
-        return "Directory contacts available to host-side communication integrations."
-    if tab_key == "vm_runtime":
-        return "VM network and relay endpoint settings used when launching and wiring guest runtime access."
-    if tab_key == "automation":
+    if tab_key == "models_assistant_knowledge":
+        return (
+            "Model routing, Assistant behavior, pricing estimates, semantic store, "
+            "and embedding settings."
+        )
+    if tab_key == "agent_runtime_launch":
+        return (
+            "Execution backend, container worker runtime, prompt delivery, launch defaults, "
+            "and guest heartbeat behavior."
+        )
+    if tab_key == "code_issues_prs":
+        return (
+            "Git transport, Azure DevOps, GitHub, ADO worker filters, PR automation, "
+            "and pull request templates."
+        )
+    if tab_key == "access_approvals_audit":
+        return (
+            "Core approval timing, MCP tool guardrails, tool argument policy, and audit redaction."
+        )
+    if tab_key == "network_relays_packages":
+        return (
+            "Host and guest network endpoints, relays, NuGet feeds, and npm audit facade settings."
+        )
+    if tab_key == "automation_assignment":
         return (
             "Role and capacity controls that govern automated issue intake and worker assignment."
         )
-    if tab_key == "issue_setup":
-        return "Repository bootstrap and post-execution defaults applied during issue VM setup."
-    if tab_key == "ado_worker":
-        return "ADO ingestion filters, repo metadata, and PR automation flags."
-    if tab_key == "pr_template":
-        return "Default markdown scaffold prepended to automated pull request descriptions."
+    if tab_key == "advanced_raw":
+        return "Advanced provider-specific JSON state and support diagnostics."
     return None
 
 
@@ -950,7 +984,7 @@ def _directory_config_field_metadata(
         "options": list(options),
         "scope": "global" if source_domain == _ASSISTANT_SETTINGS_DOMAIN else "directory",
         "root_starts_editable": (
-            (tab_key == "pr_template" and field_name == "pr_template_markdown")
+            (source_domain == "pr_template" and field_name == "pr_template_markdown")
             or (source_domain == COMMUNICATION_TARGETS_DOMAIN and field_name == "targets")
         ),
         "tooltip": _directory_config_field_tooltip(
@@ -1227,14 +1261,6 @@ def _split_tab_payload(
         for source_domain, field_name in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]
     }
     payloads_by_source: dict[str, dict[str, Any]] = {}
-    if not config:
-        payloads_by_source.update(
-            {
-                source_domain: {}
-                for source_domain in _directory_tab_underlying_domains(tab_key)
-                if source_domain != _ASSISTANT_SETTINGS_DOMAIN
-            }
-        )
     for field_name, value in config.items():
         source_domain = field_sources.get(field_name)
         if source_domain is None:
@@ -1257,6 +1283,66 @@ def _tab_fields_by_source_domain(tab_key: str) -> dict[str, set[str]]:
     for source_domain, field_name in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]:
         fields_by_source.setdefault(source_domain, set()).add(field_name)
     return fields_by_source
+
+
+def _restore_tab_source_payloads(
+    service: AdminRuntimeComponents,
+    directory_path: str,
+    domain_snapshots: dict[str, dict[str, Any]],
+    source_domains: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    rollback_errors: list[dict[str, Any]] = []
+    for source_domain in reversed(source_domains):
+        snapshot = domain_snapshots[source_domain]
+        raw = snapshot["raw"]
+        try:
+            if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
+                path = service.operations_admin.assistant_settings_path()
+                if raw["exists"]:
+                    service.operations_admin.write_assistant_settings(dict(raw["config"]))
+                elif path.exists():
+                    path.unlink()
+                continue
+
+            restore_payload = dict(raw["config"]) if raw["exists"] else {}
+            result = service.operations_admin.write_directory_domain_config(
+                directory_path,
+                source_domain,
+                restore_payload,
+            )
+            if not result.ok:
+                rollback_errors.append(
+                    {
+                        "source_domain": source_domain,
+                        "write_result": _normalize_admin_result(result),
+                    }
+                )
+        except Exception as exc:
+            rollback_errors.append({"source_domain": source_domain, "error": str(exc)})
+    return rollback_errors
+
+
+def _tab_source_write_error_response(
+    *,
+    source_domain: str,
+    rollback_errors: list[dict[str, Any]],
+    write_result: dict[str, Any] | None = None,
+    message: str | None = None,
+) -> JSONResponse:
+    payload: dict[str, Any] = {
+        "write_result": write_result
+        or {
+            "ok": False,
+            "data": None,
+            "errors": [{"code": "validation_error", "message": message or "write failed"}],
+            "validation_diagnostics": [],
+        },
+        "source_domain": source_domain,
+        "tab_snapshot": None,
+    }
+    if rollback_errors:
+        payload["rollback_errors"] = rollback_errors
+    return JSONResponse(payload, status_code=400)
 
 
 def worker_config_routes(
@@ -1397,7 +1483,12 @@ def worker_config_routes(
         return JSONResponse(service.model_usage_admin.read_model_pricing_catalog_status())
 
     async def put_model_pricing_catalog(request: Request) -> JSONResponse:
-        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+        if not request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
             return _error_response("Privileged operations are locked.", status_code=403)
         try:
             payload = await _json_body(request)
@@ -1481,12 +1572,14 @@ def worker_config_routes(
                             "tab_snapshot": current_tab_snapshot,
                         },
                     )
+                merged_payloads_by_source: dict[str, dict[str, Any]] = {}
                 for source_domain, source_payload in payloads_by_source.items():
                     if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
                         if not request_has_privileged_operations(
                             auth=auth,
                             service=service,
                             request=request,
+                            required_permission=ADMIN_OWNER_PERMISSION,
                         ):
                             return _error_response(
                                 "Privileged operations are locked.", status_code=403
@@ -1494,10 +1587,7 @@ def worker_config_routes(
                         existing_settings = domain_snapshots[source_domain]["raw"]["config"]
                         merged_settings = dict(existing_settings)
                         merged_settings.update(source_payload)
-                        try:
-                            service.operations_admin.write_assistant_settings(merged_settings)
-                        except Exception as exc:
-                            return _error_response(str(exc), status_code=400)
+                        merged_payloads_by_source[source_domain] = merged_settings
                         continue
                     existing_config = dict(domain_snapshots[source_domain]["raw"]["config"])
                     merged_payload = {
@@ -1506,17 +1596,40 @@ def worker_config_routes(
                         if field_name not in tab_fields_by_source[source_domain]
                     }
                     merged_payload.update(source_payload)
+                    merged_payloads_by_source[source_domain] = merged_payload
+
+                touched_source_domains = tuple(merged_payloads_by_source)
+                for source_domain, merged_payload in merged_payloads_by_source.items():
+                    if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
+                        try:
+                            service.operations_admin.write_assistant_settings(merged_payload)
+                        except Exception as exc:
+                            rollback_errors = _restore_tab_source_payloads(
+                                service,
+                                directory_path,
+                                domain_snapshots,
+                                touched_source_domains,
+                            )
+                            return _tab_source_write_error_response(
+                                source_domain=source_domain,
+                                message=str(exc),
+                                rollback_errors=rollback_errors,
+                            )
+                        continue
                     result = service.operations_admin.write_directory_domain_config(
                         directory_path, source_domain, merged_payload
                     )
                     if not result.ok:
-                        return JSONResponse(
-                            {
-                                "write_result": _normalize_admin_result(result),
-                                "source_domain": source_domain,
-                                "tab_snapshot": None,
-                            },
-                            status_code=400,
+                        rollback_errors = _restore_tab_source_payloads(
+                            service,
+                            directory_path,
+                            domain_snapshots,
+                            touched_source_domains,
+                        )
+                        return _tab_source_write_error_response(
+                            source_domain=source_domain,
+                            write_result=_normalize_admin_result(result),
+                            rollback_errors=rollback_errors,
                         )
                 refreshed_domain_snapshots = {
                     source_domain: _domain_snapshot(service, directory_path, source_domain)

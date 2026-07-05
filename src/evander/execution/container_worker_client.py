@@ -172,8 +172,11 @@ class ContainerWorkerClient:
         response = self._request("DELETE", f"/v1/sessions/{session_id}")
         return self._json_dict(response, operation="delete session")
 
-    def telemetry(self) -> WorkerTelemetryPayload:
-        response = self._request("GET", "/v1/telemetry")
+    def telemetry(self, *, refresh: bool = False) -> WorkerTelemetryPayload:
+        kwargs: dict[str, Any] = {}
+        if refresh:
+            kwargs["params"] = {"refresh": "1"}
+        response = self._request("GET", "/v1/telemetry", **kwargs)
         return WorkerTelemetryPayload.model_validate(
             self._json_dict(response, operation="telemetry")
         )

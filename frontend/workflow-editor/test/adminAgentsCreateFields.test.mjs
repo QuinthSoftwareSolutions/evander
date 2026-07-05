@@ -2,10 +2,19 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const page = readFileSync(
+const agentsPage = readFileSync(
   new URL("../src/features/agents/AgentsPage.tsx", import.meta.url),
   "utf8",
 );
+const agentCreateDialog = readFileSync(
+  new URL("../src/features/agents/AgentCreateDialog.tsx", import.meta.url),
+  "utf8",
+);
+const agentCreateShared = readFileSync(
+  new URL("../src/features/agents/agentCreateShared.ts", import.meta.url),
+  "utf8",
+);
+const page = [agentsPage, agentCreateDialog, agentCreateShared].join("\n");
 const types = readFileSync(
   new URL("../src/features/admin/types.ts", import.meta.url),
   "utf8",
@@ -15,51 +24,60 @@ const styles = readFileSync(
   "utf8",
 );
 
-function sourceBetween(startMarker, endMarker) {
-  const start = page.indexOf(startMarker);
-  const end = page.indexOf(endMarker);
+function sourceBetweenIn(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
   assert.notEqual(start, -1, `start marker not found: ${startMarker}`);
+  const end = source.indexOf(endMarker, start + startMarker.length);
   assert.notEqual(end, -1, `end marker not found: ${endMarker}`);
   assert.ok(end > start, `end marker must follow start marker: ${endMarker}`);
-  return page.slice(start, end);
+  return source.slice(start, end);
+}
+
+function sourceBetween(startMarker, endMarker) {
+  return sourceBetweenIn(page, startMarker, endMarker);
 }
 
 function createModalSource() {
-  return sourceBetween("{showCreateForm ? (", "{showEditForm && selectedAgent ? (");
+  return agentCreateDialog;
 }
 
 function buildCreatePayloadSource() {
-  return sourceBetween(
+  return sourceBetweenIn(
+    agentCreateShared,
     "function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): AgentCreateRequest {",
-    "function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {",
+    "export function agentCreateTargetLabel(form: AgentCreateFormState): string {",
   );
 }
 
 function parseDurationSecondsSource() {
-  return sourceBetween(
+  return sourceBetweenIn(
+    agentCreateShared,
     "function parseDurationSeconds(value: string): number | null {",
-    "type AgentListLoadOptions = {",
+    "export function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): AgentCreateRequest {",
   );
 }
 
-function handleCreateAgentSource() {
-  return sourceBetween(
-    "function handleCreateAgent() {",
-    "function openEditForm() {",
+function handleCreateSubmitSource() {
+  return sourceBetweenIn(
+    agentCreateDialog,
+    "async function handleSubmit() {",
+    "return (",
   );
 }
 
 function finishCreateAgentSource() {
-  return sourceBetween(
+  return sourceBetweenIn(
+    agentsPage,
     "async function finishCreateAgent(createPayload: AgentCreateRequest) {",
     "function scheduleCreateAgent(createPayload: AgentCreateRequest) {",
   );
 }
 
 function scheduleCreateAgentSource() {
-  return sourceBetween(
+  return sourceBetweenIn(
+    agentsPage,
     "function scheduleCreateAgent(createPayload: AgentCreateRequest) {",
-    "function handleCreateAgent() {",
+    "function handleCreateAgentSubmit(createPayload: AgentCreateRequest, meta: AgentCreateSubmitMeta) {",
   );
 }
 
@@ -100,6 +118,11 @@ test("buildCreatePayload gates provider and image fields by backend", () => {
   assert.match(source, /if \(modelProviderMode\) payload\.model_provider_mode = modelProviderMode;/);
   // model is emitted for both backends, but only when set.
   assert.match(source, /const model = optionalText\(form\.model\);\s*if \(model\) payload\.model = model;/);
+  // Seed/bootstrap capabilities are valid for both VM and container worker sessions.
+  assert.match(
+    source,
+    /payload\.dotnet = form\.dotnet;\s*payload\.nuget = form\.nuget;\s*payload\.playwright = form\.playwright;\s*if \(form\.backend === "libvirt_vm"\)/,
+  );
   // vm_image is emitted only inside the libvirt branch (before the `else`),
   // and container_image only in the container branch (after the `else`).
   assert.match(
@@ -137,31 +160,34 @@ test("buildCreatePayload gates provider and image fields by backend", () => {
 
 test("create modal loads create-options for the selected directory", () => {
   assert.match(page, /\/api\/admin\/agents\/create-options/);
-  assert.match(page, /loadAgentCreateOptions\(selectedDirectoryPath\)/);
+  assert.match(agentsPage, /directoryPath=\{selectedDirectoryPath\}/);
+  assert.match(agentCreateDialog, /loadAgentCreateOptions\(directoryPath\)/);
   assert.match(page, /setCreateOptions\(options\)/);
 });
 
 test("create modal always posts the selected page directory", () => {
-  assert.doesNotMatch(page, /directoryPath: string;/);
-  assert.doesNotMatch(page, /createForm\.directoryPath/);
-  assert.doesNotMatch(page, /<span>Directory<\/span>/);
+  assert.match(agentCreateDialog, /directoryPath: string;/);
+  assert.doesNotMatch(agentCreateShared, /createForm\.directoryPath/);
+  assert.doesNotMatch(agentCreateDialog, /<span>Directory<\/span>/);
   assert.match(page, /function buildCreatePayload\(form: AgentCreateFormState, directoryPath: string\)/);
   assert.match(page, /directory_path: optionalText\(directoryPath\)/);
-  assert.match(page, /buildCreatePayload\(submittedForm, selectedDirectoryPath\)/);
+  assert.match(agentsPage, /directoryPath=\{selectedDirectoryPath\}/);
+  assert.match(agentCreateDialog, /buildCreatePayload\(submittedForm, directoryPath\)/);
 });
 
-test("create submit dismisses the modal before waiting for agent creation", () => {
-  const source = handleCreateAgentSource();
-  const closeIndex = source.indexOf("setShowCreateForm(false);");
-  const scheduleIndex = source.indexOf("scheduleCreateAgent(createPayload);");
+test("create submit hands off creation and closes after synchronous scheduling", () => {
+  const source = handleCreateSubmitSource();
+  const createIndex = source.indexOf("const createPayload = buildCreatePayload(submittedForm, directoryPath);");
+  const submitIndex = source.indexOf("await onCreate(createPayload, { form: submittedForm, targetLabel });");
+  const closeIndex = source.indexOf("if (closeOnSuccess) onClose();");
 
-  assert.notEqual(closeIndex, -1, "create handler should close the modal");
-  assert.notEqual(scheduleIndex, -1, "create handler should schedule the create request");
-  assert.ok(closeIndex < scheduleIndex, "create modal must close before the long-running create request is scheduled");
-  assert.match(source, /const createPayload = buildCreatePayload\(submittedForm, selectedDirectoryPath\);/);
-  assert.match(source, /setCreateSubmitting\(true\);/);
-  assert.match(source, /setStatus\(`Queueing create for \$\{targetLabel\}\.\.\.`\);/);
-  assert.doesNotMatch(source, /setInlineValidation\(message\);/);
+  assert.notEqual(createIndex, -1, "create modal should build the create payload");
+  assert.notEqual(submitIndex, -1, "create modal should hand off to the page submit callback");
+  assert.notEqual(closeIndex, -1, "create modal should close on successful handoff");
+  assert.ok(createIndex < submitIndex, "create payload must be built before submit callback");
+  assert.ok(submitIndex < closeIndex, "modal should close after submit callback returns");
+  assert.match(agentsPage, /scheduleCreateAgent\(createPayload\);/);
+  assert.match(agentsPage, /setStatus\(`Queueing create for \$\{meta\.targetLabel\}\.\.\.`\);/);
   assert.doesNotMatch(source, /fetchJson<AgentActionResponse>/);
 });
 
@@ -186,15 +212,15 @@ test("create submission uses async operations instead of synchronous setup", () 
 
 test("provider options are filtered by execution_backends against the selected backend", () => {
   assert.match(
-    page,
-    /createProviderOptions = \(createOptions\?\.agent_providers \?\? \[\]\)\.filter\(\(option\) =>\s*option\.execution_backends\.includes\(createForm\.backend\),?\s*\)/,
+    agentCreateDialog,
+    /createProviderOptions = useMemo\(\s*\(\) => \(createOptions\?\.agent_providers \?\? \[\]\)\.filter\(\(option\) =>\s*option\.execution_backends\.includes\(createForm\.backend\),?\s*\)/,
   );
   // Switching backend must drop a now-illegal provider (e.g. copilot on container).
   assert.match(
-    page,
-    /const nextAgentProvider =[\s\S]*?current\.agentProvider && stillValid \? current\.agentProvider : ""[\s\S]*?agentProvider: nextAgentProvider,/,
+    agentCreateDialog,
+    /const nextAgentProvider =[\s\S]*?form\.agentProvider && stillValid \? form\.agentProvider : ""[\s\S]*?agentProvider: nextAgentProvider,/,
   );
-  assert.match(page, /nextAgentProvider && nextAgentProvider !== "codex"[\s\S]*?\? ""[\s\S]*?: current\.modelProviderMode/);
+  assert.match(agentCreateDialog, /nextAgentProvider && nextAgentProvider !== "codex"[\s\S]*?\? ""[\s\S]*?: form\.modelProviderMode/);
 });
 
 test("VM image select lives in the libvirt block; container image select in the container block", () => {
@@ -222,6 +248,7 @@ test("create modal exposes model override and structured initial policy controls
     "Allowed tools",
     "Allowed scripts",
     "Communication targets",
+    "Capabilities",
     "Web search",
     "Model",
     "Model relay",
@@ -230,8 +257,8 @@ test("create modal exposes model override and structured initial policy controls
     assert.match(createModal, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(createModal, /StringMapEditor/);
-  assert.match(createModal, /OptionMultiSelectEditor/);
   assert.match(createModal, /StringListEditor/);
+  assert.match(createModal, /CommunicationTargetCheckboxTable/);
   for (const label of [
     "Discord channels or targets",
     "Teams targets",
@@ -246,6 +273,33 @@ test("create modal exposes model override and structured initial policy controls
   ]) {
     assert.doesNotMatch(createModal, new RegExp(`>${label}<`));
   }
+});
+
+test("create modal groups create capabilities and communication targets", () => {
+  const createModal = createModalSource();
+  assert.match(createModal, /<fieldset className="agent-capability-group">/);
+  assert.match(createModal, /className="agent-capability-grid"/);
+  for (const label of [".NET", "NuGet", "MSSQL", "Playwright", "Web search"]) {
+    assert.match(createModal, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(createModal, /checked=\{createForm\.dotnet\}/);
+  assert.match(createModal, /checked=\{createForm\.nuget\}/);
+  assert.match(createModal, /checked=\{createForm\.playwright\}/);
+  assert.match(createModal, /\{createForm\.backend === "libvirt_vm" \? \(/);
+  assert.match(createModal, /checked=\{createForm\.initialPolicy\.webSearchEnabled\}/);
+  assert.match(createModal, /\{createForm\.backend === "libvirt_vm" && createForm\.mssql \? \(/);
+  assert.match(createModal, /className="agent-capability-detail-row"/);
+  assert.match(createModal, /className="field-stack agent-capability-mssql-root"/);
+  assert.doesNotMatch(createModal, /disabled=\{!createForm\.mssql\}/);
+  assert.doesNotMatch(createModal, /agent-policy-toggle-row/);
+  assert.match(createModal, /className="field-stack wide-field agent-communication-targets-field"/);
+  assert.match(createModal, /<table className="agent-communication-target-table">/);
+  for (const heading of ["Select", "Target", "Provider", "Shape", "Capabilities"]) {
+    assert.match(createModal, new RegExp(`>${heading}<`));
+  }
+  assert.match(styles, /\.agent-capability-group \{/);
+  assert.match(styles, /\.agent-capability-detail-row \{/);
+  assert.match(styles, /\.agent-communication-target-table \{/);
 });
 
 test("create modal label rows rely on tooltip help instead of a visible helper", () => {
@@ -297,8 +351,10 @@ test("admin tooltips render above modal layers", () => {
 
 test("the create modal never reintroduces upsert semantics", () => {
   // No upsert / existing-session controls belong in the direct-create modal.
-  assert.doesNotMatch(page, /existing_agent_behavior/);
-  assert.doesNotMatch(page, /allow_existing_session/);
+  assert.doesNotMatch(agentCreateDialog, /existing_agent_behavior/);
+  assert.doesNotMatch(agentCreateDialog, /allow_existing_session/);
+  assert.doesNotMatch(agentCreateShared, /existing_agent_behavior/);
+  assert.doesNotMatch(agentCreateShared, /allow_existing_session/);
 });
 
 test("request and options types expose the new create fields", () => {

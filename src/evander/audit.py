@@ -25,18 +25,32 @@ class AuditLogger:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.touch(exist_ok=True)
+        if not self.path.exists():
+            self.path.touch()
         self._index = ToolCallAuditIndex.for_audit_log(self.path)
 
     def log(self, event: AuditEvent) -> None:
         payload = event.model_dump(mode="json")
+        try:
+            previous_stat = self.path.stat()
+            previous_size_bytes = previous_stat.st_size
+            previous_mtime_ns = previous_stat.st_mtime_ns
+        except OSError:
+            previous_size_bytes = None
+            previous_mtime_ns = None
+        appended_offset_bytes: int | None = None
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, sort_keys=True))
             handle.write("\n")
-        if str(payload.get("event_type") or "").strip().casefold() != "tool_call":
-            return
+            appended_offset_bytes = handle.tell()
         try:
-            self._index.index_payload(payload)
+            self._index.index_appended_payload(
+                payload,
+                self.path,
+                previous_size_bytes=previous_size_bytes,
+                previous_mtime_ns=previous_mtime_ns,
+                appended_offset_bytes=appended_offset_bytes,
+            )
         except Exception:
             pass
 

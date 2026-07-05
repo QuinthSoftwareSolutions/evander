@@ -1029,6 +1029,38 @@ def test_team_addon_state_payload_filters_chats_without_read_all(
     )
 
 
+def test_team_addon_state_payload_windows_history_but_keeps_current_records(
+    tmp_path: Path,
+) -> None:
+    _repo, _conversation_id = _seed_long_chat_history(
+        tmp_path / "runtime",
+        message_count=125,
+    )
+    client = _client(tmp_path)
+
+    response = client.get("/api/addons/team-addon/state?history_limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["conversation_messages_total_count"] == 125
+    assert payload["conversation_messages_returned_count"] == 1
+    assert payload["conversation_messages_windowed"] is True
+    assert set(payload["conversation_messages"]) == {"msg-124"}
+    assert payload["inbox_total_count"] == 2
+    assert payload["inbox_returned_count"] == 2
+    assert payload["inbox_windowed"] is False
+    assert set(payload["inbox"]) == {"inbox-1", "escalation-1"}
+    assert set(payload["action_records"]) == {"action-1"}
+    assert set(payload["release_packages"]) == {"release-1"}
+    assert set(payload["git_promotions"]) == {"promotion-1"}
+    assert set(payload["ephemeral_assignments"]) == {
+        "ephemeral-cleanup",
+        "ephemeral-failed",
+    }
+    assert set(payload["resource_tokens"]["inbox"]) == {"inbox-1", "escalation-1"}
+    assert set(payload["resource_tokens"]["action_records"]) == {"action-1"}
+
+
 def test_team_addon_filtered_state_treats_git_work_contexts_as_collection() -> None:
     payload = {
         "revision": 1,
@@ -1235,6 +1267,34 @@ def test_team_addon_state_stream_emits_updated_snapshots(tmp_path: Path) -> None
     assert second_event.startswith("event: snapshot\n")
     assert second_payload["revision"] > first_payload["revision"]
     assert "live-task" in second_payload["tasks"]
+
+
+def test_team_addon_revision_state_stream_keeps_alive_when_revision_unchanged(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def read_two_events() -> tuple[str, str]:
+        stream = _state_snapshot_events(
+            lambda: team_addon_api._state_revision_payload(repo.read()),
+            RequestStub(),  # type: ignore[arg-type]
+            poll_interval_seconds=0,
+        )
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=1.0)
+            second = await asyncio.wait_for(anext(stream), timeout=1.0)
+            return first, second
+        finally:
+            await stream.aclose()
+
+    first_event, second_event = asyncio.run(read_two_events())
+
+    assert first_event.startswith("event: snapshot\n")
+    assert second_event == ": keepalive\n\n"
 
 
 def test_agent_voice_session_create_query_and_end(
@@ -1611,6 +1671,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
         "derived": True,
         "audit_log": False,
         "timestampless_count": 0,
+        "total_count": 0,
+        "limit": 50,
+        "offset": 0,
+        "has_more": False,
         "entries": [],
         "source": "derived_from_current_team_state",
         "description": "Derived timeline from the current TeamState snapshot.",
@@ -1716,7 +1780,12 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
-    assert "teamFetch(`${API_BASE}/costs`" in script.text
+    assert "teamFetch(`${API_BASE}/costs?backfill=false`" in script.text
+    assert "teamFetch(`${API_BASE}/costs/backfill`" in script.text
+    assert "data-cost-backfill-refresh" in script.text
+    assert 'guardTeamMutation("refresh transcript costs")' in script.text
+    assert '["[data-cost-backfill-refresh]", "refresh transcript costs"]' in script.text
+    assert 'lockedAttrs("refresh transcript costs")' in script.text
     assert "renderTeamCostCounter" in script.text
     assert "renderTeamCostBlockedNotice" in script.text
     assert "Blocked: estimated cost cap reached" in script.text
@@ -1754,6 +1823,15 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "ensureStateStream" in script.text
     assert "/state/stream" in script.text
     assert "applyStateSnapshot" in script.text
+    assert "timelineSearchParams" in script.text
+    assert 'search.set("limit", String(timelinePageSize))' in script.text
+    assert "reloadActiveTeamView({ preserveForms: true })" in script.text
+    assert "invalidateLoadedTeamViews();" in script.text
+    assert "function refetchTimelineAfterPageClamp" in script.text
+    assert "void loadTimeline();" in script.text
+    assert "teamViewCacheGeneration += 1" in script.text
+    assert "loadedTeamViews.clear()" in script.text
+    assert "loadView(activeTeamView, { force: true, preserveForms: true })" in script.text
     assert "restoreFormDrafts(drafts)" in script.text
     assert "chatReadMarkers" in script.text
     assert "chatConversationHasUnread" in script.text
@@ -1805,6 +1883,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     agent_create_script = enabled.get("/addons/team-addon/team-agent-create.js")
     assert agent_create_script.status_code == 200
     assert "team-agent-create:created" in agent_create_script.text
+    assert "admin-privileged-operations" in agent_create_script.text
     assert "Create and register agent" in agent_create_script.text
 
     agent_create_stylesheet = enabled.get("/addons/team-addon/team-agent-create.css")
@@ -2116,6 +2195,57 @@ def test_team_addon_admin_api_runtime_operations_use_admin_web_addon_service_ada
     assert backend_health["agent_latest_execution_id"] == "exec-backend"
 
 
+def test_team_addon_view_payload_avoids_agent_execution_inventory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+    )
+    service = build_admin_runtime(_write_config(tmp_path, enable_team_addon=True))
+
+    def fail_agent_inventory(self, **_kwargs):
+        del self
+        raise AssertionError("scoped Team views must not list every agent execution")
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_agents",
+        MethodType(fail_agent_inventory, service.vm_agent_admin),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/addons/team-addon/views/people")
+
+    assert response.status_code == 200
+    state = response.json()["data"]["state"]
+    session_health = {
+        row["agent_id"]: row for row in state["runtime_operations"]["session_health"]
+    }
+    assert session_health["backend"]["session_present"] is True
+    assert session_health["backend"]["status"] == "active"
+    assert "agent_execution_status" not in session_health["backend"]
+
+
+def test_team_addon_state_stream_payload_is_revision_scoped(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    payload = team_addon_api._state_revision_payload(repo.read())
+
+    assert payload["response_scope"] == "revision"
+    assert payload["revision"] == repo.read().revision
+    assert "teams" not in payload
+    assert "runtime_operations" not in payload
+
+
 def test_team_addon_admin_api_costs_smoke(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     _seed_runtime_operations_state(runtime_dir)
@@ -2150,6 +2280,103 @@ def test_team_addon_admin_api_costs_smoke(tmp_path: Path) -> None:
     assert payload["team_costs"]["team"]["events_count"] == 1
     assert payload["project_costs"]["project"]["events_count"] == 1
     assert payload["project_costs"]["project"]["estimated_cost"] is not None
+
+
+def test_team_addon_admin_api_costs_default_skips_backfill_and_uses_threadpool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    cost_calls: list[bool] = []
+    threadpool_calls: list[dict[str, object]] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append({"func": getattr(func, "__name__", ""), "kwargs": dict(kwargs)})
+        return func(*args, **kwargs)
+
+    def fake_costs_payload(self, *, backfill_transcripts: bool = False):
+        cost_calls.append(backfill_transcripts)
+        return {
+            "generated_at": "2026-06-16T12:00:00+00:00",
+            "coverage_status": "complete",
+            "coverage_reasons": [],
+            "team_costs": {},
+            "governance_group_costs": {},
+            "project_costs": {},
+            "unattributed_costs": None,
+            "source_counts": {},
+            "events_count": 0,
+            "priced_events_count": 0,
+            "unpriced_events_count": 0,
+        }
+
+    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
+    client = _client(tmp_path)
+
+    response = client.get("/api/addons/team-addon/costs")
+
+    assert response.status_code == 200
+    assert cost_calls == [False]
+    assert threadpool_calls == [
+        {"func": "_team_costs_payload", "kwargs": {"backfill_transcripts": False}}
+    ]
+    assert "backfill" not in response.json()
+
+
+def test_team_addon_admin_api_costs_backfill_endpoint_runs_backfill_in_threadpool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    cost_calls: list[bool] = []
+    threadpool_calls: list[dict[str, object]] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append({"func": getattr(func, "__name__", ""), "kwargs": dict(kwargs)})
+        return func(*args, **kwargs)
+
+    def fake_costs_payload(self, *, backfill_transcripts: bool = False):
+        cost_calls.append(backfill_transcripts)
+        return {
+            "generated_at": "2026-06-16T12:00:00+00:00",
+            "coverage_status": "complete",
+            "coverage_reasons": [],
+            "team_costs": {},
+            "governance_group_costs": {},
+            "project_costs": {},
+            "unattributed_costs": None,
+            "source_counts": {},
+            "events_count": 0,
+            "priced_events_count": 0,
+            "unpriced_events_count": 0,
+            "backfill": {
+                "coverage_status": "complete",
+                "sources_checked": 0,
+                "sources_missing": 0,
+                "files_scanned": 0,
+                "records_seen": 0,
+                "records_imported": 0,
+                "duplicate_records": 0,
+                "records_skipped": 0,
+                "errors": [],
+            },
+        }
+
+    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
+    client = _client(tmp_path)
+
+    response = client.post("/api/addons/team-addon/costs/backfill")
+
+    assert response.status_code == 200
+    assert cost_calls == [True]
+    assert threadpool_calls == [
+        {"func": "_team_costs_payload", "kwargs": {"backfill_transcripts": True}}
+    ]
+    assert response.json()["backfill"]["coverage_status"] == "complete"
 
 
 def test_team_addon_admin_api_dismisses_failed_action_attention(tmp_path: Path) -> None:
@@ -2294,6 +2521,31 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
     }
     assert all(entry["status"] == "accepted" for entry in payload["entries"])
     assert all(entry["attention_needed"] is False for entry in payload["entries"])
+
+    windowed = client.get(
+        "/api/addons/team-addon/timeline",
+        params=[
+            ("type", "task"),
+            ("type", "review"),
+            ("status", "accepted"),
+            ("attention_needed", "false"),
+            ("agent_id", "lead"),
+            ("limit", "2"),
+            ("offset", "1"),
+        ],
+    )
+
+    assert windowed.status_code == 200
+    windowed_payload = windowed.json()
+    assert windowed_payload["total_count"] == 4
+    assert windowed_payload["limit"] == 2
+    assert windowed_payload["offset"] == 1
+    assert windowed_payload["has_more"] is True
+    assert len(windowed_payload["entries"]) == 2
+
+    clamped = client.get("/api/addons/team-addon/timeline?limit=999")
+    assert clamped.status_code == 200
+    assert clamped.json()["limit"] == team_addon_api.MAX_TIMELINE_LIMIT
 
 
 def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:

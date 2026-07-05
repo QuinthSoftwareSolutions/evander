@@ -1,4 +1,5 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { DownloadIcon, RefreshIcon, UploadIcon } from "../admin/PageActionIcons";
@@ -29,6 +30,24 @@ type ArtifactListResponse = {
   next_cursor: string | null;
 };
 
+type ArtifactSpace = {
+  path: string;
+  parent_path: string | null;
+  display_name?: string | null;
+  metadata: Record<string, unknown>;
+};
+
+type ArtifactSpacesResponse = {
+  success: boolean;
+  revision: number;
+  spaces: ArtifactSpace[];
+  count: number;
+};
+
+type ArtifactSpaceTreeNode = ArtifactSpace & {
+  children: ArtifactSpaceTreeNode[];
+};
+
 type ArtifactFilters = {
   key: string;
   publishedAfter: string;
@@ -47,7 +66,7 @@ function toIsoTimestamp(value: string): string | null {
   return date.toISOString();
 }
 
-function buildQuery(filters: ArtifactFilters, cursor: string | null): string {
+function buildQuery(filters: ArtifactFilters, cursor: string | null, spacePath: string | null): string {
   const params = new URLSearchParams();
   const key = filters.key.trim();
   const limit = Number(filters.limit);
@@ -57,6 +76,10 @@ function buildQuery(filters: ArtifactFilters, cursor: string | null): string {
   const publishedBefore = toIsoTimestamp(filters.publishedBefore);
   if (publishedAfter) params.set("published_after", publishedAfter);
   if (publishedBefore) params.set("published_before", publishedBefore);
+  if (spacePath) {
+    params.set("space_path", spacePath);
+    params.set("space_recursive", "true");
+  }
   if (cursor) params.set("cursor", cursor);
   const query = params.toString();
   return query ? `?${query}` : "";
@@ -83,6 +106,109 @@ function shortSha(value: string | null | undefined): string {
   return text.length > 16 ? `${text.slice(0, 16)}...` : text || "n/a";
 }
 
+function artifactSpaceLabel(space: ArtifactSpace): string {
+  const displayName = space.display_name?.trim();
+  if (displayName) return displayName;
+  if (space.path === "/") return "Root space";
+  return space.path.split("/").filter(Boolean).pop() ?? space.path;
+}
+
+function buildArtifactSpaceTree(spaces: ArtifactSpace[]): ArtifactSpaceTreeNode[] {
+  const nodesByPath = new Map<string, ArtifactSpaceTreeNode>();
+  for (const space of spaces) {
+    nodesByPath.set(space.path, { ...space, children: [] });
+  }
+  const roots: ArtifactSpaceTreeNode[] = [];
+  for (const node of nodesByPath.values()) {
+    const parent = node.parent_path ? nodesByPath.get(node.parent_path) : null;
+    if (parent && parent.path !== node.path) {
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  const sortNodes = (nodes: ArtifactSpaceTreeNode[]) => {
+    nodes.sort((left, right) => left.path.localeCompare(right.path));
+    for (const node of nodes) sortNodes(node.children);
+  };
+  sortNodes(roots);
+  return roots;
+}
+
+function defaultExpandedSpacePaths(nodes: ArtifactSpaceTreeNode[]): Set<string> {
+  const expandedPaths = new Set<string>();
+  const visit = (node: ArtifactSpaceTreeNode, depth: number) => {
+    if (node.children.length > 0 && depth < 2) {
+      expandedPaths.add(node.path);
+    }
+    for (const child of node.children) visit(child, depth + 1);
+  };
+  for (const node of nodes) visit(node, 0);
+  return expandedPaths;
+}
+
+function ArtifactSpaceTree({
+  nodes,
+  selectedPath,
+  expandedPaths,
+  onToggle,
+  onSelect,
+  root = false,
+}: {
+  nodes: ArtifactSpaceTreeNode[];
+  selectedPath: string | null;
+  expandedPaths: Set<string>;
+  onToggle: (path: string) => void;
+  onSelect: (path: string) => void;
+  root?: boolean;
+}) {
+  return (
+    <ul className={`artifact-space-tree-list${root ? " root" : ""}`}>
+      {nodes.map((node) => {
+        const hasChildren = node.children.length > 0;
+        const expanded = expandedPaths.has(node.path);
+        return (
+          <li key={node.path}>
+            <div className="artifact-space-tree-row">
+              {hasChildren ? (
+                <button
+                  type="button"
+                  className="artifact-space-tree-toggle"
+                  aria-label={`${expanded ? "Collapse" : "Expand"} ${node.path}`}
+                  aria-expanded={expanded}
+                  onClick={() => onToggle(node.path)}
+                >
+                  {expanded ? <ChevronDown size={14} strokeWidth={2} /> : <ChevronRight size={14} strokeWidth={2} />}
+                </button>
+              ) : (
+                <span className="artifact-space-tree-spacer" aria-hidden="true" />
+              )}
+              <button
+                type="button"
+                className={`artifact-space-tree-button${node.path === selectedPath ? " selected" : ""}`}
+                aria-pressed={node.path === selectedPath}
+                onClick={() => onSelect(node.path)}
+              >
+                <span className="artifact-space-tree-name">{artifactSpaceLabel(node)}</span>
+                <span className="artifact-space-tree-path">{node.path}</span>
+              </button>
+            </div>
+            {hasChildren && expanded ? (
+              <ArtifactSpaceTree
+                nodes={node.children}
+                selectedPath={selectedPath}
+                expandedPaths={expandedPaths}
+                onToggle={onToggle}
+                onSelect={onSelect}
+              />
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export function ArtifactsPage() {
   const [filters, setFilters] = useState<ArtifactFilters>({
     key: "",
@@ -93,12 +219,17 @@ export function ArtifactsPage() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [previousCursors, setPreviousCursors] = useState<string[]>([]);
   const [response, setResponse] = useState<ArtifactListResponse | null>(null);
+  const [artifactSpaces, setArtifactSpaces] = useState<ArtifactSpacesResponse | null>(null);
+  const [selectedSpacePath, setSelectedSpacePath] = useState<string | null>(null);
+  const [expandedSpacePaths, setExpandedSpacePaths] = useState<Set<string>>(() => new Set());
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [resolvedArtifact, setResolvedArtifact] = useState<PublishedArtifact | null>(null);
   const [loading, setLoading] = useState(false);
+  const [artifactSpacesLoading, setArtifactSpacesLoading] = useState(false);
   const [lookupLoading, setLookupLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [artifactSpacesError, setArtifactSpacesError] = useState<string | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
@@ -108,12 +239,14 @@ export function ArtifactsPage() {
 
   const items = response?.items ?? [];
   const selectedArtifact = resolvedArtifact ?? items.find((item) => item.key === selectedKey) ?? items[0] ?? null;
+  const artifactSpaceTree = useMemo(() => buildArtifactSpaceTree(artifactSpaces?.spaces ?? []), [artifactSpaces]);
+  const selectedSpaceLabel = selectedSpacePath ?? "All spaces";
 
-  async function loadArtifacts(nextCursor = cursor) {
+  async function loadArtifacts(nextCursor = cursor, spacePath = selectedSpacePath) {
     setLoading(true);
     setError(null);
     try {
-      const payload = await fetchJson<ArtifactListResponse>(`/api/admin/artifacts${buildQuery(filters, nextCursor)}`);
+      const payload = await fetchJson<ArtifactListResponse>(`/api/admin/artifacts${buildQuery(filters, nextCursor, spacePath)}`);
       setResponse(payload);
       if (!selectedKey && payload.items.length > 0) {
         setSelectedKey(payload.items[0].key);
@@ -122,6 +255,21 @@ export function ArtifactsPage() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadArtifactSpaces() {
+    setArtifactSpacesLoading(true);
+    setArtifactSpacesError(null);
+    try {
+      const payload = await fetchJson<ArtifactSpacesResponse>("/api/admin/artifact-spaces?recursive=true&include_versions=false");
+      setArtifactSpaces(payload);
+      const nextTree = buildArtifactSpaceTree(payload.spaces);
+      setExpandedSpacePaths((current) => (current.size > 0 ? current : defaultExpandedSpacePaths(nextTree)));
+    } catch (reason) {
+      setArtifactSpacesError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setArtifactSpacesLoading(false);
     }
   }
 
@@ -147,15 +295,41 @@ export function ArtifactsPage() {
   }
 
   useEffect(() => {
+    void loadArtifactSpaces();
     void loadArtifacts(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function refreshArtifacts() {
+    void loadArtifactSpaces();
+    void loadArtifacts();
+  }
 
   function applyFilters() {
     setCursor(null);
     setPreviousCursors([]);
     setResolvedArtifact(null);
     void loadArtifacts(null);
+  }
+
+  function selectSpaceFilter(path: string | null) {
+    setSelectedSpacePath(path);
+    setCursor(null);
+    setPreviousCursors([]);
+    setResolvedArtifact(null);
+    void loadArtifacts(null, path);
+  }
+
+  function toggleSpacePath(path: string) {
+    setExpandedSpacePaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
   }
 
   function nextPage() {
@@ -241,11 +415,44 @@ export function ArtifactsPage() {
             <div className="eyebrow">Artifact store</div>
             <h1>Artifacts</h1>
           </div>
-          <button className="admin-action-button compact" type="button" onClick={() => void loadArtifacts()}>
+          <button className="admin-action-button compact" type="button" onClick={refreshArtifacts}>
             <RefreshIcon />
             Refresh
           </button>
         </div>
+
+        <div className="artifact-space-filter">
+          <div className="artifact-space-filter-heading">
+            <span>Artifact spaces</span>
+            <span className="panel-meta">{artifactSpaces?.count ?? 0}</span>
+          </div>
+          <button
+            type="button"
+            className={`artifact-space-tree-button artifact-space-tree-all${selectedSpacePath === null ? " selected" : ""}`}
+            aria-pressed={selectedSpacePath === null}
+            onClick={() => selectSpaceFilter(null)}
+          >
+            <span className="artifact-space-tree-name">All spaces</span>
+            <span className="artifact-space-tree-path">Unfiltered</span>
+          </button>
+          {artifactSpacesError ? <div className="callout error-callout">{artifactSpacesError}</div> : null}
+          {artifactSpacesLoading && !artifactSpaces ? <div className="empty-state artifact-space-empty">Loading spaces...</div> : null}
+          {!artifactSpacesLoading && !artifactSpacesError && (artifactSpaces?.spaces.length ?? 0) === 0 ? (
+            <div className="empty-state artifact-space-empty">No artifact spaces.</div>
+          ) : null}
+          {artifactSpaceTree.length > 0 ? (
+            <ArtifactSpaceTree
+              nodes={artifactSpaceTree}
+              selectedPath={selectedSpacePath}
+              expandedPaths={expandedSpacePaths}
+              onToggle={toggleSpacePath}
+              onSelect={selectSpaceFilter}
+              root
+            />
+          ) : null}
+        </div>
+
+        <div className="sidebar-divider" />
 
         <label className="field-stack">
           <span>Key</span>
@@ -300,13 +507,13 @@ export function ArtifactsPage() {
             <h2>Published artifacts</h2>
           </div>
           <div className="feature-toolbar-actions">
-            <span className="panel-meta">{response?.total ?? 0} matched</span>
+            <span className="panel-meta">{response?.total ?? 0} matched - {selectedSpaceLabel}</span>
             <Tooltip content="Upload a local file as a published artifact.">
               <button type="button" className="admin-icon-button toolbar-icon-button" aria-label="Upload artifact" onClick={openUploadDialog}>
                 <UploadIcon />
               </button>
             </Tooltip>
-            <button className="admin-action-button compact" type="button" onClick={() => void loadArtifacts()} disabled={loading}>
+            <button className="admin-action-button compact" type="button" onClick={refreshArtifacts} disabled={loading || artifactSpacesLoading}>
               <RefreshIcon />
               Refresh
             </button>

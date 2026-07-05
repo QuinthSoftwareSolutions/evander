@@ -6,6 +6,7 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
+from evander.admin import composition as admin_composition
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.audit import AuditLogger
@@ -420,6 +421,126 @@ def test_audit_logger_writes_jsonl_and_indexes_tool_call_entries(tmp_path: Path)
     assert page.payloads[0]["tool_name"] == "assistant_read_status"
 
 
+def test_audit_logger_advances_complete_import_source_after_appends(tmp_path: Path) -> None:
+    audit_log_path = tmp_path / "runtime" / "audit.jsonl"
+    audit_log_path.parent.mkdir(parents=True)
+    audit_log_path.write_text("", encoding="utf-8")
+    index = ToolCallAuditIndex(audit_index_path_for_log_path(audit_log_path))
+    initial_import = index.import_from_jsonl(audit_log_path, reset=True)
+    logger = AuditLogger(audit_log_path)
+
+    assert initial_import.complete is True
+    assert index.import_is_complete(audit_log_path) is True
+
+    logger.log(
+        AuditEvent(
+            event_type="approval_decision",
+            session_id="session-non-tool",
+            created_at=datetime(2026, 5, 18, 12, 1, tzinfo=UTC),
+        )
+    )
+    logger.log(
+        AuditEvent(
+            event_type="tool_call",
+            session_id="session-indexed",
+            directory_path="root/team",
+            tool_name="assistant_read_status",
+            decision="allowed",
+            created_at=datetime(2026, 5, 18, 12, 2, tzinfo=UTC),
+        )
+    )
+
+    assert index.import_is_complete(audit_log_path) is True
+    page = index.query_tool_calls(
+        session_id="session-indexed",
+        tool_name=None,
+        status=None,
+        directory_path="root/team",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q=None,
+        limit=10,
+    )
+    assert page.matched == 1
+    assert page.payloads[0]["tool_name"] == "assistant_read_status"
+
+
+def test_audit_index_appended_payload_does_not_complete_past_concurrent_append(
+    tmp_path: Path,
+) -> None:
+    audit_log_path = tmp_path / "runtime" / "audit.jsonl"
+    audit_log_path.parent.mkdir(parents=True)
+    audit_log_path.write_text("", encoding="utf-8")
+    index = ToolCallAuditIndex(audit_index_path_for_log_path(audit_log_path))
+    initial_import = index.import_from_jsonl(audit_log_path, reset=True)
+    previous_stat = audit_log_path.stat()
+    first_payload = {
+        "event_type": "tool_call",
+        "session_id": "session-first",
+        "directory_path": "root/team",
+        "tool_name": "first_tool",
+        "decision": "allowed",
+        "created_at": "2026-05-18T12:03:00+00:00",
+    }
+    second_payload = {
+        "event_type": "tool_call",
+        "session_id": "session-second",
+        "directory_path": "root/team",
+        "tool_name": "second_tool",
+        "decision": "allowed",
+        "created_at": "2026-05-18T12:04:00+00:00",
+    }
+    first_line = json.dumps(first_payload, sort_keys=True) + "\n"
+    second_line = json.dumps(second_payload, sort_keys=True) + "\n"
+    audit_log_path.write_text(first_line + second_line, encoding="utf-8")
+
+    assert initial_import.complete is True
+    indexed = index.index_appended_payload(
+        first_payload,
+        audit_log_path,
+        previous_size_bytes=previous_stat.st_size,
+        previous_mtime_ns=previous_stat.st_mtime_ns,
+        appended_offset_bytes=len(first_line.encode("utf-8")),
+    )
+
+    assert indexed is True
+    assert index.import_is_complete(audit_log_path) is False
+    first_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root/team",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q=None,
+        limit=10,
+    )
+    assert [payload["tool_name"] for payload in first_page.payloads] == ["first_tool"]
+
+    catch_up = index.import_from_jsonl(audit_log_path, reset=False)
+
+    assert catch_up.imported == 1
+    assert catch_up.complete is True
+    assert index.import_is_complete(audit_log_path) is True
+    caught_up_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root/team",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q=None,
+        limit=10,
+    )
+    assert [payload["tool_name"] for payload in caught_up_page.payloads] == [
+        "second_tool",
+        "first_tool",
+    ]
+
+
 def test_audit_index_backfill_is_idempotent_and_skips_bad_lines(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     _write_audit_log(service.config.audit_log_path)
@@ -448,6 +569,47 @@ def test_audit_index_backfill_is_idempotent_and_skips_bad_lines(tmp_path: Path) 
     )
     assert page.matched == 1
     assert page.payloads[0]["tool_name"] == "make_phone_call"
+
+
+def test_audit_index_tail_import_batches_records_in_one_connection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    audit_log_path = tmp_path / "runtime" / "audit.jsonl"
+    audit_log_path.parent.mkdir(parents=True)
+    entries = [
+        {
+            "event_type": "tool_call",
+            "session_id": f"session-{index}",
+            "directory_path": "root/team",
+            "tool_name": f"tool_{index}",
+            "decision": "allowed",
+            "created_at": f"2026-05-18T10:{index:02d}:00+00:00",
+        }
+        for index in range(25)
+    ]
+    audit_log_path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + "\n",
+        encoding="utf-8",
+    )
+    from evander.repositories import audit_index as audit_index_module
+
+    connect_calls = 0
+    original_connect = audit_index_module.connect_audit_index_db
+
+    def counting_connect(path):
+        nonlocal connect_calls
+        connect_calls += 1
+        return original_connect(path)
+
+    monkeypatch.setattr(audit_index_module, "connect_audit_index_db", counting_connect)
+    index = ToolCallAuditIndex(audit_index_path_for_log_path(audit_log_path))
+
+    result = index.import_from_jsonl_tail(audit_log_path, max_lines=100)
+
+    assert result.imported == 25
+    assert result.complete is True
+    assert connect_calls == 2
 
 
 def test_audit_index_directory_prefix_escapes_like_wildcards(tmp_path: Path) -> None:
@@ -606,6 +768,82 @@ def test_admin_web_tool_calls_route_returns_empty_payload_when_audit_log_is_miss
         invalid_status_response.json()["error"]
         == "status must be one of: success, pending_approval, denied, or error"
     )
+
+
+def test_build_admin_runtime_starts_background_import_without_tail_import(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    started: list[tuple[ToolCallAuditIndex, Path]] = []
+
+    def fail_tail_import(self, *args, **kwargs):
+        raise AssertionError("startup must not synchronously tail-import audit JSONL")
+
+    def fake_background_import(index: ToolCallAuditIndex, audit_log_path: Path) -> None:
+        started.append((index, audit_log_path))
+
+    monkeypatch.setattr(ToolCallAuditIndex, "import_from_jsonl_tail", fail_tail_import)
+    monkeypatch.setattr(
+        admin_composition,
+        "_start_tool_call_audit_index_import",
+        fake_background_import,
+    )
+
+    service = build_admin_runtime(write_config(tmp_path))
+
+    assert service.tool_call_audit_index is not None
+    assert started == [(service.tool_call_audit_index, service.config.audit_log_path)]
+
+
+def test_admin_web_dashboard_tool_calls_reads_index_only_when_jsonl_has_unindexed_entries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        admin_composition,
+        "_start_tool_call_audit_index_import",
+        lambda index, audit_log_path: None,
+    )
+    service = build_admin_runtime(write_config(tmp_path))
+    entries = [
+        {
+            "event_type": "tool_call",
+            "session_id": f"session-{index}",
+            "directory_path": "root/team",
+            "tool_name": f"tool_{index}",
+            "decision": "allowed",
+            "created_at": f"2026-05-18T10:{index:02d}:00+00:00",
+        }
+        for index in range(10)
+    ]
+    service.config.audit_log_path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+
+    dashboard_response = client.get("/api/admin/tool-calls?_dashboard=1&limit=5")
+    exact_response = client.get("/api/admin/tool-calls?limit=5")
+
+    assert dashboard_response.status_code == 200
+    dashboard_payload = dashboard_response.json()
+    assert dashboard_payload["items"] == []
+    assert dashboard_payload["counts"]["scanned"] == 0
+    assert dashboard_payload["counts"]["matched"] == 0
+    assert dashboard_payload["counts"]["returned"] == 0
+    assert dashboard_payload["has_more"] is False
+
+    assert exact_response.status_code == 200
+    exact_payload = exact_response.json()
+    assert [item["tool_name"] for item in exact_payload["items"]] == [
+        "tool_9",
+        "tool_8",
+        "tool_7",
+        "tool_6",
+        "tool_5",
+    ]
+    assert exact_payload["counts"]["scanned"] == 10
+    assert exact_payload["counts"]["matched"] == 10
 
 
 def test_admin_web_tool_calls_route_recent_only_uses_bounded_recent_read(

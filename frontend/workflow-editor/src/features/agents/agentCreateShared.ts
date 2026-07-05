@@ -148,6 +148,9 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   if (agentProvider) payload.agent_provider = agentProvider;
   const modelProviderMode = optionalText(form.modelProviderMode);
   if (modelProviderMode) payload.model_provider_mode = modelProviderMode;
+  payload.dotnet = form.dotnet;
+  payload.nuget = form.nuget;
+  payload.playwright = form.playwright;
   if (form.backend === "libvirt_vm") {
     const provider = optionalText(form.provider);
     payload.vm_name = optionalText(form.vmName);
@@ -155,11 +158,8 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
     payload.vm_user = optionalText(form.vmUser) ?? "agent";
     const vmImage = optionalText(form.vmImage);
     if (vmImage) payload.vm_image = vmImage;
-    payload.dotnet = form.dotnet;
-    payload.nuget = form.nuget;
     payload.mssql = form.mssql;
     payload.mssql_init_root = form.mssql ? optionalText(form.mssqlInitRoot) : null;
-    payload.playwright = form.playwright;
   } else {
     payload.target_name = optionalText(form.targetName);
     payload.container_image = optionalText(form.containerImage);

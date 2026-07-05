@@ -44,8 +44,14 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
     async def health(_: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
-    async def telemetry(_: Request) -> JSONResponse:
-        record = daemon.read_telemetry()
+    async def telemetry(request: Request) -> JSONResponse:
+        refresh = str(request.query_params.get("refresh") or "").strip().casefold() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        record = daemon.read_telemetry(refresh=refresh)
         return JSONResponse(record.model_dump(mode="json"))
 
     async def create_job(request: Request) -> JSONResponse:

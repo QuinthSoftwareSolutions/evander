@@ -10,8 +10,11 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import threading
+import time
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -19,12 +22,12 @@ from urllib.parse import unquote, urlparse
 from starlette.applications import Starlette
 
 from evander.capacity_health import (
+    DirectorySizeTelemetry,
     HealthState,
     SessionStorageSample,
     TelemetryError,
     TelemetryStatus,
     collect_disk_usage,
-    collect_recursive_directory_size,
     top_session_storage,
 )
 from evander.managed_sections import merge_managed_section
@@ -76,6 +79,17 @@ _CODEX_OUTCOME_REASON_NO_FINAL_MESSAGE = "codex_no_final_message"
 _CODEX_OUTCOME_REASON_TURN_FAILED = "codex_turn_failed"
 _CODEX_LOCAL_MODEL_PROVIDER_MODES = {"local_openai"}
 _CODEX_CONTEXT_LIMIT_WARNING_TOTAL_TOKENS = 60_000
+_SESSION_STORAGE_TELEMETRY_TTL_SECONDS = 60.0
+_SESSION_STORAGE_WARMING_MESSAGE = (
+    "worker session storage scan is warming; use refresh=1 to wait for a full scan"
+)
+
+
+@dataclass(frozen=True)
+class _SessionStorageTelemetryCacheEntry:
+    telemetry: WorkerSessionStorageTelemetry
+    collected_at_monotonic: float
+    refresh_generation: int
 
 
 class WorkerDaemon:
@@ -100,6 +114,7 @@ class WorkerDaemon:
         mssql_container_host: str = "172.17.0.1",
         mssql_sqlcmd_path: str = "sqlcmd",
         mssql_provisioner: WorkerMssqlProvisioner | None = None,
+        storage_telemetry_ttl_seconds: float = _SESSION_STORAGE_TELEMETRY_TTL_SECONDS,
     ) -> None:
         self.runtime_dir = runtime_dir
         self.worker_root = worker_root
@@ -130,6 +145,15 @@ class WorkerDaemon:
             container_host=mssql_container_host,
             sqlcmd_path=mssql_sqlcmd_path,
         )
+        self._session_storage_telemetry_ttl_seconds = max(
+            0.0, float(storage_telemetry_ttl_seconds)
+        )
+        self._session_storage_telemetry_lock = threading.Lock()
+        self._session_storage_telemetry_cache: _SessionStorageTelemetryCacheEntry | None = None
+        self._session_storage_telemetry_refreshing = False
+        self._session_storage_telemetry_background_generation: int | None = None
+        self._session_storage_telemetry_next_generation = 0
+        self._session_storage_telemetry_applied_generation = 0
 
     def create_app(self) -> Starlette:
 
@@ -820,69 +844,353 @@ class WorkerDaemon:
         )
         return removed_any
 
-    def read_telemetry(self) -> WorkerTelemetryPayload:
+    def read_telemetry(self, *, refresh: bool = False) -> WorkerTelemetryPayload:
         worker_root_disk = collect_disk_usage(self.worker_root, scope="worker_root")
-        sessions_root = self.worker_root / "sessions"
-        session_storage_total = collect_recursive_directory_size(
-            sessions_root,
-            scope="worker_sessions",
-        )
-        session_samples = self._session_storage_samples(sessions_root)
         return WorkerTelemetryPayload(
             disk=WorkerDiskTelemetry(worker_root=worker_root_disk),
-            session_storage=WorkerSessionStorageTelemetry(
-                total=session_storage_total,
-                session_count=len(session_samples),
-                largest_sessions=top_session_storage(session_samples, limit=5, order="largest"),
-                oldest_sessions=top_session_storage(session_samples, limit=5, order="oldest"),
-            ),
+            session_storage=self._session_storage_telemetry(refresh=refresh),
             jobs=self._job_telemetry(),
         )
 
     def _log_path(self, record: WorkerJobRecord) -> Path:
         return Path(record.logs_path) / f"{record.job_id}.log"
 
-    def _session_storage_samples(self, sessions_root: Path) -> list[SessionStorageSample]:
-        try:
-            entries = list(os.scandir(sessions_root))
-        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
-            return []
+    def _session_storage_telemetry(self, *, refresh: bool) -> WorkerSessionStorageTelemetry:
+        if refresh:
+            return self._refresh_session_storage_telemetry()
 
-        samples: list[SessionStorageSample] = []
+        now = time.monotonic()
+        with self._session_storage_telemetry_lock:
+            cached = self._session_storage_telemetry_cache
+            if cached is not None:
+                if self._session_storage_telemetry_is_stale(cached, now=now):
+                    self._start_session_storage_telemetry_refresh_locked()
+                return cached.telemetry
+
+            self._start_session_storage_telemetry_refresh_locked()
+        return self._warming_session_storage_telemetry()
+
+    def _session_storage_telemetry_is_stale(
+        self,
+        cached: _SessionStorageTelemetryCacheEntry,
+        *,
+        now: float,
+    ) -> bool:
+        return (
+            now - cached.collected_at_monotonic
+            >= self._session_storage_telemetry_ttl_seconds
+        )
+
+    def _start_session_storage_telemetry_refresh_locked(self) -> None:
+        if self._session_storage_telemetry_refreshing:
+            return
+        generation = self._next_session_storage_telemetry_generation_locked()
+        self._session_storage_telemetry_refreshing = True
+        self._session_storage_telemetry_background_generation = generation
+        thread = threading.Thread(
+            target=self._refresh_session_storage_telemetry_async,
+            args=(generation,),
+            name="evander-worker-session-storage-telemetry",
+            daemon=True,
+        )
+        thread.start()
+
+    def _next_session_storage_telemetry_generation_locked(self) -> int:
+        self._session_storage_telemetry_next_generation += 1
+        return self._session_storage_telemetry_next_generation
+
+    def _refresh_session_storage_telemetry_async(self, generation: int) -> None:
+        try:
+            self._refresh_session_storage_telemetry(generation=generation)
+        except Exception:
+            logger.exception("worker_session_storage_telemetry_refresh_failed")
+            with self._session_storage_telemetry_lock:
+                if self._session_storage_telemetry_background_generation == generation:
+                    self._session_storage_telemetry_background_generation = None
+                    self._session_storage_telemetry_refreshing = False
+
+    def _refresh_session_storage_telemetry(
+        self,
+        *,
+        generation: int | None = None,
+    ) -> WorkerSessionStorageTelemetry:
+        if generation is None:
+            with self._session_storage_telemetry_lock:
+                generation = self._next_session_storage_telemetry_generation_locked()
+        telemetry = self._collect_session_storage_telemetry()
+        with self._session_storage_telemetry_lock:
+            if generation >= self._session_storage_telemetry_applied_generation:
+                self._session_storage_telemetry_cache = _SessionStorageTelemetryCacheEntry(
+                    telemetry=telemetry,
+                    collected_at_monotonic=time.monotonic(),
+                    refresh_generation=generation,
+                )
+                self._session_storage_telemetry_applied_generation = generation
+            if self._session_storage_telemetry_background_generation == generation:
+                self._session_storage_telemetry_background_generation = None
+                self._session_storage_telemetry_refreshing = False
+        return telemetry
+
+    def _collect_session_storage_telemetry(self) -> WorkerSessionStorageTelemetry:
+        session_storage_total, session_samples = self._scan_session_storage(
+            self.worker_root / "sessions"
+        )
+        return WorkerSessionStorageTelemetry(
+            total=session_storage_total,
+            session_count=len(session_samples),
+            largest_sessions=top_session_storage(session_samples, limit=5, order="largest"),
+            oldest_sessions=top_session_storage(session_samples, limit=5, order="oldest"),
+        )
+
+    def _scan_session_storage(
+        self,
+        sessions_root: Path,
+    ) -> tuple[DirectorySizeTelemetry, list[SessionStorageSample]]:
+        if sessions_root.is_symlink():
+            return (
+                self._session_storage_total_failure(
+                    status=TelemetryStatus.UNSUPPORTED,
+                    message="symlink roots are not followed",
+                ),
+                [],
+            )
+        try:
+            root_stat = sessions_root.stat()
+        except FileNotFoundError:
+            return (
+                self._session_storage_total_failure(
+                    status=TelemetryStatus.MISSING,
+                    message="path is missing",
+                ),
+                [],
+            )
+        except PermissionError:
+            return (
+                self._session_storage_total_failure(
+                    status=TelemetryStatus.PERMISSION_DENIED,
+                    message="permission denied",
+                ),
+                [],
+            )
+        except OSError:
+            return (
+                self._session_storage_total_failure(
+                    status=TelemetryStatus.UNSUPPORTED,
+                    message="directory size is unavailable",
+                ),
+                [],
+            )
+
+        if stat.S_ISREG(root_stat.st_mode):
+            return (
+                DirectorySizeTelemetry(
+                    scope="worker_sessions",
+                    status=TelemetryStatus.AVAILABLE,
+                    health=HealthState.OK,
+                    size_bytes=max(0, int(root_stat.st_size)),
+                    file_count=1,
+                ),
+                [],
+            )
+        if not stat.S_ISDIR(root_stat.st_mode):
+            return (
+                self._session_storage_total_failure(
+                    status=TelemetryStatus.UNSUPPORTED,
+                    message="path is not a regular file or directory",
+                ),
+                [],
+            )
+
+        totals = {
+            "size_bytes": 0,
+            "file_count": 0,
+            "directory_count": 0,
+            "symlink_count": 0,
+        }
+        session_sizes: dict[str, int] = {}
+        errors: list[TelemetryError] = []
+        self._accumulate_session_storage(
+            sessions_root,
+            totals=totals,
+            session_sizes=session_sizes,
+            errors=errors,
+            allow_session_root=True,
+            session_id=None,
+        )
+        health = HealthState.OK if not errors else HealthState.WARNING
+        session_storage_total = DirectorySizeTelemetry(
+            scope="worker_sessions",
+            status=TelemetryStatus.AVAILABLE,
+            health=health,
+            size_bytes=totals["size_bytes"],
+            file_count=totals["file_count"],
+            directory_count=totals["directory_count"],
+            symlink_count=totals["symlink_count"],
+            error_count=len(errors),
+            errors=errors,
+        )
+        session_samples = [
+            self._session_storage_sample_from_size(
+                sessions_root / session_id,
+                session_id=session_id,
+                size_bytes=size_bytes,
+            )
+            for session_id, size_bytes in session_sizes.items()
+        ]
+        return session_storage_total, session_samples
+
+    def _accumulate_session_storage(
+        self,
+        path: Path,
+        *,
+        totals: dict[str, int],
+        session_sizes: dict[str, int],
+        errors: list[TelemetryError],
+        allow_session_root: bool,
+        session_id: str | None,
+    ) -> None:
+        try:
+            entries = list(os.scandir(path))
+        except FileNotFoundError:
+            errors.append(
+                TelemetryError(
+                    status=TelemetryStatus.MISSING,
+                    message="directory entry is missing",
+                )
+            )
+            return
+        except PermissionError:
+            errors.append(
+                TelemetryError(
+                    status=TelemetryStatus.PERMISSION_DENIED,
+                    message="permission denied while scanning directory",
+                )
+            )
+            return
+        except NotADirectoryError:
+            errors.append(
+                TelemetryError(
+                    status=TelemetryStatus.UNSUPPORTED,
+                    message="path is not a directory",
+                )
+            )
+            return
+        except OSError:
+            errors.append(
+                TelemetryError(
+                    status=TelemetryStatus.UNSUPPORTED,
+                    message="directory size is unavailable",
+                )
+            )
+            return
+
         for entry in entries:
             try:
-                if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                if entry.is_symlink():
+                    totals["symlink_count"] += 1
                     continue
-            except OSError:
-                continue
-            session_id = str(entry.name or "").strip()
-            if not session_id or not SAFE_ID_PATTERN.fullmatch(session_id):
-                continue
-            sample = self._session_storage_sample(Path(entry.path), session_id=session_id)
-            if sample is not None:
-                samples.append(sample)
-        return samples
+                if entry.is_dir(follow_symlinks=False):
+                    totals["directory_count"] += 1
+                    child_session_id = session_id
+                    if allow_session_root and child_session_id is None:
+                        candidate = str(entry.name or "").strip()
+                        if candidate and SAFE_ID_PATTERN.fullmatch(candidate):
+                            child_session_id = candidate
+                            session_sizes.setdefault(candidate, 0)
+                    self._accumulate_session_storage(
+                        Path(entry.path),
+                        totals=totals,
+                        session_sizes=session_sizes,
+                        errors=errors,
+                        allow_session_root=False,
+                        session_id=child_session_id,
+                    )
+                    continue
 
-    def _session_storage_sample(
+                entry_stat = entry.stat(follow_symlinks=False)
+                if stat.S_ISREG(entry_stat.st_mode):
+                    size_bytes = max(0, int(entry_stat.st_size))
+                    totals["file_count"] += 1
+                    totals["size_bytes"] += size_bytes
+                    if session_id is not None:
+                        session_sizes[session_id] = (
+                            session_sizes.get(session_id, 0) + size_bytes
+                        )
+                    continue
+
+                errors.append(
+                    TelemetryError(
+                        status=TelemetryStatus.UNSUPPORTED,
+                        message="unsupported filesystem entry",
+                    )
+                )
+            except FileNotFoundError:
+                errors.append(
+                    TelemetryError(
+                        status=TelemetryStatus.MISSING,
+                        message="directory entry is missing",
+                    )
+                )
+            except PermissionError:
+                errors.append(
+                    TelemetryError(
+                        status=TelemetryStatus.PERMISSION_DENIED,
+                        message="permission denied while scanning directory",
+                    )
+                )
+            except OSError:
+                errors.append(
+                    TelemetryError(
+                        status=TelemetryStatus.UNSUPPORTED,
+                        message="directory entry is unavailable",
+                    )
+                )
+
+    def _session_storage_sample_from_size(
         self,
         session_root: Path,
         *,
         session_id: str,
-    ) -> SessionStorageSample | None:
-        telemetry = collect_recursive_directory_size(
-            session_root,
-            scope=f"session_storage:{session_id}",
-        )
-        if telemetry.status is not TelemetryStatus.AVAILABLE:
-            return None
+        size_bytes: int,
+    ) -> SessionStorageSample:
         created_at, updated_at = self._session_storage_timestamps(session_root)
         return SessionStorageSample(
             session_id=session_id,
             directory_path=f"sessions/{session_id}",
             backend="container_worker_vm",
-            size_bytes=telemetry.size_bytes,
+            size_bytes=size_bytes,
             created_at=created_at,
             updated_at=updated_at,
+        )
+
+    def _warming_session_storage_telemetry(self) -> WorkerSessionStorageTelemetry:
+        return WorkerSessionStorageTelemetry(
+            total=DirectorySizeTelemetry(
+                scope="worker_sessions",
+                status=TelemetryStatus.UNSUPPORTED,
+                health=HealthState.UNKNOWN,
+                error_count=1,
+                errors=[
+                    TelemetryError(
+                        status=TelemetryStatus.UNSUPPORTED,
+                        message=_SESSION_STORAGE_WARMING_MESSAGE,
+                    )
+                ],
+            )
+        )
+
+    def _session_storage_total_failure(
+        self,
+        *,
+        status: TelemetryStatus,
+        message: str,
+    ) -> DirectorySizeTelemetry:
+        return DirectorySizeTelemetry(
+            scope="worker_sessions",
+            status=status,
+            health=HealthState.UNKNOWN,
+            error_count=1,
+            errors=[TelemetryError(status=status, message=message)],
         )
 
     def _session_storage_timestamps(

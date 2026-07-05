@@ -705,6 +705,55 @@ def test_remote_claude_transcript_scan_uses_configured_vm_ssh_options(
     assert known_hosts.exists()
 
 
+def test_remote_claude_transcript_backfill_circuit_breaks_stale_hosts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    costs_module._reset_remote_transcript_scan_failures_for_tests()
+    now = [1000.0]
+    monkeypatch.setattr(costs_module.time, "monotonic", lambda: now[0])
+    store = ModelUsageStore(tmp_path / "model-usage.db")
+    source = costs_module.ClaudeTranscriptSource(
+        session_id="session-backend",
+        agent_id="backend",
+        team_id="team",
+        project_id="project",
+        session_manifest=None,
+        remote_host="192.168.250.10",
+        remote_host_alias="backend-vm",
+    )
+    scan_calls = [0]
+
+    def failing_scan(_source):
+        scan_calls[0] += 1
+        raise RuntimeError("stale host")
+
+    monkeypatch.setattr(costs_module, "_scan_remote_claude_transcripts", failing_scan)
+    first = costs_module.ClaudeTranscriptBackfillResult()
+    costs_module._backfill_remote_claude_transcripts(store, source, first)
+    second = costs_module.ClaudeTranscriptBackfillResult()
+    costs_module._backfill_remote_claude_transcripts(store, source, second)
+
+    assert scan_calls[0] == 1
+    assert first.errors[0]["error"] == "RuntimeError: stale host"
+    assert "skipped after recent failure" in second.errors[0]["error"]
+
+    def successful_scan(_source):
+        scan_calls[0] += 1
+        return []
+
+    now[0] += costs_module.REMOTE_TRANSCRIPT_STALE_HOST_TTL_SECONDS + 1
+    monkeypatch.setattr(costs_module, "_scan_remote_claude_transcripts", successful_scan)
+    third = costs_module.ClaudeTranscriptBackfillResult()
+    costs_module._backfill_remote_claude_transcripts(store, source, third)
+
+    assert scan_calls[0] == 2
+    assert third.errors == []
+    assert third.sources_missing == 1
+    assert costs_module._remote_transcript_circuit_retry_after_seconds(source) is None
+    costs_module._reset_remote_transcript_scan_failures_for_tests()
+
+
 def test_claude_transcript_backfill_includes_ephemeral_assignment_sources(
     tmp_path: Path,
 ) -> None:

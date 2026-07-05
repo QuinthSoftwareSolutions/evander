@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import stat
 import subprocess
-import sqlite3
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -13,14 +15,24 @@ import pytest
 from pydantic import ValidationError
 from starlette.testclient import TestClient
 
-from evander.capacity_health import HealthState, TelemetryStatus
+from evander.capacity_health import (
+    DirectorySizeTelemetry,
+    DiskUsageTelemetry,
+    HealthState,
+    SessionStorageSample,
+    TelemetryStatus,
+)
 from evander.worker.service import WorkerDaemon
 from evander.worker.models import WorkerRepoCloneRequest
 from evander.worker_daemon import (
+    WorkerDiskTelemetry,
     WorkerJobRecord,
     WorkerJobRequest,
+    WorkerJobTelemetry,
     WorkerJobStore,
     WorkerSessionPaths,
+    WorkerSessionStorageTelemetry,
+    WorkerTelemetryPayload,
     create_app,
 )
 
@@ -91,6 +103,49 @@ def _set_session_created_at(paths: WorkerSessionPaths, created_at: datetime) -> 
     os.utime(paths.metadata_path, (timestamp, timestamp))
 
 
+def _available_session_storage(
+    *,
+    size_bytes: int = 1024,
+    session_id: str = "session-1",
+) -> WorkerSessionStorageTelemetry:
+    sample = SessionStorageSample(
+        session_id=session_id,
+        directory_path=f"sessions/{session_id}",
+        backend="container_worker_vm",
+        size_bytes=size_bytes,
+        created_at=datetime(2026, 5, 21, 9, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 5, 21, 10, 0, tzinfo=UTC),
+    )
+    return WorkerSessionStorageTelemetry(
+        total=DirectorySizeTelemetry(
+            scope="worker_sessions",
+            status=TelemetryStatus.AVAILABLE,
+            health=HealthState.OK,
+            size_bytes=size_bytes,
+            file_count=1,
+        ),
+        session_count=1,
+        largest_sessions=[sample],
+        oldest_sessions=[sample],
+    )
+
+
+def _worker_telemetry_payload(
+    session_storage: WorkerSessionStorageTelemetry | None = None,
+) -> WorkerTelemetryPayload:
+    return WorkerTelemetryPayload(
+        disk=WorkerDiskTelemetry(
+            worker_root=DiskUsageTelemetry(
+                scope="worker_root",
+                status=TelemetryStatus.AVAILABLE,
+                health=HealthState.OK,
+            )
+        ),
+        session_storage=session_storage or _available_session_storage(),
+        jobs=WorkerJobTelemetry(),
+    )
+
+
 def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token(
     tmp_path: Path,
 ) -> None:
@@ -118,6 +173,203 @@ def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token
     assert response.status_code == 201
 
 
+def test_worker_api_telemetry_refresh_query_requests_blocking_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    refresh_values: list[bool] = []
+
+    def fake_read_telemetry(*, refresh: bool = False) -> WorkerTelemetryPayload:
+        refresh_values.append(refresh)
+        return _worker_telemetry_payload()
+
+    monkeypatch.setattr(daemon, "read_telemetry", fake_read_telemetry)
+    client = TestClient(daemon.create_app())
+
+    assert client.get("/v1/telemetry?refresh=1", headers=_auth()).status_code == 200
+    assert client.get("/v1/telemetry", headers=_auth()).status_code == 200
+    assert refresh_values == [True, False]
+
+
+def test_worker_daemon_read_telemetry_cold_returns_warming_and_starts_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    started = 0
+
+    def fake_start_refresh() -> None:
+        nonlocal started
+        if daemon._session_storage_telemetry_refreshing:
+            return
+        started += 1
+        daemon._session_storage_telemetry_refreshing = True
+
+    monkeypatch.setattr(
+        daemon,
+        "_start_session_storage_telemetry_refresh_locked",
+        fake_start_refresh,
+    )
+
+    telemetry = daemon.read_telemetry()
+    repeated = daemon.read_telemetry()
+
+    assert telemetry.session_storage.total.status is TelemetryStatus.UNSUPPORTED
+    assert "warming" in telemetry.session_storage.total.errors[0].message
+    assert repeated.session_storage.total.status is TelemetryStatus.UNSUPPORTED
+    assert started == 1
+
+
+def test_worker_daemon_read_telemetry_reuses_fresh_storage_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    calls = 0
+
+    def fake_collect() -> WorkerSessionStorageTelemetry:
+        nonlocal calls
+        calls += 1
+        return _available_session_storage(size_bytes=calls, session_id=f"session-{calls}")
+
+    monkeypatch.setattr(daemon, "_collect_session_storage_telemetry", fake_collect)
+
+    first = daemon.read_telemetry(refresh=True)
+    second = daemon.read_telemetry()
+
+    assert first.session_storage.total.size_bytes == 1
+    assert second.session_storage.total.size_bytes == 1
+    assert calls == 1
+
+
+def test_worker_daemon_read_telemetry_returns_stale_cache_and_schedules_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        storage_telemetry_ttl_seconds=0,
+    )
+    monkeypatch.setattr(
+        daemon,
+        "_collect_session_storage_telemetry",
+        lambda: _available_session_storage(size_bytes=99, session_id="session-stale"),
+    )
+    daemon.read_telemetry(refresh=True)
+    started = 0
+
+    def fake_start_refresh() -> None:
+        nonlocal started
+        if daemon._session_storage_telemetry_refreshing:
+            return
+        started += 1
+        daemon._session_storage_telemetry_refreshing = True
+
+    monkeypatch.setattr(
+        daemon,
+        "_start_session_storage_telemetry_refresh_locked",
+        fake_start_refresh,
+    )
+
+    first = daemon.read_telemetry()
+    second = daemon.read_telemetry()
+
+    assert first.session_storage.total.size_bytes == 99
+    assert second.session_storage.total.size_bytes == 99
+    assert started == 1
+
+
+def test_worker_daemon_read_telemetry_explicit_refresh_recomputes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    calls = 0
+
+    def fake_collect() -> WorkerSessionStorageTelemetry:
+        nonlocal calls
+        calls += 1
+        return _available_session_storage(size_bytes=calls, session_id=f"session-{calls}")
+
+    monkeypatch.setattr(daemon, "_collect_session_storage_telemetry", fake_collect)
+
+    first = daemon.read_telemetry(refresh=True)
+    second = daemon.read_telemetry(refresh=True)
+
+    assert first.session_storage.total.size_bytes == 1
+    assert second.session_storage.total.size_bytes == 2
+    assert calls == 2
+
+
+def test_worker_daemon_ignores_older_background_refresh_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    calls = 0
+    calls_lock = threading.Lock()
+    first_started = threading.Event()
+    finish_first = threading.Event()
+
+    def fake_collect() -> WorkerSessionStorageTelemetry:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call_number = calls
+        if call_number == 1:
+            first_started.set()
+            finish_first.wait(timeout=2)
+            return _available_session_storage(size_bytes=1, session_id="session-old")
+        return _available_session_storage(size_bytes=2, session_id="session-new")
+
+    monkeypatch.setattr(daemon, "_collect_session_storage_telemetry", fake_collect)
+
+    cold = daemon.read_telemetry()
+    assert cold.session_storage.total.status is TelemetryStatus.UNSUPPORTED
+    assert first_started.wait(timeout=1)
+
+    fresh = daemon.read_telemetry(refresh=True)
+    assert fresh.session_storage.total.size_bytes == 2
+
+    finish_first.set()
+    deadline = time.monotonic() + 2
+    while daemon._session_storage_telemetry_refreshing and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert not daemon._session_storage_telemetry_refreshing
+    assert daemon.read_telemetry().session_storage.total.size_bytes == 2
+    assert calls == 2
+
+
 def test_worker_daemon_read_telemetry_reports_disk_sessions_and_jobs_without_leaking_paths(
     tmp_path: Path,
 ) -> None:
@@ -136,6 +388,9 @@ def test_worker_daemon_read_telemetry_reports_disk_sessions_and_jobs_without_lea
     (old_paths.artifacts / "small.txt").write_text("tiny\n", encoding="utf-8")
     (new_paths.artifacts / "nested").mkdir()
     (new_paths.artifacts / "nested" / "large.bin").write_bytes(b"x" * 1024)
+    invalid_root = daemon.worker_root / "sessions" / "invalid session"
+    (invalid_root / "session-shadow").mkdir(parents=True)
+    (invalid_root / "session-shadow" / "larger.bin").write_bytes(b"x" * 4096)
 
     daemon.store.put(
         WorkerJobRecord(
@@ -185,7 +440,7 @@ def test_worker_daemon_read_telemetry_reports_disk_sessions_and_jobs_without_lea
         )
     )
 
-    telemetry = daemon.read_telemetry()
+    telemetry = daemon.read_telemetry(refresh=True)
     payload = json.dumps(telemetry.model_dump(mode="json"))
 
     assert telemetry.disk.worker_root.status is TelemetryStatus.AVAILABLE

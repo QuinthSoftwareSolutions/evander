@@ -1,5 +1,227 @@
 # Changelog
 
+## 2026-07-05 - Dashboard Directory Cache Scope
+
+- Scoped Admin Web dashboard conditional-response payloads to the same request
+  path as their ETags so directory switches cannot display stale data from a
+  different directory after a `304 Not Modified` response.
+
+## 2026-07-05 - Admin Web Review Fixes
+
+- Derived artifact-space grant subjects from the authenticated Admin Web
+  session instead of caller-supplied request fields.
+- Rolled back grouped configuration tab writes when a later source domain
+  rejects the save, preventing partial persistence on failed saves.
+
+## 2026-07-05 - Admin Web Bundle and Team Stream Fixes
+
+- Pointed the checked-in Admin Web dist index at the generated JavaScript
+  bundle that exists under `dist/assets`.
+- Kept revision-scoped Team Add-on state stream payloads stable between
+  revisions so unchanged clients receive keepalives instead of snapshots.
+
+## 2026-07-05 - Add-on Discovery and MSSQL Seed Guards
+
+- Preserved already-imported bundled add-on module identities during manifest
+  discovery so future imports and monkeypatches keep hitting the public package.
+- Wrapped MSSQL seed worker provisioning failures in audited `ToolError`
+  responses for both provision and reset tool calls.
+- Treated missing Admin Web permission adapters as unavailable privileged
+  contexts instead of raising `AttributeError`.
+
+## 2026-07-04 - Team Add-on Payload Windowing
+
+- Added server-side pagination for the Team Add-on timeline API and tab so the
+  UI no longer downloads the full derived timeline before paging.
+- Windowed bulky Team state history collections in `/state` and scoped view
+  payloads while preserving current/actionable records.
+- Kept Team UI mutation recovery on scoped active-view refreshes instead of
+  falling back to full-state reloads.
+- Invalidated cached Team views after conflict recovery so previously visited
+  tabs reload against the latest revision.
+- Refetched the corrected timeline page after server-windowed view payloads
+  clamp an out-of-range page.
+
+## 2026-07-04 - Admin Dashboard Poll Backpressure
+
+- Paused Admin Web dashboard and shell background polling while the document is
+  hidden, and suppressed unrelated shell polls while operators are inside
+  add-on views.
+- Added weak ETags to the opt-in dashboard JSON cache so unchanged dashboard
+  requests can return `304 Not Modified` instead of retransmitting large
+  payloads.
+- Compacted dashboard agent-inventory responses to omit deep inventory,
+  execution, metadata, and session-policy details outside non-dashboard
+  `summary_only=true` reads.
+
+## 2026-07-04 - Admin Web Branding Asset Caching
+
+- Resized and compressed the bundled Evander and Quinth Software Solutions
+  branding PNGs so header and sign-in logos no longer ship multi-megabyte
+  source images.
+- Taught Admin Web to use Vite manifest-resolved hashed default branding assets
+  when the frontend build is available and to serve hashed `/assets/...` files
+  with long immutable cache headers.
+- Kept manifest rewrites scoped to the bundled branding asset directory so
+  deployments with custom `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` files keep
+  serving their configured logo assets.
+
+## 2026-07-04 - Admin Sessions List Payload
+
+- Reduced `GET /api/admin/sessions` to a compact single `items` list with
+  counts and active/expired session ids, moving policy, tool, notification, and
+  runtime-image details to the session detail payload.
+- Cached per-session policy summary fragments for repeated Admin Web session
+  detail reads.
+- Kept compact sessions rows provider-aware while refreshing notification target
+  options and selected-session status from live list data.
+
+## 2026-07-04 - Tool-Call Audit Index Catch-Up
+
+- Batched tool-call audit JSONL imports through one SQLite transaction per
+  import run and kept completed import-source metadata current as audit events
+  are appended.
+- Moved Admin Web audit-index catch-up out of startup's synchronous tail import
+  path and into a best-effort background importer.
+- Changed dashboard tool-call audit requests to read from the SQLite index only
+  instead of scanning or importing the `runtime/audit.jsonl` tail.
+
+## 2026-07-04 - Worker Storage Telemetry Cache
+
+- Cached container-worker session storage telemetry inside the worker daemon
+  with stale-while-revalidate behavior so Admin capacity-health reads do not
+  block on cold deep scans of large worker session trees.
+- Reworked worker session storage telemetry to compute total storage and
+  largest/oldest session samples in one filesystem pass, with explicit
+  blocking refresh available through `GET /v1/telemetry?refresh=1`.
+- Guarded worker storage telemetry cache writes so an older background scan
+  cannot overwrite a newer explicit refresh result.
+
+## 2026-07-04 - Configuration Page Reorganization
+
+- Reorganized Admin Web Configuration into operator-facing areas for people and
+  communications, models and Assistant behavior, agent runtime, code/issues/PRs,
+  access and audit policy, network/package relays, automation assignment, and
+  advanced state.
+- Moved email, approval notification targets, phone calls, communication files,
+  and communication artifact link settings into People & Communications so
+  related messaging settings are no longer split across unrelated tabs.
+- Moved model pricing into the Models, Assistant & Knowledge area alongside
+  model routing and Assistant settings.
+- Kept approval-required tool policy, VM provider defaults, and libvirt VM
+  template fields editable in the reorganized Configuration areas.
+
+## 2026-07-04 - Team Add-on First-Load Responsiveness
+
+- Reduced Team Add-on first-load pressure by building scoped view payloads
+  directly instead of serializing full Team state and filtering afterward.
+- Changed the Team Add-on state stream to publish lightweight revision events
+  so connected UI tabs refresh only the active view instead of forcing full
+  state snapshots on every poll.
+- Queued Team Add-on active-view reloads when newer revision events arrive
+  during an in-flight refresh so the UI does not settle on skipped stale data.
+- Invalidated all cached Team view slices on revision-only events and preserved
+  active form drafts during the forced refresh.
+- Kept Admin Web Lock/Unlock changes from remounting add-on iframes and taught
+  the Team Add-on UI to update locked controls from same-origin privilege
+  messages while preserving selected Teams records.
+- Stopped Team Add-on cost loads from running transcript backfill on page load,
+  added an explicit transcript-cost refresh path, and circuit-broke repeated
+  remote transcript scans for stale hosts.
+
+## 2026-07-04 - Add-on Package Discovery
+
+- Added local add-on package discovery from the git-ignored project-root
+  `addons/` directory so copied packages appear on the Admin Web Add-ons page
+  without hand-editing runtime config.
+- Kept copied add-on packages available but disabled by default, preserving
+  legacy load-all behavior for explicitly configured modules and entry points.
+- Documented `addon_loader.package_dirs` and kept `runtime/addons/<addon_id>/`
+  reserved for add-on private state.
+- Fixed local add-on package imports so packages that reuse module names such as
+  `addon` load from their own package directories instead of `sys.modules`
+  cache entries from earlier packages.
+- Fixed scanned package-style add-ons so absolute imports inside the declared
+  package work while preserving same-name package isolation.
+- Kept scanned package aliases available after registration so route and MCP
+  handlers can perform lazy absolute imports from their package.
+- Added `addon.json` manifests to bundled add-ons and scanned source-tree
+  manifests from `src/` so bundled packages model the same registration contract
+  future local add-ons should use.
+- Resolved add-on package scans from the project base in gateway and workflow
+  provider runtime paths so manifest-enabled bundled add-ons do not depend on
+  the supervisor process working directory.
+
+## 2026-07-04 - MSSQL Seed Add-on
+
+- Added an optional MSSQL Seed add-on with Admin Web configuration for
+  sidecars and approved `.bak` seed aliases.
+- Added `evander-mssql-seed-sidecar` so container-worker MSSQL databases can be
+  restored or reset from approved backups without adding seed-restore semantics
+  to the Core worker API.
+- Added worker Ansible installation for `evander-mssql-seed-sidecar.service`,
+  including env rendering, seed backup directory creation, and health
+  verification.
+- Added MCP tools for seeded MSSQL provision, reset, and listing that reuse Core
+  container-worker MSSQL provisioning before restoring seed data.
+- Fixed MSSQL Seed MCP tools so connected MCP callers can omit the legacy
+  `session_id` argument and use the session bound to their MCP transport.
+- Fixed MSSQL Seed settings writes so malformed payloads are rejected without
+  replacing state and sidecar/token environment changes require Admin Owner
+  permission.
+- Fixed MSSQL Seed UI locked mode so settings controls cannot save while the
+  Admin shell is read-only, and made seed restore timeouts configurable with a
+  one-hour default for larger backups.
+- Fixed idempotent MSSQL seed provision calls so they preserve tracked
+  `last_reset_at` metadata after a database has been reset.
+- Fixed MSSQL Seed sidecar verification to probe the configured concrete bind
+  host, including IPv6 hosts, while keeping wildcard binds probed through
+  localhost.
+
+## 2026-07-04 - Admin Web UI-Only Lock
+
+- Changed the Admin Web Lock/Unlock control into a local UI read-only guard so
+  toggling it no longer performs a backend privilege round trip or grants a
+  single global editing session.
+- Kept backend writes governed by authentication, permissions, and revision
+  checks, with the compatibility privilege endpoints now recording lightweight
+  per-session UI state only.
+- Preserved the `privileged_unlocked` add-on iframe query parameter for bundled
+  add-ons that still read unlock state from the initial URL.
+- Synchronized bundled add-on lock state through Admin shell privilege messages
+  so MSSQL Seeds and Team agent-create update without iframe reloads.
+- Added explicit Admin Owner permission gates to helper-only global/sensitive
+  writes that previously relied only on authenticated UI lock state.
+- Aligned workflow-pack and add-on runtime pack refresh coverage with the
+  UI-only lock behavior while preserving revision and disabled-add-on checks.
+
+## 2026-07-04 - Artifact Space Filtering
+
+- Added an artifact-space tree to the Admin Web Artifacts filter sidebar and
+  let operators filter published artifacts by selected formal artifact space.
+- Extended the Admin Web published-artifacts API with recursive artifact-space
+  filtering so paging totals and result pages match the selected space.
+
+## 2026-07-04 - Team Add-on Locked Mode
+
+- Fixed Team Add-on locked mode so mutation entry points, including org chart
+  context menu actions, create panels, edit saves, chat sends, voice calls,
+  stand-downs, avatar changes, and governance/action handling, are disabled and
+  guarded until privileged operations are unlocked.
+
+## 2026-07-03 - Agent Create Dialog Layout
+
+- Grouped create-time capabilities in the agent create dialog, moved Web
+  search into that group, nested the MSSQL init root behind the MSSQL toggle,
+  kept .NET, NuGet, and Playwright available for container workers, and
+  replaced communication target checkboxes with a scan-friendly table.
+
+## 2026-07-03 - Team Org Chart Viewport
+
+- Kept the Team Add-on org chart canvas viewport stable across data-only edits
+  such as agent label saves, while still refitting when the graph layout
+  changes.
+
 ## 2026-07-03 - Team Agent Session Registration
 
 - Let Team Add-on agent registration select available core VM and container
@@ -104,6 +326,10 @@
 - Fixed additional Evander rename/setup compatibility issues for legacy Admin
   Web session and workflow-event token env vars, legacy Git mirror metadata,
   sudo-owned setup secret files, and same-host container worker launch flags.
+
+- Fixed same-host container worker setup so the worker daemon unit binds to the
+  configured `container_worker_base_url`, and moved the default local worker
+  URL to `127.0.0.1:11890` to avoid the DIDWW bridge default port.
 
 - Fixed the Admin Web frontend-not-built fallback page so it preserves the
   injected branding bootstrap payload.

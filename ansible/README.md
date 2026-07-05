@@ -486,6 +486,26 @@ NSG or subnet rules so only the control-plane VM can reach that port. The daemon
 only to `config/worker-daemon.env`; set the same value on the control plane through the environment
 variable named by `container_worker_token_env`.
 
+When worker MSSQL seed restore is needed, enable the optional sidecar alongside worker MSSQL. The
+sidecar is disabled by default and is installed/started only when both flags are true:
+
+```yaml
+evander_worker_mssql_enabled: true
+evander_worker_mssql_seed_sidecar_enabled: true
+evander_worker_mssql_seed_sidecar_token: "{{ vault_evander_worker_mssql_seed_sidecar_token }}"
+evander_worker_mssql_seed_sidecar_port: 11990
+evander_worker_mssql_seed_sidecar_backup_dir: "/var/lib/evander/mssql-seeds"
+```
+
+The worker playbook renders `config/mssql-seed-sidecar.env`, installs
+`evander-mssql-seed-sidecar.service`, creates the seed backup directory owned by
+SQL Server, and verifies `/healthz` on the sidecar port. Put approved `.bak`
+files under the configured backup directory and register them as seed aliases in
+the `mssql-seed-addon` Admin Web page. Restrict network rules so only the
+control plane can reach the sidecar port, then configure the add-on sidecar URL
+as `http://<worker-private-ip>:11990` with token env
+`EVANDER_MSSQL_SEED_SIDECAR_TOKEN`.
+
 The worker playbook also provisions restricted SSH for Git mirrors. It generates
 `~agent-worker/.ssh/evander-git`, renders an SSH config entry for
 `evander_git_ssh_alias`, and, when the `evander_hosts` group is present, installs the

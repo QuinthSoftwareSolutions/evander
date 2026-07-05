@@ -401,6 +401,9 @@ timestamps, telemetry states, queue age, and unread prompt pressure. Unconfigure
 permission-denied, or unsupported sources are reported explicitly, and raw host paths or bearer
 secrets are not exposed. When an endpoint has no data or is unavailable in the current environment,
 the panel shows an explicit missing or unavailable state rather than inferred or placeholder values.
+Container-worker session storage telemetry is cached by the worker daemon so normal dashboard reads
+do not block on deep session-tree scans; use the worker API's `GET /v1/telemetry?refresh=1` only
+when an explicit blocking refresh is needed.
 
 The product context panel is backed by `/api/admin/release-info`. It reads the installed package
 version or `pyproject.toml` version when present, an explicit deployed build identity when the
@@ -578,7 +581,7 @@ Storage layout for directory config:
 ### Microsoft Teams delegated auth
 
 - Teams access is host-side and delegated. The preferred operator flow is Admin Web ->
-  Configuration -> Communications: verify the directory-scoped Teams provider settings, inspect
+  Configuration -> People & Communications: verify the directory-scoped Teams provider settings, inspect
   delegated auth status, and start the device code flow sign-in or sign-out from the browser while
   keeping the resulting credential on the host only.
 - Bind each directory to the intended Teams identity through per-directory Teams identity binding
@@ -596,11 +599,11 @@ Storage layout for directory config:
 - The Entra app behind `teams_delegated_client_id` must be configured for public client /
   device-code auth. `AADSTS7000218` means the app is being treated as a confidential client and
   the host-side delegated flow in this repo cannot complete until that registration is fixed.
-- In Admin Web -> Configuration -> Communications, use the Teams auth panel to:
+- In Admin Web -> Configuration -> People & Communications, use the Teams auth panel to:
   - inspect the current delegated auth state for the selected directory
   - start device-code sign-in and complete the login polling flow
   - sign out when you need to revoke the stored host-side credential
-- Use the channel lookup helper in the same Communications area to resolve `team-id/channel-id`
+- Use the channel lookup helper in the same People & Communications area to resolve `team-id/channel-id`
   entries and copy them into communication targets.
 - Use the host CLI for delegated auth lifecycle when you need a headless fallback:
   - `evander-cli teams-auth login --directory <directory-path>`
@@ -1503,7 +1506,7 @@ They are separate from guest communication permissions: a session does not need 
 email send allowlists for the host to notify an operator target.
 
 1. Define one or more host-owned communication targets with the `notify` capability. In Admin Web,
-   use Configuration -> Communications; the targets are stored in
+   use Configuration -> People & Communications -> Communication targets; the targets are stored in
    `runtime/communication-targets.db`. For example, a Teams channel target uses this payload shape:
 
    ```json
@@ -1536,9 +1539,9 @@ email send allowlists for the host to notify an operator target.
    and a live workflow-run approval lease can add run-scoped targets. The runtime resolves the
    final list in that order and deduplicates first-seen IDs.
 
-   In Admin Web, the Access Policy tab exposes `approval_notification_target_ids` as an explicit
-   list of known notify-capable communication targets with an `Add communication target` control
-   instead of free-form text entry.
+   In Admin Web, Configuration -> People & Communications -> Approval notification targets exposes
+   `approval_notification_target_ids` as an explicit list of known notify-capable communication
+   targets with an `Add communication target` control instead of free-form text entry.
 
 3. Have the guest create the approval request through `approval_submit`. The notification message
    includes the `request_id`, action/tool name, directory, session and VM context, expiry,
@@ -1755,7 +1758,7 @@ Outbound sends must use staged artifact IDs. Do not send arbitrary guest paths.
    `request_id` to the send tool.
    Teams image artifacts are sent inline through Graph. Teams non-image artifacts are posted as
    signed control-plane download links; configure `communication_artifact_public_base_url` in
-   Admin Web under Configuration -> Provider Integrations -> Communication artifacts, via provider
+   Admin Web under Configuration -> People & Communications -> Communication artifact links, via provider
    config, or with `EVANDER_COMMUNICATION_ARTIFACT_PUBLIC_BASE_URL`. Set the secret named by
    `communication_artifact_link_secret_env` in an environment loaded by both gateway and Admin Web,
    usually repo-root `secrets.env`.

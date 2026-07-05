@@ -27,6 +27,32 @@ _SENSITIVE_PAYLOAD_MARKERS: tuple[str, ...] = (
     "ssh_key",
 )
 
+_INSERT_TOOL_CALL_AUDIT_SQL = """
+    INSERT OR IGNORE INTO tool_call_audit_entries (
+        event_key,
+        created_at,
+        directory_path,
+        session_id,
+        vm_id,
+        agent_role,
+        actor_user_id,
+        tool_name,
+        status,
+        decision,
+        request_id,
+        correlation_id,
+        approval_request_id,
+        mcp_tool_approval_lease_id,
+        workflow_run_id,
+        trace_id,
+        duration_ms,
+        error_summary,
+        search_text,
+        payload_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
 
 @dataclass(frozen=True)
 class ToolCallAuditIndexRecord:
@@ -208,6 +234,56 @@ class ToolCallAuditIndex:
             return False
         return self._insert_record(record)
 
+    def index_appended_payload(
+        self,
+        payload: dict[str, Any],
+        source_path: Path | str,
+        *,
+        previous_size_bytes: int | None,
+        previous_mtime_ns: int | None,
+        appended_offset_bytes: int | None,
+    ) -> bool:
+        self.ensure_schema()
+        event_type = str(payload.get("event_type") or "").strip().casefold()
+        record = (
+            tool_call_audit_index_record_from_payload(payload)
+            if event_type == "tool_call"
+            else None
+        )
+        source = Path(source_path)
+        source_key = str(source.expanduser().resolve())
+        try:
+            source_stat = source.stat()
+        except OSError:
+            source_stat = None
+
+        with connect_audit_index_db(self.path) as connection:
+            source_was_complete = self._source_import_complete_for_stat(
+                connection,
+                source_key=source_key,
+                size_bytes=previous_size_bytes,
+                mtime_ns=previous_mtime_ns,
+                missing_empty_is_complete=True,
+            )
+            inserted = False
+            if record is not None:
+                inserted = self._insert_record_with_connection(connection, record)
+            if source_was_complete and source_stat is not None:
+                progress_offset_bytes = source_stat.st_size
+                if appended_offset_bytes is not None:
+                    progress_offset_bytes = min(
+                        max(0, int(appended_offset_bytes)),
+                        source_stat.st_size,
+                    )
+                self._record_import_progress_with_connection(
+                    connection,
+                    source,
+                    source_stat=source_stat,
+                    offset_bytes=progress_offset_bytes,
+                    complete=progress_offset_bytes >= source_stat.st_size,
+                )
+            return inserted
+
     def import_from_jsonl(
         self,
         source_path: Path | str,
@@ -246,29 +322,32 @@ class ToolCallAuditIndex:
                 if offset > stat.st_size:
                     offset = 0
 
-        deadline = time.monotonic() + max_seconds if max_seconds is not None else None
-        with source.open("rb") as handle:
-            handle.seek(offset)
-            while True:
-                if max_lines is not None and result.lines_scanned >= max_lines:
-                    result.stopped_by_limit = True
-                    break
-                if deadline is not None and time.monotonic() >= deadline:
-                    result.stopped_by_limit = True
-                    break
-                raw_line = handle.readline()
-                if not raw_line:
-                    break
-                offset = handle.tell()
-                self._import_line(raw_line, result)
+            deadline = time.monotonic() + max_seconds if max_seconds is not None else None
+            with source.open("rb") as handle:
+                handle.seek(offset)
+                while True:
+                    if max_lines is not None and result.lines_scanned >= max_lines:
+                        result.stopped_by_limit = True
+                        break
+                    if deadline is not None and time.monotonic() >= deadline:
+                        result.stopped_by_limit = True
+                        break
+                    raw_line = handle.readline()
+                    if not raw_line:
+                        break
+                    offset = handle.tell()
+                    self._import_line(raw_line, result, connection)
 
-        result.offset_bytes = offset
-        result.complete = offset >= stat.st_size
-        self._record_import_progress(
-            source,
-            offset_bytes=offset,
-            complete=result.complete,
-        )
+            final_stat = source.stat()
+            result.offset_bytes = offset
+            result.complete = offset >= final_stat.st_size
+            self._record_import_progress_with_connection(
+                connection,
+                source,
+                source_stat=final_stat,
+                offset_bytes=offset,
+                complete=result.complete,
+            )
         return result
 
     def import_from_jsonl_tail(
@@ -286,33 +365,45 @@ class ToolCallAuditIndex:
             return result
 
         created_after_utc = _normalize_datetime(created_after)
-        for raw_line in _iter_file_lines_reverse(source):
-            if result.lines_scanned >= max_lines:
-                result.stopped_by_limit = True
-                break
-            result.lines_scanned += 1
-            payload = _json_line_to_object(raw_line)
-            if payload is None:
-                result.skipped_malformed += 1
-                continue
-            event_type = str(payload.get("event_type") or "").strip().casefold()
-            if event_type != "tool_call":
-                result.skipped_non_tool_call += 1
-                continue
-            record = tool_call_audit_index_record_from_payload(payload)
-            if record is None:
-                result.skipped_malformed += 1
-                continue
-            if created_after_utc is not None and record.created_at < created_after_utc:
-                result.reached_time_boundary = True
-                break
-            if self._insert_record(record):
-                result.imported += 1
+        with connect_audit_index_db(self.path) as connection:
+            for raw_line in _iter_file_lines_reverse(source):
+                if result.lines_scanned >= max_lines:
+                    result.stopped_by_limit = True
+                    break
+                result.lines_scanned += 1
+                payload = _json_line_to_object(raw_line)
+                if payload is None:
+                    result.skipped_malformed += 1
+                    continue
+                event_type = str(payload.get("event_type") or "").strip().casefold()
+                if event_type != "tool_call":
+                    result.skipped_non_tool_call += 1
+                    continue
+                record = tool_call_audit_index_record_from_payload(payload)
+                if record is None:
+                    result.skipped_malformed += 1
+                    continue
+                if created_after_utc is not None and record.created_at < created_after_utc:
+                    result.reached_time_boundary = True
+                    break
+                if self._insert_record_with_connection(connection, record):
+                    result.imported += 1
+                else:
+                    result.existing += 1
             else:
-                result.existing += 1
-        else:
-            result.complete = True
-            result.reached_time_boundary = created_after_utc is not None
+                result.complete = True
+                result.reached_time_boundary = created_after_utc is not None
+
+            if result.complete:
+                final_stat = source.stat()
+                result.offset_bytes = final_stat.st_size
+                self._record_import_progress_with_connection(
+                    connection,
+                    source,
+                    source_stat=final_stat,
+                    offset_bytes=final_stat.st_size,
+                    complete=True,
+                )
         return result
 
     def query_tool_calls(
@@ -406,7 +497,12 @@ class ToolCallAuditIndex:
             and int(row["offset_bytes"]) >= stat.st_size
         )
 
-    def _import_line(self, raw_line: bytes, result: AuditIndexImportResult) -> None:
+    def _import_line(
+        self,
+        raw_line: bytes,
+        result: AuditIndexImportResult,
+        connection: sqlite3.Connection,
+    ) -> None:
         result.lines_scanned += 1
         payload = _json_line_to_object(raw_line.decode("utf-8", errors="replace"))
         if payload is None:
@@ -420,63 +516,22 @@ class ToolCallAuditIndex:
         if record is None:
             result.skipped_malformed += 1
             return
-        if self._insert_record(record):
+        if self._insert_record_with_connection(connection, record):
             result.imported += 1
         else:
             result.existing += 1
 
     def _insert_record(self, record: ToolCallAuditIndexRecord) -> bool:
         with connect_audit_index_db(self.path) as connection:
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO tool_call_audit_entries (
-                    event_key,
-                    created_at,
-                    directory_path,
-                    session_id,
-                    vm_id,
-                    agent_role,
-                    actor_user_id,
-                    tool_name,
-                    status,
-                    decision,
-                    request_id,
-                    correlation_id,
-                    approval_request_id,
-                    mcp_tool_approval_lease_id,
-                    workflow_run_id,
-                    trace_id,
-                    duration_ms,
-                    error_summary,
-                    search_text,
-                    payload_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.event_key,
-                    record.created_at_storage,
-                    record.directory_path,
-                    record.session_id,
-                    record.vm_id,
-                    record.agent_role,
-                    record.actor_user_id,
-                    record.tool_name,
-                    record.status,
-                    record.decision,
-                    record.request_id,
-                    record.correlation_id,
-                    record.approval_request_id,
-                    record.mcp_tool_approval_lease_id,
-                    record.workflow_run_id,
-                    record.trace_id,
-                    record.duration_ms,
-                    record.error_summary,
-                    record.search_text,
-                    record.payload_json,
-                ),
-            )
-            return cursor.rowcount > 0
+            return self._insert_record_with_connection(connection, record)
+
+    def _insert_record_with_connection(
+        self,
+        connection: sqlite3.Connection,
+        record: ToolCallAuditIndexRecord,
+    ) -> bool:
+        cursor = connection.execute(_INSERT_TOOL_CALL_AUDIT_SQL, _record_values(record))
+        return cursor.rowcount > 0
 
     def _record_import_progress(
         self,
@@ -487,33 +542,78 @@ class ToolCallAuditIndex:
     ) -> None:
         stat = source_path.stat()
         with connect_audit_index_db(self.path) as connection:
-            connection.execute(
-                """
-                INSERT INTO audit_import_sources (
-                    source_path,
-                    size_bytes,
-                    mtime_ns,
-                    offset_bytes,
-                    complete,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(source_path) DO UPDATE SET
-                    size_bytes = excluded.size_bytes,
-                    mtime_ns = excluded.mtime_ns,
-                    offset_bytes = excluded.offset_bytes,
-                    complete = excluded.complete,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    str(source_path.expanduser().resolve()),
-                    stat.st_size,
-                    stat.st_mtime_ns,
-                    offset_bytes,
-                    1 if complete else 0,
-                    _datetime_to_storage(datetime.now(UTC)),
-                ),
+            self._record_import_progress_with_connection(
+                connection,
+                source_path,
+                source_stat=stat,
+                offset_bytes=offset_bytes,
+                complete=complete,
             )
+
+    def _record_import_progress_with_connection(
+        self,
+        connection: sqlite3.Connection,
+        source_path: Path,
+        *,
+        source_stat: os.stat_result,
+        offset_bytes: int,
+        complete: bool,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO audit_import_sources (
+                source_path,
+                size_bytes,
+                mtime_ns,
+                offset_bytes,
+                complete,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_path) DO UPDATE SET
+                size_bytes = excluded.size_bytes,
+                mtime_ns = excluded.mtime_ns,
+                offset_bytes = excluded.offset_bytes,
+                complete = excluded.complete,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(source_path.expanduser().resolve()),
+                source_stat.st_size,
+                source_stat.st_mtime_ns,
+                offset_bytes,
+                1 if complete else 0,
+                _datetime_to_storage(datetime.now(UTC)),
+            ),
+        )
+
+    def _source_import_complete_for_stat(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        source_key: str,
+        size_bytes: int | None,
+        mtime_ns: int | None,
+        missing_empty_is_complete: bool = False,
+    ) -> bool:
+        if size_bytes is None or mtime_ns is None:
+            return False
+        row = connection.execute(
+            """
+            SELECT size_bytes, mtime_ns, offset_bytes, complete
+            FROM audit_import_sources
+            WHERE source_path = ?
+            """,
+            (source_key,),
+        ).fetchone()
+        if row is None:
+            return missing_empty_is_complete and size_bytes == 0
+        return (
+            int(row["complete"]) == 1
+            and int(row["size_bytes"]) == size_bytes
+            and int(row["mtime_ns"]) == mtime_ns
+            and int(row["offset_bytes"]) >= size_bytes
+        )
 
 
 def tool_call_audit_index_record_from_payload(
@@ -637,6 +737,31 @@ def tool_call_audit_index_record_from_payload(
         error_summary=error_summary,
         search_text=search_text,
         payload_json=payload_json,
+    )
+
+
+def _record_values(record: ToolCallAuditIndexRecord) -> tuple[Any, ...]:
+    return (
+        record.event_key,
+        record.created_at_storage,
+        record.directory_path,
+        record.session_id,
+        record.vm_id,
+        record.agent_role,
+        record.actor_user_id,
+        record.tool_name,
+        record.status,
+        record.decision,
+        record.request_id,
+        record.correlation_id,
+        record.approval_request_id,
+        record.mcp_tool_approval_lease_id,
+        record.workflow_run_id,
+        record.trace_id,
+        record.duration_ms,
+        record.error_summary,
+        record.search_text,
+        record.payload_json,
     )
 
 

@@ -137,6 +137,9 @@ const COMMUNICATION_TARGET_KINDS_BY_PROVIDER: Record<string, string[]> = {
 };
 const COMMUNICATION_TARGET_CAPABILITIES = ["read", "write", "reply", "notify", "comment"];
 const APPROVAL_NOTIFICATION_TARGET_FIELD_NAME = "approval_notification_target_ids";
+const DEFAULT_CONFIGURATION_TAB_KEY = "people_communications";
+const TEAMS_AUTH_CONFIGURATION_TAB_KEY = "people_communications";
+const MODEL_PRICING_CONFIGURATION_TAB_KEY = "models_assistant_knowledge";
 
 const MODEL_PRICING_FALLBACK_ERROR = {
   status: "error",
@@ -158,7 +161,7 @@ const MODEL_PRICING_FALLBACK_ERROR = {
     rules: [],
   },
   editable: false,
-  write_requires_privileged_unlock: true,
+  write_requires_privileged_unlock: false,
   error: "Model pricing catalog status is unavailable.",
   error_class: null,
 } satisfies ModelPricingCatalogStatus;
@@ -907,7 +910,7 @@ export function ConfigurationScreen() {
   const [modelPricingError, setModelPricingError] = useState<string | null>(null);
   const [modelPricingPanelCollapsed, setModelPricingPanelCollapsed] = useState(true);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState(globalSelectedDirectoryPath);
-  const [selectedTab, setSelectedTab] = useState("communications");
+  const [selectedTab, setSelectedTab] = useState(DEFAULT_CONFIGURATION_TAB_KEY);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<TabDrafts>({});
   const [dirtyTabs, setDirtyTabs] = useState<Record<string, boolean>>({});
@@ -984,7 +987,11 @@ export function ConfigurationScreen() {
     if (payload.selected_directory_path !== globalSelectedDirectoryPath) {
       setGlobalSelectedDirectoryPath(payload.selected_directory_path);
     }
-    setSelectedTab((current) => (payload.tabs.some((tab) => tab.key === current) ? current : payload.tabs[0]?.key ?? "communications"));
+    setSelectedTab((current) => (
+      payload.tabs.some((tab) => tab.key === current)
+        ? current
+        : payload.tabs[0]?.key ?? DEFAULT_CONFIGURATION_TAB_KEY
+    ));
     setDrafts((current) => {
       const next = { ...current };
       for (const tab of payload.tabs) {
@@ -1394,14 +1401,14 @@ export function ConfigurationScreen() {
     }
     setTeamsChannelLookupError(null);
     setStatusMessage(
-      `Inserted ${channel.displayName.trim() || channel.channelId?.trim() || "Teams channel"} into the Communications draft.`,
+      `Inserted ${channel.displayName.trim() || channel.channelId?.trim() || "Teams channel"} into the People & Communications draft.`,
     );
     setError(null);
   }
 
   useEffect(() => {
     async function refresh() {
-      if (selectedTab !== "communications") {
+      if (selectedTab !== TEAMS_AUTH_CONFIGURATION_TAB_KEY) {
         return;
       }
       const directoryPath = normalizeDirectoryPath(selectedDirectoryPath);
@@ -2474,7 +2481,7 @@ export function ConfigurationScreen() {
         ) : null}
 
         <div className="feature-grid configuration-summary-grid">
-          {selectedTabDefinition?.key === "communications" ? (
+          {selectedTabDefinition?.key === TEAMS_AUTH_CONFIGURATION_TAB_KEY ? (
             <article className="panel detail-panel configuration-summary-panel teams-auth-panel">
               <div className="panel-header">
                 <div>
@@ -2682,30 +2689,31 @@ export function ConfigurationScreen() {
               </div>
             </div>
           </article>
-          <article className="panel detail-panel configuration-summary-panel model-pricing-panel">
-            <button
-              type="button"
-              className="panel-header panel-toggle model-pricing-panel-toggle"
-              onClick={() => setModelPricingPanelCollapsed((current) => !current)}
-              aria-expanded={!modelPricingPanelCollapsed}
-              aria-controls={modelPricingPanelBodyId}
-            >
-              <div>
-                <h3>Model pricing catalog</h3>
-                <p className="muted-text">
-                  Host-global OpenAI pricing rules used for query-time model usage cost estimates.
-                </p>
-              </div>
-              <div className="model-pricing-panel-toggle-meta">
-                <span className="panel-meta">{modelPricingCatalog?.status ?? "loading"}</span>
-                {modelPricingDirty && modelPricingPanelCollapsed ? (
-                  <span className="status-pill state-stale">Unsaved changes</span>
-                ) : null}
-                <span className="panel-toggle-indicator">{modelPricingPanelCollapsed ? "Show" : "Hide"}</span>
-              </div>
-            </button>
-            {!modelPricingPanelCollapsed ? (
-              <div id={modelPricingPanelBodyId} className="detail-stack compact-detail-stack">
+          {selectedTabDefinition?.key === MODEL_PRICING_CONFIGURATION_TAB_KEY ? (
+            <article className="panel detail-panel configuration-summary-panel model-pricing-panel">
+              <button
+                type="button"
+                className="panel-header panel-toggle model-pricing-panel-toggle"
+                onClick={() => setModelPricingPanelCollapsed((current) => !current)}
+                aria-expanded={!modelPricingPanelCollapsed}
+                aria-controls={modelPricingPanelBodyId}
+              >
+                <div>
+                  <h3>Model pricing catalog</h3>
+                  <p className="muted-text">
+                    Host-global OpenAI pricing rules used for query-time model usage cost estimates.
+                  </p>
+                </div>
+                <div className="model-pricing-panel-toggle-meta">
+                  <span className="panel-meta">{modelPricingCatalog?.status ?? "loading"}</span>
+                  {modelPricingDirty && modelPricingPanelCollapsed ? (
+                    <span className="status-pill state-stale">Unsaved changes</span>
+                  ) : null}
+                  <span className="panel-toggle-indicator">{modelPricingPanelCollapsed ? "Show" : "Hide"}</span>
+                </div>
+              </button>
+              {!modelPricingPanelCollapsed ? (
+                <div id={modelPricingPanelBodyId} className="detail-stack compact-detail-stack">
                 <div className="inline-actions compact-actions">
                   <button
                     type="button"
@@ -3036,9 +3044,10 @@ export function ConfigurationScreen() {
                 ) : null}
                   </>
                 ) : null}
-              </div>
-            ) : null}
-          </article>
+                </div>
+              ) : null}
+            </article>
+          ) : null}
         </div>
 
         {(selectedTabDefinition?.sections ?? []).map((section) => {

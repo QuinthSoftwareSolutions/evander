@@ -15,6 +15,7 @@ from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.web.shared import AdminWebAuth, json_error
 
 DASHBOARD_AGENT_LIST_CACHE_TTL_SECONDS = 10.0
+DASHBOARD_AGENT_INVENTORY_PARAM = "_dashboard_agent_inventory"
 
 
 def _jsonable(value: Any) -> Any:
@@ -27,6 +28,82 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return value
+
+
+def _compact_agent_host(payload: dict[str, Any]) -> dict[str, Any]:
+    host = payload.get("host")
+    if not isinstance(host, dict):
+        return {}
+    compact: dict[str, Any] = {}
+    for key in (
+        "kind",
+        "vm_name",
+        "provider",
+        "issue_number",
+        "inventory_status",
+        "power_state",
+        "libvirt_state",
+        "provider_state",
+        "latest_execution_id",
+        "worker_job_id",
+        "last_status",
+        "execution_count",
+        "active_execution_count",
+        "image",
+        "image_alias",
+        "labels",
+        "directory_paths",
+        "session_ids",
+        "runtime_image",
+        "inventory_error",
+        "reconcile_error",
+    ):
+        if key in host:
+            compact[key] = _jsonable(host[key])
+    return compact
+
+
+def _compact_prompt_queue(payload: dict[str, Any]) -> dict[str, Any]:
+    prompt_queue = payload.get("prompt_queue")
+    if not isinstance(prompt_queue, dict):
+        return {}
+    return {
+        key: _jsonable(prompt_queue.get(key))
+        for key in (
+            "record_count",
+            "coalesced_count",
+            "oldest_created_at",
+            "newest_updated_at",
+            "truncated_count",
+            "read_error",
+        )
+        if key in prompt_queue
+    }
+
+
+def _compact_agent_record_payload(record: Any) -> dict[str, Any]:
+    payload = _jsonable(record)
+    if not isinstance(payload, dict):
+        return {}
+    compact = {
+        key: payload.get(key)
+        for key in (
+            "agent_id",
+            "backend",
+            "target_name",
+            "session_id",
+            "directory_path",
+            "status",
+            "started_at",
+            "finished_at",
+            "updated_at",
+            "capabilities",
+        )
+        if key in payload
+    }
+    compact["host"] = _compact_agent_host(payload)
+    compact["prompt_queue"] = _compact_prompt_queue(payload)
+    return compact
 
 
 async def _json_body(request: Request) -> dict[str, Any]:
@@ -79,6 +156,10 @@ def agent_routes(
         include_inactive = _bool_query(request, "include_inactive", default=True)
         backend = _string_query(request, "backend", default="all")
         summary_only = _bool_query(request, "summary_only", default=False)
+        dashboard_request = _bool_query(request, "_dashboard", default=False)
+        dashboard_agent_inventory = _bool_query(
+            request, DASHBOARD_AGENT_INVENTORY_PARAM, default=False
+        )
         reconcile_containers = _optional_bool_query(request, "reconcile_containers")
         if reconcile_containers is None:
             reconcile_containers = not summary_only
@@ -103,7 +184,12 @@ def agent_routes(
             return json_error(str(exc), status_code=400)
         return JSONResponse(
             {
-                "items": [_jsonable(record) for record in records],
+                "items": [
+                    _compact_agent_record_payload(record)
+                    if summary_only and dashboard_request and dashboard_agent_inventory
+                    else _jsonable(record)
+                    for record in records
+                ],
                 "directory_path": directory_path or "root",
                 "direct_only": direct_only,
                 "backend": backend,

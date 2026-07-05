@@ -504,7 +504,7 @@ class AdminWebAuth:
     def __init__(self, config: AdminWebConfig, user_store: AdminWebUserStore | None = None) -> None:
         self.config = config
         self.user_store = user_store
-        self._privileged_session_id: str | None = None
+        self._privileged_session_ids: set[str] = set()
         self._azure_metadata_cache: dict[str, Any] | None = None
         if self.config.auth_mode == "azure_sso":
             if self.user_store is None:
@@ -558,7 +558,7 @@ class AdminWebAuth:
             if self.config.auth_mode == "azure_sso"
             else None,
             "privileged_operations": {
-                "unlocked": bool(session_id and session_id == self._privileged_session_id),
+                "unlocked": bool(session_id and session_id in self._privileged_session_ids),
             },
             "branding": self.config.branding.to_payload(),
         }
@@ -654,23 +654,25 @@ class AdminWebAuth:
     def logout(self, request: Request) -> None:
         session = self.read_session(request)
         session_id = str(session.get("sid") or "").strip() if session else ""
-        if session_id and session_id == self._privileged_session_id:
-            self._privileged_session_id = None
+        if session_id:
+            self._privileged_session_ids.discard(session_id)
 
     def mark_privileged_for_request(self, request: Request) -> None:
         session = self.require(request)
-        self._privileged_session_id = str(session.get("sid") or "").strip() or None
+        session_id = str(session.get("sid") or "").strip()
+        if session_id:
+            self._privileged_session_ids.add(session_id)
 
     def clear_privileged_for_request(self, request: Request) -> None:
         session = self.read_session(request)
         session_id = str(session.get("sid") or "").strip() if session else ""
-        if session_id and session_id == self._privileged_session_id:
-            self._privileged_session_id = None
+        if session_id:
+            self._privileged_session_ids.discard(session_id)
 
     def privileged_for_request(self, request: Request) -> bool:
         session = self.read_session(request)
         session_id = str(session.get("sid") or "").strip() if session else ""
-        return bool(session_id) and session_id == self._privileged_session_id
+        return bool(session_id) and session_id in self._privileged_session_ids
 
     def require(self, request: Request) -> dict[str, Any]:
         session = self.read_session(request)
@@ -1125,14 +1127,24 @@ class AdminWebAuth:
 
 
 def request_has_privileged_operations(
-    *, auth: AdminWebAuth, service: Any, request: Request
+    *,
+    auth: AdminWebAuth,
+    service: Any,
+    request: Request,
+    required_permission: object | None = None,
+    directory_path: object | None = None,
 ) -> bool:
-    if not auth.privileged_for_request(request):
+    try:
+        if required_permission is None:
+            auth.require(request)
+        else:
+            require_permission = getattr(auth, "require_permission", None)
+            if not callable(require_permission):
+                return False
+            require_permission(request, required_permission, directory_path=directory_path)
+    except PermissionError:
         return False
-    return (
-        not service.operations_admin.privileged_helper_required()
-        or service.operations_admin.privileged_operations_unlocked()
-    )
+    return True
 
 
 def json_error(

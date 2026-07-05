@@ -529,15 +529,24 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
         "delete_ado_backlog_item"
     ]["description"]
     assert list_response.status_code == 200
-    assert list_response.json()["items"][0]["session_id"] == "issue-14085-session"
-    assert (
-        list_response.json()["items"][0]["effective_tool_policy"]["tool_argument_policies"][
-            "create_ado_backlog_item"
-        ][0]["id"]
-        == "issue-policy"
-    )
-    assert list_response.json()["active_items"][0]["session_id"] == "issue-14085-session"
-    assert list_response.json()["counts"]["active"] == 1
+    list_payload = list_response.json()
+    assert list_payload["items"][0]["session_id"] == "issue-14085-session"
+    assert list_payload["items"][0]["vm_id"] == "vm-14085"
+    assert list_payload["items"][0]["vm_provider"] is None
+    assert list_payload["items"][0]["vm_provider_id"] is None
+    assert list_payload["items"][0]["container_lifecycle"] is None
+    assert list_payload["items"][0]["is_expired"] is False
+    assert "effective_tool_policy" not in list_payload["items"][0]
+    assert "tool_summary" not in list_payload["items"][0]
+    assert "approval_notification_target_options" not in list_payload["items"][0]
+    assert "runtime_image" not in list_payload["items"][0]
+    assert "active_items" not in list_payload
+    assert "expired_items" not in list_payload
+    assert list_payload["status_ids"] == {
+        "active": ["issue-14085-session"],
+        "expired": [],
+    }
+    assert list_payload["counts"]["active"] == 1
     assert detail_response.status_code == 200
     assert detail_response.json()["session"]["model"] == "gpt-5.3-codex"
     assert detail_response.json()["session"]["tool_summary"]["session_id"] == "issue-14085-session"
@@ -564,15 +573,6 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
         == "issue-policy"
     )
     assert detail_response.json()["summary_json"]["session_id"] == "issue-14085-session"
-    assert list_response.json()["items"][0]["runtime_image"] == {
-        "backend": "libvirt_vm",
-        "kind": "libvirt_vm_template",
-        "label": "Legacy session: VM template metadata unavailable",
-        "template_alias": None,
-        "image_ref": None,
-        "image_ref_sanitized": False,
-        "missing_reason": "legacy_missing_libvirt_vm_template",
-    }
     assert model_response.status_code == 200
     assert model_response.json()["action"] == "set_session_model"
     assert model_response.json()["session"]["model"] == "gpt-5.5"
@@ -595,6 +595,134 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert renew_response.json()["action"] == "renew_session"
     assert revoke_response.status_code == 200
     assert revoke_response.json()["action"] == "revoke_session"
+
+
+def test_admin_web_sessions_list_uses_compact_payload_without_heavy_decoration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="active-session",
+            vm_id="vm-active",
+            vm_provider="libvirt_vm",
+            model="gpt-5",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="expired-session",
+            vm_id=None,
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            model="gpt-5",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) - timedelta(hours=2),
+        ),
+    )
+    monkeypatch.setattr(
+        service.runtime.policy,
+        "allowed_tool_summary_for_session",
+        lambda *args, **kwargs: pytest.fail("list route must not build tool summaries"),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "approval_notification_target_options",
+        lambda *args, **kwargs: pytest.fail("list route must not build notification options"),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "effective_tool_policy_payload",
+        lambda *args, **kwargs: pytest.fail("list route must not build effective policy"),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "session_runtime_image_payload",
+        lambda *args, **kwargs: pytest.fail("list route must not build runtime images"),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/sessions?include_expired=true")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["session_id"] for item in payload["items"]] == [
+        "active-session",
+        "expired-session",
+    ]
+    assert payload["items"][0]["vm_provider"] == "libvirt_vm"
+    assert payload["items"][1]["vm_provider"] == "container_worker_vm"
+    assert payload["items"][1]["vm_provider_id"] == "container-target"
+    assert payload["counts"] == {"total": 2, "active": 1, "expired": 1}
+    assert payload["status_ids"] == {
+        "active": ["active-session"],
+        "expired": ["expired-session"],
+    }
+
+
+def test_admin_web_session_detail_reuses_cached_policy_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="cached-session",
+            vm_id="vm-cached",
+            model="gpt-5",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    original_tool_summary = service.runtime.policy.allowed_tool_summary_for_session
+    original_effective_policy = service.vm_agent_admin.effective_tool_policy_payload
+    original_notification_options = service.vm_agent_admin.approval_notification_target_options
+    calls = {
+        "tool_summary": 0,
+        "effective_policy": 0,
+        "notification_options": 0,
+    }
+
+    def counted_tool_summary(*args: object, **kwargs: object) -> object:
+        calls["tool_summary"] += 1
+        return original_tool_summary(*args, **kwargs)
+
+    def counted_effective_policy(*args: object, **kwargs: object) -> object:
+        calls["effective_policy"] += 1
+        return original_effective_policy(*args, **kwargs)
+
+    def counted_notification_options(*args: object, **kwargs: object) -> object:
+        calls["notification_options"] += 1
+        return original_notification_options(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service.runtime.policy,
+        "allowed_tool_summary_for_session",
+        counted_tool_summary,
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "effective_tool_policy_payload",
+        counted_effective_policy,
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "approval_notification_target_options",
+        counted_notification_options,
+    )
+    client = TestClient(create_app(service))
+
+    first_response = client.get("/api/admin/sessions/cached-session")
+    second_response = client.get("/api/admin/sessions/cached-session")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert calls == {
+        "tool_summary": 1,
+        "effective_policy": 1,
+        "notification_options": 2,
+    }
 
 
 def test_admin_web_sessions_catalog_uses_model_pricing_catalog_models(
@@ -771,41 +899,13 @@ def test_admin_web_exposes_runtime_image_payloads_for_session_list_and_detail(
     items_by_session_id = {
         item["session_id"]: item for item in list_response.json()["items"]
     }
-    assert items_by_session_id[explicit_session_id]["runtime_image"] == {
-        "backend": "libvirt_vm",
-        "kind": "libvirt_vm_template",
-        "label": "Libvirt VM template",
-        "template_alias": "dotnet",
-        "image_ref": "dotnet-agent.qcow2",
-        "image_ref_sanitized": True,
-        "missing_reason": None,
+    assert set(items_by_session_id) == {
+        explicit_session_id,
+        default_session_id,
+        legacy_session_id,
+        container_session_id,
     }
-    assert items_by_session_id[default_session_id]["runtime_image"] == {
-        "backend": "libvirt_vm",
-        "kind": "libvirt_vm_template",
-        "label": "Libvirt VM template",
-        "template_alias": "default",
-        "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
-        "image_ref_sanitized": False,
-        "missing_reason": None,
-    }
-    assert items_by_session_id[legacy_session_id]["runtime_image"] == {
-        "backend": "libvirt_vm",
-        "kind": "libvirt_vm_template",
-        "label": "Legacy session: VM template metadata unavailable",
-        "template_alias": None,
-        "image_ref": None,
-        "image_ref_sanitized": False,
-        "missing_reason": "legacy_missing_libvirt_vm_template",
-    }
-    assert items_by_session_id[container_session_id]["runtime_image"] == {
-        "backend": "container_worker_vm",
-        "kind": "container_worker_image",
-        "label": "Container worker image",
-        "image_alias": "default",
-        "image_ref": "runner:latest",
-        "missing_reason": None,
-    }
+    assert all("runtime_image" not in item for item in items_by_session_id.values())
     assert detail_response.status_code == 200
     assert detail_response.json()["session"]["runtime_image"] == {
         "backend": "libvirt_vm",
@@ -880,22 +980,6 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
         "payload_mode": "exact",
     }
 
-    locked_response = asyncio.run(
-        update_mcp_tools(
-            _admin_json_request(
-                method="PUT",
-                path="/api/admin/mcp-tools",
-                query_string=b"directory_path=root",
-                payload={
-                    "expected_revision": initial_payload["revision"],
-                    "mcp_tool_policies": {},
-                },
-            )
-        )
-    )
-    assert locked_response.status_code == 403
-
-    service.operations_admin.unlock_privileged_operations()
     update_request = _admin_json_request(
         method="PUT",
         path="/api/admin/mcp-tools",
@@ -918,7 +1002,6 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
             },
         },
     )
-    auth.mark_privileged_for_request(update_request)
     update_response = asyncio.run(update_mcp_tools(update_request))
 
     assert update_response.status_code == 200

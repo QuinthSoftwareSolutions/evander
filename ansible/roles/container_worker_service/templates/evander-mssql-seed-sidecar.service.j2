@@ -1,0 +1,20 @@
+[Unit]
+Description=Evander MSSQL Seed Restore Sidecar
+After=network-online.target mssql-server.service
+Wants=network-online.target
+Requires=mssql-server.service
+
+[Service]
+Type=simple
+User={{ evander_run_user }}
+{% if (evander_run_user_supplementary_groups | default([]) | length) > 0 %}
+SupplementaryGroups={{ evander_run_user_supplementary_groups | join(' ') }}
+{% endif %}
+WorkingDirectory={{ evander_deploy_path }}
+EnvironmentFile={{ evander_deploy_path }}/config/mssql-seed-sidecar.env
+ExecStart={{ evander_deploy_path }}/.venv/bin/evander-mssql-seed-sidecar --host {{ evander_worker_mssql_seed_sidecar_host }} --port {{ evander_worker_mssql_seed_sidecar_port }} --token-env {{ evander_worker_mssql_seed_sidecar_token_env }} --mssql-admin-user {{ evander_worker_mssql_admin_user }} --mssql-admin-password-env {{ evander_worker_mssql_admin_password_env }} --mssql-admin-host {{ evander_worker_mssql_admin_host }} --mssql-port {{ evander_worker_mssql_port }} --mssql-sqlcmd-path {{ evander_worker_mssql_sqlcmd_path }} --mssql-data-dir {{ evander_worker_mssql_seed_sidecar_data_dir }}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

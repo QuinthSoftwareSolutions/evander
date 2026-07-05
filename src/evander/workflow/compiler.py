@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from pathlib import Path
 
 from evander.config import TriggerOrchestratorWorkerGlobalConfig
 from evander.provider_profiles import resolve_provider_module_names
@@ -42,13 +43,18 @@ def compile_trigger_orchestrator_config_with_diagnostics(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
     *,
     transforms: Iterable[WorkflowTransform] | None = None,
+    addon_base_dir: str | Path | None = None,
 ) -> tuple[TriggerOrchestratorWorkerGlobalConfig, list[WorkflowValidationDiagnostic]]:
     compiled = compile_trigger_orchestrator_config(worker_config, transforms=transforms)
-    return compiled, collect_domain_validation_diagnostics(compiled)
+    return compiled, collect_domain_validation_diagnostics(
+        compiled, addon_base_dir=addon_base_dir
+    )
 
 
 def collect_domain_validation_diagnostics(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
+    *,
+    addon_base_dir: str | Path | None = None,
 ) -> list[WorkflowValidationDiagnostic]:
     nodes_by_id = {
         node.id: node
@@ -68,6 +74,7 @@ def collect_domain_validation_diagnostics(
         include_entry_points=worker_config.provider_loader.provider_entry_points_enabled,
         include_builtin=worker_config.provider_include_builtin,
         addon_loader=worker_config.addon_loader,
+        addon_base_dir=addon_base_dir,
     )
     node_capabilities = {
         **{

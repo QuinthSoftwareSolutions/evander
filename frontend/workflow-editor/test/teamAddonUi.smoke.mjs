@@ -99,6 +99,11 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /ensureStateStream/);
   assert.match(script, /\/state\/stream/);
   assert.match(script, /applyStateSnapshot/);
+  assert.match(script, /teamViewCacheGeneration \+= 1/);
+  assert.match(script, /loadedTeamViews\.clear\(\)/);
+  assert.match(script, /loadView\(activeTeamView, \{ force: true, preserveForms: true \}\)/);
+  assert.match(script, /pendingForcedTeamViewLoads/);
+  assert.match(script, /return loadView\(normalizedView, \{ force: true, preserveForms: pendingLoad\.preserveForms \}\)/);
   assert.match(script, /chatReadMarkers/);
   assert.match(script, /chatConversationHasUnread/);
   assert.match(script, /team-view-tab-badge/);
@@ -128,6 +133,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /session_is_expired/);
   assert.match(script, /expired_agent_session/);
   assert.match(script, /buildOrgFlowGraph/);
+  assert.match(script, /orgFlowLayoutFitKey\(nodes, edges\)/);
   assert.match(script, /team-org-flow:edit-agent/);
   assert.match(script, /team-org-flow:canvas-menu/);
   assert.match(script, /data-org-context-action/);
@@ -551,6 +557,10 @@ function buildTimelinePayload(state, url) {
     matchesTimelineFilters(entry, filters),
   );
   entries.sort(compareTimelineEntries);
+  const totalCount = entries.length;
+  const limit = Math.max(1, queryInt(url.searchParams, "limit", 50));
+  const offset = Math.max(0, queryInt(url.searchParams, "offset", 0));
+  const windowedEntries = entries.slice(offset, offset + limit);
   return {
     revision: state.revision,
     derived: true,
@@ -559,7 +569,11 @@ function buildTimelinePayload(state, url) {
     description: "Derived timeline from the current TeamState snapshot.",
     filters: compactFilters(filters),
     timestampless_count: entries.filter((entry) => entry.timestamp === null).length,
-    entries,
+    total_count: totalCount,
+    limit,
+    offset,
+    has_more: offset + windowedEntries.length < totalCount,
+    entries: windowedEntries,
   };
 }
 
@@ -1034,6 +1048,15 @@ function queryText(searchParams, key) {
   return text || null;
 }
 
+function queryInt(searchParams, key, fallback) {
+  const value = queryText(searchParams, key);
+  if (value === null) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function normalizedQueryValues(searchParams, key) {
   const values = [];
   searchParams.getAll(key).forEach((value) => {
@@ -1357,6 +1380,9 @@ async function createTeamAddonServer(
             await conversationsBeforeResponse({ request, url, chatRequests });
           }
         }
+        if (view === "timeline") {
+          timelineRequests.push(url.search);
+        }
         if (!teamViewIds.includes(view)) {
           jsonResponse(response, { error: "view not found" }, 404);
           return;
@@ -1586,7 +1612,17 @@ async function createTeamAddonServer(
             { value: "openai", label: "OpenAI relay" },
             { value: "local_openai", label: "Local OpenAI" },
           ],
-          communication_targets: [],
+          communication_targets: [
+            {
+              value: "team-alerts",
+              label: "team-alerts (teams, read, reply, write)",
+              metadata: {
+                provider: "teams",
+                target_shape: "teams_channel",
+                policy_capabilities: ["read", "reply", "write"],
+              },
+            },
+          ],
           libvirt: {
             default_template: "default",
             templates: [{ alias: "default", image_ref: "/var/lib/libvirt/images/default.qcow2" }],
@@ -2310,6 +2346,29 @@ async function waitForSelectOption(page, selector, value) {
   await page.locator(`${selector} option[value="${value}"]`).waitFor({ state: "attached" });
 }
 
+async function orgChartViewportTransform(page) {
+  const viewport = page.locator("#team-org-page .react-flow__viewport");
+  await viewport.waitFor({ state: "visible" });
+  return viewport.evaluate((element) => getComputedStyle(element).transform);
+}
+
+async function zoomOrgChartCanvas(page) {
+  const canvas = page.locator("#team-org-page [data-team-org-flow-canvas]");
+  const box = await canvas.boundingBox();
+  assert.ok(box, "expected org chart canvas bounds");
+  const beforeTransform = await orgChartViewportTransform(page);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, -600);
+  await page.waitForFunction(
+    (expectedTransform) => {
+      const viewport = document.querySelector("#team-org-page .react-flow__viewport");
+      return Boolean(viewport) && getComputedStyle(viewport).transform !== expectedTransform;
+    },
+    beforeTransform,
+  );
+  return orgChartViewportTransform(page);
+}
+
 async function rightClickBareOrgCanvas(page) {
   const point = await page.locator("#team-org-page [data-team-org-flow-canvas]").evaluate((canvas) => {
     const rect = canvas.getBoundingClientRect();
@@ -2935,6 +2994,31 @@ test("team add-on agent registration can create and auto-register a core session
   await inlineAgentForm.getByRole("button", { name: "Create new session" }).click();
   const createDialog = page.locator('[role="dialog"][aria-label="Create and register agent"]');
   await createDialog.waitFor({ state: "visible" });
+  await createDialog.locator(".agent-capability-group").waitFor({ state: "visible" });
+  assert.equal(await createDialog.locator(".agent-capability-option").count(), 5);
+  for (const label of [".NET", "NuGet", "MSSQL", "Playwright", "Web search"]) {
+    await createDialog.locator(".agent-capability-option", { hasText: label }).waitFor({ state: "visible" });
+  }
+  const backendSelect = createDialog.locator("label", { hasText: "Backend" }).locator("select");
+  await backendSelect.selectOption("container_worker_vm");
+  assert.equal(await createDialog.locator(".agent-capability-option").count(), 4);
+  for (const label of [".NET", "NuGet", "Playwright", "Web search"]) {
+    await createDialog.locator(".agent-capability-option", { hasText: label }).waitFor({ state: "visible" });
+  }
+  assert.equal(await createDialog.locator(".agent-capability-option", { hasText: "MSSQL" }).count(), 0);
+  await backendSelect.selectOption("libvirt_vm");
+  assert.equal(await createDialog.locator(".agent-capability-option").count(), 5);
+  assert.equal(await createDialog.getByRole("textbox", { name: /MSSQL init root/ }).isVisible().catch(() => false), false);
+  const mssqlCapability = createDialog.locator(".agent-capability-option", { hasText: "MSSQL" });
+  await mssqlCapability.locator('input[type="checkbox"]').check();
+  await createDialog.locator(".agent-capability-detail-row").getByRole("textbox", { name: /MSSQL init root/ }).waitFor({ state: "visible" });
+  await mssqlCapability.locator('input[type="checkbox"]').uncheck();
+  await createDialog.getByRole("textbox", { name: /MSSQL init root/ }).waitFor({ state: "hidden" });
+  const communicationTargetTable = createDialog.locator(".agent-communication-target-table");
+  await communicationTargetTable.waitFor({ state: "visible" });
+  await communicationTargetTable.getByRole("columnheader", { name: "Provider" }).waitFor({ state: "visible" });
+  await communicationTargetTable.getByRole("cell", { name: "Teams", exact: true }).waitFor({ state: "visible" });
+  assert.equal(await communicationTargetTable.locator('tbody input[type="checkbox"]').count(), 1);
   await createDialog.locator("label", { hasText: "VM name" }).locator("input").fill("vm-team-created");
   await createDialog.getByRole("button", { name: "Create and register" }).click();
   await createDialog.locator(".error-callout", { hasText: "Session id is required" }).waitFor({ state: "visible" });
@@ -3069,10 +3153,13 @@ test("team add-on agent registration keeps core creation locked with privileges 
   await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
 
   await teamGroup.locator('[data-team-record-tab="agent"]').click();
-  await teamGroup.getByRole("button", { name: "Add agent" }).click();
-  const inlineAgentForm = teamGroup.locator('form[data-form-id="register-agent-form"]');
-  await inlineAgentForm.waitFor({ state: "visible" });
-  assert.equal(await inlineAgentForm.getByRole("button", { name: "Create new session" }).isDisabled(), true);
+  const addAgentButton = teamGroup.getByRole("button", { name: "Add agent" });
+  await addAgentButton.waitFor({ state: "visible" });
+  assert.equal(await addAgentButton.isDisabled(), true);
+  assert.equal(await addAgentButton.getAttribute("title"), "Unlock privileged operations to add Team records.");
+  await addAgentButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  assert.equal(await teamGroup.locator('form[data-form-id="register-agent-form"]').count(), 0);
 
   await page.evaluate(() => {
     window.dispatchEvent(
@@ -3089,6 +3176,142 @@ test("team add-on agent registration keeps core creation locked with privileges 
     requests.some((request) => request.method === "POST" && request.pathname === "/api/admin/agents/create-operations"),
     false,
   );
+});
+
+test("team add-on locked mode disables mutation entry points", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+
+  const createTeamButton = page.locator("#team-tab-create-team-action");
+  await createTeamButton.waitFor({ state: "visible" });
+  assert.equal(await createTeamButton.isDisabled(), true);
+  assert.equal(await createTeamButton.getAttribute("title"), "Unlock privileged operations to create teams.");
+  await createTeamButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  await page.locator("#teams-create-team-panel").waitFor({ state: "hidden" });
+
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await teamGroup.locator('[data-team-record-tab="agent"]').click();
+  const addAgentButton = teamGroup.getByRole("button", { name: "Add agent" });
+  await addAgentButton.waitFor({ state: "visible" });
+  assert.equal(await addAgentButton.isDisabled(), true);
+  assert.equal(await addAgentButton.getAttribute("title"), "Unlock privileged operations to add Team records.");
+  await addAgentButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  assert.equal(await teamGroup.locator('form[data-form-id="register-agent-form"]').count(), 0);
+
+  await page.locator("#team-view-projects-tab").click();
+  await page.locator("#team-projects-page").waitFor({ state: "visible" });
+  const projectCreateButton = page.locator("[data-project-create-toggle]");
+  await projectCreateButton.waitFor({ state: "visible" });
+  assert.equal(await projectCreateButton.isDisabled(), true);
+  assert.equal(await projectCreateButton.getAttribute("title"), "Unlock privileged operations to create projects.");
+  await projectCreateButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  await page.locator("#create-project-from-projects-form").waitFor({ state: "hidden" });
+
+  await openOrgChart(page);
+  const backendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  await backendCard.waitFor({ state: "visible" });
+  await backendCard.click({ button: "right" });
+  const subordinateMenuItem = page.getByRole("menuitem", { name: "Add subordinate agent" });
+  await subordinateMenuItem.waitFor({ state: "visible" });
+  assert.equal(await subordinateMenuItem.isDisabled(), true);
+  assert.equal(
+    await subordinateMenuItem.getAttribute("title"),
+    "Unlock privileged operations to add subordinate agents.",
+  );
+  await subordinateMenuItem.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator("#org-action-modal").isVisible().catch(() => false), false);
+
+  const mutationRequests = requests.filter((request) => request.method !== "GET");
+  assert.deepEqual(mutationRequests, []);
+});
+
+test("team add-on privilege messages update controls without losing selected manager", async (t) => {
+  const initialState = seededOrgChartState();
+  const standDown = {
+    id: "stand-down-manager",
+    agent_id: "manager",
+    source: "operator",
+    reason: "Pause manager wakeups",
+    set_by: "operator",
+    set_at: "2026-06-11T08:50:00Z",
+    cleared_by: null,
+    cleared_at: null,
+    active: true,
+    inherited: false,
+    root_agent_id: "manager",
+  };
+  initialState.stand_downs = { [standDown.id]: standDown };
+  initialState.agents.manager.stand_down_active = true;
+  initialState.agents.manager.effective_stand_downs = [standDown];
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port, {}, "/addons/team-addon/?privileged_unlocked=false");
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await teamGroup.locator('[data-select-agent-id="manager"]').click();
+
+  const detail = page.locator("#team-people-page .agent-detail", { hasText: "Ops Manager" });
+  await detail.waitFor({ state: "visible" });
+  const revokeButton = detail.locator('[data-stand-down-revoke-agent-id="manager"]');
+  await revokeButton.waitFor({ state: "visible" });
+  assert.equal(await revokeButton.isDisabled(), true);
+  const requestCountBeforeMessage = requests.length;
+
+  await page.evaluate(() => {
+    window.postMessage(
+      {
+        type: "admin-privileged-operations",
+        privileged_operations: { unlocked: true },
+      },
+      window.location.origin,
+    );
+  });
+  await page.waitForFunction(() => {
+    const detail = document.querySelector("#team-people-page .agent-detail");
+    const button = detail?.querySelector('[data-stand-down-revoke-agent-id="manager"]');
+    return Boolean(detail?.textContent?.includes("Ops Manager") && button && !button.disabled);
+  });
+  assert.equal(await detail.locator(".agent-detail-title h3").innerText(), "Ops Manager");
+  assert.equal(requests.length, requestCountBeforeMessage);
+
+  await page.evaluate(() => {
+    window.postMessage(
+      {
+        type: "admin-privileged-operations",
+        privileged_operations: { unlocked: false },
+      },
+      window.location.origin,
+    );
+  });
+  await page.waitForFunction(() => {
+    const detail = document.querySelector("#team-people-page .agent-detail");
+    const button = detail?.querySelector('[data-stand-down-revoke-agent-id="manager"]');
+    return Boolean(detail?.textContent?.includes("Ops Manager") && button?.disabled);
+  });
 });
 
 test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
@@ -3191,6 +3414,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
     state: "visible",
   });
 
+  const zoomedOrgViewport = await zoomOrgChartCanvas(page);
   await focusedBackendCard.click();
   await page.locator("#edit-modal-title", { hasText: "Edit agent backend" }).waitFor({
     state: "visible",
@@ -3209,6 +3433,12 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   assert.ok(editRequest);
   assert.equal(editRequest.payload.display_name, "Backend Worker Updated");
   assert.equal(Object.hasOwn(editRequest.payload, "project_id"), false);
+  await page.waitForTimeout(350);
+  assert.equal(
+    await orgChartViewportTransform(page),
+    zoomedOrgViewport,
+    "saving agent edits should not refit the org chart viewport",
+  );
 });
 
 test("team add-on Org chart draws edges and separates sibling agents", async (t) => {
@@ -3451,6 +3681,7 @@ test("team add-on Org chart context menu adds subordinate agents", async (t) => 
   assert.equal(await form.locator('[name="team_id"]').inputValue(), "team");
   assert.equal(await form.locator('[name="project_id"]').inputValue(), "project");
 
+  await form.locator('[name="role_id"]').selectOption("project__worker");
   await form.getByRole("button", { name: "Create new session" }).click();
   const createDialog = page.locator('[role="dialog"][aria-label="Create and register agent"]');
   await createDialog.waitFor({ state: "visible" });
@@ -3471,7 +3702,6 @@ test("team add-on Org chart context menu adds subordinate agents", async (t) => 
   await createDialog.waitFor({ state: "hidden" });
   await dialog.waitFor({ state: "visible" });
 
-  await form.locator('[name="role_id"]').selectOption("project__worker");
   await form.locator('[name="existing_session_id"]').selectOption("session-existing-backend");
   await form.locator('[name="display_name"]').fill("Context Worker");
   await form.locator('[name="max_concurrent"]').fill("1");
@@ -5769,10 +5999,6 @@ test("team add-on UI renders git refs and releases and submits a review decision
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
-  await waitForCondition(
-    () => timelineRequests.length > 0,
-    "expected initial timeline request",
-  );
   const timelineRequestsBeforeTabRefresh = timelineRequests.length;
   await page.getByRole("tab", { name: "Timeline" }).click();
   const timelinePage = page.locator("#team-timeline-page");
@@ -5785,8 +6011,11 @@ test("team add-on UI renders git refs and releases and submits a review decision
   assert.ok((await timelinePage.locator(".timeline-entry").count()) >= 10);
   await waitForCondition(
     () => timelineRequests.length > timelineRequestsBeforeTabRefresh,
-    "expected timeline tab refresh request",
+    "expected timeline tab request",
   );
+  const initialTimelineSearch = new URLSearchParams(timelineRequests.at(-1));
+  assert.equal(initialTimelineSearch.get("limit"), "10");
+  assert.equal(initialTimelineSearch.get("offset"), "0");
   const timelineRequestsBeforeDecision = timelineRequests.length;
 
   await page.getByRole("tab", { name: "Delivery" }).click();
@@ -5978,6 +6207,11 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await timelineTypeFilter.selectOption("review");
   await timelineAttentionFilter.selectOption("false");
   await timelinePage.locator(".timeline-entry").first().waitFor({ state: "visible" });
+  const filteredTimelineSearch = new URLSearchParams(timelineRequests.at(-1));
+  assert.equal(filteredTimelineSearch.get("type"), "review");
+  assert.equal(filteredTimelineSearch.get("attention_needed"), "false");
+  assert.equal(filteredTimelineSearch.get("limit"), "10");
+  assert.equal(filteredTimelineSearch.get("offset"), "0");
   assert.equal(await timelinePage.locator(".timeline-entry").count(), 4);
   await timelinePage.getByText(/Review requested for deliverable deliverable-waiting/).first().waitFor({
     state: "visible",
