@@ -2915,7 +2915,13 @@ async function loadState({ preserveForms = false } = {}) {
 }
 
 async function reloadActiveTeamView({ preserveForms = false } = {}) {
+  invalidateLoadedTeamViews();
   await loadView(activeTeamView, { force: true, preserveForms });
+}
+
+function invalidateLoadedTeamViews() {
+  teamViewCacheGeneration += 1;
+  loadedTeamViews.clear();
 }
 
 function applyStateSnapshot(payload) {
@@ -10674,9 +10680,13 @@ function renderTimeline() {
   const limit = Number.isFinite(Number(timelineState.limit)) && Number(timelineState.limit) > 0
     ? Number(timelineState.limit)
     : timelinePageSize;
+  let pageWasClamped = false;
   if (activeTeamView === "timeline") {
     const pageCount = Math.max(1, Math.ceil(totalCount / limit));
-    timelinePage = Math.min(Math.max(1, timelinePage), pageCount);
+    const nextPage = Math.min(Math.max(1, timelinePage), pageCount);
+    pageWasClamped = nextPage !== timelinePage;
+    timelinePage = nextPage;
+    refetchTimelineAfterPageClamp({ pageWasClamped, totalCount, entries });
   }
   const summaryParts = [`${totalCount} ${totalCount === 1 ? "entry" : "entries"}`];
   if (timelineState.timestampless_count) {
@@ -10709,6 +10719,15 @@ function renderTimeline() {
       ${entries.map((entry) => renderTimelineEntry(entry)).join("")}
     </ul>
   `);
+}
+
+function refetchTimelineAfterPageClamp({ pageWasClamped, totalCount, entries }) {
+  if (!pageWasClamped || timelineLoading || totalCount <= 0 || entries.length) {
+    return;
+  }
+  timelineLoading = true;
+  setTimelineStatus("Loading derived timeline.", "loading");
+  void loadTimeline();
 }
 
 function renderFocusedTimeline(entries) {

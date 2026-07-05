@@ -8,6 +8,10 @@
   payloads while preserving current/actionable records.
 - Kept Team UI mutation recovery on scoped active-view refreshes instead of
   falling back to full-state reloads.
+- Invalidated cached Team views after conflict recovery so previously visited
+  tabs reload against the latest revision.
+- Refetched the corrected timeline page after server-windowed view payloads
+  clamp an out-of-range page.
 
 ## 2026-07-04 - Admin Web Branding Asset Caching
 

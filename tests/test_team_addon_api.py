@@ -1798,6 +1798,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "timelineSearchParams" in script.text
     assert 'search.set("limit", String(timelinePageSize))' in script.text
     assert "reloadActiveTeamView({ preserveForms: true })" in script.text
+    assert "invalidateLoadedTeamViews();" in script.text
+    assert "function refetchTimelineAfterPageClamp" in script.text
+    assert "void loadTimeline();" in script.text
     assert "teamViewCacheGeneration += 1" in script.text
     assert "loadedTeamViews.clear()" in script.text
     assert "loadView(activeTeamView, { force: true, preserveForms: true })" in script.text
