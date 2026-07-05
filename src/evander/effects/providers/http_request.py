@@ -37,10 +37,13 @@ class _PinnedAddressNetworkBackend(httpcore.SyncBackend):
         self,
         *,
         allowed_host: str,
-        approved_address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+        approved_addresses: Iterable[ipaddress.IPv4Address | ipaddress.IPv6Address],
     ) -> None:
         self.allowed_host = allowed_host.rstrip(".").casefold()
-        self.approved_address = approved_address
+        self.approved_addresses = tuple(approved_addresses)
+        if not self.approved_addresses:
+            raise ValueError("approved_addresses cannot be empty")
+        self.approved_address = self.approved_addresses[0]
 
     def connect_tcp(
         self,
@@ -55,13 +58,21 @@ class _PinnedAddressNetworkBackend(httpcore.SyncBackend):
             raise httpcore.ConnectError(
                 f"{NODE_TYPE} attempted to connect to unapproved host: {host}"
             )
-        return super().connect_tcp(
-            str(self.approved_address),
-            port,
-            timeout=timeout,
-            local_address=local_address,
-            socket_options=socket_options,
-        )
+        last_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = None
+        for approved_address in self.approved_addresses:
+            try:
+                return super().connect_tcp(
+                    str(approved_address),
+                    port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise httpcore.ConnectError(f"{NODE_TYPE} has no approved addresses for host: {host}")
 
 
 class _PinnedAddressHTTPTransport(httpx.HTTPTransport):
@@ -69,12 +80,12 @@ class _PinnedAddressHTTPTransport(httpx.HTTPTransport):
         self,
         *,
         allowed_host: str,
-        approved_address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+        approved_addresses: Iterable[ipaddress.IPv4Address | ipaddress.IPv6Address],
     ) -> None:
         super().__init__(limits=httpx.Limits(max_connections=1, max_keepalive_connections=0))
         self.pinned_backend = _PinnedAddressNetworkBackend(
             allowed_host=allowed_host,
-            approved_address=approved_address,
+            approved_addresses=approved_addresses,
         )
         self._pool = httpcore.ConnectionPool(
             ssl_context=httpcore.default_ssl_context(),
@@ -363,7 +374,7 @@ class HttpRequestEffectProvider(EffectProviderBase):
         return _ApprovedDestination(
             transport=_PinnedAddressHTTPTransport(
                 allowed_host=normalized_host,
-                approved_address=resolved_addresses[0],
+                approved_addresses=resolved_addresses,
             )
         )
 

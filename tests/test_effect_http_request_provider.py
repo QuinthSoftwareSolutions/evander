@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import socket
 from collections.abc import Mapping
@@ -599,9 +600,59 @@ def test_http_request_provider_uses_pinned_public_address_for_hostname(
     assert isinstance(transport_arg, _PinnedAddressHTTPTransport)
     assert transport_arg.pinned_backend.allowed_host == "api.example.test"
     assert str(transport_arg.pinned_backend.approved_address) == "93.184.216.34"
+    assert [str(address) for address in transport_arg.pinned_backend.approved_addresses] == [
+        "93.184.216.34",
+        "93.184.216.35",
+    ]
     assert len(requests) == 1
     assert str(requests[0].url) == "https://api.example.test/items/42"
     assert result["success"] is True
+
+
+def test_pinned_public_address_transport_tries_later_approved_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[tuple[str, int]] = []
+
+    class FakeSocket:
+        def setsockopt(self, *_args: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    fake_socket = FakeSocket()
+
+    def fake_create_connection(
+        address: tuple[str, int],
+        timeout: float | None = None,
+        source_address: tuple[str, int] | None = None,
+    ) -> FakeSocket:
+        del timeout, source_address
+        attempts.append(address)
+        if address[0] == "2001:4860:4860::8888":
+            raise OSError("IPv6 egress unavailable")
+        return fake_socket
+
+    monkeypatch.setattr(
+        "httpcore._backends.sync.socket.create_connection",
+        fake_create_connection,
+    )
+    transport = _PinnedAddressHTTPTransport(
+        allowed_host="api.example.test",
+        approved_addresses=[
+            ipaddress.ip_address("2001:4860:4860::8888"),
+            ipaddress.ip_address("93.184.216.34"),
+        ],
+    )
+
+    stream = transport.pinned_backend.connect_tcp("api.example.test", 443, timeout=2.5)
+
+    assert stream is not None
+    assert attempts == [
+        ("2001:4860:4860::8888", 443),
+        ("93.184.216.34", 443),
+    ]
 
 
 def test_http_request_provider_allows_private_destination_with_explicit_opt_in(

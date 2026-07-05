@@ -7,6 +7,10 @@
 - Scoped Admin Web VM, issue, agent, and directory-creation owner checks to the
   target directory so child-directory owners can mutate their own scope after
   unlock.
+- Tried every vetted public DNS address for workflow HTTP requests so an
+  unreachable first record does not block later approved addresses.
+- Scoped Admin Web session and wake-schedule mutation owner checks to the
+  target session directory.
 
 ## 2026-07-05 - Tokenized Relay Security Fixes
 

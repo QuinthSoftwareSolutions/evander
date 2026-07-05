@@ -12,6 +12,7 @@ from starlette.testclient import TestClient
 
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from evander.admin.web.app import create_app
+from evander.admin.web.rbac import OWNER_GROUP_ID
 from evander.admin.web.shared import AdminWebAuth, AdminWebConfig
 from evander.admin.web.sessions_approvals import session_approval_routes
 from evander.messaging.targets import (
@@ -137,6 +138,40 @@ def _authenticated_owner_and_operator_clients(
     assert operator_login.json()["role"] == "regular"
 
     return service, owner_client, operator_client
+
+
+def _authenticated_scoped_owner_client(
+    service: AdminRuntimeComponents,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    directory_path: str = "root/ops",
+) -> TestClient:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.remove_user_group_assignment(
+        login="ops-owner@example.com",
+        group_id="operator",
+        directory_path="root",
+    )
+    store.assign_user_group(
+        login="ops-owner@example.com",
+        group_id=OWNER_GROUP_ID,
+        directory_path=directory_path,
+    )
+    store.set_local_password(login="ops-owner@example.com", password="ops-pass")
+    client = TestClient(app)
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "ops-owner@example.com", "password": "ops-pass"},
+    )
+    assert login.status_code == 200
+    _unlock_privileged_operations(client)
+    return client
 
 
 def _seed_session(
@@ -341,6 +376,77 @@ def test_admin_web_session_mutations_require_owner_unlock(
     assert cleanup_calls == ["session-cleanup"]
 
 
+def test_admin_web_session_mutations_authorize_scoped_owner_at_session_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    for session_id, overrides in {
+        "session-renew": {},
+        "session-revoke": {},
+        "session-delete": {"vm_id": None},
+        "session-cleanup": {"vm_provider": "container_worker_vm"},
+        "session-model": {"model": "gpt-old"},
+        "session-tools": {"allowed_tools": [ToolName.APPROVAL_CHECK]},
+        "session-policy": {"allowed_script_names": ["old-script"]},
+    }.items():
+        _seed_session(service, session_id, directory_path="root/ops", **overrides)
+    cleanup_calls: list[str] = []
+
+    def cleanup_container_session(self, session_id: str) -> SessionActionResult:
+        cleanup_calls.append(session_id)
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="cleanup_container_session",
+            message=f"Cleaned up container worker session {session_id}",
+        )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "cleanup_container_session",
+        MethodType(cleanup_container_session, service.vm_agent_admin),
+    )
+    client = _authenticated_scoped_owner_client(service, monkeypatch)
+
+    responses = [
+        client.post("/api/admin/sessions/session-renew/renew", json={"extension": "6h"}),
+        client.post("/api/admin/sessions/session-revoke/revoke"),
+        client.delete("/api/admin/sessions/session-delete"),
+        client.post("/api/admin/sessions/session-cleanup/cleanup"),
+        client.put("/api/admin/sessions/session-model/model", json={"model": "gpt-new"}),
+        client.put(
+            "/api/admin/sessions/session-tools/allowed-tools",
+            json={"allowed_tools": ["approval_check", "approval_submit"]},
+        ),
+        client.patch(
+            "/api/admin/sessions/session-policy",
+            json={"allowed_script_names": ["new-script"]},
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+    ]
+    assert service.runtime.session_repository.get_session("session-delete") is None
+    assert service.runtime.session_repository.get_session("session-model").model == "gpt-new"
+    assert service.runtime.session_repository.get_session("session-tools").allowed_tools == [
+        ToolName.APPROVAL_CHECK,
+        ToolName.APPROVAL_SUBMIT,
+    ]
+    assert (
+        service.runtime.session_repository.get_session("session-policy").allowed_script_names
+        == ["new-script"]
+    )
+    assert cleanup_calls == ["session-cleanup"]
+
+
 def test_admin_web_mcp_policy_mutation_requires_owner_unlock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -455,6 +561,80 @@ def test_admin_web_wake_schedule_mutations_require_owner_unlock(
 
     _unlock_privileged_operations(owner_client)
     assert attempt_all(owner_client) == [200, 200, 200, 200]
+    assert service.runtime.wake_store.get_request(existing.request_id) is None
+    assert service.runtime.wake_store.get_request(failed.request_id).status == "due"
+    created = [
+        item
+        for item in service.operations_admin.list_wake_schedules(
+            session_id="wake-session", include_disabled=True
+        )
+        if item["request_id"] not in {existing.request_id, failed.request_id}
+    ]
+    assert len(created) == 1
+
+
+def test_admin_web_wake_schedule_mutations_authorize_scoped_owner_at_session_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    _seed_session(
+        service,
+        "wake-session",
+        directory_path="root/ops",
+        vm_id="vm-wake",
+        allowed_tools=[ToolName.SCHEDULE_RESUME, ToolName.CANCEL_SCHEDULED_WAKE],
+    )
+    existing = service.operations_admin.create_wake_schedule(
+        session_id="wake-session",
+        prompt="Original prompt",
+        resume_at=datetime.now(UTC) + timedelta(minutes=30),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    failed = service.operations_admin.create_wake_schedule(
+        session_id="wake-session",
+        prompt="Retry me",
+        resume_at=datetime.now(UTC) + timedelta(minutes=45),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed-scoped-owner",
+            request_id=failed.request_id,
+            session_id="wake-session",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Retry me"),
+            dispatched_at=datetime.now(UTC),
+            error="failed",
+        )
+    )
+    client = _authenticated_scoped_owner_client(service, monkeypatch)
+
+    responses = [
+        client.post(
+            "/api/admin/sessions/wake-session/wake-schedules",
+            json={
+                "prompt": "Create from route",
+                "resume_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                "resume_mode": "same_context",
+            },
+        ),
+        client.patch(
+            f"/api/admin/sessions/wake-schedules/{existing.request_id}",
+            json={"prompt": "Updated prompt"},
+        ),
+        client.post(
+            f"/api/admin/scheduled-wakes/{failed.request_id}/retry",
+            json={"run_now": True},
+        ),
+        client.delete(f"/api/admin/sessions/wake-schedules/{existing.request_id}"),
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200, 200, 200]
     assert service.runtime.wake_store.get_request(existing.request_id) is None
     assert service.runtime.wake_store.get_request(failed.request_id).status == "due"
     created = [

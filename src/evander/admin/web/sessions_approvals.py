@@ -28,6 +28,7 @@ from evander.models import (
     McpToolPolicyRule,
     SessionSummary,
     ToolName,
+    WakeScheduledRequest,
     normalize_mcp_tool_policies,
     tool_name_value,
 )
@@ -864,6 +865,58 @@ def session_approval_routes(
                 return item
         raise ValueError(f"Unknown session: {session_id}")
 
+    def _session_summary_or_error(
+        session_id: str,
+    ) -> tuple[SessionSummary | None, JSONResponse | None]:
+        try:
+            return _get_session_summary(session_id), None
+        except ValueError as exc:
+            return None, json_error(str(exc), status_code=404)
+
+    def _authorize_session_mutation(
+        request: Request,
+        session_id: str,
+    ) -> tuple[SessionSummary | None, JSONResponse | None]:
+        summary, load_error = _session_summary_or_error(session_id)
+        if load_error is not None:
+            return None, load_error
+        assert summary is not None
+        auth_error = _owner_privileged_error(
+            request,
+            directory_path=summary.directory_path,
+        )
+        if auth_error is not None:
+            return None, auth_error
+        return summary, None
+
+    def _wake_request_or_error(
+        request_id: str,
+    ) -> tuple[WakeScheduledRequest | None, JSONResponse | None]:
+        wake_request = service.runtime.wake_store.get_request(request_id)
+        if wake_request is None:
+            return None, json_error(f"Wake schedule not found: {request_id}", status_code=404)
+        return wake_request, None
+
+    def _authorize_wake_request_mutation(
+        request: Request,
+        request_id: str,
+    ) -> tuple[WakeScheduledRequest | None, JSONResponse | None]:
+        wake_request, load_error = _wake_request_or_error(request_id)
+        if load_error is not None:
+            return None, load_error
+        assert wake_request is not None
+        summary, session_error = _session_summary_or_error(wake_request.session_id)
+        if session_error is not None:
+            return None, session_error
+        assert summary is not None
+        auth_error = _owner_privileged_error(
+            request,
+            directory_path=summary.directory_path,
+        )
+        if auth_error is not None:
+            return None, auth_error
+        return wake_request, None
+
     async def get_session_detail(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
@@ -880,10 +933,10 @@ def session_approval_routes(
         )
 
     async def renew_session(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
         if auth_error is not None:
             return auth_error
-        session_id = request.path_params.get("session_id", "")
         try:
             payload = await request.json()
         except Exception:
@@ -901,10 +954,10 @@ def session_approval_routes(
         return JSONResponse(result.model_dump(mode="json"))
 
     async def revoke_session(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
         if auth_error is not None:
             return auth_error
-        session_id = request.path_params.get("session_id", "")
         try:
             result = service.operations_admin.revoke_session(session_id)
         except ValueError as exc:
@@ -912,10 +965,10 @@ def session_approval_routes(
         return JSONResponse(result.model_dump(mode="json"))
 
     async def delete_session(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
         if auth_error is not None:
             return auth_error
-        session_id = request.path_params.get("session_id", "")
         try:
             result = service.vm_agent_admin.delete_session(session_id)
         except ValueError as exc:
@@ -923,10 +976,10 @@ def session_approval_routes(
         return JSONResponse(result.model_dump(mode="json"))
 
     async def cleanup_session(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
         if auth_error is not None:
             return auth_error
-        session_id = request.path_params.get("session_id", "")
         try:
             result = service.vm_agent_admin.cleanup_container_session(session_id)
             summary = _get_session_summary(session_id)
@@ -942,10 +995,10 @@ def session_approval_routes(
         return JSONResponse(payload, status_code=status_code)
 
     async def update_session_model(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
         if auth_error is not None:
             return auth_error
-        session_id = request.path_params.get("session_id", "")
         try:
             payload = await request.json()
         except Exception:
@@ -968,10 +1021,10 @@ def session_approval_routes(
         )
 
     async def update_session_tools(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
         if auth_error is not None:
             return auth_error
-        session_id = request.path_params.get("session_id", "")
         try:
             payload = await request.json()
         except Exception:
@@ -996,10 +1049,10 @@ def session_approval_routes(
         )
 
     async def update_session_policy(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
         if auth_error is not None:
             return auth_error
-        session_id = request.path_params.get("session_id", "")
         try:
             payload = await request.json()
         except Exception:
@@ -1161,10 +1214,10 @@ def session_approval_routes(
         return JSONResponse({"items": [_wake_ledger_payload(item) for item in items]})
 
     async def create_wake_schedule(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
         if auth_error is not None:
             return auth_error
-        session_id = request.path_params.get("session_id", "")
         try:
             payload = await request.json()
         except Exception:
@@ -1187,10 +1240,10 @@ def session_approval_routes(
         return JSONResponse({"item": _wake_schedule_payload(created.model_dump(mode="json"))})
 
     async def update_wake_schedule(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        request_id = request.path_params.get("request_id", "")
+        _, auth_error = _authorize_wake_request_mutation(request, request_id)
         if auth_error is not None:
             return auth_error
-        request_id = request.path_params.get("request_id", "")
         try:
             payload = await request.json()
         except Exception:
@@ -1220,10 +1273,10 @@ def session_approval_routes(
         return JSONResponse({"item": _wake_schedule_payload(updated.model_dump(mode="json"))})
 
     async def retry_scheduled_wake(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        request_id = request.path_params.get("request_id", "")
+        _, auth_error = _authorize_wake_request_mutation(request, request_id)
         if auth_error is not None:
             return auth_error
-        request_id = request.path_params.get("request_id", "")
         try:
             payload = await request.json()
         except Exception:
@@ -1259,10 +1312,10 @@ def session_approval_routes(
         return JSONResponse({"item": _wake_ledger_payload(updated)})
 
     async def remove_wake_schedule(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        request_id = request.path_params.get("request_id", "")
+        _, auth_error = _authorize_wake_request_mutation(request, request_id)
         if auth_error is not None:
             return auth_error
-        request_id = request.path_params.get("request_id", "")
         try:
             deleted = service.operations_admin.delete_wake_schedule(request_id)
         except ValueError as exc:
