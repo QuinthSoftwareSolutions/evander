@@ -78,11 +78,7 @@ class HttpTargetRelay:
                 query_items=request.query_params.multi_items(),
             )
             request_body = await request.body()
-            headers = {
-                key: value
-                for key, value in request.headers.items()
-                if key.lower() not in HOP_BY_HOP_HEADERS
-            }
+            headers = relay._request_headers_for_upstream(request)
             headers["accept-encoding"] = "identity"
 
             async with httpx.AsyncClient(
@@ -228,6 +224,21 @@ class HttpTargetRelay:
         if redirect_location is not None:
             headers["location"] = redirect_location
         return headers
+
+    @classmethod
+    def _request_headers_for_upstream(cls, request: Request) -> dict[str, str]:
+        blocked_headers = set(HOP_BY_HOP_HEADERS)
+        if cls._request_has_mcp_session_token(request):
+            blocked_headers.update({"referer", "referrer"})
+        return {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in blocked_headers
+        }
+
+    @classmethod
+    def _request_has_mcp_session_token(cls, request: Request) -> bool:
+        return cls._mcp_session_token_from_request(request) is not None
 
     @staticmethod
     def _filtered_query_string(query_items: list[tuple[str, str]]) -> str:

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import ipaddress
 import socket
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from fnmatch import fnmatchcase
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import httpx
+import httpcore
 
 from .base import EffectProviderBase, EffectProviderExecutionError
 
@@ -23,6 +25,67 @@ _METADATA_HOSTS = {
     "100.100.100.200",
 }
 _LOCALHOST_NAMES = {"localhost", "ip6-localhost", "ip6-loopback"}
+
+
+@dataclass(frozen=True)
+class _ApprovedDestination:
+    transport: httpx.BaseTransport | None = None
+
+
+class _PinnedAddressNetworkBackend(httpcore.SyncBackend):
+    def __init__(
+        self,
+        *,
+        allowed_host: str,
+        approved_address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    ) -> None:
+        self.allowed_host = allowed_host.rstrip(".").casefold()
+        self.approved_address = approved_address
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.NetworkStream:
+        normalized_host = host.rstrip(".").casefold()
+        if normalized_host != self.allowed_host:
+            raise httpcore.ConnectError(
+                f"{NODE_TYPE} attempted to connect to unapproved host: {host}"
+            )
+        return super().connect_tcp(
+            str(self.approved_address),
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+
+class _PinnedAddressHTTPTransport(httpx.HTTPTransport):
+    def __init__(
+        self,
+        *,
+        allowed_host: str,
+        approved_address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    ) -> None:
+        super().__init__(limits=httpx.Limits(max_connections=1, max_keepalive_connections=0))
+        self.pinned_backend = _PinnedAddressNetworkBackend(
+            allowed_host=allowed_host,
+            approved_address=approved_address,
+        )
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=httpcore.default_ssl_context(),
+            max_connections=1,
+            max_keepalive_connections=0,
+            keepalive_expiry=None,
+            http1=True,
+            http2=False,
+            retries=0,
+            network_backend=self.pinned_backend,
+        )
 
 
 class HttpRequestEffectProvider(EffectProviderBase):
@@ -45,7 +108,7 @@ class HttpRequestEffectProvider(EffectProviderBase):
                 ),
             )
         self._enforce_allowed_url(url, allowed_url_patterns)
-        self._enforce_destination_policy(
+        approved_destination = self._enforce_destination_policy(
             url,
             allow_private_networks=self._normalize_bool(
                 payload.get("allow_private_networks", False),
@@ -59,7 +122,11 @@ class HttpRequestEffectProvider(EffectProviderBase):
 
         start = time.monotonic()
         try:
-            with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
+            with httpx.Client(
+                timeout=timeout_seconds,
+                follow_redirects=False,
+                transport=approved_destination.transport,
+            ) as client:
                 request_kwargs: dict[str, Any] = {"headers": headers or None}
                 if body is not None:
                     request_kwargs["json"] = body
@@ -257,7 +324,7 @@ class HttpRequestEffectProvider(EffectProviderBase):
         url: str,
         *,
         allow_private_networks: bool,
-    ) -> None:
+    ) -> _ApprovedDestination:
         parsed = urlparse(url)
         host = parsed.hostname
         if host is None:
@@ -274,15 +341,18 @@ class HttpRequestEffectProvider(EffectProviderBase):
                     f"{NODE_TYPE} url targets a blocked private, loopback, "
                     "or link-local destination"
                 )
-            return
+            return _ApprovedDestination()
         if not allow_private_networks and cls._is_localhost_name(normalized_host):
             raise ValueError(
                 f"{NODE_TYPE} url targets a blocked private, loopback, "
                 "or link-local destination"
             )
-        for resolved_address in cls._resolve_host_addresses(
+        resolved_addresses = cls._resolve_host_addresses(
             normalized_host, parsed.port or cls._default_port(parsed.scheme)
-        ):
+        )
+        if not resolved_addresses:
+            raise ValueError(f"{NODE_TYPE} url hostname could not be resolved")
+        for resolved_address in resolved_addresses:
             if cls._is_metadata_destination(str(resolved_address)):
                 raise ValueError(f"{NODE_TYPE} url targets a blocked metadata destination")
             if not allow_private_networks and cls._is_private_destination(resolved_address):
@@ -290,6 +360,12 @@ class HttpRequestEffectProvider(EffectProviderBase):
                     f"{NODE_TYPE} url targets a blocked private, loopback, "
                     "or link-local destination"
                 )
+        return _ApprovedDestination(
+            transport=_PinnedAddressHTTPTransport(
+                allowed_host=normalized_host,
+                approved_address=resolved_addresses[0],
+            )
+        )
 
     @staticmethod
     def _parse_ip_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:

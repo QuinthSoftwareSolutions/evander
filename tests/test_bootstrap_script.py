@@ -103,6 +103,9 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
         'export OPENAI_API_KEY="\\${OPENAI_API_KEY:-\\${EVANDER_MCP_SESSION_TOKEN:-\\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"'
         in script
     )
+    assert 'line.strip().startswith("export OPENAI_API_KEY=")' in script
+    assert "and \"relay-placeholder\" in line" in script
+    assert "if ! grep -q 'export OPENAI_API_KEY='" in script
     assert (
         'CODEX_GATEWAY_URL="$(append_evander_mcp_query "${CODEX_GATEWAY_URL}" "${CODEX_SESSION_ID}" "${CODEX_MCP_SESSION_TOKEN}")'
         in script
@@ -135,7 +138,8 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
     assert "cat > ~/bin/gh <<SHIM" in script
     assert 'COPILOT_HOST_AUTH_URL="${COPILOT_GATEWAY_BASE_URL}/copilot-auth/token"' in script
     assert (
-        'python3 - "${COPILOT_HOST_AUTH_URL}" "\\${session_id}" <<\'PY\'' in script
+        'python3 - "${COPILOT_HOST_AUTH_URL}" "\\${session_id}" "\\${mcp_session_token}" <<\'PY\''
+        in script
     )
     assert 'if [ -f /etc/agent-sandbox/session.env ]; then' in script
     assert 'if [ -f /etc/evander/session.env ]; then' in script
@@ -143,6 +147,11 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
     assert 'session_id="\\${AGENT_SANDBOX_SESSION_ID:-}"' in script
     assert 'session_id="${COPILOT_SESSION_ID}"' in script
     assert '"X-Evander-Session-Id": session_id' in script
+    assert (
+        'local mcp_session_token="\\${EVANDER_MCP_SESSION_TOKEN:-\\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"'
+        in script
+    )
+    assert 'headers["X-Evander-MCP-Session-Token"] = mcp_session_token' in script
     assert "gh auth token" in script
     assert '"mcpServers": {' in script
     assert '"evander": {' in script
@@ -250,6 +259,8 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
     assert '"type": "http"' in script
     assert '"tools": ["*"]' in script
     assert 'export AGENT_PROVIDER="${AGENT_PROVIDER:-claude}"' in script
+    assert 'line.strip().startswith("export ANTHROPIC_AUTH_TOKEN=")' in script
+    assert "and \"relay-placeholder\" in line" in script
     assert "repair_missing_profile_fi" in script
     assert 'if [ -f "$HOME/.claude/settings.json" ]; then' in script
     assert 'line == line.lstrip() and stripped.startswith("export ")' in script

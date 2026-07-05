@@ -322,7 +322,15 @@ managed = {
     'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"',
 }
 lines = repair_missing_profile_fi(lines)
-filtered = [line for line in lines if line.strip() not in managed]
+filtered = [
+    line
+    for line in lines
+    if line.strip() not in managed
+    and not (
+        line.strip().startswith("export ANTHROPIC_AUTH_TOKEN=")
+        and "relay-placeholder" in line
+    )
+]
 filtered.extend(sorted(managed))
 target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
 PY

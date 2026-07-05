@@ -155,22 +155,27 @@ copilot_host_auth_token() {
   else
     session_id="${COPILOT_SESSION_ID}"
   fi
-  python3 - "${COPILOT_HOST_AUTH_URL}" "\${session_id}" <<'PY'
+  local mcp_session_token="\${EVANDER_MCP_SESSION_TOKEN:-\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"
+  python3 - "${COPILOT_HOST_AUTH_URL}" "\${session_id}" "\${mcp_session_token}" <<'PY'
 import sys
 import urllib.error
 import urllib.request
 
 url = sys.argv[1]
 session_id = sys.argv[2].strip()
+mcp_session_token = sys.argv[3].strip()
 if not session_id:
     print("EVANDER_SESSION_ID or AGENT_SANDBOX_SESSION_ID is not set for host-mediated Copilot auth.", file=sys.stderr)
     raise SystemExit(1)
+headers = {
+    "Accept": "text/plain",
+    "X-Evander-Session-Id": session_id,
+}
+if mcp_session_token:
+    headers["X-Evander-MCP-Session-Token"] = mcp_session_token
 request = urllib.request.Request(
     url,
-    headers={
-        "Accept": "text/plain",
-        "X-Evander-Session-Id": session_id,
-    },
+    headers=headers,
 )
 try:
     with urllib.request.urlopen(request, timeout=30) as response:

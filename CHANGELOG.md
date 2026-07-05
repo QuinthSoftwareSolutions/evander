@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-05 - Tokenized Relay Security Fixes
+
+- Stripped referrer headers from tokenized HTTP target relay requests before
+  proxying to upstream targets.
+- Pinned workflow HTTP request effects to an address approved by destination
+  policy checks so later DNS rebinding cannot change the outbound connection.
+- Updated Copilot, Codex, and Claude guest bootstraps to preserve MCP
+  session-token auth on rebootstrap.
+
 ## 2026-07-05 - Relay Session Token Compatibility
 
 - Generated tokenized agent model and HTTP target relay URLs that carry the
