@@ -86,6 +86,10 @@ from .providers import _session_records_by_id
 
 DEFAULT_CHAT_MESSAGE_LIMIT = 50
 MAX_CHAT_MESSAGE_LIMIT = 100
+DEFAULT_TIMELINE_LIMIT = 50
+MAX_TIMELINE_LIMIT = 200
+DEFAULT_STATE_HISTORY_LIMIT = 100
+MAX_STATE_HISTORY_LIMIT = 500
 TEAM_VIEW_IDS = (
     "workspace",
     "operations",
@@ -243,6 +247,14 @@ TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "release_packages",
     "stand_downs",
 )
+TEAM_STATE_HISTORY_COLLECTIONS = (
+    "inbox",
+    "action_records",
+    "release_packages",
+    "ephemeral_assignments",
+    "git_promotions",
+    "conversation_messages",
+)
 
 
 def _team_costs_payload(
@@ -389,41 +401,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def get_timeline(request: Request) -> JSONResponse:
         state = repository.read()
-        team_id = _query_text(request, "team_id")
-        project_id = _query_text(request, "project_id")
-        agent_id = _query_text(request, "agent_id")
-        types = _query_values(request, "type")
-        statuses = _query_values(request, "status")
-        attention_needed = _query_bool(request, "attention_needed")
-        timeline = derive_team_timeline(
-            state,
-            team_id=team_id,
-            project_id=project_id,
-            agent_id=agent_id,
-            types=types,
-            statuses=statuses,
-            attention_needed=attention_needed,
-        )
-        filters: dict[str, object] = {}
-        if team_id is not None:
-            filters["team_id"] = team_id
-        if project_id is not None:
-            filters["project_id"] = project_id
-        if agent_id is not None:
-            filters["agent_id"] = agent_id
-        if types is not None:
-            filters["type"] = types
-        if statuses is not None:
-            filters["status"] = statuses
-        if attention_needed is not None:
-            filters["attention_needed"] = attention_needed
-        payload = {
-            **timeline,
-            "source": "derived_from_current_team_state",
-            "description": "Derived timeline from the current TeamState snapshot.",
-            "filters": filters,
-        }
-        return JSONResponse(payload)
+        return JSONResponse(_timeline_payload_for_request(request, state))
 
     async def get_costs(request: Request) -> JSONResponse:
         backfill = _query_bool(request, "backfill")
@@ -2333,25 +2311,29 @@ def _team_state_payload_for_request(
         agent_execution_records=agent_execution_records,
     )
     _add_team_resource_tokens(payload, state)
-    if _can_view_all_team_chats(auth, request):
-        return payload
-    identity = _operator_identity_from_request(auth, request)
-    allowed_conversation_ids = {
-        conversation.id
-        for conversation in state.conversations.values()
-        if conversation.operator_user_id == identity["user_id"]
-    }
-    payload["conversations"] = {
-        conversation_id: conversation_payload
-        for conversation_id, conversation_payload in payload.get("conversations", {}).items()
-        if conversation_id in allowed_conversation_ids
-    }
-    payload["conversation_messages"] = {
-        message_id: message_payload
-        for message_id, message_payload in payload.get("conversation_messages", {}).items()
-        if isinstance(message_payload, Mapping)
-        and message_payload.get("conversation_id") in allowed_conversation_ids
-    }
+    if not _can_view_all_team_chats(auth, request):
+        identity = _operator_identity_from_request(auth, request)
+        allowed_conversation_ids = {
+            conversation.id
+            for conversation in state.conversations.values()
+            if conversation.operator_user_id == identity["user_id"]
+        }
+        payload["conversations"] = {
+            conversation_id: conversation_payload
+            for conversation_id, conversation_payload in payload.get("conversations", {}).items()
+            if conversation_id in allowed_conversation_ids
+        }
+        payload["conversation_messages"] = {
+            message_id: message_payload
+            for message_id, message_payload in payload.get("conversation_messages", {}).items()
+            if isinstance(message_payload, Mapping)
+            and message_payload.get("conversation_id") in allowed_conversation_ids
+        }
+    _window_state_history_payload(
+        payload,
+        state,
+        history_limit=_query_state_history_limit(request),
+    )
     return payload
 
 
@@ -2463,12 +2445,7 @@ def _view_payload_for_request(
         )
     }
     if view == "timeline":
-        data["timeline"] = {
-            **derive_team_timeline(state),
-            "source": "derived_from_current_team_state",
-            "description": "Derived timeline from the current TeamState snapshot.",
-            "filters": {},
-        }
+        data["timeline"] = _timeline_payload_for_request(request, state)
     return {
         "revision": state.revision,
         "view": view,
@@ -2479,6 +2456,51 @@ def _view_payload_for_request(
             collections,
             ids_by_collection=ids_by_collection,
         ),
+    }
+
+
+def _timeline_payload_for_request(request: Request, state: TeamState) -> dict[str, Any]:
+    team_id = _query_text(request, "team_id")
+    project_id = _query_text(request, "project_id")
+    agent_id = _query_text(request, "agent_id")
+    types = _query_values(request, "type")
+    statuses = _query_values(request, "status")
+    attention_needed = _query_bool(request, "attention_needed")
+    limit = _query_limited_int(
+        request,
+        "limit",
+        default=DEFAULT_TIMELINE_LIMIT,
+        max_value=MAX_TIMELINE_LIMIT,
+    )
+    offset = _query_non_negative_int(request, "offset", default=0)
+    filters: dict[str, object] = {}
+    if team_id is not None:
+        filters["team_id"] = team_id
+    if project_id is not None:
+        filters["project_id"] = project_id
+    if agent_id is not None:
+        filters["agent_id"] = agent_id
+    if types is not None:
+        filters["type"] = types
+    if statuses is not None:
+        filters["status"] = statuses
+    if attention_needed is not None:
+        filters["attention_needed"] = attention_needed
+    return {
+        **derive_team_timeline(
+            state,
+            team_id=team_id,
+            project_id=project_id,
+            agent_id=agent_id,
+            types=types,
+            statuses=statuses,
+            attention_needed=attention_needed,
+            limit=limit,
+            offset=offset,
+        ),
+        "source": "derived_from_current_team_state",
+        "description": "Derived timeline from the current TeamState snapshot.",
+        "filters": filters,
     }
 
 
@@ -2508,7 +2530,7 @@ def _state_slice_payload_for_request(
     agent_execution_records: Mapping[str, Any] | None = None,
     session_repository: Any | None = None,
 ) -> dict[str, Any]:
-    del auth, request
+    del auth
     scoped_ids = ids_by_collection or {}
     payload = state.model_dump(
         mode="json",
@@ -2553,6 +2575,11 @@ def _state_slice_payload_for_request(
         state,
         collections=collections,
         ids_by_collection=scoped_ids,
+    )
+    _window_state_history_payload(
+        payload,
+        state,
+        history_limit=_query_state_history_limit(request),
     )
     return payload
 
@@ -2648,6 +2675,136 @@ def _filter_state_payload(
                 scoped_tokens[str(collection)] = collection_tokens
         filtered["resource_tokens"] = scoped_tokens
     return filtered
+
+
+def _window_state_history_payload(
+    payload: dict[str, Any],
+    state: TeamState,
+    *,
+    history_limit: int,
+) -> None:
+    windows: dict[str, dict[str, Any]] = {}
+    for collection in TEAM_STATE_HISTORY_COLLECTIONS:
+        rows = payload.get(collection)
+        if not isinstance(rows, Mapping):
+            continue
+        allowed_ids = {str(item_id) for item_id in rows}
+        keep_ids = _state_history_keep_ids(
+            state,
+            collection,
+            allowed_ids=allowed_ids,
+            history_limit=history_limit,
+        )
+        payload[collection] = {
+            item_id: item for item_id, item in rows.items() if str(item_id) in keep_ids
+        }
+        _trim_resource_tokens(payload, collection, keep_ids)
+        returned_count = len(payload[collection])
+        total_count = len(rows)
+        windowed = returned_count < total_count
+        windows[collection] = {
+            "total_count": total_count,
+            "returned_count": returned_count,
+            "limit": history_limit,
+            "windowed": windowed,
+        }
+        payload[f"{collection}_total_count"] = total_count
+        payload[f"{collection}_returned_count"] = returned_count
+        payload[f"{collection}_windowed"] = windowed
+    if windows:
+        payload["history_windows"] = windows
+
+
+def _state_history_keep_ids(
+    state: TeamState,
+    collection: str,
+    *,
+    allowed_ids: set[str],
+    history_limit: int,
+) -> set[str]:
+    source = getattr(state, collection, {})
+    if not isinstance(source, Mapping) or not allowed_ids:
+        return set()
+    if collection == "action_records":
+        current_ids = {
+            record.id
+            for record in current_failed_action_records(state)
+            if record.id in allowed_ids
+        }
+    else:
+        current_ids = {
+            str(item_id)
+            for item_id, item in source.items()
+            if str(item_id) in allowed_ids and _state_history_item_is_current(collection, item)
+        }
+    newest_ids = [
+        str(item_id)
+        for item_id, _item in sorted(
+            (
+                (str(item_id), item)
+                for item_id, item in source.items()
+                if str(item_id) in allowed_ids and str(item_id) not in current_ids
+            ),
+            key=lambda row: _state_history_sort_key(row[0], row[1]),
+            reverse=True,
+        )
+    ]
+    keep_ids = set(current_ids)
+    remaining_slots = max(0, history_limit - len(keep_ids))
+    keep_ids.update(newest_ids[:remaining_slots])
+    return keep_ids
+
+
+def _state_history_item_is_current(collection: str, item: Any) -> bool:
+    if collection == "inbox":
+        return _record_state_value(item) != TeamInboxItemState.HANDLED.value
+    if collection == "release_packages":
+        return _record_state_value(item) != TeamRecordState.ACCEPTED.value
+    if collection == "ephemeral_assignments":
+        return _record_state_value(item) not in {
+            "accepted",
+            "cleaned_up",
+            "completed",
+        }
+    if collection == "git_promotions":
+        return _record_state_value(item) != "succeeded"
+    return False
+
+
+def _record_state_value(item: Any) -> str:
+    value = getattr(item, "state", "") or ""
+    enum_value = getattr(value, "value", None)
+    return str(enum_value if enum_value is not None else value)
+
+
+def _state_history_sort_key(item_id: str, item: Any) -> tuple[float, str]:
+    for field_name in (
+        "updated_at",
+        "last_interaction_at",
+        "published_at",
+        "decision_at",
+        "created_at",
+    ):
+        timestamp = getattr(item, field_name, None)
+        if isinstance(timestamp, datetime):
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+            return (timestamp.timestamp(), item_id)
+    return (float("-inf"), item_id)
+
+
+def _trim_resource_tokens(payload: dict[str, Any], collection: str, keep_ids: set[str]) -> None:
+    tokens = payload.get("resource_tokens")
+    if not isinstance(tokens, dict):
+        return
+    collection_tokens = tokens.get(collection)
+    if not isinstance(collection_tokens, Mapping):
+        return
+    tokens[collection] = {
+        item_id: token
+        for item_id, token in collection_tokens.items()
+        if str(item_id) in keep_ids
+    }
 
 
 def _add_team_resource_tokens(payload: dict[str, Any], state: TeamState) -> None:
@@ -3830,7 +3987,10 @@ def _optional_present_text(payload: Mapping[str, Any], field_name: str) -> str |
 
 
 def _query_text(request: Request, field_name: str) -> str | None:
-    value = request.query_params.get(field_name)
+    query_params = getattr(request, "query_params", None)
+    if query_params is None:
+        return None
+    value = query_params.get(field_name)
     if value is None:
         return None
     text = value.strip()
@@ -3862,6 +4022,41 @@ def _query_bool(request: Request, field_name: str) -> bool | None:
     if text in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{field_name} must be true or false")
+
+
+def _query_limited_int(
+    request: Request,
+    field_name: str,
+    *,
+    default: int,
+    max_value: int,
+) -> int:
+    value = _query_text(request, field_name)
+    if value is None:
+        return default
+    result = _coerce_int(value, field_name)
+    if result < 1:
+        raise ValueError(f"{field_name} must be greater than zero")
+    return min(result, max_value)
+
+
+def _query_non_negative_int(request: Request, field_name: str, *, default: int) -> int:
+    value = _query_text(request, field_name)
+    if value is None:
+        return default
+    result = _coerce_int(value, field_name)
+    if result < 0:
+        raise ValueError(f"{field_name} must be greater than or equal to zero")
+    return result
+
+
+def _query_state_history_limit(request: Request) -> int:
+    return _query_limited_int(
+        request,
+        "history_limit",
+        default=DEFAULT_STATE_HISTORY_LIMIT,
+        max_value=MAX_STATE_HISTORY_LIMIT,
+    )
 
 
 def _query_chat_message_limit(request: Request) -> int:

@@ -1029,6 +1029,38 @@ def test_team_addon_state_payload_filters_chats_without_read_all(
     )
 
 
+def test_team_addon_state_payload_windows_history_but_keeps_current_records(
+    tmp_path: Path,
+) -> None:
+    _repo, _conversation_id = _seed_long_chat_history(
+        tmp_path / "runtime",
+        message_count=125,
+    )
+    client = _client(tmp_path)
+
+    response = client.get("/api/addons/team-addon/state?history_limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["conversation_messages_total_count"] == 125
+    assert payload["conversation_messages_returned_count"] == 1
+    assert payload["conversation_messages_windowed"] is True
+    assert set(payload["conversation_messages"]) == {"msg-124"}
+    assert payload["inbox_total_count"] == 2
+    assert payload["inbox_returned_count"] == 2
+    assert payload["inbox_windowed"] is False
+    assert set(payload["inbox"]) == {"inbox-1", "escalation-1"}
+    assert set(payload["action_records"]) == {"action-1"}
+    assert set(payload["release_packages"]) == {"release-1"}
+    assert set(payload["git_promotions"]) == {"promotion-1"}
+    assert set(payload["ephemeral_assignments"]) == {
+        "ephemeral-cleanup",
+        "ephemeral-failed",
+    }
+    assert set(payload["resource_tokens"]["inbox"]) == {"inbox-1", "escalation-1"}
+    assert set(payload["resource_tokens"]["action_records"]) == {"action-1"}
+
+
 def test_team_addon_filtered_state_treats_git_work_contexts_as_collection() -> None:
     payload = {
         "revision": 1,
@@ -1611,6 +1643,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
         "derived": True,
         "audit_log": False,
         "timestampless_count": 0,
+        "total_count": 0,
+        "limit": 50,
+        "offset": 0,
+        "has_more": False,
         "entries": [],
         "source": "derived_from_current_team_state",
         "description": "Derived timeline from the current TeamState snapshot.",
@@ -1756,6 +1792,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "ensureStateStream" in script.text
     assert "/state/stream" in script.text
     assert "applyStateSnapshot" in script.text
+    assert "timelineSearchParams" in script.text
+    assert 'search.set("limit", String(timelinePageSize))' in script.text
+    assert "reloadActiveTeamView({ preserveForms: true })" in script.text
     assert "teamViewCacheGeneration += 1" in script.text
     assert "loadedTeamViews.clear()" in script.text
     assert "loadView(activeTeamView, { force: true, preserveForms: true })" in script.text
@@ -2448,6 +2487,31 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
     }
     assert all(entry["status"] == "accepted" for entry in payload["entries"])
     assert all(entry["attention_needed"] is False for entry in payload["entries"])
+
+    windowed = client.get(
+        "/api/addons/team-addon/timeline",
+        params=[
+            ("type", "task"),
+            ("type", "review"),
+            ("status", "accepted"),
+            ("attention_needed", "false"),
+            ("agent_id", "lead"),
+            ("limit", "2"),
+            ("offset", "1"),
+        ],
+    )
+
+    assert windowed.status_code == 200
+    windowed_payload = windowed.json()
+    assert windowed_payload["total_count"] == 4
+    assert windowed_payload["limit"] == 2
+    assert windowed_payload["offset"] == 1
+    assert windowed_payload["has_more"] is True
+    assert len(windowed_payload["entries"]) == 2
+
+    clamped = client.get("/api/addons/team-addon/timeline?limit=999")
+    assert clamped.status_code == 200
+    assert clamped.json()["limit"] == team_addon_api.MAX_TIMELINE_LIMIT
 
 
 def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:

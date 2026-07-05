@@ -557,6 +557,10 @@ function buildTimelinePayload(state, url) {
     matchesTimelineFilters(entry, filters),
   );
   entries.sort(compareTimelineEntries);
+  const totalCount = entries.length;
+  const limit = Math.max(1, queryInt(url.searchParams, "limit", 50));
+  const offset = Math.max(0, queryInt(url.searchParams, "offset", 0));
+  const windowedEntries = entries.slice(offset, offset + limit);
   return {
     revision: state.revision,
     derived: true,
@@ -565,7 +569,11 @@ function buildTimelinePayload(state, url) {
     description: "Derived timeline from the current TeamState snapshot.",
     filters: compactFilters(filters),
     timestampless_count: entries.filter((entry) => entry.timestamp === null).length,
-    entries,
+    total_count: totalCount,
+    limit,
+    offset,
+    has_more: offset + windowedEntries.length < totalCount,
+    entries: windowedEntries,
   };
 }
 
@@ -1040,6 +1048,15 @@ function queryText(searchParams, key) {
   return text || null;
 }
 
+function queryInt(searchParams, key, fallback) {
+  const value = queryText(searchParams, key);
+  if (value === null) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function normalizedQueryValues(searchParams, key) {
   const values = [];
   searchParams.getAll(key).forEach((value) => {
@@ -1362,6 +1379,9 @@ async function createTeamAddonServer(
           if (conversationsBeforeResponse) {
             await conversationsBeforeResponse({ request, url, chatRequests });
           }
+        }
+        if (view === "timeline") {
+          timelineRequests.push(url.search);
         }
         if (!teamViewIds.includes(view)) {
           jsonResponse(response, { error: "view not found" }, 404);
@@ -5979,10 +5999,6 @@ test("team add-on UI renders git refs and releases and submits a review decision
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
-  await waitForCondition(
-    () => timelineRequests.length > 0,
-    "expected initial timeline request",
-  );
   const timelineRequestsBeforeTabRefresh = timelineRequests.length;
   await page.getByRole("tab", { name: "Timeline" }).click();
   const timelinePage = page.locator("#team-timeline-page");
@@ -5995,8 +6011,11 @@ test("team add-on UI renders git refs and releases and submits a review decision
   assert.ok((await timelinePage.locator(".timeline-entry").count()) >= 10);
   await waitForCondition(
     () => timelineRequests.length > timelineRequestsBeforeTabRefresh,
-    "expected timeline tab refresh request",
+    "expected timeline tab request",
   );
+  const initialTimelineSearch = new URLSearchParams(timelineRequests.at(-1));
+  assert.equal(initialTimelineSearch.get("limit"), "10");
+  assert.equal(initialTimelineSearch.get("offset"), "0");
   const timelineRequestsBeforeDecision = timelineRequests.length;
 
   await page.getByRole("tab", { name: "Delivery" }).click();
@@ -6188,6 +6207,11 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await timelineTypeFilter.selectOption("review");
   await timelineAttentionFilter.selectOption("false");
   await timelinePage.locator(".timeline-entry").first().waitFor({ state: "visible" });
+  const filteredTimelineSearch = new URLSearchParams(timelineRequests.at(-1));
+  assert.equal(filteredTimelineSearch.get("type"), "review");
+  assert.equal(filteredTimelineSearch.get("attention_needed"), "false");
+  assert.equal(filteredTimelineSearch.get("limit"), "10");
+  assert.equal(filteredTimelineSearch.get("offset"), "0");
   assert.equal(await timelinePage.locator(".timeline-entry").count(), 4);
   await timelinePage.getByText(/Review requested for deliverable deliverable-waiting/).first().waitFor({
     state: "visible",

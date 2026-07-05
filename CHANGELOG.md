@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-04 - Team Add-on Payload Windowing
+
+- Added server-side pagination for the Team Add-on timeline API and tab so the
+  UI no longer downloads the full derived timeline before paging.
+- Windowed bulky Team state history collections in `/state` and scoped view
+  payloads while preserving current/actionable records.
+- Kept Team UI mutation recovery on scoped active-view refreshes instead of
+  falling back to full-state reloads.
+
 ## 2026-07-04 - Admin Web Branding Asset Caching
 
 - Resized and compressed the bundled Evander and Quinth Software Solutions

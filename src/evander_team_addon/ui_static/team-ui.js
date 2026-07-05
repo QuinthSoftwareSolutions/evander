@@ -536,6 +536,10 @@ function emptyTimelineState() {
     description: "Derived timeline from the current TeamState snapshot.",
     filters: {},
     timestampless_count: 0,
+    total_count: 0,
+    limit: 10,
+    offset: 0,
+    has_more: false,
     entries: [],
   };
 }
@@ -2703,7 +2707,8 @@ async function loadView(view, { force = false, preserveForms = false } = {}) {
   }
   const loadGeneration = teamViewCacheGeneration;
   const promise = (async () => {
-    const response = await teamFetch(`${API_BASE}/views/${encodeURIComponent(normalizedView)}`, {
+    const query = normalizedView === "timeline" ? timelineSearchParams() : new URLSearchParams();
+    const response = await teamFetch(`${API_BASE}/views/${encodeURIComponent(normalizedView)}${query.toString() ? `?${query.toString()}` : ""}`, {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -2851,9 +2856,6 @@ function scheduleAuxiliaryLoadsForView(view) {
   if (view !== "chat") {
     void loadCosts();
   }
-  if (view === "timeline") {
-    void loadTimeline();
-  }
 }
 
 function scheduleIdleViewPrefetch() {
@@ -2906,6 +2908,10 @@ async function loadState({ preserveForms = false } = {}) {
     timelineLoading = false;
     setStatus(error instanceof Error ? error.message : "Team state failed to load.", "error");
   }
+}
+
+async function reloadActiveTeamView({ preserveForms = false } = {}) {
+  await loadView(activeTeamView, { force: true, preserveForms });
 }
 
 function applyStateSnapshot(payload) {
@@ -10511,7 +10517,7 @@ function bindTimelinePagination() {
     } else {
       return;
     }
-    renderTimeline();
+    void loadTimeline();
   });
 }
 
@@ -10531,6 +10537,50 @@ async function loadTimeline() {
     return;
   }
   const requestId = ++timelineRequestId;
+  const search = timelineSearchParams();
+
+  timelineLoading = true;
+  setTimelineStatus("Loading derived timeline.", "loading");
+
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/timeline${search.toString() ? `?${search.toString()}` : ""}`,
+      {
+        headers: { Accept: "application/json" },
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== timelineRequestId) {
+      return;
+    }
+    timelineState = normalizeTimeline(payload);
+    if (
+      activeTeamView === "timeline" &&
+      Number(timelineState.total_count || 0) > 0 &&
+      Number(timelineState.offset || 0) >= Number(timelineState.total_count || 0)
+    ) {
+      timelinePage = Math.max(1, Math.ceil(Number(timelineState.total_count || 0) / timelinePageSize));
+      void loadTimeline();
+      return;
+    }
+    timelineLoading = false;
+    refreshSelects();
+    renderTimeline();
+    setTimelineStatus(describeTimelineStatus(timelineState), "ok");
+  } catch (error) {
+    if (requestId !== timelineRequestId) {
+      return;
+    }
+    timelineLoading = false;
+    setTimelineStatus(error instanceof Error ? error.message : "Timeline failed to load.", "error");
+    renderTimeline();
+  }
+}
+
+function timelineSearchParams() {
   const filters = readTimelineFilters();
   const search = new URLSearchParams();
   if (filters.team_id) {
@@ -10551,37 +10601,9 @@ async function loadTimeline() {
   if (filters.attention_needed !== null && filters.attention_needed !== undefined) {
     search.set("attention_needed", filters.attention_needed ? "true" : "false");
   }
-
-  timelineLoading = true;
-  setTimelineStatus("Loading derived timeline.", "loading");
-
-  try {
-    const response = await teamFetch(
-      `${API_BASE}/timeline${search.toString() ? `?${search.toString()}` : ""}`,
-      {
-        headers: { Accept: "application/json" },
-      },
-    );
-    if (!response.ok) {
-      throw new Error(await responseText(response));
-    }
-    const payload = await response.json();
-    if (requestId !== timelineRequestId) {
-      return;
-    }
-    timelineState = normalizeTimeline(payload);
-    timelineLoading = false;
-    refreshSelects();
-    renderTimeline();
-    setTimelineStatus(describeTimelineStatus(timelineState), "ok");
-  } catch (error) {
-    if (requestId !== timelineRequestId) {
-      return;
-    }
-    timelineLoading = false;
-    setTimelineStatus(error instanceof Error ? error.message : "Timeline failed to load.", "error");
-    renderTimeline();
-  }
+  search.set("limit", String(timelinePageSize));
+  search.set("offset", String(Math.max(0, (Math.max(1, timelinePage) - 1) * timelinePageSize)));
+  return search;
 }
 
 function normalizeTimeline(payload) {
@@ -10642,16 +10664,22 @@ function renderTimeline() {
   }
 
   const entries = (timelineState.entries || []).slice().sort(compareTimelineEntriesNewestFirst);
+  const totalCount = Number.isFinite(Number(timelineState.total_count))
+    ? Number(timelineState.total_count)
+    : entries.length;
+  const limit = Number.isFinite(Number(timelineState.limit)) && Number(timelineState.limit) > 0
+    ? Number(timelineState.limit)
+    : timelinePageSize;
   if (activeTeamView === "timeline") {
-    const pageCount = Math.max(1, Math.ceil(entries.length / timelinePageSize));
+    const pageCount = Math.max(1, Math.ceil(totalCount / limit));
     timelinePage = Math.min(Math.max(1, timelinePage), pageCount);
   }
-  const summaryParts = [`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`];
+  const summaryParts = [`${totalCount} ${totalCount === 1 ? "entry" : "entries"}`];
   if (timelineState.timestampless_count) {
     summaryParts.push(`${timelineState.timestampless_count} timestamp unavailable`);
   }
-  if (activeTeamView === "timeline" && entries.length > timelinePageSize) {
-    summaryParts.push(`page ${timelinePage} of ${Math.ceil(entries.length / timelinePageSize)}`);
+  if (activeTeamView === "timeline" && totalCount > limit) {
+    summaryParts.push(`page ${timelinePage} of ${Math.ceil(totalCount / limit)}`);
   }
   document.querySelectorAll("[data-timeline-summary]").forEach((summary) => {
     summary.textContent = targetIsActive(summary) ? summaryParts.join(" · ") : "";
@@ -10680,12 +10708,20 @@ function renderTimeline() {
 }
 
 function renderFocusedTimeline(entries) {
-  const pageCount = Math.max(1, Math.ceil(entries.length / timelinePageSize));
+  const totalCount = Number.isFinite(Number(timelineState.total_count))
+    ? Number(timelineState.total_count)
+    : entries.length;
+  const limit = Number.isFinite(Number(timelineState.limit)) && Number(timelineState.limit) > 0
+    ? Number(timelineState.limit)
+    : timelinePageSize;
+  const offset = Number.isFinite(Number(timelineState.offset))
+    ? Number(timelineState.offset)
+    : (Math.max(1, timelinePage) - 1) * limit;
+  const pageCount = Math.max(1, Math.ceil(totalCount / limit));
   timelinePage = Math.min(Math.max(1, timelinePage), pageCount);
-  const start = (timelinePage - 1) * timelinePageSize;
-  const pageEntries = entries.slice(start, start + timelinePageSize);
-  const pagination = entries.length > timelinePageSize
-    ? renderTimelinePagination(pageCount, start, pageEntries.length, entries.length)
+  const pageEntries = entries;
+  const pagination = totalCount > limit
+    ? renderTimelinePagination(pageCount, offset, pageEntries.length, totalCount)
     : "";
 
   renderIntoActiveTargets("[data-timeline-view]", `
@@ -11710,7 +11746,7 @@ async function submitMutation(form, endpoint, method, payload, { resetOnSuccess 
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       showRevisionConflictRecoveryStatus({
@@ -12115,7 +12151,7 @@ async function submitAvatarFormData(form, endpoint, body) {
     });
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; review and submit again.`, "warning");
@@ -12171,6 +12207,7 @@ async function requestContextRotation(button, agentId) {
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
+          "X-Team-Addon-Response-Scope": "view",
         },
         body: JSON.stringify(mutationBodyWithConflictMetadata(endpoint, "POST", {
           reason: "manual operator request",
@@ -12180,7 +12217,7 @@ async function requestContextRotation(button, agentId) {
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; request context clearing again.`, "warning");
@@ -12868,7 +12905,7 @@ async function requestAgentStandDown(button, agentId) {
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; stand down again.`, "warning");
@@ -12920,7 +12957,7 @@ async function revokeAgentStandDown(button, agentId) {
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; revoke again.`, "warning");
@@ -12973,7 +13010,7 @@ async function dismissActionRecordAttention(button, actionRecordId) {
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; review and dismiss again.`, "warning");
@@ -13024,7 +13061,7 @@ async function markGovernanceAgendaHandled(button, agendaItemId) {
 
     if (response.status === 409) {
       const conflict = await response.json().catch(() => ({}));
-      await loadState();
+      await reloadActiveTeamView({ preserveForms: true });
       restoreFormDrafts(drafts);
       const current = conflict.current_revision ?? state.revision;
       setStatus(`Revision conflict. Reloaded revision ${current}; mark handled again.`, "warning");

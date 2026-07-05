@@ -57,9 +57,12 @@ def derive_team_timeline(
     types: Sequence[str] | str | None = None,
     statuses: Sequence[str] | str | None = None,
     attention_needed: bool | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> dict[str, Any]:
     normalized_types = _normalize_filter_values(types)
     normalized_statuses = _normalize_filter_values(statuses)
+    normalized_offset = max(0, offset)
 
     entries = _collect_timeline_entries(state)
     filtered_entries = [
@@ -77,13 +80,26 @@ def derive_team_timeline(
     ]
     filtered_entries.sort(key=_timeline_tiebreaker_key)
     filtered_entries.sort(key=_timeline_timestamp_sort_key, reverse=True)
+    total_count = len(filtered_entries)
+    if limit is None:
+        windowed_entries = filtered_entries
+        normalized_limit = total_count
+    else:
+        normalized_limit = max(1, limit)
+        windowed_entries = filtered_entries[
+            normalized_offset : normalized_offset + normalized_limit
+        ]
 
     return {
         "revision": state.revision,
         "derived": True,
         "audit_log": False,
         "timestampless_count": sum(1 for entry in filtered_entries if entry.timestamp is None),
-        "entries": [entry.model_dump(mode="json") for entry in filtered_entries],
+        "total_count": total_count,
+        "limit": normalized_limit,
+        "offset": normalized_offset,
+        "has_more": normalized_offset + len(windowed_entries) < total_count,
+        "entries": [entry.model_dump(mode="json") for entry in windowed_entries],
     }
 
 
