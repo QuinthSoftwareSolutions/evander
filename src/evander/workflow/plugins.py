@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import import_module
 from importlib.metadata import EntryPoint, entry_points
+from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import BaseModel
@@ -64,6 +65,7 @@ def load_provider_plugins(
     include_entry_points: bool = True,
     include_builtin: bool = False,
     addon_loader: AddonLoaderConfig | Mapping[str, Any] | None = None,
+    addon_base_dir: str | Path | None = None,
 ) -> LoadedProviderCatalog:
     trigger_providers: dict[str, type[TriggerProviderBase]] = {}
     gate_providers: dict[str, type[GateProviderBase]] = {}
@@ -96,7 +98,7 @@ def load_provider_plugins(
             )
 
     if addon_loader is not None:
-        addon_catalog = load_addons(addon_loader)
+        addon_catalog = load_addons(addon_loader, base_dir=addon_base_dir)
         for addon in addon_catalog.registrations:
             if addon.workflow_providers is None:
                 continue

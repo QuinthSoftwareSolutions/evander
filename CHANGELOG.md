@@ -111,6 +111,9 @@
 - Added `addon.json` manifests to bundled add-ons and scanned source-tree
   manifests from `src/` so bundled packages model the same registration contract
   future local add-ons should use.
+- Resolved add-on package scans from the project base in gateway and workflow
+  provider runtime paths so manifest-enabled bundled add-ons do not depend on
+  the supervisor process working directory.
 
 ## 2026-07-04 - MSSQL Seed Add-on
 

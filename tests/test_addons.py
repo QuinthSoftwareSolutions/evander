@@ -723,6 +723,23 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
     )
 
 
+def test_workflow_provider_loader_uses_addon_base_dir_for_scanned_addons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    enabled = load_provider_plugins(
+        module_names=[],
+        include_entry_points=False,
+        include_builtin=False,
+        addon_loader=AddonLoaderConfig(enabled_addon_ids=["team-addon"]),
+        addon_base_dir=PROJECT_ROOT,
+    )
+
+    assert "addon:team-addon" in enabled.loaded_plugins
+    assert "effect:team:wake-due-agents" in enabled.effect_providers
+
+
 def test_bundled_bokio_addon_workflow_providers_are_optional() -> None:
     disabled = load_provider_plugins(
         module_names=[],

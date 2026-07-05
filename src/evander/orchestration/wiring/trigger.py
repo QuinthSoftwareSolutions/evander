@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.provider_config import ProviderConfigResolver
@@ -28,6 +29,7 @@ def build_trigger_provider_runtime_wiring(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
     runtime: RuntimeContext,
     provider_config_resolver: ProviderConfigResolver | None = None,
+    addon_base_dir: str | Path | None = None,
 ) -> TriggerProviderRuntimeWiring:
     runtime_provider_resolver = getattr(runtime, "provider_config", None)
     resolver = (
@@ -41,6 +43,7 @@ def build_trigger_provider_runtime_wiring(
         include_entry_points=worker_config.provider_entry_points_enabled,
         include_builtin=worker_config.provider_include_builtin,
         addon_loader=worker_config.addon_loader,
+        addon_base_dir=addon_base_dir if addon_base_dir is not None else config.runtime_dir.parent,
     )
     provider_factory = build_trigger_provider_factory(
         runtime_dir=config.runtime_dir,
@@ -74,6 +77,7 @@ def build_trigger_worker_wiring(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
     runtime: RuntimeContext,
     provider_config_resolver: ProviderConfigResolver | None = None,
+    addon_base_dir: str | Path | None = None,
 ) -> TriggerWorkerWiring:
     if _sqlite_orchestration_store_enabled(worker_config):
         event_queue = SqliteTriggerEventQueue(
@@ -98,6 +102,7 @@ def build_trigger_worker_wiring(
         worker_config=worker_config,
         runtime=runtime,
         provider_config_resolver=provider_config_resolver,
+        addon_base_dir=addon_base_dir,
     )
     return TriggerWorkerWiring(
         provider_config_resolver=runtime_wiring.provider_config_resolver,

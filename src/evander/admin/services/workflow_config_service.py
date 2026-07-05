@@ -2016,7 +2016,8 @@ class WorkflowConfigAdminService:
             "trigger-orchestrator", normalized_candidate
         )
         compiled_config, diagnostics = compile_worker_global_config_with_diagnostics(
-            TriggerOrchestratorWorkerGlobalConfig.model_validate(normalized_config)
+            TriggerOrchestratorWorkerGlobalConfig.model_validate(normalized_config),
+            project_dir=self.project_dir,
         )
         normalized_config = _strip_default_edge_fields(
             compiled_config.model_dump(mode="json", exclude_none=True)

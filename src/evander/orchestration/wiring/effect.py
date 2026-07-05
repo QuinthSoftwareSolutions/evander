@@ -72,6 +72,7 @@ def build_effect_provider_runtime_wiring(
     runtime: RuntimeContext,
     provider_config_resolver: ProviderConfigResolver | None = None,
     include_default_domain_handlers: bool = True,
+    addon_base_dir: str | Path | None = None,
 ) -> EffectProviderRuntimeWiring:
     runtime_provider_resolver = getattr(runtime, "provider_config", None)
     resolver = (
@@ -85,6 +86,7 @@ def build_effect_provider_runtime_wiring(
         include_entry_points=worker_config.provider_entry_points_enabled,
         include_builtin=worker_config.provider_include_builtin,
         addon_loader=worker_config.addon_loader,
+        addon_base_dir=addon_base_dir if addon_base_dir is not None else config.runtime_dir.parent,
     )
     provider_factory = build_effect_provider_factory(
         runtime_dir=config.runtime_dir,
@@ -276,6 +278,7 @@ def build_effect_worker_wiring(
     runtime: RuntimeContext,
     provider_config_resolver: ProviderConfigResolver | None = None,
     include_default_domain_handlers: bool = True,
+    addon_base_dir: str | Path | None = None,
 ) -> EffectWorkerWiring:
     store_wiring = build_effect_worker_store_wiring(
         config=config,
@@ -292,6 +295,7 @@ def build_effect_worker_wiring(
         runtime=runtime,
         provider_config_resolver=provider_config_resolver,
         include_default_domain_handlers=include_default_domain_handlers,
+        addon_base_dir=addon_base_dir,
     )
     return EffectWorkerWiring(
         provider_config_resolver=runtime_wiring.provider_config_resolver,
