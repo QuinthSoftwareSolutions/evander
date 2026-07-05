@@ -791,7 +791,8 @@ class AzureVmProvider(VmProvider):
                 f"      - {ssh_public_key}",
             ]
         for key, value in sorted(guest_environment.items()):
-            lines.append(f"      {key}={value}")
+            env_key = vm_helpers.validate_environment_variable_name(key)
+            lines.append(f"      {env_key}={value}")
         lines.extend(
             [
                 "runcmd:",

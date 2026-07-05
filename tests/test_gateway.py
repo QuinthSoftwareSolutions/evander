@@ -3413,6 +3413,56 @@ def test_gateway_app_exposes_host_mediated_copilot_auth(
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_gateway_app_requires_mcp_session_token_for_copilot_auth(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    session = SessionManifest(
+        session_id="session-1",
+        allowed_tools=[ToolName.COPILOT_HOST_AUTH],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    protected_session, mcp_session_token = ensure_session_mcp_auth_token(session)
+    context.session_repository.upsert_session(protected_session)
+
+    client = TestClient(create_app(context))
+    missing_response = client.get(
+        "/copilot-auth/token", headers={"x-evander-session-id": "session-1"}
+    )
+    wrong_response = client.get(
+        "/copilot-auth/token",
+        headers={
+            "x-evander-session-id": "session-1",
+            "x-evander-mcp-session-token": "wrong-token",
+        },
+    )
+    allowed_response = client.get(
+        "/copilot-auth/token",
+        headers={
+            "x-evander-session-id": "session-1",
+            "x-evander-mcp-session-token": mcp_session_token,
+        },
+    )
+
+    assert missing_response.status_code == 401
+    assert missing_response.json()["error"] == "MCP session token is required for this session"
+    assert wrong_response.status_code == 401
+    assert wrong_response.json()["error"] == "MCP session token is required for this session"
+    assert allowed_response.status_code == 200
+    assert allowed_response.text == "github_pat_test"
+
+
 def test_gateway_app_rejects_missing_unauthorized_or_expired_copilot_auth_session(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

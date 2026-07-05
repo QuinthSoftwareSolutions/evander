@@ -15,6 +15,11 @@ from evander.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from evander.config import GatewayConfig
 from evander.models import HttpTargetMetadata, SessionManifest
 from evander.provider_config import ProviderConfigResolver
+from evander.session_auth import (
+    MCP_SESSION_TOKEN_HEADER_NAMES,
+    MCP_SESSION_TOKEN_QUERY_PARAM_NAMES,
+    verify_mcp_session_token,
+)
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -28,7 +33,10 @@ HOP_BY_HOP_HEADERS = {
     "trailers",
     "transfer-encoding",
     "upgrade",
+    *MCP_SESSION_TOKEN_HEADER_NAMES,
 }
+
+MCP_SESSION_TOKEN_REQUIRED_MESSAGE = "MCP session token is required for this session"
 
 
 class HttpTargetRelay:
@@ -59,6 +67,8 @@ class HttpTargetRelay:
         async def proxy(request: Request) -> Response:
             try:
                 resolved_config, http_target = relay._resolve_request_target(request)
+            except PermissionError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=401)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=404)
 
@@ -131,6 +141,7 @@ class HttpTargetRelay:
         session_id = self._session_id_from_path_params(request.path_params)
         alias = self._alias_from_path_params(request.path_params)
         session = self.provider_config_resolver.get_session_manifest(session_id)
+        self._ensure_mcp_session_token(session, request)
         http_target = self._http_target_for_alias(session, alias)
         resolved_config = self.provider_config_resolver.resolve_for_session_manifest(session)
         return resolved_config, http_target
@@ -156,6 +167,24 @@ class HttpTargetRelay:
         except ValueError as exc:
             raise ValueError(f"session {session.session_id} {exc}") from exc
 
+    @classmethod
+    def _ensure_mcp_session_token(cls, session: SessionManifest, request: Request) -> None:
+        if verify_mcp_session_token(session, cls._mcp_session_token_from_request(request)):
+            return
+        raise PermissionError(MCP_SESSION_TOKEN_REQUIRED_MESSAGE)
+
+    @staticmethod
+    def _mcp_session_token_from_request(request: Request) -> str | None:
+        for name in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES:
+            token = str(request.query_params.get(name) or "").strip()
+            if token:
+                return token
+        for name in MCP_SESSION_TOKEN_HEADER_NAMES:
+            token = str(request.headers.get(name) or "").strip()
+            if token:
+                return token
+        return None
+
     @staticmethod
     def _response_headers(
         response: httpx.Response,
@@ -173,7 +202,12 @@ class HttpTargetRelay:
 
     @staticmethod
     def _filtered_query_string(query_items: list[tuple[str, str]]) -> str:
-        return urlencode(query_items, doseq=True)
+        filtered = [
+            (key, value)
+            for key, value in query_items
+            if key not in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES
+        ]
+        return urlencode(filtered, doseq=True)
 
     @classmethod
     def _upstream_http_url(

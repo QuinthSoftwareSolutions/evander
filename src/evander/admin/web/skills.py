@@ -11,7 +11,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from evander.admin.composition import AdminRuntimeComponents
-from evander.admin.web.shared import AdminWebAuth, json_error
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
+from evander.admin.web.shared import AdminWebAuth, json_error, request_has_privileged_operations
 
 
 def _jsonable(value: Any) -> Any:
@@ -36,12 +37,19 @@ async def _json_body(request: Request) -> dict[str, Any]:
     return payload
 
 
-def skill_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> list[BaseRoute]:
+def skill_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[BaseRoute]:
     async def list_skills(_: Request) -> JSONResponse:
         items = await run_in_threadpool(service.skill_admin.list_skills)
         return JSONResponse({"items": [_jsonable(item) for item in items]})
 
     async def create_skill(request: Request) -> JSONResponse:
+        if not request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
+            return json_error("Privileged operations are locked.", status_code=403)
         try:
             payload = await _json_body(request)
             metadata = await run_in_threadpool(service.skill_admin.create_skill, payload)
@@ -64,6 +72,13 @@ def skill_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> list[B
         return JSONResponse({"skill": _jsonable(entry)})
 
     async def delete_skill(request: Request) -> JSONResponse:
+        if not request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
+            return json_error("Privileged operations are locked.", status_code=403)
         name = request.path_params["name"]
         try:
             metadata = await run_in_threadpool(service.skill_admin.delete_skill, name)

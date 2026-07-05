@@ -351,3 +351,87 @@ def test_artifact_space_admin_api_uses_session_subject_for_grants(tmp_path: Path
     state = store.read()
     assert "/teams/secret/child" not in state.spaces
     assert len(state.versions_for_space("/teams/secret")) == 1
+
+
+def test_artifact_space_admin_api_rejects_subject_spoofing_for_authenticated_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from starlette.testclient import TestClient
+
+    from evander.admin.composition import build_admin_runtime
+    from evander.admin.web.app import create_app
+
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "bob")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "secret")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+
+    config_path = tmp_path / "gateway.yaml"
+    runtime_dir = tmp_path / "runtime"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'runtime_dir: "{runtime_dir}"',
+                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
+                f'session_store_path: "{runtime_dir / "sessions.json"}"',
+                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    PublishedArtifactStore(runtime_dir).publish_single_file(
+        key="uploads/alice-secret",
+        session_id="session-1",
+        filename="secret.txt",
+        content=b"secret",
+    )
+    store = ArtifactSpaceStore(runtime_dir)
+    store.ensure_space(
+        path="/teams/alice-private",
+        grants={
+            "read_subjects": ["alice"],
+            "write_subjects": ["alice"],
+            "manage_subjects": ["alice"],
+        },
+    )
+    store.publish_version(
+        space_path="/teams/alice-private",
+        artifact_id="secret",
+        artifact_key="uploads/alice-secret",
+        created_by_subject="alice",
+    )
+    client = TestClient(create_app(build_admin_runtime(config_path)))
+    login = client.post("/api/auth/login", json={"username": "bob", "password": "secret"})
+    assert login.status_code == 200
+    assert login.json()["username"] == "bob"
+
+    listed_artifacts = client.get(
+        "/api/admin/artifacts",
+        params={"space_path": "/teams/alice-private", "subject": "alice"},
+    )
+    latest = client.get(
+        "/api/admin/artifact-space-versions/latest",
+        params={
+            "space_path": "/teams/alice-private",
+            "artifact_id": "secret",
+            "subject": "alice",
+        },
+    )
+    publish = client.post(
+        "/api/admin/artifact-space-versions",
+        json={
+            "space_path": "/teams/alice-private",
+            "artifact_id": "secret-copy",
+            "artifact_key": "uploads/alice-secret",
+            "subject": "alice",
+        },
+    )
+
+    assert listed_artifacts.status_code == 200
+    assert listed_artifacts.json()["total"] == 0
+    assert listed_artifacts.json()["items"] == []
+    assert latest.status_code == 403
+    assert "subject bob cannot read artifact space /teams/alice-private" in latest.json()["error"]
+    assert publish.status_code == 403
+    assert "subject bob cannot write artifact space /teams/alice-private" in publish.json()["error"]
+    assert len(store.read().versions_for_space("/teams/alice-private")) == 1

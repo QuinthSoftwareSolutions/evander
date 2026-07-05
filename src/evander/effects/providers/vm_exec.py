@@ -5,6 +5,8 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from evander.admin.services.vm_helpers import validate_environment_variable_name
+
 from .base import EffectProviderBase
 from .vm_targeting import resolve_vm_target
 
@@ -165,7 +167,8 @@ class VmExecEffectProvider(EffectProviderBase):
         if working_directory:
             lines.append(f"cd {shlex.quote(working_directory)}")
         for key, value in env.items():
-            lines.append(f"export {key}={shlex.quote(value)}")
+            env_key = validate_environment_variable_name(key)
+            lines.append(f"export {env_key}={shlex.quote(value)}")
         if stdin is not None:
             lines.append("cat <<'EOF_VM_EXEC_STDIN' >/tmp/vm_exec.stdin")
             lines.append(stdin)
@@ -208,6 +211,7 @@ class VmExecEffectProvider(EffectProviderBase):
             normalized_key = str(key).strip()
             if not normalized_key:
                 continue
+            validate_environment_variable_name(normalized_key)
             env[normalized_key] = "" if raw_value is None else str(raw_value)
         return env
 

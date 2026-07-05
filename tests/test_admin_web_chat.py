@@ -96,8 +96,14 @@ class FakeAdminService:
         return {"event_id": f"chat:{kwargs['user_message_id']}"}
 
 
-def _client_for_user(service: FakeAdminService, payload: dict[str, Any]) -> TestClient:
-    return TestClient(Starlette(routes=chat_routes(service, FakeAuth(payload))))
+def _client_for_user(
+    service: FakeAdminService,
+    payload: dict[str, Any],
+    *,
+    privileged: bool = False,
+) -> TestClient:
+    auth = PrivilegedFakeAuth(payload) if privileged else FakeAuth(payload)
+    return TestClient(Starlette(routes=chat_routes(service, auth)))
 
 
 def _wait_for(predicate, *, timeout: float = 2.0) -> None:
@@ -148,7 +154,11 @@ def test_chat_store_uses_per_instance_locks_and_atomic_json_write(tmp_path: Path
 
 def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: Path) -> None:
     service = FakeAdminService(tmp_path)
-    alice = _client_for_user(service, {"username": "  ", "display_name": " Alice "})
+    alice = _client_for_user(
+        service,
+        {"username": "  ", "display_name": " Alice "},
+        privileged=True,
+    )
     bob = _client_for_user(service, {"username": "bob"})
 
     alice_session_response = alice.post("/api/chat/session")
@@ -192,7 +202,7 @@ def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: P
 
 def test_chat_transcript_is_bounded_and_supports_before_cursor(tmp_path: Path) -> None:
     service = FakeAdminService(tmp_path)
-    alice = _client_for_user(service, {"username": "alice"})
+    alice = _client_for_user(service, {"username": "alice"}, privileged=True)
     store_path = tmp_path / "admin-web-chat-store.json"
     store = ChatStore(store_path)
     thread_id = store.get_or_create_thread("alice")
@@ -244,7 +254,7 @@ def test_chat_session_start_prewarms_assistant_session_with_effective_settings(
     tmp_path: Path,
 ) -> None:
     service = FakeAdminService(tmp_path)
-    alice = _client_for_user(service, {"username": "alice"})
+    alice = _client_for_user(service, {"username": "alice"}, privileged=True)
 
     response = alice.post("/api/chat/session")
     assert response.status_code == 200
@@ -267,7 +277,7 @@ def test_chat_session_start_schedules_prewarm_without_synchronous_resolution(
     monkeypatch,
 ) -> None:
     service = FakeAdminService(tmp_path)
-    alice = _client_for_user(service, {"username": "alice"})
+    alice = _client_for_user(service, {"username": "alice"}, privileged=True)
     scheduled: list[dict[str, Any]] = []
 
     def fake_schedule_chat_assistant_prewarm(**kwargs: Any) -> bool:
@@ -295,7 +305,7 @@ def test_chat_session_start_preserves_full_access_settings_for_authorized_reques
     tmp_path: Path,
 ) -> None:
     service = FakeAdminService(tmp_path)
-    alice = _client_for_user(service, {"username": "alice"})
+    alice = _client_for_user(service, {"username": "alice"}, privileged=True)
 
     response = alice.post("/api/chat/session")
     assert response.status_code == 200
@@ -313,7 +323,7 @@ def test_chat_new_session_clears_widget_thread_and_resets_assistant_context(
     tmp_path: Path,
 ) -> None:
     service = FakeAdminService(tmp_path)
-    alice = _client_for_user(service, {"username": "alice"})
+    alice = _client_for_user(service, {"username": "alice"}, privileged=True)
 
     first_session = alice.post("/api/chat/session").json()
     _wait_for(lambda: len(service.vm_agent_admin.resolve_calls) == 1)
@@ -440,7 +450,7 @@ def test_chat_session_disabled_status_does_not_schedule_prewarm(tmp_path: Path) 
 def test_chat_session_reenabled_disabled_thread_schedules_prewarm(tmp_path: Path) -> None:
     service = FakeAdminService(tmp_path)
     service.assistant_enabled = False
-    alice = _client_for_user(service, {"username": "alice"})
+    alice = _client_for_user(service, {"username": "alice"}, privileged=True)
 
     disabled_session = alice.post("/api/chat/session").json()
 

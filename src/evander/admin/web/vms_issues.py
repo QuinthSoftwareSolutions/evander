@@ -13,7 +13,12 @@ from starlette.routing import BaseRoute, Route
 
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.services.issue_helpers import ISSUE_STATES
-from evander.admin.web.shared import AdminWebAuth, json_error
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
+from evander.admin.web.shared import (
+    AdminWebAuth,
+    json_error,
+    request_has_privileged_operations,
+)
 from evander.models import LocalIssueRecord, VmActionResult, VmSummary
 
 _INACTIVE_ISSUE_STATES = frozenset({"Completed", "Closed", "Done"})
@@ -280,6 +285,16 @@ def _action_payload(result: VmActionResult) -> dict[str, Any]:
 
 
 def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> list[BaseRoute]:
+    def require_owner_privileged(request: Request) -> JSONResponse | None:
+        if request_has_privileged_operations(
+            auth=_auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
+            return None
+        return json_error("Privileged operations are locked.", status_code=403)
+
     async def list_vms(request: Request) -> JSONResponse:
         directory_path = _string_query(request, "directory_path")
         direct_only = _bool_query(request, "direct_only", default=True)
@@ -330,6 +345,8 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
         return JSONResponse({"vm_name": vm_name, "lines": lines, "text": text})
 
     async def mutate_vm(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         vm_name = request.path_params["vm_name"]
         action = request.path_params["action"]
         directory_path = _string_query(request, "directory_path")
@@ -399,6 +416,8 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
         return JSONResponse(_action_payload(result), status_code=status_code)
 
     async def create_vm(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         try:
             payload = await _json_body(request)
             vm_name = str(payload.get("vm_name") or "").strip()
@@ -454,6 +473,8 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
         return JSONResponse(_local_issue_detail_payload(service, local_issue))
 
     async def create_issue(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         try:
             payload = await _json_body(request)
 
@@ -487,6 +508,8 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
             return json_error(str(exc), status_code=400)
 
     async def update_issue(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         issue_id = request.path_params["issue_id"]
         try:
             payload = await _json_body(request)
@@ -502,6 +525,8 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
         return JSONResponse(_issue_record_payload(issue))
 
     async def delete_issue(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         issue_id = request.path_params["issue_id"]
         result = service.issue_git_admin.delete_local_issue(issue_id)
         status_code = 200 if result.success else 409
@@ -533,6 +558,8 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
         )
 
     async def create_vm_from_issue(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         issue_id = request.path_params["issue_id"]
         try:
             payload = await _json_body(request)

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+from mcp.server.fastmcp.exceptions import ToolError
 import pytest
 
+from evander.addons import AddonContext
 from evander.config import GatewayConfig
+from evander.models import ApprovalRequest, SessionManifest
+from evander.policy import PolicyEngine
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.storage import JsonStore
 from evander_bokio_addon.client import BokioApiError, BokioClient, BokioConfigError, settings_from_context
+from evander_bokio_addon.mcp import MCP_TOOL_NAMES, register_mcp_tools
 from evander_bokio_addon.providers import BokioCompanyQueryProvider
 from evander_bokio_addon.state import PreparedActionStore, upload_staging_dir
 
@@ -123,6 +132,156 @@ def test_bokio_upload_staging_separates_session_and_reserved_scopes(tmp_path) ->
     assert len({admin_scope, workflow_scope, admin_session, workflow_session}) == 4
 
 
+def test_bokio_mcp_read_tool_requires_session_tool_permission(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"companyInformation": {"name": "Example AB"}})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+
+    denied_server = _register_bokio_mcp(tmp_path / "denied", allowed_tools=[])
+    with pytest.raises(ToolError, match="bokio_get_company"):
+        denied_server.tools["bokio_get_company"](session_id="session-1")
+
+    assert requests == []
+
+    allowed_server = _register_bokio_mcp(
+        tmp_path / "allowed",
+        allowed_tools=["bokio_get_company"],
+    )
+    result = allowed_server.tools["bokio_get_company"](session_id="session-1")
+
+    assert result == {"result": {"companyInformation": {"name": "Example AB"}}}
+    assert len(requests) == 1
+    assert requests[0].headers["authorization"] == "Bearer secret-token"
+
+
+def test_bokio_mcp_prepare_tool_requires_session_tool_permission(tmp_path: Path) -> None:
+    denied_root = tmp_path / "denied"
+    denied_server = _register_bokio_mcp(denied_root, allowed_tools=[])
+
+    with pytest.raises(ToolError, match="bokio_prepare_journal_entry"):
+        denied_server.tools["bokio_prepare_journal_entry"](
+            payload={"title": "Receipt", "items": []},
+            session_id="session-1",
+        )
+
+    assert PreparedActionStore(denied_root).list_actions() == []
+
+    allowed_root = tmp_path / "allowed"
+    allowed_server = _register_bokio_mcp(
+        allowed_root,
+        allowed_tools=["bokio_prepare_journal_entry"],
+    )
+    result = allowed_server.tools["bokio_prepare_journal_entry"](
+        payload={"title": "Receipt", "items": []},
+        session_id="session-1",
+    )
+
+    assert result["action"]["kind"] == "journal_entry"
+    assert result["action"]["source"] == "session-1"
+    assert PreparedActionStore(allowed_root).list_actions()[0]["source"] == "session-1"
+
+
+def test_bokio_mcp_upload_tool_requires_policy_before_client_access(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+
+    denied_root = tmp_path / "denied"
+    denied_upload_root = upload_staging_dir(denied_root, session_id="session-1")
+    denied_upload_root.mkdir(parents=True)
+    (denied_upload_root / "receipt.pdf").write_bytes(b"%PDF-1.7\nreceipt")
+    denied_server = _register_bokio_mcp(denied_root, allowed_tools=[])
+
+    with pytest.raises(ToolError, match="bokio_upload_document"):
+        denied_server.tools["bokio_upload_document"](
+            file_path="receipt.pdf",
+            session_id="session-1",
+        )
+
+    assert requests == []
+
+    allowed_root = tmp_path / "allowed"
+    allowed_upload_root = upload_staging_dir(allowed_root, session_id="session-1")
+    allowed_upload_root.mkdir(parents=True)
+    (allowed_upload_root / "receipt.pdf").write_bytes(b"%PDF-1.7\nreceipt")
+    allowed_server = _register_bokio_mcp(
+        allowed_root,
+        allowed_tools=["bokio_upload_document"],
+    )
+    result = allowed_server.tools["bokio_upload_document"](
+        file_path="receipt.pdf",
+        session_id="session-1",
+    )
+
+    assert result == {"result": {"uploadId": "upload-1"}}
+    assert len(requests) == 1
+    assert requests[0].headers["authorization"] == "Bearer secret-token"
+
+
+def test_bokio_mcp_approved_write_tool_checks_policy_before_client_access(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "journal-entry-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    store = PreparedActionStore(tmp_path)
+    action = store.create_action(
+        kind="journal_entry",
+        payload={"title": "Receipt", "items": []},
+        source="session-1",
+    )
+    store.approve_action(action["action_id"])
+
+    denied_server = _register_bokio_mcp(tmp_path, allowed_tools=[])
+    with pytest.raises(ToolError, match="bokio_create_approved_journal_entry"):
+        denied_server.tools["bokio_create_approved_journal_entry"](
+            prepared_action_id=action["action_id"],
+            session_id="session-1",
+        )
+
+    assert requests == []
+    assert store.get_action(action["action_id"])["status"] == "approved"
+
+    allowed_server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_approved_journal_entry"],
+    )
+    result = allowed_server.tools["bokio_create_approved_journal_entry"](
+        prepared_action_id=action["action_id"],
+        session_id="session-1",
+    )
+
+    assert result["result"] == {"id": "journal-entry-1"}
+    assert store.get_action(action["action_id"])["status"] == "executed"
+    assert len(requests) == 1
+    assert requests[0].headers["authorization"] == "Bearer secret-token"
+
+
 def test_bokio_workflow_provider_uses_full_gateway_provider_state(
     tmp_path,
     monkeypatch,
@@ -194,3 +353,59 @@ def _install_transport(monkeypatch, handler) -> None:
         return real_client(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "Client", factory)
+
+
+class FakeServer:
+    def __init__(self) -> None:
+        self.tools = {}
+
+    def tool(self, *args, **kwargs):
+        def decorator(func):
+            self.tools[kwargs.get("name") or func.__name__] = func
+            return func
+
+        if args and callable(args[0]):
+            return decorator(args[0])
+        return decorator
+
+
+def _register_bokio_mcp(tmp_path: Path, *, allowed_tools: list[str]) -> FakeServer:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+    )
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    approvals = JsonStore(config.approval_store_path, ApprovalRequest)
+    policy = PolicyEngine(
+        config,
+        sessions,
+        approvals,
+        extra_mcp_tool_names=list(MCP_TOOL_NAMES),
+    )
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=list(allowed_tools),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+    runtime = SimpleNamespace(policy=policy)
+    server = FakeServer()
+    register_mcp_tools(
+        server,
+        AddonContext(
+            addon_id="bokio-addon",
+            runtime_dir=tmp_path,
+            addon_runtime_dir=tmp_path / "addons" / "bokio-addon",
+            config=config,
+            service=runtime,
+        ),
+    )
+    return server

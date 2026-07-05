@@ -30,6 +30,7 @@ from evander.models import (
     ApprovalRequest,
     ApprovalStatus,
     SessionManifest,
+    SessionActionResult,
     ToolName,
     WakeDispatchRecord,
     WakeResumePromptPayload,
@@ -94,6 +95,64 @@ def _admin_json_request(
     )
 
 
+def _unlock_privileged_operations(client: TestClient) -> None:
+    response = client.post("/api/admin/privileged/unlock")
+    assert response.status_code == 200
+    assert response.json()["privileged_operations"]["unlocked"] is True
+
+
+def _authenticated_owner_and_operator_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[AdminRuntimeComponents, TestClient, TestClient]:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    app = create_app(service)
+    owner_client = TestClient(app)
+    operator_client = TestClient(app)
+
+    owner_login = owner_client.post(
+        "/api/auth/login", json={"username": "admin", "password": "admin-pass"}
+    )
+    assert owner_login.status_code == 200
+    assert owner_login.json()["role"] == "admin"
+
+    created = owner_client.post(
+        "/api/admin/users",
+        json={
+            "login": "operator@example.com",
+            "role": "regular",
+            "password": "operator-pass",
+        },
+    )
+    assert created.status_code == 200
+
+    operator_login = operator_client.post(
+        "/api/auth/login",
+        json={"username": "operator@example.com", "password": "operator-pass"},
+    )
+    assert operator_login.status_code == 200
+    assert operator_login.json()["role"] == "regular"
+
+    return service, owner_client, operator_client
+
+
+def _seed_session(
+    service: AdminRuntimeComponents,
+    session_id: str,
+    **overrides: object,
+) -> None:
+    payload: dict[str, object] = {
+        "session_id": session_id,
+        "allowed_tools": [ToolName.APPROVAL_CHECK],
+        "expires_at": datetime.now(UTC) + timedelta(hours=2),
+    }
+    payload.update(overrides)
+    service.runtime.session_repository.upsert_session(SessionManifest(**payload))
+
+
 def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> None:
     source = (
         ROOT / "frontend" / "workflow-editor" / "src" / "features" / "sessions" / "SessionsScreen.tsx"
@@ -118,6 +177,294 @@ def test_mcp_tools_page_renders_tool_descriptions() -> None:
 
     assert "mcp-tool-policy-description" in source
     assert "item.description" in source
+
+
+def test_admin_web_approval_mutations_require_owner_unlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, owner_client, operator_client = _authenticated_owner_and_operator_clients(
+        tmp_path, monkeypatch
+    )
+    _seed_session(
+        service,
+        "approval-session",
+        vm_id="vm-approval",
+        allowed_tools=[ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK],
+    )
+    service.runtime.approvals.put(
+        "approval-decision",
+        ApprovalRequest(
+            request_id="approval-decision",
+            session_id="approval-session",
+            action_type="run_script",
+            tool_name="run_script",
+            payload_digest="digest-decision",
+            human_summary="Run script",
+            payload={"script": "echo ok"},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-revoke",
+        ApprovalRequest(
+            request_id="approval-revoke",
+            session_id="approval-session",
+            action_type="run_script",
+            tool_name="run_script",
+            payload_digest="digest-revoke",
+            human_summary="Run approved script",
+            payload={"script": "echo ok"},
+            status=ApprovalStatus.APPROVED,
+            approver="ops",
+            decision_at=datetime.now(UTC),
+            decision_reason="initially safe",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    locked_owner = owner_client.post(
+        "/api/admin/approvals/approval-decision/decision",
+        json={"approver": "admin", "approve": True, "reason": "safe"},
+    )
+    assert locked_owner.status_code == 403
+    assert locked_owner.json()["error"] == "Privileged operations are locked."
+    assert service.runtime.approvals.get("approval-decision").status == ApprovalStatus.PENDING
+
+    _unlock_privileged_operations(operator_client)
+    unlocked_non_owner = operator_client.post(
+        "/api/admin/approvals/approval-decision/decision",
+        json={"approver": "operator", "approve": True, "reason": "safe"},
+    )
+    assert unlocked_non_owner.status_code == 403
+    assert unlocked_non_owner.json()["error"] == "Privileged operations are locked."
+    assert service.runtime.approvals.get("approval-decision").status == ApprovalStatus.PENDING
+
+    _unlock_privileged_operations(owner_client)
+    owner_decision = owner_client.post(
+        "/api/admin/approvals/approval-decision/decision",
+        json={"approver": "admin", "approve": True, "reason": "safe"},
+    )
+    owner_revoke = owner_client.post(
+        "/api/admin/approvals/approval-revoke/revoke",
+        json={"approver": "admin", "reason": "no longer safe"},
+    )
+
+    assert owner_decision.status_code == 200
+    assert owner_decision.json()["request"]["status"] == "approved"
+    assert owner_revoke.status_code == 200
+    assert owner_revoke.json()["request"]["status"] == "denied"
+    assert service.runtime.approvals.get("approval-decision").status == ApprovalStatus.APPROVED
+    assert service.runtime.approvals.get("approval-revoke").status == ApprovalStatus.DENIED
+
+
+def test_admin_web_session_mutations_require_owner_unlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, owner_client, operator_client = _authenticated_owner_and_operator_clients(
+        tmp_path, monkeypatch
+    )
+    for session_id, overrides in {
+        "session-renew": {},
+        "session-revoke": {},
+        "session-delete": {"vm_id": None},
+        "session-cleanup": {"vm_provider": "container_worker_vm"},
+        "session-model": {"model": "gpt-old"},
+        "session-tools": {"allowed_tools": [ToolName.APPROVAL_CHECK]},
+        "session-policy": {"allowed_script_names": ["old-script"]},
+    }.items():
+        _seed_session(service, session_id, **overrides)
+    cleanup_calls: list[str] = []
+
+    def cleanup_container_session(self, session_id: str) -> SessionActionResult:
+        cleanup_calls.append(session_id)
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="cleanup_container_session",
+            message=f"Cleaned up container worker session {session_id}",
+        )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "cleanup_container_session",
+        MethodType(cleanup_container_session, service.vm_agent_admin),
+    )
+
+    def attempt_all(client: TestClient) -> list[int]:
+        responses = [
+            client.post("/api/admin/sessions/session-renew/renew", json={"extension": "6h"}),
+            client.post("/api/admin/sessions/session-revoke/revoke"),
+            client.delete("/api/admin/sessions/session-delete"),
+            client.post("/api/admin/sessions/session-cleanup/cleanup"),
+            client.put("/api/admin/sessions/session-model/model", json={"model": "gpt-new"}),
+            client.put(
+                "/api/admin/sessions/session-tools/allowed-tools",
+                json={"allowed_tools": ["approval_check", "approval_submit"]},
+            ),
+            client.patch(
+                "/api/admin/sessions/session-policy",
+                json={"allowed_script_names": ["new-script"]},
+            ),
+        ]
+        return [response.status_code for response in responses]
+
+    assert attempt_all(owner_client) == [403, 403, 403, 403, 403, 403, 403]
+    assert service.runtime.session_repository.get_session("session-delete") is not None
+    assert service.runtime.session_repository.get_session("session-model").model == "gpt-old"
+    assert service.runtime.session_repository.get_session("session-tools").allowed_tools == [
+        ToolName.APPROVAL_CHECK
+    ]
+    assert (
+        service.runtime.session_repository.get_session("session-policy").allowed_script_names
+        == ["old-script"]
+    )
+    assert cleanup_calls == []
+
+    _unlock_privileged_operations(operator_client)
+    assert attempt_all(operator_client) == [403, 403, 403, 403, 403, 403, 403]
+    assert service.runtime.session_repository.get_session("session-delete") is not None
+    assert service.runtime.session_repository.get_session("session-model").model == "gpt-old"
+    assert cleanup_calls == []
+
+    _unlock_privileged_operations(owner_client)
+    assert attempt_all(owner_client) == [200, 200, 200, 200, 200, 200, 200]
+    assert service.runtime.session_repository.get_session("session-delete") is None
+    assert service.runtime.session_repository.get_session("session-model").model == "gpt-new"
+    assert service.runtime.session_repository.get_session("session-tools").allowed_tools == [
+        ToolName.APPROVAL_CHECK,
+        ToolName.APPROVAL_SUBMIT,
+    ]
+    assert (
+        service.runtime.session_repository.get_session("session-policy").allowed_script_names
+        == ["new-script"]
+    )
+    assert cleanup_calls == ["session-cleanup"]
+
+
+def test_admin_web_mcp_policy_mutation_requires_owner_unlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, owner_client, operator_client = _authenticated_owner_and_operator_clients(
+        tmp_path, monkeypatch
+    )
+    initial = owner_client.get("/api/admin/mcp-tools?directory_path=root").json()
+    payload = {
+        "expected_revision": initial["revision"],
+        "mcp_tool_policies": {"run_script": {"denied": True}},
+    }
+
+    def stored_mcp_tool_policies() -> dict[str, object]:
+        result = service.operations_admin.read_directory_domain_config("root", "policy")
+        assert result.data is not None
+        return dict(result.data.config.get("mcp_tool_policies") or {})
+
+    locked_owner = owner_client.put("/api/admin/mcp-tools?directory_path=root", json=payload)
+    assert locked_owner.status_code == 403
+    assert locked_owner.json()["error"] == "Privileged operations are locked."
+    assert stored_mcp_tool_policies() == {}
+
+    _unlock_privileged_operations(operator_client)
+    unlocked_non_owner = operator_client.put("/api/admin/mcp-tools?directory_path=root", json=payload)
+    assert unlocked_non_owner.status_code == 403
+    assert unlocked_non_owner.json()["error"] == "Privileged operations are locked."
+    assert stored_mcp_tool_policies() == {}
+
+    _unlock_privileged_operations(owner_client)
+    allowed = owner_client.put("/api/admin/mcp-tools?directory_path=root", json=payload)
+
+    assert allowed.status_code == 200
+    assert allowed.json()["mcp_tool_policies"]["run_script"]["denied"] is True
+    assert stored_mcp_tool_policies()["run_script"]["denied"] is True
+
+
+def test_admin_web_wake_schedule_mutations_require_owner_unlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, owner_client, operator_client = _authenticated_owner_and_operator_clients(
+        tmp_path, monkeypatch
+    )
+    _seed_session(
+        service,
+        "wake-session",
+        vm_id="vm-wake",
+        allowed_tools=[ToolName.SCHEDULE_RESUME, ToolName.CANCEL_SCHEDULED_WAKE],
+    )
+    existing = service.operations_admin.create_wake_schedule(
+        session_id="wake-session",
+        prompt="Original prompt",
+        resume_at=datetime.now(UTC) + timedelta(minutes=30),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    failed = service.operations_admin.create_wake_schedule(
+        session_id="wake-session",
+        prompt="Retry me",
+        resume_at=datetime.now(UTC) + timedelta(minutes=45),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    service.runtime.wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed-auth",
+            request_id=failed.request_id,
+            session_id="wake-session",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Retry me"),
+            dispatched_at=datetime.now(UTC),
+            error="failed",
+        )
+    )
+
+    def attempt_all(client: TestClient) -> list[int]:
+        responses = [
+            client.post(
+                "/api/admin/sessions/wake-session/wake-schedules",
+                json={
+                    "prompt": "Create from route",
+                    "resume_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "resume_mode": "same_context",
+                },
+            ),
+            client.patch(
+                f"/api/admin/sessions/wake-schedules/{existing.request_id}",
+                json={"prompt": "Updated prompt"},
+            ),
+            client.post(f"/api/admin/scheduled-wakes/{failed.request_id}/retry", json={"run_now": True}),
+            client.delete(f"/api/admin/sessions/wake-schedules/{existing.request_id}"),
+        ]
+        return [response.status_code for response in responses]
+
+    assert attempt_all(owner_client) == [403, 403, 403, 403]
+    assert service.runtime.wake_store.get_request(existing.request_id) is not None
+    assert (
+        service.runtime.wake_store.get_request(existing.request_id).resume_prompt.prompt
+        == "Original prompt"
+    )
+    assert service.runtime.wake_store.get_request(failed.request_id).status != "due"
+
+    _unlock_privileged_operations(operator_client)
+    assert attempt_all(operator_client) == [403, 403, 403, 403]
+    assert service.runtime.wake_store.get_request(existing.request_id) is not None
+    assert (
+        service.runtime.wake_store.get_request(existing.request_id).resume_prompt.prompt
+        == "Original prompt"
+    )
+    assert service.runtime.wake_store.get_request(failed.request_id).status != "due"
+
+    _unlock_privileged_operations(owner_client)
+    assert attempt_all(owner_client) == [200, 200, 200, 200]
+    assert service.runtime.wake_store.get_request(existing.request_id) is None
+    assert service.runtime.wake_store.get_request(failed.request_id).status == "due"
+    created = [
+        item
+        for item in service.operations_admin.list_wake_schedules(
+            session_id="wake-session", include_disabled=True
+        )
+        if item["request_id"] not in {existing.request_id, failed.request_id}
+    ]
+    assert len(created) == 1
 
 
 def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -> None:
@@ -214,6 +561,7 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
 
     index_response = client.get("/api/admin/approvals?statuses=pending")
     detail_response = client.get("/api/admin/approvals/approval-1")
+    _unlock_privileged_operations(client)
     decision_response = client.post(
         "/api/admin/approvals/approval-1/decision",
         json={"approver": "alice", "approve": False, "reason": "unsafe"},
@@ -309,6 +657,7 @@ def test_admin_web_rejects_invalid_approval_decisions(tmp_path: Path) -> None:
         ),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     missing_approver = client.post(
         "/api/admin/approvals/approval-1/decision",
@@ -364,6 +713,7 @@ def test_admin_web_uses_authenticated_identity_for_approval_decision(
     client = TestClient(create_app(service))
 
     login = client.post("/api/auth/login", json={"username": "operator", "password": "swordfish"})
+    _unlock_privileged_operations(client)
     decision = client.post(
         "/api/admin/approvals/approval-1/decision",
         json={"approver": "spoofed-user", "approve": True, "reason": "safe"},
@@ -416,6 +766,7 @@ def test_admin_web_revokes_valid_approved_approval(tmp_path: Path) -> None:
         ),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     revoked = client.post(
         "/api/admin/approvals/approval-1/revoke",
@@ -463,6 +814,7 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     catalog_response = client.get("/api/admin/sessions/catalog")
     list_response = client.get("/api/admin/sessions")
     detail_response = client.get("/api/admin/sessions/issue-14085-session")
+    _unlock_privileged_operations(client)
     model_response = client.put(
         "/api/admin/sessions/issue-14085-session/model",
         json={"model": "gpt-5.5"},
@@ -1002,6 +1354,7 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
             },
         },
     )
+    auth.mark_privileged_for_request(update_request)
     update_response = asyncio.run(update_mcp_tools(update_request))
 
     assert update_response.status_code == 200
@@ -1084,6 +1437,7 @@ def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
         MethodType(lambda self, **_kwargs: FakeContainerBackend(), service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     list_response = client.get("/api/admin/sessions")
     detail_response = client.get("/api/admin/sessions/container-session")
@@ -1181,6 +1535,7 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
         MethodType(lambda self, **_kwargs: FakeContainerBackend(), service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     cleanup_response = client.post("/api/admin/sessions/container-session/cleanup")
     detail_response = client.get("/api/admin/sessions/container-session")
@@ -1255,6 +1610,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
         ),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.patch(
         "/api/admin/sessions/issue-14085-session",
@@ -1366,6 +1722,7 @@ def test_admin_web_rejects_direct_delete_for_agent_session(tmp_path: Path) -> No
         ),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.delete("/api/admin/sessions/issue-14085-session")
 
@@ -1385,6 +1742,7 @@ def test_admin_web_rejects_blank_session_model(tmp_path: Path) -> None:
         ),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.put(
         "/api/admin/sessions/issue-14085-session/model",
@@ -1406,6 +1764,7 @@ def test_admin_web_exposes_wake_schedule_crud(tmp_path: Path) -> None:
         ),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     create_response = client.post(
         "/api/admin/sessions/issue-14086-session/wake-schedules",
@@ -1502,6 +1861,7 @@ def test_admin_web_lists_and_retries_scheduled_wakes(tmp_path: Path) -> None:
             "include_completed": "false",
         },
     )
+    _unlock_privileged_operations(client)
     retry_response = client.post(
         f"/api/admin/scheduled-wakes/{failed.request_id}/retry",
         json={"run_now": True},
@@ -1605,6 +1965,7 @@ def test_admin_web_rejects_retry_for_completed_wake(tmp_path: Path) -> None:
         evidence={"dispatch_id": "dispatch-completed", "session_id": "issue-14086-session"},
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         f"/api/admin/scheduled-wakes/{completed.request_id}/retry",
@@ -1646,6 +2007,7 @@ def test_admin_web_reschedules_failed_wake_with_resume_at(tmp_path: Path) -> Non
     )
     retry_at = datetime.now(UTC) + timedelta(hours=1)
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         f"/api/admin/scheduled-wakes/{failed.request_id}/retry",
@@ -1751,23 +2113,22 @@ def test_admin_web_rejects_cancelled_wake_schedule_reenable(tmp_path: Path) -> N
         reason="No longer needed",
         metadata={"source": "ui"},
     )
+    auth = AdminWebAuth(AdminWebConfig.from_env())
     update_endpoint = next(
         route.endpoint
-        for route in session_approval_routes(service, object())
+        for route in session_approval_routes(service, auth)
         if getattr(route, "path", "") == "/api/admin/sessions/wake-schedules/{request_id:str}"
         and "PATCH" in getattr(route, "methods", set())
     )
-
-    response = asyncio.run(
-        update_endpoint(
-            _admin_json_request(
-                method="PATCH",
-                path=f"/api/admin/sessions/wake-schedules/{created.request_id}",
-                path_params={"request_id": created.request_id},
-                payload={"enabled": True},
-            )
-        )
+    update_request = _admin_json_request(
+        method="PATCH",
+        path=f"/api/admin/sessions/wake-schedules/{created.request_id}",
+        path_params={"request_id": created.request_id},
+        payload={"enabled": True},
     )
+    auth.mark_privileged_for_request(update_request)
+
+    response = asyncio.run(update_endpoint(update_request))
 
     assert response.status_code == 400
     payload = json.loads(response.body)
@@ -1790,6 +2151,7 @@ def test_admin_web_rejects_invalid_tool_argument_policy_updates(tmp_path: Path) 
         ),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     invalid_payload = {
         "tool_argument_policies": {

@@ -665,6 +665,19 @@ def session_approval_routes(
 ) -> list[BaseRoute]:
     policy_summary_cache = _SessionPolicySummaryCache()
 
+    def _owner_privileged_error(
+        request: Request, *, directory_path: object | None = None
+    ) -> JSONResponse | None:
+        if request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
+        ):
+            return None
+        return json_error("Privileged operations are locked.", status_code=403)
+
     async def approvals_index(request: Request) -> JSONResponse:
         params = request.query_params
         try:
@@ -710,6 +723,9 @@ def session_approval_routes(
         return JSONResponse(_approval_review_payload(review))
 
     async def decide_approval(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         request_id = request.path_params.get("request_id", "")
         try:
             payload = await request.json()
@@ -739,6 +755,9 @@ def session_approval_routes(
         return JSONResponse({"request": _approval_payload(updated)})
 
     async def revoke_approval(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         request_id = request.path_params.get("request_id", "")
         try:
             payload = await request.json()
@@ -830,6 +849,9 @@ def session_approval_routes(
         )
 
     async def renew_session(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         session_id = request.path_params.get("session_id", "")
         try:
             payload = await request.json()
@@ -848,6 +870,9 @@ def session_approval_routes(
         return JSONResponse(result.model_dump(mode="json"))
 
     async def revoke_session(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         session_id = request.path_params.get("session_id", "")
         try:
             result = service.operations_admin.revoke_session(session_id)
@@ -856,6 +881,9 @@ def session_approval_routes(
         return JSONResponse(result.model_dump(mode="json"))
 
     async def delete_session(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         session_id = request.path_params.get("session_id", "")
         try:
             result = service.vm_agent_admin.delete_session(session_id)
@@ -864,6 +892,9 @@ def session_approval_routes(
         return JSONResponse(result.model_dump(mode="json"))
 
     async def cleanup_session(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         session_id = request.path_params.get("session_id", "")
         try:
             result = service.vm_agent_admin.cleanup_container_session(session_id)
@@ -880,6 +911,9 @@ def session_approval_routes(
         return JSONResponse(payload, status_code=status_code)
 
     async def update_session_model(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         session_id = request.path_params.get("session_id", "")
         try:
             payload = await request.json()
@@ -903,6 +937,9 @@ def session_approval_routes(
         )
 
     async def update_session_tools(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         session_id = request.path_params.get("session_id", "")
         try:
             payload = await request.json()
@@ -928,6 +965,9 @@ def session_approval_routes(
         )
 
     async def update_session_policy(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         session_id = request.path_params.get("session_id", "")
         try:
             payload = await request.json()
@@ -1015,13 +1055,9 @@ def session_approval_routes(
 
     async def update_mcp_tools(request: Request) -> JSONResponse:
         directory_path = str(request.query_params.get("directory_path") or "root").strip() or "root"
-        if not request_has_privileged_operations(
-            auth=auth,
-            service=service,
-            request=request,
-            required_permission=ADMIN_OWNER_PERMISSION,
-        ):
-            return json_error("Privileged operations are locked.", status_code=403)
+        auth_error = _owner_privileged_error(request, directory_path=directory_path)
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -1094,6 +1130,9 @@ def session_approval_routes(
         return JSONResponse({"items": [_wake_ledger_payload(item) for item in items]})
 
     async def create_wake_schedule(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         session_id = request.path_params.get("session_id", "")
         try:
             payload = await request.json()
@@ -1117,6 +1156,9 @@ def session_approval_routes(
         return JSONResponse({"item": _wake_schedule_payload(created.model_dump(mode="json"))})
 
     async def update_wake_schedule(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         request_id = request.path_params.get("request_id", "")
         try:
             payload = await request.json()
@@ -1147,6 +1189,9 @@ def session_approval_routes(
         return JSONResponse({"item": _wake_schedule_payload(updated.model_dump(mode="json"))})
 
     async def retry_scheduled_wake(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         request_id = request.path_params.get("request_id", "")
         try:
             payload = await request.json()
@@ -1183,6 +1228,9 @@ def session_approval_routes(
         return JSONResponse({"item": _wake_ledger_payload(updated)})
 
     async def remove_wake_schedule(request: Request) -> JSONResponse:
+        auth_error = _owner_privileged_error(request)
+        if auth_error is not None:
+            return auth_error
         request_id = request.path_params.get("request_id", "")
         try:
             deleted = service.operations_admin.delete_wake_schedule(request_id)

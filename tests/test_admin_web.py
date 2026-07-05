@@ -663,7 +663,14 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     agent_copy_fields = {field["key"]: field for field in agent_copy_files["fields"]}
     assert all(
         agent_copy_fields[key]["description"]
-        for key in ["target", "session_id", "vm_name", "vm_user", "files"]
+        for key in [
+            "target",
+            "session_id",
+            "vm_name",
+            "vm_user",
+            "allowed_source_roots",
+            "files",
+        ]
     )
     agent_copy_file_fields = {
         field["key"]: field for field in agent_copy_fields["files"]["item_fields"]
@@ -974,6 +981,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "method",
         "url",
         "allowed_url_patterns",
+        "allow_private_networks",
         "payload",
         "headers",
         "timeout_seconds",
@@ -1004,6 +1012,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert http_request_fields["url"]["required"] and http_request_fields["url"]["bindable"]
     assert http_request_fields["allowed_url_patterns"]["kind"] == "string_list"
     assert http_request_fields["allowed_url_patterns"]["default_value"] == ["*"]
+    assert http_request_fields["allow_private_networks"]["kind"] == "boolean"
+    assert http_request_fields["allow_private_networks"]["default_value"] is False
     assert http_request_fields["payload"]["json_value_type"] == "object"
     assert http_request_fields["headers"]["json_value_type"] == "object"
     assert http_request_fields["check"]["default_value"] is False
@@ -1885,6 +1895,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "session_id",
         "vm_name",
         "vm_user",
+        "allowed_source_roots",
         "files",
     ]
     vm_clone_repo = next(
@@ -2874,11 +2885,19 @@ def test_admin_web_release_info_reports_missing_sources(monkeypatch, tmp_path: P
 def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
+    locked_create = client.post(
+        "/api/admin/skills",
+        json={"name": "locked.skill", "content": "# Locked\n", "replace": False},
+    )
+    unlock_response = client.post("/api/admin/privileged/unlock")
     create_response = client.post(
         "/api/admin/skills",
         json={"name": "demo.skill", "content": "# Demo\n", "replace": False},
     )
 
+    assert locked_create.status_code == 403
+    assert locked_create.json()["error"] == "Privileged operations are locked."
+    assert unlock_response.status_code == 200
     assert create_response.status_code == 201
     assert create_response.json()["skill"]["name"] == "demo.skill"
     duplicate_response = client.post(
@@ -2920,6 +2939,7 @@ def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
 
 def test_admin_web_skills_api_rejects_json_errors(tmp_path: Path) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+    assert client.post("/api/admin/privileged/unlock").status_code == 200
 
     assert client.post("/api/admin/skills", json=[]).status_code == 400
     assert (
@@ -2936,6 +2956,65 @@ def test_admin_web_skills_api_rejects_json_errors(tmp_path: Path) -> None:
         ).status_code
         == 400
     )
+
+
+def test_admin_web_skills_mutations_require_owner_and_privileged_unlock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
+    app.state.admin_user_store.upsert_user(
+        login="operator@example.com",
+        role="regular",
+        display_name="Operator",
+    )
+    app.state.admin_user_store.set_local_password(
+        login="operator@example.com",
+        password="operator-pass",
+    )
+    admin_client = TestClient(app)
+    operator_client = TestClient(app)
+    assert (
+        admin_client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin-pass"},
+        ).status_code
+        == 200
+    )
+    assert (
+        operator_client.post(
+            "/api/auth/login",
+            json={"username": "operator@example.com", "password": "operator-pass"},
+        ).status_code
+        == 200
+    )
+
+    locked_owner = admin_client.post(
+        "/api/admin/skills",
+        json={"name": "owner.skill", "content": "# Owner\n"},
+    )
+    assert operator_client.post("/api/admin/privileged/unlock").status_code == 200
+    non_owner = operator_client.post(
+        "/api/admin/skills",
+        json={"name": "operator.skill", "content": "# Operator\n"},
+    )
+    assert admin_client.post("/api/admin/privileged/unlock").status_code == 200
+    owner_create = admin_client.post(
+        "/api/admin/skills",
+        json={"name": "owner.skill", "content": "# Owner\n"},
+    )
+    owner_delete = admin_client.delete("/api/admin/skills/owner.skill")
+
+    assert locked_owner.status_code == 403
+    assert locked_owner.json()["error"] == "Privileged operations are locked."
+    assert non_owner.status_code == 403
+    assert non_owner.json()["error"] == "Privileged operations are locked."
+    assert owner_create.status_code == 201
+    assert owner_delete.status_code == 200
 
 
 def test_admin_web_exposes_workflow_run_stream(tmp_path: Path) -> None:
@@ -4655,6 +4734,7 @@ def test_admin_web_manages_workflow_packs_with_privileged_revision_checks(
     )
     client = TestClient(create_app(service))
     pack_list_revision = _workflow_pack_list_revision(client, workflow_pack="pack-a.v1.json")
+    _unlock_privileged_operations(client)
 
     create_response = client.post(
         "/api/workflow-editor/packs",
@@ -9053,6 +9133,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
 def test_admin_web_state_exposes_effective_execution_backend(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     root_state = client.get("/api/admin/state")
     create_directory = client.post(
@@ -10340,6 +10421,7 @@ def test_admin_web_workers_expose_config_schema(tmp_path: Path) -> None:
 
 def test_admin_web_worker_config_save_requires_matching_revision(tmp_path: Path) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+    _unlock_privileged_operations(client)
     worker_id = "trigger-orchestrator"
     detail_response = client.get(f"/api/workers/{worker_id}")
     assert detail_response.status_code == 200
@@ -10824,7 +10906,7 @@ def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
     assert payload["catalog"]["version"] == payload["version"]
     assert payload["catalog"]["currency"] == "usd"
     assert payload["editable"] is True
-    assert payload["write_requires_privileged_unlock"] is False
+    assert payload["write_requires_privileged_unlock"] is True
     first_rule = payload["rules"][0]
     assert isinstance(first_rule["id"], str)
     assert first_rule["id"]
@@ -10858,7 +10940,7 @@ def test_admin_web_model_pricing_catalog_status_reports_env_override(
     assert payload["catalog"]["rules"][0]["models"] == ["test-model"]
     assert payload["catalog"]["rules"][0]["model_patterns"] == []
     assert payload["editable"] is True
-    assert payload["write_requires_privileged_unlock"] is False
+    assert payload["write_requires_privileged_unlock"] is True
 
 
 def test_admin_web_model_pricing_catalog_status_reports_invalid_catalog(
@@ -10888,7 +10970,7 @@ def test_admin_web_model_pricing_catalog_status_reports_invalid_catalog(
         "rules": [],
     }
     assert payload["editable"] is True
-    assert payload["write_requires_privileged_unlock"] is False
+    assert payload["write_requires_privileged_unlock"] is True
 
 
 def test_admin_web_model_pricing_catalog_write_requires_revision(
@@ -10903,6 +10985,7 @@ def test_admin_web_model_pricing_catalog_write_requires_revision(
     monkeypatch.setenv("EVANDER_MODEL_PRICING_PATH", str(catalog_path))
     clear_model_pricing_catalog_cache()
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+    _unlock_privileged_operations(client)
 
     initial_response = client.get("/api/configuration/model-pricing")
     assert initial_response.status_code == 200
@@ -11068,6 +11151,7 @@ def test_admin_web_people_communications_tab_save_preserves_user_contact_links(
         },
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.put(
         "/api/configuration/domains/people_communications?directory_path=root",
@@ -11110,6 +11194,7 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
     client = TestClient(
         create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
+    _unlock_privileged_operations(client)
     create_response = client.post(
         "/api/configuration/directories",
         json={"parent_path": "root", "name": "ops"},
@@ -11168,6 +11253,7 @@ def test_admin_web_people_communications_tab_save_splits_underlying_domains(
     client = TestClient(
         create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
+    _unlock_privileged_operations(client)
 
     create_response = client.post(
         "/api/configuration/directories",
@@ -11204,6 +11290,7 @@ def test_admin_web_people_communications_saves_communication_artifact_link_field
     client = TestClient(
         create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
+    _unlock_privileged_operations(client)
 
     response = client.put(
         "/api/configuration/domains/people_communications?directory_path=root",
@@ -11237,6 +11324,7 @@ def test_admin_web_people_communications_tab_save_rolls_back_on_later_domain_fai
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
     providers_before = service.operations_admin.read_directory_domain_config("root", "providers")
     assert providers_before.ok is True
     assert providers_before.data is not None
@@ -11279,6 +11367,7 @@ def test_admin_web_configuration_tab_save_removed_fields_clears_child_domain_ove
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
     target_payload = [
         {
             "id": "ops-notify",
@@ -11350,6 +11439,7 @@ def test_admin_web_configuration_tab_save_rejects_missing_and_stale_revision(
     client = TestClient(
         create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
+    _unlock_privileged_operations(client)
     create_response = client.post(
         "/api/configuration/directories",
         json={"parent_path": "root", "name": "ops"},
@@ -11390,6 +11480,7 @@ def test_admin_web_people_communications_tab_saves_sqlite_communication_targets(
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     root_response = client.put(
         "/api/configuration/domains/people_communications?directory_path=root",
@@ -11508,6 +11599,7 @@ def test_admin_web_models_assistant_knowledge_tab_save_preserves_directory_domai
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     create_response = client.post(
         "/api/configuration/directories",
@@ -11595,6 +11687,7 @@ def test_admin_web_people_communications_tab_preserves_assistant_settings_when_a
         }
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.put(
         "/api/configuration/domains/people_communications?directory_path=root",
@@ -11634,6 +11727,12 @@ def test_admin_web_chat_settings_write_requires_authentication(
         json={"username": "operator", "password": "swordfish"},
     )
     assert login.status_code == 200
+    locked = client.put(
+        "/api/chat/settings",
+        json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
+    )
+    assert locked.status_code == 403
+    _unlock_privileged_operations(client)
     saved = client.put(
         "/api/chat/settings",
         json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
@@ -11647,6 +11746,7 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     create_response = client.post(
         "/api/configuration/directories",
@@ -11716,6 +11816,7 @@ def test_admin_web_models_tab_save_preserves_other_provider_area_fields(
         },
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.put(
         "/api/configuration/domains/models_assistant_knowledge?directory_path=root",
@@ -11759,21 +11860,58 @@ def test_admin_web_can_toggle_privileged_operations_state(tmp_path: Path) -> Non
     assert relocked_response.json()["privileged_operations"]["unlocked"] is False
 
 
-def test_request_has_privileged_operations_is_auth_only() -> None:
+def test_request_has_privileged_operations_requires_unlock_state() -> None:
     calls: list[str] = []
 
-    operations_admin = SimpleNamespace(
-        privileged_helper_required=lambda: calls.append("required") or False,
-        privileged_operations_unlocked=lambda: calls.append("unlocked") or False,
+    service = SimpleNamespace(operations_admin=SimpleNamespace())
+    locked_auth = SimpleNamespace(
+        require=lambda _request: calls.append("require") or {"sid": "test"},
+        privileged_for_request=lambda _request: calls.append("privileged_for_request")
+        or False,
     )
-    service = SimpleNamespace(operations_admin=operations_admin)
-    auth = SimpleNamespace(require=lambda _request: calls.append("require") or {"sid": "test"})
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
 
     assert (
-        request_has_privileged_operations(auth=auth, service=service, request=request) is True
+        request_has_privileged_operations(auth=locked_auth, service=service, request=request)
+        is False
     )
-    assert calls == ["require"]
+    assert calls == ["require", "privileged_for_request"]
+
+    unlocked_auth = SimpleNamespace(
+        require=lambda _request: {"sid": "test"},
+        privileged_for_request=lambda _request: True,
+    )
+    assert (
+        request_has_privileged_operations(auth=unlocked_auth, service=service, request=request)
+        is True
+    )
+
+
+def test_helper_gated_route_requires_unlock_in_local_dev_auth_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "none")
+    service = build_admin_runtime(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    locked_response = client.put(
+        "/api/chat/settings",
+        json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
+    )
+    unlock_response = client.post("/api/admin/privileged/unlock")
+    unlocked_response = client.put(
+        "/api/chat/settings",
+        json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
+    )
+
+    assert locked_response.status_code == 403
+    assert locked_response.json()["error"] == "Privileged operations are locked."
+    assert unlock_response.status_code == 200
+    assert unlock_response.json()["privileged_operations"]["unlocked"] is True
+    assert unlocked_response.status_code == 200
+    assert unlocked_response.json()["enabled"] is True
+    assert unlocked_response.json()["read_only"] is False
+    assert unlocked_response.json()["default_profile"] == "full-admin"
 
 
 def test_request_has_privileged_operations_can_require_permission() -> None:
@@ -11783,7 +11921,10 @@ def test_request_has_privileged_operations_can_require_permission() -> None:
         calls.append(("require_permission", permission, directory_path))
 
     service = SimpleNamespace(operations_admin=SimpleNamespace())
-    auth = SimpleNamespace(require_permission=require_permission)
+    auth = SimpleNamespace(
+        require_permission=require_permission,
+        privileged_for_request=lambda _request: True,
+    )
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
 
     assert (
@@ -11801,7 +11942,10 @@ def test_request_has_privileged_operations_can_require_permission() -> None:
     def deny_permission(_request, _permission, directory_path=None):
         raise PermissionError("denied")
 
-    denied_auth = SimpleNamespace(require_permission=deny_permission)
+    denied_auth = SimpleNamespace(
+        require_permission=deny_permission,
+        privileged_for_request=lambda _request: True,
+    )
     assert (
         request_has_privileged_operations(
             auth=denied_auth,
@@ -11812,7 +11956,10 @@ def test_request_has_privileged_operations_can_require_permission() -> None:
         is False
     )
 
-    minimal_auth = SimpleNamespace(require=lambda _request: {"sid": "test"})
+    minimal_auth = SimpleNamespace(
+        require=lambda _request: {"sid": "test"},
+        privileged_for_request=lambda _request: True,
+    )
     assert (
         request_has_privileged_operations(
             auth=minimal_auth,
@@ -11925,6 +12072,470 @@ def test_admin_web_unlock_endpoint_does_not_start_privileged_helper(
     assert relocked_state.json()["privileged_operations"]["unlocked"] is False
 
 
+_ADMIN_AGENT_MUTATION_CASES = (
+    (
+        "create",
+        "POST",
+        "/api/admin/agents",
+        {"backend": "container_worker_vm", "session_id": "session-1"},
+        201,
+    ),
+    (
+        "submit-create-operation",
+        "POST",
+        "/api/admin/agents/create-operations",
+        {"backend": "container_worker_vm", "session_id": "session-1"},
+        202,
+    ),
+    (
+        "patch",
+        "PATCH",
+        "/api/admin/agents/session-1?backend=libvirt_vm",
+        {"model": "gpt-5"},
+        200,
+    ),
+    ("delete", "DELETE", "/api/admin/agents/session-1?backend=libvirt_vm", None, 200),
+    ("action", "POST", "/api/admin/agents/vm-1/actions/start?backend=libvirt_vm", {}, 200),
+    (
+        "prompt",
+        "POST",
+        "/api/admin/agents/vm-1/actions/prompt-agent?backend=libvirt_vm",
+        {"prompt": "Continue"},
+        200,
+    ),
+)
+
+
+_ADMIN_VM_ISSUE_MUTATION_CASES = (
+    ("vm-create", "POST", "/api/admin/vms", {"vm_name": "vm-1"}, 201),
+    ("vm-action", "POST", "/api/admin/vms/vm-1/actions/start", {}, 200),
+    ("issue-create", "POST", "/api/admin/issues", {"title": "Issue", "body": "Body"}, 201),
+    (
+        "issue-create-start-vm",
+        "POST",
+        "/api/admin/issues",
+        {"title": "Issue", "body": "Body", "start_vm": True},
+        201,
+    ),
+    (
+        "issue-update",
+        "PUT",
+        "/api/admin/issues/issue-1",
+        {"title": "Updated", "body": "Body", "state": "New"},
+        200,
+    ),
+    ("issue-delete", "DELETE", "/api/admin/issues/issue-1", None, 200),
+    ("issue-create-vm", "POST", "/api/admin/issues/issue-1/create-vm", {}, 200),
+)
+
+
+def _admin_route_issue_record(issue_id: str = "issue-1") -> LocalIssueRecord:
+    return LocalIssueRecord(
+        issue_id=issue_id,
+        issue_number="1",
+        title="Issue",
+        body="Body",
+        yaml_path="/tmp/issue.yaml",
+        directory_path="root",
+    )
+
+
+def _invoke_admin_mutation(
+    client: TestClient,
+    *,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+) -> httpx.Response:
+    request_kwargs: dict[str, object] = {}
+    if payload is not None:
+        request_kwargs["json"] = payload
+    return client.request(method, path, **request_kwargs)
+
+
+def _assert_admin_mutation_forbidden(response: httpx.Response) -> None:
+    assert response.status_code == 403
+    assert response.json()["error"] == "Privileged operations are locked."
+
+
+def _regular_admin_web_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    service: AdminRuntimeComponents,
+) -> TestClient:
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin")
+    store.upsert_user(login="regular@example.com", role="regular")
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(service)
+    client = TestClient(app)
+    callback = _complete_azure_login(
+        app, client, login="regular@example.com", display_name="Regular User"
+    )
+    assert callback.status_code == 303
+    return client
+
+
+def _install_admin_agent_mutation_stub(
+    service: AdminRuntimeComponents,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    calls: list[str],
+) -> None:
+    if case == "create":
+
+        def create_admin_agent(self, payload):
+            del self
+            calls.append("create_admin_agent")
+            return {
+                "success": True,
+                "agent_id": str(payload.get("session_id") or "session-1"),
+                "backend": str(payload.get("backend") or "container_worker_vm"),
+                "target_name": "target-1",
+                "action": "create",
+                "message": "created",
+            }
+
+        monkeypatch.setattr(
+            service.vm_agent_admin,
+            "create_admin_agent",
+            MethodType(create_admin_agent, service.vm_agent_admin),
+        )
+        return
+    if case == "submit-create-operation":
+
+        def submit_admin_agent_create(self, payload):
+            del self, payload
+            calls.append("submit_admin_agent_create")
+            return AgentCreateOperation(
+                operation_id="operation-1",
+                status="queued",
+                backend="container_worker_vm",
+                target_name="target-1",
+                session_id="session-1",
+            )
+
+        monkeypatch.setattr(
+            service.vm_agent_admin,
+            "submit_admin_agent_create",
+            MethodType(submit_admin_agent_create, service.vm_agent_admin),
+        )
+        return
+    if case == "patch":
+
+        def update_admin_agent(self, agent_id, *, backend=None, payload=None):
+            del self, backend, payload
+            calls.append("update_admin_agent")
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "backend": "libvirt_vm",
+                "target_name": agent_id,
+                "action": "patch",
+                "message": "updated",
+            }
+
+        monkeypatch.setattr(
+            service.vm_agent_admin,
+            "update_admin_agent",
+            MethodType(update_admin_agent, service.vm_agent_admin),
+        )
+        return
+    if case == "delete":
+
+        def delete_admin_agent(self, agent_id, *, backend=None):
+            del self, backend
+            calls.append("delete_admin_agent")
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "backend": "libvirt_vm",
+                "target_name": agent_id,
+                "action": "delete",
+                "message": "deleted",
+                "status": "deleted",
+            }
+
+        monkeypatch.setattr(
+            service.vm_agent_admin,
+            "delete_admin_agent",
+            MethodType(delete_admin_agent, service.vm_agent_admin),
+        )
+        return
+
+    def run_admin_agent_action(self, agent_id, action, *, backend=None, payload=None):
+        del self, payload
+        calls.append(f"run_admin_agent_action:{action}")
+        return {
+            "success": True,
+            "agent_id": agent_id,
+            "backend": backend or "libvirt_vm",
+            "target_name": agent_id,
+            "action": action,
+            "message": "ran",
+        }
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "run_admin_agent_action",
+        MethodType(run_admin_agent_action, service.vm_agent_admin),
+    )
+
+
+def _install_vm_issue_mutation_stub(
+    service: AdminRuntimeComponents,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    calls: list[str],
+) -> None:
+    if case == "vm-create":
+
+        def create_vm(self, **payload):
+            del self
+            calls.append("create_vm")
+            return VmActionResult(
+                success=True,
+                vm_name=str(payload.get("vm_name") or "vm-1"),
+                action="create-vm",
+                message="created",
+            )
+
+        monkeypatch.setattr(
+            service.vm_agent_admin,
+            "create_vm",
+            MethodType(create_vm, service.vm_agent_admin),
+        )
+        return
+    if case == "vm-action":
+
+        def list_vms(self, **_kwargs):
+            del self
+            calls.append("list_vms")
+            return [
+                VmSummary(
+                    vm_name="vm-1",
+                    issue_number="ISSUE-1",
+                    session_ids=[],
+                    directory_paths=["root"],
+                    libvirt_state="stopped",
+                    agent_state="idle",
+                )
+            ]
+
+        def start_vm(self, vm_name):
+            del self
+            calls.append("start_vm")
+            return VmActionResult(
+                success=True,
+                vm_name=vm_name,
+                action="start",
+                message="started",
+            )
+
+        monkeypatch.setattr(
+            service.vm_agent_admin,
+            "list_vms",
+            MethodType(list_vms, service.vm_agent_admin),
+        )
+        monkeypatch.setattr(
+            service.vm_agent_admin,
+            "start_vm",
+            MethodType(start_vm, service.vm_agent_admin),
+        )
+        return
+    if case in {"issue-create", "issue-create-start-vm"}:
+
+        def create_local_issue(self, **_payload):
+            del self
+            calls.append("create_local_issue")
+            return _admin_route_issue_record()
+
+        monkeypatch.setattr(
+            service.issue_git_admin,
+            "create_local_issue",
+            MethodType(create_local_issue, service.issue_git_admin),
+        )
+        if case == "issue-create-start-vm":
+
+            def create_issue_vm_from_local_issue(self, issue_identifier, **_payload):
+                del self
+                calls.append(f"create_issue_vm_from_local_issue:{issue_identifier}")
+                return VmActionResult(
+                    success=True,
+                    vm_name="vm-issue-1",
+                    action="create-issue-vm",
+                    message="created",
+                )
+
+            monkeypatch.setattr(
+                service.vm_agent_admin,
+                "create_issue_vm_from_local_issue",
+                MethodType(create_issue_vm_from_local_issue, service.vm_agent_admin),
+            )
+        return
+    if case == "issue-update":
+
+        def update_local_issue(self, issue_identifier, **_payload):
+            del self
+            calls.append(f"update_local_issue:{issue_identifier}")
+            return _admin_route_issue_record(issue_identifier)
+
+        monkeypatch.setattr(
+            service.issue_git_admin,
+            "update_local_issue",
+            MethodType(update_local_issue, service.issue_git_admin),
+        )
+        return
+    if case == "issue-delete":
+
+        def delete_local_issue(self, issue_identifier):
+            del self
+            calls.append(f"delete_local_issue:{issue_identifier}")
+            return VmActionResult(
+                success=True,
+                vm_name="vm-issue-1",
+                action="delete_local_issue",
+                message="deleted",
+            )
+
+        monkeypatch.setattr(
+            service.issue_git_admin,
+            "delete_local_issue",
+            MethodType(delete_local_issue, service.issue_git_admin),
+        )
+        return
+
+    def create_issue_vm_from_local_issue(self, issue_identifier, **_payload):
+        del self
+        calls.append(f"create_issue_vm_from_local_issue:{issue_identifier}")
+        return VmActionResult(
+            success=True,
+            vm_name="vm-issue-1",
+            action="create-issue-vm",
+            message="created",
+        )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "create_issue_vm_from_local_issue",
+        MethodType(create_issue_vm_from_local_issue, service.vm_agent_admin),
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "method", "path", "payload", "expected_status"),
+    _ADMIN_AGENT_MUTATION_CASES,
+)
+def test_admin_web_agent_mutations_require_owner_unlock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+    expected_status: int,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    calls: list[str] = []
+    _install_admin_agent_mutation_stub(service, monkeypatch, case, calls)
+    client = TestClient(create_app(service))
+
+    locked_response = _invoke_admin_mutation(
+        client, method=method, path=path, payload=payload
+    )
+    assert calls == []
+    _assert_admin_mutation_forbidden(locked_response)
+
+    _unlock_privileged_operations(client)
+    unlocked_response = _invoke_admin_mutation(
+        client, method=method, path=path, payload=payload
+    )
+
+    assert unlocked_response.status_code == expected_status
+    assert calls
+
+
+@pytest.mark.parametrize(
+    ("case", "method", "path", "payload", "_expected_status"),
+    _ADMIN_AGENT_MUTATION_CASES,
+)
+def test_admin_web_agent_mutations_reject_non_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+    _expected_status: int,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    calls: list[str] = []
+    _install_admin_agent_mutation_stub(service, monkeypatch, case, calls)
+    client = _regular_admin_web_client(tmp_path, monkeypatch, service)
+
+    response = _invoke_admin_mutation(client, method=method, path=path, payload=payload)
+
+    _assert_admin_mutation_forbidden(response)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("case", "method", "path", "payload", "expected_status"),
+    _ADMIN_VM_ISSUE_MUTATION_CASES,
+)
+def test_admin_web_vm_issue_mutations_require_owner_unlock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+    expected_status: int,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    calls: list[str] = []
+    _install_vm_issue_mutation_stub(service, monkeypatch, case, calls)
+    client = TestClient(create_app(service))
+
+    locked_response = _invoke_admin_mutation(
+        client, method=method, path=path, payload=payload
+    )
+    assert calls == []
+    _assert_admin_mutation_forbidden(locked_response)
+
+    _unlock_privileged_operations(client)
+    unlocked_response = _invoke_admin_mutation(
+        client, method=method, path=path, payload=payload
+    )
+
+    assert unlocked_response.status_code == expected_status
+    assert calls
+
+
+@pytest.mark.parametrize(
+    ("case", "method", "path", "payload", "_expected_status"),
+    _ADMIN_VM_ISSUE_MUTATION_CASES,
+)
+def test_admin_web_vm_issue_mutations_reject_non_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+    _expected_status: int,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    calls: list[str] = []
+    _install_vm_issue_mutation_stub(service, monkeypatch, case, calls)
+    client = _regular_admin_web_client(tmp_path, monkeypatch, service)
+
+    response = _invoke_admin_mutation(client, method=method, path=path, payload=payload)
+
+    _assert_admin_mutation_forbidden(response)
+    assert calls == []
+
+
 def test_admin_web_rejects_start_when_vm_session_model_is_missing(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -11987,6 +12598,7 @@ def test_admin_web_rejects_start_when_vm_session_model_is_missing(
     )
 
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/admin/vms/vm-1/actions/start?directory_path=root/team-a&direct_only=true", json={}
@@ -12547,6 +13159,7 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     )
 
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     log_response = client.get(
         "/api/admin/agents/session-1/log?backend=container_worker_vm&view=executions&lines=4"
@@ -12758,6 +13371,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         MethodType(create_vm, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/admin/agents",
@@ -12883,6 +13497,7 @@ def test_admin_web_agents_create_rejects_capability_limited_email_targets(
         MethodType(create_vm, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/admin/agents",
@@ -13064,6 +13679,7 @@ def test_admin_web_agents_create_vm_duplicate_session_returns_409(
         MethodType(create_vm, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/admin/agents",
@@ -13105,6 +13721,7 @@ def test_admin_web_agents_create_operations_submit_list_and_get(
         MethodType(create_admin_agent, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/admin/agents/create-operations",
@@ -13198,6 +13815,7 @@ def test_admin_web_agents_create_vm_forwards_supplied_teams_chat_allowlist(
         MethodType(create_vm, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/admin/agents",
@@ -13273,6 +13891,7 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
         MethodType(lambda self, **kwargs: [], service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     create_response = client.post(
         "/api/admin/agents",
@@ -13373,6 +13992,7 @@ def test_admin_web_agents_create_container_duplicate_session_returns_400(
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     payload = {
         "backend": "container_worker_vm",
@@ -13423,6 +14043,7 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
         )
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.patch(
         "/api/admin/agents/lab-session?backend=libvirt_vm",
@@ -13525,6 +14146,7 @@ def test_admin_web_agents_delete_vm_removes_unambiguous_session(
 
     monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.delete("/api/admin/agents/lab-vm?backend=libvirt_vm")
 
@@ -13600,6 +14222,7 @@ def test_admin_web_agents_delete_container_cleans_mapping_and_session(
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.delete("/api/admin/agents/exec-1?backend=container_worker_vm")
 
@@ -13660,6 +14283,7 @@ def test_admin_web_agents_delete_container_session_uses_persisted_worker_url(
         MethodType(fake_container_worker_backend, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.delete("/api/admin/agents/container-session?backend=container_worker_vm")
 
@@ -13690,6 +14314,7 @@ def test_admin_web_agents_delete_ambiguous_vm_session_link_fails(
         MethodType(lambda self, target: destroyed.append(target), service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.delete("/api/admin/agents/lab-vm?backend=libvirt_vm")
 
@@ -13720,6 +14345,7 @@ def test_admin_web_vm_agent_action_uses_existing_vm_path(tmp_path: Path, monkeyp
     )
 
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
     response = client.post("/api/admin/agents/vm-1/actions/start?backend=libvirt_vm", json={})
 
     assert response.status_code == 200
@@ -13770,6 +14396,7 @@ def test_admin_web_agent_prompt_action_uses_existing_vm_path(
     )
 
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
     response = client.post(
         "/api/admin/agents/vm-1/actions/prompt-agent?backend=libvirt_vm",
         json={"prompt": "Summarize the latest changes", "resume_thread_id": "thread-keep-1"},
@@ -13846,6 +14473,7 @@ def test_admin_web_agent_prompt_action_uses_existing_container_path(
     )
 
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
     response = client.post(
         "/api/admin/agents/container-session/actions/prompt-agent?backend=container_worker_vm",
         json={"prompt": "Continue the container workflow", "resume_thread_id": "thread-keep-2"},
@@ -13882,6 +14510,7 @@ def test_admin_web_agent_prompt_action_uses_existing_container_path(
 def test_admin_web_agent_prompt_action_rejects_blank_prompt(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/admin/agents/vm-1/actions/prompt-agent?backend=libvirt_vm",
@@ -14028,7 +14657,7 @@ def test_admin_web_issue_detail_uses_cached_proxy_data_without_remote_credential
     assert payload["state"] == "In Progress"
 
 
-def test_admin_web_operator_steering_note_flow_allows_authorized_write_without_unlock(
+def test_admin_web_operator_steering_note_flow_requires_privileged_unlock(
     tmp_path: Path,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
@@ -14060,6 +14689,18 @@ def test_admin_web_operator_steering_note_flow_allows_authorized_write_without_u
     assert context_payload["directory_path"] == "root"
     assert context_payload["context"]["session_id"] == "session-steer"
     assert context_payload["context"]["dispatch_id"] == "dispatch-steer"
+
+    locked = client.post(
+        "/api/operator-steering/notes",
+        json={
+            "session_id": "session-steer",
+            "dispatch_id": "dispatch-steer",
+            "worker_execution_id": "worker-steer",
+            "message": "Move from exploration to implementation.",
+        },
+    )
+    assert locked.status_code == 403
+    _unlock_privileged_operations(client)
 
     created = client.post(
         "/api/operator-steering/notes",
@@ -14118,6 +14759,7 @@ def test_admin_web_creates_standalone_vm(tmp_path: Path, monkeypatch) -> None:
     )
 
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/admin/vms",
@@ -14181,6 +14823,7 @@ def test_admin_web_create_issue_can_start_vm_immediately(tmp_path: Path, monkeyp
     monkeypatch.setattr(vms_issues_module, "run_in_threadpool", fake_run_in_threadpool)
 
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/admin/issues",
@@ -14239,6 +14882,7 @@ def test_admin_web_create_vm_from_issue_runs_in_threadpool(
     monkeypatch.setattr(vms_issues_module, "run_in_threadpool", fake_run_in_threadpool)
 
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         f"/api/admin/issues/{created_issue.issue_id}/create-vm",

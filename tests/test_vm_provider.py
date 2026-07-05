@@ -169,3 +169,33 @@ def test_azure_cloud_init_adds_default_host_key_to_agent_admin(
 
     assert "  - name: agent-admin" in cloud_init
     assert cloud_init.count("ssh-ed25519 AAAATEST jonathan@example") == 2
+
+
+def test_azure_cloud_init_rejects_malicious_guest_environment_key() -> None:
+    vm_defaults = SimpleNamespace(
+        azure=SimpleNamespace(ssh_public_key_path=None),
+        guest_environment=lambda: {"BAD; touch /tmp/vm-exec-pwned #": "1"},
+    )
+
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        AzureVmProvider._render_cloud_init(
+            vm_name="vm-azure-1",
+            vm_user="agent",
+            vm_defaults=vm_defaults,
+        )
+
+
+def test_azure_cloud_init_accepts_valid_guest_environment_keys() -> None:
+    vm_defaults = SimpleNamespace(
+        azure=SimpleNamespace(ssh_public_key_path=None),
+        guest_environment=lambda: {"VALID_1": "one", "_EMPTY": ""},
+    )
+
+    cloud_init = AzureVmProvider._render_cloud_init(
+        vm_name="vm-azure-1",
+        vm_user="agent",
+        vm_defaults=vm_defaults,
+    )
+
+    assert "      VALID_1=one" in cloud_init
+    assert "      _EMPTY=" in cloud_init

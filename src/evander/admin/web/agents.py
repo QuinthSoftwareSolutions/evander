@@ -12,7 +12,12 @@ from starlette.routing import BaseRoute, Route
 
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.web.cache import AdminWebJsonResponseCache
-from evander.admin.web.shared import AdminWebAuth, json_error
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
+from evander.admin.web.shared import (
+    AdminWebAuth,
+    json_error,
+    request_has_privileged_operations,
+)
 
 DASHBOARD_AGENT_LIST_CACHE_TTL_SECONDS = 10.0
 DASHBOARD_AGENT_INVENTORY_PARAM = "_dashboard_agent_inventory"
@@ -150,6 +155,16 @@ def agent_routes(
     _auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[BaseRoute]:
+    def require_owner_privileged(request: Request) -> JSONResponse | None:
+        if request_has_privileged_operations(
+            auth=_auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
+            return None
+        return json_error("Privileged operations are locked.", status_code=403)
+
     async def list_agents(request: Request) -> JSONResponse:
         directory_path = _string_query(request, "directory_path")
         direct_only = _bool_query(request, "direct_only", default=True)
@@ -274,6 +289,8 @@ def agent_routes(
         return JSONResponse(_jsonable(options))
 
     async def create_agent(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         try:
             payload = await _json_body(request)
             result = await run_in_threadpool(service.vm_agent_admin.create_admin_agent, payload)
@@ -285,6 +302,8 @@ def agent_routes(
         return JSONResponse(_jsonable(result), status_code=status_code)
 
     async def submit_create_operation(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         try:
             payload = await _json_body(request)
             operation = await run_in_threadpool(service.vm_agent_admin.submit_admin_agent_create, payload)
@@ -322,6 +341,8 @@ def agent_routes(
         return JSONResponse({"operation": _jsonable(operation)})
 
     async def patch_agent(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         agent_id = request.path_params["agent_id"]
         backend = _string_query(request, "backend")
         try:
@@ -339,6 +360,8 @@ def agent_routes(
         return JSONResponse(_jsonable(result), status_code=200)
 
     async def delete_agent(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         agent_id = request.path_params["agent_id"]
         backend = _string_query(request, "backend")
         try:
@@ -355,6 +378,8 @@ def agent_routes(
         return JSONResponse(_jsonable(result), status_code=status_code)
 
     async def mutate_agent(request: Request) -> JSONResponse:
+        if error_response := require_owner_privileged(request):
+            return error_response
         agent_id = request.path_params["agent_id"]
         action = request.path_params["action"]
         backend = _string_query(request, "backend")

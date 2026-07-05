@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import time
 from collections.abc import Mapping
 from fnmatch import fnmatchcase
@@ -12,23 +13,47 @@ import httpx
 from .base import EffectProviderBase, EffectProviderExecutionError
 
 NODE_TYPE = "effect:http:request"
+_METADATA_HOSTS = {
+    "169.254.169.254",
+    "fd00:ec2::254",
+    "metadata",
+    "metadata.google.internal",
+    "metadata.azure.internal",
+    "100.100.100.200",
+}
+_LOCALHOST_NAMES = {"localhost", "ip6-localhost", "ip6-loopback"}
 
 
 class HttpRequestEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        resolved_config_map = dict(resolved_config or {})
         payload = self._definition_payload()
-        if resolved_config:
-            payload.update(dict(resolved_config))
+        if resolved_config_map:
+            payload.update(resolved_config_map)
 
         method = self._normalize_method(payload.get("method", "GET"))
         url = self._normalize_url(payload.get("url"))
         allowed_url_patterns = self._normalize_allowed_url_patterns(
             payload.get("allowed_url_patterns", ["*"])
         )
+        if self._url_requires_explicit_allowlist(resolved_config_map):
+            self._enforce_explicit_bound_url_allowlist(
+                allowed_url_patterns=allowed_url_patterns,
+                explicit_allowlist=self._allowed_url_patterns_was_explicit(
+                    resolved_config_map
+                ),
+            )
         self._enforce_allowed_url(url, allowed_url_patterns)
+        self._enforce_destination_policy(
+            url,
+            allow_private_networks=self._normalize_bool(
+                payload.get("allow_private_networks", False),
+                field_name="allow_private_networks",
+            ),
+        )
         headers = self._normalize_headers(payload.get("headers"))
         timeout_seconds = self._resolve_timeout_seconds(payload.get("timeout_seconds"))
-        check = self._normalize_bool(payload.get("check", False))
+        check = self._normalize_bool(payload.get("check", False), field_name="check")
         body = payload.get("payload")
 
         start = time.monotonic()
@@ -80,6 +105,7 @@ class HttpRequestEffectProvider(EffectProviderBase):
             "headers",
             "timeout_seconds",
             "check",
+            "allow_private_networks",
         ):
             if hasattr(definition, field_name):
                 payload[field_name] = getattr(definition, field_name)
@@ -152,6 +178,139 @@ class HttpRequestEffectProvider(EffectProviderBase):
                 return
         raise ValueError(f"{NODE_TYPE} url is not allowed by allowed_url_patterns: {url}")
 
+    def _url_requires_explicit_allowlist(self, resolved_config: Mapping[str, Any]) -> bool:
+        definition_url = self._definition_config_value("url")
+        if isinstance(definition_url, str) and "${{" in definition_url:
+            return True
+        if "url" not in resolved_config:
+            return False
+        if definition_url is None:
+            return True
+        if not isinstance(definition_url, str):
+            return True
+        if "${{" in definition_url:
+            return True
+        return str(resolved_config.get("url") or "").strip() != definition_url.strip()
+
+    def _allowed_url_patterns_was_explicit(self, resolved_config: Mapping[str, Any]) -> bool:
+        if "allowed_url_patterns" in resolved_config:
+            return True
+        definition = self.effect_definition
+        config = getattr(definition, "config", None)
+        if isinstance(config, Mapping) and "allowed_url_patterns" in config:
+            return True
+        fields_set = getattr(definition, "model_fields_set", set())
+        return "allowed_url_patterns" in fields_set
+
+    def _definition_config_value(self, field_name: str) -> Any:
+        definition = self.effect_definition
+        if definition is None:
+            return None
+        config = getattr(definition, "config", None)
+        if isinstance(config, Mapping) and field_name in config:
+            return config[field_name]
+        if hasattr(definition, field_name):
+            return getattr(definition, field_name)
+        return None
+
+    @classmethod
+    def _enforce_explicit_bound_url_allowlist(
+        cls,
+        *,
+        allowed_url_patterns: list[str],
+        explicit_allowlist: bool,
+    ) -> None:
+        if not explicit_allowlist:
+            raise ValueError(
+                f"{NODE_TYPE} bound urls require explicit allowed_url_patterns"
+            )
+        global_patterns = [
+            pattern
+            for pattern in allowed_url_patterns
+            if cls._pattern_allows_any_host(pattern)
+        ]
+        if global_patterns:
+            raise ValueError(
+                f"{NODE_TYPE} bound urls require host-restricted allowed_url_patterns"
+            )
+
+    @staticmethod
+    def _pattern_allows_any_host(pattern: str) -> bool:
+        normalized = pattern.strip().casefold()
+        if not normalized or normalized == "*":
+            return True
+        if "://" in normalized:
+            parsed = urlparse(normalized)
+            host = (parsed.hostname or "").rstrip(".")
+            return host in {"", "*"}
+        if normalized.startswith("["):
+            closing = normalized.find("]")
+            host = normalized[1:closing] if closing != -1 else normalized
+        else:
+            host = normalized.rsplit(":", 1)[0] if ":" in normalized else normalized
+        return host.rstrip(".") in {"", "*"}
+
+    @classmethod
+    def _enforce_destination_policy(
+        cls,
+        url: str,
+        *,
+        allow_private_networks: bool,
+    ) -> None:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if host is None:
+            raise ValueError(f"{NODE_TYPE} url must be a non-empty http or https URL")
+        normalized_host = host.rstrip(".").casefold()
+        if cls._is_metadata_destination(normalized_host):
+            raise ValueError(f"{NODE_TYPE} url targets a blocked metadata destination")
+        address = cls._parse_ip_address(normalized_host)
+        if address is not None:
+            if cls._is_metadata_destination(str(address)):
+                raise ValueError(f"{NODE_TYPE} url targets a blocked metadata destination")
+            if not allow_private_networks and cls._is_private_destination(address):
+                raise ValueError(
+                    f"{NODE_TYPE} url targets a blocked private, loopback, "
+                    "or link-local destination"
+                )
+            return
+        if not allow_private_networks and cls._is_localhost_name(normalized_host):
+            raise ValueError(
+                f"{NODE_TYPE} url targets a blocked private, loopback, "
+                "or link-local destination"
+            )
+
+    @staticmethod
+    def _parse_ip_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+        try:
+            return ipaddress.ip_address(host)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _is_private_destination(
+        address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    ) -> bool:
+        return (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_unspecified
+            or address.is_multicast
+            or address.is_reserved
+        )
+
+    @staticmethod
+    def _is_localhost_name(host: str) -> bool:
+        return host in _LOCALHOST_NAMES or host.endswith(".localhost")
+
+    @staticmethod
+    def _is_metadata_destination(host: str) -> bool:
+        normalized = host.strip("[]").rstrip(".").casefold()
+        return normalized in _METADATA_HOSTS or normalized.endswith(
+            ".metadata.google.internal"
+        )
+
     @staticmethod
     def _url_match_candidates(url: str) -> dict[str, str]:
         parsed = urlparse(url)
@@ -221,7 +380,7 @@ class HttpRequestEffectProvider(EffectProviderBase):
         return 30.0
 
     @staticmethod
-    def _normalize_bool(value: Any, *, default: bool = False) -> bool:
+    def _normalize_bool(value: Any, *, default: bool = False, field_name: str) -> bool:
         if value is None:
             return default
         if isinstance(value, bool):
@@ -232,7 +391,7 @@ class HttpRequestEffectProvider(EffectProviderBase):
                 return True
             if normalized in {"false", "0", "no", "n", "off"}:
                 return False
-        raise ValueError(f"{NODE_TYPE} check must be a boolean")
+        raise ValueError(f"{NODE_TYPE} {field_name} must be a boolean")
 
     @staticmethod
     def _parse_json(response: httpx.Response) -> Any | None:

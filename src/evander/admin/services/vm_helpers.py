@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -9,6 +10,19 @@ from datetime import datetime
 from pathlib import Path
 
 from evander.admin.services import process_helpers
+
+
+_ENVIRONMENT_VARIABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def validate_environment_variable_name(name: object) -> str:
+    normalized = str(name)
+    if not _ENVIRONMENT_VARIABLE_NAME_PATTERN.fullmatch(normalized):
+        raise ValueError(
+            "Invalid environment variable name "
+            f"{normalized!r}; expected ^[A-Za-z_][A-Za-z0-9_]*$"
+        )
+    return normalized
 
 
 def caller_home() -> Path:
@@ -231,7 +245,8 @@ def remote_shell_script(
 ) -> str:
     script_lines = ["set -euo pipefail"]
     for key, value in sorted((environment or {}).items()):
-        script_lines.append(f"export {key}={shlex.quote(value)}")
+        env_key = validate_environment_variable_name(key)
+        script_lines.append(f"export {env_key}={shlex.quote(value)}")
     if working_directory:
         script_lines.append(f"cd {shlex.quote(working_directory)}")
     if isinstance(command, str):
@@ -417,5 +432,6 @@ _wait_for_vm_ip = wait_for_vm_ip
 _wait_for_vm_ssh = wait_for_vm_ssh
 _ssh_options = ssh_options
 _resolve_vm_ssh_access = resolve_vm_ssh_access
+_validate_environment_variable_name = validate_environment_variable_name
 _remote_shell_script = remote_shell_script
 _probe_agent_state = probe_agent_state

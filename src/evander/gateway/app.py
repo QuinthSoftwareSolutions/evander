@@ -4,6 +4,8 @@ import contextlib
 import json
 import logging
 import os
+from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Any
 
 from starlette.applications import Starlette
@@ -13,8 +15,9 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Mount, Route
 
 from evander.gateway.server import *  # noqa: F403
-from evander.gateway.server import _MCP_REQUEST_CONTEXT
-from evander.config import _normalize_phone_number
+from evander.gateway.server import _MCP_REQUEST_CONTEXT, create_server
+from evander.config import GatewayConfig, InboundPhoneRoute, _normalize_phone_number
+from evander.directories import DirectoryService
 from evander.gateway.request_context import (
     _string_from_headers,
     _string_from_query_params,
@@ -25,12 +28,11 @@ from evander.gateway.session_context import (
     _mcp_session_token_from_request,
     _resolve_session_id_from_request,
 )
-from evander.models import tool_name_value
+from evander.models import ToolName, tool_name_value
 from evander.policy import PolicyError
 from evander.retell_phone import (
     RetellWebhookSignatureError,
     retell_api_key_from_config,
-    sanitize_retell_metadata,
     verify_retell_webhook_signature,
 )
 from evander.runtime import RuntimeContext
@@ -39,7 +41,11 @@ from evander.session_auth import (
     verify_mcp_session_token,
 )
 from evander.voice_sessions import VoiceProjectionService, VoiceQueryDelegator
-from evander.voice_sessions import realtime_session_config, voice_query_payload
+from evander.voice_sessions import (
+    realtime_session_config,
+    sanitize_voice_metadata,
+    voice_query_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +291,23 @@ def create_app(context: RuntimeContext) -> Starlette:
             session_id = _resolve_session_id_from_request(request)
             session = context.policy.require_tool(session_id, ToolName.COPILOT_HOST_AUTH)
             vm_id = session.vm_id
+            if not verify_mcp_session_token(
+                session,
+                _mcp_session_token_from_request(request),
+            ):
+                context.audit.log_decision(
+                    event_type="copilot_auth_request",
+                    session_id=session_id,
+                    vm_id=vm_id,
+                    decision="denied",
+                    reason="MCP session token is required for this session",
+                    args={},
+                    result={},
+                )
+                return JSONResponse(
+                    {"error": "MCP session token is required for this session"},
+                    status_code=401,
+                )
             resolved_config = context.resolve_provider_config_for_session(session_id)
             env_var_name = str(resolved_config.github_token_env or "").strip()
             if not env_var_name:

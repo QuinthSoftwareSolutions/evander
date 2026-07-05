@@ -512,6 +512,7 @@ def test_admin_web_addon_runtime_workflow_pack_refresh_overwrites_existing_pack(
         create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon")))
     )
     state = client.get("/api/admin/addons").json()
+    client.post("/api/admin/privileged/unlock")
 
     disabled_response = client.post(
         "/api/admin/addons/team-addon/runtime-workflow-pack/refresh",

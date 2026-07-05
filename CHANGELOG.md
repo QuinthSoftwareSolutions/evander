@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-07-05 - Workflow Effect Source Guards
+
+- Blocked `effect:http:request` private, loopback, link-local, and metadata
+  destinations by default, including URLs resolved from workflow bindings.
+- Required bound HTTP request URLs to use explicit host-restricted allowlists
+  and added an `allow_private_networks` opt-in for trusted private endpoints.
+- Restricted copy-file `source_path` reads to repo deployment assets and
+  runtime artifact stores by default, with `allowed_source_roots` for explicit
+  additional host roots.
+
+## 2026-07-05 - Git SSH Repo And Session Push Scope
+
+- Bound writable guest Git SSH keys to one bare repo and one
+  `refs/heads/agents/<session-id>/...` namespace, with read-only bootstrap
+  fallback when repo/session metadata is unavailable.
+
+## 2026-07-05 - VM Exec Environment Validation
+
+- Rejected VM exec and guest environment variable names that are not strict
+  shell identifiers before rendering shell export or cloud-init environment
+  lines.
+
+## 2026-07-05 - Admin Web Secret Placement
+
+- Defaulted the Admin Web listener to localhost and documented keeping active
+  Admin Web password/session secrets outside repo-local config files.
+- Loaded `/etc/evander/local-secrets.env` from the Admin Web systemd unit so
+  deployments can keep local secrets out of `config/admin-web.env`.
+
+## 2026-07-05 - Admin Web Privileged Lock Enforcement
+
+- Required the current Admin Web privileged unlock state before helper-gated
+  backend routes accept privileged mutations.
+
 ## 2026-07-05 - Dashboard Directory Cache Scope
 
 - Scoped Admin Web dashboard conditional-response payloads to the same request

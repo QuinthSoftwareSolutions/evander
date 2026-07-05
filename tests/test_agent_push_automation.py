@@ -7,11 +7,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     root = Path(__file__).resolve().parents[1]
+    bootstrap_git = (root / "scripts/bootstrap_git_vm.sh").read_text(encoding="utf-8")
     create_remote = (root / "scripts/create_git_remote.sh").read_text(encoding="utf-8")
     mirror_issue = (root / "scripts/mirror_issue_repo.sh").read_text(encoding="utf-8")
     handle_push = (root / "scripts/handle_agent_push.sh").read_text(encoding="utf-8")
     open_pr = (root / "scripts/open_agent_pr.sh").read_text(encoding="utf-8")
 
+    assert "EVANDER_GIT_AUTH_REPO_B64" in bootstrap_git
+    assert "EVANDER_GIT_AUTH_SESSION_ID_B64" in bootstrap_git
+    assert "EVANDER_GIT_AUTH_REF_PREFIX_B64" in bootstrap_git
+    assert "EVANDER_GIT_AUTH_ACCESS=read-only" in bootstrap_git
+    assert "hooks/pre-receive" in create_remote
+    assert "EVANDER_GIT_AUTH_ENFORCE" in create_remote
     assert "hooks/post-receive" in create_remote
     assert "handle_git_push_trigger.sh" in create_remote
     assert "handle_agent_push.sh" not in create_remote

@@ -7,8 +7,9 @@ Usage: git_ssh_command_wrapper.sh
 
 Forced-command wrapper used by host authorized_keys entries for guest Git SSH
 access. It validates that the requested repository lives under the configured
-Git root, auto-refreshes issue mirrors for guest read commands when mirror
-metadata is available, and then hands the command to git-shell.
+Git root, enforces repo/session metadata for guest write commands,
+auto-refreshes issue mirrors for guest read commands when mirror metadata is
+available, and then hands the command to git-shell.
 EOF
 }
 
@@ -32,6 +33,43 @@ ROOT_REAL="$(realpath -m -- "${GIT_ROOT}")"
 ORIGINAL_COMMAND="${SSH_ORIGINAL_COMMAND:-}"
 MIRROR_SCRIPT="${SCRIPT_DIR}/mirror_issue_repo.sh"
 RESOLVE_REPO_SOURCE_SCRIPT="${SCRIPT_DIR}/resolve_repo_source.sh"
+
+decode_auth_value() {
+  local plain_value="$1"
+  local encoded_value="$2"
+  local decoded_value
+
+  if [[ -n "${plain_value}" ]]; then
+    printf '%s\n' "${plain_value}"
+    return 0
+  fi
+
+  if [[ -z "${encoded_value}" ]]; then
+    return 0
+  fi
+
+  if ! decoded_value="$(printf '%s' "${encoded_value}" | base64 -d 2>/dev/null)"; then
+    echo "Invalid base64-encoded Git SSH authorization metadata." >&2
+    return 1
+  fi
+  printf '%s\n' "${decoded_value}"
+}
+
+resolve_authorized_repo_real() {
+  local repo_value="$1"
+  local repo_path
+
+  if [[ "${repo_value}" == /* ]]; then
+    repo_path="${repo_value}"
+  else
+    case "${repo_value}" in
+      *.git) repo_path="${GIT_ROOT}/${repo_value}" ;;
+      *) repo_path="${GIT_ROOT}/${repo_value}.git" ;;
+    esac
+  fi
+
+  realpath -m -- "${repo_path}"
+}
 
 if [[ -z "${ORIGINAL_COMMAND}" ]]; then
   echo "Missing SSH_ORIGINAL_COMMAND." >&2
@@ -71,6 +109,77 @@ if [[ ! -d "${REPO_REAL}" ]]; then
   echo "Repository does not exist: ${REPO_REAL}" >&2
   exit 1
 fi
+
+AUTH_ACCESS="${EVANDER_GIT_AUTH_ACCESS:-read-only}"
+AUTH_REPO_RAW="$(decode_auth_value "${EVANDER_GIT_AUTH_REPO:-}" "${EVANDER_GIT_AUTH_REPO_B64:-}")"
+AUTH_SESSION_ID="$(
+  decode_auth_value "${EVANDER_GIT_AUTH_SESSION_ID:-}" "${EVANDER_GIT_AUTH_SESSION_ID_B64:-}"
+)"
+AUTH_REF_PREFIX="$(
+  decode_auth_value "${EVANDER_GIT_AUTH_REF_PREFIX:-}" "${EVANDER_GIT_AUTH_REF_PREFIX_B64:-}"
+)"
+
+require_write_authorization() {
+  local auth_repo_real expected_prefix hook_path
+
+  if [[ "${AUTH_ACCESS}" != "write" ]]; then
+    echo "Git SSH key is read-only; repo/session metadata is required for pushes." >&2
+    exit 1
+  fi
+
+  if [[ -z "${AUTH_REPO_RAW}" || -z "${AUTH_SESSION_ID}" || -z "${AUTH_REF_PREFIX}" ]]; then
+    echo "Git write access requires authorized repo, session, and ref-prefix metadata." >&2
+    exit 1
+  fi
+
+  auth_repo_real="$(resolve_authorized_repo_real "${AUTH_REPO_RAW}")"
+  case "${auth_repo_real}" in
+    "${ROOT_REAL}"/*) ;;
+    *)
+      echo "Authorized repository is outside the allowed Git root." >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ "${auth_repo_real}" != "${REPO_REAL}" ]]; then
+    echo "Git SSH key is not authorized for repository: ${REPO_REAL}" >&2
+    exit 1
+  fi
+
+  if [[ -z "${AUTH_SESSION_ID}" || "${AUTH_SESSION_ID}" == */* || "${AUTH_SESSION_ID}" == "." || "${AUTH_SESSION_ID}" == ".." ]]; then
+    echo "Authorized Git session id must be a single non-empty ref path component." >&2
+    exit 1
+  fi
+
+  expected_prefix="refs/heads/agents/${AUTH_SESSION_ID}/"
+  if [[ "${AUTH_REF_PREFIX}" != "${expected_prefix}" ]]; then
+    echo "Authorized Git ref prefix must be ${expected_prefix}." >&2
+    exit 1
+  fi
+
+  if ! git check-ref-format "${AUTH_REF_PREFIX}probe" >/dev/null 2>&1; then
+    echo "Authorized Git ref prefix is not a valid branch namespace: ${AUTH_REF_PREFIX}" >&2
+    exit 1
+  fi
+
+  hook_path="${REPO_REAL}/hooks/pre-receive"
+  if [[ ! -x "${hook_path}" ]] || ! grep -q "EVANDER_GIT_AUTH_ENFORCE" "${hook_path}"; then
+    echo "Repository is missing the Evander Git auth pre-receive hook; rerun create_git_remote.sh or mirror_issue_repo.sh for this repo." >&2
+    exit 1
+  fi
+
+  export EVANDER_GIT_AUTH_ENFORCE=1
+  export EVANDER_GIT_AUTH_ACCESS=write
+  export EVANDER_GIT_AUTH_REPO="${auth_repo_real}"
+  export EVANDER_GIT_AUTH_SESSION_ID="${AUTH_SESSION_ID}"
+  export EVANDER_GIT_AUTH_REF_PREFIX="${AUTH_REF_PREFIX}"
+}
+
+case "${ORIGINAL_COMMAND}" in
+  git-receive-pack\ *)
+    require_write_authorization
+    ;;
+esac
 
 is_remote_source() {
   local source="$1"

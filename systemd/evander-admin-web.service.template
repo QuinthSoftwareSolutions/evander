@@ -10,6 +10,7 @@ WorkingDirectory=__PROJECT_DIR__
 EnvironmentFile=-__PROJECT_DIR__/config/admin-web.env
 EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env
 EnvironmentFile=-__PROJECT_DIR__/secrets.env
+EnvironmentFile=-/etc/evander/local-secrets.env
 ExecStart=__PROJECT_DIR__/.venv/bin/evander-admin-web --runtime-dir __PROJECT_DIR__/runtime --host ${ADMIN_WEB_HOST} --port ${ADMIN_WEB_PORT}
 Restart=on-failure
 RestartSec=3

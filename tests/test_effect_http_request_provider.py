@@ -194,6 +194,166 @@ def test_http_request_provider_allows_matching_url_pattern(
     assert result["success"] is True
 
 
+def test_http_request_provider_allows_bound_public_url_with_explicit_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    result = provider.execute(
+        resolved_config={
+            "url": "https://api.example.test/items/42",
+            "allowed_url_patterns": ["https://api.example.test/*"],
+        }
+    )
+
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://api.example.test/items/42"
+    assert result["success"] is True
+
+
+def test_http_request_provider_rejects_bound_url_without_explicit_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(ValueError, match="bound urls require explicit allowed_url_patterns"):
+        provider.execute(resolved_config={"url": "https://api.example.test/items/42"})
+
+    assert requests == []
+
+
+def test_http_request_provider_rejects_bound_url_with_global_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(
+        ValueError,
+        match="bound urls require host-restricted allowed_url_patterns",
+    ):
+        provider.execute(
+            resolved_config={
+                "url": "https://api.example.test/items/42",
+                "allowed_url_patterns": ["*"],
+            }
+        )
+
+    assert requests == []
+
+
+@pytest.mark.parametrize(
+    ("url", "allowed_url_patterns", "message"),
+    [
+        (
+            "http://127.0.0.1:8080/admin",
+            ["http://127.0.0.1:8080/*"],
+            "blocked private, loopback, or link-local destination",
+        ),
+        (
+            "http://10.1.2.3/api",
+            ["http://10.1.2.3/*"],
+            "blocked private, loopback, or link-local destination",
+        ),
+        (
+            "http://169.254.1.2/api",
+            ["http://169.254.1.2/*"],
+            "blocked private, loopback, or link-local destination",
+        ),
+        (
+            "http://169.254.169.254/latest/meta-data",
+            ["http://169.254.169.254/*"],
+            "blocked metadata destination",
+        ),
+        (
+            "http://metadata.google.internal/computeMetadata/v1/",
+            ["http://metadata.google.internal/*"],
+            "blocked metadata destination",
+        ),
+    ],
+)
+def test_http_request_provider_rejects_bound_private_and_metadata_destinations_by_default(
+    url: str,
+    allowed_url_patterns: list[str],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(ValueError, match=message):
+        provider.execute(
+            resolved_config={
+                "url": url,
+                "allowed_url_patterns": allowed_url_patterns,
+            }
+        )
+
+    assert requests == []
+
+
+def test_http_request_provider_allows_private_destination_with_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    result = provider.execute(
+        resolved_config={
+            "url": "http://10.1.2.3/api",
+            "allowed_url_patterns": ["http://10.1.2.3/*"],
+            "allow_private_networks": True,
+        }
+    )
+
+    assert len(requests) == 1
+    assert str(requests[0].url) == "http://10.1.2.3/api"
+    assert result["success"] is True
+
+
 def test_http_request_provider_rejects_disallowed_url_before_request(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
