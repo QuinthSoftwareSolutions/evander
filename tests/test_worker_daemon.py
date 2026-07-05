@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import stat
 import subprocess
-import sqlite3
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -320,6 +322,51 @@ def test_worker_daemon_read_telemetry_explicit_refresh_recomputes(
 
     assert first.session_storage.total.size_bytes == 1
     assert second.session_storage.total.size_bytes == 2
+    assert calls == 2
+
+
+def test_worker_daemon_ignores_older_background_refresh_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    calls = 0
+    calls_lock = threading.Lock()
+    first_started = threading.Event()
+    finish_first = threading.Event()
+
+    def fake_collect() -> WorkerSessionStorageTelemetry:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call_number = calls
+        if call_number == 1:
+            first_started.set()
+            finish_first.wait(timeout=2)
+            return _available_session_storage(size_bytes=1, session_id="session-old")
+        return _available_session_storage(size_bytes=2, session_id="session-new")
+
+    monkeypatch.setattr(daemon, "_collect_session_storage_telemetry", fake_collect)
+
+    cold = daemon.read_telemetry()
+    assert cold.session_storage.total.status is TelemetryStatus.UNSUPPORTED
+    assert first_started.wait(timeout=1)
+
+    fresh = daemon.read_telemetry(refresh=True)
+    assert fresh.session_storage.total.size_bytes == 2
+
+    finish_first.set()
+    deadline = time.monotonic() + 2
+    while daemon._session_storage_telemetry_refreshing and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert not daemon._session_storage_telemetry_refreshing
+    assert daemon.read_telemetry().session_storage.total.size_bytes == 2
     assert calls == 2
 
 

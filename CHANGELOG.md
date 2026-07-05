@@ -68,6 +68,8 @@
 - Reworked worker session storage telemetry to compute total storage and
   largest/oldest session samples in one filesystem pass, with explicit
   blocking refresh available through `GET /v1/telemetry?refresh=1`.
+- Guarded worker storage telemetry cache writes so an older background scan
+  cannot overwrite a newer explicit refresh result.
 
 ## 2026-07-04 - Team Add-on First-Load Responsiveness
 

@@ -89,6 +89,7 @@ _SESSION_STORAGE_WARMING_MESSAGE = (
 class _SessionStorageTelemetryCacheEntry:
     telemetry: WorkerSessionStorageTelemetry
     collected_at_monotonic: float
+    refresh_generation: int
 
 
 class WorkerDaemon:
@@ -150,6 +151,9 @@ class WorkerDaemon:
         self._session_storage_telemetry_lock = threading.Lock()
         self._session_storage_telemetry_cache: _SessionStorageTelemetryCacheEntry | None = None
         self._session_storage_telemetry_refreshing = False
+        self._session_storage_telemetry_background_generation: int | None = None
+        self._session_storage_telemetry_next_generation = 0
+        self._session_storage_telemetry_applied_generation = 0
 
     def create_app(self) -> Starlette:
 
@@ -880,30 +884,51 @@ class WorkerDaemon:
     def _start_session_storage_telemetry_refresh_locked(self) -> None:
         if self._session_storage_telemetry_refreshing:
             return
+        generation = self._next_session_storage_telemetry_generation_locked()
         self._session_storage_telemetry_refreshing = True
+        self._session_storage_telemetry_background_generation = generation
         thread = threading.Thread(
             target=self._refresh_session_storage_telemetry_async,
+            args=(generation,),
             name="evander-worker-session-storage-telemetry",
             daemon=True,
         )
         thread.start()
 
-    def _refresh_session_storage_telemetry_async(self) -> None:
+    def _next_session_storage_telemetry_generation_locked(self) -> int:
+        self._session_storage_telemetry_next_generation += 1
+        return self._session_storage_telemetry_next_generation
+
+    def _refresh_session_storage_telemetry_async(self, generation: int) -> None:
         try:
-            self._refresh_session_storage_telemetry()
+            self._refresh_session_storage_telemetry(generation=generation)
         except Exception:
             logger.exception("worker_session_storage_telemetry_refresh_failed")
             with self._session_storage_telemetry_lock:
-                self._session_storage_telemetry_refreshing = False
+                if self._session_storage_telemetry_background_generation == generation:
+                    self._session_storage_telemetry_background_generation = None
+                    self._session_storage_telemetry_refreshing = False
 
-    def _refresh_session_storage_telemetry(self) -> WorkerSessionStorageTelemetry:
+    def _refresh_session_storage_telemetry(
+        self,
+        *,
+        generation: int | None = None,
+    ) -> WorkerSessionStorageTelemetry:
+        if generation is None:
+            with self._session_storage_telemetry_lock:
+                generation = self._next_session_storage_telemetry_generation_locked()
         telemetry = self._collect_session_storage_telemetry()
         with self._session_storage_telemetry_lock:
-            self._session_storage_telemetry_cache = _SessionStorageTelemetryCacheEntry(
-                telemetry=telemetry,
-                collected_at_monotonic=time.monotonic(),
-            )
-            self._session_storage_telemetry_refreshing = False
+            if generation >= self._session_storage_telemetry_applied_generation:
+                self._session_storage_telemetry_cache = _SessionStorageTelemetryCacheEntry(
+                    telemetry=telemetry,
+                    collected_at_monotonic=time.monotonic(),
+                    refresh_generation=generation,
+                )
+                self._session_storage_telemetry_applied_generation = generation
+            if self._session_storage_telemetry_background_generation == generation:
+                self._session_storage_telemetry_background_generation = None
+                self._session_storage_telemetry_refreshing = False
         return telemetry
 
     def _collect_session_storage_telemetry(self) -> WorkerSessionStorageTelemetry:
