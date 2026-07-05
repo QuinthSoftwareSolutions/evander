@@ -678,6 +678,19 @@ def session_approval_routes(
             return None
         return json_error("Privileged operations are locked.", status_code=403)
 
+    def _privileged_unlocked_error(request: Request) -> JSONResponse | None:
+        if request_has_privileged_operations(auth=auth, service=service, request=request):
+            return None
+        return json_error("Privileged operations are locked.", status_code=403)
+
+    def _approval_request_or_error(
+        request_id: str,
+    ) -> tuple[ApprovalRequest | None, JSONResponse | None]:
+        try:
+            return service.approval_audit_admin.get_approval_request(request_id), None
+        except ValueError as exc:
+            return None, json_error(str(exc), status_code=404)
+
     async def approvals_index(request: Request) -> JSONResponse:
         params = request.query_params
         try:
@@ -723,10 +736,19 @@ def session_approval_routes(
         return JSONResponse(_approval_review_payload(review))
 
     async def decide_approval(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        auth_error = _privileged_unlocked_error(request)
         if auth_error is not None:
             return auth_error
         request_id = request.path_params.get("request_id", "")
+        approval_request, load_error = _approval_request_or_error(request_id)
+        if load_error is not None:
+            return load_error
+        auth_error = _owner_privileged_error(
+            request,
+            directory_path=approval_request.directory_path if approval_request else None,
+        )
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -755,10 +777,19 @@ def session_approval_routes(
         return JSONResponse({"request": _approval_payload(updated)})
 
     async def revoke_approval(request: Request) -> JSONResponse:
-        auth_error = _owner_privileged_error(request)
+        auth_error = _privileged_unlocked_error(request)
         if auth_error is not None:
             return auth_error
         request_id = request.path_params.get("request_id", "")
+        approval_request, load_error = _approval_request_or_error(request_id)
+        if load_error is not None:
+            return load_error
+        auth_error = _owner_privileged_error(
+            request,
+            directory_path=approval_request.directory_path if approval_request else None,
+        )
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:

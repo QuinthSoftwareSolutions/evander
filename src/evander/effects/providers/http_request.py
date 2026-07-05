@@ -403,25 +403,38 @@ class HttpRequestEffectProvider(EffectProviderBase):
         return addresses
 
     @staticmethod
+    def _canonical_address_for_policy(
+        address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    ) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            return address.ipv4_mapped
+        return address
+
+    @classmethod
     def _is_private_destination(
+        cls,
         address: ipaddress.IPv4Address | ipaddress.IPv6Address,
     ) -> bool:
+        policy_address = cls._canonical_address_for_policy(address)
         return (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_unspecified
-            or address.is_multicast
-            or address.is_reserved
+            policy_address.is_private
+            or policy_address.is_loopback
+            or policy_address.is_link_local
+            or policy_address.is_unspecified
+            or policy_address.is_multicast
+            or policy_address.is_reserved
         )
 
     @staticmethod
     def _is_localhost_name(host: str) -> bool:
         return host in _LOCALHOST_NAMES or host.endswith(".localhost")
 
-    @staticmethod
-    def _is_metadata_destination(host: str) -> bool:
+    @classmethod
+    def _is_metadata_destination(cls, host: str) -> bool:
         normalized = host.strip("[]").rstrip(".").casefold()
+        address = cls._parse_ip_address(normalized)
+        if address is not None:
+            normalized = str(cls._canonical_address_for_policy(address))
         return normalized in _METADATA_HOSTS or normalized.endswith(
             ".metadata.google.internal"
         )

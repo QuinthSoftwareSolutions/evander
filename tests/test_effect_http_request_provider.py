@@ -320,6 +320,11 @@ def test_http_request_provider_rejects_bound_url_with_global_allowlist(
             "blocked metadata destination",
         ),
         (
+            "http://[::ffff:100.100.100.200]/latest/meta-data",
+            ["::ffff:100.100.100.200"],
+            "blocked metadata destination",
+        ),
+        (
             "http://metadata.google.internal/computeMetadata/v1/",
             ["http://metadata.google.internal/*"],
             "blocked metadata destination",
@@ -385,6 +390,52 @@ def test_http_request_provider_rejects_hostname_that_resolves_to_metadata(
             resolved_config={
                 "url": "http://169.254.169.254.nip.io/latest/meta-data",
                 "allowed_url_patterns": ["http://169.254.169.254.nip.io/*"],
+            }
+        )
+
+    assert requests == []
+
+
+def test_http_request_provider_rejects_hostname_that_resolves_to_ipv4_mapped_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    def fake_getaddrinfo(
+        host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[object, object, object, str, tuple[object, ...]]]:
+        assert host == "metadata.example.test"
+        return [
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("::ffff:100.100.100.200", port, 0, 0),
+            )
+        ]
+
+    monkeypatch.setattr(
+        "evander.effects.providers.http_request.socket.getaddrinfo",
+        fake_getaddrinfo,
+    )
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(ValueError, match="blocked metadata destination"):
+        provider.execute(
+            resolved_config={
+                "url": "https://metadata.example.test/latest/meta-data",
+                "allowed_url_patterns": ["https://metadata.example.test/*"],
             }
         )
 

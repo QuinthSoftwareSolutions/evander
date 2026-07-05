@@ -48,6 +48,7 @@ from evander.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
     AUDITOR_GROUP_ID,
     GROUPS_MANAGE_PERMISSION,
+    OWNER_GROUP_ID,
     TEAM_CHATS_READ_ALL_PERMISSION,
     WORKFLOW_PACKS_MANAGE_PERMISSION,
     WORKFLOWS_READ_PERMISSION,
@@ -9853,6 +9854,86 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
     assert isinstance(responses["failure_clusters"].json()["clusters"], list)
     assert responses["conformance_reports"].status_code == 200
     assert len(responses["conformance_reports"].json()["reports"]) == 2
+
+
+def test_admin_web_approval_decisions_use_approval_directory_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    service.runtime.approvals.put(
+        "ops-pending",
+        ApprovalRequest(
+            request_id="ops-pending",
+            session_id="ops-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="abc",
+            human_summary="send email",
+            payload={"body": "hello"},
+            directory_path="root/ops",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    service.runtime.approvals.put(
+        "ops-approved",
+        ApprovalRequest(
+            request_id="ops-approved",
+            session_id="ops-session",
+            action_type="run_script",
+            tool_name="run_script",
+            payload_digest="def",
+            human_summary="run script",
+            payload={"script": "deploy"},
+            directory_path="root/ops",
+            status=ApprovalStatus.APPROVED,
+            approver="lead",
+            decision_at=datetime.now(timezone.utc),
+            decision_reason="approved for deploy",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.remove_user_group_assignment(
+        login="ops-owner@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="ops-owner@example.com", group_id=OWNER_GROUP_ID, directory_path="root/ops"
+    )
+    store.set_local_password(login="ops-owner@example.com", password="ops-pass")
+    client = TestClient(app)
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "ops-owner@example.com", "password": "ops-pass"},
+    )
+
+    locked_decision = client.post(
+        "/api/admin/approvals/ops-pending/decision",
+        json={"approver": "ops-owner@example.com", "approve": False, "reason": "unsafe"},
+    )
+    _unlock_privileged_operations(client)
+    decision = client.post(
+        "/api/admin/approvals/ops-pending/decision",
+        json={"approver": "ops-owner@example.com", "approve": False, "reason": "unsafe"},
+    )
+    revoke = client.post(
+        "/api/admin/approvals/ops-approved/revoke",
+        json={"approver": "ops-owner@example.com", "reason": "superseded"},
+    )
+
+    assert login.status_code == 200
+    assert locked_decision.status_code == 403
+    assert locked_decision.json()["error"] == "Privileged operations are locked."
+    assert decision.status_code == 200
+    assert decision.json()["request"]["status"] == "denied"
+    assert revoke.status_code == 200
+    assert revoke.json()["request"]["status"] == "denied"
 
 
 def _assert_json_schema_requires_every_object_property(

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-05 - Review Follow-up Security Fixes
+
+- Blocked IPv4-mapped metadata IP addresses in workflow HTTP request destination checks.
+- Scoped Admin Web approval decision and revoke authorization to the approval request directory.
+
 ## 2026-07-05 - Tokenized Relay Security Fixes
 
 - Stripped referrer headers from tokenized HTTP target relay requests before
