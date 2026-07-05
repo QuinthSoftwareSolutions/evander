@@ -20,6 +20,7 @@ from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
 import evander.admin.services.workflow_reports_service as workflow_reports_service
+import evander.admin.web.app as admin_web_app
 import evander.admin.web.vms_issues as vms_issues_module
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from evander.admin.services.vm_agent.common_models import AgentCreateOperation
@@ -7862,7 +7863,10 @@ def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: P
     assert response.json()["branding"]["header_title"] == "EVANDER"
 
 
-def test_admin_web_branding_endpoint_reports_defaults(tmp_path: Path) -> None:
+def test_admin_web_branding_endpoint_reports_defaults(tmp_path: Path, monkeypatch) -> None:
+    dist_dir = tmp_path / "dist-without-manifest"
+    dist_dir.mkdir()
+    monkeypatch.setattr(admin_web_app, "_dist_dir", lambda: dist_dir)
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/admin/branding")
@@ -7893,6 +7897,54 @@ def test_admin_web_branding_endpoint_reports_defaults(tmp_path: Path) -> None:
     }
     assert logo.status_code == 200
     assert logo.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_admin_web_branding_endpoint_uses_hashed_default_assets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    dist_dir = tmp_path / "dist"
+    assets_dir = dist_dir / "assets"
+    manifest_dir = dist_dir / ".vite"
+    assets_dir.mkdir(parents=True)
+    manifest_dir.mkdir()
+    hashed_assets = {
+        "evander-logo-light.png": "assets/evander-logo-light-a1B2c3D4.png",
+        "evander-logo-dark.png": "assets/evander-logo-dark-a1B2c3D4.png",
+        "qss-light.png": "assets/qss-light-a1B2c3D4.png",
+        "qss-dark.png": "assets/qss-dark-a1B2c3D4.png",
+    }
+    for asset_path in hashed_assets.values():
+        (dist_dir / asset_path).write_bytes(b"hashed-logo")
+    (manifest_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                f"../branding/{source_name}": {
+                    "file": hashed_path,
+                    "src": f"../branding/{source_name}",
+                }
+                for source_name, hashed_path in hashed_assets.items()
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(admin_web_app, "_dist_dir", lambda: dist_dir)
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    branding = client.get("/api/admin/branding")
+    session = client.get("/api/auth/session")
+    logo = client.get("/assets/evander-logo-light-a1B2c3D4.png")
+
+    assert branding.status_code == 200
+    payload = branding.json()
+    assert payload["header_logo"]["light_url"] == "/assets/evander-logo-light-a1B2c3D4.png"
+    assert payload["header_logo"]["dark_url"] == "/assets/evander-logo-dark-a1B2c3D4.png"
+    assert payload["product_logo"] == payload["header_logo"]
+    assert payload["company_logo"]["light_url"] == "/assets/qss-light-a1B2c3D4.png"
+    assert payload["company_logo"]["dark_url"] == "/assets/qss-dark-a1B2c3D4.png"
+    assert session.status_code == 200
+    assert session.json()["branding"] == payload
+    assert logo.status_code == 200
+    assert logo.headers["cache-control"] == "public, max-age=31536000, immutable"
 
 
 def test_admin_web_branding_reads_env_and_serves_assets_without_login(

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-04 - Admin Web Branding Asset Caching
+
+- Resized and compressed the bundled Evander and Quinth Software Solutions
+  branding PNGs so header and sign-in logos no longer ship multi-megabyte
+  source images.
+- Taught Admin Web to use Vite manifest-resolved hashed default branding assets
+  when the frontend build is available and to serve hashed `/assets/...` files
+  with long immutable cache headers.
+
 ## 2026-07-04 - Configuration Page Reorganization
 
 - Reorganized Admin Web Configuration into operator-facing areas for people and
