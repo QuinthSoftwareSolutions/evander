@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +13,7 @@ import pytest
 from evander.config import GatewayConfig
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.http_request import HttpRequestEffectProvider
+from evander.effects.providers.http_request import _PinnedAddressHTTPTransport
 from evander.events.provider_models import HttpRequestEffectDefinition
 
 
@@ -40,8 +44,16 @@ def _install_mock_client(
     transport: httpx.MockTransport,
     *,
     captured_calls: list[dict[str, object]] | None = None,
+    host_addresses: Mapping[str, str] | None = None,
 ) -> None:
     original_client = httpx.Client
+    resolved_hosts = {
+        "example.test": "93.184.216.34",
+        "api.example.test": "93.184.216.34",
+        "2130706433": "127.0.0.1",
+    }
+    if host_addresses is not None:
+        resolved_hosts.update(host_addresses)
 
     def _client_factory(*args: object, **kwargs: object) -> httpx.Client:
         if captured_calls is not None:
@@ -51,6 +63,23 @@ def _install_mock_client(
         return original_client(*args, **kwargs)
 
     monkeypatch.setattr("evander.effects.providers.http_request.httpx.Client", _client_factory)
+
+    def fake_getaddrinfo(
+        host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[object, object, object, str, tuple[str, int]]]:
+        address = resolved_hosts.get(host)
+        if address is None:
+            return []
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        return [(family, socket.SOCK_STREAM, 6, "", (address, port))]
+
+    monkeypatch.setattr(
+        "evander.effects.providers.http_request.socket.getaddrinfo",
+        fake_getaddrinfo,
+    )
 
 
 def test_http_request_provider_gets_json_response_without_payload(
@@ -191,6 +220,467 @@ def test_http_request_provider_allows_matching_url_pattern(
 
     assert len(requests) == 1
     assert str(requests[0].url) == "https://api.example.test/items/42"
+    assert result["success"] is True
+
+
+def test_http_request_provider_allows_bound_public_url_with_explicit_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    result = provider.execute(
+        resolved_config={
+            "url": "https://api.example.test/items/42",
+            "allowed_url_patterns": ["https://api.example.test/*"],
+        }
+    )
+
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://api.example.test/items/42"
+    assert result["success"] is True
+
+
+def test_http_request_provider_rejects_bound_url_without_explicit_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(ValueError, match="bound urls require explicit allowed_url_patterns"):
+        provider.execute(resolved_config={"url": "https://api.example.test/items/42"})
+
+    assert requests == []
+
+
+def test_http_request_provider_rejects_bound_url_with_global_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(
+        ValueError,
+        match="bound urls require host-restricted allowed_url_patterns",
+    ):
+        provider.execute(
+            resolved_config={
+                "url": "https://api.example.test/items/42",
+                "allowed_url_patterns": ["*"],
+            }
+        )
+
+    assert requests == []
+
+
+@pytest.mark.parametrize(
+    ("url", "allowed_url_patterns", "message"),
+    [
+        (
+            "http://127.0.0.1:8080/admin",
+            ["http://127.0.0.1:8080/*"],
+            "blocked private, loopback, or link-local destination",
+        ),
+        (
+            "http://10.1.2.3/api",
+            ["http://10.1.2.3/*"],
+            "blocked private, loopback, or link-local destination",
+        ),
+        (
+            "http://169.254.1.2/api",
+            ["http://169.254.1.2/*"],
+            "blocked private, loopback, or link-local destination",
+        ),
+        (
+            "http://169.254.169.254/latest/meta-data",
+            ["http://169.254.169.254/*"],
+            "blocked metadata destination",
+        ),
+        (
+            "http://[::ffff:100.100.100.200]/latest/meta-data",
+            ["::ffff:100.100.100.200"],
+            "blocked metadata destination",
+        ),
+        (
+            "http://metadata.google.internal/computeMetadata/v1/",
+            ["http://metadata.google.internal/*"],
+            "blocked metadata destination",
+        ),
+    ],
+)
+def test_http_request_provider_rejects_bound_private_and_metadata_destinations_by_default(
+    url: str,
+    allowed_url_patterns: list[str],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(ValueError, match=message):
+        provider.execute(
+            resolved_config={
+                "url": url,
+                "allowed_url_patterns": allowed_url_patterns,
+            }
+        )
+
+    assert requests == []
+
+
+def test_http_request_provider_rejects_hostname_that_resolves_to_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    def fake_getaddrinfo(
+        host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[object, object, object, str, tuple[str, int]]]:
+        assert host == "169.254.169.254.nip.io"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", port))]
+
+    monkeypatch.setattr(
+        "evander.effects.providers.http_request.socket.getaddrinfo",
+        fake_getaddrinfo,
+    )
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(ValueError, match="blocked metadata destination"):
+        provider.execute(
+            resolved_config={
+                "url": "http://169.254.169.254.nip.io/latest/meta-data",
+                "allowed_url_patterns": ["http://169.254.169.254.nip.io/*"],
+            }
+        )
+
+    assert requests == []
+
+
+def test_http_request_provider_rejects_hostname_that_resolves_to_ipv4_mapped_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    def fake_getaddrinfo(
+        host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[object, object, object, str, tuple[object, ...]]]:
+        assert host == "metadata.example.test"
+        return [
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("::ffff:100.100.100.200", port, 0, 0),
+            )
+        ]
+
+    monkeypatch.setattr(
+        "evander.effects.providers.http_request.socket.getaddrinfo",
+        fake_getaddrinfo,
+    )
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(ValueError, match="blocked metadata destination"):
+        provider.execute(
+            resolved_config={
+                "url": "https://metadata.example.test/latest/meta-data",
+                "allowed_url_patterns": ["https://metadata.example.test/*"],
+            }
+        )
+
+    assert requests == []
+
+
+def test_http_request_provider_rejects_hostname_with_any_private_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    def fake_getaddrinfo(
+        host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[object, object, object, str, tuple[str, int]]]:
+        assert host == "api.example.test"
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+        ]
+
+    monkeypatch.setattr(
+        "evander.effects.providers.http_request.socket.getaddrinfo",
+        fake_getaddrinfo,
+    )
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(
+        ValueError,
+        match="blocked private, loopback, or link-local destination",
+    ):
+        provider.execute(
+            resolved_config={
+                "url": "https://api.example.test/items/42",
+                "allowed_url_patterns": ["https://api.example.test/*"],
+            }
+        )
+
+    assert requests == []
+
+
+def test_http_request_provider_rejects_numeric_hostname_that_resolves_to_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(
+        ValueError,
+        match="blocked private, loopback, or link-local destination",
+    ):
+        provider.execute(
+            resolved_config={
+                "url": "http://2130706433/admin",
+                "allowed_url_patterns": ["http://2130706433/*"],
+            }
+        )
+
+    assert requests == []
+
+
+def test_http_request_provider_allows_public_hostname_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    _install_mock_client(monkeypatch, transport)
+
+    def fake_getaddrinfo(
+        host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[object, object, object, str, tuple[str, int]]]:
+        assert host == "api.example.test"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(
+        "evander.effects.providers.http_request.socket.getaddrinfo",
+        fake_getaddrinfo,
+    )
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    result = provider.execute(
+        resolved_config={
+            "url": "https://api.example.test/items/42",
+            "allowed_url_patterns": ["https://api.example.test/*"],
+        }
+    )
+
+    assert len(requests) == 1
+    assert result["success"] is True
+
+
+def test_http_request_provider_uses_pinned_public_address_for_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    client_calls: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    _install_mock_client(monkeypatch, transport, captured_calls=client_calls)
+
+    def fake_getaddrinfo(
+        host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[object, object, object, str, tuple[str, int]]]:
+        assert host == "api.example.test"
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.35", port)),
+        ]
+
+    monkeypatch.setattr(
+        "evander.effects.providers.http_request.socket.getaddrinfo",
+        fake_getaddrinfo,
+    )
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    result = provider.execute(
+        resolved_config={
+            "url": "https://api.example.test/items/42",
+            "allowed_url_patterns": ["https://api.example.test/*"],
+        }
+    )
+
+    transport_arg = client_calls[0]["kwargs"]["transport"]
+    assert isinstance(transport_arg, _PinnedAddressHTTPTransport)
+    assert transport_arg.pinned_backend.allowed_host == "api.example.test"
+    assert str(transport_arg.pinned_backend.approved_address) == "93.184.216.34"
+    assert [str(address) for address in transport_arg.pinned_backend.approved_addresses] == [
+        "93.184.216.34",
+        "93.184.216.35",
+    ]
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://api.example.test/items/42"
+    assert result["success"] is True
+
+
+def test_pinned_public_address_transport_tries_later_approved_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[tuple[str, int]] = []
+
+    class FakeSocket:
+        def setsockopt(self, *_args: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    fake_socket = FakeSocket()
+
+    def fake_create_connection(
+        address: tuple[str, int],
+        timeout: float | None = None,
+        source_address: tuple[str, int] | None = None,
+    ) -> FakeSocket:
+        del timeout, source_address
+        attempts.append(address)
+        if address[0] == "2001:4860:4860::8888":
+            raise OSError("IPv6 egress unavailable")
+        return fake_socket
+
+    monkeypatch.setattr(
+        "httpcore._backends.sync.socket.create_connection",
+        fake_create_connection,
+    )
+    transport = _PinnedAddressHTTPTransport(
+        allowed_host="api.example.test",
+        approved_addresses=[
+            ipaddress.ip_address("2001:4860:4860::8888"),
+            ipaddress.ip_address("93.184.216.34"),
+        ],
+    )
+
+    stream = transport.pinned_backend.connect_tcp("api.example.test", 443, timeout=2.5)
+
+    assert stream is not None
+    assert attempts == [
+        ("2001:4860:4860::8888", 443),
+        ("93.184.216.34", 443),
+    ]
+
+
+def test_http_request_provider_allows_private_destination_with_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    result = provider.execute(
+        resolved_config={
+            "url": "http://10.1.2.3/api",
+            "allowed_url_patterns": ["http://10.1.2.3/*"],
+            "allow_private_networks": True,
+        }
+    )
+
+    assert len(requests) == 1
+    assert str(requests[0].url) == "http://10.1.2.3/api"
     assert result["success"] is True
 
 

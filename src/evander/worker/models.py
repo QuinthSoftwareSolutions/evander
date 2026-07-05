@@ -6,7 +6,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from evander.capacity_health import (
     DiskUsageTelemetry,
@@ -20,6 +27,44 @@ from evander.managed_sections import normalize_managed_section_id
 
 DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+SAFE_ID_ALLOWED_DESCRIPTION = "letters, numbers, dots, underscores, or dashes"
+
+
+def validate_worker_component_id(
+    value: object,
+    *,
+    field_name: str,
+    allow_none: bool = False,
+) -> str | None:
+    if value is None:
+        if allow_none:
+            return None
+        raise ValueError(f"{field_name} is required")
+    text = str(value).strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    if not SAFE_ID_PATTERN.fullmatch(text):
+        raise ValueError(f"{field_name} must contain only {SAFE_ID_ALLOWED_DESCRIPTION}")
+    if text in {".", ".."}:
+        raise ValueError(f"{field_name} must not be a dot or parent segment")
+    return text
+
+
+def ensure_resolved_path_within(
+    *,
+    base: Path,
+    candidate: Path,
+    description: str,
+    allow_base: bool = False,
+) -> None:
+    resolved_base = Path(base).resolve(strict=False)
+    resolved_candidate = Path(candidate).resolve(strict=False)
+    if not allow_base and resolved_candidate == resolved_base:
+        raise ValueError(f"{description} must stay below {resolved_base}")
+    try:
+        resolved_candidate.relative_to(resolved_base)
+    except ValueError as exc:
+        raise ValueError(f"{description} must stay below {resolved_base}") from exc
 
 
 def now_utc() -> datetime:
@@ -54,17 +99,15 @@ class WorkerJobRequest(BaseModel):
     resource_limits: WorkerResourceLimits = Field(default_factory=WorkerResourceLimits)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("session_id", "job_id", mode="before")
+    @field_validator("session_id", mode="before")
     @classmethod
-    def normalize_safe_id(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text:
-            raise ValueError("must not be empty")
-        if not SAFE_ID_PATTERN.fullmatch(text):
-            raise ValueError("must contain only letters, numbers, dots, underscores, or dashes")
-        return text
+    def normalize_session_id(cls, value: object) -> str:
+        return str(validate_worker_component_id(value, field_name="session_id"))
+
+    @field_validator("job_id", mode="before")
+    @classmethod
+    def normalize_job_id(cls, value: object) -> str | None:
+        return validate_worker_component_id(value, field_name="job_id", allow_none=True)
 
     @field_validator("image", mode="before")
     @classmethod
@@ -106,6 +149,7 @@ class WorkerJobRequest(BaseModel):
 
 class WorkerSessionPaths(BaseModel):
     session_id: str
+    sessions_root: Path | None = None
     root: Path
     agent_home: Path
     repo_root: Path
@@ -115,14 +159,14 @@ class WorkerSessionPaths(BaseModel):
 
     @classmethod
     def resolve(cls, worker_root: Path, session_id: str) -> "WorkerSessionPaths":
-        if not SAFE_ID_PATTERN.fullmatch(session_id):
-            raise ValueError(
-                "session_id must contain only letters, numbers, dots, underscores, or dashes"
-            )
-        root = worker_root / "sessions" / session_id
+        normalized_session_id, sessions_root, root = cls.resolve_session_root(
+            worker_root,
+            session_id,
+        )
         agent_home = root / "agent_home"
         paths = cls(
-            session_id=session_id,
+            session_id=normalized_session_id,
+            sessions_root=sessions_root,
             root=root,
             agent_home=agent_home,
             repo_root=agent_home / "repos",
@@ -133,9 +177,46 @@ class WorkerSessionPaths(BaseModel):
         paths.ensure()
         return paths
 
+    @classmethod
+    def resolve_session_root(cls, worker_root: Path, session_id: str) -> tuple[str, Path, Path]:
+        normalized_session_id = str(
+            validate_worker_component_id(session_id, field_name="session_id")
+        )
+        sessions_root = Path(worker_root) / "sessions"
+        root = sessions_root / normalized_session_id
+        ensure_resolved_path_within(
+            base=sessions_root,
+            candidate=root,
+            description="session root",
+        )
+        return normalized_session_id, sessions_root, root
+
+    def assert_contained(self) -> None:
+        if self.sessions_root is None:
+            raise ValueError("session paths are missing the sessions root")
+        ensure_resolved_path_within(
+            base=self.sessions_root,
+            candidate=self.root,
+            description="session root",
+        )
+        for description, candidate in (
+            ("agent home path", self.agent_home),
+            ("repo root path", self.repo_root),
+            ("artifacts path", self.artifacts),
+            ("logs path", self.logs),
+            ("metadata path", self.metadata_path),
+        ):
+            ensure_resolved_path_within(
+                base=self.root,
+                candidate=candidate,
+                description=description,
+            )
+
     def ensure(self) -> None:
+        self.assert_contained()
         for path in (self.agent_home, self.repo_root, self.artifacts, self.logs):
             path.mkdir(parents=True, exist_ok=True)
+        self.assert_contained()
         if not self.metadata_path.exists():
             self.metadata_path.write_text(
                 json.dumps(
@@ -163,12 +244,7 @@ class WorkerSessionPrepareRequest(BaseModel):
     @field_validator("session_id", mode="before")
     @classmethod
     def normalize_safe_id(cls, value: object) -> str:
-        text = str(value or "").strip()
-        if not text:
-            raise ValueError("session_id is required")
-        if not SAFE_ID_PATTERN.fullmatch(text):
-            raise ValueError("must contain only letters, numbers, dots, underscores, or dashes")
-        return text
+        return str(validate_worker_component_id(value, field_name="session_id"))
 
 
 class WorkerSessionRecord(BaseModel):
@@ -217,11 +293,7 @@ class WorkerRepoCloneRequest(BaseModel):
         text = str(value).strip()
         if not text:
             return None
-        if text in {".", ".."} or not SAFE_ID_PATTERN.fullmatch(text):
-            raise ValueError(
-                "repo_name must contain only letters, numbers, dots, underscores, or dashes"
-            )
-        return text
+        return validate_worker_component_id(text, field_name="repo_name")
 
 
 class WorkerRepoCloneRecord(BaseModel):
@@ -337,13 +409,7 @@ class WorkerMssqlDatabaseRequest(BaseModel):
     @field_validator("logical_name", mode="before")
     @classmethod
     def normalize_logical_name(cls, value: object) -> str:
-        text = str(value or "").strip()
-        if not text:
-            raise ValueError("logical_name is required")
-        if text in {".", ".."} or not SAFE_ID_PATTERN.fullmatch(text):
-            raise ValueError(
-                "logical_name must contain only letters, numbers, dots, underscores, or dashes"
-            )
+        text = str(validate_worker_component_id(value, field_name="logical_name"))
         if len(text) > 64:
             raise ValueError("logical_name must be 64 characters or fewer")
         return text
@@ -427,6 +493,11 @@ class WorkerJobRecord(BaseModel):
     cleanup_attempted_at: datetime | None = None
     cleanup_completed_at: datetime | None = None
     cleanup_error: str | None = None
+
+    @field_validator("job_id", "session_id", mode="before")
+    @classmethod
+    def normalize_record_ids(cls, value: object, info: ValidationInfo) -> str:
+        return str(validate_worker_component_id(value, field_name=str(info.field_name)))
 
     @field_validator("cleanup_status", mode="before")
     @classmethod

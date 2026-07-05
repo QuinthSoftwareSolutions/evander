@@ -152,9 +152,7 @@ def test_wake_scheduled_request_normalizes_legacy_status_values(
         {
             "request_id": "wake-legacy-status",
             "session_id": "session-1",
-            "schedule": {
-                "resume_at": datetime(2026, 4, 1, 10, 30, tzinfo=UTC).isoformat()
-            },
+            "schedule": {"resume_at": datetime(2026, 4, 1, 10, 30, tzinfo=UTC).isoformat()},
             "resume_prompt": {"prompt": "Resume work."},
             "status": raw_status,
         }
@@ -168,9 +166,7 @@ def test_wake_scheduled_request_backfills_legacy_retry_state_defaults() -> None:
         {
             "request_id": "wake-legacy-retry-state",
             "session_id": "session-1",
-            "schedule": {
-                "resume_at": datetime(2026, 4, 1, 10, 30, tzinfo=UTC).isoformat()
-            },
+            "schedule": {"resume_at": datetime(2026, 4, 1, 10, 30, tzinfo=UTC).isoformat()},
             "resume_prompt": {"prompt": "Resume work."},
             "status": "pending",
         }
@@ -180,6 +176,7 @@ def test_wake_scheduled_request_backfills_legacy_retry_state_defaults() -> None:
     assert request.auto_retry_started_at is None
     assert request.auto_retry_last_backoff_seconds is None
     assert request.auto_retry_exhausted_at is None
+    assert request.directory_path == "root"
 
 
 def test_wake_request_store_skips_legacy_import_when_db_already_has_rows(
@@ -429,7 +426,12 @@ def test_wake_request_store_imports_legacy_requests_with_lifecycle_defaults(
 
 
 @pytest.mark.parametrize(
-    ("dispatch_status", "expected_request_status", "expected_last_dispatched_at", "expected_enabled"),
+    (
+        "dispatch_status",
+        "expected_request_status",
+        "expected_last_dispatched_at",
+        "expected_enabled",
+    ),
     [
         ("dispatched", "dispatched", True, True),
         ("queued", "queued", False, True),
@@ -466,7 +468,9 @@ def test_record_dispatch_updates_request_lifecycle_state(
             status=dispatch_status,
             resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
             dispatched_at=dispatch_time,
-            error="stack trace\nsecret token" if dispatch_status in {"failed", "timed_out"} else None,
+            error="stack trace\nsecret token"
+            if dispatch_status in {"failed", "timed_out"}
+            else None,
         )
     )
 

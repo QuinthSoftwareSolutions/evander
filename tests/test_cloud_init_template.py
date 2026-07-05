@@ -22,8 +22,14 @@ def test_cloud_init_contains_provider_neutral_session_and_profile_exports() -> N
     assert "https://example-resource.openai.azure.com" not in template
     assert "AZURE_OPENAI_API_KEY" not in template
     assert "deployment-gpt-5-4" not in template
-    assert 'OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in template
-    assert 'ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-relay-placeholder}"' in template
+    assert (
+        'OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"'
+        in template
+    )
+    assert (
+        'ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"'
+        in template
+    )
     assert "  - git" in template
     assert "  - ripgrep" in template
     assert "  - name: agent-admin" in template

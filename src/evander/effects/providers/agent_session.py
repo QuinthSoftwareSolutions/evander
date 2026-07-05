@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from evander.config import GatewayConfig
 from evander.directory_config import ContactDirectoryConfig
@@ -654,12 +654,38 @@ def container_worker_guest_npm_registry_url(config: GatewayConfig) -> str:
     )
 
 
-def container_session_openai_base_url(config: GatewayConfig, session_id: str) -> str:
+def relay_base_url_with_mcp_path_token(
+    base_url: str, *, mcp_session_token: str | None = None
+) -> str:
+    token = normalize_optional_string(mcp_session_token)
+    if not token:
+        return base_url
+    parts = urlsplit(base_url)
+    path = f"{parts.path.rstrip('/')}/auth/{quote(token, safe='')}"
+    return urlunsplit(parts._replace(path=path))
+
+
+def container_session_openai_base_url(
+    config: GatewayConfig,
+    session_id: str,
+) -> str:
     return f"{container_worker_guest_openai_base_url(config).rstrip('/')}/session/{session_id}"
 
 
-def container_session_anthropic_base_url(config: GatewayConfig, session_id: str) -> str:
+def container_session_anthropic_base_url(
+    config: GatewayConfig,
+    session_id: str,
+) -> str:
     return f"{container_worker_guest_anthropic_base_url(config).rstrip('/')}/session/{session_id}"
+
+
+def container_http_target_relay_base_url(
+    config: GatewayConfig, *, mcp_session_token: str | None = None
+) -> str:
+    return relay_base_url_with_mcp_path_token(
+        container_worker_guest_http_target_relay_base_url(config),
+        mcp_session_token=mcp_session_token,
+    )
 
 
 def container_session_gateway_url(
@@ -715,7 +741,9 @@ def build_container_session_files(
     openai_base_url = container_worker_guest_openai_base_url(config)
     anthropic_base_url = container_worker_guest_anthropic_base_url(config)
     gateway_url = container_worker_guest_gateway_url(config)
-    http_target_relay_base_url = container_worker_guest_http_target_relay_base_url(config)
+    http_target_relay_base_url = container_http_target_relay_base_url(
+        config, mcp_session_token=mcp_session_token
+    )
     nuget_relay_base_url = container_worker_guest_nuget_relay_base_url(config)
     pypi_index_url = container_worker_guest_pypi_index_url(config)
     resolved_npm_registry_url = normalize_optional_http_url(
@@ -723,8 +751,14 @@ def build_container_session_files(
     )
     if resolved_npm_registry_url is None:
         resolved_npm_registry_url = container_worker_guest_npm_registry_url(config)
-    session_openai_base_url = container_session_openai_base_url(config, session_id)
-    session_anthropic_base_url = container_session_anthropic_base_url(config, session_id)
+    session_openai_base_url = container_session_openai_base_url(
+        config,
+        session_id,
+    )
+    session_anthropic_base_url = container_session_anthropic_base_url(
+        config,
+        session_id,
+    )
     session_gateway_url = container_session_gateway_url(
         config,
         session_id,
@@ -814,7 +848,10 @@ def build_container_session_files(
         {
             "destination_path": "/home/agent/.claude/settings.json",
             "mode": "0600",
-            "content": _claude_settings_content(anthropic_base_url=session_anthropic_base_url),
+            "content": _claude_settings_content(
+                anthropic_base_url=session_anthropic_base_url,
+                mcp_session_token=mcp_session_token,
+            ),
         },
         {
             "destination_path": "/home/agent/.claude/mcp-config.json",
@@ -862,8 +899,8 @@ def container_shell_preamble() -> str:
         "if [ -f /home/agent/.profile ]; then\n"
         "  . /home/agent/.profile\n"
         "fi\n"
-        'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"\n'
-        'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-relay-placeholder}"\n'
+        'export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"\n'
+        'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"\n'
     )
 
 
@@ -1444,8 +1481,8 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
         '  . "$HOME/.evander/session.env"',
         "  set +a",
         "fi",
-        'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"',
-        'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-relay-placeholder}"',
+        'export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"',
+        'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"',
         'export EVANDER_NODE_ROOT="/opt/evander/toolchains/node-v24.14.0"',
         'export PATH="$EVANDER_NODE_ROOT/bin:$PATH"',
     ]
@@ -1539,7 +1576,9 @@ def _shell_join_with_codex_optional_feature_args(args: Sequence[str]) -> str:
     return " ".join(parts)
 
 
-def _claude_settings_content(*, anthropic_base_url: str) -> str:
+def _claude_settings_content(
+    *, anthropic_base_url: str, mcp_session_token: str | None = None
+) -> str:
     return (
         json.dumps(
             {
@@ -1547,7 +1586,7 @@ def _claude_settings_content(*, anthropic_base_url: str) -> str:
                     "commit": "",
                 },
                 "env": {
-                    "ANTHROPIC_AUTH_TOKEN": "relay-placeholder",
+                    "ANTHROPIC_AUTH_TOKEN": mcp_session_token or "relay-placeholder",
                     "ANTHROPIC_BASE_URL": anthropic_base_url,
                     "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
                     "DISABLE_TELEMETRY": "1",

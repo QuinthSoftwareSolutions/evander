@@ -566,6 +566,7 @@ Type-specific keys:
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
+| `effect:agent:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `allowed_source_roots`, `outputs` |
 | `effect:artifact:stage` | one of `target`, `session_id`, `vm_name`; `path` | `destination_path`, `vm_user`, `outputs` |
 | `effect:artifact:publish-artifacts` | one of `target`, `session_id`, `vm_name`; `key` | `source_paths`, `vm_user`, `outputs` |
 | `effect:artifact:import-published` | one of `target`, `session_id`, `vm_name`; `key` | `destination_path`, `overwrite`, `vm_user`, `outputs` |
@@ -576,10 +577,10 @@ Type-specific keys:
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
 | `effect:state:update` | `namespace`, `key`, `operation` | `value`, `patch`, `expected_version`, `outputs` |
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
-| `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
+| `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `allow_private_networks`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
 | `effect:runtime:diagnostics-snapshot` | _none beyond envelope_ | `since`, `units`, `include_failed_units`, `include_journal`, `include_runtime_files`, `max_journal_lines_per_unit`, `max_runtime_file_bytes`, `command_timeout_seconds`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
-| `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
+| `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `allowed_source_roots`, `outputs` |
 | `effect:event:schedule` | `event_type`, `payload`; exactly one of `run_at`, `delay_seconds` | `correlation_key`, `idempotency_key`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `repo_source`, `yaml_output_dir`, `outputs` |
@@ -627,12 +628,24 @@ effect orchestrator. It supports `GET`, `POST`, and `PUT`; sends `payload` as a
 JSON request body when present; treats non-2xx responses as normal workflow
 outputs by default; and raises on non-2xx only when `check` is true. When
 `check` raises, response outputs are still recorded on the failed run.
-`allowed_url_patterns` defaults to `["*"]` and is checked before the host request
-is opened. Patterns are shell-style globs matched against either the full URL or
-origin when they include a scheme, for example `https://api.example.test/*`, and
-against the host or `host:port` when they do not, for example `*.example.test`.
-This effect does not use the guest HTTP target relay or its destination
-allowlist.
+`allowed_url_patterns` defaults to `["*"]` for static URLs and is checked before
+the host request is opened. URLs supplied through workflow bindings must set
+explicit host-restricted `allowed_url_patterns`; the global `*` pattern is not
+accepted for bound URLs. Patterns are shell-style globs matched against either
+the full URL or origin when they include a scheme, for example
+`https://api.example.test/*`, and against the host or `host:port` when they do
+not, for example `*.example.test`. Private, loopback, and link-local IP
+destinations are blocked by default even when the URL matches the allowlist. Set
+`allow_private_networks: true` only for a workflow that intentionally targets a
+trusted private endpoint; cloud metadata destinations remain blocked. This
+effect does not use the guest HTTP target relay or its destination allowlist.
+
+`effect:vm:copy-files` and `effect:agent:copy-files` accept host-side
+`source_path` entries only under approved source roots before reading any host
+file. The built-in roots are repo `templates/`, repo `scripts/guest/`,
+`runtime/published-artifacts/`, and `runtime/communication-artifacts/`. Add
+absolute host paths in `allowed_source_roots` only for additional trusted
+deployment-owned assets.
 
 `effect:runtime:diagnostics-snapshot` captures a host-side diagnostic snapshot
 without accepting arbitrary commands or paths from workflow config. It reads only
@@ -1196,6 +1209,10 @@ root directory-scoped config and host environment:
 | `EVANDER_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
 | `EVANDER_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
 | `EVANDER_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
+| `EVANDER_GIT_REPO` | host shell | `scripts/bootstrap_git_vm.sh` writable SSH key binding; accepts a bare repo path or name under `EVANDER_GIT_ROOT`. |
+| `EVANDER_GIT_SESSION_ID` | host shell or guest `/etc/evander/session.env` | `scripts/bootstrap_git_vm.sh` writable SSH key binding for `refs/heads/agents/<session-id>/...`. |
+| `EVANDER_GIT_READ_ONLY` | host shell | `scripts/bootstrap_git_vm.sh` when forcing read-only Git SSH access. |
+| `EVANDER_GIT_REQUIRE_WRITE_METADATA` | host shell | `scripts/bootstrap_git_vm.sh` when missing repo/session metadata should fail instead of installing read-only access. |
 | `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat toggle). |
 | `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat prompt). |
 | `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (post-exec resume prompt metadata). |
@@ -1422,11 +1439,13 @@ C# bridge under `integrations/teams-meeting-media-bridge`.
 | `http_target_relay_host`, `http_target_relay_port` | root `host-config.json`, provider config overlays | `src/evander/relays/http_target.py` listener bind and `src/evander/cli.py` status checks. |
 | `http_target_relay_timeout_seconds` | provider config overlays | `src/evander/relays/http_target.py` upstream request timeout. |
 
-The current HTTP target relay is auth-transparent: it allowlists the upstream destination by
-session and per-target alias, but it forwards guest `Authorization` headers and cookies instead of
-injecting host-side credentials. The APP demo workflow is one consumer layered on top of this
-generic relay pattern and can register separate UI and API aliases for the same provisioned
-environment.
+The current HTTP target relay is upstream-auth-transparent: it allowlists the upstream destination
+by session and per-target alias, but it forwards guest `Authorization` headers and cookies instead
+of injecting host-side credentials. Tokenized sessions may receive an
+`HTTP_TARGET_RELAY_BASE_URL` with relay auth embedded in the path prefix; guests should treat the
+base URL as opaque and append `/session/<session-id>/target/<alias>/`. The APP demo workflow is
+one consumer layered on top of this generic relay pattern and can register separate UI and API
+aliases for the same provisioned environment.
 
 ### NuGet relay keys
 
@@ -1501,8 +1520,8 @@ These placeholders are substituted by `scripts/launch_agent_vm.sh` before VM boo
 | `__NUGET_PACKAGES__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `NUGET_PACKAGES`. |
 | `__NUGET_HTTP_CACHE_PATH__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `NUGET_HTTP_CACHE_PATH`. |
 | `__NUGET_CACHE_FS_TYPE__`, `__NUGET_CACHE_MOUNT_OPTIONS__`, `__NUGET_CACHE_TAG__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; mount + `/etc/fstab` entry for shared NuGet cache. |
-| `OPENAI_API_KEY` fallback in profile (`relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for OpenAI-compatible relay sessions. |
-| `ANTHROPIC_AUTH_TOKEN` fallback in profile (`relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for Anthropic-compatible relay sessions. |
+| `OPENAI_API_KEY` fallback in profile (`EVANDER_MCP_SESSION_TOKEN` or `relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for OpenAI-compatible relay sessions. |
+| `ANTHROPIC_AUTH_TOKEN` fallback in profile (`EVANDER_MCP_SESSION_TOKEN` or `relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for Anthropic-compatible relay sessions. |
 
 ## Directory Config Domains And Storage
 

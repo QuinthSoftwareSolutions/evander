@@ -17,6 +17,18 @@ def _git(
     )
 
 
+def _git_result(
+    repo: Path, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+
 def _git_dir(git_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", f"--git-dir={git_dir}", *args],
@@ -32,6 +44,256 @@ def _copy_script(source_root: Path, target_root: Path, relative_path: str) -> No
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(target, 0o755)
+
+
+def _copy_git_ssh_scripts(source_root: Path, target_root: Path) -> None:
+    for relative_path in (
+        "scripts/git_ssh_command_wrapper.sh",
+        "scripts/create_git_remote.sh",
+        "scripts/resolve_repo_source.sh",
+        "scripts/lib/runtime_config.sh",
+        "scripts/lib/git_provider_auth.sh",
+    ):
+        _copy_script(source_root, target_root, relative_path)
+
+
+def _base_git_env(git_root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Test User",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test User",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+            "EVANDER_GIT_ROOT": str(git_root),
+        }
+    )
+    return env
+
+
+def _write_fake_ssh(path: Path) -> None:
+    path.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+
+host_seen=0
+command_parts=()
+while (($# > 0)); do
+  case "$1" in
+    -o|-p|-l|-i|-F)
+      shift 2
+      ;;
+    -*)
+      shift
+      ;;
+    *)
+      if (( host_seen == 0 )); then
+        host_seen=1
+      else
+        command_parts+=("$1")
+      fi
+      shift
+      ;;
+  esac
+done
+
+if (( ${#command_parts[@]} == 0 )); then
+  echo "missing git ssh command" >&2
+  exit 1
+fi
+
+printf -v original_command '%s ' "${command_parts[@]}"
+export SSH_ORIGINAL_COMMAND="${original_command% }"
+exec "${EVANDER_TEST_WRAPPER}"
+""",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o755)
+
+
+def test_git_ssh_wrapper_enforces_repo_and_session_ref_prefix_for_pushes(
+    tmp_path: Path,
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    _copy_git_ssh_scripts(repo_root, sandbox_root)
+    env = _base_git_env(git_root)
+
+    create_remote_script = scripts_dir / "create_git_remote.sh"
+    subprocess.run(
+        [str(create_remote_script), "allowed"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    subprocess.run(
+        [str(create_remote_script), "other"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    allowed_repo = git_root / "allowed.git"
+    other_repo = git_root / "other.git"
+    worktree = tmp_path / "worktree"
+    subprocess.run(["git", "init", str(worktree)], check=True, text=True, capture_output=True)
+    _git(worktree, "checkout", "-b", "main")
+    (worktree / "README.md").write_text("agent work\n", encoding="utf-8")
+    _git(worktree, "add", "README.md", env=env)
+    _git(worktree, "commit", "-m", "Agent work", env=env)
+    expected_sha = _git(worktree, "rev-parse", "HEAD", env=env).stdout.strip()
+
+    fake_ssh = tmp_path / "fake-ssh"
+    _write_fake_ssh(fake_ssh)
+    wrapper_script = scripts_dir / "git_ssh_command_wrapper.sh"
+    push_env = env.copy()
+    push_env.update(
+        {
+            "GIT_SSH_COMMAND": str(fake_ssh),
+            "GIT_SSH_VARIANT": "ssh",
+            "EVANDER_TEST_WRAPPER": str(wrapper_script),
+            "EVANDER_GIT_AUTH_ACCESS": "write",
+            "EVANDER_GIT_AUTH_REPO": str(allowed_repo),
+            "EVANDER_GIT_AUTH_SESSION_ID": "session-1",
+            "EVANDER_GIT_AUTH_REF_PREFIX": "refs/heads/agents/session-1/",
+        }
+    )
+
+    _git(worktree, "remote", "add", "agent", f"ssh://evander-git-host{allowed_repo}")
+    _git(worktree, "remote", "add", "other", f"ssh://evander-git-host{other_repo}")
+
+    _git(
+        worktree,
+        "push",
+        "agent",
+        "HEAD:refs/heads/agents/session-1/topic",
+        env=push_env,
+    )
+    assert (
+        _git_dir(allowed_repo, "rev-parse", "refs/heads/agents/session-1/topic").stdout.strip()
+        == expected_sha
+    )
+
+    wrong_prefix = _git_result(
+        worktree,
+        "push",
+        "agent",
+        "HEAD:refs/heads/agents/session-2/topic",
+        env=push_env,
+    )
+    assert wrong_prefix.returncode != 0
+    assert "outside authorized prefix 'refs/heads/agents/session-1/'" in wrong_prefix.stderr
+    missing_wrong_prefix_ref = subprocess.run(
+        [
+            "git",
+            f"--git-dir={allowed_repo}",
+            "rev-parse",
+            "--verify",
+            "refs/heads/agents/session-2/topic",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert missing_wrong_prefix_ref.returncode != 0
+
+    repo_mismatch = _git_result(
+        worktree,
+        "push",
+        "other",
+        "HEAD:refs/heads/agents/session-1/topic",
+        env=push_env,
+    )
+    assert repo_mismatch.returncode != 0
+    assert "Git SSH key is not authorized for repository" in repo_mismatch.stderr
+    missing_other_ref = subprocess.run(
+        [
+            "git",
+            f"--git-dir={other_repo}",
+            "rev-parse",
+            "--verify",
+            "refs/heads/agents/session-1/topic",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert missing_other_ref.returncode != 0
+
+
+def test_git_ssh_wrapper_without_write_metadata_allows_reads_and_denies_pushes(
+    tmp_path: Path,
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    _copy_git_ssh_scripts(repo_root, sandbox_root)
+    env = _base_git_env(git_root)
+
+    create_remote_script = scripts_dir / "create_git_remote.sh"
+    subprocess.run(
+        [str(create_remote_script), "readonly"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    bare_repo = git_root / "readonly.git"
+    worktree = tmp_path / "worktree"
+    subprocess.run(["git", "init", str(worktree)], check=True, text=True, capture_output=True)
+    _git(worktree, "checkout", "-b", "main")
+    (worktree / "README.md").write_text("seed\n", encoding="utf-8")
+    _git(worktree, "add", "README.md", env=env)
+    _git(worktree, "commit", "-m", "Seed", env=env)
+    _git(worktree, "remote", "add", "origin", str(bare_repo))
+    _git(worktree, "push", "origin", "HEAD:refs/heads/main", env=env)
+
+    fake_ssh = tmp_path / "fake-ssh"
+    _write_fake_ssh(fake_ssh)
+    wrapper_script = scripts_dir / "git_ssh_command_wrapper.sh"
+    read_env = env.copy()
+    read_env.update(
+        {
+            "GIT_SSH_COMMAND": str(fake_ssh),
+            "GIT_SSH_VARIANT": "ssh",
+            "EVANDER_TEST_WRAPPER": str(wrapper_script),
+        }
+    )
+
+    remote_url = f"ssh://evander-git-host{bare_repo}"
+    ls_remote = subprocess.run(
+        ["git", "ls-remote", remote_url, "refs/heads/main"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=read_env,
+    )
+    assert ls_remote.returncode == 0
+    assert "refs/heads/main" in ls_remote.stdout
+
+    denied_push = _git_result(
+        worktree,
+        "push",
+        remote_url,
+        "HEAD:refs/heads/agents/session-1/topic",
+        env=read_env,
+    )
+    assert denied_push.returncode != 0
+    assert "Git SSH key is read-only; repo/session metadata is required for pushes." in (
+        denied_push.stderr
+    )
 
 
 def test_git_ssh_wrapper_refreshes_issue_mirror_before_upload_pack(tmp_path: Path) -> None:

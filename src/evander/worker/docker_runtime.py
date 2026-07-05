@@ -7,7 +7,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from .models import WorkerJobRecord, WorkerJobRequest, WorkerSessionPaths
+from .models import (
+    WorkerJobRecord,
+    WorkerJobRequest,
+    WorkerSessionPaths,
+    ensure_resolved_path_within,
+)
 from .sandbox_profile import (
     WorkerReadOnlyMount,
     WorkerSandboxProfile,
@@ -116,6 +121,7 @@ class DockerContainerRuntime:
             reject_unsafe_mount(host_path, container_path)
         for mount in self.read_only_mounts:
             validate_worker_read_only_mount(mount)
+        paths.assert_contained()
         identity_mounts = self._container_identity_mounts(paths)
 
         args = [
@@ -167,7 +173,17 @@ class DockerContainerRuntime:
             return []
         uid, gid = identity
         identity_dir = paths.root / "container-identity"
+        ensure_resolved_path_within(
+            base=paths.root,
+            candidate=identity_dir,
+            description="container identity path",
+        )
         identity_dir.mkdir(parents=True, exist_ok=True)
+        ensure_resolved_path_within(
+            base=paths.root,
+            candidate=identity_dir,
+            description="container identity path",
+        )
         passwd_path = identity_dir / "passwd"
         group_path = identity_dir / "group"
         _write_container_identity_file(

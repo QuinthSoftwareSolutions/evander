@@ -36,9 +36,15 @@ from evander.model_usage.runtime import (
 from evander.operator_steering import OperatorSteeringNote, operator_steering_note_store
 from evander.provider_config import ProviderConfigResolver
 from evander.session_expiry import SessionExpiredError, ensure_session_not_expired
+from evander.session_auth import (
+    MCP_SESSION_TOKEN_HEADER_NAMES,
+    MCP_SESSION_TOKEN_QUERY_PARAM_NAMES,
+    verify_mcp_session_token,
+)
 
 logger = logging.getLogger(__name__)
 
+MCP_SESSION_TOKEN_REQUIRED_MESSAGE = "MCP session token is required for this session"
 
 HOP_BY_HOP_HEADERS = {
     "authorization",
@@ -54,6 +60,7 @@ HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
     "x-api-key",
+    *MCP_SESSION_TOKEN_HEADER_NAMES,
 }
 
 HOSTED_WEB_SEARCH_TOOL_TYPES = {
@@ -124,6 +131,8 @@ class OpenAIRelay:
                 request_context = relay._resolve_request_context(request)
             except SessionExpiredError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=403)
+            except PermissionError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=401)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
@@ -366,6 +375,9 @@ class OpenAIRelay:
             try:
                 request_context = relay._resolve_websocket_context(websocket)
             except SessionExpiredError as exc:
+                await websocket.close(code=1008, reason=str(exc))
+                return
+            except PermissionError as exc:
                 await websocket.close(code=1008, reason=str(exc))
                 return
             except ValueError as exc:
@@ -1340,6 +1352,7 @@ class OpenAIRelay:
             request.path_params
         ) or self._require_session_id(request.query_params.multi_items())
         session = self._session_for_request_context(session_id)
+        self._ensure_mcp_session_token(session, request)
         ensure_session_not_expired(session)
         resolved_config = self.provider_config_resolver.resolve_for_session_manifest(session)
         self._log_resolved_api_key_env(
@@ -1359,6 +1372,7 @@ class OpenAIRelay:
             websocket.path_params
         ) or self._require_session_id(websocket.query_params.multi_items())
         session = self._session_for_request_context(session_id)
+        self._ensure_mcp_session_token(session, websocket)
         ensure_session_not_expired(session)
         resolved_config = self.provider_config_resolver.resolve_for_session_manifest(session)
         self._log_resolved_api_key_env(
@@ -1390,6 +1404,37 @@ class OpenAIRelay:
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         return session
+
+    @classmethod
+    def _ensure_mcp_session_token(cls, session: Any, request: Request | WebSocket) -> None:
+        if verify_mcp_session_token(session, cls._mcp_session_token_from_request(request)):
+            return
+        raise PermissionError(MCP_SESSION_TOKEN_REQUIRED_MESSAGE)
+
+    @staticmethod
+    def _mcp_session_token_from_request(request: Request | WebSocket) -> str | None:
+        for name in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES:
+            token = str(request.query_params.get(name) or "").strip()
+            if token:
+                return token
+        for name in MCP_SESSION_TOKEN_HEADER_NAMES:
+            token = str(request.headers.get(name) or "").strip()
+            if token:
+                return token
+        token = OpenAIRelay._mcp_session_token_from_auth_headers(request)
+        if token:
+            return token
+        return None
+
+    @staticmethod
+    def _mcp_session_token_from_auth_headers(request: Request | WebSocket) -> str | None:
+        authorization = str(request.headers.get("authorization") or "").strip()
+        if authorization.casefold().startswith("bearer "):
+            token = authorization[7:].strip()
+            if token:
+                return token
+        api_key = str(request.headers.get("x-api-key") or "").strip()
+        return api_key or None
 
     @staticmethod
     def _log_resolved_api_key_env(
@@ -1473,7 +1518,11 @@ class OpenAIRelay:
 
     @staticmethod
     def _filtered_query_string(query_items: list[tuple[str, str]]) -> str:
-        filtered = [(key, value) for key, value in query_items if key != "session_id"]
+        filtered = [
+            (key, value)
+            for key, value in query_items
+            if key != "session_id" and key not in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES
+        ]
         return urlencode(filtered, doseq=True)
 
     @staticmethod
@@ -1507,6 +1556,7 @@ class OpenAIRelay:
             (key, value)
             for key, value in query_items
             if key not in {"session_id", "api-version"}
+            and key not in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES
         ]
         filtered_query_items.append(("api-version", api_version))
         upstream_url = f"{endpoint.rstrip('/')}/openai/v1/{upstream_path}"

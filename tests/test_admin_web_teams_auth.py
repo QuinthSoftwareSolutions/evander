@@ -10,7 +10,7 @@ import pytest
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.admin.web.teams_auth import teams_auth_routes
 from evander.messaging.teams_auth import DeviceCodeLoginSession
@@ -504,7 +504,7 @@ def test_admin_web_teams_auth_requires_auth_when_enabled(
     assert login.json()["error"] == "Authentication required"
 
 
-def test_admin_web_teams_auth_mutations_do_not_require_privileged_unlock(
+def test_admin_web_teams_auth_mutations_require_privileged_unlock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
@@ -545,6 +545,12 @@ def test_admin_web_teams_auth_mutations_do_not_require_privileged_unlock(
     )
 
     client = TestClient(create_app(service))
+
+    locked = client.post("/api/teams-auth/login")
+    assert locked.status_code == 403
+    assert calls == []
+    unlock = client.post("/api/admin/privileged/unlock")
+    assert unlock.status_code == 200
 
     login = client.post("/api/teams-auth/login")
     login_session_id = login.json()["login_session_id"]

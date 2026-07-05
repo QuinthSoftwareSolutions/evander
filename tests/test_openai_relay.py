@@ -18,6 +18,7 @@ from evander.directories import DirectoryService, DirectoryStore
 from evander.models import SessionManifest
 from evander.relays.openai import OpenAIRelay, create_app
 from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.session_auth import session_mcp_auth_metadata
 
 
 def make_config(tmp_path: Path) -> GatewayConfig:
@@ -153,6 +154,74 @@ def test_relay_rejects_expired_session_by_query_without_invoking_transport(
         "error": "session expired: session_id=session-1 expires_at=2020-01-01T00:00:00Z"
     }
     assert called is False
+
+
+def test_relay_requires_mcp_session_token_for_tokenized_http_session(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(
+            {
+                "url": str(request.url),
+                "mcp_token_header": request.headers.get(
+                    "x-evander-mcp-session-token", ""
+                ),
+            }
+        )
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        metadata={"mcp_session_auth": session_mcp_auth_metadata("correct-token")},
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    denied_missing = client.post(
+        "/v1/session/session-1/responses",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+    denied_wrong = client.post(
+        "/v1/session/session-1/responses",
+        headers={"x-evander-mcp-session-token": "wrong-token"},
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+    allowed = client.post(
+        "/v1/session/session-1/responses?mcp_session_token=correct-token&foo=bar",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+    allowed_auth_header = client.post(
+        "/v1/session/session-1/responses?bar=baz",
+        headers={"authorization": "Bearer correct-token"},
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+
+    assert denied_missing.status_code == 401
+    assert denied_missing.json() == {
+        "error": "MCP session token is required for this session"
+    }
+    assert denied_wrong.status_code == 401
+    assert denied_wrong.json() == {
+        "error": "MCP session token is required for this session"
+    }
+    assert allowed.status_code == 200
+    assert allowed_auth_header.status_code == 200
+    assert calls == [
+        {
+            "url": "https://api.openai.com/v1/responses?foo=bar",
+            "mcp_token_header": "",
+        },
+        {
+            "url": "https://api.openai.com/v1/responses?bar=baz",
+            "mcp_token_header": "",
+        },
+    ]
 
 
 def test_relay_injects_authorization_header(tmp_path: Path) -> None:
@@ -643,6 +712,53 @@ def test_relay_routes_anthropic_messages_requests_through_session_directory_over
     }
 
 
+def test_relay_accepts_mcp_session_token_in_anthropic_auth_header(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "anthropic",
+            "anthropic_api_base_url": "https://anthropic.example/",
+            "anthropic_api_key_env": "ANTHROPIC_TEST_KEY",
+            "anthropic_api_version": "2023-06-01",
+        },
+    )
+    write_session(
+        config,
+        session_id="session-anthropic",
+        metadata={"mcp_session_auth": session_mcp_auth_metadata("correct-token")},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["x-api-key"] = request.headers.get("x-api-key", "")
+        return httpx.Response(200, json={"id": "msg_1", "type": "message"})
+
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["ANTHROPIC_TEST_KEY"] = "anthropic-key"
+
+    denied = client.post(
+        "/session/session-anthropic/v1/messages",
+        json={"model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64},
+    )
+    allowed = client.post(
+        "/session/session-anthropic/v1/messages?beta=1",
+        headers={"x-api-key": "correct-token"},
+        json={"model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64},
+    )
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+    assert captured == {
+        "url": "https://anthropic.example/v1/messages?beta=1",
+        "x-api-key": "anthropic-key",
+    }
+
+
 def test_relay_routes_claude_agent_session_through_anthropic_provider_override(
     tmp_path: Path,
 ) -> None:
@@ -1091,6 +1207,64 @@ def test_relay_rejects_expired_websocket_session_without_upstream_connection(
     assert exc_info.value.code == 1008
     assert connected is False
     assert upstream.sent_messages == []
+
+
+def test_relay_requires_mcp_session_token_for_tokenized_websocket_session(
+    tmp_path: Path,
+) -> None:
+    connected = 0
+    captured: dict[str, object] = {}
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        metadata={"mcp_session_auth": session_mcp_auth_metadata("correct-token")},
+    )
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        nonlocal connected
+        connected += 1
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["timeout_seconds"] = timeout_seconds
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    client = TestClient(relay.create_app())
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    with pytest.raises(WebSocketDisconnect) as missing_exc:
+        with client.websocket_connect("/v1/session/session-1/responses"):
+            pass
+    with pytest.raises(WebSocketDisconnect) as wrong_exc:
+        with client.websocket_connect(
+            "/v1/session/session-1/responses?mcp_session_token=wrong-token"
+        ):
+            pass
+
+    with client.websocket_connect(
+        "/v1/session/session-1/responses?mcp_session_token=correct-token&foo=bar"
+    ) as websocket:
+        websocket.send_text("hello upstream")
+        deadline = time.time() + 1.0
+        while time.time() < deadline and upstream.sent_messages != ["hello upstream"]:
+            time.sleep(0.01)
+        assert upstream.sent_messages == ["hello upstream"]
+
+    assert missing_exc.value.code == 1008
+    assert missing_exc.value.reason == "MCP session token is required for this session"
+    assert wrong_exc.value.code == 1008
+    assert wrong_exc.value.reason == "MCP session token is required for this session"
+    assert connected == 1
+    assert captured["url"] == "wss://api.openai.com/v1/responses?foo=bar"
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert "x-evander-mcp-session-token" not in {
+        key.lower() for key in headers
+    }
 
 
 def test_relay_rejects_websocket_hosted_web_search_without_session_flag(

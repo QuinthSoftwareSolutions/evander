@@ -436,6 +436,7 @@ class HttpRequestEffectDefinition(EffectDefinition):
     method: ConfigValue = "GET"
     url: ConfigValue
     allowed_url_patterns: ConfigValue | None = Field(default_factory=lambda: ["*"])
+    allow_private_networks: ConfigValue | None = False
     payload: ConfigValue | None = None
     headers: ConfigValue | None = None
     timeout_seconds: ConfigValue | None = None
@@ -605,7 +606,13 @@ class VmCopyFilesEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     vm_user: ConfigValue | None = None
+    allowed_source_roots: ConfigValue | None = None
     files: list[VmCopyFilesItemDefinition]
+
+    @field_validator("allowed_source_roots")
+    @classmethod
+    def validate_allowed_source_roots(cls, value: ConfigValue | None) -> ConfigValue | None:
+        return _validate_allowed_source_roots(value, effect_type="effect:vm:copy-files")
 
 
 class AgentCopyFilesEffectDefinition(EffectDefinition):
@@ -614,7 +621,34 @@ class AgentCopyFilesEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     vm_user: ConfigValue | None = None
+    allowed_source_roots: ConfigValue | None = None
     files: list[VmCopyFilesItemDefinition]
+
+    @field_validator("allowed_source_roots")
+    @classmethod
+    def validate_allowed_source_roots(cls, value: ConfigValue | None) -> ConfigValue | None:
+        return _validate_allowed_source_roots(value, effect_type="effect:agent:copy-files")
+
+
+def _validate_allowed_source_roots(
+    value: ConfigValue | None,
+    *,
+    effect_type: str,
+) -> ConfigValue | None:
+    if value is None:
+        return value
+    if isinstance(value, str):
+        if value.strip():
+            return value
+        raise ValueError(f"{effect_type} allowed_source_roots must include a path")
+    if not isinstance(value, list):
+        raise ValueError(f"{effect_type} allowed_source_roots must be a string list or binding")
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(
+                f"{effect_type} allowed_source_roots must be a string list or binding"
+            )
+    return value
 
 
 class ArtifactStageEffectDefinition(EffectDefinition):

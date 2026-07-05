@@ -6,8 +6,8 @@ import os
 import shlex
 import subprocess
 import tempfile
-from copy import deepcopy
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -17,6 +17,16 @@ from evander.managed_sections import normalize_managed_section_id
 from evander.workflow.binding import resolve_workflow_bindings
 
 from .base import EffectProviderBase
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_DEFAULT_REPO_SOURCE_ROOTS = (
+    _REPO_ROOT / "templates",
+    _REPO_ROOT / "scripts" / "guest",
+)
+_DEFAULT_RUNTIME_SOURCE_ROOT_NAMES = (
+    "published-artifacts",
+    "communication-artifacts",
+)
 
 
 class VmCopyFilesEffectProvider(EffectProviderBase):
@@ -34,6 +44,11 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         raw_files = next_config.get("files")
         if not isinstance(raw_files, list):
             return next_config
+        effect_type = self._effect_type_label()
+        allowed_source_roots = self._approved_source_roots(
+            next_config.get("allowed_source_roots"),
+            effect_type=effect_type,
+        )
         for index, raw_entry in enumerate(raw_files):
             if not isinstance(raw_entry, dict):
                 continue
@@ -47,17 +62,20 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             source_path = str(raw_entry.get("source_path") or "").strip()
             if not source_path:
                 raise ValueError(
-                    f"effect:vm:copy-files files[{index}] source_path is required for template sources"
+                    f"{effect_type} files[{index}] source_path is required for template sources"
                 )
-            template_path = Path(source_path).expanduser().resolve()
+            template_path = self._resolve_allowed_source_path(
+                source_path,
+                allowed_source_roots=allowed_source_roots,
+                effect_type=effect_type,
+                index=index,
+            )
             if not template_path.exists():
                 raise ValueError(
-                    f"effect:vm:copy-files template source does not exist: {template_path}"
+                    f"{effect_type} template source does not exist: {template_path}"
                 )
             if template_path.is_dir():
-                raise ValueError(
-                    f"effect:vm:copy-files template source must be a file: {template_path}"
-                )
+                raise ValueError(f"{effect_type} template source must be a file: {template_path}")
             template_text = template_path.read_text(encoding="utf-8")
             rendered = resolve_workflow_bindings(
                 template_text,
@@ -68,7 +86,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             ).resolved_config
             if not isinstance(rendered, str):
                 raise ValueError(
-                    f"effect:vm:copy-files template source must resolve to text: {template_path}"
+                    f"{effect_type} template source must resolve to text: {template_path}"
                 )
             raw_entry["content"] = rendered
             raw_entry.pop("source_path", None)
@@ -78,7 +96,16 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         context = self._context()
         payload = dict(resolved_config or {})
         vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
-        files = self._normalize_file_entries(payload.get("files"))
+        effect_type = self._effect_type_label()
+        allowed_source_roots = self._approved_source_roots(
+            payload.get("allowed_source_roots"),
+            effect_type=effect_type,
+        )
+        files = self._normalize_file_entries(
+            payload.get("files"),
+            allowed_source_roots=allowed_source_roots,
+            effect_type=effect_type,
+        )
         if not files:
             raise ValueError("effect:vm:copy-files requires at least one file entry")
         target = self._resolve_target(payload)
@@ -471,28 +498,47 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             raise FileNotFoundError(f"Source path does not exist: {local_source}")
         return local_source
 
-    def _normalize_file_entries(self, value: object) -> list[dict[str, Any]]:
+    def _normalize_file_entries(
+        self,
+        value: object,
+        *,
+        allowed_source_roots: Sequence[Path] | None = None,
+        effect_type: str = "effect:vm:copy-files",
+    ) -> list[dict[str, Any]]:
         if value is None:
             return []
         if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-            raise ValueError("effect:vm:copy-files files must be a list")
+            raise ValueError(f"{effect_type} files must be a list")
         entries: list[dict[str, Any]] = []
+        source_roots = list(
+            allowed_source_roots
+            or self._approved_source_roots(None, effect_type=effect_type)
+        )
         for raw_entry in value:
             if not isinstance(raw_entry, Mapping):
-                raise ValueError("effect:vm:copy-files file entries must be objects")
+                raise ValueError(f"{effect_type} file entries must be objects")
             destination_path = self._normalize_optional_string(
                 raw_entry.get("destination_path") or raw_entry.get("destination")
             )
             if not destination_path:
-                raise ValueError("effect:vm:copy-files entries require destination_path")
+                raise ValueError(f"{effect_type} entries require destination_path")
             source_path = self._normalize_optional_string(
                 raw_entry.get("source_path") or raw_entry.get("source")
             )
             content = raw_entry.get("content")
             if (source_path is None) == (content is None):
                 raise ValueError(
-                    "effect:vm:copy-files entries require exactly one of source_path or content"
-            )
+                    f"{effect_type} entries require exactly one of source_path or content"
+                )
+            if source_path is not None:
+                source_path = str(
+                    self._resolve_allowed_source_path(
+                        source_path,
+                        allowed_source_roots=source_roots,
+                        effect_type=effect_type,
+                        index=len(entries),
+                    )
+                )
             mode = self._normalize_optional_string(raw_entry.get("mode"))
             content_format = self._normalize_content_format(raw_entry.get("content_format"))
             merge_strategy = self._normalize_merge_strategy(raw_entry.get("merge_strategy"))
@@ -503,18 +549,18 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             if merge_strategy == "managed_section":
                 if source_path is not None:
                     raise ValueError(
-                        "effect:vm:copy-files managed_section entries require inline content"
+                        f"{effect_type} managed_section entries require inline content"
                     )
                 section_id = normalize_managed_section_id(section_id or "")
             elif remove_section_ids:
                 raise ValueError(
-                    "effect:vm:copy-files remove_section_ids requires managed_section merge_strategy"
+                    f"{effect_type} remove_section_ids requires managed_section merge_strategy"
                 )
             overwrite = raw_entry.get("overwrite")
             if overwrite is None:
                 overwrite = True
             elif not isinstance(overwrite, bool):
-                raise ValueError("effect:vm:copy-files overwrite must be a boolean when provided")
+                raise ValueError(f"{effect_type} overwrite must be a boolean when provided")
             entry = {
                 "source_path": source_path,
                 "destination_path": destination_path,
@@ -532,6 +578,112 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                     entry["remove_section_ids"] = remove_section_ids
             entries.append(entry)
         return entries
+
+    def _approved_source_roots(self, value: Any, *, effect_type: str) -> list[Path]:
+        roots = [self._resolve_root_path(root) for root in _DEFAULT_REPO_SOURCE_ROOTS]
+        runtime_dir = self._runtime_dir_or_none()
+        if runtime_dir is not None:
+            roots.extend(
+                self._resolve_root_path(runtime_dir / name)
+                for name in _DEFAULT_RUNTIME_SOURCE_ROOT_NAMES
+            )
+        roots.extend(
+            self._normalize_configured_source_roots(value, effect_type=effect_type)
+        )
+        unique_roots: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = str(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_roots.append(root)
+        return unique_roots
+
+    def _runtime_dir_or_none(self) -> Path | None:
+        try:
+            return self._context().config_path("runtime_dir")
+        except KeyError:
+            return None
+
+    @staticmethod
+    def _normalize_configured_source_roots(value: Any, *, effect_type: str) -> list[Path]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_values = [value]
+        elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            raw_values = list(value)
+        else:
+            raise ValueError(f"{effect_type} allowed_source_roots must be a string or string list")
+        roots: list[Path] = []
+        for item in raw_values:
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"{effect_type} allowed_source_roots must be a string or string list"
+                )
+            text = item.strip()
+            if not text:
+                raise ValueError(f"{effect_type} allowed_source_roots must include a path")
+            root = Path(text).expanduser()
+            if not root.is_absolute():
+                raise ValueError(
+                    f"{effect_type} allowed_source_roots entries must be absolute host paths"
+                )
+            roots.append(VmCopyFilesEffectProvider._resolve_root_path(root))
+        return roots
+
+    @staticmethod
+    def _resolve_root_path(root: Path) -> Path:
+        return Path(root).expanduser().resolve(strict=False)
+
+    def _resolve_allowed_source_path(
+        self,
+        source_path: str,
+        *,
+        allowed_source_roots: Sequence[Path],
+        effect_type: str,
+        index: int,
+    ) -> Path:
+        text = str(source_path or "").strip()
+        if not text:
+            raise ValueError(f"{effect_type} files[{index}] source_path is required")
+        if "\x00" in text:
+            raise ValueError(f"{effect_type} files[{index}] source_path must not contain NUL")
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            candidate = _REPO_ROOT / candidate
+        preflight_path = candidate.resolve(strict=False)
+        if not self._path_is_under_any_root(preflight_path, allowed_source_roots):
+            raise ValueError(
+                f"{effect_type} files[{index}] source_path is outside approved "
+                f"host source roots: {preflight_path}"
+            )
+        if not preflight_path.exists():
+            raise FileNotFoundError(f"Source path does not exist: {preflight_path}")
+        resolved = candidate.resolve(strict=True)
+        if not self._path_is_under_any_root(resolved, allowed_source_roots):
+            raise ValueError(
+                f"{effect_type} files[{index}] source_path is outside approved "
+                f"host source roots: {resolved}"
+            )
+        return resolved
+
+    @staticmethod
+    def _path_is_under_any_root(path: Path, roots: Sequence[Path]) -> bool:
+        for root in roots:
+            try:
+                path.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def _effect_type_label(self) -> str:
+        value = getattr(self.effect_definition, "type", None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return "effect:vm:copy-files"
 
     @staticmethod
     def _normalize_remote_path(value: str) -> str:

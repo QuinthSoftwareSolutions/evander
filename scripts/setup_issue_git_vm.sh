@@ -81,7 +81,7 @@ VM_USER="${4:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-"${SCRIPT_DIR}/bootstrap_git_vm.sh" "${VM_NAME}" "${VM_USER}"
+EVANDER_GIT_REPO="${ISSUE_NUMBER}_repo" "${SCRIPT_DIR}/bootstrap_git_vm.sh" "${VM_NAME}" "${VM_USER}"
 "${SCRIPT_DIR}/mirror_issue_repo.sh" "${MIRROR_ARGS[@]}" "${ISSUE_NUMBER}" "${REPO_SOURCE}"
 
 echo

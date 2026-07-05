@@ -573,8 +573,8 @@ Next steps:
   4. Populate ${ROOT_DIR}/config/teams-meeting-ingest/config.json from the example file if you want to override Teams meeting ingest defaults.
   5. Populate ${ROOT_DIR}/config/trigger-orchestrator/config.json from the example file if you want to enable the trigger orchestrator scaffold.
   6. Populate ${ROOT_DIR}/config/didww-sip-bridge.env from the example file if you want OpenAI Realtime/DIDWW phone calls.
-  7. Export the required host secrets in the service manager environment, or source ${ROOT_DIR}/secrets.env if you keep one there.
-  8. Populate ${ROOT_DIR}/config/admin-web.env from the example file and set host/auth settings for the admin UI.
+  7. Export the required host secrets in the service manager environment, source ${ROOT_DIR}/secrets.env if you keep one there, or put host-local secrets in ${LOCAL_SECRETS_FILE}.
+  8. Populate ${ROOT_DIR}/config/admin-web.env from the example file and keep Admin Web password/session secrets in ${LOCAL_SECRETS_FILE} or another service-manager secret source.
   9. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
   10. Start services:
      sudo systemctl start evander-admin-web.service

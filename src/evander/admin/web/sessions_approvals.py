@@ -28,6 +28,7 @@ from evander.models import (
     McpToolPolicyRule,
     SessionSummary,
     ToolName,
+    WakeScheduledRequest,
     normalize_mcp_tool_policies,
     tool_name_value,
 )
@@ -62,18 +63,14 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.CREATE_ADO_BACKLOG_ITEM: (
         "Create an Azure DevOps backlog item using the host-side ADO integration."
     ),
-    ToolName.QUERY_ADO_BACKLOG_ITEMS: (
-        "Search Azure DevOps backlog items with host-side filters."
-    ),
+    ToolName.QUERY_ADO_BACKLOG_ITEMS: ("Search Azure DevOps backlog items with host-side filters."),
     ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS: (
         "List Azure DevOps backlog items in the configured current iteration."
     ),
     ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA: (
         "Build daily status report data from Azure DevOps current-iteration items."
     ),
-    ToolName.GET_ADO_BACKLOG_ITEM: (
-        "Fetch details for one Azure DevOps backlog item."
-    ),
+    ToolName.GET_ADO_BACKLOG_ITEM: ("Fetch details for one Azure DevOps backlog item."),
     ToolName.POST_ADO_BACKLOG_COMMENT: (
         "Post comments to Azure DevOps backlog items, including staged image artifacts when enabled."
     ),
@@ -89,33 +86,17 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY: (
         "Find Azure DevOps work items with matching created, changed, or commented activity."
     ),
-    ToolName.CREATE_LOCAL_ISSUE: (
-        "Create a local issue record in the session's directory scope."
-    ),
-    ToolName.LIST_ISSUES: (
-        "List local issue records visible to the session."
-    ),
-    ToolName.GET_ISSUE: (
-        "Read details for a local issue record."
-    ),
-    ToolName.SET_ISSUE_PLAN: (
-        "Store or update the implementation plan attached to a local issue."
-    ),
-    ToolName.APPROVE_ISSUE: (
-        "Mark a local issue as approved for implementation."
-    ),
-    ToolName.COMMIT_ISSUE: (
-        "Move a local issue into the committed state when work is ready."
-    ),
-    ToolName.REJECT_ISSUE: (
-        "Reject a local issue instead of approving it for execution."
-    ),
+    ToolName.CREATE_LOCAL_ISSUE: ("Create a local issue record in the session's directory scope."),
+    ToolName.LIST_ISSUES: ("List local issue records visible to the session."),
+    ToolName.GET_ISSUE: ("Read details for a local issue record."),
+    ToolName.SET_ISSUE_PLAN: ("Store or update the implementation plan attached to a local issue."),
+    ToolName.APPROVE_ISSUE: ("Mark a local issue as approved for implementation."),
+    ToolName.COMMIT_ISSUE: ("Move a local issue into the committed state when work is ready."),
+    ToolName.REJECT_ISSUE: ("Reject a local issue instead of approving it for execution."),
     ToolName.CLAIM_NEXT_ISSUE: (
         "Claim the next available local issue in the session's directory scope."
     ),
-    ToolName.COMPLETE_ISSUE: (
-        "Mark a local issue as completed after the work is finished."
-    ),
+    ToolName.COMPLETE_ISSUE: ("Mark a local issue as completed after the work is finished."),
     ToolName.GET_AGENT_STATUS: (
         "Inspect current guest agent state, including whether it is running."
     ),
@@ -174,9 +155,7 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.LIST_CONTACTS: (
         "List directory-configured contact ids without exposing addresses or phone numbers."
     ),
-    ToolName.MAKE_PHONE_CALL: (
-        "Start host-side phone calls to directory-configured contact ids."
-    ),
+    ToolName.MAKE_PHONE_CALL: ("Start host-side phone calls to directory-configured contact ids."),
     ToolName.GET_PHONE_CALL_RESULT: (
         "Read phone call status and transcripts for calls owned by the session."
     ),
@@ -189,9 +168,7 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.EMAIL_GET_MESSAGE: (
         "Open a specific email message the session is allowed to inspect."
     ),
-    ToolName.EMAIL_CREATE_DRAFT: (
-        "Create an email draft on the host without sending it."
-    ),
+    ToolName.EMAIL_CREATE_DRAFT: ("Create an email draft on the host without sending it."),
     ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS: (
         "Create an email draft with staged communication file artifacts attached."
     ),
@@ -235,12 +212,8 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.LIST_ADO_PR_COMMIT_ACTIVITY: (
         "Find Azure DevOps pull request commits matching an author and date range."
     ),
-    ToolName.REQUEST_PR_REVIEW: (
-        "Request reviewers on a pull request from the host side."
-    ),
-    ToolName.POST_PR_COMMENT: (
-        "Post a pull request comment using the host integration."
-    ),
+    ToolName.REQUEST_PR_REVIEW: ("Request reviewers on a pull request from the host side."),
+    ToolName.POST_PR_COMMENT: ("Post a pull request comment using the host integration."),
     ToolName.POST_PR_INLINE_COMMENT: (
         "Post an inline pull request comment at a specific diff position."
     ),
@@ -271,21 +244,15 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.RESPOND_TO_AGENT: (
         "Reply to a pending agent prompt using its one-time response token."
     ),
-    ToolName.RUN_SCRIPT: (
-        "Run an approved host-side script on behalf of the session."
-    ),
+    ToolName.RUN_SCRIPT: ("Run an approved host-side script on behalf of the session."),
     ToolName.GET_WORKFLOW_SNAPSHOT: (
         "Read the current workflow editor document and optional run snapshot."
     ),
     ToolName.SEMANTIC_UPSERT_TEXT: (
         "Insert or update text points in an allowlisted semantic collection."
     ),
-    ToolName.SEMANTIC_SEARCH: (
-        "Search an allowlisted semantic collection for relevant points."
-    ),
-    ToolName.SEMANTIC_GET_POINTS: (
-        "Read specific points from an allowlisted semantic collection."
-    ),
+    ToolName.SEMANTIC_SEARCH: ("Search an allowlisted semantic collection for relevant points."),
+    ToolName.SEMANTIC_GET_POINTS: ("Read specific points from an allowlisted semantic collection."),
     ToolName.SEMANTIC_DELETE_POINTS: (
         "Delete specific points from an allowlisted semantic collection."
     ),
@@ -665,6 +632,32 @@ def session_approval_routes(
 ) -> list[BaseRoute]:
     policy_summary_cache = _SessionPolicySummaryCache()
 
+    def _owner_privileged_error(
+        request: Request, *, directory_path: object | None = None
+    ) -> JSONResponse | None:
+        if request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
+        ):
+            return None
+        return json_error("Privileged operations are locked.", status_code=403)
+
+    def _privileged_unlocked_error(request: Request) -> JSONResponse | None:
+        if request_has_privileged_operations(auth=auth, service=service, request=request):
+            return None
+        return json_error("Privileged operations are locked.", status_code=403)
+
+    def _approval_request_or_error(
+        request_id: str,
+    ) -> tuple[ApprovalRequest | None, JSONResponse | None]:
+        try:
+            return service.approval_audit_admin.get_approval_request(request_id), None
+        except ValueError as exc:
+            return None, json_error(str(exc), status_code=404)
+
     async def approvals_index(request: Request) -> JSONResponse:
         params = request.query_params
         try:
@@ -710,7 +703,19 @@ def session_approval_routes(
         return JSONResponse(_approval_review_payload(review))
 
     async def decide_approval(request: Request) -> JSONResponse:
+        auth_error = _privileged_unlocked_error(request)
+        if auth_error is not None:
+            return auth_error
         request_id = request.path_params.get("request_id", "")
+        approval_request, load_error = _approval_request_or_error(request_id)
+        if load_error is not None:
+            return load_error
+        auth_error = _owner_privileged_error(
+            request,
+            directory_path=approval_request.directory_path if approval_request else None,
+        )
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -739,7 +744,19 @@ def session_approval_routes(
         return JSONResponse({"request": _approval_payload(updated)})
 
     async def revoke_approval(request: Request) -> JSONResponse:
+        auth_error = _privileged_unlocked_error(request)
+        if auth_error is not None:
+            return auth_error
         request_id = request.path_params.get("request_id", "")
+        approval_request, load_error = _approval_request_or_error(request_id)
+        if load_error is not None:
+            return load_error
+        auth_error = _owner_privileged_error(
+            request,
+            directory_path=approval_request.directory_path if approval_request else None,
+        )
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -766,10 +783,7 @@ def session_approval_routes(
     async def sessions_catalog(_: Request) -> JSONResponse:
         return JSONResponse(
             {
-                "tool_options": [
-                    _tool_option(tool)
-                    for tool in ToolName
-                ],
+                "tool_options": [_tool_option(tool) for tool in ToolName],
                 "model_options": _model_options_from_pricing_catalog(service),
                 "resume_mode_options": [
                     {"value": "same_context", "label": "same_context"},
@@ -814,6 +828,69 @@ def session_approval_routes(
                 return item
         raise ValueError(f"Unknown session: {session_id}")
 
+    def _session_summary_or_error(
+        session_id: str,
+    ) -> tuple[SessionSummary | None, JSONResponse | None]:
+        try:
+            return _get_session_summary(session_id), None
+        except ValueError as exc:
+            return None, json_error(str(exc), status_code=404)
+
+    def _authorize_session_mutation(
+        request: Request,
+        session_id: str,
+    ) -> tuple[SessionSummary | None, JSONResponse | None]:
+        summary, load_error = _session_summary_or_error(session_id)
+        if load_error is not None:
+            return None, load_error
+        assert summary is not None
+        auth_error = _owner_privileged_error(
+            request,
+            directory_path=summary.directory_path,
+        )
+        if auth_error is not None:
+            return None, auth_error
+        return summary, None
+
+    def _wake_request_or_error(
+        request_id: str,
+    ) -> tuple[WakeScheduledRequest | None, JSONResponse | None]:
+        wake_request = service.runtime.wake_store.get_request(request_id)
+        if wake_request is None:
+            return None, json_error(f"Wake schedule not found: {request_id}", status_code=404)
+        return wake_request, None
+
+    def _wake_request_directory_path(wake_request: WakeScheduledRequest) -> str:
+        directory_path = str(getattr(wake_request, "directory_path", "") or "").strip()
+        if directory_path:
+            return directory_path
+        metadata = getattr(wake_request.resume_prompt, "metadata", None)
+        if isinstance(metadata, dict):
+            directory_path = str(metadata.get("directory_path") or "").strip()
+            if directory_path:
+                return directory_path
+        return "root"
+
+    def _authorize_wake_request_mutation(
+        request: Request,
+        request_id: str,
+    ) -> tuple[WakeScheduledRequest | None, JSONResponse | None]:
+        wake_request, load_error = _wake_request_or_error(request_id)
+        if load_error is not None:
+            return None, load_error
+        assert wake_request is not None
+        try:
+            directory_path = _get_session_summary(wake_request.session_id).directory_path
+        except ValueError:
+            directory_path = _wake_request_directory_path(wake_request)
+        auth_error = _owner_privileged_error(
+            request,
+            directory_path=directory_path,
+        )
+        if auth_error is not None:
+            return None, auth_error
+        return wake_request, None
+
     async def get_session_detail(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
@@ -831,6 +908,9 @@ def session_approval_routes(
 
     async def renew_session(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -849,6 +929,9 @@ def session_approval_routes(
 
     async def revoke_session(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
         try:
             result = service.operations_admin.revoke_session(session_id)
         except ValueError as exc:
@@ -857,6 +940,9 @@ def session_approval_routes(
 
     async def delete_session(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
         try:
             result = service.vm_agent_admin.delete_session(session_id)
         except ValueError as exc:
@@ -865,6 +951,9 @@ def session_approval_routes(
 
     async def cleanup_session(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
         try:
             result = service.vm_agent_admin.cleanup_container_session(session_id)
             summary = _get_session_summary(session_id)
@@ -881,6 +970,9 @@ def session_approval_routes(
 
     async def update_session_model(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -904,6 +996,9 @@ def session_approval_routes(
 
     async def update_session_tools(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -929,6 +1024,9 @@ def session_approval_routes(
 
     async def update_session_policy(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -1015,13 +1113,9 @@ def session_approval_routes(
 
     async def update_mcp_tools(request: Request) -> JSONResponse:
         directory_path = str(request.query_params.get("directory_path") or "root").strip() or "root"
-        if not request_has_privileged_operations(
-            auth=auth,
-            service=service,
-            request=request,
-            required_permission=ADMIN_OWNER_PERMISSION,
-        ):
-            return json_error("Privileged operations are locked.", status_code=403)
+        auth_error = _owner_privileged_error(request, directory_path=directory_path)
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -1058,9 +1152,13 @@ def session_approval_routes(
             else {}
         )
         raw_config["mcp_tool_policies"] = validated_policies
-        result = service.operations_admin.write_directory_domain_config(directory_path, "policy", raw_config)
+        result = service.operations_admin.write_directory_domain_config(
+            directory_path, "policy", raw_config
+        )
         if not result.ok:
-            message = result.errors[0].message if result.errors else "Unable to save MCP tool policy."
+            message = (
+                result.errors[0].message if result.errors else "Unable to save MCP tool policy."
+            )
             return json_error(message, status_code=400)
         return JSONResponse(_mcp_tools_payload(directory_path))
 
@@ -1085,9 +1183,7 @@ def session_approval_routes(
                 statuses=_parse_wake_statuses(params.get("statuses")),
                 session_id=params.get("session_id"),
                 limit=100 if limit is None else limit,
-                include_completed=_parse_bool(
-                    params.get("include_completed"), default=True
-                ),
+                include_completed=_parse_bool(params.get("include_completed"), default=True),
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -1095,6 +1191,9 @@ def session_approval_routes(
 
     async def create_wake_schedule(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -1118,6 +1217,9 @@ def session_approval_routes(
 
     async def update_wake_schedule(request: Request) -> JSONResponse:
         request_id = request.path_params.get("request_id", "")
+        _, auth_error = _authorize_wake_request_mutation(request, request_id)
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -1148,6 +1250,9 @@ def session_approval_routes(
 
     async def retry_scheduled_wake(request: Request) -> JSONResponse:
         request_id = request.path_params.get("request_id", "")
+        _, auth_error = _authorize_wake_request_mutation(request, request_id)
+        if auth_error is not None:
+            return auth_error
         try:
             payload = await request.json()
         except Exception:
@@ -1157,7 +1262,9 @@ def session_approval_routes(
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object.")
         try:
-            resume_at = _parse_datetime(payload.get("resume_at")) if "resume_at" in payload else None
+            resume_at = (
+                _parse_datetime(payload.get("resume_at")) if "resume_at" in payload else None
+            )
             if "run_now" in payload:
                 run_now_raw = payload.get("run_now")
                 if not isinstance(run_now_raw, bool):
@@ -1184,6 +1291,9 @@ def session_approval_routes(
 
     async def remove_wake_schedule(request: Request) -> JSONResponse:
         request_id = request.path_params.get("request_id", "")
+        _, auth_error = _authorize_wake_request_mutation(request, request_id)
+        if auth_error is not None:
+            return auth_error
         try:
             deleted = service.operations_admin.delete_wake_schedule(request_id)
         except ValueError as exc:

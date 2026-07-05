@@ -79,6 +79,96 @@ if [[ ! -d "${REPO_DIR}" ]]; then
   git --git-dir="${REPO_DIR}" config gc.auto 0
 fi
 
+cat > "${REPO_DIR}/hooks/pre-receive" <<'HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${EVANDER_GIT_AUTH_ENFORCE:-0}" != "1" ]]; then
+  cat >/dev/null
+  exit 0
+fi
+
+decode_auth_value() {
+  local plain_value="$1"
+  local encoded_value="$2"
+  local decoded_value
+
+  if [[ -n "${plain_value}" ]]; then
+    printf '%s\n' "${plain_value}"
+    return 0
+  fi
+
+  if [[ -z "${encoded_value}" ]]; then
+    return 0
+  fi
+
+  if ! decoded_value="$(printf '%s' "${encoded_value}" | base64 -d 2>/dev/null)"; then
+    echo "Invalid base64-encoded Git SSH authorization metadata." >&2
+    return 1
+  fi
+  printf '%s\n' "${decoded_value}"
+}
+
+AUTH_ACCESS="${EVANDER_GIT_AUTH_ACCESS:-read-only}"
+AUTH_REPO_RAW="$(decode_auth_value "${EVANDER_GIT_AUTH_REPO:-}" "${EVANDER_GIT_AUTH_REPO_B64:-}")"
+AUTH_SESSION_ID="$(
+  decode_auth_value "${EVANDER_GIT_AUTH_SESSION_ID:-}" "${EVANDER_GIT_AUTH_SESSION_ID_B64:-}"
+)"
+AUTH_REF_PREFIX="$(
+  decode_auth_value "${EVANDER_GIT_AUTH_REF_PREFIX:-}" "${EVANDER_GIT_AUTH_REF_PREFIX_B64:-}"
+)"
+
+if [[ "${AUTH_ACCESS}" != "write" ]]; then
+  echo "Git SSH key is read-only; repo/session metadata is required for pushes." >&2
+  exit 1
+fi
+
+if [[ -z "${AUTH_REPO_RAW}" || -z "${AUTH_SESSION_ID}" || -z "${AUTH_REF_PREFIX}" ]]; then
+  echo "Git write access requires authorized repo, session, and ref-prefix metadata." >&2
+  exit 1
+fi
+
+current_git_dir="$(git rev-parse --git-dir)"
+if [[ "${current_git_dir}" != /* ]]; then
+  current_git_dir="$(pwd)/${current_git_dir}"
+fi
+current_repo_real="$(realpath -m -- "${current_git_dir}")"
+auth_repo_real="$(realpath -m -- "${AUTH_REPO_RAW}")"
+
+if [[ "${auth_repo_real}" != "${current_repo_real}" ]]; then
+  echo "Git SSH key is not authorized for repository: ${current_repo_real}" >&2
+  exit 1
+fi
+
+if [[ -z "${AUTH_SESSION_ID}" || "${AUTH_SESSION_ID}" == */* || "${AUTH_SESSION_ID}" == "." || "${AUTH_SESSION_ID}" == ".." ]]; then
+  echo "Authorized Git session id must be a single non-empty ref path component." >&2
+  exit 1
+fi
+
+expected_prefix="refs/heads/agents/${AUTH_SESSION_ID}/"
+if [[ "${AUTH_REF_PREFIX}" != "${expected_prefix}" ]]; then
+  echo "Authorized Git ref prefix must be ${expected_prefix}." >&2
+  exit 1
+fi
+
+if ! git check-ref-format "${AUTH_REF_PREFIX}probe" >/dev/null 2>&1; then
+  echo "Authorized Git ref prefix is not a valid branch namespace: ${AUTH_REF_PREFIX}" >&2
+  exit 1
+fi
+
+while read -r _oldrev _newrev refname; do
+  [[ -n "${refname}" ]] || continue
+  case "${refname}" in
+    "${AUTH_REF_PREFIX}"*) ;;
+    *)
+      echo "Ref '${refname}' is outside authorized prefix '${AUTH_REF_PREFIX}'." >&2
+      exit 1
+      ;;
+  esac
+done
+HOOK
+chmod +x "${REPO_DIR}/hooks/pre-receive"
+
 cat > "${REPO_DIR}/hooks/post-receive" <<HOOK
 #!/usr/bin/env bash
 set -euo pipefail
@@ -110,8 +200,9 @@ repair_git_remote_ownership_if_root "${REPO_DIR}" "${GIT_USER}"
 
 echo "Bare remote ready: ${REPO_DIR}"
 echo
-echo "Before first VM use:"
-echo "  ./scripts/bootstrap_git_vm.sh <vm-name>"
+echo "Before first writable VM use:"
+echo "  EVANDER_GIT_REPO=$(basename "${REPO_DIR}") EVANDER_GIT_SESSION_ID=<session-id> ./scripts/bootstrap_git_vm.sh <vm-name>"
+echo "Without repo/session metadata, bootstrap_git_vm.sh installs read-only Git access."
 echo
 echo "Add from VM:"
 echo "  git remote add agent ssh://${GIT_SSH_ALIAS}${REPO_DIR}"

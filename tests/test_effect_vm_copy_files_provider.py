@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from evander.config import GatewayConfig
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
@@ -69,6 +71,7 @@ def test_vm_copy_files_provider_copies_inline_and_host_files(tmp_path: Path) -> 
         resolved_config={
             "target": "lab-vm-1",
             "vm_user": "agent",
+            "allowed_source_roots": [str(tmp_path)],
             "files": [
                 {
                     "destination_path": "/home/agent/inline.txt",
@@ -103,7 +106,7 @@ def test_vm_copy_files_provider_copies_inline_and_host_files(tmp_path: Path) -> 
                     "overwrite": True,
                 },
                 {
-                    "source_path": str(source_path),
+                    "source_path": str(source_path.resolve()),
                     "destination_path": "/home/agent/source.txt",
                     "content": None,
                     "content_format": None,
@@ -114,6 +117,214 @@ def test_vm_copy_files_provider_copies_inline_and_host_files(tmp_path: Path) -> 
             "vm_user": "agent",
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        "/etc/passwd",
+        "../agent-sandbox/pyproject.toml",
+        "~/evander-copy-files-secret.txt",
+    ],
+)
+def test_vm_copy_files_provider_rejects_source_paths_outside_approved_roots(
+    source_path: str,
+    tmp_path: Path,
+) -> None:
+    admin_service = _AdminServiceStub(
+        [],
+        vm_copy_files_result={
+            "success": True,
+            "copied_paths": ["/home/agent/source.txt"],
+        },
+    )
+    context = _build_context(tmp_path, admin_service)
+    provider = VmCopyFilesEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(id="copy-files", type="effect:vm:copy-files"),
+        runtime_context=context,
+    )
+
+    with pytest.raises(ValueError, match="outside approved host source roots"):
+        provider.execute(
+            resolved_config={
+                "target": "lab-vm-1",
+                "files": [
+                    {
+                        "destination_path": "/home/agent/source.txt",
+                        "source_path": source_path,
+                    }
+                ],
+            }
+        )
+
+    assert admin_service.calls == []
+
+
+def test_vm_copy_files_template_source_rejects_outside_roots_before_rendering(
+    tmp_path: Path,
+) -> None:
+    admin_service = _AdminServiceStub([])
+    context = _build_context(tmp_path, admin_service)
+    provider = VmCopyFilesEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(id="copy-files", type="effect:vm:copy-files"),
+        runtime_context=context,
+    )
+
+    with pytest.raises(ValueError, match="outside approved host source roots"):
+        provider.normalize_resolved_config(
+            resolved_config={
+                "files": [
+                    {
+                        "destination_path": "/home/agent/passwd",
+                        "source_path": "/etc/passwd",
+                        "source_format": "template",
+                    }
+                ],
+            }
+        )
+
+    assert admin_service.calls == []
+
+
+@pytest.mark.parametrize(
+    ("source_path", "destination_path"),
+    [
+        (Path("templates/PLANS.md"), "/home/agent/PLANS.md"),
+        (Path("scripts/guest/setup_review_repo.sh"), "/home/agent/setup_review_repo.sh"),
+    ],
+)
+def test_vm_copy_files_provider_allows_repo_template_and_guest_script_roots(
+    source_path: Path,
+    destination_path: str,
+    tmp_path: Path,
+) -> None:
+    resolved_source = source_path.resolve()
+    admin_service = _AdminServiceStub(
+        [],
+        vm_copy_files_result={
+            "success": True,
+            "vm_name": "lab-vm-1",
+            "action": "vm_copy_files",
+            "message": "Copied 1 path(s) into lab-vm-1",
+            "copied_count": 1,
+            "copied_paths": [destination_path],
+        },
+    )
+    context = _build_context(tmp_path, admin_service)
+    provider = VmCopyFilesEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(id="copy-files", type="effect:vm:copy-files"),
+        runtime_context=context,
+    )
+
+    result = provider.execute(
+        resolved_config={
+            "target": "lab-vm-1",
+            "files": [
+                {
+                    "destination_path": destination_path,
+                    "source_path": str(source_path),
+                }
+            ],
+        }
+    )
+
+    assert result["success"] is True
+    assert admin_service.calls == [
+        {
+            "target": "lab-vm-1",
+            "files": [
+                {
+                    "source_path": str(resolved_source),
+                    "destination_path": destination_path,
+                    "content": None,
+                    "content_format": None,
+                    "mode": None,
+                    "overwrite": True,
+                }
+            ],
+            "vm_user": "agent",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "root_name",
+    [
+        "published-artifacts",
+        "communication-artifacts",
+    ],
+)
+def test_vm_copy_files_provider_allows_runtime_artifact_roots(
+    root_name: str,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / root_name / "blob.txt"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("artifact", encoding="utf-8")
+    admin_service = _AdminServiceStub(
+        [],
+        vm_copy_files_result={
+            "success": True,
+            "vm_name": "lab-vm-1",
+            "action": "vm_copy_files",
+            "message": "Copied 1 path(s) into lab-vm-1",
+            "copied_count": 1,
+            "copied_paths": ["/home/agent/blob.txt"],
+        },
+    )
+    context = _build_context(tmp_path, admin_service)
+    provider = VmCopyFilesEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(id="copy-files", type="effect:vm:copy-files"),
+        runtime_context=context,
+    )
+
+    result = provider.execute(
+        resolved_config={
+            "target": "lab-vm-1",
+            "files": [
+                {
+                    "destination_path": "/home/agent/blob.txt",
+                    "source_path": str(source_path),
+                }
+            ],
+        }
+    )
+
+    assert result["success"] is True
+    assert admin_service.calls[0]["files"][0]["source_path"] == str(source_path.resolve())
+
+
+def test_vm_copy_files_template_source_allows_repo_template_root(tmp_path: Path) -> None:
+    admin_service = _AdminServiceStub([])
+    context = _build_context(tmp_path, admin_service)
+    provider = VmCopyFilesEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(id="copy-files", type="effect:vm:copy-files"),
+        runtime_context=context,
+    )
+
+    rendered = provider.normalize_resolved_config(
+        resolved_config={
+            "files": [
+                {
+                    "destination_path": "/home/agent/PLANS.md",
+                    "source_path": "templates/PLANS.md",
+                    "source_format": "template",
+                }
+            ],
+        },
+        upstream_payload={},
+        declared_upstream_output_names={},
+    )
+
+    rendered_file = rendered["files"][0]
+    assert "source_path" not in rendered_file
+    assert rendered_file["content"]
+    assert admin_service.calls == []
 
 
 def test_vm_copy_files_provider_resolves_vm_by_session_id(tmp_path: Path) -> None:

@@ -1144,7 +1144,10 @@ def request_has_privileged_operations(
             require_permission(request, required_permission, directory_path=directory_path)
     except PermissionError:
         return False
-    return True
+    privileged_for_request = getattr(auth, "privileged_for_request", None)
+    if not callable(privileged_for_request):
+        return False
+    return bool(privileged_for_request(request))
 
 
 def json_error(

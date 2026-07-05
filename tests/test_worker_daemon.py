@@ -173,6 +173,85 @@ def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token
     assert response.status_code == 201
 
 
+@pytest.mark.parametrize("session_id", [".", ".."])
+def test_worker_session_paths_reject_dot_segments_before_creating_directories(
+    tmp_path: Path,
+    session_id: str,
+) -> None:
+    worker_root = tmp_path / "worker-root"
+    raw_root = worker_root / "sessions" / session_id
+    resolved_raw_root = raw_root.resolve(strict=False)
+
+    with pytest.raises(ValueError, match="session_id"):
+        WorkerSessionPaths.resolve(worker_root, session_id)
+
+    assert resolved_raw_root in {
+        worker_root.resolve(strict=False),
+        (worker_root / "sessions").resolve(strict=False),
+    }
+    assert not (worker_root / "agent_home").exists()
+    assert not (worker_root / "metadata.json").exists()
+    assert not (worker_root / "sessions").exists()
+
+
+def test_worker_api_rejects_dot_segment_session_and_job_ids_before_path_use(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeContainerRuntime()
+    client = _client(tmp_path, runtime)
+
+    responses = [
+        client.post("/v1/sessions", headers=_auth(), json={"session_id": ".."}),
+        client.post(
+            "/v1/jobs",
+            headers=_auth(),
+            json={
+                "session_id": "..",
+                "job_id": "job-1",
+                "image": "codex:latest",
+                "command": ["true"],
+            },
+        ),
+        client.post(
+            "/v1/jobs",
+            headers=_auth(),
+            json={
+                "session_id": "session-1",
+                "job_id": "..",
+                "image": "codex:latest",
+                "command": ["true"],
+            },
+        ),
+        client.post(
+            "/v1/sessions/%2E%2E/files",
+            headers=_auth(),
+            json={"files": [{"destination_path": "/home/agent/AGENTS.md", "content": "bad"}]},
+        ),
+        client.delete("/v1/sessions/%2E%2E", headers=_auth()),
+    ]
+
+    assert [response.status_code for response in responses] == [400, 400, 400, 400, 400]
+    assert runtime.started == []
+    worker_root = tmp_path / "worker-root"
+    assert not (worker_root / "agent_home").exists()
+    assert not (worker_root / "metadata.json").exists()
+
+
+def test_worker_api_allows_safe_dotted_session_ids(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session.1"},
+    )
+
+    assert response.status_code == 201
+    assert (
+        tmp_path / "worker-root" / "sessions" / "session.1" / "metadata.json"
+    ).is_file()
+
+
 def test_worker_api_telemetry_refresh_query_requests_blocking_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1108,6 +1187,32 @@ def test_mssql_database_endpoints_are_session_scoped_and_cleanup_on_delete(
     assert [item["logical_name"] for item in remaining.json()["databases"]] == ["app"]
 
 
+def test_mssql_database_endpoints_reject_dot_segment_session_ids(tmp_path: Path) -> None:
+    client = _client(
+        tmp_path,
+        mssql_enabled=True,
+        mssql_admin_password="AdminPassw0rd!",
+        mssql_sqlcmd_path="/bin/true",
+    )
+
+    created = client.post(
+        "/v1/sessions/%2E%2E/mssql/databases",
+        headers=_auth(),
+        json={"logical_name": "app"},
+    )
+    listed = client.get("/v1/sessions/%2E%2E/mssql/databases", headers=_auth())
+    dropped = client.delete(
+        "/v1/sessions/%2E%2E/mssql/databases/app",
+        headers=_auth(),
+    )
+
+    assert [created.status_code, listed.status_code, dropped.status_code] == [400, 400, 400]
+    assert all("session_id" in response.json()["error"] for response in (created, listed, dropped))
+    state_path = tmp_path / "runtime" / "mssql-state.json"
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {}
+    assert not (tmp_path / "worker-root" / "agent_home").exists()
+
+
 def test_mssql_cleanup_failure_blocks_session_file_deletion(tmp_path: Path) -> None:
     client = _client(
         tmp_path,
@@ -1170,6 +1275,32 @@ def test_session_file_write_rejects_paths_outside_worker_session_roots(tmp_path:
 
         assert response.status_code == 400
         assert "/home/agent" in response.json()["error"]
+
+
+@pytest.mark.parametrize(
+    "destination_path",
+    [
+        "/home/agent/./AGENTS.md",
+        "/home/agent/repos/../escape.txt",
+    ],
+)
+def test_session_file_write_rejects_dot_segment_destinations(
+    tmp_path: Path,
+    destination_path: str,
+) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={"files": [{"destination_path": destination_path, "content": "bad"}]},
+    )
+
+    assert response.status_code == 400
+    assert "dot, or parent segments" in response.json()["error"]
+    session_root = tmp_path / "worker-root" / "sessions" / "session-1"
+    assert not (session_root / "agent_home" / "AGENTS.md").exists()
+    assert not (session_root / "agent_home" / "escape.txt").exists()
 
 
 def test_session_file_write_rejects_symlink_escape_from_worker_roots(
@@ -1260,7 +1391,11 @@ def test_session_repo_clone_clones_into_named_repo_under_agent_home(tmp_path: Pa
     assert (checkout / "README.md").read_text(encoding="utf-8") == "hello\n"
 
 
-def test_session_repo_clone_rejects_unsafe_repo_name(tmp_path: Path) -> None:
+@pytest.mark.parametrize("repo_name", ["../escape", ".", ".."])
+def test_session_repo_clone_rejects_unsafe_repo_name(
+    tmp_path: Path,
+    repo_name: str,
+) -> None:
     source = tmp_path / "source-repo"
     source.mkdir()
     client = _client(tmp_path, allowed_git_source_prefixes=[str(source)])
@@ -1268,7 +1403,7 @@ def test_session_repo_clone_rejects_unsafe_repo_name(tmp_path: Path) -> None:
     response = client.post(
         "/v1/sessions/session-1/repo",
         headers=_auth(),
-        json={"repo_source": str(source), "repo_name": "../escape"},
+        json={"repo_source": str(source), "repo_name": repo_name},
     )
 
     assert response.status_code == 400

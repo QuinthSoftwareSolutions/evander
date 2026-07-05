@@ -188,6 +188,30 @@ class FakeExecutionBackend:
         return "destroy-result"
 
 
+def test_remote_shell_script_rejects_malicious_environment_key() -> None:
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        vm_helpers.remote_shell_script(
+            command="true",
+            environment={"BAD; touch /tmp/vm-exec-pwned #": "1"},
+        )
+
+
+def test_remote_shell_script_accepts_valid_environment_keys() -> None:
+    script = vm_helpers.remote_shell_script(
+        command=["printenv", "VALID_1"],
+        working_directory="/tmp/work dir",
+        environment={
+            "VALID_1": "two words; $(touch /tmp/vm-exec-pwned)",
+            "_EMPTY": "",
+        },
+    )
+
+    assert "export VALID_1='two words; $(touch /tmp/vm-exec-pwned)'" in script
+    assert "export _EMPTY=''" in script
+    assert "cd '/tmp/work dir'" in script
+    assert "printenv VALID_1" in script
+
+
 class FakeVmInventoryAdmin:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []

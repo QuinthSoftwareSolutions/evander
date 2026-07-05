@@ -55,7 +55,9 @@ from .models import (
     WorkerSessionRecord,
     WorkerSessionStorageTelemetry,
     WorkerTelemetryPayload,
+    ensure_resolved_path_within,
     now_utc,
+    validate_worker_component_id,
 )
 from .mssql import WorkerMssqlProvisioner, WorkerMssqlStore
 from .runtime import ContainerRuntime
@@ -746,14 +748,10 @@ class WorkerDaemon:
         )
 
     def read_session_artifact_text(self, session_id: str, relative_path: str) -> str:
-        normalized_session_id = str(session_id or "").strip()
-        if not normalized_session_id:
-            raise ValueError("session_id is required")
-        if not SAFE_ID_PATTERN.fullmatch(normalized_session_id):
-            raise ValueError(
-                "session_id must contain only letters, numbers, dots, underscores, or dashes"
-            )
-        root = self.worker_root / "sessions" / normalized_session_id / "artifacts"
+        _normalized_session_id, _sessions_root, session_root = (
+            WorkerSessionPaths.resolve_session_root(self.worker_root, session_id)
+        )
+        root = session_root / "artifacts"
         artifact_path = resolve_artifact_file(root, relative_path)
         try:
             return artifact_path.read_text(encoding="utf-8")
@@ -781,13 +779,9 @@ class WorkerDaemon:
         return self.mssql.drop_session(session_id)
 
     def delete_session(self, session_id: str) -> bool:
-        normalized_session_id = str(session_id or "").strip()
-        if not normalized_session_id:
-            raise ValueError("session_id is required")
-        if not SAFE_ID_PATTERN.fullmatch(normalized_session_id):
-            raise ValueError(
-                "session_id must contain only letters, numbers, dots, underscores, or dashes"
-            )
+        normalized_session_id, _sessions_root, session_root = (
+            WorkerSessionPaths.resolve_session_root(self.worker_root, session_id)
+        )
 
         mssql_cleanup = self.drop_mssql_session(normalized_session_id)
         removed_any = False
@@ -817,7 +811,6 @@ class WorkerDaemon:
                 ) from exc
             removed_any = True
 
-        session_root = self.worker_root / "sessions" / normalized_session_id
         try:
             if session_root.is_symlink() or session_root.is_file():
                 session_root.unlink()
@@ -1390,7 +1383,13 @@ class WorkerDaemon:
         repo_name: str,
     ) -> tuple[Path, bool]:
         self._ensure_allowed_git_source(repo_source)
+        repo_name = str(validate_worker_component_id(repo_name, field_name="repo_name"))
         target_dir = paths.repo_root / repo_name
+        ensure_resolved_path_within(
+            base=paths.repo_root,
+            candidate=target_dir,
+            description="repo target",
+        )
         if target_dir.is_symlink():
             raise ValueError(
                 f"repo target already exists and is not a directory: "
@@ -1413,6 +1412,11 @@ class WorkerDaemon:
                 f"/home/agent/repos/{repo_name}"
             )
         target_dir.mkdir(parents=True, exist_ok=True)
+        ensure_resolved_path_within(
+            base=paths.repo_root,
+            candidate=target_dir,
+            description="repo target",
+        )
         args = ["git", "clone"]
         if clone_branch:
             args.extend(["--branch", clone_branch])
@@ -1527,8 +1531,13 @@ class WorkerDaemon:
             if not normalized.startswith(prefix):
                 continue
             relative_text = normalized[len(prefix) :]
+            if any(part in {"", ".", ".."} for part in relative_text.split("/")):
+                raise ValueError(
+                    f"destination_path must not contain empty, dot, or parent "
+                    f"segments below {container_root}"
+                )
             relative = Path(relative_text)
-            if relative.is_absolute() or ".." in relative.parts:
+            if relative.is_absolute():
                 raise ValueError(f"destination_path must stay below {container_root}")
             return host_root, relative, f"{container_root}/{relative.as_posix()}"
         raise ValueError("destination_path must be under /home/agent")

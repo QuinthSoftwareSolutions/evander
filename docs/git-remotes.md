@@ -22,15 +22,18 @@ evander-cli directories config-set --domain issue_setup root "{\"git_root\": \"$
 ```
 
 This creates a bare repository under `EVANDER_GIT_ROOT` and prints the SSH remote URL for the VM.
-Before a guest can clone or push without prompting for your host password, bootstrap guest Git SSH once:
+Before a guest can push without prompting for your host password, bootstrap guest Git SSH with the
+repo and session namespace that should be writable:
 
 ```bash
-./scripts/bootstrap_git_vm.sh vm-real
+EVANDER_GIT_REPO=sample-repo EVANDER_GIT_SESSION_ID=<session-id> ./scripts/bootstrap_git_vm.sh vm-real
 ```
 
 That creates a dedicated guest SSH key, installs a restricted forced-command entry in your host
-`authorized_keys`, and configures the guest to use the host alias
-`evander-git-host` by default.
+`authorized_keys`, and configures the guest to use the host alias `evander-git-host` by default.
+The key can only push to `refs/heads/agents/<session-id>/...` in that repo. If repo/session metadata
+is not available, the helper installs read-only Git access instead; set
+`EVANDER_GIT_REQUIRE_WRITE_METADATA=1` to fail rather than install a read-only key.
 
 If you want to mirror the default host repo into an issue-specific bare remote using the project
 naming convention, use:
@@ -67,7 +70,9 @@ If you want the shortest host-side setup path for an issue VM, combine both step
 `mirror_issue_repo.sh`. VM creation is now separate; after the VM is up, clone the mirrored repo
 with `evander-cli clone-repo-into-vm`.
 
-That bootstraps guest Git SSH and refreshes the `14084_repo.git` host mirror in one command.
+That bootstraps guest Git SSH and refreshes the `14084_repo.git` host mirror in one command. The
+helper binds writable SSH access to `14084_repo.git` and uses the guest session env for the
+`agents/<session-id>/...` namespace when it is available.
 
 That derives:
 
@@ -276,7 +281,8 @@ remotes through `gh`.
 
 - This assumes the VM can SSH to the host over the private libvirt network.
 - `bootstrap_git_vm.sh` avoids giving guests your host password and restricts the installed SSH key
-  to Git transport commands only.
+  to Git transport commands only. Writable keys are also bound to one bare repo and one
+  `refs/heads/agents/<session-id>/...` prefix; keys without repo/session metadata are read-only.
 - `promote_agent_branch.sh` intentionally refuses to overwrite an existing local review branch.
 - `open_agent_pr.sh` uses a normal push for non-review branches.
 - For `review/*` branches it uses `--force-with-lease` after first refreshing the exact remote-tracking ref on the push remote, so reused review branches stay safe without stale-lease failures.

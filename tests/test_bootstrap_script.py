@@ -79,7 +79,10 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "if [ -f ~/.agent/config.env ]; then" in script
     assert "if [ -f /etc/agent-sandbox/session.env ]; then" in script
     assert "if [ -f /etc/evander/session.env ]; then" in script
-    assert 'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in script
+    assert (
+        'export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"'
+        in script
+    )
     assert (
         'CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}}"'
         in script
@@ -96,6 +99,13 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "append_evander_mcp_query() {" in script
     assert 'CODEX_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"' in script
     assert 'query["mcp_session_token"] = token' in script
+    assert (
+        'export OPENAI_API_KEY="\\${OPENAI_API_KEY:-\\${EVANDER_MCP_SESSION_TOKEN:-\\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"'
+        in script
+    )
+    assert 'line.strip().startswith("export OPENAI_API_KEY=")' in script
+    assert "and \"relay-placeholder\" in line" in script
+    assert "if ! grep -q 'export OPENAI_API_KEY='" in script
     assert (
         'CODEX_GATEWAY_URL="$(append_evander_mcp_query "${CODEX_GATEWAY_URL}" "${CODEX_SESSION_ID}" "${CODEX_MCP_SESSION_TOKEN}")'
         in script
@@ -128,7 +138,8 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
     assert "cat > ~/bin/gh <<SHIM" in script
     assert 'COPILOT_HOST_AUTH_URL="${COPILOT_GATEWAY_BASE_URL}/copilot-auth/token"' in script
     assert (
-        'python3 - "${COPILOT_HOST_AUTH_URL}" "\\${session_id}" <<\'PY\'' in script
+        'python3 - "${COPILOT_HOST_AUTH_URL}" "\\${session_id}" "\\${mcp_session_token}" <<\'PY\''
+        in script
     )
     assert 'if [ -f /etc/agent-sandbox/session.env ]; then' in script
     assert 'if [ -f /etc/evander/session.env ]; then' in script
@@ -136,6 +147,11 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
     assert 'session_id="\\${AGENT_SANDBOX_SESSION_ID:-}"' in script
     assert 'session_id="${COPILOT_SESSION_ID}"' in script
     assert '"X-Evander-Session-Id": session_id' in script
+    assert (
+        'local mcp_session_token="\\${EVANDER_MCP_SESSION_TOKEN:-\\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"'
+        in script
+    )
+    assert 'headers["X-Evander-MCP-Session-Token"] = mcp_session_token' in script
     assert "gh auth token" in script
     assert '"mcpServers": {' in script
     assert '"evander": {' in script
@@ -163,6 +179,11 @@ def test_launch_script_can_derive_public_key_from_private_key() -> None:
 
     assert (
         'HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL:-http://192.168.250.1:11777}"'
+        in script
+    )
+    assert "append_evander_mcp_path_token() {" in script
+    assert (
+        'HTTP_TARGET_RELAY_BASE_URL="$(append_evander_mcp_path_token "${HTTP_TARGET_RELAY_BASE_URL}" "${MCP_SESSION_TOKEN}")'
         in script
     )
     assert (
@@ -224,6 +245,10 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
     assert 'CLAUDE_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"' in script
     assert 'query["mcp_session_token"] = token' in script
     assert (
+        '"ANTHROPIC_AUTH_TOKEN": "${CLAUDE_MCP_SESSION_TOKEN:-relay-placeholder}"'
+        in script
+    )
+    assert (
         'CLAUDE_GATEWAY_URL="$(append_evander_mcp_query "${CLAUDE_GATEWAY_URL}" "${CLAUDE_SESSION_ID}" "${CLAUDE_MCP_SESSION_TOKEN}")'
         in script
     )
@@ -234,6 +259,8 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
     assert '"type": "http"' in script
     assert '"tools": ["*"]' in script
     assert 'export AGENT_PROVIDER="${AGENT_PROVIDER:-claude}"' in script
+    assert 'line.strip().startswith("export ANTHROPIC_AUTH_TOKEN=")' in script
+    assert "and \"relay-placeholder\" in line" in script
     assert "repair_missing_profile_fi" in script
     assert 'if [ -f "$HOME/.claude/settings.json" ]; then' in script
     assert 'line == line.lstrip() and stripped.startswith("export ")' in script

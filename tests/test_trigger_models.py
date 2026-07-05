@@ -1105,6 +1105,7 @@ def test_http_request_effect_defaults_to_allow_any_url_pattern() -> None:
     )
 
     assert effect.allowed_url_patterns == ["*"]
+    assert effect.allow_private_networks is False
 
 
 def test_http_request_effect_rejects_invalid_static_method() -> None:

@@ -2626,7 +2626,7 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
         '[projects."/home/agent"]\n'
         'trust_level = "trusted"\n'
     )
-    assert "OPENAI_API_KEY=\"${OPENAI_API_KEY:-relay-placeholder}\"" in by_path[
+    assert "OPENAI_API_KEY=\"${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}\"" in by_path[
         "/home/agent/.profile"
     ]
     assert "azure_openai_endpoint" not in combined_content
@@ -2693,6 +2693,64 @@ def test_container_session_files_include_claude_provider_config() -> None:
         "    }\n"
         "  }\n"
         "}\n"
+    )
+
+
+def test_container_session_files_propagate_mcp_token_to_relay_clients() -> None:
+    config = GatewayConfig(
+        runtime_dir=Path("/tmp/runtime"),
+        audit_log_path=Path("/tmp/runtime/audit.jsonl"),
+        session_store_path=Path("/tmp/runtime/sessions.json"),
+        approval_store_path=Path("/tmp/runtime/approvals.json"),
+        draft_store_path=Path("/tmp/runtime/drafts.json"),
+        email_store_path=Path("/tmp/runtime/emails.json"),
+        discord_command_store_path=Path("/tmp/runtime/discord.json"),
+        gateway_url="http://relay.test:8000/mcp",
+        container_worker_guest_openai_base_url="http://relay.test:11434/v1",
+        container_worker_guest_anthropic_base_url="http://relay.test:11434",
+        container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
+    )
+
+    files = build_container_session_files(
+        config=config,
+        session_id="session-1",
+        model="gpt-5.4",
+        agent_provider="codex",
+        web_search_enabled=False,
+        dotnet=False,
+        nuget=False,
+        playwright=False,
+        mcp_session_token="correct-token",
+    )
+    by_path = {entry["destination_path"]: entry["content"] for entry in files}
+
+    assert (
+        'base_url = "http://relay.test:11434/v1/session/session-1"'
+        in by_path["/home/agent/.codex/config.toml"]
+    )
+    assert (
+        '"ANTHROPIC_AUTH_TOKEN": "correct-token"'
+        in by_path["/home/agent/.claude/settings.json"]
+    )
+    assert (
+        '"ANTHROPIC_BASE_URL": "http://relay.test:11434/session/session-1"'
+        in by_path["/home/agent/.claude/settings.json"]
+    )
+    assert (
+        'url = "http://relay.test:8000/mcp?session_id=session-1&mcp_session_token=correct-token"'
+        in by_path["/home/agent/.codex/config.toml"]
+    )
+    assert (
+        "HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777/auth/correct-token\n"
+        in by_path["/home/agent/.evander/session.env"]
+    )
+    assert (
+        "EVANDER_MCP_SESSION_TOKEN=correct-token\n"
+        in by_path["/home/agent/.evander/session.env"]
+    )
+    assert (
+        'export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"'
+        in by_path["/home/agent/.profile"]
     )
 
 
@@ -3935,41 +3993,47 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "/home/agent/.evander/session.env" in bootstrap_by_path
     assert "/home/agent/.config/pip/pip.conf" in bootstrap_by_path
     assert "/home/agent/.npmrc" in bootstrap_by_path
+    session_env = bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
+    mcp_token_line = next(
+        line for line in session_env.splitlines() if line.startswith("EVANDER_MCP_SESSION_TOKEN=")
+    )
+    mcp_session_token = mcp_token_line.split("=", 1)[1]
+    assert mcp_session_token
     assert (
         "EVANDER_SESSION_ID=session-1"
-        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
+        in session_env
     )
     assert (
         "EVANDER_ARTIFACTS_DIR=/artifacts"
-        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
+        in session_env
     )
     assert (
-        "HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777"
-        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
+        f"HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777/auth/{mcp_session_token}"
+        in session_env
     )
     assert (
-        "EVANDER_HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777"
-        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
+        f"EVANDER_HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777/auth/{mcp_session_token}"
+        in session_env
     )
     assert (
         "PIP_INDEX_URL=http://nexus.test:8081/repository/pypi-all/simple"
-        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
+        in session_env
     )
     assert (
         "NPM_CONFIG_REGISTRY=http://nexus.test:8081/repository/npm-all/"
-        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
+        in session_env
     )
     assert (
         "GIT_TERMINAL_PROMPT=0"
-        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
+        in session_env
     )
     assert (
         "GIT_HTTP_LOW_SPEED_LIMIT=1"
-        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
+        in session_env
     )
     assert (
         "GIT_HTTP_LOW_SPEED_TIME=15"
-        in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
+        in session_env
     )
     assert (
         "trusted-host = nexus.test"

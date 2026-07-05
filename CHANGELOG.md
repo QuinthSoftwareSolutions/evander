@@ -1,5 +1,71 @@
 # Changelog
 
+## 2026-07-05 - Review Follow-up Security Fixes
+
+- Blocked IPv4-mapped metadata IP addresses in workflow HTTP request destination checks.
+- Scoped Admin Web approval decision and revoke authorization to the approval request directory.
+- Scoped Admin Web VM, issue, agent, and directory-creation owner checks to the
+  target directory so child-directory owners can mutate their own scope after
+  unlock.
+- Tried every vetted public DNS address for workflow HTTP requests so an
+  unreachable first record does not block later approved addresses.
+- Scoped Admin Web session and wake-schedule mutation owner checks to the
+  target session directory.
+- Required Admin Web VM actions to authorize every linked directory, preserved
+  the ambiguous libvirt agent-delete error path, and kept orphaned wake
+  schedules cleanable through their stored directory.
+
+## 2026-07-05 - Tokenized Relay Security Fixes
+
+- Stripped referrer headers from tokenized HTTP target relay requests before
+  proxying to upstream targets.
+- Pinned workflow HTTP request effects to an address approved by destination
+  policy checks so later DNS rebinding cannot change the outbound connection.
+- Updated Copilot, Codex, and Claude guest bootstraps to preserve MCP
+  session-token auth on rebootstrap.
+
+## 2026-07-05 - Relay Session Token Compatibility
+
+- Generated tokenized agent model and HTTP target relay URLs that carry the
+  MCP session token without forwarding it to upstream providers or targets.
+- Resolved hostname and numeric HTTP request destinations before approving
+  public-only workflow requests so DNS aliases to private or metadata
+  addresses are blocked.
+
+## 2026-07-05 - Workflow Effect Source Guards
+
+- Blocked `effect:http:request` private, loopback, link-local, and metadata
+  destinations by default, including URLs resolved from workflow bindings.
+- Required bound HTTP request URLs to use explicit host-restricted allowlists
+  and added an `allow_private_networks` opt-in for trusted private endpoints.
+- Restricted copy-file `source_path` reads to repo deployment assets and
+  runtime artifact stores by default, with `allowed_source_roots` for explicit
+  additional host roots.
+
+## 2026-07-05 - Git SSH Repo And Session Push Scope
+
+- Bound writable guest Git SSH keys to one bare repo and one
+  `refs/heads/agents/<session-id>/...` namespace, with read-only bootstrap
+  fallback when repo/session metadata is unavailable.
+
+## 2026-07-05 - VM Exec Environment Validation
+
+- Rejected VM exec and guest environment variable names that are not strict
+  shell identifiers before rendering shell export or cloud-init environment
+  lines.
+
+## 2026-07-05 - Admin Web Secret Placement
+
+- Defaulted the Admin Web listener to localhost and documented keeping active
+  Admin Web password/session secrets outside repo-local config files.
+- Loaded `/etc/evander/local-secrets.env` from the Admin Web systemd unit so
+  deployments can keep local secrets out of `config/admin-web.env`.
+
+## 2026-07-05 - Admin Web Privileged Lock Enforcement
+
+- Required the current Admin Web privileged unlock state before helper-gated
+  backend routes accept privileged mutations.
+
 ## 2026-07-05 - Dashboard Directory Cache Scope
 
 - Scoped Admin Web dashboard conditional-response payloads to the same request

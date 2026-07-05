@@ -6,6 +6,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, field_validator
 
+from evander.admin.services.vm_helpers import validate_environment_variable_name
 from evander.bootstrap import load_runtime_gateway_config
 from evander.config import GatewayConfig, load_config
 from evander.directory_config import (
@@ -176,7 +177,7 @@ def render_vm_defaults_exports(
     else:
         vm_defaults = resolver.resolve_for_directory(fallback_directory)
     return "\n".join(
-        f"export {key}={shlex.quote(value)}"
+        f"export {validate_environment_variable_name(key)}={shlex.quote(value)}"
         for key, value in sorted(vm_defaults.guest_environment().items())
     )
 

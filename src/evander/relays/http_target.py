@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 import uvicorn
@@ -15,6 +15,11 @@ from evander.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from evander.config import GatewayConfig
 from evander.models import HttpTargetMetadata, SessionManifest
 from evander.provider_config import ProviderConfigResolver
+from evander.session_auth import (
+    MCP_SESSION_TOKEN_HEADER_NAMES,
+    MCP_SESSION_TOKEN_QUERY_PARAM_NAMES,
+    verify_mcp_session_token,
+)
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -28,7 +33,10 @@ HOP_BY_HOP_HEADERS = {
     "trailers",
     "transfer-encoding",
     "upgrade",
+    *MCP_SESSION_TOKEN_HEADER_NAMES,
 }
+
+MCP_SESSION_TOKEN_REQUIRED_MESSAGE = "MCP session token is required for this session"
 
 
 class HttpTargetRelay:
@@ -59,6 +67,8 @@ class HttpTargetRelay:
         async def proxy(request: Request) -> Response:
             try:
                 resolved_config, http_target = relay._resolve_request_target(request)
+            except PermissionError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=401)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=404)
 
@@ -68,11 +78,7 @@ class HttpTargetRelay:
                 query_items=request.query_params.multi_items(),
             )
             request_body = await request.body()
-            headers = {
-                key: value
-                for key, value in request.headers.items()
-                if key.lower() not in HOP_BY_HOP_HEADERS
-            }
+            headers = relay._request_headers_for_upstream(request)
             headers["accept-encoding"] = "identity"
 
             async with httpx.AsyncClient(
@@ -93,6 +99,10 @@ class HttpTargetRelay:
                         base_url=http_target.base_url,
                         session_id=request.path_params["session_id"],
                         alias=request.path_params["alias"],
+                        mcp_session_token=relay._mcp_session_token_from_path(request),
+                        mcp_session_query_token=relay._mcp_session_token_from_query(
+                            request
+                        ),
                     )
                     if redirect_location is None:
                         return JSONResponse(
@@ -115,6 +125,16 @@ class HttpTargetRelay:
             routes=[
                 Route("/healthz", health, methods=["GET"]),
                 Route(
+                    "/auth/{mcp_session_token}/session/{session_id}/target/{alias}",
+                    proxy,
+                    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+                ),
+                Route(
+                    "/auth/{mcp_session_token}/session/{session_id}/target/{alias}/{path:path}",
+                    proxy,
+                    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+                ),
+                Route(
                     "/session/{session_id}/target/{alias}",
                     proxy,
                     methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
@@ -131,6 +151,7 @@ class HttpTargetRelay:
         session_id = self._session_id_from_path_params(request.path_params)
         alias = self._alias_from_path_params(request.path_params)
         session = self.provider_config_resolver.get_session_manifest(session_id)
+        self._ensure_mcp_session_token(session, request)
         http_target = self._http_target_for_alias(session, alias)
         resolved_config = self.provider_config_resolver.resolve_for_session_manifest(session)
         return resolved_config, http_target
@@ -156,6 +177,39 @@ class HttpTargetRelay:
         except ValueError as exc:
             raise ValueError(f"session {session.session_id} {exc}") from exc
 
+    @classmethod
+    def _ensure_mcp_session_token(cls, session: SessionManifest, request: Request) -> None:
+        if verify_mcp_session_token(session, cls._mcp_session_token_from_request(request)):
+            return
+        raise PermissionError(MCP_SESSION_TOKEN_REQUIRED_MESSAGE)
+
+    @staticmethod
+    def _mcp_session_token_from_request(request: Request) -> str | None:
+        token = HttpTargetRelay._mcp_session_token_from_query(request)
+        if token:
+            return token
+        token = HttpTargetRelay._mcp_session_token_from_path(request)
+        if token:
+            return token
+        for name in MCP_SESSION_TOKEN_HEADER_NAMES:
+            token = str(request.headers.get(name) or "").strip()
+            if token:
+                return token
+        return None
+
+    @staticmethod
+    def _mcp_session_token_from_query(request: Request) -> str | None:
+        for name in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES:
+            token = str(request.query_params.get(name) or "").strip()
+            if token:
+                return token
+        return None
+
+    @staticmethod
+    def _mcp_session_token_from_path(request: Request) -> str | None:
+        token = str(request.path_params.get("mcp_session_token") or "").strip()
+        return token or None
+
     @staticmethod
     def _response_headers(
         response: httpx.Response,
@@ -171,9 +225,29 @@ class HttpTargetRelay:
             headers["location"] = redirect_location
         return headers
 
+    @classmethod
+    def _request_headers_for_upstream(cls, request: Request) -> dict[str, str]:
+        blocked_headers = set(HOP_BY_HOP_HEADERS)
+        if cls._request_has_mcp_session_token(request):
+            blocked_headers.update({"referer", "referrer"})
+        return {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in blocked_headers
+        }
+
+    @classmethod
+    def _request_has_mcp_session_token(cls, request: Request) -> bool:
+        return cls._mcp_session_token_from_request(request) is not None
+
     @staticmethod
     def _filtered_query_string(query_items: list[tuple[str, str]]) -> str:
-        return urlencode(query_items, doseq=True)
+        filtered = [
+            (key, value)
+            for key, value in query_items
+            if key not in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES
+        ]
+        return urlencode(filtered, doseq=True)
 
     @classmethod
     def _upstream_http_url(
@@ -196,6 +270,8 @@ class HttpTargetRelay:
         base_url: str,
         session_id: str,
         alias: str,
+        mcp_session_token: str | None = None,
+        mcp_session_query_token: str | None = None,
     ) -> str | None:
         if not location:
             return location
@@ -218,8 +294,19 @@ class HttpTargetRelay:
         )
         if relay_upstream_path is None:
             return None
-        relay_path = f"/session/{session_id}/target/{alias}{relay_upstream_path}"
-        return urlunsplit(("", "", relay_path, location_parts.query, location_parts.fragment))
+        auth_prefix = (
+            f"/auth/{quote(mcp_session_token, safe='')}" if mcp_session_token else ""
+        )
+        relay_path = f"{auth_prefix}/session/{session_id}/target/{alias}{relay_upstream_path}"
+        relay_query = location_parts.query
+        if mcp_session_query_token:
+            query_items = parse_qsl(relay_query, keep_blank_values=True)
+            if not any(key in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES for key, _ in query_items):
+                query_items.append(
+                    (MCP_SESSION_TOKEN_QUERY_PARAM_NAMES[0], mcp_session_query_token)
+                )
+                relay_query = urlencode(query_items, doseq=True)
+        return urlunsplit(("", "", relay_path, relay_query, location_parts.fragment))
 
     @staticmethod
     def _strip_target_base_path(path: str, *, base_path: str) -> str | None:

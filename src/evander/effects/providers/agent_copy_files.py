@@ -28,6 +28,7 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
             "session_id": effect.session_id,
             "vm_name": effect.vm_name,
             "vm_user": effect.vm_user,
+            "allowed_source_roots": effect.allowed_source_roots,
             "files": [
                 entry.model_dump(mode="json", exclude_none=True) for entry in effect.files
             ],
@@ -35,12 +36,20 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
         if resolved_config:
             payload.update(dict(resolved_config))
 
+        allowed_source_roots = self._approved_source_roots(
+            payload.get("allowed_source_roots"),
+            effect_type="effect:agent:copy-files",
+        )
         directory_path = str(context.metadata.get("directory_path") or "root")
         execution_backend, config = selected_execution_backend_for_target(
             context, payload, directory_path=directory_path
         )
         if execution_backend == "libvirt_vm":
-            return self._execute_libvirt(payload, execution_backend=execution_backend)
+            return self._execute_libvirt(
+                payload,
+                execution_backend=execution_backend,
+                allowed_source_roots=allowed_source_roots,
+            )
         if execution_backend != "container_worker_vm":
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
 
@@ -55,7 +64,11 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
             session_id,
             fallback_directory_path=getattr(session, "directory_path", directory_path),
         )
-        files = self._normalize_file_entries(payload.get("files"))
+        files = self._normalize_file_entries(
+            payload.get("files"),
+            allowed_source_roots=allowed_source_roots,
+            effect_type="effect:agent:copy-files",
+        )
         if not files:
             raise ValueError("effect:agent:copy-files requires at least one file entry")
         worker_files = [self._worker_file_entry(entry) for entry in files]
@@ -65,7 +78,10 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
         )
         return {
             "success": True,
-            "message": f"Copied {result.copied_count} file(s) into container worker session {session_id}",
+            "message": (
+                f"Copied {result.copied_count} file(s) into container worker "
+                f"session {session_id}"
+            ),
             "session_id": session_id,
             "execution_backend": "container_worker_vm",
             "vm_name": None,
@@ -73,12 +89,22 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
             "copied_paths": result.copied_paths,
         }
 
-    def _execute_libvirt(self, payload: dict[str, Any], *, execution_backend: str) -> dict[str, Any]:
+    def _execute_libvirt(
+        self,
+        payload: dict[str, Any],
+        *,
+        execution_backend: str,
+        allowed_source_roots: list[Path],
+    ) -> dict[str, Any]:
         context = self._context()
         vm_name, session_id = resolve_vm_target(
             context, payload, effect_type="effect:agent:copy-files"
         )
-        files = self._normalize_file_entries(payload.get("files"))
+        files = self._normalize_file_entries(
+            payload.get("files"),
+            allowed_source_roots=allowed_source_roots,
+            effect_type="effect:agent:copy-files",
+        )
         vm_user = normalize_optional_string(payload.get("vm_user")) or "agent"
         explicit_vm_ip = normalize_optional_string(payload.get("vm_ip"))
         if explicit_vm_ip:

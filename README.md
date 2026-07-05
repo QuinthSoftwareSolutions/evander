@@ -266,8 +266,11 @@ sudo systemctl start evander-scheduled-wake.service
 For fresh-host Ubuntu 24.04 deployment paths that wrap this same repo-native flow with Ansible,
 including the dedicated container-worker VM playbook, see `ansible/README.md`.
 
-When you expose `evander-admin-web` beyond localhost, configure auth in `config/admin-web.env`
-and put TLS plus ingress policy in front of the service.
+`evander-admin-web` binds to localhost by default. Keep active Admin Web
+passwords and session secrets in `/etc/evander/local-secrets.env` or another
+service-manager secret source rather than `config/admin-web.env`. When you
+expose it beyond localhost, configure auth, set `EVANDER_ADMIN_WEB_COOKIE_SECURE=true`
+behind HTTPS, and put TLS plus ingress policy in front of the service.
 
 ## Admin Web Operations Dashboard
 
@@ -666,9 +669,11 @@ SHA for auditability.
 refreshes the issue-numbered host mirror in one command. The lower-level
 `bootstrap_git_vm.sh` helper installs a dedicated guest SSH key and a restricted host
 `authorized_keys` entry so guests can push Git branches without needing your host password or
-general shell access. Issue mirrors also carry a `post-receive` hook so host-side automation can
-promote pushed `agents/...` branches into the trusted clone, push the review branch to `origin`,
-and create the upstream PR automatically.
+general shell access. Writable guest keys are bound to one bare repo and
+`refs/heads/agents/<session-id>/...` namespace; if the helper cannot determine repo/session
+metadata, it installs read-only Git access instead. Issue mirrors also carry a `post-receive`
+hook so host-side automation can promote pushed `agents/...` branches into the trusted clone, push
+the review branch to `origin`, and create the upstream PR automatically.
 Issue mirrors also remember their source settings, so later guest `git fetch` / `git pull`
 operations can trigger a host-side mirror refresh before the read is served.
 

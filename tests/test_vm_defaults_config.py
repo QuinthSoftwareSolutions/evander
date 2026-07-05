@@ -260,6 +260,30 @@ def test_render_vm_defaults_exports_uses_session_scope_and_shell_exports(tmp_pat
     assert "export NUGET_RELAY_BASE_URL=http://10.0.0.8:13000" in exports
 
 
+def test_render_vm_defaults_exports_rejects_malicious_environment_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BadVmDefaults:
+        def guest_environment(self) -> dict[str, str]:
+            return {"BAD; touch /tmp/vm-defaults-pwned #": "1"}
+
+    class BadResolver:
+        def __init__(self, config: GatewayConfig) -> None:
+            self.config = config
+
+        def resolve_for_directory(self, directory_path: str | None) -> BadVmDefaults:
+            return BadVmDefaults()
+
+        def resolve_for_session_id(self, session_id: str) -> BadVmDefaults:
+            return BadVmDefaults()
+
+    monkeypatch.setattr("evander.vm.defaults_config.VmDefaultsConfigResolver", BadResolver)
+
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        render_vm_defaults_exports(runtime_dir=tmp_path / "runtime")
+
+
 def test_vm_defaults_resolver_supports_provider_and_azure_overlay(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")

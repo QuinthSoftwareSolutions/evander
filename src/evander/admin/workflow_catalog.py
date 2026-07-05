@@ -16,22 +16,8 @@ from evander.events.models import (
     TriggerDefinitionDiscriminated,
     materialize_node_definition,
 )
-from evander.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
-from evander.models import (
-    DirectoryPath,
-    McpToolName,
-    ToolName,
-    normalize_approval_tool_settings,
-    normalize_tool_name,
-    tool_name_value,
-)
-from evander.services import (
-    normalize_teams_channel_or_target_refs,
-    normalize_teams_chat_or_target_refs,
-    normalize_teams_user_or_target_refs,
-    parse_teams_target,
-)
-from evander.worker.security import sanitize_text
+from evander.models import ToolName
+from evander.services import parse_teams_target
 from evander.workflow.catalog import (
     WorkflowEditorFieldDefinition,
     WorkflowEditorFieldOption,
@@ -2249,6 +2235,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Guest user for libvirt-backed copies. Defaults to agent.",
             ),
             _field(
+                "allowed_source_roots",
+                "Allowed source roots",
+                "string_list",
+                bindable=True,
+                description=(
+                    "Optional absolute host roots allowed for Source path beyond the "
+                    "built-in repo template/script and artifact roots."
+                ),
+            ),
+            _field(
                 "files",
                 "Files",
                 "object_list",
@@ -2771,8 +2767,19 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 default_value=["*"],
                 placeholder="https://api.example.test/*",
                 description=(
-                    "Shell-style URL or host patterns allowed for this request. "
-                    "Use '*' to allow any HTTP or HTTPS target."
+                    "Shell-style URL or host patterns allowed for this request. Bound URLs "
+                    "require explicit host-restricted patterns."
+                ),
+            ),
+            _field(
+                "allow_private_networks",
+                "Allow private networks",
+                "boolean",
+                bindable=True,
+                default_value=False,
+                description=(
+                    "When enabled, allow private, loopback, and link-local destinations that "
+                    "also match Allowed URL patterns. Metadata destinations remain blocked."
                 ),
             ),
             _field(
@@ -2895,6 +2902,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
+            _field(
+                "allowed_source_roots",
+                "Allowed source roots",
+                "string_list",
+                bindable=True,
+                description=(
+                    "Optional absolute host roots allowed for Source path beyond the "
+                    "built-in repo template/script and artifact roots."
+                ),
+            ),
             _field(
                 "files",
                 "Files",

@@ -133,7 +133,7 @@ class ModelUsageAdminService:
             "revision": None,
             "catalog": _empty_model_pricing_catalog_payload(),
             "editable": path is not None,
-            "write_requires_privileged_unlock": False,
+            "write_requires_privileged_unlock": True,
             "error": None,
             "error_class": None,
         }

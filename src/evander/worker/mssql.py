@@ -10,7 +10,6 @@ from pathlib import Path
 from evander.storage import JsonStore
 
 from .models import (
-    SAFE_ID_PATTERN,
     WorkerMssqlDatabaseDeleteRecord,
     WorkerMssqlDatabaseListRecord,
     WorkerMssqlDatabaseRecord,
@@ -18,6 +17,7 @@ from .models import (
     WorkerMssqlDatabaseState,
     WorkerMssqlSessionDeleteRecord,
     WorkerMssqlSessionState,
+    validate_worker_component_id,
 )
 from .security import safe_subprocess_error
 
@@ -260,12 +260,7 @@ END;
 
 
 def _validate_session_id(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        raise ValueError("session_id is required")
-    if not SAFE_ID_PATTERN.fullmatch(text):
-        raise ValueError("session_id must contain only letters, numbers, dots, underscores, or dashes")
-    return text
+    return str(validate_worker_component_id(value, field_name="session_id"))
 
 
 def _database_name(session_id: str, logical_name: str) -> str:

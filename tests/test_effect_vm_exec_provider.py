@@ -107,6 +107,41 @@ def test_vm_exec_provider_calls_admin_service_with_resolved_session_target(tmp_p
     assert result["stdout"] == "hello\n"
 
 
+def test_vm_exec_provider_rejects_malicious_environment_key_before_admin_exec(tmp_path) -> None:
+    session = SessionManifest(
+        session_id="session-1",
+        vm_id="lab-vm-1",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    admin_service = _AdminServiceStub(
+        sessions={"session-1": session},
+        vm_exec_result={
+            "success": True,
+            "vm_name": "lab-vm-1",
+            "action": "vm_exec",
+            "message": "ok",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+        },
+        calls=[],
+    )
+    provider = VmExecEffectProvider()
+    provider.initialize(_effect_definition(), _runtime_context(admin_service, tmp_path))
+
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        provider.execute(
+            resolved_config={
+                "session_id": "session-1",
+                "command": "true",
+                "environment": {"BAD; touch /tmp/vm-exec-pwned #": "1"},
+            }
+        )
+
+    assert admin_service.calls == []
+
+
 def test_vm_exec_provider_uses_vm_name_fallback_session_id(tmp_path) -> None:
     admin_service = _AdminServiceStub(
         sessions={},
@@ -264,6 +299,37 @@ def test_vm_exec_provider_uses_ssh_fallback_session_id(tmp_path, monkeypatch) ->
     assert result["success"] is True
     assert result["vm_name"] == "lab-vm-ssh"
     assert result["session_id"] == "session-lab-vm-ssh"
+
+
+def test_vm_exec_provider_remote_script_rejects_malicious_environment_key() -> None:
+    provider = VmExecEffectProvider()
+
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        provider._build_remote_script(
+            command="true",
+            working_directory=None,
+            env={"BAD; touch /tmp/vm-exec-pwned #": "1"},
+            stdin=None,
+        )
+
+
+def test_vm_exec_provider_remote_script_accepts_valid_environment_keys() -> None:
+    provider = VmExecEffectProvider()
+
+    script = provider._build_remote_script(
+        command="printenv VALID_1",
+        working_directory="/tmp/work dir",
+        env={
+            "VALID_1": "two words; $(touch /tmp/vm-exec-pwned)",
+            "_EMPTY": "",
+        },
+        stdin=None,
+    )
+
+    assert "cd '/tmp/work dir'" in script
+    assert "export VALID_1='two words; $(touch /tmp/vm-exec-pwned)'" in script
+    assert "export _EMPTY=''" in script
+    assert "printenv VALID_1" in script
 
 
 def test_vm_exec_provider_raises_when_checked_command_fails(tmp_path) -> None:

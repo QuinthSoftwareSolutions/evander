@@ -249,11 +249,48 @@ def test_setup_writes_admin_web_no_auth_config_without_placeholder_password(
     manager._write_config_files(state)
 
     admin_env = (config_dir / "admin-web.env").read_text(encoding="utf-8")
+    assert 'ADMIN_WEB_HOST="127.0.0.1"' in admin_env
     assert 'EVANDER_ADMIN_WEB_AUTH_MODE="none"' in admin_env
     assert 'EVANDER_ADMIN_WEB_USERNAME="operator"' in admin_env
     assert 'EVANDER_ADMIN_WEB_PASSWORD=""' in admin_env
     assert 'EVANDER_ADMIN_WEB_SESSION_SECRET=""' in admin_env
     assert "replace-with-real-password" not in admin_env
+
+
+def test_setup_writes_admin_web_password_secrets_outside_repo_config(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    config_dir = project_dir / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "admin-web.env.example").write_text(
+        (ROOT / "config" / "admin-web.env.example").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (config_dir / "firewall.env.example").write_text("", encoding="utf-8")
+    manager = SetupManager(project_dir=project_dir, runtime_dir=project_dir / "runtime")
+    state = manager.load_state()
+    state.secret_file = str(tmp_path / "local-secrets.env")
+    state = manager.configure_admin_web(
+        state,
+        host="127.0.0.1",
+        port="8100",
+        username="operator",
+        password="admin-secret",
+    )
+
+    manager._write_config_files(state)
+
+    admin_env = (config_dir / "admin-web.env").read_text(encoding="utf-8")
+    secret_text = (tmp_path / "local-secrets.env").read_text(encoding="utf-8")
+    assert 'ADMIN_WEB_HOST="127.0.0.1"' in admin_env
+    assert 'EVANDER_ADMIN_WEB_AUTH_MODE="local_password"' in admin_env
+    assert 'EVANDER_ADMIN_WEB_USERNAME="operator"' in admin_env
+    assert 'EVANDER_ADMIN_WEB_PASSWORD=""' in admin_env
+    assert 'EVANDER_ADMIN_WEB_SESSION_SECRET=""' in admin_env
+    assert "admin-secret" not in admin_env
+    assert "EVANDER_ADMIN_WEB_PASSWORD" in secret_text
+    assert "EVANDER_ADMIN_WEB_SESSION_SECRET" in secret_text
 
 
 def test_setup_writes_container_worker_token_secret_without_state_leak(

@@ -1350,6 +1350,19 @@ def worker_config_routes(
     auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[BaseRoute]:
+    def _require_config_mutation_access(
+        request: Request, *, directory_path: str | None = None
+    ) -> JSONResponse | None:
+        if request_has_privileged_operations(
+            auth=auth,
+            service=service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
+        ):
+            return None
+        return _error_response("Privileged operations are locked.", status_code=403)
+
     async def list_workers(_: Request) -> JSONResponse:
         workers = [
             _normalize_worker_summary(summary)
@@ -1387,6 +1400,9 @@ def worker_config_routes(
         )
 
     async def write_worker_config(request: Request) -> JSONResponse:
+        access_error = _require_config_mutation_access(request)
+        if access_error is not None:
+            return access_error
         worker_id = str(request.path_params.get("worker_id") or "").strip()
         try:
             payload = await _json_body(request)
@@ -1412,6 +1428,9 @@ def worker_config_routes(
         return JSONResponse(detail)
 
     async def worker_action(request: Request) -> JSONResponse:
+        access_error = _require_config_mutation_access(request)
+        if access_error is not None:
+            return access_error
         worker_id = str(request.path_params.get("worker_id") or "").strip()
         action = str(request.path_params.get("action") or "").strip()
         if action == "start":
@@ -1516,6 +1535,11 @@ def worker_config_routes(
         except ValueError as exc:
             return _error_response(str(exc), status_code=400)
         parent_path = str(payload.get("parent_path") or "root").strip() or "root"
+        access_error = _require_config_mutation_access(
+            request, directory_path=parent_path
+        )
+        if access_error is not None:
+            return access_error
         name = str(payload.get("name") or "").strip()
         if not name:
             return _error_response("name is required", status_code=400)
@@ -1525,6 +1549,11 @@ def worker_config_routes(
 
     async def delete_directory(request: Request) -> JSONResponse:
         directory_path = _directory_path_from_request(request)
+        access_error = _require_config_mutation_access(
+            request, directory_path=directory_path
+        )
+        if access_error is not None:
+            return access_error
         result = service.directory_admin.delete(directory_path, recursive=False)
         status_code = 200 if result.ok else 400
         return JSONResponse(_normalize_admin_result(result), status_code=status_code)
@@ -1532,6 +1561,11 @@ def worker_config_routes(
     async def write_directory_domain(request: Request) -> JSONResponse:
         domain = str(request.path_params.get("domain") or "").strip()
         directory_path = _directory_path_from_request(request)
+        access_error = _require_config_mutation_access(
+            request, directory_path=directory_path
+        )
+        if access_error is not None:
+            return access_error
         try:
             payload = await _json_body(request)
         except ValueError as exc:

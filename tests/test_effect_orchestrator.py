@@ -7031,12 +7031,13 @@ def test_vm_copy_files_template_source_renders_bindings_before_dispatch(tmp_path
                 },
                 {
                     "id": "effect-2",
-                    "display_name": "Copy files",
-                    "type": "effect:vm:copy-files",
-                    "target": "${{effect-1.session_id}}",
-                    "files": [
-                        {
-                            "source_path": str(template_path),
+                        "display_name": "Copy files",
+                        "type": "effect:vm:copy-files",
+                        "target": "${{effect-1.session_id}}",
+                        "allowed_source_roots": [str(tmp_path)],
+                        "files": [
+                            {
+                                "source_path": str(template_path),
                             "source_format": "template",
                             "destination_path": "/home/agent/AGENTS.md",
                             "overwrite": True,

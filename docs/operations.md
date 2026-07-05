@@ -18,7 +18,10 @@ sequence with Ansible, including the dedicated container-worker VM playbook, see
 `ansible/README.md`.
 
 If Admin Web is part of the deployed surface, treat `evander-admin-web` as a managed host
-service and configure `config/admin-web.env` before exposing it beyond localhost.
+service. Keep active Admin Web passwords and session secrets in
+`/etc/evander/local-secrets.env` or another service-manager secret source, keep
+`config/admin-web.env` for non-secret listener/auth mode settings, and do not expose
+the service beyond localhost without HTTPS, secure cookies, and ingress policy.
 By default, Admin Web uses the bundled Evander and Quinth Software Solutions branding in
 `frontend/workflow-editor/branding`. Use the Admin Web branding variables in that env file when a
 deployment needs a different browser title, shell header title, or logo set; relative logo paths
@@ -2523,7 +2526,8 @@ sudo journalctl -u evander-trigger-orchestrator.service -f
 - Guests authenticate to the selected APP environment themselves through the relay-backed URL for
   the appropriate API or UI alias. The generic HTTP target relay no longer injects host-side APP
   authorization headers.
-- Container-backed agents receive `HTTP_TARGET_RELAY_BASE_URL` and should build relay URLs as
+- Container-backed agents receive `HTTP_TARGET_RELAY_BASE_URL` and should treat it as an opaque
+  relay prefix; tokenized sessions may include relay auth in that prefix. Build relay URLs as
   `$HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/` rather than calling the public
   Azure URL directly.
 
@@ -2754,7 +2758,8 @@ evander-cli directories config-set --domain issue_setup root "{\"git_root\": \"$
 ./scripts/setup_issue_git_vm.sh vm-real 14084
 ```
 
-That one command bootstraps the guest SSH key path and creates or refreshes the
+That one command bootstraps the guest SSH key path, binds writable access to the
+issue-numbered repo's `refs/heads/agents/<session-id>/...` namespace, and creates or refreshes the
 issue-numbered bare mirror on the host. Use the lower-level
 `create_git_remote.sh` and `bootstrap_git_vm.sh` helpers directly only when you
 need a non-issue-specific repository layout.
@@ -2892,7 +2897,10 @@ sudo ./scripts/apply_firewall.sh
 
 `bootstrap_git_vm.sh` creates a dedicated guest SSH key, installs a forced-command
 `authorized_keys` entry on the host, and configures the guest-side alias
-`evander-git-host` so the VM does not need your host password.
+`evander-git-host` so the VM does not need your host password. For writable access, pass
+`EVANDER_GIT_REPO=<repo-name-or-path>` and `EVANDER_GIT_SESSION_ID=<session-id>`; without repo and
+session metadata the helper installs read-only Git access, or fails when
+`EVANDER_GIT_REQUIRE_WRITE_METADATA=1` is set.
 
 Then in the VM, add the printed SSH remote URL and push into a session-specific namespace such as:
 

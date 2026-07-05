@@ -141,6 +141,31 @@ def test_docker_runtime_mounts_passwd_for_numeric_container_user(tmp_path: Path)
     assert args[args.index("--user") + 1] == "1001:1001"
 
 
+def test_docker_runtime_rejects_session_paths_outside_sessions_root_before_mount(
+    tmp_path: Path,
+) -> None:
+    safe_paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    unsafe_root = safe_paths.sessions_root / ".."
+    unsafe_paths = WorkerSessionPaths(
+        session_id="session-1",
+        sessions_root=safe_paths.sessions_root,
+        root=unsafe_root,
+        agent_home=unsafe_root / "agent_home",
+        repo_root=unsafe_root / "agent_home" / "repos",
+        artifacts=unsafe_root / "artifacts",
+        logs=unsafe_root / "logs",
+        metadata_path=unsafe_root / "metadata.json",
+    )
+    runtime = DockerContainerRuntime()
+
+    with pytest.raises(ValueError, match="session root"):
+        runtime._build_run_args(  # noqa: SLF001
+            request=_request(),
+            record=_record(safe_paths),
+            paths=unsafe_paths,
+        )
+
+
 def test_docker_runtime_rejects_unsafe_worker_read_only_mounts() -> None:
     with pytest.raises(ValueError, match="Docker socket"):
         DockerContainerRuntime(read_only_mounts=["/var/run/docker.sock:/opt/docker.sock"])
@@ -192,6 +217,7 @@ def test_docker_runtime_rejects_docker_socket_mount(tmp_path: Path) -> None:
     paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
     unsafe_paths = WorkerSessionPaths(
         session_id=paths.session_id,
+        sessions_root=paths.sessions_root,
         root=paths.root,
         agent_home=Path("/var/run/docker.sock"),
         repo_root=paths.repo_root,

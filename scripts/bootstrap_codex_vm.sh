@@ -381,24 +381,36 @@ filtered = [
         'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"',
         'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"',
     }
+    and not (
+        line.strip().startswith("export OPENAI_API_KEY=")
+        and "relay-placeholder" in line
+    )
 ]
 filtered.append('export PATH="$HOME/bin:$PATH"')
 filtered.append('export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"')
 target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
 PY
-  if ! grep -q 'relay-placeholder' "${target}" 2>/dev/null; then
-    cat >> "${target}" <<PROFILE
+  if ! grep -q 'export OPENAI_API_KEY=' "${target}" 2>/dev/null; then
+    if ! grep -q '/etc/agent-sandbox/session.env' "${target}" 2>/dev/null; then
+      cat >> "${target}" <<'PROFILE'
 if [ -f /etc/agent-sandbox/session.env ]; then
   set -a
   . /etc/agent-sandbox/session.env
   set +a
 fi
+PROFILE
+    fi
+    if ! grep -q '/etc/evander/session.env' "${target}" 2>/dev/null; then
+      cat >> "${target}" <<'PROFILE'
 if [ -f /etc/evander/session.env ]; then
   set -a
   . /etc/evander/session.env
   set +a
 fi
-export OPENAI_API_KEY="\${OPENAI_API_KEY:-relay-placeholder}"
+PROFILE
+    fi
+    cat >> "${target}" <<PROFILE
+export OPENAI_API_KEY="\${OPENAI_API_KEY:-\${EVANDER_MCP_SESSION_TOKEN:-\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"
 PROFILE
   fi
 }
@@ -409,7 +421,7 @@ append_shell_setup ~/.bashrc
 mkdir -p "${CODEX_HOME}/skills"
 export PATH="$HOME/bin:$HOME/codex-vendor/path:$HOME/codex-vendor/codex-path:$PATH"
 export CODEX_HOME
-export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"
+export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"
 codex --version
 
 echo "Host-side wake workers are now responsible for feedback wakeups by default."

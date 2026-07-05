@@ -19,6 +19,13 @@ Environment:
   EVANDER_GIT_ROOT          Host directory containing bare remotes.
   EVANDER_GIT_SSH_ALIAS     Guest SSH host alias. Default: evander-git-host
   EVANDER_GIT_ALLOWED_FROM  Source CIDR allowed in the host authorized_keys entry.
+  EVANDER_GIT_REPO          Bare repo path or name under EVANDER_GIT_ROOT to allow writes.
+  EVANDER_GIT_SESSION_ID    Session id allowed to push refs/heads/agents/<session-id>/...
+                            Defaults to EVANDER_SESSION_ID from the guest session env.
+  EVANDER_GIT_READ_ONLY     Set to 1 to force read-only Git SSH access.
+  EVANDER_GIT_REQUIRE_WRITE_METADATA
+                            Set to 1 to fail instead of installing read-only access
+                            when EVANDER_GIT_REPO/session metadata is unavailable.
   Values can also come from root directory-scoped issue setup config.
 EOF
 }
@@ -58,9 +65,55 @@ GIT_SSH_ALIAS="${EVANDER_GIT_SSH_ALIAS:-evander-git-host}"
 GIT_ALLOWED_FROM="${EVANDER_GIT_ALLOWED_FROM:-192.168.250.0/24}"
 WRAPPER_PATH="${ROOT_DIR}/scripts/git_ssh_command_wrapper.sh"
 AUTHORIZED_KEYS_PATH="${CALLER_HOME}/.ssh/authorized_keys"
+GIT_AUTH_REPO_INPUT="${EVANDER_GIT_REPO:-${EVANDER_GIT_AUTH_REPO:-}}"
+GIT_SESSION_ID="${EVANDER_GIT_SESSION_ID:-${EVANDER_SESSION_ID:-}}"
 SSH_OPTS=(
   -i "${SSH_KEY_PATH}"
 )
+
+is_truthy() {
+  case "${1:-}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+one_line_base64() {
+  printf '%s' "$1" | base64 | tr -d '\n'
+}
+
+resolve_git_auth_repo() {
+  local repo_value="$1"
+  local repo_path
+
+  if [[ "${repo_value}" == /* ]]; then
+    repo_path="${repo_value}"
+  else
+    case "${repo_value}" in
+      *.git) repo_path="${GIT_ROOT}/${repo_value}" ;;
+      *) repo_path="${GIT_ROOT}/${repo_value}.git" ;;
+    esac
+  fi
+
+  realpath -m -- "${repo_path}"
+}
+
+validate_git_session_id() {
+  local session_id="$1"
+
+  if [[ -z "${session_id}" || "${session_id}" == */* || "${session_id}" == "." || "${session_id}" == ".." ]]; then
+    return 1
+  fi
+
+  git check-ref-format "refs/heads/agents/${session_id}/probe" >/dev/null 2>&1
+}
+
+escape_authorized_keys_command() {
+  local command_value="$1"
+  command_value="${command_value//\\/\\\\}"
+  command_value="${command_value//\"/\\\"}"
+  printf '%s' "${command_value}"
+}
 
 if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   echo "Missing SSH private key: ${SSH_KEY_PATH}" >&2
@@ -88,7 +141,7 @@ mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PAT
 
 echo "Bootstrapping Git SSH into ${VM_USER}@${VM_IP}"
 
-PUBLIC_KEY="$(
+GUEST_GIT_INFO="$(
   ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" \
     "VM_NAME='${VM_NAME}' GIT_HOST='${GIT_HOST}' GIT_USER='${GIT_USER}' GIT_SSH_ALIAS='${GIT_SSH_ALIAS}' bash -s" <<'EOF'
 set -euo pipefail
@@ -135,13 +188,37 @@ Host ${GIT_SSH_ALIAS}
 CONFIG
 
 ssh-keyscan -H "${GIT_HOST}" >> "${KNOWN_HOSTS_PATH}" 2>/dev/null || true
-cat "${KEY_PATH}.pub"
+detected_session_id=""
+if [[ -r /etc/evander/session.env ]]; then
+  detected_session_id="$(
+    set +u
+    # shellcheck disable=SC1091
+    . /etc/evander/session.env >/dev/null 2>&1 || true
+    printf '%s' "${EVANDER_SESSION_ID:-${SESSION_ID:-}}"
+  )"
+fi
+
+printf 'PUBLIC_KEY=%s\n' "$(cat "${KEY_PATH}.pub")"
+printf 'SESSION_ID=%s\n' "${detected_session_id}"
 EOF
 )"
+
+PUBLIC_KEY=""
+DETECTED_SESSION_ID=""
+while IFS= read -r line; do
+  case "${line}" in
+    PUBLIC_KEY=*) PUBLIC_KEY="${line#PUBLIC_KEY=}" ;;
+    SESSION_ID=*) DETECTED_SESSION_ID="${line#SESSION_ID=}" ;;
+  esac
+done <<<"${GUEST_GIT_INFO}"
 
 if [[ -z "${PUBLIC_KEY}" ]]; then
   echo "Failed to retrieve guest Git SSH public key." >&2
   exit 1
+fi
+
+if [[ -z "${GIT_SESSION_ID}" && -n "${DETECTED_SESSION_ID}" ]]; then
+  GIT_SESSION_ID="${DETECTED_SESSION_ID}"
 fi
 
 mkdir -p "${CALLER_HOME}/.ssh"
@@ -161,11 +238,60 @@ filtered = [line for line in lines if needle not in line]
 path.write_text(("\n".join(filtered) + "\n") if filtered else "", encoding="utf-8")
 PY
 
+AUTH_ACCESS="read-only"
+AUTH_REPO_REAL=""
+AUTH_REF_PREFIX=""
+if is_truthy "${EVANDER_GIT_READ_ONLY:-0}"; then
+  AUTH_ACCESS="read-only"
+elif [[ -n "${GIT_AUTH_REPO_INPUT}" && -n "${GIT_SESSION_ID}" ]]; then
+  if ! validate_git_session_id "${GIT_SESSION_ID}"; then
+    echo "Invalid EVANDER_GIT_SESSION_ID: ${GIT_SESSION_ID}" >&2
+    echo "Session ids used for Git writes must be a single valid ref path component." >&2
+    exit 1
+  fi
+  AUTH_REPO_REAL="$(resolve_git_auth_repo "${GIT_AUTH_REPO_INPUT}")"
+  GIT_ROOT_REAL="$(realpath -m -- "${GIT_ROOT}")"
+  case "${AUTH_REPO_REAL}" in
+    "${GIT_ROOT_REAL}"/*) ;;
+    *)
+      echo "EVANDER_GIT_REPO must resolve under EVANDER_GIT_ROOT: ${GIT_ROOT}" >&2
+      exit 1
+      ;;
+  esac
+  AUTH_REF_PREFIX="refs/heads/agents/${GIT_SESSION_ID}/"
+  AUTH_ACCESS="write"
+elif is_truthy "${EVANDER_GIT_REQUIRE_WRITE_METADATA:-0}"; then
+  echo "Cannot install writable Git SSH access without repo/session metadata." >&2
+  echo "Set EVANDER_GIT_REPO and EVANDER_GIT_SESSION_ID, or allow read-only access with EVANDER_GIT_READ_ONLY=1." >&2
+  exit 1
+else
+  echo "Repo/session metadata unavailable; installing read-only Git SSH access." >&2
+  echo "Set EVANDER_GIT_REPO and EVANDER_GIT_SESSION_ID to allow pushes to refs/heads/agents/<session-id>/..." >&2
+fi
+
+if [[ "${AUTH_ACCESS}" == "write" ]]; then
+  FORCED_COMMAND="EVANDER_GIT_AUTH_ACCESS=write"
+  FORCED_COMMAND+=" EVANDER_GIT_AUTH_REPO_B64=$(one_line_base64 "${AUTH_REPO_REAL}")"
+  FORCED_COMMAND+=" EVANDER_GIT_AUTH_SESSION_ID_B64=$(one_line_base64 "${GIT_SESSION_ID}")"
+  FORCED_COMMAND+=" EVANDER_GIT_AUTH_REF_PREFIX_B64=$(one_line_base64 "${AUTH_REF_PREFIX}")"
+  FORCED_COMMAND+=" ${WRAPPER_PATH}"
+else
+  FORCED_COMMAND="EVANDER_GIT_AUTH_ACCESS=read-only ${WRAPPER_PATH}"
+fi
+FORCED_COMMAND_ESCAPED="$(escape_authorized_keys_command "${FORCED_COMMAND}")"
+
 cat >> "${AUTHORIZED_KEYS_PATH}" <<EOF
-from="${GIT_ALLOWED_FROM}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="${WRAPPER_PATH}" ${PUBLIC_KEY}
+from="${GIT_ALLOWED_FROM}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="${FORCED_COMMAND_ESCAPED}" ${PUBLIC_KEY}
 EOF
 
 echo "Git SSH bootstrap complete for ${VM_NAME} (${VM_IP})"
+if [[ "${AUTH_ACCESS}" == "write" ]]; then
+  echo "Write access is limited to:"
+  echo "  repo: ${AUTH_REPO_REAL}"
+  echo "  ref prefix: ${AUTH_REF_PREFIX}"
+else
+  echo "Installed read-only Git SSH access; pushes require EVANDER_GIT_REPO and EVANDER_GIT_SESSION_ID."
+fi
 echo
 echo "Guest host alias:"
 echo "  ${GIT_SSH_ALIAS}"
