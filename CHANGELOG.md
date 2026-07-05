@@ -58,6 +58,8 @@
   runtime-image details to the session detail payload.
 - Cached per-session policy summary fragments for repeated Admin Web session
   detail reads.
+- Kept compact sessions rows provider-aware while refreshing notification target
+  options and selected-session status from live list data.
 
 ## 2026-07-04 - Tool-Call Audit Index Catch-Up
 

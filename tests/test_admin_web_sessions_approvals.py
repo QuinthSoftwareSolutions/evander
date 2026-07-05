@@ -532,6 +532,9 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     list_payload = list_response.json()
     assert list_payload["items"][0]["session_id"] == "issue-14085-session"
     assert list_payload["items"][0]["vm_id"] == "vm-14085"
+    assert list_payload["items"][0]["vm_provider"] is None
+    assert list_payload["items"][0]["vm_provider_id"] is None
+    assert list_payload["items"][0]["container_lifecycle"] is None
     assert list_payload["items"][0]["is_expired"] is False
     assert "effective_tool_policy" not in list_payload["items"][0]
     assert "tool_summary" not in list_payload["items"][0]
@@ -602,6 +605,7 @@ def test_admin_web_sessions_list_uses_compact_payload_without_heavy_decoration(
         SessionManifest(
             session_id="active-session",
             vm_id="vm-active",
+            vm_provider="libvirt_vm",
             model="gpt-5",
             allowed_tools=[ToolName.APPROVAL_CHECK],
             expires_at=datetime.now(UTC) + timedelta(hours=2),
@@ -610,7 +614,9 @@ def test_admin_web_sessions_list_uses_compact_payload_without_heavy_decoration(
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="expired-session",
-            vm_id="vm-expired",
+            vm_id=None,
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
             model="gpt-5",
             allowed_tools=[ToolName.APPROVAL_CHECK],
             expires_at=datetime.now(UTC) - timedelta(hours=2),
@@ -646,6 +652,9 @@ def test_admin_web_sessions_list_uses_compact_payload_without_heavy_decoration(
         "active-session",
         "expired-session",
     ]
+    assert payload["items"][0]["vm_provider"] == "libvirt_vm"
+    assert payload["items"][1]["vm_provider"] == "container_worker_vm"
+    assert payload["items"][1]["vm_provider_id"] == "container-target"
     assert payload["counts"] == {"total": 2, "active": 1, "expired": 1}
     assert payload["status_ids"] == {
         "active": ["active-session"],
@@ -712,7 +721,7 @@ def test_admin_web_session_detail_reuses_cached_policy_summary(
     assert calls == {
         "tool_summary": 1,
         "effective_policy": 1,
-        "notification_options": 1,
+        "notification_options": 2,
     }
 
 

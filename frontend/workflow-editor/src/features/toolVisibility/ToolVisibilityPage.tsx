@@ -11,6 +11,7 @@ type SessionRecord = {
   directory_path: string;
   vm_id: string | null;
   vm_provider: string | null;
+  vm_provider_id?: string | null;
   expires_at: string;
   is_expired: boolean;
   capability_profile?: string | null;
@@ -268,6 +269,7 @@ function sessionSearchText(item: SessionRecord): string {
     item.directory_path,
     item.vm_id ?? "",
     item.vm_provider ?? "",
+    item.vm_provider_id ?? "",
     item.capability_profile ?? "",
     item.is_expired ? "expired" : "active",
   ]
@@ -754,7 +756,7 @@ export function ToolVisibilityPage() {
               </div>
               <div className="feature-list-meta">{item.directory_path}</div>
               <div className="feature-list-meta">
-                {item.vm_id ?? "No VM"}{item.vm_provider ? ` • ${item.vm_provider}` : ""}
+                {item.vm_id ?? item.vm_provider_id ?? "No VM"}{item.vm_provider ? ` • ${item.vm_provider}` : ""}
               </div>
               <div className="feature-list-meta">{item.capability_profile ?? "Capability profile missing"}</div>
             </button>

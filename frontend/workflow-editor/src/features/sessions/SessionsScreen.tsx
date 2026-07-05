@@ -40,6 +40,8 @@ type EffectiveToolPolicy = SessionEffectiveToolPolicy & {
 type SessionRecord = {
   session_id: string;
   vm_id: string | null;
+  vm_provider?: string | null;
+  vm_provider_id?: string | null;
   model: string | null;
   directory_path: string;
   allowed_tools?: string[];
@@ -575,6 +577,8 @@ function matchesFilter(item: SessionRecord, query: string): boolean {
   return [
     item.session_id,
     item.vm_id ?? "",
+    item.vm_provider ?? "",
+    item.vm_provider_id ?? "",
     item.issue_number ?? "",
     item.directory_path,
     item.model ?? "",
@@ -1362,12 +1366,13 @@ export function SessionsScreen() {
     setSelectedSessionId(visibleItems[0]?.session_id ?? "");
   }, [response, selectedSessionId, visibleItems]);
 
-  const selectedSession = useMemo(
-    () => (detail?.session.session_id === selectedSessionId ? detail.session : null)
-      ?? response?.items.find((item) => item.session_id === selectedSessionId)
-      ?? null,
-    [detail?.session, response?.items, selectedSessionId],
-  );
+  const selectedSession = useMemo(() => {
+    const listItem = response?.items.find((item) => item.session_id === selectedSessionId) ?? null;
+    if (detail?.session.session_id === selectedSessionId) {
+      return listItem ? { ...detail.session, ...listItem } : detail.session;
+    }
+    return listItem;
+  }, [detail?.session, response?.items, selectedSessionId]);
 
   const visibleWakeScheduleItems = useMemo(
     () => filterVisibleWakeSchedules(detail?.wake_schedules ?? [], {

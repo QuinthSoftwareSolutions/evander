@@ -540,15 +540,20 @@ def _compact_session_payload(summary: SessionSummary) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "session_id": summary.session_id,
         "vm_id": summary.vm_id,
+        "vm_provider": summary.vm_provider,
+        "vm_provider_id": summary.vm_provider_id,
         "model": summary.model,
         "directory_path": summary.directory_path,
         "expires_at": _iso(summary.expires_at),
         "created_at": _iso(summary.created_at),
         "issue_number": summary.issue_number,
         "is_expired": summary.is_expired,
+        "container_lifecycle": (
+            None
+            if summary.container_lifecycle is None
+            else summary.container_lifecycle.model_dump(mode="json")
+        ),
     }
-    if summary.container_lifecycle is not None:
-        payload["container_lifecycle"] = summary.container_lifecycle.model_dump(mode="json")
     return payload
 
 
@@ -576,10 +581,6 @@ def _session_policy_summary_payload(
     )
     payload = {
         "tool_summary": tool_summary,
-        "approval_notification_target_options": [
-            option.model_dump(mode="json")
-            for option in service.vm_agent_admin.approval_notification_target_options(summary)
-        ],
         "effective_tool_policy": service.vm_agent_admin.effective_tool_policy_payload(
             summary,
             effective_policy=effective_policy,
@@ -600,6 +601,10 @@ def _session_payload(
     payload = summary.model_dump(mode="json")
     payload["allowed_tools"] = [tool_name_value(tool) for tool in summary.allowed_tools]
     payload.update(_session_policy_summary_payload(service, summary, cache=policy_cache))
+    payload["approval_notification_target_options"] = [
+        option.model_dump(mode="json")
+        for option in service.vm_agent_admin.approval_notification_target_options(summary)
+    ]
     payload["runtime_image"] = service.vm_agent_admin.session_runtime_image_payload(summary)
     return payload
 
