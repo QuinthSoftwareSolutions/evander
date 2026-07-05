@@ -1421,7 +1421,20 @@ class OpenAIRelay:
             token = str(request.headers.get(name) or "").strip()
             if token:
                 return token
+        token = OpenAIRelay._mcp_session_token_from_auth_headers(request)
+        if token:
+            return token
         return None
+
+    @staticmethod
+    def _mcp_session_token_from_auth_headers(request: Request | WebSocket) -> str | None:
+        authorization = str(request.headers.get("authorization") or "").strip()
+        if authorization.casefold().startswith("bearer "):
+            token = authorization[7:].strip()
+            if token:
+                return token
+        api_key = str(request.headers.get("x-api-key") or "").strip()
+        return api_key or None
 
     @staticmethod
     def _log_resolved_api_key_env(

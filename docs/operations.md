@@ -2526,7 +2526,8 @@ sudo journalctl -u evander-trigger-orchestrator.service -f
 - Guests authenticate to the selected APP environment themselves through the relay-backed URL for
   the appropriate API or UI alias. The generic HTTP target relay no longer injects host-side APP
   authorization headers.
-- Container-backed agents receive `HTTP_TARGET_RELAY_BASE_URL` and should build relay URLs as
+- Container-backed agents receive `HTTP_TARGET_RELAY_BASE_URL` and should treat it as an opaque
+  relay prefix; tokenized sessions may include relay auth in that prefix. Build relay URLs as
   `$HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/` rather than calling the public
   Azure URL directly.
 

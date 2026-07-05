@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 import uvicorn
@@ -103,6 +103,10 @@ class HttpTargetRelay:
                         base_url=http_target.base_url,
                         session_id=request.path_params["session_id"],
                         alias=request.path_params["alias"],
+                        mcp_session_token=relay._mcp_session_token_from_path(request),
+                        mcp_session_query_token=relay._mcp_session_token_from_query(
+                            request
+                        ),
                     )
                     if redirect_location is None:
                         return JSONResponse(
@@ -124,6 +128,16 @@ class HttpTargetRelay:
             debug=False,
             routes=[
                 Route("/healthz", health, methods=["GET"]),
+                Route(
+                    "/auth/{mcp_session_token}/session/{session_id}/target/{alias}",
+                    proxy,
+                    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+                ),
+                Route(
+                    "/auth/{mcp_session_token}/session/{session_id}/target/{alias}/{path:path}",
+                    proxy,
+                    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+                ),
                 Route(
                     "/session/{session_id}/target/{alias}",
                     proxy,
@@ -175,15 +189,30 @@ class HttpTargetRelay:
 
     @staticmethod
     def _mcp_session_token_from_request(request: Request) -> str | None:
-        for name in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES:
-            token = str(request.query_params.get(name) or "").strip()
-            if token:
-                return token
+        token = HttpTargetRelay._mcp_session_token_from_query(request)
+        if token:
+            return token
+        token = HttpTargetRelay._mcp_session_token_from_path(request)
+        if token:
+            return token
         for name in MCP_SESSION_TOKEN_HEADER_NAMES:
             token = str(request.headers.get(name) or "").strip()
             if token:
                 return token
         return None
+
+    @staticmethod
+    def _mcp_session_token_from_query(request: Request) -> str | None:
+        for name in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES:
+            token = str(request.query_params.get(name) or "").strip()
+            if token:
+                return token
+        return None
+
+    @staticmethod
+    def _mcp_session_token_from_path(request: Request) -> str | None:
+        token = str(request.path_params.get("mcp_session_token") or "").strip()
+        return token or None
 
     @staticmethod
     def _response_headers(
@@ -230,6 +259,8 @@ class HttpTargetRelay:
         base_url: str,
         session_id: str,
         alias: str,
+        mcp_session_token: str | None = None,
+        mcp_session_query_token: str | None = None,
     ) -> str | None:
         if not location:
             return location
@@ -252,8 +283,19 @@ class HttpTargetRelay:
         )
         if relay_upstream_path is None:
             return None
-        relay_path = f"/session/{session_id}/target/{alias}{relay_upstream_path}"
-        return urlunsplit(("", "", relay_path, location_parts.query, location_parts.fragment))
+        auth_prefix = (
+            f"/auth/{quote(mcp_session_token, safe='')}" if mcp_session_token else ""
+        )
+        relay_path = f"{auth_prefix}/session/{session_id}/target/{alias}{relay_upstream_path}"
+        relay_query = location_parts.query
+        if mcp_session_query_token:
+            query_items = parse_qsl(relay_query, keep_blank_values=True)
+            if not any(key in MCP_SESSION_TOKEN_QUERY_PARAM_NAMES for key, _ in query_items):
+                query_items.append(
+                    (MCP_SESSION_TOKEN_QUERY_PARAM_NAMES[0], mcp_session_query_token)
+                )
+                relay_query = urlencode(query_items, doseq=True)
+        return urlunsplit(("", "", relay_path, relay_query, location_parts.fragment))
 
     @staticmethod
     def _strip_target_base_path(path: str, *, base_path: str) -> str | None:

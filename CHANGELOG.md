@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-05 - Relay Session Token Compatibility
+
+- Generated tokenized agent model and HTTP target relay URLs that carry the
+  MCP session token without forwarding it to upstream providers or targets.
+- Resolved hostname and numeric HTTP request destinations before approving
+  public-only workflow requests so DNS aliases to private or metadata
+  addresses are blocked.
+
 ## 2026-07-05 - Workflow Effect Source Guards
 
 - Blocked `effect:http:request` private, loopback, link-local, and metadata

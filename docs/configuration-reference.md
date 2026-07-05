@@ -1439,11 +1439,13 @@ C# bridge under `integrations/teams-meeting-media-bridge`.
 | `http_target_relay_host`, `http_target_relay_port` | root `host-config.json`, provider config overlays | `src/evander/relays/http_target.py` listener bind and `src/evander/cli.py` status checks. |
 | `http_target_relay_timeout_seconds` | provider config overlays | `src/evander/relays/http_target.py` upstream request timeout. |
 
-The current HTTP target relay is auth-transparent: it allowlists the upstream destination by
-session and per-target alias, but it forwards guest `Authorization` headers and cookies instead of
-injecting host-side credentials. The APP demo workflow is one consumer layered on top of this
-generic relay pattern and can register separate UI and API aliases for the same provisioned
-environment.
+The current HTTP target relay is upstream-auth-transparent: it allowlists the upstream destination
+by session and per-target alias, but it forwards guest `Authorization` headers and cookies instead
+of injecting host-side credentials. Tokenized sessions may receive an
+`HTTP_TARGET_RELAY_BASE_URL` with relay auth embedded in the path prefix; guests should treat the
+base URL as opaque and append `/session/<session-id>/target/<alias>/`. The APP demo workflow is
+one consumer layered on top of this generic relay pattern and can register separate UI and API
+aliases for the same provisioned environment.
 
 ### NuGet relay keys
 
@@ -1518,8 +1520,8 @@ These placeholders are substituted by `scripts/launch_agent_vm.sh` before VM boo
 | `__NUGET_PACKAGES__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `NUGET_PACKAGES`. |
 | `__NUGET_HTTP_CACHE_PATH__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `NUGET_HTTP_CACHE_PATH`. |
 | `__NUGET_CACHE_FS_TYPE__`, `__NUGET_CACHE_MOUNT_OPTIONS__`, `__NUGET_CACHE_TAG__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; mount + `/etc/fstab` entry for shared NuGet cache. |
-| `OPENAI_API_KEY` fallback in profile (`relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for OpenAI-compatible relay sessions. |
-| `ANTHROPIC_AUTH_TOKEN` fallback in profile (`relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for Anthropic-compatible relay sessions. |
+| `OPENAI_API_KEY` fallback in profile (`EVANDER_MCP_SESSION_TOKEN` or `relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for OpenAI-compatible relay sessions. |
+| `ANTHROPIC_AUTH_TOKEN` fallback in profile (`EVANDER_MCP_SESSION_TOKEN` or `relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for Anthropic-compatible relay sessions. |
 
 ## Directory Config Domains And Storage
 

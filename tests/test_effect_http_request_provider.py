@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -323,6 +324,112 @@ def test_http_request_provider_rejects_bound_private_and_metadata_destinations_b
         )
 
     assert requests == []
+
+
+def test_http_request_provider_rejects_hostname_that_resolves_to_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    def fake_getaddrinfo(
+        host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[object, object, object, str, tuple[str, int]]]:
+        assert host == "169.254.169.254.nip.io"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", port))]
+
+    monkeypatch.setattr(
+        "evander.effects.providers.http_request.socket.getaddrinfo",
+        fake_getaddrinfo,
+    )
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(ValueError, match="blocked metadata destination"):
+        provider.execute(
+            resolved_config={
+                "url": "http://169.254.169.254.nip.io/latest/meta-data",
+                "allowed_url_patterns": ["http://169.254.169.254.nip.io/*"],
+            }
+        )
+
+    assert requests == []
+
+
+def test_http_request_provider_rejects_numeric_hostname_that_resolves_to_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, request=request)
+    )
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    with pytest.raises(
+        ValueError,
+        match="blocked private, loopback, or link-local destination",
+    ):
+        provider.execute(
+            resolved_config={
+                "url": "http://2130706433/admin",
+                "allowed_url_patterns": ["http://2130706433/*"],
+            }
+        )
+
+    assert requests == []
+
+
+def test_http_request_provider_allows_public_hostname_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    _install_mock_client(monkeypatch, transport)
+
+    def fake_getaddrinfo(
+        host: str,
+        port: int,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[tuple[object, object, object, str, tuple[str, int]]]:
+        assert host == "api.example.test"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(
+        "evander.effects.providers.http_request.socket.getaddrinfo",
+        fake_getaddrinfo,
+    )
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(url="${{trigger.url}}"), _runtime_context(tmp_path))
+
+    result = provider.execute(
+        resolved_config={
+            "url": "https://api.example.test/items/42",
+            "allowed_url_patterns": ["https://api.example.test/*"],
+        }
+    )
+
+    assert len(requests) == 1
+    assert result["success"] is True
 
 
 def test_http_request_provider_allows_private_destination_with_explicit_opt_in(

@@ -79,7 +79,10 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "if [ -f ~/.agent/config.env ]; then" in script
     assert "if [ -f /etc/agent-sandbox/session.env ]; then" in script
     assert "if [ -f /etc/evander/session.env ]; then" in script
-    assert 'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in script
+    assert (
+        'export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"'
+        in script
+    )
     assert (
         'CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}}"'
         in script
@@ -96,6 +99,10 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "append_evander_mcp_query() {" in script
     assert 'CODEX_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"' in script
     assert 'query["mcp_session_token"] = token' in script
+    assert (
+        'export OPENAI_API_KEY="\\${OPENAI_API_KEY:-\\${EVANDER_MCP_SESSION_TOKEN:-\\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"'
+        in script
+    )
     assert (
         'CODEX_GATEWAY_URL="$(append_evander_mcp_query "${CODEX_GATEWAY_URL}" "${CODEX_SESSION_ID}" "${CODEX_MCP_SESSION_TOKEN}")'
         in script
@@ -165,6 +172,11 @@ def test_launch_script_can_derive_public_key_from_private_key() -> None:
         'HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL:-http://192.168.250.1:11777}"'
         in script
     )
+    assert "append_evander_mcp_path_token() {" in script
+    assert (
+        'HTTP_TARGET_RELAY_BASE_URL="$(append_evander_mcp_path_token "${HTTP_TARGET_RELAY_BASE_URL}" "${MCP_SESSION_TOKEN}")'
+        in script
+    )
     assert (
         '-e "s|__HTTP_TARGET_RELAY_BASE_URL__|${ESCAPED_HTTP_TARGET_RELAY_BASE_URL}|g" \\' in script
     )
@@ -223,6 +235,10 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
     assert "append_evander_mcp_query() {" in script
     assert 'CLAUDE_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"' in script
     assert 'query["mcp_session_token"] = token' in script
+    assert (
+        '"ANTHROPIC_AUTH_TOKEN": "${CLAUDE_MCP_SESSION_TOKEN:-relay-placeholder}"'
+        in script
+    )
     assert (
         'CLAUDE_GATEWAY_URL="$(append_evander_mcp_query "${CLAUDE_GATEWAY_URL}" "${CLAUDE_SESSION_ID}" "${CLAUDE_MCP_SESSION_TOKEN}")'
         in script

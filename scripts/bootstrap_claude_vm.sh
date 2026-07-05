@@ -263,7 +263,7 @@ cat > ~/.claude/settings.json <<CONFIG
     "commit": ""
   },
   "env": {
-    "ANTHROPIC_AUTH_TOKEN": "relay-placeholder",
+    "ANTHROPIC_AUTH_TOKEN": "${CLAUDE_MCP_SESSION_TOKEN:-relay-placeholder}",
     "ANTHROPIC_BASE_URL": "${CLAUDE_ANTHROPIC_BASE_URL}",
     "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
     "DISABLE_TELEMETRY": "1"
@@ -319,7 +319,7 @@ def repair_missing_profile_fi(profile_lines):
 managed = {
     'export PATH="$HOME/bin:$PATH"',
     'export AGENT_PROVIDER="${AGENT_PROVIDER:-claude}"',
-    'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-relay-placeholder}"',
+    'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"',
 }
 lines = repair_missing_profile_fi(lines)
 filtered = [line for line in lines if line.strip() not in managed]

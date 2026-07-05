@@ -100,6 +100,23 @@ HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL:-http://192.168.250.1:1
 LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
 ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}"
 
+append_evander_mcp_path_token() {
+  python3 - "$1" "$2" <<'PY'
+from urllib.parse import quote, urlsplit, urlunsplit
+import sys
+
+url, token = sys.argv[1], sys.argv[2]
+if not token:
+    print(url)
+    raise SystemExit(0)
+parts = urlsplit(url)
+path = f"{parts.path.rstrip('/')}/auth/{quote(token, safe='')}"
+print(urlunsplit(parts._replace(path=path)))
+PY
+}
+
+HTTP_TARGET_RELAY_BASE_URL="$(append_evander_mcp_path_token "${HTTP_TARGET_RELAY_BASE_URL}" "${MCP_SESSION_TOKEN}")"
+
 mkdir -p "${VM_DIR}"
 mkdir -p "${STATE_DIR}"
 mkdir -p "${SHARED_NUGET_CACHE_DIR}"

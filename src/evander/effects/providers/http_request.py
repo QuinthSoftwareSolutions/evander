@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import socket
 import time
 from collections.abc import Mapping
 from fnmatch import fnmatchcase
@@ -279,6 +280,16 @@ class HttpRequestEffectProvider(EffectProviderBase):
                 f"{NODE_TYPE} url targets a blocked private, loopback, "
                 "or link-local destination"
             )
+        for resolved_address in cls._resolve_host_addresses(
+            normalized_host, parsed.port or cls._default_port(parsed.scheme)
+        ):
+            if cls._is_metadata_destination(str(resolved_address)):
+                raise ValueError(f"{NODE_TYPE} url targets a blocked metadata destination")
+            if not allow_private_networks and cls._is_private_destination(resolved_address):
+                raise ValueError(
+                    f"{NODE_TYPE} url targets a blocked private, loopback, "
+                    "or link-local destination"
+                )
 
     @staticmethod
     def _parse_ip_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -286,6 +297,34 @@ class HttpRequestEffectProvider(EffectProviderBase):
             return ipaddress.ip_address(host)
         except ValueError:
             return None
+
+    @staticmethod
+    def _default_port(scheme: str) -> int:
+        return 443 if scheme == "https" else 80
+
+    @classmethod
+    def _resolve_host_addresses(
+        cls, host: str, port: int
+    ) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+        try:
+            address_info = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except socket.gaierror:
+            return []
+        addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+        seen: set[str] = set()
+        for item in address_info:
+            sockaddr = item[4]
+            if not sockaddr:
+                continue
+            address = cls._parse_ip_address(str(sockaddr[0]))
+            if address is None:
+                continue
+            key = str(address)
+            if key in seen:
+                continue
+            seen.add(key)
+            addresses.append(address)
+        return addresses
 
     @staticmethod
     def _is_private_destination(
