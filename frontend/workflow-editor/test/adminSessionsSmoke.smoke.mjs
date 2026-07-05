@@ -113,12 +113,14 @@ async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}
   const policyBodies = [];
   const sessionListResponse = {
     items: [sessionRecord],
-    active_items: [sessionRecord],
-    expired_items: [],
     counts: {
       total: 1,
       active: 1,
       expired: 0,
+    },
+    status_ids: {
+      active: [sessionRecord.session_id],
+      expired: [],
     },
   };
   const sessionDetailResponse = {
@@ -833,12 +835,14 @@ test("admin shell sessions page shows wake schedule loading while the selected s
   };
   const sessionListResponse = {
     items: [sessionRecord],
-    active_items: [sessionRecord],
-    expired_items: [],
     counts: {
       total: 1,
       active: 1,
       expired: 0,
+    },
+    status_ids: {
+      active: [sessionRecord.session_id],
+      expired: [],
     },
   };
   const sessionDetailResponse = {
@@ -1147,12 +1151,14 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
   };
   const sessionListResponse = {
     items: [explicitSession, legacySession, containerSession],
-    active_items: [explicitSession, legacySession, containerSession],
-    expired_items: [],
     counts: {
       total: 3,
       active: 3,
       expired: 0,
+    },
+    status_ids: {
+      active: [explicitSession.session_id, legacySession.session_id, containerSession.session_id],
+      expired: [],
     },
   };
   const sessionDetailResponse = {
@@ -1341,10 +1347,10 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
   assert.ok(cleanupButtonBox, "expected cleanup toolbar button to have a bounding box");
   assert.ok(cleanupButtonBox.width <= 40, `expected cleanup toolbar button to stay icon-sized, got ${cleanupButtonBox.width}`);
 
-  await page.getByPlaceholder("session, VM, issue, model").fill("runner:latest");
+  await page.getByPlaceholder("session, VM, issue, model").fill("container");
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 1);
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "libvirt-explicit" }).count(), 0);
-  await page.getByPlaceholder("session, VM, issue, model").fill("dotnet");
+  await page.getByPlaceholder("session, VM, issue, model").fill("libvirt-explicit");
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "libvirt-explicit" }).count(), 1);
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 0);
 

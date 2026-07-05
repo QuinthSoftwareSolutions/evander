@@ -146,33 +146,35 @@ type SessionRecord = {
   vm_id: string | null;
   model: string | null;
   directory_path: string;
-  allowed_tools: string[];
+  allowed_tools?: string[];
   approval_required_tools?: string[];
-  allowed_script_names: string[];
-  discord_channel_allowlist: string[];
-  teams_channel_allowlist: string[];
-  communication_file_receive_enabled: boolean;
-  communication_file_send_enabled: boolean;
-  communication_file_max_bytes: number | null;
-  communication_file_allowed_mime_types: string[];
-  communication_file_allowed_extensions: string[];
-  communication_file_blocked_extensions: string[];
-  communication_file_require_approval_for_send: boolean;
+  allowed_script_names?: string[];
+  discord_channel_allowlist?: string[];
+  teams_channel_allowlist?: string[];
+  communication_file_receive_enabled?: boolean;
+  communication_file_send_enabled?: boolean;
+  communication_file_max_bytes?: number | null;
+  communication_file_allowed_mime_types?: string[];
+  communication_file_allowed_extensions?: string[];
+  communication_file_blocked_extensions?: string[];
+  communication_file_require_approval_for_send?: boolean;
   expires_at: string;
   created_at: string;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   issue_number?: string | null;
   is_expired: boolean;
 };
 
 type SessionListResponse = {
   items: SessionRecord[];
-  active_items: SessionRecord[];
-  expired_items: SessionRecord[];
   counts: {
     total: number;
     active: number;
     expired: number;
+  };
+  status_ids: {
+    active: string[];
+    expired: string[];
   };
 };
 
@@ -780,6 +782,11 @@ function sessionTone(response: SessionListResponse | null | undefined): Dashboar
 
 function sessionItemTone(session: SessionRecord): DashboardPillTone {
   return session.is_expired ? "missing" : "pass";
+}
+
+function sessionItemsForStatus(response: SessionListResponse, status: "active" | "expired"): SessionRecord[] {
+  const ids = new Set(response.status_ids[status]);
+  return response.items.filter((item) => ids.has(item.session_id));
 }
 
 function workflowDocumentTone(document: WorkflowEditorDocument | null | undefined): DashboardPillTone {
@@ -2532,14 +2539,14 @@ export function OperationsDashboard() {
                       {
                         label: "Wake cue",
                         value:
-                          sessions.active_items.map(sessionWakeCue).find(Boolean) ??
-                          sessions.expired_items.map(sessionWakeCue).find(Boolean) ??
+                          sessionItemsForStatus(sessions, "active").map(sessionWakeCue).find(Boolean) ??
+                          sessionItemsForStatus(sessions, "expired").map(sessionWakeCue).find(Boolean) ??
                           "No wake-schedule cue exposed by the list payload.",
                       },
                     ]}
                   />
                   <DashboardCompactRows>
-                    {sessions.active_items.slice(0, 3).map((session) => (
+                    {sessionItemsForStatus(sessions, "active").slice(0, 3).map((session) => (
                       <DashboardCompactRow
                         key={session.session_id}
                         title={session.session_id}

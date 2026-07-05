@@ -71,12 +71,14 @@ test("admin shell sessions page surfaces wake ledger entries and retry controls"
   };
   const sessionListResponse = {
     items: [sessionRecord],
-    active_items: [sessionRecord],
-    expired_items: [],
     counts: {
       total: 1,
       active: 1,
       expired: 0,
+    },
+    status_ids: {
+      active: [sessionRecord.session_id],
+      expired: [],
     },
   };
   const sessionDetailResponse = {

@@ -19,12 +19,14 @@ type SessionRecord = {
 
 type SessionListResponse = {
   items: SessionRecord[];
-  active_items: SessionRecord[];
-  expired_items: SessionRecord[];
   counts: {
     total: number;
     active: number;
     expired: number;
+  };
+  status_ids: {
+    active: string[];
+    expired: string[];
   };
 };
 

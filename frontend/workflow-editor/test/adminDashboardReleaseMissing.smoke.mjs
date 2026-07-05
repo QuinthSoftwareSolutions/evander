@@ -149,12 +149,14 @@ test("admin shell release and capacity panels show missing states without invent
 
   const sessionsResponse = {
     items: [],
-    active_items: [],
-    expired_items: [],
     counts: {
       total: 0,
       active: 0,
       expired: 0,
+    },
+    status_ids: {
+      active: [],
+      expired: [],
     },
   };
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-04 - Admin Sessions List Payload
+
+- Reduced `GET /api/admin/sessions` to a compact single `items` list with
+  counts and active/expired session ids, moving policy, tool, notification, and
+  runtime-image details to the session detail payload.
+- Cached per-session policy summary fragments for repeated Admin Web session
+  detail reads.
+
 ## 2026-07-04 - Tool-Call Audit Index Catch-Up
 
 - Batched tool-call audit JSONL imports through one SQLite transaction per

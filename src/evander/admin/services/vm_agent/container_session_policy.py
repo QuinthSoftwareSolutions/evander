@@ -79,15 +79,22 @@ class VmAgentContainerSessionPolicyMixin:
             return []
 
     def effective_tool_policy_payload(
-        self, session: SessionManifest | None
+        self,
+        session: SessionManifest | None,
+        *,
+        effective_policy: Any | None = None,
+        tool_summary: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if session is None:
             return None
-        effective_policy = self.runtime.policy_config.resolve_for_session_manifest(session)
-        tool_summary = self.runtime.policy.allowed_tool_summary_for_session(
-            session,
-            effective_policy=effective_policy,
+        effective_policy = effective_policy or self.runtime.policy_config.resolve_for_session_manifest(
+            session
         )
+        if tool_summary is None:
+            tool_summary = self.runtime.policy.allowed_tool_summary_for_session(
+                session,
+                effective_policy=effective_policy,
+            )
         inherited_approval_required_tools: list[str] = []
         approval_required_tools: list[str] = []
         seen_tools: set[str] = set()

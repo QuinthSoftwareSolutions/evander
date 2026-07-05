@@ -176,12 +176,14 @@ async function createAdminPage(t) {
               },
             },
           ],
-          active_items: [],
-          expired_items: [],
           counts: {
             total: 2,
             active: 1,
             expired: 1,
+          },
+          status_ids: {
+            active: ["session-1"],
+            expired: ["session-2"],
           },
         }),
       );
