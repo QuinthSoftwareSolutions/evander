@@ -202,9 +202,7 @@ class ToolArgumentConstraintOperator(str, Enum):
     ENUM = "enum"
 
 
-def normalize_tool_argument_policies(
-    value: object, *, field_name: str
-) -> dict[str, list[object]]:
+def normalize_tool_argument_policies(value: object, *, field_name: str) -> dict[str, list[object]]:
     if value is None:
         return {}
     if not isinstance(value, dict):
@@ -354,7 +352,9 @@ class ToolArgumentPolicyRule(BaseModel):
     def validate_unique_constraint_ids(self) -> "ToolArgumentPolicyRule":
         duplicates = sorted(
             constraint_id
-            for constraint_id, count in Counter(constraint.id for constraint in self.constraints).items()
+            for constraint_id, count in Counter(
+                constraint.id for constraint in self.constraints
+            ).items()
             if count > 1
         )
         if duplicates:
@@ -373,9 +373,7 @@ def validate_tool_argument_policy_map(
         rule_ids = [rule.id for rule in rules if hasattr(rule, "id")]
         duplicates = sorted(rule_id for rule_id, count in Counter(rule_ids).items() if count > 1)
         if duplicates:
-            duplicate_rules.append(
-                f"{tool_name}: {', '.join(duplicates)}"
-            )
+            duplicate_rules.append(f"{tool_name}: {', '.join(duplicates)}")
     if duplicate_rules:
         raise ValueError(
             f"duplicate tool argument policy rule ids are not allowed for {field_name}: "
@@ -468,9 +466,7 @@ class McpToolPolicyRule(BaseModel):
         return value
 
 
-def normalize_approval_tool_settings(
-    value: object, *, field_name: str
-) -> dict[str, object]:
+def normalize_approval_tool_settings(value: object, *, field_name: str) -> dict[str, object]:
     if value is None:
         return {}
     if not isinstance(value, dict):
@@ -592,16 +588,12 @@ class SessionManifest(BaseModel):
 
     @field_validator("approval_tool_settings", mode="before")
     @classmethod
-    def normalize_approval_tool_settings_field(
-        cls, value: object
-    ) -> dict[str, object]:
+    def normalize_approval_tool_settings_field(cls, value: object) -> dict[str, object]:
         return normalize_approval_tool_settings(value, field_name="approval_tool_settings")
 
     @field_validator("approval_notification_target_ids", mode="before")
     @classmethod
-    def normalize_approval_notification_target_ids_field(
-        cls, value: object
-    ) -> list[str]:
+    def normalize_approval_notification_target_ids_field(cls, value: object) -> list[str]:
         return normalize_approval_notification_target_ids(
             value, field_name="approval_notification_target_ids"
         )
@@ -627,9 +619,7 @@ class SessionManifest(BaseModel):
 
     @field_validator("tool_argument_policies", mode="before")
     @classmethod
-    def normalize_tool_argument_policies_field(
-        cls, value: object
-    ) -> dict[str, list[object]]:
+    def normalize_tool_argument_policies_field(cls, value: object) -> dict[str, list[object]]:
         return normalize_tool_argument_policies(value, field_name="tool_argument_policies")
 
     @field_validator("tool_argument_policies")
@@ -691,16 +681,12 @@ class SessionToolApprovalLease(BaseModel):
 
     @field_validator("approval_settings", mode="before")
     @classmethod
-    def normalize_approval_settings(
-        cls, value: object
-    ) -> dict[str, object]:
+    def normalize_approval_settings(cls, value: object) -> dict[str, object]:
         return normalize_approval_tool_settings(value, field_name="approval_settings")
 
     @field_validator("approval_notification_target_ids", mode="before")
     @classmethod
-    def normalize_approval_notification_target_ids_field(
-        cls, value: object
-    ) -> list[str]:
+    def normalize_approval_notification_target_ids_field(cls, value: object) -> list[str]:
         return normalize_approval_notification_target_ids(
             value, field_name="approval_notification_target_ids"
         )
@@ -904,8 +890,12 @@ class ContainerSessionLifecycleAction(BaseModel):
 
 
 class ContainerSessionLifecycleActions(BaseModel):
-    cleanup: ContainerSessionLifecycleAction = Field(default_factory=ContainerSessionLifecycleAction)
-    recovery: ContainerSessionLifecycleAction = Field(default_factory=ContainerSessionLifecycleAction)
+    cleanup: ContainerSessionLifecycleAction = Field(
+        default_factory=ContainerSessionLifecycleAction
+    )
+    recovery: ContainerSessionLifecycleAction = Field(
+        default_factory=ContainerSessionLifecycleAction
+    )
 
 
 class ContainerSessionLifecycle(BaseModel):
@@ -1237,9 +1227,7 @@ class ApprovalRequest(BaseModel):
     notification_target_ids: list[str] = Field(default_factory=list)
     notification_attempted_at: datetime | None = None
     notification_error: str | None = None
-    notification_deliveries: list[ApprovalNotificationDeliveryRecord] = Field(
-        default_factory=list
-    )
+    notification_deliveries: list[ApprovalNotificationDeliveryRecord] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
     approver: str | None = None
@@ -2671,7 +2659,9 @@ class AdoWorkItemActivityRequest(BaseModel):
             if not text:
                 continue
             if text not in allowed:
-                raise ValueError("activity_types values must be one of: created, changed, commented")
+                raise ValueError(
+                    "activity_types values must be one of: created, changed, commented"
+                )
             if text in seen:
                 continue
             seen.add(text)
@@ -3270,6 +3260,7 @@ class WakeResumePromptPayload(BaseModel):
 class WakeScheduledRequest(BaseModel):
     request_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
+    directory_path: str = "root"
     schedule: WakeScheduleDefinition
     resume_prompt: WakeResumePromptPayload
     resume_mode: str = Field(default="same_context")
@@ -3304,6 +3295,11 @@ class WakeScheduledRequest(BaseModel):
         if not normalized:
             return "pending"
         return normalized
+
+    @field_validator("directory_path")
+    @classmethod
+    def validate_directory_path(cls, value: str) -> str:
+        return DirectoryPath(segments=value).as_posix()
 
     @field_validator("resume_mode")
     @classmethod

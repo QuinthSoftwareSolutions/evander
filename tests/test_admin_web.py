@@ -164,8 +164,7 @@ def wait_for_agent_create_operation_status(
         time.sleep(0.01)
     operation = service.vm_agent_admin.get_admin_agent_create_operation(operation_id)
     raise AssertionError(
-        f"Operation {operation_id} did not reach {status}; "
-        f"last status was {operation.status}"
+        f"Operation {operation_id} did not reach {status}; last status was {operation.status}"
     )
 
 
@@ -1108,9 +1107,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "include_existing",
     ]
     remote_issue = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "trigger:remote-issue-matching"
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:remote-issue-matching"
     )
     assert remote_issue["label"] == "Remote issue matching"
     assert [field["key"] for field in remote_issue["fields"]] == [
@@ -3315,8 +3312,12 @@ def test_admin_web_workflow_run_stream_includes_recent_node_activity_in_state_ke
         async def is_disconnected(self) -> bool:
             return False
 
-    monkeypatch.setattr(service.workflow_config_admin, "workflow_event_journal", lambda: FakeJournal())
-    monkeypatch.setattr(service.workflow_config_admin, "read_workflow_run_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(
+        service.workflow_config_admin, "workflow_event_journal", lambda: FakeJournal()
+    )
+    monkeypatch.setattr(
+        service.workflow_config_admin, "read_workflow_run_snapshot", lambda: next(snapshots)
+    )
 
     async def read_two_events() -> tuple[str, str]:
         stream = _workflow_run_events(service, RequestStub())  # type: ignore[arg-type]
@@ -4685,7 +4686,9 @@ def test_admin_web_validate_selected_workflow_pack_checks_sibling_pack_ids(
         ),
         encoding="utf-8",
     )
-    document = service.workflow_config_admin.read_workflow_editor_document(workflow_pack="pack-b.v1.json")
+    document = service.workflow_config_admin.read_workflow_editor_document(
+        workflow_pack="pack-b.v1.json"
+    )
     config = dict(document.config)
     effects = [dict(effect) for effect in config["effects"]]
     effects[0]["id"] = "shared-id"
@@ -4730,7 +4733,9 @@ def test_admin_web_manages_workflow_packs_with_privileged_revision_checks(
     config_root.mkdir(parents=True, exist_ok=True)
     config_path = config_root / "config.json"
     config_path.write_text(
-        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        json.dumps(
+            {"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}
+        ),
         encoding="utf-8",
     )
     client = TestClient(create_app(service))
@@ -4827,12 +4832,16 @@ def test_admin_web_manages_workflow_packs_with_privileged_revision_checks(
     assert detail_response.status_code == 200
     detail_payload = detail_response.json()
     assert detail_payload["entry"]["operation"] == "create"
-    assert next(file for file in detail_payload["before_files"] if file["label"] == "pack")[
-        "exists"
-    ] is False
-    assert next(file for file in detail_payload["after_files"] if file["label"] == "pack")[
-        "content"
-    ]["pack_id"] == "custom-pack"
+    assert (
+        next(file for file in detail_payload["before_files"] if file["label"] == "pack")["exists"]
+        is False
+    )
+    assert (
+        next(file for file in detail_payload["after_files"] if file["label"] == "pack")["content"][
+            "pack_id"
+        ]
+        == "custom-pack"
+    )
 
 
 def test_admin_web_workflow_pack_mutations_require_root_pack_management_permission(
@@ -4856,7 +4865,9 @@ def test_admin_web_workflow_pack_mutations_require_root_pack_management_permissi
     config_root = tmp_path / "config" / "trigger-orchestrator"
     config_root.mkdir(parents=True, exist_ok=True)
     (config_root / "config.json").write_text(
-        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        json.dumps(
+            {"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}
+        ),
         encoding="utf-8",
     )
     store = _admin_web_user_store(tmp_path)
@@ -6551,9 +6562,7 @@ def test_admin_web_filters_published_artifacts_by_artifact_space(tmp_path: Path)
     assert direct_response.status_code == 200
     assert [item["key"] for item in direct_response.json()["items"]] == ["runs/team/report"]
     assert key_response.status_code == 200
-    assert [item["key"] for item in key_response.json()["items"]] == [
-        "runs/team/backend/report"
-    ]
+    assert [item["key"] for item in key_response.json()["items"]] == ["runs/team/backend/report"]
     assert unspaced_key_response.status_code == 200
     assert unspaced_key_response.json()["total"] == 0
 
@@ -8172,9 +8181,7 @@ def test_admin_web_local_password_username_permissions_are_case_insensitive(
     assert authorized.status_code == 200
 
 
-def test_admin_web_bootstraps_local_password_user_from_env(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_admin_web_bootstraps_local_password_user_from_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "Operator")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
@@ -8190,9 +8197,7 @@ def test_admin_web_bootstraps_local_password_user_from_env(
     assert credential.login == "operator"
 
 
-def test_admin_web_local_password_supports_multiple_users(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_admin_web_local_password_supports_multiple_users(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
@@ -8251,9 +8256,7 @@ def test_admin_web_local_password_user_create_requires_password(
     assert created.json()["error"] == "password is required for new local password users"
 
 
-def test_admin_web_local_password_reset_changes_user_password(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_admin_web_local_password_reset_changes_user_password(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
@@ -8480,9 +8483,7 @@ def test_workflow_event_api_accepts_configured_machine_tokens_with_source_names(
     assert "github-secret" not in json.dumps(github_published.json())
 
 
-def test_workflow_event_api_accepts_legacy_machine_tokens(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_workflow_event_api_accepts_legacy_machine_tokens(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS", raising=False)
     monkeypatch.setenv(
         "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS",
@@ -8555,7 +8556,9 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
         wake_paths.append(wake_socket_path_for_lock(lock_path))
         return True
 
-    monkeypatch.setattr("evander.admin.services.workflow_config_service.notify_wake_socket_for_lock", _fake_notify)
+    monkeypatch.setattr(
+        "evander.admin.services.workflow_config_service.notify_wake_socket_for_lock", _fake_notify
+    )
     token = client.post("/api/workflow-events/token").json()["access_token"]
     publish_response = client.post(
         "/api/workflow-events",
@@ -8656,9 +8659,7 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     assert response.json()["payload"]["slug"] == "build-notify"
     assert response.json()["payload"]["body"] == {"target": "demo", "options": {"dry_run": True}}
     assert response.json()["payload"]["query"] == {"source": "ci"}
-    assert (
-        response.json()["payload"]["signature_header"] == headers["X-Evander-Signature-256"]
-    )
+    assert response.json()["payload"]["signature_header"] == headers["X-Evander-Signature-256"]
     assert response.json()["payload"]["received_at"].endswith("Z")
     assert response.json()["payload"]["remote_addr"]
 
@@ -9164,7 +9165,9 @@ def test_admin_web_state_exposes_effective_execution_backend(tmp_path: Path) -> 
 
 def test_admin_web_state_uses_root_execution_backend(tmp_path: Path) -> None:
     client = TestClient(
-        create_app(build_admin_runtime(write_config(tmp_path, execution_backend="container_worker_vm")))
+        create_app(
+            build_admin_runtime(write_config(tmp_path, execution_backend="container_worker_vm"))
+        )
     )
 
     response = client.get("/api/admin/state")
@@ -9962,7 +9965,9 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    service.operations_admin.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    service.operations_admin.write_assistant_settings(
+        {"workflow_generation_model": "gpt-workflow-test"}
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     captured_requests: list[dict[str, object]] = []
 
@@ -10027,7 +10032,9 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
             },
         )
 
-    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: httpx.MockTransport(handler)
+    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: (
+        httpx.MockTransport(handler)
+    )
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -10060,7 +10067,9 @@ def test_workflow_generator_rejects_cyclic_generated_graph_without_hanging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    service.operations_admin.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    service.operations_admin.write_assistant_settings(
+        {"workflow_generation_model": "gpt-workflow-test"}
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     generated = {
         "graph": {
@@ -10097,7 +10106,9 @@ def test_workflow_generator_rejects_cyclic_generated_graph_without_hanging(
             },
         )
 
-    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: httpx.MockTransport(handler)
+    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: (
+        httpx.MockTransport(handler)
+    )
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -10155,13 +10166,17 @@ def test_workflow_generator_returns_json_error_for_transport_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    service.operations_admin.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    service.operations_admin.write_assistant_settings(
+        {"workflow_generation_model": "gpt-workflow-test"}
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
 
-    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: httpx.MockTransport(handler)
+    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: (
+        httpx.MockTransport(handler)
+    )
     client = TestClient(create_app(service))
 
     response = client.post(
@@ -10179,7 +10194,9 @@ def test_workflow_generator_rejects_back_to_back_model_requests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    service.operations_admin.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    service.operations_admin.write_assistant_settings(
+        {"workflow_generation_model": "gpt-workflow-test"}
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     model_request_count = 0
 
@@ -10188,7 +10205,9 @@ def test_workflow_generator_rejects_back_to_back_model_requests(
         model_request_count += 1
         return httpx.Response(200, json=_workflow_generator_success_response())
 
-    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: httpx.MockTransport(handler)
+    service.workflow_generation_admin._workflow_generation_transport_provider = lambda: (
+        httpx.MockTransport(handler)
+    )
     client = TestClient(create_app(service))
 
     first_response = client.post(
@@ -10210,7 +10229,9 @@ def test_workflow_generator_rejects_concurrent_model_requests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    service.operations_admin.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    service.operations_admin.write_assistant_settings(
+        {"workflow_generation_model": "gpt-workflow-test"}
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     model_request_count = 0
 
@@ -10225,7 +10246,9 @@ def test_workflow_generator_rejects_concurrent_model_requests(
             await release.wait()
             return httpx.Response(200, json=_workflow_generator_success_response())
 
-        service.workflow_generation_admin._workflow_generation_transport_provider = lambda: httpx.MockTransport(handler)
+        service.workflow_generation_admin._workflow_generation_transport_provider = lambda: (
+            httpx.MockTransport(handler)
+        )
         first_task = asyncio.create_task(
             service.workflow_generation_admin.generate_workflow_editor_draft(
                 description="Every night, emit a generated summary event.",
@@ -10289,7 +10312,9 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
             "workers": {"total_workers": capacity_calls},
         }
 
-    monkeypatch.setattr(service.operations_admin, "list_background_workers", list_background_workers)
+    monkeypatch.setattr(
+        service.operations_admin, "list_background_workers", list_background_workers
+    )
     monkeypatch.setattr(service.capacity_health_admin, "read_capacity_health", read_capacity_health)
     client = TestClient(create_app(service))
 
@@ -10613,9 +10638,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     contacts = next(section for section in people["sections"] if section["title"] == "Contacts")
     assert {field["field_name"] for field in contacts["fields"]} == {"contacts"}
     communication_targets = next(
-        section
-        for section in people["sections"]
-        if section["title"] == "Communication targets"
+        section for section in people["sections"] if section["title"] == "Communication targets"
     )
     target_fields = {field["field_name"]: field for field in communication_targets["fields"]}
     assert target_fields["targets"]["source_domain"] == "communication_targets"
@@ -10682,9 +10705,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert "local_openai mode" in openai_fields["local_openai_api_base_url"]["tooltip"]
     assert "Azure OpenAI" in openai_fields["azure_openai_endpoint"]["tooltip"]
     assert "Anthropic" in openai_fields["anthropic_api_base_url"]["tooltip"]
-    assistant = next(
-        section for section in models["sections"] if section["title"] == "Assistant"
-    )
+    assistant = next(section for section in models["sections"] if section["title"] == "Assistant")
     assistant_fields = {field["field_name"]: field for field in assistant["fields"]}
     assert assistant_fields["enabled"]["scope"] == "global"
     assert "admin web assistant launcher" in assistant_fields["enabled"]["tooltip"]
@@ -10752,8 +10773,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert agent_prompt_fields["agent_context_retry_target_chars"]["kind"] == "int"
     assert "container worker service" in all_fields["container_worker_base_url"]["tooltip"]
     assert (
-        "Fallback runner container image"
-        in all_fields["container_worker_default_image"]["tooltip"]
+        "Fallback runner container image" in all_fields["container_worker_default_image"]["tooltip"]
     )
     assert "catalog" in all_fields["container_worker_images"]["tooltip"]
     assert (
@@ -10801,9 +10821,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "email_send_enabled",
     }
     communication_files = next(
-        section
-        for section in people["sections"]
-        if section["title"] == "Communication files"
+        section for section in people["sections"] if section["title"] == "Communication files"
     )
     communication_file_fields = {field["field_name"] for field in communication_files["fields"]}
     assert "communication_file_receive_enabled" in communication_file_fields
@@ -10912,9 +10930,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     pr_feedback = next(
         section for section in code["sections"] if section["title"] == "PR feedback approval"
     )
-    assert {field["field_name"] for field in pr_feedback["fields"]} == {
-        "pr_reply_require_approval"
-    }
+    assert {field["field_name"] for field in pr_feedback["fields"]} == {"pr_reply_require_approval"}
 
     network = next(tab for tab in payload["tabs"] if tab["key"] == "network_relays_packages")
     vm_provider = next(
@@ -10928,9 +10944,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     libvirt_templates = next(
         section for section in network["sections"] if section["title"] == "Libvirt templates"
     )
-    libvirt_template_fields = {
-        field["field_name"]: field for field in libvirt_templates["fields"]
-    }
+    libvirt_template_fields = {field["field_name"]: field for field in libvirt_templates["fields"]}
     assert set(libvirt_template_fields) == {
         "libvirt_vm_default_template",
         "libvirt_vm_templates",
@@ -11500,13 +11514,17 @@ def test_admin_web_configuration_tab_save_removed_fields_clears_child_domain_ove
     assert child_providers.data is not None
     assert child_providers.data.exists is False
     assert child_providers.data.config is None
-    effective_providers = service.operations_admin.compute_directory_effective_config("root/ops", "providers")
+    effective_providers = service.operations_admin.compute_directory_effective_config(
+        "root/ops", "providers"
+    )
     assert effective_providers.ok is True
     assert effective_providers.data is not None
     assert effective_providers.data.resolution.effective_config["teams_delegated_scopes"] == [
         "Chat.ReadWrite"
     ]
-    targets = service.operations_admin.read_directory_domain_config("root/ops", COMMUNICATION_TARGETS_DOMAIN)
+    targets = service.operations_admin.read_directory_domain_config(
+        "root/ops", COMMUNICATION_TARGETS_DOMAIN
+    )
     assert targets.ok is True
     assert targets.data is not None
     assert targets.data.config is not None
@@ -11947,8 +11965,7 @@ def test_request_has_privileged_operations_requires_unlock_state() -> None:
     service = SimpleNamespace(operations_admin=SimpleNamespace())
     locked_auth = SimpleNamespace(
         require=lambda _request: calls.append("require") or {"sid": "test"},
-        privileged_for_request=lambda _request: calls.append("privileged_for_request")
-        or False,
+        privileged_for_request=lambda _request: calls.append("privileged_for_request") or False,
     )
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
 
@@ -12421,9 +12438,7 @@ def _install_vm_issue_mutation_stub(
     if case in {"issue-update", "issue-delete", "issue-create-vm"}:
 
         def resolve_local_issue_record(_service, issue_identifier):
-            return _admin_route_issue_record(
-                issue_identifier, directory_path=directory_path
-            )
+            return _admin_route_issue_record(issue_identifier, directory_path=directory_path)
 
         monkeypatch.setattr(
             vms_issues_module,
@@ -12521,9 +12536,7 @@ def _install_vm_issue_mutation_stub(
         def update_local_issue(self, issue_identifier, **_payload):
             del self
             calls.append(f"update_local_issue:{issue_identifier}")
-            return _admin_route_issue_record(
-                issue_identifier, directory_path=directory_path
-            )
+            return _admin_route_issue_record(issue_identifier, directory_path=directory_path)
 
         monkeypatch.setattr(
             service.issue_git_admin,
@@ -12585,16 +12598,12 @@ def test_admin_web_agent_mutations_require_owner_unlock(
     _install_admin_agent_mutation_stub(service, monkeypatch, case, calls)
     client = TestClient(create_app(service))
 
-    locked_response = _invoke_admin_mutation(
-        client, method=method, path=path, payload=payload
-    )
+    locked_response = _invoke_admin_mutation(client, method=method, path=path, payload=payload)
     assert calls == []
     _assert_admin_mutation_forbidden(locked_response)
 
     _unlock_privileged_operations(client)
-    unlocked_response = _invoke_admin_mutation(
-        client, method=method, path=path, payload=payload
-    )
+    unlocked_response = _invoke_admin_mutation(client, method=method, path=path, payload=payload)
 
     assert unlocked_response.status_code == expected_status
     assert calls
@@ -12642,16 +12651,12 @@ def test_admin_web_vm_issue_mutations_require_owner_unlock(
     _install_vm_issue_mutation_stub(service, monkeypatch, case, calls)
     client = TestClient(create_app(service))
 
-    locked_response = _invoke_admin_mutation(
-        client, method=method, path=path, payload=payload
-    )
+    locked_response = _invoke_admin_mutation(client, method=method, path=path, payload=payload)
     assert calls == []
     _assert_admin_mutation_forbidden(locked_response)
 
     _unlock_privileged_operations(client)
-    unlocked_response = _invoke_admin_mutation(
-        client, method=method, path=path, payload=payload
-    )
+    unlocked_response = _invoke_admin_mutation(client, method=method, path=path, payload=payload)
 
     assert unlocked_response.status_code == expected_status
     assert calls
@@ -12738,15 +12743,64 @@ def test_admin_web_vm_issue_mutations_authorize_scoped_owner_at_target_directory
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     service.directory_admin.create_child(parent="root", name="ops")
     calls: list[str] = []
-    _install_vm_issue_mutation_stub(
-        service, monkeypatch, case, calls, directory_path="root/ops"
-    )
+    _install_vm_issue_mutation_stub(service, monkeypatch, case, calls, directory_path="root/ops")
     client = _scoped_owner_admin_web_client(monkeypatch, service)
 
     response = _invoke_admin_mutation(client, method=method, path=path, payload=payload)
 
     assert response.status_code == expected_status
     assert calls
+
+
+def test_admin_web_vm_action_requires_owner_for_every_linked_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="team-a")
+    service.directory_admin.create_child(parent="root", name="team-b")
+    destroyed: list[str] = []
+
+    def list_vms(self, **_kwargs):
+        del self
+        return [
+            VmSummary(
+                vm_name="shared-vm",
+                issue_number="ISSUE-1",
+                session_ids=["session-a", "session-b"],
+                directory_paths=["root/team-a", "root/team-b"],
+                libvirt_state="stopped",
+                agent_state="idle",
+            )
+        ]
+
+    def destroy_vm(self, vm_name: str) -> VmActionResult:
+        del self
+        destroyed.append(vm_name)
+        return VmActionResult(
+            success=True,
+            vm_name=vm_name,
+            action="destroy",
+            message="destroyed",
+        )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(list_vms, service.vm_agent_admin),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "destroy_vm",
+        MethodType(destroy_vm, service.vm_agent_admin),
+    )
+    client = _scoped_owner_admin_web_client(monkeypatch, service, directory_path="root/team-a")
+
+    response = client.post(
+        "/api/admin/vms/shared-vm/actions/destroy?directory_path=root/team-a", json={}
+    )
+
+    _assert_admin_mutation_forbidden(response)
+    assert destroyed == []
 
 
 @pytest.mark.parametrize(
@@ -12804,9 +12858,7 @@ def test_admin_web_agent_mutations_authorize_scoped_owner_at_target_directory(
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     service.directory_admin.create_child(parent="root", name="ops")
     calls: list[str] = []
-    _install_admin_agent_mutation_stub(
-        service, monkeypatch, case, calls, directory_path="root/ops"
-    )
+    _install_admin_agent_mutation_stub(service, monkeypatch, case, calls, directory_path="root/ops")
     client = _scoped_owner_admin_web_client(monkeypatch, service)
 
     response = _invoke_admin_mutation(client, method=method, path=path, payload=payload)
@@ -15150,7 +15202,9 @@ def test_admin_web_create_vm_from_issue_runs_in_threadpool(
         )
 
     monkeypatch.setattr(
-        service.vm_agent_admin, "create_issue_vm_from_local_issue", MethodType(create_issue_vm, service.vm_agent_admin)
+        service.vm_agent_admin,
+        "create_issue_vm_from_local_issue",
+        MethodType(create_issue_vm, service.vm_agent_admin),
     )
     threadpool_calls: list[str] = []
 

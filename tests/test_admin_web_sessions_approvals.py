@@ -190,7 +190,13 @@ def _seed_session(
 
 def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> None:
     source = (
-        ROOT / "frontend" / "workflow-editor" / "src" / "features" / "sessions" / "SessionsScreen.tsx"
+        ROOT
+        / "frontend"
+        / "workflow-editor"
+        / "src"
+        / "features"
+        / "sessions"
+        / "SessionsScreen.tsx"
     ).read_text(encoding="utf-8")
 
     assert '"Voice calling"' in source
@@ -200,8 +206,7 @@ def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> N
     )
     assert (
         '"stage_artifact",\n    "communication_copy_artifact_to_workspace",\n'
-        '    "communication_stage_workspace_file",'
-        in source
+        '    "communication_stage_workspace_file",' in source
     )
 
 
@@ -349,10 +354,9 @@ def test_admin_web_session_mutations_require_owner_unlock(
     assert service.runtime.session_repository.get_session("session-tools").allowed_tools == [
         ToolName.APPROVAL_CHECK
     ]
-    assert (
-        service.runtime.session_repository.get_session("session-policy").allowed_script_names
-        == ["old-script"]
-    )
+    assert service.runtime.session_repository.get_session(
+        "session-policy"
+    ).allowed_script_names == ["old-script"]
     assert cleanup_calls == []
 
     _unlock_privileged_operations(operator_client)
@@ -369,10 +373,9 @@ def test_admin_web_session_mutations_require_owner_unlock(
         ToolName.APPROVAL_CHECK,
         ToolName.APPROVAL_SUBMIT,
     ]
-    assert (
-        service.runtime.session_repository.get_session("session-policy").allowed_script_names
-        == ["new-script"]
-    )
+    assert service.runtime.session_repository.get_session(
+        "session-policy"
+    ).allowed_script_names == ["new-script"]
     assert cleanup_calls == ["session-cleanup"]
 
 
@@ -440,10 +443,9 @@ def test_admin_web_session_mutations_authorize_scoped_owner_at_session_directory
         ToolName.APPROVAL_CHECK,
         ToolName.APPROVAL_SUBMIT,
     ]
-    assert (
-        service.runtime.session_repository.get_session("session-policy").allowed_script_names
-        == ["new-script"]
-    )
+    assert service.runtime.session_repository.get_session(
+        "session-policy"
+    ).allowed_script_names == ["new-script"]
     assert cleanup_calls == ["session-cleanup"]
 
 
@@ -470,7 +472,9 @@ def test_admin_web_mcp_policy_mutation_requires_owner_unlock(
     assert stored_mcp_tool_policies() == {}
 
     _unlock_privileged_operations(operator_client)
-    unlocked_non_owner = operator_client.put("/api/admin/mcp-tools?directory_path=root", json=payload)
+    unlocked_non_owner = operator_client.put(
+        "/api/admin/mcp-tools?directory_path=root", json=payload
+    )
     assert unlocked_non_owner.status_code == 403
     assert unlocked_non_owner.json()["error"] == "Privileged operations are locked."
     assert stored_mcp_tool_policies() == {}
@@ -537,7 +541,9 @@ def test_admin_web_wake_schedule_mutations_require_owner_unlock(
                 f"/api/admin/sessions/wake-schedules/{existing.request_id}",
                 json={"prompt": "Updated prompt"},
             ),
-            client.post(f"/api/admin/scheduled-wakes/{failed.request_id}/retry", json={"run_now": True}),
+            client.post(
+                f"/api/admin/scheduled-wakes/{failed.request_id}/retry", json={"run_now": True}
+            ),
             client.delete(f"/api/admin/sessions/wake-schedules/{existing.request_id}"),
         ]
         return [response.status_code for response in responses]
@@ -645,6 +651,36 @@ def test_admin_web_wake_schedule_mutations_authorize_scoped_owner_at_session_dir
         if item["request_id"] not in {existing.request_id, failed.request_id}
     ]
     assert len(created) == 1
+
+
+def test_admin_web_wake_schedule_delete_uses_stored_directory_when_session_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    _seed_session(
+        service,
+        "deleted-wake-session",
+        directory_path="root/ops",
+        vm_id="vm-wake",
+        allowed_tools=[ToolName.SCHEDULE_RESUME, ToolName.CANCEL_SCHEDULED_WAKE],
+    )
+    existing = service.operations_admin.create_wake_schedule(
+        session_id="deleted-wake-session",
+        prompt="Clean up after the session is gone",
+        resume_at=datetime.now(UTC) + timedelta(minutes=30),
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    assert existing.directory_path == "root/ops"
+    service.runtime.session_repository.delete_session("deleted-wake-session")
+    client = _authenticated_scoped_owner_client(service, monkeypatch)
+
+    response = client.delete(f"/api/admin/sessions/wake-schedules/{existing.request_id}")
+
+    assert response.status_code == 200
+    assert service.runtime.wake_store.get_request(existing.request_id) is None
 
 
 def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -> None:
@@ -759,12 +795,18 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
     assert detail_payload["approval_diagnostics"]["request_id"] == "approval-1"
     assert detail_payload["approval_diagnostics"]["status"] == "pending"
     assert detail_payload["approval_diagnostics"]["approved_payload"]["token"] == "<redacted>"
-    assert detail_payload["approval_diagnostics"]["blocked_tool_call_diagnostics"][0][
-        "attempted_payload"
-    ]["token"] == "<redacted>"
-    assert detail_payload["audit_context"][0]["result"]["approval_diagnostic"]["attempted_payload"][
-        "token"
-    ] == "<redacted>"
+    assert (
+        detail_payload["approval_diagnostics"]["blocked_tool_call_diagnostics"][0][
+            "attempted_payload"
+        ]["token"]
+        == "<redacted>"
+    )
+    assert (
+        detail_payload["audit_context"][0]["result"]["approval_diagnostic"]["attempted_payload"][
+            "token"
+        ]
+        == "<redacted>"
+    )
     assert detail_payload["request"]["notification_status"] == "delivered"
     assert detail_payload["request"]["notification_target_ids"] == ["ops-approvals"]
     assert detail_payload["request"]["notification_deliveries"][0]["target_id"] == "ops-approvals"
@@ -1032,10 +1074,7 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     )
     assert session_policy_fields["communication_file_receive_enabled"]["kind"] == "bool"
     assert session_policy_fields["communication_file_max_bytes"]["kind"] == "int_or_null"
-    assert (
-        session_policy_fields["communication_file_allowed_mime_types"]["kind"]
-        == "string_list"
-    )
+    assert session_policy_fields["communication_file_allowed_mime_types"]["kind"] == "string_list"
     catalog_tool_values = {item["value"] for item in catalog_payload["tool_options"]}
     assert {
         "add_message_reaction",
@@ -1057,9 +1096,10 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert "Read phone call status" in tool_options["get_phone_call_result"]["description"]
     assert "Submit a human approval request" in tool_options["approval_submit"]["description"]
     assert "Check the current state" in tool_options["approval_check"]["description"]
-    assert "Delete Azure DevOps backlog items" in tool_options[
-        "delete_ado_backlog_item"
-    ]["description"]
+    assert (
+        "Delete Azure DevOps backlog items"
+        in tool_options["delete_ado_backlog_item"]["description"]
+    )
     assert list_response.status_code == 200
     list_payload = list_response.json()
     assert list_payload["items"][0]["session_id"] == "issue-14085-session"
@@ -1428,9 +1468,7 @@ def test_admin_web_exposes_runtime_image_payloads_for_session_list_and_detail(
     container_detail_response = client.get(f"/api/admin/sessions/{container_session_id}")
 
     assert list_response.status_code == 200
-    items_by_session_id = {
-        item["session_id"]: item for item in list_response.json()["items"]
-    }
+    items_by_session_id = {item["session_id"]: item for item in list_response.json()["items"]}
     assert set(items_by_session_id) == {
         explicit_session_id,
         default_session_id,
@@ -1498,14 +1536,10 @@ def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> Non
         item["value"] for item in initial_payload["items"] if not item["description"].strip()
     ]
     assert missing_descriptions == []
-    assert "Submit a human approval request" in initial_by_tool["approval_submit"][
-        "description"
-    ]
+    assert "Submit a human approval request" in initial_by_tool["approval_submit"]["description"]
     assert "Check the current state" in initial_by_tool["approval_check"]["description"]
     assert initial_by_tool["semantic_delete_points"]["approval_required"] is True
-    run_script = next(
-        item for item in initial_payload["items"] if item["value"] == "run_script"
-    )
+    run_script = next(item for item in initial_payload["items"] if item["value"] == "run_script")
     assert run_script["effective_settings"] == {
         "ttl_seconds": 3600,
         "max_uses": 1,
@@ -1631,17 +1665,19 @@ def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
     assert list_item["container_lifecycle"]["last_signal_at"] == "2026-05-21T11:55:00Z"
     assert detail_response.status_code == 200
     assert detail_response.json()["session"]["container_lifecycle"]["state"] == "stopped"
-    assert detail_response.json()["session"]["container_lifecycle"]["actions"]["cleanup"][
-        "supported"
-    ] is True
+    assert (
+        detail_response.json()["session"]["container_lifecycle"]["actions"]["cleanup"]["supported"]
+        is True
+    )
     assert cleanup_response.status_code == 200
     cleanup_payload = cleanup_response.json()
     assert cleanup_payload["action"] == "cleanup_container_session"
     assert cleanup_payload["message"] == "Cleaned up container worker session container-session"
     assert cleanup_payload["session"]["container_lifecycle"]["state"] == "cleaned_up"
-    assert cleanup_payload["session"]["container_lifecycle"]["actions"]["cleanup"][
-        "supported"
-    ] is False
+    assert (
+        cleanup_payload["session"]["container_lifecycle"]["actions"]["cleanup"]["supported"]
+        is False
+    )
     assert refreshed_detail.json()["session"]["container_lifecycle"]["state"] == "cleaned_up"
     assert service.runtime.session_repository.get_session("container-session") is not None
 
@@ -1727,9 +1763,9 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
     assert cleanup_payload["error"] == cleanup_payload["message"]
     assert "cleanup exploded" in cleanup_payload["message"]
     assert cleanup_payload["session"]["container_lifecycle"]["state"] == "cleanup_failed"
-    assert cleanup_payload["session"]["container_lifecycle"]["actions"]["cleanup"][
-        "supported"
-    ] is True
+    assert (
+        cleanup_payload["session"]["container_lifecycle"]["actions"]["cleanup"]["supported"] is True
+    )
     assert cleanup_payload["session"]["container_lifecycle"]["cleanup_error"].endswith(
         "cleanup exploded"
     )
@@ -1747,15 +1783,11 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
             "contacts": {
                 "ops": {
                     "name": "Ops",
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550001", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550001", "primary": True}],
                 },
                 "support": {
                     "name": "Support",
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550002", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550002", "primary": True}],
                 },
             }
         },
@@ -1851,9 +1883,12 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
         "team-b/channel-2",
         "chat:chat-1",
     ]
-    assert response.json()["session"]["effective_tool_policy"]["tool_argument_policies"][
-        "create_ado_backlog_item"
-    ][0]["id"] == "issue-policy"
+    assert (
+        response.json()["session"]["effective_tool_policy"]["tool_argument_policies"][
+            "create_ado_backlog_item"
+        ][0]["id"]
+        == "issue-policy"
+    )
     assert response.json()["session"]["tool_summary"]["approval_required_tools"] == ["run_script"]
     assert response.json()["session"]["approval_required_tools"] == ["run_script"]
     assert response.json()["session"]["approval_notification_target_ids"] == ["ops-approvals"]

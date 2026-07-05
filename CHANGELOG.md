@@ -11,6 +11,9 @@
   unreachable first record does not block later approved addresses.
 - Scoped Admin Web session and wake-schedule mutation owner checks to the
   target session directory.
+- Required Admin Web VM actions to authorize every linked directory, preserved
+  the ambiguous libvirt agent-delete error path, and kept orphaned wake
+  schedules cleanable through their stored directory.
 
 ## 2026-07-05 - Tokenized Relay Security Fixes
 

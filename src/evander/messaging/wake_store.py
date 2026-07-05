@@ -102,6 +102,7 @@ class WakeRequestRepository(Protocol):
         resume_mode: str,
         enabled: bool,
         metadata: dict[str, Any],
+        directory_path: str = "root",
     ) -> WakeScheduledRequest: ...
 
     def list_requests(
@@ -442,6 +443,7 @@ class WakeRequestStore:
         resume_mode: str,
         enabled: bool,
         metadata: dict[str, Any],
+        directory_path: str = "root",
     ) -> WakeScheduledRequest:
         now = datetime.now(UTC)
         with self._lock, self._connect() as connection:
@@ -458,6 +460,7 @@ class WakeRequestStore:
             request = WakeScheduledRequest(
                 request_id=normalized_request_id,
                 session_id=session_id,
+                directory_path=directory_path,
                 schedule=schedule,
                 resume_prompt=WakeResumePromptPayload(prompt=prompt, metadata=metadata),
                 resume_mode=resume_mode,
@@ -970,7 +973,9 @@ class WakeRequestStore:
                 if next_run_at is None or next_run_at > now_utc:
                     continue
                 due_requests.append(request)
-        due_requests.sort(key=lambda request: (request.next_run_at or request.created_at, request.request_id))
+        due_requests.sort(
+            key=lambda request: (request.next_run_at or request.created_at, request.request_id)
+        )
         return due_requests
 
     def ensure_schema(self) -> None:
@@ -1537,9 +1542,9 @@ class WakeRequestStore:
         request.next_run_at = now_utc + timedelta(seconds=backoff_seconds)
         if current_status == "failed":
             request.last_error = request.last_error or retry_reason
-            request.last_error_at = request.last_error_at or getattr(
-                latest_dispatch, "dispatched_at", None
-            ) or now_utc
+            request.last_error_at = (
+                request.last_error_at or getattr(latest_dispatch, "dispatched_at", None) or now_utc
+            )
         else:
             request.last_error = retry_reason
             request.last_error_at = now_utc
@@ -1664,7 +1669,9 @@ class WakeRequestStore:
             "source": request.source,
             "resume_at": self._datetime_to_storage(request.schedule.resume_at),
             "next_run_at": self._datetime_to_storage(request.next_run_at),
-            "scheduled_for": self._datetime_to_storage(request.next_run_at or request.schedule.resume_at),
+            "scheduled_for": self._datetime_to_storage(
+                request.next_run_at or request.schedule.resume_at
+            ),
             "schedule_cron": request.schedule.cron,
             "created_at": self._datetime_to_storage(request.created_at),
             "updated_at": self._datetime_to_storage(request.updated_at),
@@ -1674,7 +1681,8 @@ class WakeRequestStore:
             "prompt_summary": self._prompt_summary(prompt),
             "redacted_prompt": "[redacted]" if prompt else None,
             "latest_dispatch": latest_dispatch_summary,
-            "latest_dispatch_id": request.last_dispatch_id or getattr(latest_dispatch, "dispatch_id", None),
+            "latest_dispatch_id": request.last_dispatch_id
+            or getattr(latest_dispatch, "dispatch_id", None),
             "latest_dispatch_status": request.last_dispatch_status
             or getattr(latest_dispatch, "status", None),
             "last_error": self._sanitize_text(request.last_error),

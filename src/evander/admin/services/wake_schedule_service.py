@@ -18,6 +18,15 @@ class WakeScheduleAdminService:
     def __init__(self, dependencies: WakeScheduleAdminDependencies) -> None:
         self._deps = dependencies
 
+    def _session_directory_path(self, session_id: str) -> str:
+        repository = getattr(self._deps.runtime, "session_repository", None)
+        get_session = getattr(repository, "get_session", None)
+        if callable(get_session):
+            session = get_session(session_id)
+            if session is not None:
+                return str(getattr(session, "directory_path", None) or "root").strip() or "root"
+        return "root"
+
     def list_wake_schedules(
         self,
         *,
@@ -39,6 +48,7 @@ class WakeScheduleAdminService:
                 {
                     "request_id": request.request_id,
                     "session_id": request.session_id,
+                    "directory_path": request.directory_path,
                     "resume_at": request.schedule.resume_at,
                     "cron": request.schedule.cron,
                     "prompt": request.resume_prompt.prompt,
@@ -235,6 +245,9 @@ class WakeScheduleAdminService:
             schedule=schedule,
             enabled=bool(enabled),
         )
+        directory_path = self._session_directory_path(normalized_session_id)
+        request_metadata = dict(metadata or {})
+        request_metadata.setdefault("directory_path", directory_path)
         return self._deps.runtime.wake_store.schedule_resume_request(
             session_id=normalized_session_id,
             prompt=normalized_prompt,
@@ -245,7 +258,8 @@ class WakeScheduleAdminService:
             source=normalized_source,
             resume_mode=normalized_resume_mode,
             enabled=bool(enabled),
-            metadata=metadata or {},
+            directory_path=directory_path,
+            metadata=request_metadata,
         )
 
     def edit_wake_schedule(

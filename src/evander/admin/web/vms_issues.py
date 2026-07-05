@@ -80,7 +80,9 @@ def _find_vm_summary(
 
 
 def _issue_setup_default_model(service: AdminRuntimeComponents, directory_path: str) -> str | None:
-    effective_result = service.operations_admin.compute_directory_effective_config(directory_path, "issue_setup")
+    effective_result = service.operations_admin.compute_directory_effective_config(
+        directory_path, "issue_setup"
+    )
     if not effective_result.ok or effective_result.data is None:
         return None
     return (
@@ -197,7 +199,9 @@ def _issue_record_payload(issue: LocalIssueRecord) -> dict[str, Any]:
     }
 
 
-def _resolve_local_issue_record(service: AdminRuntimeComponents, issue_identifier: str) -> LocalIssueRecord:
+def _resolve_local_issue_record(
+    service: AdminRuntimeComponents, issue_identifier: str
+) -> LocalIssueRecord:
     try:
         return service.local_issue_identity_resolver.resolve_record(issue_identifier)
     except ValueError as exc:
@@ -239,7 +243,9 @@ def _issue_detail_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _local_issue_detail_payload(service: AdminRuntimeComponents, issue: LocalIssueRecord) -> dict[str, Any]:
+def _local_issue_detail_payload(
+    service: AdminRuntimeComponents, issue: LocalIssueRecord
+) -> dict[str, Any]:
     payload = issue.model_dump(mode="json")
     payload["local_source_type"] = issue.source_type
     proxy_target = service.issue_git_support.proxy_target_for_issue(issue)
@@ -303,6 +309,19 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
             return None
         return json_error("Privileged operations are locked.", status_code=403)
 
+    def vm_summary_directory_paths(summary: VmSummary) -> tuple[str, ...]:
+        paths = [
+            str(path or "root").strip() or "root"
+            for path in getattr(summary, "directory_paths", ())
+        ]
+        return tuple(dict.fromkeys(paths)) or ("root",)
+
+    def require_owner_for_vm_summary(request: Request, summary: VmSummary) -> JSONResponse | None:
+        for directory_path in vm_summary_directory_paths(summary):
+            if error_response := require_owner_privileged(request, directory_path=directory_path):
+                return error_response
+        return None
+
     async def list_vms(request: Request) -> JSONResponse:
         directory_path = _string_query(request, "directory_path")
         direct_only = _bool_query(request, "direct_only", default=True)
@@ -359,18 +378,19 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
         action = request.path_params["action"]
         directory_path = _string_query(request, "directory_path")
         direct_only = _bool_query(request, "direct_only", default=False)
-        if error_response := require_owner_privileged(request, directory_path=directory_path):
-            return error_response
         try:
+            summary = await run_in_threadpool(
+                _find_vm_summary,
+                service,
+                vm_name,
+                directory_path=directory_path,
+                direct_only=direct_only,
+            )
+            if error_response := require_owner_for_vm_summary(request, summary):
+                return error_response
             payload = await _json_body(request)
 
             def _mutate_vm() -> VmActionResult:
-                summary = _find_vm_summary(
-                    service,
-                    vm_name,
-                    directory_path=directory_path,
-                    direct_only=direct_only,
-                )
                 if action == "start":
                     validation_error = _validate_vm_model_configuration(
                         service,
@@ -431,9 +451,7 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
         try:
             payload = await _json_body(request)
             directory_path = str(payload.get("directory_path") or "root").strip() or "root"
-            if error_response := require_owner_privileged(
-                request, directory_path=directory_path
-            ):
+            if error_response := require_owner_privileged(request, directory_path=directory_path):
                 return error_response
             vm_name = str(payload.get("vm_name") or "").strip()
             if not vm_name:
@@ -493,9 +511,7 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
         try:
             payload = await _json_body(request)
             directory_path = str(payload.get("directory_path") or "root").strip() or "root"
-            if error_response := require_owner_privileged(
-                request, directory_path=directory_path
-            ):
+            if error_response := require_owner_privileged(request, directory_path=directory_path):
                 return error_response
 
             def _create_issue() -> tuple[LocalIssueRecord, VmActionResult | None]:
