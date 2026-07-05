@@ -12131,6 +12131,11 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
     assert summary_payload["summary_only"] is True
     assert summary_payload["reconcile_containers"] is False
     assert summary_payload["omit_vm_state"] is True
+    summary_container_item = next(
+        item for item in summary_payload["items"] if item["backend"] == "container_worker_vm"
+    )
+    assert "session_policy" in summary_container_item["host"]
+    assert "executions" in summary_container_item["host"]
     assert list_vms_calls[1]["directory_path"] == "root/team-a"
     assert list_vms_calls[1]["omit_state"] is True
 
@@ -12205,7 +12210,11 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
 
     summary_url = (
         "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
-        "&summary_only=true&_dashboard=1"
+        "&summary_only=true&_dashboard=1&_dashboard_agent_inventory=1"
+    )
+    agent_page_summary_url = (
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+        "&summary_only=true&_dashboard=1&omit_vm_state=false"
     )
     deep_url = (
         "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
@@ -12215,11 +12224,13 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
 
     first = client.get(summary_url)
     second = client.get(summary_url)
+    agent_page_summary = client.get(agent_page_summary_url)
     live = client.get(deep_url)
     refreshed = client.get(refresh_url)
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert agent_page_summary.status_code == 200
     assert live.status_code == 200
     assert refreshed.status_code == 200
     assert first.headers["x-admin-web-cache"] == "miss"
@@ -12236,6 +12247,9 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
     assert "metadata" not in summary_item["host"]
     assert "records" not in summary_item["prompt_queue"]
     assert second.json() == first.json()
+    agent_page_item = agent_page_summary.json()["items"][0]
+    assert "session_policy" in agent_page_item["host"]
+    assert "metadata" in agent_page_item["host"]
     assert live.json()["summary_only"] is False
     assert live.json()["reconcile_containers"] is True
     assert live.json()["omit_vm_state"] is False
@@ -12252,6 +12266,16 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
             "include_inactive": True,
             "reconcile_containers": False,
             "omit_vm_state": True,
+            "summary_only": True,
+            "backend": "all",
+            "include_prompt_queue": True,
+        },
+        {
+            "directory_path": "root/team-a",
+            "direct_only": True,
+            "include_inactive": True,
+            "reconcile_containers": False,
+            "omit_vm_state": False,
             "summary_only": True,
             "backend": "all",
             "include_prompt_queue": True,

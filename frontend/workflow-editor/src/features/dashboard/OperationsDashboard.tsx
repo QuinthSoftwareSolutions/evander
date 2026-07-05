@@ -666,7 +666,7 @@ function remoteFromNotModified<T>(current: RemoteState<T>): RemoteState<T> {
     ...current,
     loading: false,
     error: null,
-    missing: current.data ? null : current.missing,
+    missing: current.missing,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -1452,6 +1452,7 @@ function dashboardAgentInventoryUrl(directoryPath: string, refreshKey: number | 
     include_inactive: true,
     backend: "all",
     summary_only: true,
+    _dashboard_agent_inventory: true,
     reconcile_containers: false,
     omit_vm_state: true,
     ...dashboardCacheParams(refreshKey),

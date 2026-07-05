@@ -15,6 +15,7 @@ from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.web.shared import AdminWebAuth, json_error
 
 DASHBOARD_AGENT_LIST_CACHE_TTL_SECONDS = 10.0
+DASHBOARD_AGENT_INVENTORY_PARAM = "_dashboard_agent_inventory"
 
 
 def _jsonable(value: Any) -> Any:
@@ -155,6 +156,10 @@ def agent_routes(
         include_inactive = _bool_query(request, "include_inactive", default=True)
         backend = _string_query(request, "backend", default="all")
         summary_only = _bool_query(request, "summary_only", default=False)
+        dashboard_request = _bool_query(request, "_dashboard", default=False)
+        dashboard_agent_inventory = _bool_query(
+            request, DASHBOARD_AGENT_INVENTORY_PARAM, default=False
+        )
         reconcile_containers = _optional_bool_query(request, "reconcile_containers")
         if reconcile_containers is None:
             reconcile_containers = not summary_only
@@ -180,7 +185,9 @@ def agent_routes(
         return JSONResponse(
             {
                 "items": [
-                    _compact_agent_record_payload(record) if summary_only else _jsonable(record)
+                    _compact_agent_record_payload(record)
+                    if summary_only and dashboard_request and dashboard_agent_inventory
+                    else _jsonable(record)
                     for record in records
                 ],
                 "directory_path": directory_path or "root",
