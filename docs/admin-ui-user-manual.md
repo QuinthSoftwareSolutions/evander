@@ -425,10 +425,10 @@ Specialized configuration areas:
   launch defaults, and guest heartbeat behavior.
 - **Code, Issues & Pull Requests**: configure Azure DevOps, GitHub, ADO worker filters, Git
   transport, PR feedback approval, and PR templates.
-- **Access, Approvals & Audit**: keep core approval timing, MCP tool policies, tool argument
-  guardrails, and audit redaction together.
-- **Network, Relays & Package Access**: configure VM network, gateway, relay endpoints, NuGet,
-  and npm audit facade settings.
+- **Access, Approvals & Audit**: keep approval-required tools, core approval timing, MCP tool
+  policies, tool argument guardrails, and audit redaction together.
+- **Network, Relays & Package Access**: configure VM provider defaults, libvirt templates, VM
+  network, gateway, relay endpoints, NuGet, and npm audit facade settings.
 - **Automation & Assignment**: set issue intake capacity and assignment roles.
 - **Advanced & Raw**: inspect advanced provider state and support diagnostics.
 - **Directory override JSON**: copy the unified explicit overrides for review, diffing, or support.

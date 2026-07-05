@@ -10677,6 +10677,16 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     )
 
     access_policy = next(tab for tab in payload["tabs"] if tab["key"] == "access_approvals_audit")
+    approval_requirements = next(
+        section
+        for section in access_policy["sections"]
+        if section["title"] == "Approval requirements"
+    )
+    approval_requirement_fields = {
+        field["field_name"]: field for field in approval_requirements["fields"]
+    }
+    assert set(approval_requirement_fields) == {"approval_required_tools"}
+    assert approval_requirement_fields["approval_required_tools"]["source_domain"] == "policy"
     tool_argument_policy = next(
         section
         for section in access_policy["sections"]
@@ -10744,6 +10754,26 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     }
 
     network = next(tab for tab in payload["tabs"] if tab["key"] == "network_relays_packages")
+    vm_provider = next(
+        section for section in network["sections"] if section["title"] == "VM provider"
+    )
+    vm_provider_fields = {field["field_name"]: field for field in vm_provider["fields"]}
+    assert set(vm_provider_fields) == {"provider", "provider_defaults", "azure"}
+    assert vm_provider_fields["provider"]["kind"] == "text"
+    assert vm_provider_fields["provider_defaults"]["kind"] == "json"
+    assert vm_provider_fields["azure"]["kind"] == "json"
+    libvirt_templates = next(
+        section for section in network["sections"] if section["title"] == "Libvirt templates"
+    )
+    libvirt_template_fields = {
+        field["field_name"]: field for field in libvirt_templates["fields"]
+    }
+    assert set(libvirt_template_fields) == {
+        "libvirt_vm_default_template",
+        "libvirt_vm_templates",
+    }
+    assert libvirt_template_fields["libvirt_vm_default_template"]["kind"] == "text"
+    assert libvirt_template_fields["libvirt_vm_templates"]["kind"] == "json"
     http_target_relay = next(
         section for section in network["sections"] if section["title"] == "HTTP target relay"
     )

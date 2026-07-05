@@ -101,6 +101,9 @@ _APPROVAL_TIMING_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
 _APPROVAL_NOTIFICATION_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
     ("policy", "approval_notification_target_ids"),
 )
+_APPROVAL_REQUIRED_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("policy", "approval_required_tools"),
+)
 _MCP_TOOL_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
     ("policy", "mcp_tool_policies"),
 )
@@ -213,6 +216,15 @@ _PHONE_CALL_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
 )
 _PROVIDER_STATE_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "provider_state"),
+)
+_VM_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("vm", "provider"),
+    ("vm", "provider_defaults"),
+    ("vm", "azure"),
+)
+_VM_LIBVIRT_TEMPLATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("vm", "libvirt_vm_default_template"),
+    ("vm", "libvirt_vm_templates"),
 )
 _VM_NETWORK_FIELDS: tuple[tuple[str, str], ...] = (
     ("vm", "bind_network_cidr"),
@@ -398,12 +410,15 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
         *_PR_TEMPLATE_FIELDS,
     ),
     "access_approvals_audit": (
+        *_APPROVAL_REQUIRED_POLICY_FIELDS,
         *_APPROVAL_TIMING_POLICY_FIELDS,
         *_MCP_TOOL_POLICY_FIELDS,
         *_TOOL_ARGUMENT_POLICY_FIELDS,
         *_AUDIT_POLICY_FIELDS,
     ),
     "network_relays_packages": (
+        *_VM_PROVIDER_FIELDS,
+        *_VM_LIBVIRT_TEMPLATE_FIELDS,
         *_VM_NETWORK_FIELDS,
         *_VM_GATEWAY_FIELDS,
         *_VM_HTTP_TARGET_RELAY_FIELDS,
@@ -500,6 +515,11 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
     ),
     "access_approvals_audit": (
         (
+            "Approval requirements",
+            _APPROVAL_REQUIRED_POLICY_FIELDS,
+            (),
+        ),
+        (
             "MCP tool policy",
             _MCP_TOOL_POLICY_FIELDS,
             (),
@@ -517,6 +537,8 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
         ("Audit redaction", _AUDIT_POLICY_FIELDS, ()),
     ),
     "network_relays_packages": (
+        ("VM provider", _VM_PROVIDER_FIELDS, ()),
+        ("Libvirt templates", _VM_LIBVIRT_TEMPLATE_FIELDS, ("libvirt_vm_",)),
         ("Network", _VM_NETWORK_FIELDS, ()),
         ("Gateway", _VM_GATEWAY_FIELDS, ()),
         (

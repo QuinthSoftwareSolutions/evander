@@ -3971,10 +3971,10 @@ workflow surface.
    delivery, launch defaults, and guest heartbeat behavior.
 4. **Code, Issues & Pull Requests** controls Git transport, Azure DevOps, GitHub, ADO worker
    filters, PR feedback approval, and PR templates.
-5. **Access, Approvals & Audit** controls approval timing, MCP tool policy, tool argument
-   guardrails, and audit redaction.
-6. **Network, Relays & Package Access** controls VM network, gateway, relay endpoints, NuGet,
-   and npm audit facade settings.
+5. **Access, Approvals & Audit** controls approval-required tools, approval timing, MCP tool
+   policy, tool argument guardrails, and audit redaction.
+6. **Network, Relays & Package Access** controls VM provider defaults, libvirt templates, VM
+   network, gateway, relay endpoints, NuGet, and npm audit facade settings.
 7. **Automation & Assignment** controls issue intake capacity and assignment roles.
 8. **Advanced & Raw** contains provider-specific JSON state and support diagnostics.
 

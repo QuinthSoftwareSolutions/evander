@@ -32,6 +32,8 @@
   related messaging settings are no longer split across unrelated tabs.
 - Moved model pricing into the Models, Assistant & Knowledge area alongside
   model routing and Assistant settings.
+- Kept approval-required tool policy, VM provider defaults, and libvirt VM
+  template fields editable in the reorganized Configuration areas.
 
 ## 2026-07-04 - Admin Dashboard Poll Backpressure
 
