@@ -15,6 +15,7 @@ import {
 import { fetchJson } from "./features/admin/api";
 import { AdminUiContext } from "./features/admin/AdminContext";
 import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminContext";
+import { useDocumentVisible } from "./features/admin/visibility";
 import { AddonsPage } from "./features/addons/AddonsPage";
 import { AgentsPage } from "./features/agents/AgentsPage";
 import { ArtifactsPage } from "./features/artifacts/ArtifactsPage";
@@ -1393,6 +1394,12 @@ export default function AdminRoot() {
     () => tabsForExecutionBackend(adminExecutionBackend, addonTabs),
     [adminExecutionBackend, addonTabs],
   );
+  const documentVisible = useDocumentVisible();
+  const renderedTab = visibleTabs.some((tab) => tab.key === selectedTab)
+    ? selectedTab
+    : visibleTabs[0]?.key ?? "workflow";
+  const activeTab = visibleTabs.find((tab) => tab.key === renderedTab) ?? TABS[TABS.length - 1];
+  const shellBackgroundPollingEnabled = documentVisible && !selectedTab.startsWith("addon:");
 
   useEffect(() => {
     let cancelled = false;
@@ -1465,6 +1472,9 @@ export default function AdminRoot() {
   }, []);
 
   useEffect(() => {
+    if (!shellBackgroundPollingEnabled) {
+      return;
+    }
     let cancelled = false;
     async function loadDeploymentStatus() {
       try {
@@ -1486,7 +1496,7 @@ export default function AdminRoot() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [shellBackgroundPollingEnabled]);
 
   useEffect(() => {
     if (session === null || (session.auth_required && !session.authenticated)) {
@@ -1627,6 +1637,9 @@ export default function AdminRoot() {
       setUserNotifications({ unread_count: 0, notifications: [] });
       return;
     }
+    if (!shellBackgroundPollingEnabled) {
+      return;
+    }
     let cancelled = false;
     async function loadUserNotifications() {
       try {
@@ -1654,7 +1667,7 @@ export default function AdminRoot() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [session]);
+  }, [session, shellBackgroundPollingEnabled]);
 
   async function signIn(username: string, password: string) {
     setAuthBusy(true);
@@ -1796,10 +1809,6 @@ export default function AdminRoot() {
     window.location.assign(targetUrl);
   }
 
-  const renderedTab = visibleTabs.some((tab) => tab.key === selectedTab)
-    ? selectedTab
-    : visibleTabs[0]?.key ?? "workflow";
-  const activeTab = visibleTabs.find((tab) => tab.key === renderedTab) ?? TABS[TABS.length - 1];
   const currentUserRole = adminState?.role ?? session?.role ?? null;
   const currentUserRootPermissions = normalizePermissionList(session?.effective_permissions, session?.permissions);
   const currentUserPermissions = normalizePermissionList(session?.permissions, adminState?.permissions);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 import time
@@ -21,6 +22,7 @@ class _CacheEntry:
     payload: Any
     status_code: int
     expires_at: float
+    etag: str
 
 
 class AdminWebJsonResponseCache:
@@ -73,7 +75,7 @@ class AdminWebJsonResponseCache:
             with self._lock:
                 entry = self._entries.get(key)
                 if entry is not None and entry.expires_at > now:
-                    return _cached_json_response(entry, hit=True)
+                    return _cached_json_response(entry, hit=True, request=request)
 
                 future = self._inflight.get(key)
                 if future is None:
@@ -86,7 +88,7 @@ class AdminWebJsonResponseCache:
             if not owns_refresh:
                 entry = await future
                 if entry is not None and entry.expires_at > time.monotonic():
-                    return _cached_json_response(entry, hit=True)
+                    return _cached_json_response(entry, hit=True, request=request)
                 return await factory()
         else:
             future = None
@@ -110,13 +112,17 @@ class AdminWebJsonResponseCache:
                 payload=payload,
                 status_code=response.status_code,
                 expires_at=time.monotonic() + ttl,
+                etag=_json_etag(payload),
             )
             with self._lock:
                 self._entries[key] = entry
             if future is not None and not future.done():
                 future.set_result(entry)
+            if not bypass and _request_etag_matches(request.headers.get("if-none-match"), entry.etag):
+                return _not_modified_json_response(entry, cache_state="miss")
             response.headers["X-Admin-Web-Cache"] = "refresh" if bypass else "miss"
             response.headers.setdefault("Cache-Control", "no-store")
+            response.headers["ETag"] = entry.etag
             return response
         except Exception:
             if future is not None and not future.done():
@@ -129,15 +135,53 @@ class AdminWebJsonResponseCache:
                         self._inflight.pop(key, None)
 
 
-def _cached_json_response(entry: _CacheEntry, *, hit: bool) -> JSONResponse:
+def _cached_json_response(entry: _CacheEntry, *, hit: bool, request: Request) -> Response:
+    cache_state = "hit" if hit else "miss"
+    if _request_etag_matches(request.headers.get("if-none-match"), entry.etag):
+        return _not_modified_json_response(entry, cache_state=cache_state)
     return JSONResponse(
         entry.payload,
         status_code=entry.status_code,
         headers={
-            "X-Admin-Web-Cache": "hit" if hit else "miss",
+            "X-Admin-Web-Cache": cache_state,
             "Cache-Control": "no-store",
+            "ETag": entry.etag,
         },
     )
+
+
+def _not_modified_json_response(entry: _CacheEntry, *, cache_state: str) -> Response:
+    return Response(
+        status_code=304,
+        headers={
+            "X-Admin-Web-Cache": cache_state,
+            "Cache-Control": "no-store",
+            "ETag": entry.etag,
+        },
+    )
+
+
+def _json_etag(payload: Any) -> str:
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+    return f'W/"{hashlib.sha256(body).hexdigest()}"'
+
+
+def _request_etag_matches(header_value: str | None, etag: str) -> bool:
+    if not header_value:
+        return False
+    etag_value = etag.strip()
+    strong_value = etag_value.removeprefix("W/")
+    for candidate in header_value.split(","):
+        normalized = candidate.strip()
+        if normalized == "*":
+            return True
+        if normalized == etag_value or normalized == strong_value:
+            return True
+        if normalized.removeprefix("W/") == strong_value:
+            return True
+    return False
 
 
 def _dashboard_cache_enabled(request: Request) -> bool:

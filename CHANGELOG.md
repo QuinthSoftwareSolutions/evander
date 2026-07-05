@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-04 - Admin Dashboard Poll Backpressure
+
+- Paused Admin Web dashboard and shell background polling while the document is
+  hidden, and suppressed unrelated shell polls while operators are inside
+  add-on views.
+- Added weak ETags to the opt-in dashboard JSON cache so unchanged dashboard
+  requests can return `304 Not Modified` instead of retransmitting large
+  payloads.
+- Compacted `summary_only=true` agent API responses to omit deep inventory,
+  execution, metadata, and session-policy details that the dashboard does not
+  render.
+
 ## 2026-07-04 - Admin Sessions List Payload
 
 - Reduced `GET /api/admin/sessions` to a compact single `items` list with

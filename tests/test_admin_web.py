@@ -10038,15 +10038,23 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     client = TestClient(create_app(service))
 
     first = client.get("/api/workers?_dashboard=1")
+    not_modified = client.get(
+        "/api/workers?_dashboard=1",
+        headers={"If-None-Match": first.headers["etag"]},
+    )
     second = client.get("/api/workers?_dashboard=1")
     live = client.get("/api/workers")
-    refreshed = client.get("/api/workers?_dashboard=1&_dashboard_refresh=1")
+    refreshed = client.get(
+        "/api/workers?_dashboard=1&_dashboard_refresh=1",
+        headers={"If-None-Match": first.headers["etag"]},
+    )
     capacity_first = client.get("/api/admin/capacity-health?_dashboard=1")
     capacity_second = client.get("/api/admin/capacity-health?_dashboard=1")
     capacity_live = client.get("/api/admin/capacity-health")
     capacity_refreshed = client.get("/api/admin/capacity-health?_dashboard=1&_dashboard_refresh=1")
 
     assert first.status_code == 200
+    assert not_modified.status_code == 304
     assert second.status_code == 200
     assert live.status_code == 200
     assert refreshed.status_code == 200
@@ -10055,9 +10063,14 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     assert capacity_live.status_code == 200
     assert capacity_refreshed.status_code == 200
     assert first.headers["x-admin-web-cache"] == "miss"
+    assert not_modified.headers["x-admin-web-cache"] == "hit"
+    assert not_modified.headers["etag"] == first.headers["etag"]
+    assert not_modified.content == b""
     assert second.headers["x-admin-web-cache"] == "hit"
+    assert second.headers["etag"] == first.headers["etag"]
     assert "x-admin-web-cache" not in live.headers
     assert refreshed.headers["x-admin-web-cache"] == "refresh"
+    assert refreshed.status_code == 200
     assert capacity_first.headers["x-admin-web-cache"] == "miss"
     assert capacity_second.headers["x-admin-web-cache"] == "hit"
     assert "x-admin-web-cache" not in capacity_live.headers
@@ -11902,10 +11915,19 @@ def test_admin_web_agents_summary_reads_use_dashboard_cache(
     assert first.json()["summary_only"] is True
     assert first.json()["reconcile_containers"] is False
     assert first.json()["omit_vm_state"] is True
+    summary_item = first.json()["items"][0]
+    assert summary_item["host"]["kind"] == "container_worker_session"
+    assert "executions" not in summary_item["host"]
+    assert "session_policy" not in summary_item["host"]
+    assert "metadata" not in summary_item["host"]
+    assert "records" not in summary_item["prompt_queue"]
     assert second.json() == first.json()
     assert live.json()["summary_only"] is False
     assert live.json()["reconcile_containers"] is True
     assert live.json()["omit_vm_state"] is False
+    live_item = live.json()["items"][0]
+    assert "executions" in live_item["host"]
+    assert "session_policy" in live_item["host"]
     assert refreshed.json()["summary_only"] is False
     assert refreshed.json()["reconcile_containers"] is True
     assert refreshed.json()["omit_vm_state"] is False
