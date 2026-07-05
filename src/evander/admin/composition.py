@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import fcntl
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -88,6 +89,9 @@ from evander.models import LocalIssueRecord
 
 
 _ADMIN_CONFIG_MUTATION_THREAD_LOCK = threading.RLock()
+_AUDIT_INDEX_BACKGROUND_IMPORT_MAX_LINES = 20_000
+_AUDIT_INDEX_BACKGROUND_IMPORT_MAX_SECONDS = 1.0
+_AUDIT_INDEX_BACKGROUND_IMPORT_SLEEP_SECONDS = 0.05
 
 
 @contextmanager
@@ -100,6 +104,35 @@ def admin_config_mutation_file_lock(path: Path):
                 yield
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _start_tool_call_audit_index_import(
+    index: ToolCallAuditIndex,
+    audit_log_path: Path,
+) -> None:
+    def _run() -> None:
+        while True:
+            try:
+                result = index.import_from_jsonl(
+                    audit_log_path,
+                    max_lines=_AUDIT_INDEX_BACKGROUND_IMPORT_MAX_LINES,
+                    max_seconds=_AUDIT_INDEX_BACKGROUND_IMPORT_MAX_SECONDS,
+                    reset=False,
+                )
+                if index.import_is_complete(audit_log_path):
+                    return
+                if not result.stopped_by_limit and result.lines_scanned == 0:
+                    return
+            except Exception:
+                return
+            time.sleep(_AUDIT_INDEX_BACKGROUND_IMPORT_SLEEP_SECONDS)
+
+    thread = threading.Thread(
+        target=_run,
+        name="evander-tool-call-audit-index-import",
+        daemon=True,
+    )
+    thread.start()
 
 
 class AdminRuntimeDirectoryOwnershipPort:
@@ -324,7 +357,7 @@ def _build_admin_runtime_components(
     )
     try:
         tool_call_audit_index.ensure_schema()
-        tool_call_audit_index.import_from_jsonl_tail(config.audit_log_path, max_lines=1_000)
+        _start_tool_call_audit_index_import(tool_call_audit_index, config.audit_log_path)
     except Exception:
         tool_call_audit_index = None
 

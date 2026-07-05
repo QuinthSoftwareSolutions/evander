@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-04 - Tool-Call Audit Index Catch-Up
+
+- Batched tool-call audit JSONL imports through one SQLite transaction per
+  import run and kept completed import-source metadata current as audit events
+  are appended.
+- Moved Admin Web audit-index catch-up out of startup's synchronous tail import
+  path and into a best-effort background importer.
+- Changed dashboard tool-call audit requests to read from the SQLite index only
+  instead of scanning or importing the `runtime/audit.jsonl` tail.
+
 ## 2026-07-04 - Worker Storage Telemetry Cache
 
 - Cached container-worker session storage telemetry inside the worker daemon
