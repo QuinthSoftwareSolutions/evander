@@ -2250,7 +2250,6 @@ def _state_revision_payload(state: TeamState) -> dict[str, Any]:
     return {
         "response_scope": "revision",
         "revision": state.revision,
-        "generated_at": utc_now().isoformat(),
     }
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-05 - Admin Web Bundle and Team Stream Fixes
+
+- Pointed the checked-in Admin Web dist index at the generated JavaScript
+  bundle that exists under `dist/assets`.
+- Kept revision-scoped Team Add-on state stream payloads stable between
+  revisions so unchanged clients receive keepalives instead of snapshots.
+
 ## 2026-07-05 - Add-on Discovery and MSSQL Seed Guards
 
 - Preserved already-imported bundled add-on module identities during manifest

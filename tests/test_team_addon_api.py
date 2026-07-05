@@ -1269,6 +1269,34 @@ def test_team_addon_state_stream_emits_updated_snapshots(tmp_path: Path) -> None
     assert "live-task" in second_payload["tasks"]
 
 
+def test_team_addon_revision_state_stream_keeps_alive_when_revision_unchanged(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def read_two_events() -> tuple[str, str]:
+        stream = _state_snapshot_events(
+            lambda: team_addon_api._state_revision_payload(repo.read()),
+            RequestStub(),  # type: ignore[arg-type]
+            poll_interval_seconds=0,
+        )
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=1.0)
+            second = await asyncio.wait_for(anext(stream), timeout=1.0)
+            return first, second
+        finally:
+            await stream.aclose()
+
+    first_event, second_event = asyncio.run(read_two_events())
+
+    assert first_event.startswith("event: snapshot\n")
+    assert second_event == ": keepalive\n\n"
+
+
 def test_agent_voice_session_create_query_and_end(
     tmp_path: Path,
     monkeypatch,
