@@ -1590,6 +1590,9 @@ function bindRecordEditing() {
     const costBackfillButton = event.target.closest("[data-cost-backfill-refresh]");
     if (costBackfillButton) {
       event.preventDefault();
+      if (!guardTeamMutation("refresh transcript costs")) {
+        return;
+      }
       void refreshCostBackfill();
       return;
     }
@@ -2062,6 +2065,7 @@ const lockedMutationControlSelectors = [
   ["[data-avatar-accept-agent-id]", "accept avatar previews"],
   ["[data-avatar-upload-agent-id]", "upload avatars"],
   ["[data-avatar-remove-agent-id]", "remove avatars"],
+  ["[data-cost-backfill-refresh]", "refresh transcript costs"],
   ["[data-chat-new]", "start chats"],
   ["[data-chat-agent-id]", "start chats"],
   ["[data-agent-call-agent-id]", "start voice calls"],
@@ -4373,7 +4377,7 @@ function renderTeamCostCounter(teamId) {
 }
 
 function renderCostBackfillControl() {
-  const disabled = costBackfillLoading ? " disabled" : "";
+  const buttonAttrs = lockedAttrs("refresh transcript costs") || (costBackfillLoading ? "disabled" : "");
   const label = costBackfillLoading ? "Refreshing transcript costs" : "Refresh transcript costs";
   const backfill = costState.backfill || null;
   const detail = backfill
@@ -4381,7 +4385,7 @@ function renderCostBackfillControl() {
     : "Manual refresh checks transcript-backed Claude usage.";
   return `
     <div class="record-actions cost-refresh-actions">
-      <button type="button" data-cost-backfill-refresh${disabled}>${escapeHtml(label)}</button>
+      <button type="button" data-cost-backfill-refresh${buttonAttrs ? ` ${buttonAttrs}` : ""}>${escapeHtml(label)}</button>
       <span class="meta-line">${escapeHtml(detail)}</span>
     </div>
   `;

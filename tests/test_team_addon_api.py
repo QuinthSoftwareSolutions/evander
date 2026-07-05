@@ -1755,6 +1755,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "teamFetch(`${API_BASE}/costs?backfill=false`" in script.text
     assert "teamFetch(`${API_BASE}/costs/backfill`" in script.text
     assert "data-cost-backfill-refresh" in script.text
+    assert 'guardTeamMutation("refresh transcript costs")' in script.text
+    assert '["[data-cost-backfill-refresh]", "refresh transcript costs"]' in script.text
+    assert 'lockedAttrs("refresh transcript costs")' in script.text
     assert "renderTeamCostCounter" in script.text
     assert "renderTeamCostBlockedNotice" in script.text
     assert "Blocked: estimated cost cap reached" in script.text
