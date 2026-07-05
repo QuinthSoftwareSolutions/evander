@@ -74,3 +74,24 @@ test("not-modified dashboard loads preserve empty-state status", () => {
   assert.match(helper, /missing: current\.missing,/);
   assert.doesNotMatch(helper, /missing: current\.data \? null : current\.missing/);
 });
+
+test("dashboard 304 responses restore payloads from the matching request path cache", () => {
+  const helperStart = dashboard.indexOf("async function fetchDashboardJson");
+  const helperEnd = dashboard.indexOf("function startDashboardLoad", helperStart);
+  assert.notEqual(helperStart, -1);
+  assert.notEqual(helperEnd, -1);
+
+  const helper = dashboard.slice(helperStart, helperEnd);
+  assert.match(
+    dashboard,
+    /type DashboardResponseCacheEntry = \{\s+etag: string \| null;\s+data: unknown;\s+\};/,
+  );
+  assert.match(helper, /const cacheKey = `\$\{key\}\\n\$\{path\}`;/);
+  assert.match(helper, /const cached = dashboardResponseCacheRef\.current\[cacheKey\];/);
+  assert.match(helper, /cached\?\.etag \?\? null/);
+  assert.match(helper, /return cached\.data as T;/);
+  assert.match(
+    helper,
+    /dashboardResponseCacheRef\.current\[cacheKey\] = \{\s+etag: result\.etag,\s+data: result\.data,\s+\};/,
+  );
+});

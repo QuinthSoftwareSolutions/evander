@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-05 - Dashboard Directory Cache Scope
+
+- Scoped Admin Web dashboard conditional-response payloads to the same request
+  path as their ETags so directory switches cannot display stale data from a
+  different directory after a `304 Not Modified` response.
+
 ## 2026-07-05 - Admin Web Review Fixes
 
 - Derived artifact-space grant subjects from the authenticated Admin Web

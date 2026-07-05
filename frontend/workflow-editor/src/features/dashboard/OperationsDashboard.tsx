@@ -553,6 +553,11 @@ type DashboardLoadTask<T> = {
   missingIfEmpty?: (value: T) => string | null;
 };
 
+type DashboardResponseCacheEntry = {
+  etag: string | null;
+  data: unknown;
+};
+
 type DashboardPillTone = "pass" | "fail" | "missing" | "running" | "idle";
 
 function createRemotePendingState<T>(current?: RemoteState<T>): RemoteState<T> {
@@ -1729,25 +1734,34 @@ export function OperationsDashboard() {
   const globalLoadIdRef = useRef(0);
   const releaseLoadIdRef = useRef(0);
   const agentInventoryLoadIdRef = useRef(0);
-  const dashboardEtagsRef = useRef<Record<string, string>>({});
+  const dashboardResponseCacheRef = useRef<Record<string, DashboardResponseCacheEntry>>({});
 
   async function fetchDashboardJson<T>(
     key: DashboardRemoteKey,
     path: string,
     signal?: AbortSignal,
   ): Promise<DashboardLoadValue<T>> {
-    const etagKey = `${key}\n${path}`;
+    const cacheKey = `${key}\n${path}`;
+    const cached = dashboardResponseCacheRef.current[cacheKey];
     const result = await fetchJsonConditional<T>(
       path,
       signal ? { signal } : undefined,
-      dashboardEtagsRef.current[etagKey] ?? null,
+      cached?.etag ?? null,
     );
-    if (result.etag) {
-      dashboardEtagsRef.current[etagKey] = result.etag;
-    }
     if (result.status === "not_modified") {
+      if (cached) {
+        dashboardResponseCacheRef.current[cacheKey] = {
+          ...cached,
+          etag: result.etag,
+        };
+        return cached.data as T;
+      }
       return DASHBOARD_NOT_MODIFIED;
     }
+    dashboardResponseCacheRef.current[cacheKey] = {
+      etag: result.etag,
+      data: result.data,
+    };
     return result.data;
   }
 
