@@ -353,7 +353,21 @@ class CapacityHealthAdminService:
                     )
                     missing_telemetry_seen.add(entry.worker_url)
                 continue
-            measured_total_bytes += telemetry.session_storage.total.size_bytes
+            storage_total = telemetry.session_storage.total
+            if storage_total.status is not TelemetryStatus.AVAILABLE:
+                if entry.worker_url not in missing_telemetry_seen:
+                    missing_telemetry.append(
+                        self._capacity_missing_storage_entry(
+                            scope=f"session_storage:worker:{entry.worker_url}",
+                            status=storage_total.status,
+                            message=storage_total.errors[0].message
+                            if storage_total.errors
+                            else "worker session storage telemetry is unavailable",
+                        )
+                    )
+                    missing_telemetry_seen.add(entry.worker_url)
+                continue
+            measured_total_bytes += storage_total.size_bytes
             measured_session_count += telemetry.session_storage.session_count
             for sample in (
                 *telemetry.session_storage.largest_sessions,

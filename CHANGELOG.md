@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-04 - Worker Storage Telemetry Cache
+
+- Cached container-worker session storage telemetry inside the worker daemon
+  with stale-while-revalidate behavior so Admin capacity-health reads do not
+  block on cold deep scans of large worker session trees.
+- Reworked worker session storage telemetry to compute total storage and
+  largest/oldest session samples in one filesystem pass, with explicit
+  blocking refresh available through `GET /v1/telemetry?refresh=1`.
+
 ## 2026-07-04 - Team Add-on First-Load Responsiveness
 
 - Reduced Team Add-on first-load pressure by building scoped view payloads

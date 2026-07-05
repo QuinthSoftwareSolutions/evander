@@ -122,10 +122,10 @@ def test_container_worker_client_telemetry_uses_auth_and_parses_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
-    seen: list[tuple[str, str]] = []
+    seen: list[tuple[str, str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.append((request.method, request.url.path))
+        seen.append((request.method, request.url.path, str(request.url.query, "ascii")))
         assert request.headers["authorization"] == "Bearer secret-token"
         return httpx.Response(
             200,
@@ -202,15 +202,20 @@ def test_container_worker_client_telemetry_uses_auth_and_parses_payload(
     )
 
     telemetry = worker.telemetry()
+    refreshed = worker.telemetry(refresh=True)
 
     assert isinstance(telemetry, WorkerTelemetryPayload)
+    assert isinstance(refreshed, WorkerTelemetryPayload)
     assert telemetry.jobs.failed_start_count == 1
     assert telemetry.jobs.queued_job_count == 0
     assert telemetry.jobs.queued_job_status is TelemetryStatus.UNSUPPORTED
     assert telemetry.jobs.cleanup_failure_status is TelemetryStatus.UNSUPPORTED
     assert telemetry.session_storage.session_count == 1
     assert telemetry.session_storage.largest_sessions[0].directory_path == "sessions/session-1"
-    assert seen == [("GET", "/v1/telemetry")]
+    assert seen == [
+        ("GET", "/v1/telemetry", ""),
+        ("GET", "/v1/telemetry", "refresh=1"),
+    ]
 
 
 def test_container_worker_client_prepares_session_clones_repo_and_writes_files(

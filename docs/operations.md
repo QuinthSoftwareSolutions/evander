@@ -401,6 +401,9 @@ timestamps, telemetry states, queue age, and unread prompt pressure. Unconfigure
 permission-denied, or unsupported sources are reported explicitly, and raw host paths or bearer
 secrets are not exposed. When an endpoint has no data or is unavailable in the current environment,
 the panel shows an explicit missing or unavailable state rather than inferred or placeholder values.
+Container-worker session storage telemetry is cached by the worker daemon so normal dashboard reads
+do not block on deep session-tree scans; use the worker API's `GET /v1/telemetry?refresh=1` only
+when an explicit blocking refresh is needed.
 
 The product context panel is backed by `/api/admin/release-info`. It reads the installed package
 version or `pyproject.toml` version when present, an explicit deployed build identity when the

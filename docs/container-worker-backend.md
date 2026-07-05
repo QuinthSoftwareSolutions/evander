@@ -402,6 +402,9 @@ synchronously and does not persist a worker-side queue. `cleanup_failure_status`
 `unsupported` because cleanup-failure history is not persisted separately from the live job records.
 The host-side Admin Web capacity-health endpoint uses this telemetry when it can reach a configured
 worker; otherwise it reports missing or permission-denied worker telemetry explicitly.
+Worker session storage telemetry is cached inside the daemon with stale-while-revalidate behavior:
+normal `GET /v1/telemetry` calls return cached or warming storage data quickly, while
+`GET /v1/telemetry?refresh=1` performs a blocking deep storage scan for explicit refresh.
 
 For `container_worker_vm`, `effect:agent:clone-repo` does not send upstream GitHub or Azure DevOps
 URLs to the clone API. The control plane resolves and refreshes a deterministic bare mirror under
