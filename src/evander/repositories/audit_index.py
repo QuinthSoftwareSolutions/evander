@@ -241,6 +241,7 @@ class ToolCallAuditIndex:
         *,
         previous_size_bytes: int | None,
         previous_mtime_ns: int | None,
+        appended_offset_bytes: int | None,
     ) -> bool:
         self.ensure_schema()
         event_type = str(payload.get("event_type") or "").strip().casefold()
@@ -268,12 +269,18 @@ class ToolCallAuditIndex:
             if record is not None:
                 inserted = self._insert_record_with_connection(connection, record)
             if source_was_complete and source_stat is not None:
+                progress_offset_bytes = source_stat.st_size
+                if appended_offset_bytes is not None:
+                    progress_offset_bytes = min(
+                        max(0, int(appended_offset_bytes)),
+                        source_stat.st_size,
+                    )
                 self._record_import_progress_with_connection(
                     connection,
                     source,
                     source_stat=source_stat,
-                    offset_bytes=source_stat.st_size,
-                    complete=True,
+                    offset_bytes=progress_offset_bytes,
+                    complete=progress_offset_bytes >= source_stat.st_size,
                 )
             return inserted
 

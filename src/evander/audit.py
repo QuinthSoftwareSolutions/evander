@@ -38,15 +38,18 @@ class AuditLogger:
         except OSError:
             previous_size_bytes = None
             previous_mtime_ns = None
+        appended_offset_bytes: int | None = None
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, sort_keys=True))
             handle.write("\n")
+            appended_offset_bytes = handle.tell()
         try:
             self._index.index_appended_payload(
                 payload,
                 self.path,
                 previous_size_bytes=previous_size_bytes,
                 previous_mtime_ns=previous_mtime_ns,
+                appended_offset_bytes=appended_offset_bytes,
             )
         except Exception:
             pass

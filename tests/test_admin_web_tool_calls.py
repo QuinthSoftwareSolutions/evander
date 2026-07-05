@@ -466,6 +466,81 @@ def test_audit_logger_advances_complete_import_source_after_appends(tmp_path: Pa
     assert page.payloads[0]["tool_name"] == "assistant_read_status"
 
 
+def test_audit_index_appended_payload_does_not_complete_past_concurrent_append(
+    tmp_path: Path,
+) -> None:
+    audit_log_path = tmp_path / "runtime" / "audit.jsonl"
+    audit_log_path.parent.mkdir(parents=True)
+    audit_log_path.write_text("", encoding="utf-8")
+    index = ToolCallAuditIndex(audit_index_path_for_log_path(audit_log_path))
+    initial_import = index.import_from_jsonl(audit_log_path, reset=True)
+    previous_stat = audit_log_path.stat()
+    first_payload = {
+        "event_type": "tool_call",
+        "session_id": "session-first",
+        "directory_path": "root/team",
+        "tool_name": "first_tool",
+        "decision": "allowed",
+        "created_at": "2026-05-18T12:03:00+00:00",
+    }
+    second_payload = {
+        "event_type": "tool_call",
+        "session_id": "session-second",
+        "directory_path": "root/team",
+        "tool_name": "second_tool",
+        "decision": "allowed",
+        "created_at": "2026-05-18T12:04:00+00:00",
+    }
+    first_line = json.dumps(first_payload, sort_keys=True) + "\n"
+    second_line = json.dumps(second_payload, sort_keys=True) + "\n"
+    audit_log_path.write_text(first_line + second_line, encoding="utf-8")
+
+    assert initial_import.complete is True
+    indexed = index.index_appended_payload(
+        first_payload,
+        audit_log_path,
+        previous_size_bytes=previous_stat.st_size,
+        previous_mtime_ns=previous_stat.st_mtime_ns,
+        appended_offset_bytes=len(first_line.encode("utf-8")),
+    )
+
+    assert indexed is True
+    assert index.import_is_complete(audit_log_path) is False
+    first_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root/team",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q=None,
+        limit=10,
+    )
+    assert [payload["tool_name"] for payload in first_page.payloads] == ["first_tool"]
+
+    catch_up = index.import_from_jsonl(audit_log_path, reset=False)
+
+    assert catch_up.imported == 1
+    assert catch_up.complete is True
+    assert index.import_is_complete(audit_log_path) is True
+    caught_up_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root/team",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q=None,
+        limit=10,
+    )
+    assert [payload["tool_name"] for payload in caught_up_page.payloads] == [
+        "second_tool",
+        "first_tool",
+    ]
+
+
 def test_audit_index_backfill_is_idempotent_and_skips_bad_lines(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     _write_audit_log(service.config.audit_log_path)
