@@ -39,6 +39,7 @@ from evander_team_addon.models import (
     TeamInboxItemState,
     TeamInboxPriority,
     TeamInboxItemType,
+    TeamMemoryScope,
     TeamOutboxRecord,
     TeamOutboxStatus,
     TeamRecordState,
@@ -76,6 +77,7 @@ from evander_team_addon.services.commands import (
     TeamEphemeralCommandService,
     TeamGitReleaseCommandService,
     TeamGovernanceCommandService,
+    TeamMemoryCommandService,
     TeamNoteCommandService,
     TeamOperatorEscalationCommandService,
     TeamReviewCommandService,
@@ -86,6 +88,12 @@ from evander_team_addon.sqlite_store import (
     SQLITE_SCHEMA_VERSION,
     TeamIdempotencyConflictError,
     _ensure_team_conversations_operator_scope,
+)
+from evander_team_addon.services.memory_service import (
+    list_memory_records,
+    team_memory_collection_name,
+    team_memory_point_id,
+    team_memory_point_payload,
 )
 
 
@@ -99,6 +107,7 @@ class _TeamCommandTestHarness(
     TeamTaskUpdateCommandService,
     TeamAgentControlCommandService,
     TeamGovernanceCommandService,
+    TeamMemoryCommandService,
     TeamDeliverableSubmissionCommandService,
     TeamReviewCommandService,
     TeamGitReleaseCommandService,
@@ -698,6 +707,108 @@ def test_repository_record_team_note_command_preserves_active_dispatch_lease(
     assert activities[0].action_record_id == result["action_record_id"]
     assert activities[0].progress_classification == "context"
     assert repo.list_outbox_records() == []
+
+
+def test_repository_persists_team_memories_and_canonical_search(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, memory = _team_admin_service(repo).create_or_update_memory(
+        memory_id="memory-architecture",
+        team_id="team",
+        project_id="project",
+        codebase_id="repo-main",
+        scope=TeamMemoryScope.PROJECT.value,
+        kind="decision",
+        title="Use Qdrant as a derived memory index",
+        summary="Canonical Team memory stays in SQLite and Qdrant is rebuilt from it.",
+        body="Long-form rationale belongs in artifacts and explicit memory detail calls.",
+        tags=["Architecture", "memory"],
+        source_refs=["task:task"],
+        artifact_refs=["artifact-space:/teams/team/projects/project/memory/memory-architecture"],
+        confidence=0.82,
+        created_by="operator",
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.memories[memory.id].tags == ["architecture", "memory"]
+    reloaded = TeamStateRepository(tmp_path).read()
+    assert reloaded.memories["memory-architecture"].body == (
+        "Long-form rationale belongs in artifacts and explicit memory detail calls."
+    )
+
+    search = list_memory_records(
+        reloaded,
+        team_id="team",
+        project_id="project",
+        codebase_id="repo-main",
+        tags_any=["architecture"],
+        query_text="rebuilt",
+    )
+
+    assert [record.id for record in search["records"]] == ["memory-architecture"]
+    assert team_memory_collection_name("team").startswith("team_memory_team_")
+    assert team_memory_collection_name("team") == team_memory_collection_name("team")
+    assert team_memory_point_id("memory-architecture") == team_memory_point_id(
+        "memory-architecture"
+    )
+    point_payload = team_memory_point_payload(reloaded.memories["memory-architecture"])
+    assert point_payload["memory_id"] == "memory-architecture"
+    assert point_payload["_semantic_text"].startswith("Title: Use Qdrant")
+
+    archived_state, archived = _team_admin_service(repo).archive_memory(
+        memory_id="memory-architecture",
+        expected_revision=reloaded.revision,
+    )
+    assert archived.status.value == "archived"
+    assert not list_memory_records(archived_state, team_id="team")["records"]
+    assert list_memory_records(
+        archived_state,
+        team_id="team",
+        statuses=["archived"],
+        include_archived=True,
+    )["records"][0].id == "memory-architecture"
+
+
+def test_repository_record_memory_command_requires_dispatch_and_persists_memory(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-memory")
+
+    state, result = _command_service(repo).record_memory_command(
+        session_id="session-backend",
+        request_id="request-memory-1",
+        id="memory-command",
+        project_id="project",
+        codebase_id="repo-main",
+        kind="preference",
+        title="Keep wake prompts compact",
+        summary="Do not inject Team memory into normal wake prompts.",
+        body="Agents should call the explicit memory search tool when recall is needed.",
+        tags=["Prompt", "memory"],
+        artifact_space_ref="artifact-space:/teams/team/projects/project/memory/memory-command",
+    )
+
+    assert result["success"] is True
+    assert result["progress_made"] is False
+    assert result["memory_id"] == "memory-command"
+    assert "body" not in result["memory"]
+    memory = state.memories["memory-command"]
+    assert memory.created_by_agent_id == "backend"
+    assert memory.scope == TeamMemoryScope.PROJECT
+    assert memory.body == "Agents should call the explicit memory search tool when recall is needed."
+    assert memory.tags == ["prompt", "memory"]
+    assert memory.artifact_refs == [
+        "artifact-space:/teams/team/projects/project/memory/memory-command"
+    ]
+
+    activities = repo.list_dispatch_activity(
+        dispatch_id="dispatch-memory",
+        request_id="request-memory-1",
+    )
+    assert [activity.status for activity in activities] == [TeamDispatchActivityStatus.SUCCESS]
 
 
 def test_repository_record_team_note_command_exact_replay_is_idempotent(

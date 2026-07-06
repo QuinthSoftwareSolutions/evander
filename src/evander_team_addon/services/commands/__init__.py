@@ -9,6 +9,7 @@ from .ephemeral import TeamEphemeralCommandService
 from .executor import TeamCommandExecutor
 from .git_release import TeamGitReleaseCommandService
 from .governance_commands import TeamGovernanceCommandService
+from .memory_commands import TeamMemoryArtifactPublisher, TeamMemoryCommandService
 from .note_commands import TeamNoteCommandService
 from .operator_escalation_commands import TeamOperatorEscalationCommandService
 from .review_commands import TeamReviewCommandService
@@ -36,6 +37,8 @@ __all__ = [
     "TeamEphemeralCommandService",
     "TeamGitReleaseCommandService",
     "TeamGovernanceCommandService",
+    "TeamMemoryArtifactPublisher",
+    "TeamMemoryCommandService",
     "TeamNoteCommandService",
     "TeamOperatorEscalationCommandService",
     "TeamReviewCommandService",

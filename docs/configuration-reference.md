@@ -576,6 +576,8 @@ Type-specific keys:
 | `effect:semantic:ensure-collection` | `collection_name` | `directory_path`, `outputs` |
 | `effect:semantic:upsert` | `collection_name`, `point_id`, `text` | `payload`, `directory_path`, `wait`, `outputs` |
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
+| `effect:team:index-memory` | one of `memory_id`, `memory_ids`, or `team_id` | `project_id`, `directory_path`, `wait`, `outputs` |
+| `effect:team:reindex-memory` | `team_id` | `project_id`, `directory_path`, `wait`, `outputs` |
 | `effect:state:update` | `namespace`, `key`, `operation` | `value`, `patch`, `expected_version`, `outputs` |
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
 | `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `allow_private_networks`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
@@ -786,6 +788,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
 | `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
+| `query:team:memory` | _none beyond envelope_ | `team_id`, `project_id`, `codebase_id`, `agent_id`, `query_text`, `semantic`, `kinds`, `statuses`, `tags_any`, `limit`, `directory_path`, `score_threshold`, `outputs` |
 | `query:state:get` | `namespace`, `key` | `outputs` |
 | `query:artifact-space:list` | _none beyond envelope_ | `path`, `recursive`, `subject`, `include_versions`, `outputs` |
 | `query:artifact-space:latest` | `space_path` | `artifact_id`, `subject`, `outputs` |
@@ -1320,6 +1323,12 @@ points without vectors. `query:semantic:get` and `effect:semantic:delete` operat
 point IDs; filter-based delete is intentionally not supported. If an existing collection uses
 different dimensions, distance, or named vectors, schema-sensitive operations fail and do not delete
 or recreate anything.
+
+Team memory uses the same semantic settings when `query:team:memory` runs with
+`semantic=true` or when `effect:team:index-memory` / `effect:team:reindex-memory`
+refresh a Team collection. Team memory collection names are generated per Team
+from the Team id. Canonical records remain in Team SQLite state; Qdrant can be
+rebuilt from that state and is not the source of truth.
 
 ### Workflow state
 

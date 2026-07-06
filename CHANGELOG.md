@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-06 - Team Add-on Memory
+
+- Added canonical Team memory records in the Team SQLite state store with
+  team/project/codebase/agent scoping, status, tags, source refs, artifact refs,
+  supersession, and compact broad payloads that omit long bodies.
+- Added Team MCP memory tools, Admin API memory routes, a compact Team Memory UI
+  tab, and workflow nodes for compact memory query plus per-team Qdrant
+  indexing/reindexing from canonical state.
+- Kept normal Team wake prompts free of memory content; agents and workflows
+  must use explicit memory search/query paths for recall.
+
 ## 2026-07-06 - Worker Git Mirror Scope Fix
 
 - Authorized the shared container-worker Git SSH key for read-only access to the

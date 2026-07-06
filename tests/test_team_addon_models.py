@@ -41,6 +41,8 @@ from evander_team_addon.models import (
     TeamInboxItemState,
     TeamInboxPriority,
     TeamInboxItemType,
+    TeamMemoryRecord,
+    TeamMemoryScope,
     TeamRecordState,
     TeamRole,
     TeamState,
@@ -428,6 +430,53 @@ def test_team_state_rejects_reporting_cycle() -> None:
 
     with pytest.raises(ValidationError, match="reporting cycle"):
         TeamState.model_validate(state)
+
+
+def test_team_memory_record_validates_scope_requirements() -> None:
+    with pytest.raises(ValidationError, match="project-scoped"):
+        TeamMemoryRecord(
+            id="memory-project",
+            team_id="team",
+            scope=TeamMemoryScope.PROJECT,
+            title="Project decision",
+            summary="Project-scoped memory must identify the project.",
+        )
+
+    with pytest.raises(ValidationError, match="agent-private"):
+        TeamMemoryRecord(
+            id="memory-agent",
+            team_id="team",
+            scope=TeamMemoryScope.AGENT_PRIVATE,
+            title="Private note",
+            summary="Agent-private memory must identify the owning agent.",
+        )
+
+
+def test_team_state_validates_and_compacts_memory_payloads() -> None:
+    state = _valid_state()
+    state.memories["memory-1"] = TeamMemoryRecord(
+        id="memory-1",
+        team_id="team",
+        project_id="project",
+        scope=TeamMemoryScope.PROJECT,
+        kind="decision",
+        title="Use artifact spaces for evidence",
+        summary="Keep the memory row compact and store bulky evidence elsewhere.",
+        body="Long rationale and detailed evidence stay out of broad state payloads.",
+        tags=["Architecture", "memory"],
+        source_refs=["task:task"],
+        artifact_refs=["artifact-space:/teams/team/projects/project/memory/memory-1"],
+        created_by_agent_id="lead",
+    )
+
+    validated = TeamState.model_validate(state.model_dump(mode="python"))
+    payload = team_state_payload(validated)
+
+    assert validated.memories["memory-1"].tags == ["architecture", "memory"]
+    assert payload["memories"]["memory-1"]["summary"] == (
+        "Keep the memory row compact and store bulky evidence elsewhere."
+    )
+    assert "body" not in payload["memories"]["memory-1"]
 
 
 def test_ephemeral_assignments_do_not_join_reporting_hierarchy() -> None:

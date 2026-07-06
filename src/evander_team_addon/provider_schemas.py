@@ -303,12 +303,60 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
         )
 
 
+class TeamIndexMemoryEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:index-memory"]
+    memory_id: ConfigValue | None = None
+    memory_ids: ConfigValue | None = None
+    team_id: ConfigValue | None = None
+    project_id: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+    wait: ConfigValue | None = None
+
+    @field_validator("memory_ids")
+    @classmethod
+    def validate_memory_ids(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (list, str)):
+            return value
+        raise ValueError("effect:team:index-memory memory_ids must be a JSON array")
+
+
+class TeamReindexMemoryEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:reindex-memory"]
+    team_id: ConfigValue
+    project_id: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+    wait: ConfigValue | None = None
+
+
 class TeamStateQueryDefinition(QueryDefinition):
     type: Literal["query:team:state"]
     team_id: ConfigValue | None = None
     project_id: ConfigValue | None = None
     agent_id: ConfigValue | None = None
     include_records: ConfigValue | None = None
+
+
+class TeamMemoryQueryDefinition(QueryDefinition):
+    type: Literal["query:team:memory"]
+    team_id: ConfigValue | None = None
+    project_id: ConfigValue | None = None
+    codebase_id: ConfigValue | None = None
+    agent_id: ConfigValue | None = None
+    query_text: ConfigValue | None = None
+    semantic: ConfigValue | None = None
+    kinds: ConfigValue | None = None
+    statuses: ConfigValue | None = None
+    tags_any: ConfigValue | None = None
+    limit: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+    score_threshold: ConfigValue | None = None
+
+    @field_validator("kinds", "statuses", "tags_any")
+    @classmethod
+    def validate_string_list(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (list, str)):
+            return value
+        raise ValueError("query:team:memory list filters must be JSON arrays")
 
 
 class TeamSessionRoutingQueryDefinition(QueryDefinition):
@@ -509,6 +557,28 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "output": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]},
     },
+    "effect:team:index-memory": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "indexed_count": {"type": "integer"},
+        "deleted_count": {"type": "integer"},
+        "memory_ids": {"type": "array"},
+        "index_results": {"type": "array"},
+        "delete_results": {"type": "array"},
+        "errors": {"type": "array"},
+    },
+    "effect:team:reindex-memory": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "team_id": {"type": "string"},
+        "project_id": {"type": ["string", "null"]},
+        "indexed_count": {"type": "integer"},
+        "deleted_count": {"type": "integer"},
+        "memory_ids": {"type": "array"},
+        "index_results": {"type": "array"},
+        "delete_results": {"type": "array"},
+        "errors": {"type": "array"},
+    },
     "query:team:state": {
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
@@ -517,6 +587,15 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "projects": {"type": "object"},
         "agents": {"type": "object"},
         "tasks": {"type": "object"},
+    },
+    "query:team:memory": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "memories": {"type": "array"},
+        "records": {"type": "array"},
+        "count": {"type": "integer"},
+        "limit": {"type": "integer"},
+        "semantic": {"type": "boolean"},
     },
     "query:team:session-routing": {
         "success": {"type": "boolean"},

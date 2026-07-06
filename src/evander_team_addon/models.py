@@ -160,6 +160,30 @@ class GovernanceAgendaItemState(str, Enum):
     HANDLED = "handled"
 
 
+class TeamMemoryKind(str, Enum):
+    DECISION = "decision"
+    PREFERENCE = "preference"
+    FACT = "fact"
+    RUNBOOK = "runbook"
+    POSTMORTEM = "postmortem"
+    RESEARCH = "research"
+    HANDOFF = "handoff"
+    OTHER = "other"
+
+
+class TeamMemoryScope(str, Enum):
+    TEAM_GLOBAL = "team_global"
+    PROJECT = "project"
+    AGENT_PRIVATE = "agent_private"
+    GOVERNANCE = "governance"
+
+
+class TeamMemoryStatus(str, Enum):
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    ARCHIVED = "archived"
+
+
 class TeamModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1041,6 +1065,71 @@ class AgentActionRecord(TeamModel):
         return _optional_text(value)
 
 
+class TeamMemoryRecord(TeamModel):
+    id: str
+    team_id: str
+    project_id: str | None = None
+    codebase_id: str | None = None
+    agent_id: str | None = None
+    scope: TeamMemoryScope = TeamMemoryScope.TEAM_GLOBAL
+    kind: TeamMemoryKind = TeamMemoryKind.OTHER
+    title: str
+    summary: str
+    body: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    artifact_refs: list[str] = Field(default_factory=list)
+    status: TeamMemoryStatus = TeamMemoryStatus.ACTIVE
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    supersedes_memory_id: str | None = None
+    superseded_by_memory_id: str | None = None
+    created_by_agent_id: str | None = None
+    created_by: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "team_id", "title", "summary", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "project_id",
+        "codebase_id",
+        "agent_id",
+        "body",
+        "supersedes_memory_id",
+        "superseded_by_memory_id",
+        "created_by_agent_id",
+        "created_by",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _tags(cls, value: object) -> list[str]:
+        return [
+            tag.casefold()
+            for tag in _unique_text_list(value or [], "tags")
+        ]
+
+    @field_validator("source_refs", "artifact_refs", mode="before")
+    @classmethod
+    def _refs(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "TeamMemoryRecord":
+        if self.scope == TeamMemoryScope.PROJECT and self.project_id is None:
+            raise ValueError("project-scoped memory requires project_id")
+        if self.scope == TeamMemoryScope.AGENT_PRIVATE and self.agent_id is None:
+            raise ValueError("agent-private memory requires agent_id")
+        return self
+
+
 class TeamDispatchActivityStatus(str, Enum):
     SUCCESS = "success"
     FAILURE = "failure"
@@ -1496,6 +1585,7 @@ class TeamState(TeamModel):
     review_profiles: dict[str, ReviewProfile] = Field(default_factory=dict)
     inbox: dict[str, AgentInboxItem] = Field(default_factory=dict)
     action_records: dict[str, AgentActionRecord] = Field(default_factory=dict)
+    memories: dict[str, TeamMemoryRecord] = Field(default_factory=dict)
     conversations: dict[str, TeamConversation] = Field(default_factory=dict)
     conversation_messages: dict[str, TeamConversationMessage] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
@@ -1658,6 +1748,7 @@ class TeamState(TeamModel):
         self._validate_reviews(errors)
         self._validate_inbox(errors)
         self._validate_action_records(errors)
+        self._validate_memories(errors)
         self._validate_conversations(errors)
         self._validate_releases(errors)
         self._validate_ephemeral_assignments(errors)
@@ -1691,6 +1782,7 @@ class TeamState(TeamModel):
             "review_profiles",
             "inbox",
             "action_records",
+            "memories",
             "conversations",
             "conversation_messages",
             "release_packages",
@@ -2375,6 +2467,59 @@ class TeamState(TeamModel):
             if record.agent_id not in self.agents:
                 errors.append(
                     f"action record {record.id} references missing agent {record.agent_id}"
+                )
+
+    def _validate_memories(self, errors: list[str]) -> None:
+        for memory in self.memories.values():
+            if memory.team_id not in self.teams:
+                errors.append(f"memory {memory.id} references missing team {memory.team_id}")
+            if memory.project_id is not None:
+                project = self.projects.get(memory.project_id)
+                if project is None:
+                    errors.append(
+                        f"memory {memory.id} references missing project {memory.project_id}"
+                    )
+                elif project.team_id != memory.team_id:
+                    errors.append(
+                        f"memory {memory.id} project {project.id} belongs to team {project.team_id}"
+                    )
+            if memory.agent_id is not None:
+                agent = self.agents.get(memory.agent_id)
+                if agent is None:
+                    errors.append(
+                        f"memory {memory.id} references missing agent {memory.agent_id}"
+                    )
+                elif agent.team_id != memory.team_id:
+                    errors.append(
+                        f"memory {memory.id} agent {agent.id} belongs to team {agent.team_id}"
+                    )
+            if memory.created_by_agent_id is not None:
+                creator = self.agents.get(memory.created_by_agent_id)
+                if creator is None:
+                    errors.append(
+                        f"memory {memory.id} references missing creator "
+                        f"{memory.created_by_agent_id}"
+                    )
+                elif creator.team_id != memory.team_id:
+                    errors.append(
+                        f"memory {memory.id} creator {creator.id} belongs to team "
+                        f"{creator.team_id}"
+                    )
+            if (
+                memory.supersedes_memory_id is not None
+                and memory.supersedes_memory_id not in self.memories
+            ):
+                errors.append(
+                    f"memory {memory.id} supersedes missing memory "
+                    f"{memory.supersedes_memory_id}"
+                )
+            if (
+                memory.superseded_by_memory_id is not None
+                and memory.superseded_by_memory_id not in self.memories
+            ):
+                errors.append(
+                    f"memory {memory.id} is superseded by missing memory "
+                    f"{memory.superseded_by_memory_id}"
                 )
 
     def _validate_conversations(self, errors: list[str]) -> None:
@@ -3158,6 +3303,10 @@ def team_state_payload(
         release_id: release_package_payload_with_derived(state, release)
         for release_id, release in state.release_packages.items()
     }
+    payload["memories"] = {
+        memory_id: _compact_memory_payload(memory)
+        for memory_id, memory in state.memories.items()
+    }
     payload["runtime_operations"] = runtime_operations_payload(
         state,
         now=now,
@@ -3173,6 +3322,12 @@ def team_state_payload(
         agent_payload = payload["agents"].get(agent_id)
         if isinstance(agent_payload, dict):
             agent_payload["activity_summary"] = summary
+    return payload
+
+
+def _compact_memory_payload(memory: TeamMemoryRecord) -> dict[str, Any]:
+    payload = memory.model_dump(mode="json")
+    payload.pop("body", None)
     return payload
 
 

@@ -105,6 +105,9 @@ from .mcp import (
 from .models import (
     AgentStatus,
     RolePermission,
+    TeamMemoryRecord,
+    TeamMemoryScope,
+    TeamMemoryStatus,
     TeamState,
     TeamTaskState,
     team_session_health_payload,
@@ -120,12 +123,15 @@ from .provider_schemas import (
     TeamCreateTaskEffectDefinition,
     TeamDeliverableCreatedTriggerDefinition,
     TeamFinalizeAgentDispatchEffectDefinition,
+    TeamIndexMemoryEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamMarkReleasePublishedEffectDefinition,
+    TeamMemoryQueryDefinition,
     TeamPublishOutboxEventsEffectDefinition,
     TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
+    TeamReindexMemoryEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
     TeamStateQueryDefinition,
     TeamSessionRoutingQueryDefinition,
@@ -150,6 +156,12 @@ from .services.domain.review import _apply_review_request, _review_request_was_c
 from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
+from .services.memory_service import (
+    DEFAULT_MEMORY_LIMIT,
+    TeamMemorySemanticService,
+    list_memory_records,
+    memory_record_payload,
+)
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
@@ -1282,6 +1294,171 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Failure message to store when release publication failed.",
             ),
             _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "query",
+        "query:team:memory",
+        "Search Team memory",
+        "Read compact Team memory records from canonical state or the Team Qdrant collection.",
+        [
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                description="Team whose memories should be searched. Required for semantic search.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Optional project filter; Team-global memories remain visible.",
+            ),
+            _catalog_field(
+                "codebase_id",
+                "Codebase ID",
+                "string",
+                description="Optional codebase filter; Team-global memories remain visible.",
+            ),
+            _catalog_field(
+                "agent_id",
+                "Agent ID",
+                "string",
+                description="Optional agent-private memory owner filter.",
+            ),
+            _catalog_field(
+                "query_text",
+                "Query text",
+                "string",
+                description="Text filter or semantic query.",
+            ),
+            _catalog_field(
+                "semantic",
+                "Semantic",
+                "boolean",
+                description="Use the Team Qdrant collection when query text and team id are set.",
+                default_value=False,
+            ),
+            _catalog_field(
+                "kinds",
+                "Kinds",
+                "json",
+                description="Optional memory kind filter.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "statuses",
+                "Statuses",
+                "json",
+                description="Optional memory status filter.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "tags_any",
+                "Tags any",
+                "json",
+                description="Optional tag-any filter.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "limit",
+                "Limit",
+                "number",
+                description="Maximum compact memory records to return.",
+                default_value=DEFAULT_MEMORY_LIMIT,
+            ),
+            _catalog_field(
+                "directory_path",
+                "Directory path",
+                "string",
+                description="Optional directory config used for semantic provider settings.",
+            ),
+            _catalog_field(
+                "score_threshold",
+                "Score threshold",
+                "number",
+                description="Optional minimum semantic score.",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:index-memory",
+        "Index Team memory",
+        "Index active Team memory records into that Team's Qdrant collection.",
+        [
+            _catalog_field(
+                "memory_id",
+                "Memory ID",
+                "string",
+                description="Single memory record to index or delete from the semantic index.",
+            ),
+            _catalog_field(
+                "memory_ids",
+                "Memory IDs",
+                "json",
+                description="Memory records to index or delete from the semantic index.",
+                json_value_type="array",
+            ),
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                description="Team filter used when memory ids are not provided.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Optional project filter; Team-global memories are included.",
+            ),
+            _catalog_field(
+                "directory_path",
+                "Directory path",
+                "string",
+                description="Optional directory config used for semantic provider settings.",
+            ),
+            _catalog_field(
+                "wait",
+                "Wait",
+                "boolean",
+                description="Wait for Qdrant write operations to apply.",
+                default_value=False,
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:reindex-memory",
+        "Reindex Team memory",
+        "Refresh a Team's Qdrant collection from canonical Team memory state.",
+        [
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                required=True,
+                description="Team whose memory collection should be refreshed.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Optional project filter; Team-global memories are included.",
+            ),
+            _catalog_field(
+                "directory_path",
+                "Directory path",
+                "string",
+                description="Optional directory config used for semantic provider settings.",
+            ),
+            _catalog_field(
+                "wait",
+                "Wait",
+                "boolean",
+                description="Wait for Qdrant write operations to apply.",
+                default_value=False,
+            ),
         ],
     ),
 )
@@ -2906,6 +3083,219 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
         )
 
 
+class TeamIndexMemoryEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamIndexMemoryEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "memory_id",
+            "memory_ids",
+            "team_id",
+            "project_id",
+            "directory_path",
+            "wait",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        state = repo.read()
+        try:
+            memory_ids = _team_memory_id_selection(payload)
+            team_id = _optional_text(payload.get("team_id"))
+            project_id = _optional_text(payload.get("project_id"))
+            if memory_ids:
+                records, errors = _team_memory_records_by_ids(
+                    state,
+                    memory_ids=memory_ids,
+                    team_id=team_id,
+                    project_id=project_id,
+                )
+            else:
+                required_team_id = _required_text(payload.get("team_id"), "team_id")
+                records = _team_memory_records_for_team(
+                    state,
+                    team_id=required_team_id,
+                    project_id=project_id,
+                )
+                errors = []
+            return _sync_team_memory_records_to_semantic_index(
+                self.runtime_context,
+                state=state,
+                records=records,
+                directory_path=_optional_text(payload.get("directory_path")),
+                wait=_optional_bool(payload.get("wait"), default=False),
+                initial_errors=errors,
+            )
+        except (TypeError, ValueError) as exc:
+            return {
+                "success": False,
+                "revision": state.revision,
+                "indexed_count": 0,
+                "deleted_count": 0,
+                "memory_ids": [],
+                "index_results": [],
+                "delete_results": [],
+                "errors": [str(exc)],
+            }
+
+
+class TeamReindexMemoryEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamReindexMemoryEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "team_id",
+            "project_id",
+            "directory_path",
+            "wait",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        state = repo.read()
+        try:
+            team_id = _required_text(payload.get("team_id"), "team_id")
+            project_id = _optional_text(payload.get("project_id"))
+            records = _team_memory_records_for_team(
+                state,
+                team_id=team_id,
+                project_id=project_id,
+            )
+            result = _sync_team_memory_records_to_semantic_index(
+                self.runtime_context,
+                state=state,
+                records=records,
+                directory_path=_optional_text(payload.get("directory_path")),
+                wait=_optional_bool(payload.get("wait"), default=False),
+            )
+            return {
+                **result,
+                "team_id": team_id,
+                "project_id": project_id,
+            }
+        except (TypeError, ValueError) as exc:
+            return {
+                "success": False,
+                "revision": state.revision,
+                "team_id": _optional_text(payload.get("team_id")) or "",
+                "project_id": _optional_text(payload.get("project_id")),
+                "indexed_count": 0,
+                "deleted_count": 0,
+                "memory_ids": [],
+                "index_results": [],
+                "delete_results": [],
+                "errors": [str(exc)],
+            }
+
+
+class TeamMemoryQueryProvider(QueryProviderBase):
+    @classmethod
+    def validate_definition(cls, query_definition):
+        if isinstance(query_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamMemoryQueryDefinition, query_definition)
+        return query_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.query_definition,
+            "team_id",
+            "project_id",
+            "codebase_id",
+            "agent_id",
+            "query_text",
+            "semantic",
+            "kinds",
+            "statuses",
+            "tags_any",
+            "limit",
+            "directory_path",
+            "score_threshold",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        state = TeamStateRepository(_runtime_dir(self.runtime_context)).read()
+        team_id = _optional_text(payload.get("team_id"))
+        query_text = _optional_text(payload.get("query_text"))
+        kinds = _string_list(payload.get("kinds"), "kinds")
+        statuses = _string_list(payload.get("statuses"), "statuses")
+        tags_any = _string_list(payload.get("tags_any"), "tags_any")
+        limit = _optional_int(payload.get("limit"), default=DEFAULT_MEMORY_LIMIT)
+        semantic_error: str | None = None
+        if _optional_bool(payload.get("semantic"), default=False) and query_text is not None:
+            if team_id is None:
+                semantic_error = "query:team:memory semantic search requires team_id"
+            else:
+                try:
+                    semantic_result = TeamMemorySemanticService(
+                        self.runtime_context
+                    ).semantic_search(
+                        state,
+                        query_text=query_text,
+                        team_id=team_id,
+                        project_id=_optional_text(payload.get("project_id")),
+                        codebase_id=_optional_text(payload.get("codebase_id")),
+                        agent_id=_optional_text(payload.get("agent_id")),
+                        kinds=kinds,
+                        statuses=statuses,
+                        tags_any=tags_any,
+                        limit=limit or DEFAULT_MEMORY_LIMIT,
+                        directory_path=_optional_text(payload.get("directory_path")),
+                        score_threshold=_optional_float(
+                            payload.get("score_threshold"),
+                            default=None,
+                        ),
+                    )
+                    records = list(semantic_result.get("records") or [])
+                    return {
+                        **semantic_result,
+                        "success": True,
+                        "revision": state.revision,
+                        "semantic": True,
+                        "memories": records,
+                        "records": records,
+                    }
+                except Exception as exc:
+                    semantic_error = str(exc)
+        result = list_memory_records(
+            state,
+            team_id=team_id,
+            project_id=_optional_text(payload.get("project_id")),
+            codebase_id=_optional_text(payload.get("codebase_id")),
+            agent_id=_optional_text(payload.get("agent_id")),
+            kinds=kinds,
+            statuses=statuses,
+            tags_any=tags_any,
+            query_text=query_text,
+            include_archived=TeamMemoryStatus.ARCHIVED.value in set(statuses),
+            limit=limit or DEFAULT_MEMORY_LIMIT,
+        )
+        records = [
+            memory_record_payload(memory, include_body=False)
+            for memory in result.pop("records")
+        ]
+        response = {
+            "success": True,
+            "revision": state.revision,
+            "semantic": False,
+            "memories": records,
+            "records": records,
+            **result,
+        }
+        if semantic_error is not None:
+            response["semantic_error"] = semantic_error
+        return response
+
+
 class TeamStateQueryProvider(QueryProviderBase):
     @classmethod
     def validate_definition(cls, query_definition):
@@ -3029,6 +3419,127 @@ class TeamSessionRoutingQueryProvider(QueryProviderBase):
         }
 
 
+def _team_memory_id_selection(payload: Mapping[str, Any]) -> list[str]:
+    memory_ids: list[str] = []
+    memory_id = _optional_text(payload.get("memory_id"))
+    if memory_id is not None:
+        memory_ids.append(memory_id)
+    for item in _string_list(payload.get("memory_ids"), "memory_ids"):
+        if item not in memory_ids:
+            memory_ids.append(item)
+    return memory_ids
+
+
+def _team_memory_records_by_ids(
+    state: TeamState,
+    *,
+    memory_ids: list[str],
+    team_id: str | None,
+    project_id: str | None,
+) -> tuple[list[TeamMemoryRecord], list[str]]:
+    records: list[TeamMemoryRecord] = []
+    errors: list[str] = []
+    for memory_id in memory_ids:
+        memory = state.memories.get(memory_id)
+        if memory is None:
+            errors.append(f"memory {memory_id} does not exist")
+            continue
+        if team_id is not None and memory.team_id != team_id:
+            errors.append(f"memory {memory_id} belongs to team {memory.team_id}, not {team_id}")
+            continue
+        if not _team_memory_matches_project_filter(memory, project_id):
+            errors.append(f"memory {memory_id} does not match project filter {project_id}")
+            continue
+        records.append(memory)
+    return records, errors
+
+
+def _team_memory_records_for_team(
+    state: TeamState,
+    *,
+    team_id: str,
+    project_id: str | None,
+) -> list[TeamMemoryRecord]:
+    records = [
+        memory
+        for memory in state.memories.values()
+        if memory.team_id == team_id and _team_memory_matches_project_filter(memory, project_id)
+    ]
+    records.sort(key=lambda memory: (memory.updated_at, memory.id))
+    return records
+
+
+def _team_memory_matches_project_filter(
+    memory: TeamMemoryRecord,
+    project_id: str | None,
+) -> bool:
+    if project_id is None:
+        return True
+    return memory.scope == TeamMemoryScope.TEAM_GLOBAL or memory.project_id == project_id
+
+
+def _sync_team_memory_records_to_semantic_index(
+    context: Any,
+    *,
+    state: TeamState,
+    records: list[TeamMemoryRecord],
+    directory_path: str | None,
+    wait: bool,
+    initial_errors: list[str] | None = None,
+) -> dict[str, Any]:
+    service = TeamMemorySemanticService(context)
+    index_results: list[dict[str, Any]] = []
+    delete_results: list[dict[str, Any]] = []
+    errors = list(initial_errors or [])
+    for memory in records:
+        if memory.status == TeamMemoryStatus.ACTIVE:
+            try:
+                index_results.append(
+                    service.index_memory(
+                        memory,
+                        directory_path=directory_path,
+                        wait=wait,
+                    )
+                )
+            except Exception as exc:
+                errors.append(f"{memory.id}: {exc}")
+            continue
+        try:
+            delete_results.append(
+                service.delete_memory(
+                    team_id=memory.team_id,
+                    memory_id=memory.id,
+                    directory_path=directory_path,
+                    wait=wait,
+                )
+            )
+        except ValueError as exc:
+            if "does not exist" in str(exc):
+                delete_results.append(
+                    {
+                        "success": True,
+                        "memory_id": memory.id,
+                        "team_id": memory.team_id,
+                        "skipped": True,
+                        "reason": str(exc),
+                    }
+                )
+            else:
+                errors.append(f"{memory.id}: {exc}")
+        except Exception as exc:
+            errors.append(f"{memory.id}: {exc}")
+    return {
+        "success": not errors,
+        "revision": state.revision,
+        "indexed_count": len(index_results),
+        "deleted_count": len(delete_results),
+        "memory_ids": [memory.id for memory in records],
+        "index_results": index_results,
+        "delete_results": delete_results,
+        "errors": errors,
+    }
+
+
 def _publish_deliverable_artifact_bundle(
     context: Any,
     *,
@@ -3090,6 +3601,84 @@ def _publish_deliverable_artifact_bundle(
     )
     return {
         "deliverable_id": deliverable_id,
+        "project_id": project_id,
+        "team_id": team_id,
+        "artifact_key": artifact_key,
+        "artifact_ref": artifact_ref,
+        "artifact_space_path": artifact_ref_path,
+        "artifact_space_version_id": version.get("id"),
+        "artifact_space_version": version.get("version"),
+        "source_paths": source_paths,
+        "publish_result": publish_result,
+    }
+
+
+def _publish_memory_artifact_bundle(
+    context: Any,
+    *,
+    agent: Mapping[str, Any],
+    team_id: str,
+    project_id: str | None,
+    memory_id: str,
+    dispatch_id: str,
+    source_paths: list[str],
+) -> dict[str, Any]:
+    runtime_dir = _runtime_dir(context)
+    safe_team_id = _artifact_space_path_segment(team_id, "team_id")
+    safe_memory_id = _artifact_space_path_segment(memory_id, "memory_id")
+    safe_dispatch_id = _artifact_space_path_segment(dispatch_id, "dispatch_id")
+    safe_project_id = (
+        _artifact_space_path_segment(project_id, "project_id")
+        if project_id is not None
+        else None
+    )
+    project_segment = f"/projects/{safe_project_id}" if safe_project_id is not None else ""
+    project_key_segment = f"/{safe_project_id}" if safe_project_id is not None else ""
+    artifact_key = (
+        f"team/{safe_team_id}{project_key_segment}/memory/{safe_memory_id}/"
+        f"{safe_dispatch_id}/bundle"
+    )
+    artifact_ref_path = f"/teams/{safe_team_id}{project_segment}/memory/{safe_memory_id}"
+    artifact_ref = f"artifact-space:{artifact_ref_path}"
+    store = PublishedArtifactStore(runtime_dir)
+    if store.exists(artifact_key):
+        artifact = store.get(artifact_key)
+        publish_result: dict[str, Any] = {
+            "success": True,
+            "key": artifact.metadata.key,
+            "byte_count": artifact.metadata.byte_count,
+            "sha256": artifact.metadata.sha256,
+            "source_file_count": artifact.metadata.source_file_count,
+            "source_byte_count": artifact.metadata.source_byte_count,
+            "reused": True,
+        }
+    else:
+        provider = ArtifactPublishArtifactsEffectProvider()
+        provider.initialize(
+            ArtifactPublishArtifactsEffectDefinition(
+                id=f"team-memory-artifacts-{memory_id}",
+                display_name="Publish Team memory artifacts",
+                type="effect:artifact:publish-artifacts",
+                session_id=_required_text(agent.get("session_id"), "session_id"),
+                key=artifact_key,
+                source_paths=source_paths,
+            ),
+            context,
+        )
+        publish_result = provider.execute()
+        publish_result["reused"] = False
+
+    version = _ensure_memory_artifact_space_version(
+        runtime_dir,
+        space_path=artifact_ref_path,
+        artifact_key=artifact_key,
+        team_id=team_id,
+        project_id=project_id,
+        memory_id=memory_id,
+        agent_id=_required_text(agent.get("id"), "agent_id"),
+    )
+    return {
+        "memory_id": memory_id,
         "project_id": project_id,
         "team_id": team_id,
         "artifact_key": artifact_key,
@@ -3418,6 +4007,44 @@ def _ensure_deliverable_artifact_space_version(
     return state.versions_for_space(space_path, artifact_id="bundle")[-1].model_dump(mode="json")
 
 
+def _ensure_memory_artifact_space_version(
+    runtime_dir: Path,
+    *,
+    space_path: str,
+    artifact_key: str,
+    team_id: str,
+    project_id: str | None,
+    memory_id: str,
+    agent_id: str,
+) -> dict[str, Any]:
+    subject = f"team-agent:{agent_id}"
+    metadata = {
+        "team_id": team_id,
+        "project_id": project_id,
+        "memory_id": memory_id,
+        "source": "team_addon",
+        "record_kind": "memory",
+    }
+    store = ArtifactSpaceStore(runtime_dir)
+    state = store.ensure_space(
+        path=space_path,
+        display_name=f"Memory {memory_id}",
+        metadata=metadata,
+        subject=subject,
+    )
+    for version in state.versions_for_space(space_path, artifact_id="bundle"):
+        if version.artifact_key == artifact_key:
+            return version.model_dump(mode="json")
+    state = store.publish_version(
+        space_path=space_path,
+        artifact_id="bundle",
+        artifact_key=artifact_key,
+        created_by_subject=subject,
+        metadata=metadata,
+    )
+    return state.versions_for_space(space_path, artifact_id="bundle")[-1].model_dump(mode="json")
+
+
 def _append_unique_text(values: list[str], value: str) -> list[str]:
     return values if value in values else [*values, value]
 
@@ -3449,9 +4076,12 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:publish-review-branch": TeamPublishReviewBranchEffectProvider,
             "effect:team:mark-release-published": TeamMarkReleasePublishedEffectProvider,
             "effect:team:consolidate-git-branches": (TeamConsolidateGitBranchesEffectProvider),
+            "effect:team:index-memory": TeamIndexMemoryEffectProvider,
+            "effect:team:reindex-memory": TeamReindexMemoryEffectProvider,
         },
         query_providers={
             "query:team:state": TeamStateQueryProvider,
+            "query:team:memory": TeamMemoryQueryProvider,
             "query:team:session-routing": TeamSessionRoutingQueryProvider,
         },
         node_definition_resolvers={
@@ -3518,7 +4148,14 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:consolidate-git-branches": (
                 lambda node: _materialize(TeamConsolidateGitBranchesEffectDefinition, node)
             ),
+            "effect:team:index-memory": (
+                lambda node: _materialize(TeamIndexMemoryEffectDefinition, node)
+            ),
+            "effect:team:reindex-memory": (
+                lambda node: _materialize(TeamReindexMemoryEffectDefinition, node)
+            ),
             "query:team:state": (lambda node: _materialize(TeamStateQueryDefinition, node)),
+            "query:team:memory": (lambda node: _materialize(TeamMemoryQueryDefinition, node)),
             "query:team:session-routing": (
                 lambda node: _materialize(TeamSessionRoutingQueryDefinition, node)
             ),
@@ -5622,6 +6259,7 @@ def _filtered_team_state_payload(
         include_agent_avatars=False,
         session_records=session_records,
     )
+    filtered["memories"] = {}
     teams = filtered["teams"]
     projects = filtered["projects"]
     agents = filtered["agents"]
