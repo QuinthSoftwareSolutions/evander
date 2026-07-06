@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
 import uvicorn
@@ -37,6 +37,8 @@ HOP_BY_HOP_HEADERS = {
 }
 
 MCP_SESSION_TOKEN_REQUIRED_MESSAGE = "MCP session token is required for this session"
+PATH_SEGMENT_SAFE_CHARS = ":@!$&'()*+,;=-._~"
+MAX_PATH_DECODE_PASSES = 5
 
 
 class HttpTargetRelay:
@@ -72,11 +74,14 @@ class HttpTargetRelay:
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=404)
 
-            upstream_url = self._upstream_http_url(
-                base_url=http_target.base_url,
-                upstream_path=request.path_params.get("path", ""),
-                query_items=request.query_params.multi_items(),
-            )
+            try:
+                upstream_url = self._upstream_http_url(
+                    base_url=http_target.base_url,
+                    upstream_path=request.path_params.get("path", ""),
+                    query_items=request.query_params.multi_items(),
+                )
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
             request_body = await request.body()
             headers = relay._request_headers_for_upstream(request)
             headers["accept-encoding"] = "identity"
@@ -100,9 +105,7 @@ class HttpTargetRelay:
                         session_id=request.path_params["session_id"],
                         alias=request.path_params["alias"],
                         mcp_session_token=relay._mcp_session_token_from_path(request),
-                        mcp_session_query_token=relay._mcp_session_token_from_query(
-                            request
-                        ),
+                        mcp_session_query_token=relay._mcp_session_token_from_query(request),
                     )
                     if redirect_location is None:
                         return JSONResponse(
@@ -253,15 +256,29 @@ class HttpTargetRelay:
     def _upstream_http_url(
         cls, *, base_url: str, upstream_path: str, query_items: list[tuple[str, str]]
     ) -> str:
-        normalized_base = base_url.rstrip("/")
-        normalized_path = upstream_path.lstrip("/")
-        upstream_url = (
-            normalized_base if not normalized_path else f"{normalized_base}/{normalized_path}"
+        base_parts = urlsplit(base_url)
+        base_segments = _safe_path_segments(
+            base_parts.path,
+            field_name="configured HTTP target base path",
+        )
+        upstream_segments = _safe_path_segments(
+            upstream_path,
+            field_name="HTTP target path",
+        )
+        upstream_path_value = _path_from_segments(
+            [*base_segments, *upstream_segments],
+            root_if_empty=base_parts.path == "/",
         )
         filtered_query = cls._filtered_query_string(query_items)
-        if filtered_query:
-            upstream_url = f"{upstream_url}?{filtered_query}"
-        return upstream_url
+        return urlunsplit(
+            (
+                base_parts.scheme,
+                base_parts.netloc,
+                upstream_path_value,
+                filtered_query,
+                "",
+            )
+        )
 
     @staticmethod
     def _relay_redirect_location(
@@ -294,9 +311,7 @@ class HttpTargetRelay:
         )
         if relay_upstream_path is None:
             return None
-        auth_prefix = (
-            f"/auth/{quote(mcp_session_token, safe='')}" if mcp_session_token else ""
-        )
+        auth_prefix = f"/auth/{quote(mcp_session_token, safe='')}" if mcp_session_token else ""
         relay_path = f"{auth_prefix}/session/{session_id}/target/{alias}{relay_upstream_path}"
         relay_query = location_parts.query
         if mcp_session_query_token:
@@ -310,16 +325,62 @@ class HttpTargetRelay:
 
     @staticmethod
     def _strip_target_base_path(path: str, *, base_path: str) -> str | None:
-        normalized_path = path or "/"
-        normalized_base_path = base_path or ""
-        if not normalized_base_path or normalized_base_path == "/":
-            return normalized_path
-        normalized_base_path = normalized_base_path.rstrip("/")
-        if normalized_path == normalized_base_path:
+        try:
+            path_segments = _safe_path_segments(
+                path or "/",
+                field_name="HTTP target redirect path",
+            )
+            base_segments = _safe_path_segments(
+                base_path or "",
+                field_name="configured HTTP target base path",
+            )
+        except ValueError:
+            return None
+
+        if not base_segments:
+            return _path_from_segments(path_segments, root_if_empty=True)
+        if path_segments[: len(base_segments)] != base_segments:
+            return None
+        remainder = path_segments[len(base_segments) :]
+        if not remainder:
             return "/"
-        if normalized_path.startswith(f"{normalized_base_path}/"):
-            return normalized_path[len(normalized_base_path) :]
-        return None
+        return _path_from_segments(remainder, root_if_empty=True)
+
+
+def _safe_path_segments(path: object, *, field_name: str) -> list[str]:
+    raw_path = str(path or "").lstrip("/")
+    if not raw_path:
+        return []
+    segments: list[str] = []
+    for raw_segment in raw_path.split("/"):
+        if not raw_segment:
+            continue
+        segment = _fully_unquote_path_segment(raw_segment, field_name=field_name)
+        if segment in {".", ".."}:
+            raise ValueError(f"{field_name} must not contain dot segments")
+        if "/" in segment or "\\" in segment:
+            raise ValueError(f"{field_name} must not contain encoded path separators")
+        segments.append(segment)
+    return segments
+
+
+def _fully_unquote_path_segment(segment: str, *, field_name: str) -> str:
+    decoded = segment
+    for _ in range(MAX_PATH_DECODE_PASSES):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            return decoded
+        decoded = next_decoded
+    if unquote(decoded) != decoded:
+        raise ValueError(f"{field_name} is too deeply percent-encoded")
+    return decoded
+
+
+def _path_from_segments(segments: list[str], *, root_if_empty: bool) -> str:
+    if not segments:
+        return "/" if root_if_empty else ""
+    encoded_segments = [quote(segment, safe=PATH_SEGMENT_SAFE_CHARS) for segment in segments]
+    return f"/{'/'.join(encoded_segments)}"
 
 
 def create_app(

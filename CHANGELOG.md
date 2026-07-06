@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-07-06 - Security Audit Remediation
+
+- Required token proof when MCP callers select an existing session over HTTP,
+  while keeping direct in-process gateway calls compatible for trusted control-plane paths.
+- Rejected raw and encoded dot-segment escapes in the OpenAI, NuGet, and HTTP target relays,
+  constrained NuGet Azure Packaging shortcuts to the configured feed scope, and limited the
+  OpenAI relay to known OpenAI-compatible endpoints before forwarding host credentials.
+- Hardened worker session file writes and artifact text reads with descriptor-based no-follow
+  traversal so symlink swaps cannot escape session roots.
+- Scoped Admin Web session and approval reads to authorized directories instead of exposing
+  cross-directory session or approval data.
+- Required timestamped webhook signatures over `timestamp.body` and rejected stale webhook
+  deliveries to close replay windows.
+- Enforced privileged unlock checks on Team add-on mutation routes.
+- Restricted guest Git keys to their authorized bare repository for read operations and preserved
+  the existing session branch write scope.
+- Validated guest Git public keys before rewriting `authorized_keys` so malformed keys cannot
+  erase existing entries.
+- Updated vulnerable workflow-editor development dependencies and lockfile entries.
+
 ## 2026-07-05 - Review Follow-up Security Fixes
 
 - Blocked IPv4-mapped metadata IP addresses in workflow HTTP request destination checks.

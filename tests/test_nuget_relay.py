@@ -68,6 +68,78 @@ def test_azure_proxy_injects_basic_auth(tmp_path: Path) -> None:
     assert captured["authorization"].startswith("Basic ")
 
 
+def test_azure_proxy_rejects_encoded_dot_segment_escape_without_sending_pat(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["AZURE_ARTIFACTS_PAT"] = "test-pat"
+
+    response = client.get("/nuget/azure/%2e%2e/_apis/projects")
+
+    assert response.status_code == 400
+    assert "dot segments" in response.text
+    assert called is False
+
+
+def test_azure_proxy_rejects_packaging_path_outside_configured_feed(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["AZURE_ARTIFACTS_PAT"] = "test-pat"
+
+    response = client.get("/nuget/azure/example/example/_packaging/other-feed/nuget/v3/index.json")
+
+    assert response.status_code == 400
+    assert "outside the configured feed" in response.text
+    assert called is False
+
+
+def test_azure_proxy_allows_packaging_path_under_configured_feed(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["AZURE_ARTIFACTS_PAT"] = "test-pat"
+
+    response = client.get("/nuget/azure/example/example/_packaging/example/nuget/v3/index.json")
+
+    assert response.status_code == 200
+    assert captured["authorization"].startswith("Basic ")
+    assert (
+        captured["url"]
+        == "https://pkgs.dev.azure.com/example/example/_packaging/example/nuget/v3/index.json"
+    )
+
+
 def test_public_proxy_rewrites_index_urls(tmp_path: Path) -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(

@@ -101,10 +101,22 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
     return config_path
 
 
-def _client(tmp_path: Path, *, enable_team_addon: bool = True) -> TestClient:
-    return TestClient(
-        create_app(build_admin_runtime(_write_config(tmp_path, enable_team_addon=enable_team_addon)))
+def _client(
+    tmp_path: Path, *, enable_team_addon: bool = True, unlock_privileged: bool = True
+) -> TestClient:
+    client = TestClient(
+        create_app(
+            build_admin_runtime(_write_config(tmp_path, enable_team_addon=enable_team_addon))
+        )
     )
+    if unlock_privileged:
+        _unlock_privileged_operations(client)
+    return client
+
+
+def _unlock_privileged_operations(client: TestClient) -> None:
+    response = client.post("/api/admin/privileged/unlock")
+    assert response.status_code == 200
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -608,6 +620,7 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
     monkeypatch.setattr(service.vm_agent_admin, "resume_agent", _fake_resume_agent)
     monkeypatch.setattr(service.vm_agent_admin, "vm_copy_files", _fake_vm_copy_files)
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     created = client.post(
         "/api/addons/team-addon/conversations",
@@ -716,6 +729,7 @@ def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
 
     monkeypatch.setattr(service.vm_agent_admin, "resume_agent", _fake_resume_agent)
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     created = client.post(
         "/api/addons/team-addon/conversations",
@@ -1337,6 +1351,7 @@ def test_agent_voice_session_create_query_and_end(
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post("/api/addons/team-addon/agents/backend/voice-sessions", json={})
 
@@ -1444,6 +1459,7 @@ def test_agent_voice_session_records_chat_conversation_message(
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     created = client.post(
         "/api/addons/team-addon/agents/backend/voice-sessions",
@@ -1530,6 +1546,7 @@ def test_agent_voice_session_can_end_by_request_id(
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
     request_id = "browser-call:test-request"
     created = client.post(
         "/api/addons/team-addon/agents/backend/voice-sessions",
@@ -1906,6 +1923,34 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "team-agent-create.css" in html.text
 
 
+def test_team_addon_admin_api_mutations_require_privileged_unlock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "none")
+    client = _client(tmp_path, unlock_privileged=False)
+
+    create_payload = {
+        "expected_revision": 0,
+        "id": "team",
+        "name": "Team",
+        "manager_agent_id": "manager",
+        "manager_session_id": "session-manager",
+    }
+    locked_response = client.post("/api/addons/team-addon/teams", json=create_payload)
+    read_response = client.get("/api/addons/team-addon/state")
+    unlock_response = client.post("/api/admin/privileged/unlock")
+    unlocked_response = client.post("/api/addons/team-addon/teams", json=create_payload)
+
+    assert locked_response.status_code == 403
+    assert locked_response.json()["error"] == "Privileged operations are locked."
+    assert read_response.status_code == 200
+    assert read_response.json()["revision"] == 0
+    assert unlock_response.status_code == 200
+    assert unlock_response.json()["privileged_operations"]["unlocked"] is True
+    assert unlocked_response.status_code == 201
+    assert unlocked_response.json()["teams"]["team"]["name"] == "Team"
+
+
 def test_team_addon_admin_api_governance_group_flow(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -2170,6 +2215,7 @@ def test_team_addon_admin_api_runtime_operations_use_admin_web_addon_service_ada
         MethodType(list_agents, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.get("/api/addons/team-addon/state")
 
@@ -2222,14 +2268,13 @@ def test_team_addon_view_payload_avoids_agent_execution_inventory(
         MethodType(fail_agent_inventory, service.vm_agent_admin),
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.get("/api/addons/team-addon/views/people")
 
     assert response.status_code == 200
     state = response.json()["data"]["state"]
-    session_health = {
-        row["agent_id"]: row for row in state["runtime_operations"]["session_health"]
-    }
+    session_health = {row["agent_id"]: row for row in state["runtime_operations"]["session_health"]}
     assert session_health["backend"]["session_present"] is True
     assert session_health["backend"]["status"] == "active"
     assert "agent_execution_status" not in session_health["backend"]
@@ -3487,6 +3532,7 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         },
     )
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/addons/team-addon/projects/git/import",
@@ -3510,12 +3556,12 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         "base_branch": "main",
     }
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == source_commit
-    assert _git_dir(
-        bare_repo, "config", "--get", "evander.trustedRepoPath"
-    ).stdout.strip() == str(source_repo.resolve())
-    assert _git_dir(
-        bare_repo, "config", "--get", "evander.mirrorSource"
-    ).stdout.strip() == str(source_repo)
+    assert _git_dir(bare_repo, "config", "--get", "evander.trustedRepoPath").stdout.strip() == str(
+        source_repo.resolve()
+    )
+    assert _git_dir(bare_repo, "config", "--get", "evander.mirrorSource").stdout.strip() == str(
+        source_repo
+    )
     (source_repo / "README.md").write_text("# Source\n\nRefresh\n", encoding="utf-8")
     _git(source_repo, "add", "README.md")
     _git(source_repo, "commit", "-q", "-m", "refresh")
@@ -3584,6 +3630,7 @@ def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
     monkeypatch.setattr(service.issue_git_admin, "import_git_repo", fake_import_git_repo)
     monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
     client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
 
     response = client.post(
         "/api/addons/team-addon/projects/git/import",

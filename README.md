@@ -505,25 +505,29 @@ example `${{trigger-external-deploy.payload.target}}`.
 ### Signed Workflow Webhooks
 
 For public inbound workflows, configure `trigger:http:webhook` and POST to
-`/api/workflow-webhooks/{slug}`. The request body must be a JSON object, and the signature header
-must be `X-Evander-Signature-256: sha256=<hex>`, where the HMAC-SHA256 is computed over the
-exact raw request body bytes with the configured secret.
+`/api/workflow-webhooks/{slug}`. The request body must be a JSON object. Requests must include
+`X-Evander-Timestamp` with a Unix timestamp that is within five minutes of the Admin Web clock and
+`X-Evander-Signature-256: sha256=<hex>`, where the HMAC-SHA256 is computed over
+`<timestamp>.<raw request body bytes>` with the configured secret.
 
 The webhook trigger stores the durable event as `external.webhook.<slug>` by default, exposes the
-webhook envelope downstream, and leaves payload shaping to gates such as `gate:filter`,
+webhook envelope downstream with the signature and timestamp headers, and leaves payload shaping to
+gates such as `gate:filter`,
 `gate:map`, `gate:deserialize`, and `gate:dedupe`.
 
 ```bash
 WEBHOOK_BODY='{"target":"demo"}'
 WEBHOOK_SECRET='replace-with-your-secret'
+WEBHOOK_TIMESTAMP="$(date +%s)"
 SIG="$(
-  printf '%s' "$WEBHOOK_BODY" |
+  printf '%s.%s' "$WEBHOOK_TIMESTAMP" "$WEBHOOK_BODY" |
     openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex |
     awk '{print $2}'
 )"
 
 curl -X POST http://127.0.0.1:8100/api/workflow-webhooks/deploy \
   -H "Content-Type: application/json" \
+  -H "X-Evander-Timestamp: ${WEBHOOK_TIMESTAMP}" \
   -H "X-Evander-Signature-256: sha256=${SIG}" \
   -d "$WEBHOOK_BODY"
 ```
@@ -532,10 +536,12 @@ curl -X POST http://127.0.0.1:8100/api/workflow-webhooks/deploy \
 import hashlib
 import hmac
 import os
+import time
 
 body = b'{"target":"demo"}'
 secret = os.environ["WEBHOOK_SECRET"].encode()
-signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
+timestamp = str(int(time.time()))
+signature = hmac.new(secret, timestamp.encode("ascii") + b"." + body, hashlib.sha256).hexdigest()
 print(signature)
 ```
 

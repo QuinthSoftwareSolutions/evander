@@ -38,7 +38,7 @@ from evander.retell_phone import (
 from evander.runtime import RuntimeContext
 from evander.session_auth import (
     redact_mcp_session_token_query,
-    verify_mcp_session_token,
+    verify_mcp_session_proof_token,
 )
 from evander.voice_sessions import VoiceProjectionService, VoiceQueryDelegator
 from evander.voice_sessions import (
@@ -48,6 +48,7 @@ from evander.voice_sessions import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 def _install_mcp_http_logging(
     app: Starlette,
@@ -140,7 +141,7 @@ def _install_mcp_http_logging(
                 auth_session_id = (declared_session_id or bound_session_id or "").strip()
                 if auth_session_id:
                     session = runtime_context.session_repository.get_session(auth_session_id)
-                    if session is not None and not verify_mcp_session_token(
+                    if session is not None and not verify_mcp_session_proof_token(
                         session,
                         _mcp_session_token_from_request(request),
                     ):
@@ -150,9 +151,7 @@ def _install_mcp_http_logging(
                         )
                 if transport_session_map is not None and request_transport_session_id:
                     if transport_binding_store is not None:
-                        effective_bound_session_id = (
-                            declared_session_id or bound_session_id or None
-                        )
+                        effective_bound_session_id = declared_session_id or bound_session_id or None
                         if effective_bound_session_id:
                             transport_binding_store.bind_transport_session(
                                 transport_session_id=request_transport_session_id,
@@ -192,9 +191,12 @@ def _install_mcp_http_logging(
                     and transport_binding_store is not None
                     and request_transport_session_id
                 ):
-                    resolved_session_id = declared_session_id or str(
-                        transport_session_map.get(request_transport_session_id) or ""
-                    ).strip()
+                    resolved_session_id = (
+                        declared_session_id
+                        or str(
+                            transport_session_map.get(request_transport_session_id) or ""
+                        ).strip()
+                    )
                     if resolved_session_id:
                         try:
                             session = runtime_context.policy.get_session(resolved_session_id)
@@ -236,6 +238,7 @@ def _install_mcp_http_logging(
 
     app.add_middleware(McpHttpLoggingMiddleware)
 
+
 def create_app(context: RuntimeContext) -> Starlette:
     server = create_server(context)
     mcp_app = server.streamable_http_app()
@@ -250,9 +253,7 @@ def create_app(context: RuntimeContext) -> Starlette:
             if call is not None and not isinstance(call, dict):
                 raise ValueError("Retell webhook call payload must be an object")
             call_id = str((call or {}).get("call_id") or "").strip()
-            record = (
-                context.retell_phone_call_store.get_by_call_id(call_id) if call_id else None
-            )
+            record = context.retell_phone_call_store.get_by_call_id(call_id) if call_id else None
             signature_config = (
                 context.provider_config.resolve_for_directory(record.directory_path)
                 if record is not None
@@ -291,7 +292,7 @@ def create_app(context: RuntimeContext) -> Starlette:
             session_id = _resolve_session_id_from_request(request)
             session = context.policy.require_tool(session_id, ToolName.COPILOT_HOST_AUTH)
             vm_id = session.vm_id
-            if not verify_mcp_session_token(
+            if not verify_mcp_session_proof_token(
                 session,
                 _mcp_session_token_from_request(request),
             ):
@@ -778,7 +779,9 @@ def create_app(context: RuntimeContext) -> Starlette:
                 voice_session_id,
                 question=str(payload.get("question") or ""),
                 transcript_excerpt=str(payload.get("transcript_excerpt") or "").strip() or None,
-                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+                metadata=payload.get("metadata")
+                if isinstance(payload.get("metadata"), dict)
+                else {},
                 deadline_seconds=(
                     int(payload["deadline_seconds"])
                     if payload.get("deadline_seconds") is not None

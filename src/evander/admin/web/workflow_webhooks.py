@@ -5,7 +5,7 @@ import hmac
 import os
 import re
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from starlette.requests import Request
@@ -18,6 +18,7 @@ from evander.admin.web.shared import json_error
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 _WEBHOOK_SIGNATURE_RE = re.compile(r"^sha256=([0-9a-fA-F]{64})$")
+_WEBHOOK_TIMESTAMP_TOLERANCE = timedelta(minutes=5)
 
 
 def workflow_webhook_routes(service: AdminRuntimeComponents) -> list[Route]:
@@ -71,15 +72,25 @@ def workflow_webhook_routes(service: AdminRuntimeComponents) -> list[Route]:
                 status_code=500,
             )
 
+        timestamp_header = str(request.headers.get("x-evander-timestamp") or "").strip()
+        try:
+            webhook_timestamp = _parse_webhook_timestamp(timestamp_header)
+        except ValueError:
+            return json_error("Webhook timestamp is invalid or stale", status_code=401)
+        now = datetime.now(UTC)
+        if abs(now - webhook_timestamp) > _WEBHOOK_TIMESTAMP_TOLERANCE:
+            return json_error("Webhook timestamp is invalid or stale", status_code=401)
+
+        signature_digest = signature_match.group(1).lower()
         expected_signature = hmac.new(
             secret.encode("utf-8"),
-            raw_body,
+            timestamp_header.encode("ascii") + b"." + raw_body,
             hashlib.sha256,
         ).hexdigest()
-        if not hmac.compare_digest(expected_signature, signature_match.group(1).lower()):
+        if not hmac.compare_digest(expected_signature, signature_digest):
             return json_error("Webhook signature is invalid or missing", status_code=401)
 
-        received_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        received_at = now.isoformat().replace("+00:00", "Z")
         envelope = {
             "slug": trigger.slug,
             "headers": _json_object_from_pairs(request.headers.items()),
@@ -88,6 +99,7 @@ def workflow_webhook_routes(service: AdminRuntimeComponents) -> list[Route]:
             "received_at": received_at,
             "remote_addr": _remote_addr(request),
             "signature_header": signature_header or "",
+            "timestamp_header": timestamp_header,
         }
 
         try:
@@ -95,6 +107,7 @@ def workflow_webhook_routes(service: AdminRuntimeComponents) -> list[Route]:
                 event_type=trigger.event_type,
                 payload=envelope,
                 correlation_key=f"webhook:{trigger.slug}",
+                idempotency_key=(f"webhook:{trigger.id}:{trigger.slug}:sha256:{signature_digest}"),
                 source={
                     "source_type": "webhook",
                     "source_name": trigger.slug,
@@ -122,6 +135,15 @@ def _json_object_from_pairs(items: Iterable[tuple[str, Any]]) -> dict[str, Any]:
             continue
         result[normalized_key] = value
     return result
+
+
+def _parse_webhook_timestamp(value: str) -> datetime:
+    if not value or not value.isascii() or not value.isdecimal():
+        raise ValueError("webhook timestamp must be epoch seconds")
+    try:
+        return datetime.fromtimestamp(int(value), UTC)
+    except (OverflowError, OSError) as exc:
+        raise ValueError("webhook timestamp is out of range") from exc
 
 
 def _remote_addr(request: Request) -> str:

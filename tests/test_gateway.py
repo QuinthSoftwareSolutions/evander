@@ -115,14 +115,15 @@ def _make_request_context(
 def _mcp_initialize_session(
     client: TestClient,
     *,
-    session_id: str,
+    session_id: str | None,
     mcp_session_token: str | None = None,
 ) -> str:
     headers = {
         "accept": "application/json, text/event-stream",
         "content-type": "application/json",
-        "x-evander-session-id": session_id,
     }
+    if session_id is not None:
+        headers["x-evander-session-id"] = session_id
     if mcp_session_token is not None:
         headers["x-evander-mcp-session-token"] = mcp_session_token
     response = client.post(
@@ -148,6 +149,35 @@ def _mcp_initialize_session(
     session_id_header = response.headers.get("mcp-session-id")
     assert session_id_header
     return session_id_header
+
+
+def _mcp_call_tool_response(
+    client: TestClient,
+    *,
+    mcp_session_id: str,
+    tool_name: str,
+    arguments: dict[str, object],
+    mcp_session_token: str | None = None,
+) -> httpx.Response:
+    headers = {
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-session-id": mcp_session_id,
+    }
+    if mcp_session_token is not None:
+        headers["x-evander-mcp-session-token"] = mcp_session_token
+    return client.post(
+        "/mcp",
+        headers=headers,
+        content=json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments},
+            }
+        ),
+    )
 
 
 def _mcp_response_payload(response: httpx.Response) -> dict[str, Any]:
@@ -552,8 +582,7 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     }
     assert ado_tool_names <= registered_tool_names
     assert any(
-        tool.name == "query_ado_work_item_activity"
-        for tool in server._tool_manager.list_tools()
+        tool.name == "query_ado_work_item_activity" for tool in server._tool_manager.list_tools()
     )
     assert any(tool.name == "get_workflow_snapshot" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "assistant_read_config" for tool in server._tool_manager.list_tools())
@@ -578,14 +607,10 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     assert "phone_number" not in make_phone_call_fields
     assert "to_number" not in make_phone_call_fields
     cancel_scheduled_wake_tool = next(
-        tool
-        for tool in server._tool_manager.list_tools()
-        if tool.name == "cancel_scheduled_wake"
+        tool for tool in server._tool_manager.list_tools() if tool.name == "cancel_scheduled_wake"
     )
     cancel_scheduled_wake_fields = set(cancel_scheduled_wake_tool.parameters["properties"])
-    assert {"session_id", "request_id", "reason", "metadata"}.issubset(
-        cancel_scheduled_wake_fields
-    )
+    assert {"session_id", "request_id", "reason", "metadata"}.issubset(cancel_scheduled_wake_fields)
     list_contacts_tool = next(
         tool for tool in server._tool_manager.list_tools() if tool.name == "list_contacts"
     )
@@ -660,16 +685,25 @@ def test_gateway_mcp_tools_list_filters_visible_tools_for_session(
         tmp_path,
         allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
     )
+    session = context.session_repository.get_session("session-1")
+    assert session is not None
+    protected_session, mcp_session_token = ensure_session_mcp_auth_token(session)
+    context.session_repository.upsert_session(protected_session)
+
     with TestClient(create_app(context)) as client:
         mcp_session_id = _mcp_initialize_session(
             client,
             session_id="session-1",
+            mcp_session_token=mcp_session_token,
         )
 
         tool_names = _mcp_list_tool_names(
             client,
             mcp_session_id=mcp_session_id,
-            query_params={"session_id": "session-1"},
+            query_params={
+                "session_id": "session-1",
+                "mcp_session_token": mcp_session_token,
+            },
         )
 
     binding = context.mcp_transport_bindings.get_binding(mcp_session_id)
@@ -680,6 +714,93 @@ def test_gateway_mcp_tools_list_filters_visible_tools_for_session(
     assert binding.bound_session_id == "session-1"
     assert binding.last_visible_tool_names == ["get_workflow_snapshot"]
     assert binding.last_tools_list_at is not None
+
+
+def test_gateway_rejects_tokenless_mcp_session_selected_by_header(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+
+    with TestClient(create_app(context)) as client:
+        response = client.post(
+            "/mcp",
+            headers={
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+                "x-evander-session-id": "session-1",
+            },
+            content=json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "clientInfo": {"name": "pytest", "version": "1.0"},
+                        "capabilities": {},
+                    },
+                }
+            ),
+        )
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "MCP session token is required for this session"
+
+
+def test_gateway_rejects_tokenless_mcp_tool_call_selected_by_argument(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+
+    with TestClient(create_app(context)) as client:
+        mcp_session_id = _mcp_initialize_session(client, session_id=None)
+        response = _mcp_call_tool_response(
+            client,
+            mcp_session_id=mcp_session_id,
+            tool_name="get_workflow_snapshot",
+            arguments={"session_id": "session-1"},
+        )
+
+    assert response.status_code == 200
+    payload = _mcp_response_payload(response)
+    result = payload.get("result")
+    assert isinstance(result, dict)
+    assert result.get("isError") is True
+    assert "MCP session token is required for this session" in json.dumps(result)
+
+
+def test_gateway_allows_tokenized_mcp_tool_call_selected_by_argument(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    session = context.session_repository.get_session("session-1")
+    assert session is not None
+    protected_session, mcp_session_token = ensure_session_mcp_auth_token(session)
+    context.session_repository.upsert_session(protected_session)
+
+    with TestClient(create_app(context)) as client:
+        mcp_session_id = _mcp_initialize_session(client, session_id=None)
+        response = _mcp_call_tool_response(
+            client,
+            mcp_session_id=mcp_session_id,
+            tool_name="get_workflow_snapshot",
+            arguments={"session_id": "session-1"},
+            mcp_session_token=mcp_session_token,
+        )
+
+    assert response.status_code == 200
+    payload = _mcp_response_payload(response)
+    assert "error" not in payload
+    assert "trigger-orchestrator" in json.dumps(payload)
 
 
 def test_gateway_requires_mcp_session_token_for_tokenized_session(
@@ -782,13 +903,22 @@ def test_gateway_mcp_tools_list_rejects_conflicting_bound_transport_session(
             directory_path="root",
         )
     )
+    session = context.session_repository.get_session("session-1")
+    assert session is not None
+    protected_session, mcp_session_token = ensure_session_mcp_auth_token(session)
+    context.session_repository.upsert_session(protected_session)
 
     with TestClient(create_app(context)) as client:
         mcp_session_id = _mcp_initialize_session(
             client,
             session_id="session-1",
+            mcp_session_token=mcp_session_token,
         )
-        bound_tool_names = _mcp_list_tool_names(client, mcp_session_id=mcp_session_id)
+        bound_tool_names = _mcp_list_tool_names(
+            client,
+            mcp_session_id=mcp_session_id,
+            query_params={"mcp_session_token": mcp_session_token},
+        )
 
         conflict_response = client.post(
             "/mcp",
@@ -828,6 +958,10 @@ def test_gateway_list_tools_uses_tool_approval_lease_visibility(
     tmp_path: Path,
 ) -> None:
     context = _build_runtime_with_workflow_config(tmp_path, allowed_tools=[])
+    session = context.session_repository.get_session("session-1")
+    assert session is not None
+    protected_session, mcp_session_token = ensure_session_mcp_auth_token(session)
+    context.session_repository.upsert_session(protected_session)
     lease = context.tool_approval_leases.upsert_lease(
         session_id="session-1",
         workflow_run_id="workflow-run-1",
@@ -839,12 +973,14 @@ def test_gateway_list_tools_uses_tool_approval_lease_visibility(
         headers={"mcp-session-id": "transport-1"},
         query_params={
             "session_id": "session-1",
+            "mcp_session_token": mcp_session_token,
             "workflow_run_id": "workflow-run-1",
             "mcp_tool_approval_lease_id": lease.lease_id,
         },
         url=SimpleNamespace(
             query=(
-                "session_id=session-1&workflow_run_id=workflow-run-1&"
+                f"session_id=session-1&mcp_session_token={mcp_session_token}&"
+                "workflow_run_id=workflow-run-1&"
                 f"mcp_tool_approval_lease_id={lease.lease_id}"
             )
         ),
@@ -1117,9 +1253,9 @@ def test_approval_required_tool_creates_pending_request_without_execution(
     assert pending_diagnostic["status"] == "pending_approval"
     assert pending_diagnostic["payload_match"] is True
     assert pending_diagnostic["approved_payload_summary"]["arguments"]["session_id"] == "session-1"
-    assert pending_diagnostic["approved_payload_digest"] == tool_events[0]["result"][
-        "payload_digest"
-    ]
+    assert (
+        pending_diagnostic["approved_payload_digest"] == tool_events[0]["result"]["payload_digest"]
+    )
 
 
 def test_approval_required_tool_approved_exact_retry_executes_and_links_audit(
@@ -1382,17 +1518,29 @@ def test_approval_required_tool_redacts_secret_values_in_payload_diagnostic(
     assert tool_events[0]["decision"] == "pending_approval"
     pending_diagnostic = tool_events[0]["result"]["approval_diagnostic"]
     assert pending_diagnostic["approval_request_id"] == approval.request_id
-    assert pending_diagnostic["approved_payload_summary"]["arguments"]["response_token"] == "<redacted>"
-    assert pending_diagnostic["attempted_payload_summary"]["arguments"]["response_token"] == "<redacted>"
-    assert pending_diagnostic["approved_payload_digest"] == tool_events[0]["result"][
-        "payload_digest"
-    ]
+    assert (
+        pending_diagnostic["approved_payload_summary"]["arguments"]["response_token"]
+        == "<redacted>"
+    )
+    assert (
+        pending_diagnostic["attempted_payload_summary"]["arguments"]["response_token"]
+        == "<redacted>"
+    )
+    assert (
+        pending_diagnostic["approved_payload_digest"] == tool_events[0]["result"]["payload_digest"]
+    )
 
     blocked_diagnostic = tool_events[-1]["result"]["approval_diagnostic"]
     assert blocked_diagnostic["approval_request_id"] == approval.request_id
     assert blocked_diagnostic["rejection_kind"] == "payload_mismatch"
-    assert blocked_diagnostic["attempted_payload_summary"]["arguments"]["response_token"] == "<redacted>"
-    assert blocked_diagnostic["approved_payload_summary"]["arguments"]["response_token"] == "<redacted>"
+    assert (
+        blocked_diagnostic["attempted_payload_summary"]["arguments"]["response_token"]
+        == "<redacted>"
+    )
+    assert (
+        blocked_diagnostic["approved_payload_summary"]["arguments"]["response_token"]
+        == "<redacted>"
+    )
     changed = {
         entry["path"]: entry for entry in blocked_diagnostic["differences"]["changed"]["entries"]
     }
@@ -1459,7 +1607,7 @@ def test_assistant_create_workflow_saves_selected_pack_in_multi_pack_config(
                     "capability_profile": "operator-limited",
                     "assistant_mutation_policy": {
                         "writable_scopes": ["config/workflow"],
-                    }
+                    },
                 }
             }
         )
@@ -1521,9 +1669,9 @@ def test_assistant_create_workflow_saves_selected_pack_in_multi_pack_config(
     }
     config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
     config_path.write_text(json.dumps(wrapper_payload), encoding="utf-8")
-    document = build_admin_runtime(context.config.runtime_dir).workflow_config_admin.read_workflow_editor_document(
-        workflow_pack="pack-b.v1.json"
-    )
+    document = build_admin_runtime(
+        context.config.runtime_dir
+    ).workflow_config_admin.read_workflow_editor_document(workflow_pack="pack-b.v1.json")
     edited_config = dict(document.config)
     edited_effects = [dict(effect) for effect in edited_config["effects"]]
     edited_effects[0]["display_name"] = "Emit updated event"
@@ -2458,7 +2606,7 @@ def test_make_phone_call_enforces_policy_contact_alias_and_audit_redaction(
                     "phone_numbers": [
                         {"label": "mobile", "number": "+15550000005", "primary": True}
                     ],
-                }
+                },
             }
         },
     )
@@ -2760,9 +2908,10 @@ def test_inbound_phone_call_provisioning_uses_directory_route_and_is_idempotent(
     assert record.voice_session_id == body["voice_session_id"]
     assert record.contact_id == "ops-main"
     assert record.directory_path == team_path
-    assert record.caller_metadata["caller_sha256"] == sha256(
-        "+15550000200".encode("utf-8")
-    ).hexdigest()
+    assert (
+        record.caller_metadata["caller_sha256"]
+        == sha256("+15550000200".encode("utf-8")).hexdigest()
+    )
 
     duplicate = client.post(
         "/voice-sessions/inbound-phone-calls",
@@ -2772,9 +2921,10 @@ def test_inbound_phone_call_provisioning_uses_directory_route_and_is_idempotent(
     assert duplicate.status_code == 200
     assert duplicate.json()["voice_session_id"] == body["voice_session_id"]
     assert duplicate.json()["request_id"] == request_id
-    assert context.voice_session_store.get_by_request_id(request_id).voice_session_id == body[
-        "voice_session_id"
-    ]
+    assert (
+        context.voice_session_store.get_by_request_id(request_id).voice_session_id
+        == body["voice_session_id"]
+    )
 
     store_text = context.voice_session_store.path.read_text(encoding="utf-8")
     audit_text = context.config.audit_log_path.read_text(encoding="utf-8")
@@ -2819,9 +2969,10 @@ def test_inbound_phone_call_provisioning_matches_plus_and_digits_only_numbers(
     assert body["route"]["route_id"] == "ops-main"
     assert body["route"]["directory_path"] == team_path
     assert body["route"]["caller"]["sha256"]
-    assert context.voice_session_store.get_by_request_id(
-        "inbound-phone:ops-main:SIP/abc-0006"
-    ) is not None
+    assert (
+        context.voice_session_store.get_by_request_id("inbound-phone:ops-main:SIP/abc-0006")
+        is not None
+    )
 
 
 def test_inbound_phone_call_provisioning_rejects_blocked_caller_without_creating_record(
@@ -2939,8 +3090,7 @@ def test_inbound_phone_bridge_result_updates_voice_session_without_auto_reconcil
     assert record.bridge_metadata["audio_quality"]["metadata"]["api_key"] == "<redacted>"
     assert record.bridge_metadata["audio_quality"]["metadata"]["phone_number"] == "<redacted>"
     assert record.transcript == (
-        "caller: Can ops confirm the deployment?\n"
-        "assistant: Ops will check the deployment window."
+        "caller: Can ops confirm the deployment?\nassistant: Ops will check the deployment window."
     )
     assert record.reconciliation_status == "not_requested"
     assert context.wake_store.list_requests(session_id="team-origin") == []
@@ -2979,9 +3129,10 @@ def test_inbound_phone_call_provisioning_rejects_missing_route_with_root_token(
 
     assert response.status_code == 404
     assert response.json()["error"] == "No inbound phone routes are configured"
-    assert context.voice_session_store.get_by_request_id(
-        "inbound-phone:missing-route:SIP/abc-0003"
-    ) is None
+    assert (
+        context.voice_session_store.get_by_request_id("inbound-phone:missing-route:SIP/abc-0003")
+        is None
+    )
     assert "SIP/abc-0003" not in context.voice_session_store.path.read_text(encoding="utf-8")
 
 
@@ -3022,7 +3173,9 @@ def test_inbound_phone_call_provisioning_rejects_expired_target_session(
 
     assert response.status_code == 403
     assert response.json()["error"] == "Configured inbound route session is inactive"
-    assert context.voice_session_store.get_by_request_id("inbound-phone:ops-main:SIP/abc-0004") is None
+    assert (
+        context.voice_session_store.get_by_request_id("inbound-phone:ops-main:SIP/abc-0004") is None
+    )
     audit_text = context.config.audit_log_path.read_text(encoding="utf-8")
     assert "+15550000100" not in audit_text
     assert "+15550000200" not in audit_text
@@ -3395,6 +3548,43 @@ def test_gateway_app_exposes_host_mediated_copilot_auth(
             discord_command_store_path=tmp_path / "discord.json",
         )
     )
+    session = SessionManifest(
+        session_id="session-1",
+        allowed_tools=[ToolName.COPILOT_HOST_AUTH],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    protected_session, mcp_session_token = ensure_session_mcp_auth_token(session)
+    context.session_repository.upsert_session(protected_session)
+
+    client = TestClient(create_app(context))
+    response = client.get(
+        "/copilot-auth/token",
+        headers={
+            "x-evander-session-id": "session-1",
+            "x-evander-mcp-session-token": mcp_session_token,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.text == "github_pat_test"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_gateway_app_rejects_tokenless_copilot_auth_session_id(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -3404,13 +3594,10 @@ def test_gateway_app_exposes_host_mediated_copilot_auth(
     )
 
     client = TestClient(create_app(context))
-    response = client.get(
-        "/copilot-auth/token", headers={"x-evander-session-id": "session-1"}
-    )
+    response = client.get("/copilot-auth/token", headers={"x-evander-session-id": "session-1"})
 
-    assert response.status_code == 200
-    assert response.text == "github_pat_test"
-    assert response.headers["cache-control"] == "no-store"
+    assert response.status_code == 401
+    assert response.json()["error"] == "MCP session token is required for this session"
 
 
 def test_gateway_app_requires_mcp_session_token_for_copilot_auth(
@@ -3543,17 +3730,21 @@ def test_gateway_app_reports_missing_host_token_for_copilot_auth(
             discord_command_store_path=tmp_path / "discord.json",
         )
     )
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-1",
-            allowed_tools=[ToolName.COPILOT_HOST_AUTH],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
+    session = SessionManifest(
+        session_id="session-1",
+        allowed_tools=[ToolName.COPILOT_HOST_AUTH],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
+    protected_session, mcp_session_token = ensure_session_mcp_auth_token(session)
+    context.session_repository.upsert_session(protected_session)
 
     client = TestClient(create_app(context))
     response = client.get(
-        "/copilot-auth/token", headers={"x-evander-session-id": "session-1"}
+        "/copilot-auth/token",
+        headers={
+            "x-evander-session-id": "session-1",
+            "x-evander-mcp-session-token": mcp_session_token,
+        },
     )
 
     assert response.status_code == 503
@@ -3597,9 +3788,7 @@ def test_gateway_import_paths_expose_migration_entry_points() -> None:
 
 
 def test_gateway_legacy_module_shim_exposes_migration_entry_points() -> None:
-    legacy_module_path = (
-        Path(__file__).resolve().parents[1] / "src" / "evander" / "gateway.py"
-    )
+    legacy_module_path = Path(__file__).resolve().parents[1] / "src" / "evander" / "gateway.py"
     spec = importlib.util.spec_from_file_location(
         "_evander_gateway_legacy_shim",
         legacy_module_path,

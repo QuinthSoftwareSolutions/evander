@@ -115,6 +115,73 @@ escape_authorized_keys_command() {
   printf '%s' "${command_value}"
 }
 
+validate_guest_public_key() {
+  local public_key="$1"
+  local key_type key_body
+  local temp_key
+
+  read -r key_type key_body _ <<<"${public_key}" || true
+  case "${key_type}" in
+    ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp*|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com)
+      ;;
+    *)
+      echo "Guest Git SSH public key has an unsupported or missing key type." >&2
+      return 1
+      ;;
+  esac
+
+  if [[ -z "${key_body}" ]]; then
+    echo "Guest Git SSH public key is missing key material." >&2
+    return 1
+  fi
+
+  temp_key="$(mktemp)"
+  printf '%s\n' "${public_key}" > "${temp_key}"
+  if ! ssh-keygen -l -f "${temp_key}" >/dev/null 2>&1; then
+    rm -f "${temp_key}"
+    echo "Guest Git SSH public key is not a valid OpenSSH public key." >&2
+    return 1
+  fi
+  rm -f "${temp_key}"
+
+  printf '%s\n' "${key_body}"
+}
+
+replace_authorized_keys_entry() {
+  local authorized_keys_path="$1"
+  local public_key_body="$2"
+  local authorized_keys_entry="$3"
+  local temp_path
+
+  temp_path="$(mktemp "${authorized_keys_path}.tmp.XXXXXX")"
+  chmod 600 "${temp_path}"
+  if python3 - "${authorized_keys_path}" "${temp_path}" "${public_key_body}" "${authorized_keys_entry}" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+path = Path(sys.argv[1])
+temp_path = Path(sys.argv[2])
+needle = sys.argv[3]
+entry = sys.argv[4]
+
+if not needle:
+    raise SystemExit("refusing authorized_keys update with empty public key body")
+
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+filtered = [line for line in lines if needle not in line]
+filtered.append(entry)
+temp_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+os.replace(temp_path, path)
+PY
+  then
+    return 0
+  fi
+
+  rm -f "${temp_path}"
+  return 1
+}
+
 if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   echo "Missing SSH private key: ${SSH_KEY_PATH}" >&2
   echo "Set SSH_KEY_PATH to the private key that matches the VM's authorized key." >&2
@@ -217,26 +284,13 @@ if [[ -z "${PUBLIC_KEY}" ]]; then
   exit 1
 fi
 
+if ! PUBLIC_KEY_BODY="$(validate_guest_public_key "${PUBLIC_KEY}")"; then
+  exit 1
+fi
+
 if [[ -z "${GIT_SESSION_ID}" && -n "${DETECTED_SESSION_ID}" ]]; then
   GIT_SESSION_ID="${DETECTED_SESSION_ID}"
 fi
-
-mkdir -p "${CALLER_HOME}/.ssh"
-chmod 700 "${CALLER_HOME}/.ssh"
-touch "${AUTHORIZED_KEYS_PATH}"
-chmod 600 "${AUTHORIZED_KEYS_PATH}"
-
-PUBLIC_KEY_BODY="$(awk '{print $2}' <<<"${PUBLIC_KEY}")"
-python3 - "${AUTHORIZED_KEYS_PATH}" "${PUBLIC_KEY_BODY}" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-needle = sys.argv[2]
-lines = path.read_text(encoding="utf-8").splitlines()
-filtered = [line for line in lines if needle not in line]
-path.write_text(("\n".join(filtered) + "\n") if filtered else "", encoding="utf-8")
-PY
 
 AUTH_ACCESS="read-only"
 AUTH_REPO_REAL=""
@@ -279,10 +333,13 @@ else
   FORCED_COMMAND="EVANDER_GIT_AUTH_ACCESS=read-only ${WRAPPER_PATH}"
 fi
 FORCED_COMMAND_ESCAPED="$(escape_authorized_keys_command "${FORCED_COMMAND}")"
+AUTHORIZED_KEYS_ENTRY="from=\"${GIT_ALLOWED_FROM}\",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command=\"${FORCED_COMMAND_ESCAPED}\" ${PUBLIC_KEY}"
 
-cat >> "${AUTHORIZED_KEYS_PATH}" <<EOF
-from="${GIT_ALLOWED_FROM}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="${FORCED_COMMAND_ESCAPED}" ${PUBLIC_KEY}
-EOF
+mkdir -p "${CALLER_HOME}/.ssh"
+chmod 700 "${CALLER_HOME}/.ssh"
+touch "${AUTHORIZED_KEYS_PATH}"
+chmod 600 "${AUTHORIZED_KEYS_PATH}"
+replace_authorized_keys_entry "${AUTHORIZED_KEYS_PATH}" "${PUBLIC_KEY_BODY}" "${AUTHORIZED_KEYS_ENTRY}"
 
 echo "Git SSH bootstrap complete for ${VM_NAME} (${VM_IP})"
 if [[ "${AUTH_ACCESS}" == "write" ]]; then

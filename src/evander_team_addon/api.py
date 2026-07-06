@@ -16,6 +16,7 @@ from starlette.routing import Route
 
 from evander.addons import AddonContext
 from evander.admin.web.rbac import TEAM_CHATS_READ_ALL_PERMISSION
+from evander.admin.web.shared import request_has_privileged_operations
 from evander.admin.web.user_store import normalize_admin_web_login
 from evander.events.internal import (
     InternalEventBus,
@@ -2004,198 +2005,204 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             return JSONResponse({"error": "git promotion not found"}, status_code=404)
         return JSONResponse(promotion.model_dump(mode="json"))
 
+    def route(path: str, handler: Any, *, methods: Sequence[str]) -> Route:
+        protected_handler = handler
+        if _route_requires_privileged_operations(methods):
+            protected_handler = _with_privileged_operations(context, protected_handler)
+        return Route(path, _with_errors(protected_handler), methods=methods)
+
     return [
-        Route("/bootstrap", _with_errors(get_bootstrap), methods=["GET"]),
-        Route("/views/{view}", _with_errors(get_view), methods=["GET"]),
-        Route("/state", _with_errors(get_state), methods=["GET"]),
-        Route("/state/stream", _with_errors(stream_state), methods=["GET"]),
-        Route("/templates", _with_errors(list_templates), methods=["GET"]),
-        Route(
+        route("/bootstrap", get_bootstrap, methods=["GET"]),
+        route("/views/{view}", get_view, methods=["GET"]),
+        route("/state", get_state, methods=["GET"]),
+        route("/state/stream", stream_state, methods=["GET"]),
+        route("/templates", list_templates, methods=["GET"]),
+        route(
             "/templates/{template_id}",
-            _with_errors(get_template_details),
+            get_template_details,
             methods=["GET"],
         ),
-        Route(
+        route(
             "/templates/{template_id}/materialize",
-            _with_errors(materialize_template),
+            materialize_template,
             methods=["POST"],
         ),
-        Route("/timeline", _with_errors(get_timeline), methods=["GET"]),
-        Route("/costs", _with_errors(get_costs), methods=["GET"]),
-        Route("/costs/backfill", _with_errors(backfill_costs), methods=["POST"]),
-        Route("/teams", _with_errors(create_team), methods=["POST"]),
-        Route("/teams/{team_id}", _with_errors(patch_team), methods=["PATCH"]),
-        Route("/governance-groups", _with_errors(create_governance_group), methods=["POST"]),
-        Route(
+        route("/timeline", get_timeline, methods=["GET"]),
+        route("/costs", get_costs, methods=["GET"]),
+        route("/costs/backfill", backfill_costs, methods=["POST"]),
+        route("/teams", create_team, methods=["POST"]),
+        route("/teams/{team_id}", patch_team, methods=["PATCH"]),
+        route("/governance-groups", create_governance_group, methods=["POST"]),
+        route(
             "/governance-groups/{governance_group_id}",
-            _with_errors(patch_governance_group),
+            patch_governance_group,
             methods=["PATCH"],
         ),
-        Route(
+        route(
             "/governance-agenda",
-            _with_errors(create_governance_agenda_item),
+            create_governance_agenda_item,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/governance-agenda/{agenda_item_id}/handle",
-            _with_errors(handle_governance_agenda_item),
+            handle_governance_agenda_item,
             methods=["POST"],
         ),
-        Route("/projects", _with_errors(create_project), methods=["POST"]),
-        Route("/projects/git/import", _with_errors(import_project_git_repo), methods=["POST"]),
-        Route("/projects/{project_id}", _with_errors(patch_project), methods=["PATCH"]),
-        Route("/roles", _with_errors(create_role), methods=["POST"]),
-        Route("/roles", _with_errors(list_roles), methods=["GET"]),
-        Route("/roles/{role_id}", _with_errors(get_role), methods=["GET"]),
-        Route("/roles/{role_id}", _with_errors(patch_role), methods=["PATCH"]),
-        Route("/conversations", _with_errors(list_conversations), methods=["GET"]),
-        Route("/conversations", _with_errors(create_conversation), methods=["POST"]),
-        Route(
+        route("/projects", create_project, methods=["POST"]),
+        route("/projects/git/import", import_project_git_repo, methods=["POST"]),
+        route("/projects/{project_id}", patch_project, methods=["PATCH"]),
+        route("/roles", create_role, methods=["POST"]),
+        route("/roles", list_roles, methods=["GET"]),
+        route("/roles/{role_id}", get_role, methods=["GET"]),
+        route("/roles/{role_id}", patch_role, methods=["PATCH"]),
+        route("/conversations", list_conversations, methods=["GET"]),
+        route("/conversations", create_conversation, methods=["POST"]),
+        route(
             "/conversations/{conversation_id}",
-            _with_errors(get_conversation),
+            get_conversation,
             methods=["GET"],
         ),
-        Route(
+        route(
             "/conversations/{conversation_id}/stream",
-            _with_errors(stream_conversation),
+            stream_conversation,
             methods=["GET"],
         ),
-        Route(
+        route(
             "/conversations/{conversation_id}/messages",
-            _with_errors(list_conversation_messages),
+            list_conversation_messages,
             methods=["GET"],
         ),
-        Route(
+        route(
             "/conversations/{conversation_id}/messages",
-            _with_errors(send_conversation_message),
+            send_conversation_message,
             methods=["POST"],
         ),
-        Route("/agents", _with_errors(register_agent), methods=["POST"]),
-        Route("/agents/{agent_id}", _with_errors(patch_agent), methods=["PATCH"]),
-        Route(
+        route("/agents", register_agent, methods=["POST"]),
+        route("/agents/{agent_id}", patch_agent, methods=["PATCH"]),
+        route(
             "/agents/{agent_id}/voice-sessions",
-            _with_errors(create_agent_voice_session),
+            create_agent_voice_session,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/voice-sessions/{voice_session_id}/events",
-            _with_errors(record_agent_voice_event),
+            record_agent_voice_event,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/voice-sessions/{voice_session_id}/end",
-            _with_errors(end_agent_voice_session),
+            end_agent_voice_session,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/voice-session-requests/{request_id}/end",
-            _with_errors(end_agent_voice_session_by_request),
+            end_agent_voice_session_by_request,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/voice-sessions/{voice_session_id}/queries",
-            _with_errors(create_agent_voice_query),
+            create_agent_voice_query,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/voice-sessions/{voice_session_id}/queries/{query_id}",
-            _with_errors(get_agent_voice_query),
+            get_agent_voice_query,
             methods=["GET"],
         ),
-        Route(
+        route(
             "/voice-sessions/{voice_session_id}/queries/{query_id}/timeout",
-            _with_errors(timeout_agent_voice_query),
+            timeout_agent_voice_query,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/agents/{agent_id}/avatar/previews",
-            _with_errors(create_avatar_preview),
+            create_avatar_preview,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/agents/{agent_id}/avatar/upload",
-            _with_errors(upload_agent_avatar),
+            upload_agent_avatar,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/agents/{agent_id}/avatar/accept-preview",
-            _with_errors(accept_agent_avatar_preview),
+            accept_agent_avatar_preview,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/agents/{agent_id}/avatar",
-            _with_errors(delete_agent_avatar),
+            delete_agent_avatar,
             methods=["DELETE"],
         ),
-        Route(
+        route(
             "/avatars/{asset_id}",
-            _with_errors(get_avatar_asset),
+            get_avatar_asset,
             methods=["GET"],
         ),
-        Route(
+        route(
             "/avatar-previews/{preview_id}",
-            _with_errors(get_avatar_preview),
+            get_avatar_preview,
             methods=["GET"],
         ),
-        Route(
+        route(
             "/agents/{agent_id}/context-rotation",
-            _with_errors(request_agent_context_rotation),
+            request_agent_context_rotation,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/agents/{agent_id}/stand-down",
-            _with_errors(stand_down_agent),
+            stand_down_agent,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/agents/{agent_id}/stand-down/revoke",
-            _with_errors(revoke_agent_stand_down),
+            revoke_agent_stand_down,
             methods=["POST"],
         ),
-        Route("/cases", _with_errors(create_case), methods=["POST"]),
-        Route("/cases/{case_id}", _with_errors(patch_case), methods=["PATCH"]),
-        Route("/tasks", _with_errors(create_task), methods=["POST"]),
-        Route("/tasks/{task_id}", _with_errors(patch_task), methods=["PATCH"]),
-        Route("/deliverables", _with_errors(record_deliverable), methods=["POST"]),
-        Route("/review-requests", _with_errors(record_review_request), methods=["POST"]),
-        Route(
+        route("/cases", create_case, methods=["POST"]),
+        route("/cases/{case_id}", patch_case, methods=["PATCH"]),
+        route("/tasks", create_task, methods=["POST"]),
+        route("/tasks/{task_id}", patch_task, methods=["PATCH"]),
+        route("/deliverables", record_deliverable, methods=["POST"]),
+        route("/review-requests", record_review_request, methods=["POST"]),
+        route(
             "/review-requests/{review_request_id}/decision",
-            _with_errors(decide_review_request),
+            decide_review_request,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/operator-directives",
-            _with_errors(create_operator_directive),
+            create_operator_directive,
             methods=["POST"],
         ),
-        Route(
+        route(
             "/action-records/{action_record_id}/dismiss",
-            _with_errors(dismiss_action_record),
+            dismiss_action_record,
             methods=["POST"],
         ),
-        Route("/review-profiles", _with_errors(create_review_profile), methods=["POST"]),
-        Route("/review-profiles", _with_errors(list_review_profiles), methods=["GET"]),
-        Route(
+        route("/review-profiles", create_review_profile, methods=["POST"]),
+        route("/review-profiles", list_review_profiles, methods=["GET"]),
+        route(
             "/review-profiles/{review_profile_id}",
-            _with_errors(get_review_profile),
+            get_review_profile,
             methods=["GET"],
         ),
-        Route(
+        route(
             "/review-profiles/{review_profile_id}",
-            _with_errors(patch_review_profile),
+            patch_review_profile,
             methods=["PATCH"],
         ),
-        Route("/release-packages", _with_errors(create_release_package), methods=["POST"]),
-        Route("/release-packages", _with_errors(list_release_packages), methods=["GET"]),
-        Route(
+        route("/release-packages", create_release_package, methods=["POST"]),
+        route("/release-packages", list_release_packages, methods=["GET"]),
+        route(
             "/release-packages/{release_package_id}",
-            _with_errors(get_release_package),
+            get_release_package,
             methods=["GET"],
         ),
-        Route("/git-promotions", _with_errors(list_git_promotions), methods=["GET"]),
-        Route(
+        route("/git-promotions", list_git_promotions, methods=["GET"]),
+        route(
             "/git-promotions/{promotion_id}",
-            _with_errors(get_git_promotion),
+            get_git_promotion,
             methods=["GET"],
         ),
     ]
@@ -2218,6 +2225,24 @@ def _with_errors(handler):
             return JSONResponse({"error": str(exc)}, status_code=403)
         except (ValueError, TypeError, ValidationError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return _wrapped
+
+
+def _route_requires_privileged_operations(methods: Sequence[str]) -> bool:
+    return any(str(method).upper() in {"DELETE", "PATCH", "POST", "PUT"} for method in methods)
+
+
+def _with_privileged_operations(context: AddonContext, handler):
+    async def _wrapped(request: Request) -> JSONResponse:
+        auth = getattr(context, "auth", None)
+        if auth is None or not request_has_privileged_operations(
+            auth=auth,
+            service=getattr(context, "service", None),
+            request=request,
+        ):
+            return JSONResponse({"error": "Privileged operations are locked."}, status_code=403)
+        return await handler(request)
 
     return _wrapped
 
@@ -2726,9 +2751,7 @@ def _state_history_keep_ids(
         return set()
     if collection == "action_records":
         current_ids = {
-            record.id
-            for record in current_failed_action_records(state)
-            if record.id in allowed_ids
+            record.id for record in current_failed_action_records(state) if record.id in allowed_ids
         }
     else:
         current_ids = {
@@ -2800,9 +2823,7 @@ def _trim_resource_tokens(payload: dict[str, Any], collection: str, keep_ids: se
     if not isinstance(collection_tokens, Mapping):
         return
     tokens[collection] = {
-        item_id: token
-        for item_id, token in collection_tokens.items()
-        if str(item_id) in keep_ids
+        item_id: token for item_id, token in collection_tokens.items() if str(item_id) in keep_ids
     }
 
 

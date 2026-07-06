@@ -181,6 +181,31 @@ def test_git_ssh_wrapper_enforces_repo_and_session_ref_prefix_for_pushes(
         == expected_sha
     )
 
+    allowed_read = subprocess.run(
+        [
+            "git",
+            "ls-remote",
+            f"ssh://evander-git-host{allowed_repo}",
+            "refs/heads/agents/session-1/topic",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=push_env,
+    )
+    assert allowed_read.returncode == 0
+    assert "refs/heads/agents/session-1/topic" in allowed_read.stdout
+
+    denied_cross_repo_read = subprocess.run(
+        ["git", "ls-remote", f"ssh://evander-git-host{other_repo}"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=push_env,
+    )
+    assert denied_cross_repo_read.returncode != 0
+    assert "Git SSH key is not authorized for repository" in denied_cross_repo_read.stderr
+
     wrong_prefix = _git_result(
         worktree,
         "push",

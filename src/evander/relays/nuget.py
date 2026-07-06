@@ -5,7 +5,7 @@ import base64
 import json
 import os
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import httpx
 import uvicorn
@@ -32,6 +32,8 @@ HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
+PATH_SEGMENT_SAFE_CHARS = ":@!$&'()*+,;=-._~"
+MAX_PATH_DECODE_PASSES = 5
 
 
 class NuGetRelay:
@@ -112,7 +114,10 @@ class NuGetRelay:
         auth_header: str | None,
     ) -> Response:
         upstream_path = path.lstrip("/")
-        upstream_url = _build_upstream_url(upstream_base_url, upstream_path)
+        try:
+            upstream_url = _build_upstream_url(upstream_base_url, upstream_path)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         request_body = await request.body()
 
         headers = {
@@ -228,24 +233,88 @@ def _origin(url: str) -> str:
 
 
 def _build_upstream_url(upstream_base_url: str, upstream_path: str) -> str:
-    if not upstream_path:
-        return upstream_base_url.rstrip("/")
+    base_parts = urlsplit(upstream_base_url)
+    base_segments = _safe_path_segments(
+        base_parts.path,
+        field_name="configured NuGet feed base path",
+    )
+    upstream_segments = _safe_path_segments(
+        upstream_path,
+        field_name="NuGet relay path",
+    )
+    if not upstream_segments:
+        return urlunsplit(
+            (
+                base_parts.scheme,
+                base_parts.netloc,
+                _path_from_segments(base_segments, root_if_empty=base_parts.path == "/"),
+                "",
+                "",
+            )
+        )
 
     # Azure Artifacts service indexes can advertise absolute-origin resource paths
     # like "exampleindustry/_packaging/<feed-guid>/nuget/v3/flat2/...". When those
     # are rewritten onto the guest-facing relay and called back, appending them to
-    # the configured feed base duplicates the feed path. If the path already looks
-    # like a feed-rooted Azure resource, proxy from the upstream origin instead.
-    path_parts = upstream_path.split("/")
-    if "_packaging" in path_parts:
-        return f"{_origin(upstream_base_url)}/{upstream_path}"
+    # the configured feed base duplicates the feed path. Only honor that shortcut
+    # when the rewritten path is already rooted under this relay's configured feed.
+    if "_packaging" in upstream_segments:
+        if upstream_segments[: len(base_segments)] != base_segments:
+            raise ValueError("NuGet relay path is outside the configured feed")
+        target_segments = upstream_segments
+    else:
+        target_segments = [*base_segments, *upstream_segments]
 
-    return f"{upstream_base_url.rstrip('/')}/{upstream_path}"
+    return urlunsplit(
+        (
+            base_parts.scheme,
+            base_parts.netloc,
+            _path_from_segments(target_segments, root_if_empty=base_parts.path == "/"),
+            "",
+            "",
+        )
+    )
 
 
 def _should_follow_redirects(upstream_path: str) -> bool:
     normalized = upstream_path.lower()
     return normalized.endswith(".nupkg") or normalized.endswith(".snupkg")
+
+
+def _safe_path_segments(path: object, *, field_name: str) -> list[str]:
+    raw_path = str(path or "").lstrip("/")
+    if not raw_path:
+        return []
+    segments: list[str] = []
+    for raw_segment in raw_path.split("/"):
+        if not raw_segment:
+            continue
+        segment = _fully_unquote_path_segment(raw_segment, field_name=field_name)
+        if segment in {".", ".."}:
+            raise ValueError(f"{field_name} must not contain dot segments")
+        if "/" in segment or "\\" in segment:
+            raise ValueError(f"{field_name} must not contain encoded path separators")
+        segments.append(segment)
+    return segments
+
+
+def _fully_unquote_path_segment(segment: str, *, field_name: str) -> str:
+    decoded = segment
+    for _ in range(MAX_PATH_DECODE_PASSES):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            return decoded
+        decoded = next_decoded
+    if unquote(decoded) != decoded:
+        raise ValueError(f"{field_name} is too deeply percent-encoded")
+    return decoded
+
+
+def _path_from_segments(segments: list[str], *, root_if_empty: bool) -> str:
+    if not segments:
+        return "/" if root_if_empty else ""
+    encoded_segments = [quote(segment, safe=PATH_SEGMENT_SAFE_CHARS) for segment in segments]
+    return f"/{'/'.join(encoded_segments)}"
 
 
 def _strip_insecure_repository_signatures(
