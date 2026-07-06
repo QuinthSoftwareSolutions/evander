@@ -5,6 +5,8 @@
 - Added the MCP session token to container worker Codex OpenAI relay URLs so
   token-protected sessions authenticate with the relay even when Codex does not
   emit an OpenAI authorization header for the custom provider.
+- Rewrote tokenized relay auth paths before routing and logging so MCP session
+  tokens do not persist in request paths.
 
 ## 2026-07-06 - ADO Workflow Query Modes
 
