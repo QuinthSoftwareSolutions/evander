@@ -85,6 +85,7 @@ from evander.workflow.graph_metadata import (
     resolve_workflow_graph_metadata,
 )
 from evander.workflow.migrations import AGENT_PROMPT_ERROR_PORT
+from evander.effects.providers.lifecycle_hooks import has_active_enqueue_prompt_for_target
 from evander.workflow.engine.node_executors import (
     NodeExecutorRegistry,
     ProviderEffectNodeExecutor,
@@ -299,6 +300,27 @@ class EffectOrchestratorCycleResult:
 class InflightExecution:
     future: Future[dict[str, Any]]
     config_revision: str
+
+
+class _WorkerAgentPromptActivity:
+    def __init__(self, worker: "EffectOrchestratorWorker") -> None:
+        self._worker = worker
+
+    def has_active_enqueue_prompt(
+        self,
+        *,
+        target: str,
+        vm_name: str,
+        session_id: str | None = None,
+        current_idempotency_key: str | None = None,
+    ) -> bool:
+        return has_active_enqueue_prompt_for_target(
+            self._worker.execution_store,
+            target=target,
+            vm_name=vm_name,
+            session_id=session_id,
+            current_idempotency_key=current_idempotency_key,
+        )
 
 
 class EventEmitEffectExecutor:
@@ -518,6 +540,8 @@ class EffectOrchestratorWorker:
         self.provider_factory = resolved_wiring.provider_factory
         self.query_provider_factory = resolved_wiring.query_provider_factory
         self.gate_provider_factory = resolved_wiring.gate_provider_factory
+        self._agent_prompt_activity = _WorkerAgentPromptActivity(self)
+        self._bind_provider_factory_runtime_ports()
         self.agent_run_status_port = getattr(resolved_wiring, "agent_run_status_port", None)
         self.agent_prompt_dispatch_port = getattr(
             resolved_wiring, "agent_prompt_dispatch_port", None
@@ -546,6 +570,16 @@ class EffectOrchestratorWorker:
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
             on_start=self._wake_sleeper.start,
         )
+
+    def _bind_provider_factory_runtime_ports(self) -> None:
+        try:
+            setattr(
+                self.provider_factory,
+                "agent_prompt_activity",
+                self._agent_prompt_activity,
+            )
+        except Exception:
+            return
 
     def run_forever(self) -> None:
         self._kernel.run_forever()
@@ -665,6 +699,7 @@ class EffectOrchestratorWorker:
                 if runtime_wiring is not None:
                     self.provider_config_resolver = runtime_wiring.provider_config_resolver
                     self.provider_factory = runtime_wiring.provider_factory
+                    self._bind_provider_factory_runtime_ports()
                     self.query_provider_factory = runtime_wiring.query_provider_factory
                     self.gate_provider_factory = runtime_wiring.gate_provider_factory
                     self.agent_run_status_port = runtime_wiring.agent_run_status_port

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-06 - Agent Prompt Queue Race Fix
+
+- Queued racing `effect:agent:enqueue-prompt` prompts when another prompt for
+  the same agent is already running or waiting, preventing concurrent prompt
+  delivery before VM inventory reflects the active run.
+
 ## 2026-07-05 - Review Follow-up Security Fixes
 
 - Blocked IPv4-mapped metadata IP addresses in workflow HTTP request destination checks.

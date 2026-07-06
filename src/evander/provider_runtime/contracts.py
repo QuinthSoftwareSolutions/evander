@@ -32,6 +32,17 @@ class AgentResumer(Protocol):
     def resume_agent(self, **kwargs: Any) -> Any: ...
 
 
+class AgentPromptActivity(Protocol):
+    def has_active_enqueue_prompt(
+        self,
+        *,
+        target: str,
+        vm_name: str,
+        session_id: str | None = None,
+        current_idempotency_key: str | None = None,
+    ) -> bool: ...
+
+
 class VmPowerController(Protocol):
     def start_vm(self, target: str) -> Any: ...
 
@@ -109,6 +120,7 @@ class ProviderRuntimePorts:
     vm_python_bootstrapper: VmPythonBootstrapper | None = None
     vm_frontend_bootstrapper: VmFrontendBootstrapper | None = None
     agent_resumer: AgentResumer | None = None
+    agent_prompt_activity: AgentPromptActivity | None = None
     vm_power_controller: VmPowerController | None = None
     vm_inventory: VmInventory | None = None
     gate_vm_inventory: GateVmInventory | None = None

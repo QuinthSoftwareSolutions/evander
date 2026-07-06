@@ -51,6 +51,8 @@ from evander.session_auth import session_mcp_auth_token
 logger = logging.getLogger(__name__)
 
 _ADMIN_AGENT_PROMPT_EFFECT_ID_PREFIX = "admin-agent-prompt:"
+_AGENT_ENQUEUE_PROMPT_EFFECT_TYPE = "effect:agent:enqueue-prompt"
+_ACTIVE_ENQUEUE_PROMPT_STATUSES = {"running", "waiting"}
 _QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
     "workflow_run_id",
     "mcp_tool_approval_lease_id",
@@ -60,6 +62,137 @@ _QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
     "agent_context_retry_max_attempts",
     "agent_context_retry_target_chars",
 )
+
+
+def has_active_enqueue_prompt_for_target(
+    execution_store: Any,
+    *,
+    target: str,
+    vm_name: str,
+    session_id: str | None = None,
+    current_idempotency_key: str | None = None,
+) -> bool:
+    normalized_current_key = str(current_idempotency_key or "").strip()
+    try:
+        records = _list_enqueue_prompt_activity_records(execution_store)
+    except Exception:
+        return False
+    current_order_key = _current_enqueue_prompt_order_key(
+        records,
+        current_idempotency_key=normalized_current_key,
+    )
+    for execution in records:
+        if (
+            normalized_current_key
+            and str(getattr(execution, "idempotency_key", "") or "").strip()
+            == normalized_current_key
+        ):
+            continue
+        if current_order_key is not None:
+            execution_order_key = _enqueue_prompt_order_key(execution)
+            if execution_order_key is not None and execution_order_key > current_order_key:
+                continue
+        if _enqueue_prompt_execution_matches_target(
+            execution,
+            session_id=session_id,
+            vm_name=vm_name,
+            target=target,
+        ):
+            return True
+    return False
+
+
+def _list_enqueue_prompt_activity_records(execution_store: Any) -> list[Any]:
+    list_executions = getattr(execution_store, "list_executions", None)
+    list_waiting = getattr(execution_store, "list_waiting_records", None)
+    read_all = getattr(execution_store, "read_all", None)
+    if callable(list_executions):
+        candidates = list_executions()
+    elif callable(list_waiting):
+        candidates = list_waiting(_AGENT_ENQUEUE_PROMPT_EFFECT_TYPE)
+    elif callable(read_all):
+        candidates = list(read_all().values())
+    else:
+        return []
+    return [record for record in candidates if _enqueue_prompt_execution_is_active(record)]
+
+
+def _current_enqueue_prompt_order_key(
+    records: list[Any],
+    *,
+    current_idempotency_key: str,
+) -> tuple[float, str] | None:
+    if not current_idempotency_key:
+        return None
+    for record in records:
+        if str(getattr(record, "idempotency_key", "") or "").strip() != current_idempotency_key:
+            continue
+        return _enqueue_prompt_order_key(record)
+    return None
+
+
+def _enqueue_prompt_order_key(execution: Any) -> tuple[float, str] | None:
+    started_at = getattr(execution, "started_at", None)
+    timestamp = started_at.timestamp() if isinstance(started_at, datetime) else None
+    if timestamp is None:
+        return None
+    return (timestamp, str(getattr(execution, "execution_id", "") or ""))
+
+
+def _enqueue_prompt_execution_is_active(execution: Any) -> bool:
+    if (
+        str(getattr(execution, "effect_type", "") or "").strip()
+        != _AGENT_ENQUEUE_PROMPT_EFFECT_TYPE
+    ):
+        return False
+    status = str(getattr(execution, "status", "") or "").strip()
+    if status in _ACTIVE_ENQUEUE_PROMPT_STATUSES:
+        return True
+    if status != "completion_pending":
+        return False
+    pending_status = str(getattr(execution, "completion_pending_status", "") or "").strip()
+    return pending_status in _ACTIVE_ENQUEUE_PROMPT_STATUSES
+
+
+def _enqueue_prompt_execution_matches_target(
+    execution: Any,
+    *,
+    session_id: str | None,
+    vm_name: str,
+    target: str,
+) -> bool:
+    normalized_session_id = str(session_id or "").strip()
+    normalized_vm_name = str(vm_name or "").strip()
+    normalized_target = str(target or "").strip()
+    outputs = getattr(execution, "outputs", None)
+    if not isinstance(outputs, dict):
+        outputs = {}
+    resolved_config = getattr(execution, "resolved_config", None)
+    if not isinstance(resolved_config, dict):
+        resolved_config = {}
+    input_payload = getattr(execution, "input_payload", None)
+    if not isinstance(input_payload, dict):
+        input_payload = {}
+    active_session_id = str(
+        outputs.get("session_id")
+        or resolved_config.get("session_id")
+        or input_payload.get("session_id")
+        or ""
+    ).strip()
+    active_vm_name = str(
+        outputs.get("vm_name")
+        or resolved_config.get("vm_name")
+        or input_payload.get("vm_name")
+        or ""
+    ).strip()
+    active_target = str(
+        resolved_config.get("target") or input_payload.get("target") or outputs.get("target") or ""
+    ).strip()
+    if normalized_session_id and active_session_id == normalized_session_id:
+        return True
+    if normalized_vm_name and active_vm_name == normalized_vm_name:
+        return True
+    return bool(normalized_target and active_target == normalized_target)
 
 
 class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
@@ -782,52 +915,14 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
 
     def _has_waiting_enqueue_prompt_for_record(self, *, worker: Any, record: Any) -> bool:
         execution_store = getattr(worker, "execution_store", None)
-        list_waiting = getattr(execution_store, "list_waiting_records", None)
-        read_all = getattr(execution_store, "read_all", None)
-        session_id = str(getattr(record, "session_id", "") or "").strip()
-        vm_name = str(getattr(record, "vm_name", "") or "").strip()
-        target = str(getattr(record, "target", "") or "").strip()
-        try:
-            if callable(list_waiting):
-                records = list_waiting("effect:agent:enqueue-prompt")
-            elif callable(read_all):
-                records = [
-                    execution
-                    for execution in read_all().values()
-                    if str(getattr(execution, "effect_type", "") or "").strip()
-                    == "effect:agent:enqueue-prompt"
-                    and str(getattr(execution, "status", "") or "").strip() == "waiting"
-                ]
-            else:
-                return False
-        except Exception:
+        if execution_store is None:
             return False
-        for execution in records:
-            outputs = getattr(execution, "outputs", None)
-            if not isinstance(outputs, dict):
-                outputs = {}
-            resolved_config = getattr(execution, "resolved_config", None)
-            if not isinstance(resolved_config, dict):
-                resolved_config = {}
-            input_payload = getattr(execution, "input_payload", None)
-            if not isinstance(input_payload, dict):
-                input_payload = {}
-            waiting_session_id = str(
-                outputs.get("session_id") or resolved_config.get("session_id") or ""
-            ).strip()
-            waiting_vm_name = str(
-                outputs.get("vm_name") or resolved_config.get("vm_name") or ""
-            ).strip()
-            waiting_target = str(
-                resolved_config.get("target") or input_payload.get("target") or ""
-            ).strip()
-            if session_id and waiting_session_id == session_id:
-                return True
-            if vm_name and waiting_vm_name == vm_name:
-                return True
-            if target and waiting_target == target:
-                return True
-        return False
+        return has_active_enqueue_prompt_for_target(
+            execution_store,
+            session_id=str(getattr(record, "session_id", "") or "").strip() or None,
+            vm_name=str(getattr(record, "vm_name", "") or "").strip(),
+            target=str(getattr(record, "target", "") or "").strip(),
+        )
 
     def _effective_record_resume_thread_id(
         self,

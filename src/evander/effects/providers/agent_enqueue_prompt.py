@@ -46,7 +46,10 @@ from .agent_session import (
     selected_execution_backend_for_target,
 )
 from .base import EffectProviderBase, EffectProviderExecutionError
-from .lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
+from .lifecycle_hooks import (
+    AgentEnqueuePromptQueueDispatchHook,
+    has_active_enqueue_prompt_for_target,
+)
 from .resume_thread_metadata import (
     normalize_resume_thread_metadata_collection,
     resume_thread_id_from_metadata,
@@ -217,7 +220,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         )
 
         summary = self._find_vm_summary(vm_name=vm_name, vm_user=vm_user)
-        if (
+        if self._has_active_enqueue_prompt(
+            target=target,
+            vm_name=vm_name,
+            session_id=effective_session_id,
+            execution_context=execution_context,
+        ) or (
             summary is not None
             and str(getattr(summary, "agent_state", "") or "").strip() == "running"
         ):
@@ -826,6 +834,48 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             if str(getattr(summary, "vm_name", "") or "").strip() == vm_name:
                 return summary
         return None
+
+    def _has_active_enqueue_prompt(
+        self,
+        *,
+        target: str,
+        vm_name: str,
+        session_id: str | None,
+        execution_context: Mapping[str, Any] | None,
+    ) -> bool:
+        context = self._context()
+        activity = getattr(context, "agent_prompt_activity", None)
+        has_active = getattr(activity, "has_active_enqueue_prompt", None)
+        if callable(has_active):
+            try:
+                return bool(
+                    has_active(
+                        target=target,
+                        vm_name=vm_name,
+                        session_id=session_id,
+                        current_idempotency_key=self._current_idempotency_key(execution_context),
+                    )
+                )
+            except Exception:
+                return False
+        execution_store = getattr(activity, "execution_store", None)
+        if execution_store is not None:
+            return has_active_enqueue_prompt_for_target(
+                execution_store,
+                target=target,
+                vm_name=vm_name,
+                session_id=session_id,
+                current_idempotency_key=self._current_idempotency_key(execution_context),
+            )
+        return False
+
+    def _current_idempotency_key(
+        self,
+        execution_context: Mapping[str, Any] | None,
+    ) -> str | None:
+        if not isinstance(execution_context, Mapping):
+            return None
+        return self._normalize_optional_string(execution_context.get("idempotency_key"))
 
     def _resolve_target(self, payload: dict[str, Any]) -> str:
         explicit_target = self._normalize_optional_string(payload.get("target"))
