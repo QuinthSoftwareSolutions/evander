@@ -202,7 +202,7 @@ echo "Bare remote ready: ${REPO_DIR}"
 echo
 echo "Before first writable VM use:"
 echo "  EVANDER_GIT_REPO=$(basename "${REPO_DIR}") EVANDER_GIT_SESSION_ID=<session-id> ./scripts/bootstrap_git_vm.sh <vm-name>"
-echo "Without repo/session metadata, bootstrap_git_vm.sh installs read-only Git access."
+echo "With only EVANDER_GIT_REPO metadata, bootstrap_git_vm.sh installs repo-scoped read-only Git access."
 echo
 echo "Add from VM:"
 echo "  git remote add agent ssh://${GIT_SSH_ALIAS}${REPO_DIR}"

@@ -2898,9 +2898,9 @@ sudo ./scripts/apply_firewall.sh
 `bootstrap_git_vm.sh` creates a dedicated guest SSH key, installs a forced-command
 `authorized_keys` entry on the host, and configures the guest-side alias
 `evander-git-host` so the VM does not need your host password. For writable access, pass
-`EVANDER_GIT_REPO=<repo-name-or-path>` and `EVANDER_GIT_SESSION_ID=<session-id>`; without repo and
-session metadata the helper installs read-only Git access, or fails when
-`EVANDER_GIT_REQUIRE_WRITE_METADATA=1` is set.
+`EVANDER_GIT_REPO=<repo-name-or-path>` and `EVANDER_GIT_SESSION_ID=<session-id>`. With
+`EVANDER_GIT_REPO` but no session metadata, the helper installs read-only access for only that
+repo; without repo metadata, it refuses to install an unscoped key.
 
 Then in the VM, add the printed SSH remote URL and push into a session-specific namespace such as:
 

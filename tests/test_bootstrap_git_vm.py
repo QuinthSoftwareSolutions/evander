@@ -85,6 +85,7 @@ def _bootstrap_env(tmp_path: Path, home: Path, public_key: str, fake_bin: Path) 
         "EVANDER_TEST_PUBLIC_KEY": public_key,
         "SSH_KEY_PATH": str(private_key),
         "EVANDER_GIT_READ_ONLY": "1",
+        "EVANDER_GIT_REPO": "readonly",
         "EVANDER_VM_IP": "192.0.2.10",
     }
 
@@ -155,3 +156,31 @@ def test_bootstrap_git_vm_atomically_replaces_existing_valid_guest_public_key_en
     assert updated_authorized_keys.count(public_key_body) == 1
     assert "command=" in updated_authorized_keys
     assert "keep-me" in updated_authorized_keys
+
+
+def test_bootstrap_git_vm_rejects_read_only_key_without_repo_scope(tmp_path: Path) -> None:
+    _, bootstrap_script = _copy_bootstrap_sandbox(tmp_path)
+    home = tmp_path / "home"
+    key_path = tmp_path / "guest-key"
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key_path)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    public_key = key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
+    fake_bin = _write_fake_bin(tmp_path)
+    env = _bootstrap_env(tmp_path, home, public_key, fake_bin)
+    env.pop("EVANDER_GIT_REPO")
+
+    result = subprocess.run(
+        [str(bootstrap_script), "vm-test"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "without EVANDER_GIT_REPO metadata" in result.stderr
+    assert not (home / ".ssh" / "authorized_keys").exists()

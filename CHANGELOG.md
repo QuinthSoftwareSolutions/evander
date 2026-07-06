@@ -16,6 +16,12 @@
 - Enforced privileged unlock checks on Team add-on mutation routes.
 - Restricted guest Git keys to their authorized bare repository for read operations and preserved
   the existing session branch write scope.
+- Required read-only Git key bootstrap to carry authorized repository metadata and rejected
+  unscoped read-only forced-command entries.
+- Allowed Azure Artifacts NuGet resource URLs that use feed GUID paths after the relay observes
+  those IDs in the configured feed service index.
+- Kept the workflow-editor setup build path compatible with apt-installed Node 18 by pinning Vite
+  tooling to the Node 18-compatible major line.
 - Validated guest Git public keys before rewriting `authorized_keys` so malformed keys cannot
   erase existing entries.
 - Updated vulnerable workflow-editor development dependencies and lockfile entries.

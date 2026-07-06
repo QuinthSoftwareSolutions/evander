@@ -1210,9 +1210,9 @@ root directory-scoped config and host environment:
 | `EVANDER_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
 | `EVANDER_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
 | `EVANDER_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
-| `EVANDER_GIT_REPO` | host shell | `scripts/bootstrap_git_vm.sh` writable SSH key binding; accepts a bare repo path or name under `EVANDER_GIT_ROOT`. |
+| `EVANDER_GIT_REPO` | host shell | `scripts/bootstrap_git_vm.sh` SSH key repository binding for read-only or writable access; accepts a bare repo path or name under `EVANDER_GIT_ROOT`. |
 | `EVANDER_GIT_SESSION_ID` | host shell or guest `/etc/evander/session.env` | `scripts/bootstrap_git_vm.sh` writable SSH key binding for `refs/heads/agents/<session-id>/...`. |
-| `EVANDER_GIT_READ_ONLY` | host shell | `scripts/bootstrap_git_vm.sh` when forcing read-only Git SSH access. |
+| `EVANDER_GIT_READ_ONLY` | host shell | `scripts/bootstrap_git_vm.sh` when forcing repo-scoped read-only Git SSH access. |
 | `EVANDER_GIT_REQUIRE_WRITE_METADATA` | host shell | `scripts/bootstrap_git_vm.sh` when missing repo/session metadata should fail instead of installing read-only access. |
 | `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat toggle). |
 | `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat prompt). |

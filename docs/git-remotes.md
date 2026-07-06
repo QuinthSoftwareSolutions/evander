@@ -31,9 +31,9 @@ EVANDER_GIT_REPO=sample-repo EVANDER_GIT_SESSION_ID=<session-id> ./scripts/boots
 
 That creates a dedicated guest SSH key, installs a restricted forced-command entry in your host
 `authorized_keys`, and configures the guest to use the host alias `evander-git-host` by default.
-The key can only push to `refs/heads/agents/<session-id>/...` in that repo. If repo/session metadata
-is not available, the helper installs read-only Git access instead; set
-`EVANDER_GIT_REQUIRE_WRITE_METADATA=1` to fail rather than install a read-only key.
+The key can only push to `refs/heads/agents/<session-id>/...` in that repo. If only repo metadata is
+available, the helper installs read-only access scoped to that repo. Without repo metadata, it
+refuses to install a key.
 
 If you want to mirror the default host repo into an issue-specific bare remote using the project
 naming convention, use:
@@ -282,7 +282,8 @@ remotes through `gh`.
 - This assumes the VM can SSH to the host over the private libvirt network.
 - `bootstrap_git_vm.sh` avoids giving guests your host password and restricts the installed SSH key
   to Git transport commands only. Writable keys are also bound to one bare repo and one
-  `refs/heads/agents/<session-id>/...` prefix; keys without repo/session metadata are read-only.
+  `refs/heads/agents/<session-id>/...` prefix. Read-only keys are still bound to one bare repo;
+  the bootstrap refuses to install an unscoped key when repo metadata is unavailable.
 - `promote_agent_branch.sh` intentionally refuses to overwrite an existing local review branch.
 - `open_agent_pr.sh` uses a normal push for non-review branches.
 - For `review/*` branches it uses `--force-with-lease` after first refreshing the exact remote-tracking ref on the push remote, so reused review branches stay safe without stale-lease failures.

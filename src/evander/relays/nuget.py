@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections.abc import Collection, Iterator
 import json
 import os
 from pathlib import Path
+import re
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import httpx
@@ -34,6 +36,10 @@ HOP_BY_HOP_HEADERS = {
 }
 PATH_SEGMENT_SAFE_CHARS = ":@!$&'()*+,;=-._~"
 MAX_PATH_DECODE_PASSES = 5
+AZURE_FEED_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 class NuGetRelay:
@@ -42,6 +48,7 @@ class NuGetRelay:
     ) -> None:
         self.config = config
         self.transport = transport
+        self._azure_feed_ids: set[str] = set()
 
     def create_app(self) -> Starlette:
         relay = self
@@ -115,7 +122,11 @@ class NuGetRelay:
     ) -> Response:
         upstream_path = path.lstrip("/")
         try:
-            upstream_url = _build_upstream_url(upstream_base_url, upstream_path)
+            upstream_url = _build_upstream_url(
+                upstream_base_url,
+                upstream_path,
+                allowed_feed_ids=self._azure_feed_ids,
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         request_body = await request.body()
@@ -209,6 +220,9 @@ class NuGetRelay:
             request=request,
             upstream_base_url=upstream_base_url,
         )
+        self._azure_feed_ids.update(
+            _advertised_azure_feed_ids(payload, upstream_base_url=upstream_base_url)
+        )
 
         upstream_root = _origin(upstream_base_url)
         local_base = f"{request.base_url.scheme}://{request.base_url.netloc}{upstream_prefix}"
@@ -232,7 +246,12 @@ def _origin(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
 
-def _build_upstream_url(upstream_base_url: str, upstream_path: str) -> str:
+def _build_upstream_url(
+    upstream_base_url: str,
+    upstream_path: str,
+    *,
+    allowed_feed_ids: Collection[str] = (),
+) -> str:
     base_parts = urlsplit(upstream_base_url)
     base_segments = _safe_path_segments(
         base_parts.path,
@@ -256,10 +275,14 @@ def _build_upstream_url(upstream_base_url: str, upstream_path: str) -> str:
     # Azure Artifacts service indexes can advertise absolute-origin resource paths
     # like "exampleindustry/_packaging/<feed-guid>/nuget/v3/flat2/...". When those
     # are rewritten onto the guest-facing relay and called back, appending them to
-    # the configured feed base duplicates the feed path. Only honor that shortcut
-    # when the rewritten path is already rooted under this relay's configured feed.
+    # the configured feed base duplicates the feed path. Honor that shortcut for
+    # the configured feed name and for feed IDs observed in the service index.
     if "_packaging" in upstream_segments:
-        if upstream_segments[: len(base_segments)] != base_segments:
+        if not _packaging_path_matches_configured_feed(
+            upstream_segments,
+            base_segments,
+            allowed_feed_ids=allowed_feed_ids,
+        ):
             raise ValueError("NuGet relay path is outside the configured feed")
         target_segments = upstream_segments
     else:
@@ -273,6 +296,101 @@ def _build_upstream_url(upstream_base_url: str, upstream_path: str) -> str:
             "",
             "",
         )
+    )
+
+
+def _advertised_azure_feed_ids(payload: object, upstream_base_url: str) -> set[str]:
+    base_segments = _safe_path_segments(
+        urlsplit(upstream_base_url).path,
+        field_name="configured NuGet feed base path",
+    )
+    feed_scope = _azure_feed_scope(base_segments)
+    if feed_scope is None:
+        return set()
+
+    upstream_root = _origin(upstream_base_url)
+    allowed_feed_ids: set[str] = set()
+    for value in _iter_strings(payload):
+        if not value.startswith(f"{upstream_root}/"):
+            continue
+        try:
+            segments = _safe_path_segments(
+                urlsplit(value).path,
+                field_name="advertised NuGet resource path",
+            )
+        except ValueError:
+            continue
+        feed_id = _matching_packaging_feed_id(segments, base_segments)
+        if feed_id is not None:
+            allowed_feed_ids.add(feed_id.lower())
+    return allowed_feed_ids
+
+
+def _iter_strings(payload: object) -> Iterator[str]:
+    if isinstance(payload, dict):
+        for value in payload.values():
+            yield from _iter_strings(value)
+    elif isinstance(payload, list):
+        for value in payload:
+            yield from _iter_strings(value)
+    elif isinstance(payload, str):
+        yield payload
+
+
+def _packaging_path_matches_configured_feed(
+    upstream_segments: list[str],
+    base_segments: list[str],
+    *,
+    allowed_feed_ids: Collection[str],
+) -> bool:
+    if upstream_segments[: len(base_segments)] == base_segments:
+        return True
+    feed_id = _matching_packaging_feed_id(upstream_segments, base_segments)
+    return feed_id is not None and feed_id.lower() in {value.lower() for value in allowed_feed_ids}
+
+
+def _matching_packaging_feed_id(
+    upstream_segments: list[str],
+    base_segments: list[str],
+) -> str | None:
+    feed_scope = _azure_feed_scope(base_segments)
+    if feed_scope is None:
+        return None
+    base_prefix, configured_feed, base_suffix = feed_scope
+
+    try:
+        packaging_index = upstream_segments.index("_packaging")
+    except ValueError:
+        return None
+    if upstream_segments[:packaging_index] != base_prefix:
+        return None
+    feed_index = packaging_index + 1
+    if len(upstream_segments) <= feed_index:
+        return None
+    feed = upstream_segments[feed_index]
+    suffix_start = feed_index + 1
+    suffix_end = suffix_start + len(base_suffix)
+    if upstream_segments[suffix_start:suffix_end] != base_suffix:
+        return None
+    if feed == configured_feed:
+        return feed
+    if AZURE_FEED_ID_RE.fullmatch(feed):
+        return feed
+    return None
+
+
+def _azure_feed_scope(base_segments: list[str]) -> tuple[list[str], str, list[str]] | None:
+    try:
+        packaging_index = base_segments.index("_packaging")
+    except ValueError:
+        return None
+    feed_index = packaging_index + 1
+    if len(base_segments) <= feed_index:
+        return None
+    return (
+        base_segments[:packaging_index],
+        base_segments[feed_index],
+        base_segments[feed_index + 1 :],
     )
 
 

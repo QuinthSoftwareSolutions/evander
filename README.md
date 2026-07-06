@@ -676,8 +676,9 @@ refreshes the issue-numbered host mirror in one command. The lower-level
 `bootstrap_git_vm.sh` helper installs a dedicated guest SSH key and a restricted host
 `authorized_keys` entry so guests can push Git branches without needing your host password or
 general shell access. Writable guest keys are bound to one bare repo and
-`refs/heads/agents/<session-id>/...` namespace; if the helper cannot determine repo/session
-metadata, it installs read-only Git access instead. Issue mirrors also carry a `post-receive`
+`refs/heads/agents/<session-id>/...` namespace. Read-only guest keys are still bound to one bare
+repo; if the helper cannot determine repo metadata, it refuses to install an unscoped key. Issue
+mirrors also carry a `post-receive`
 hook so host-side automation can promote pushed `agents/...` branches into the trusted clone, push
 the review branch to `origin`, and create the upstream PR automatically.
 Issue mirrors also remember their source settings, so later guest `git fetch` / `git pull`

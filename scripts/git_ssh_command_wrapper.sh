@@ -7,7 +7,7 @@ Usage: git_ssh_command_wrapper.sh
 
 Forced-command wrapper used by host authorized_keys entries for guest Git SSH
 access. It validates that the requested repository lives under the configured
-Git root, enforces repo/session metadata for guest write commands,
+Git root, enforces repo scope for read commands and repo/session metadata for writes,
 auto-refreshes issue mirrors for guest read commands when mirror metadata is
 available, and then hands the command to git-shell.
 EOF
@@ -150,9 +150,7 @@ require_read_authorization() {
       require_authorized_repo_scope >/dev/null
       ;;
     read-only)
-      if [[ -n "${AUTH_REPO_RAW}" || -n "${AUTH_SESSION_ID}" || -n "${AUTH_REF_PREFIX}" ]]; then
-        require_authorized_repo_scope >/dev/null
-      fi
+      require_authorized_repo_scope >/dev/null
       ;;
     *)
       echo "Unsupported Git SSH auth access mode: ${AUTH_ACCESS}" >&2
