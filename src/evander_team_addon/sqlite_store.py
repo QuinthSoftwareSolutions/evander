@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 20
+SQLITE_SCHEMA_VERSION = 21
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1040,6 +1040,7 @@ class TeamStateSqliteStore:
             "review_profiles": {},
             "inbox": {},
             "action_records": {},
+            "memories": {},
             "conversations": {},
             "conversation_messages": {},
             "release_packages": {},
@@ -1065,6 +1066,7 @@ class TeamStateSqliteStore:
         self._read_review_requests(connection, payload)
         self._read_inbox(connection, payload)
         self._read_action_records(connection, payload)
+        self._read_memories(connection, payload)
         self._read_conversations(connection, payload)
         self._read_conversation_messages(connection, payload)
         self._read_release_packages(connection, payload)
@@ -1093,6 +1095,7 @@ class TeamStateSqliteStore:
         self._write_review_requests(connection, payload["review_requests"])
         self._write_inbox(connection, payload["inbox"])
         self._write_action_records(connection, payload["action_records"])
+        self._write_memories(connection, payload["memories"])
         self._write_conversations(connection, payload["conversations"])
         self._write_conversation_messages(connection, payload["conversation_messages"])
         self._write_release_packages(connection, payload["release_packages"])
@@ -2210,6 +2213,104 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
+    def _read_memories(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        tags = _grouped_values(
+            connection,
+            "SELECT memory_id AS owner_id, tag AS value FROM team_memory_tags ORDER BY memory_id, position",
+        )
+        source_refs = _grouped_values(
+            connection,
+            "SELECT memory_id AS owner_id, source_ref AS value FROM team_memory_source_refs ORDER BY memory_id, position",
+        )
+        artifact_refs = _grouped_values(
+            connection,
+            "SELECT memory_id AS owner_id, artifact_ref AS value FROM team_memory_artifact_refs ORDER BY memory_id, position",
+        )
+        for row in connection.execute("SELECT * FROM team_memories ORDER BY id"):
+            payload["memories"][row["id"]] = {
+                "id": row["id"],
+                "team_id": row["team_id"],
+                "project_id": row["project_id"],
+                "codebase_id": row["codebase_id"],
+                "agent_id": row["agent_id"],
+                "scope": row["scope"],
+                "kind": row["kind"],
+                "title": row["title"],
+                "summary": row["summary"],
+                "body": row["body"],
+                "tags": tags.get(row["id"], []),
+                "source_refs": source_refs.get(row["id"], []),
+                "artifact_refs": artifact_refs.get(row["id"], []),
+                "status": row["status"],
+                "confidence": row["confidence"],
+                "supersedes_memory_id": row["supersedes_memory_id"],
+                "superseded_by_memory_id": row["superseded_by_memory_id"],
+                "created_by_agent_id": row["created_by_agent_id"],
+                "created_by": row["created_by"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_memories(connection: sqlite3.Connection, memories: dict[str, Any]) -> None:
+        for memory in memories.values():
+            connection.execute(
+                """
+                INSERT INTO team_memories(
+                    id, team_id, project_id, codebase_id, agent_id, scope, kind,
+                    title, summary, body, status, confidence, supersedes_memory_id,
+                    superseded_by_memory_id, created_by_agent_id, created_by,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    memory["id"],
+                    memory["team_id"],
+                    memory.get("project_id"),
+                    memory.get("codebase_id"),
+                    memory.get("agent_id"),
+                    memory.get("scope", "team_global"),
+                    memory.get("kind", "other"),
+                    memory["title"],
+                    memory["summary"],
+                    memory.get("body"),
+                    memory.get("status", "active"),
+                    memory.get("confidence"),
+                    memory.get("supersedes_memory_id"),
+                    memory.get("superseded_by_memory_id"),
+                    memory.get("created_by_agent_id"),
+                    memory.get("created_by"),
+                    memory["created_at"],
+                    memory["updated_at"],
+                ),
+            )
+            _insert_position_values(
+                connection,
+                "team_memory_tags",
+                "memory_id",
+                memory["id"],
+                "tag",
+                memory.get("tags", []),
+            )
+            _insert_position_values(
+                connection,
+                "team_memory_source_refs",
+                "memory_id",
+                memory["id"],
+                "source_ref",
+                memory.get("source_refs", []),
+            )
+            _insert_position_values(
+                connection,
+                "team_memory_artifact_refs",
+                "memory_id",
+                memory["id"],
+                "artifact_ref",
+                memory.get("artifact_refs", []),
+            )
+
+    @staticmethod
     def _read_conversations(
         connection: sqlite3.Connection,
         payload: dict[str, Any],
@@ -3106,12 +3207,16 @@ _STATE_TABLES = (
     "team_release_git_promotions",
     "team_ephemeral_assignment_artifacts",
     "team_ephemeral_assignment_allowed_tools",
+    "team_memory_tags",
+    "team_memory_source_refs",
+    "team_memory_artifact_refs",
     "team_git_work_contexts",
     "team_git_promotions",
     "team_ephemeral_assignments",
     "team_release_packages",
     "team_conversation_messages",
     "team_conversations",
+    "team_memories",
     "team_action_records",
     "team_inbox",
     "team_review_requests",
@@ -3540,6 +3645,59 @@ CREATE INDEX IF NOT EXISTS idx_team_action_records_agent_dispatch
     ON team_action_records(agent_id, dispatch_id, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_team_action_records_attention
     ON team_action_records(success, dismissed_at, created_at, id);
+
+CREATE TABLE IF NOT EXISTS team_memories (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    project_id TEXT,
+    codebase_id TEXT,
+    agent_id TEXT,
+    scope TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    body TEXT,
+    status TEXT NOT NULL,
+    confidence REAL,
+    supersedes_memory_id TEXT,
+    superseded_by_memory_id TEXT,
+    created_by_agent_id TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_memories_team_status_updated
+    ON team_memories(team_id, status, updated_at DESC, id);
+CREATE INDEX IF NOT EXISTS idx_team_memories_project_status
+    ON team_memories(project_id, status, updated_at DESC, id);
+CREATE INDEX IF NOT EXISTS idx_team_memories_agent_status
+    ON team_memories(agent_id, status, updated_at DESC, id);
+CREATE INDEX IF NOT EXISTS idx_team_memories_codebase_status
+    ON team_memories(codebase_id, status, updated_at DESC, id);
+CREATE INDEX IF NOT EXISTS idx_team_memories_kind_status
+    ON team_memories(kind, status, updated_at DESC, id);
+
+CREATE TABLE IF NOT EXISTS team_memory_tags (
+    memory_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    tag TEXT NOT NULL,
+    PRIMARY KEY(memory_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_team_memory_tags_tag ON team_memory_tags(tag, memory_id);
+
+CREATE TABLE IF NOT EXISTS team_memory_source_refs (
+    memory_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    source_ref TEXT NOT NULL,
+    PRIMARY KEY(memory_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS team_memory_artifact_refs (
+    memory_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    artifact_ref TEXT NOT NULL,
+    PRIMARY KEY(memory_id, position)
+);
 
 CREATE TABLE IF NOT EXISTS team_conversations (
     id TEXT PRIMARY KEY,

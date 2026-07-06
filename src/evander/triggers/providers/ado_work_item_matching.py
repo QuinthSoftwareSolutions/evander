@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from evander.ado_query_mode import ADO_QUERY_MODE_MANUAL_WIQL
 from evander.events.models import TriggerEvent
 from evander.events.provider_models import AdoWorkItemMatchingTriggerDefinition
 from evander.issues.service import IssueService
@@ -115,6 +116,7 @@ class AdoWorkItemMatchingTriggerProvider(TriggerProviderBase):
 
         request_payload: dict[str, Any] = {
             "project": trigger.project,
+            "query_mode": trigger.query_mode,
             "wiql": trigger.wiql,
             "iteration": trigger.iteration,
             "area_path": trigger.area_path,
@@ -125,10 +127,10 @@ class AdoWorkItemMatchingTriggerProvider(TriggerProviderBase):
             "top": trigger.top,
             "skip": 0,
         }
-        if trigger.wiql:
+        if trigger.query_mode == ADO_QUERY_MODE_MANUAL_WIQL:
             request_payload = {
                 key: request_payload[key]
-                for key in ("project", "wiql", "top", "skip")
+                for key in ("project", "query_mode", "wiql", "top", "skip")
                 if request_payload.get(key) is not None
             }
         request = AdoBacklogQueryRequest.model_validate(request_payload)

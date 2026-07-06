@@ -18,6 +18,7 @@ from evander.events.scheduled import (
     scheduled_internal_event_store_path,
 )
 from evander.effects.providers.base import EffectRuntimeContext
+from evander.queries.providers.base import QueryRuntimeContext
 
 from .mcp_context import (
     TeamMcpContextResolver,
@@ -39,14 +40,22 @@ from .services.commands import (
     TeamEphemeralCommandService,
     TeamGitReleaseCommandService,
     TeamGovernanceCommandService,
+    TeamMemoryCommandService,
     TeamNoteCommandService,
     TeamOperatorEscalationCommandService,
     TeamReviewCommandService,
     TeamTaskCreationCommandService,
     TeamTaskUpdateCommandService,
 )
+from .services.memory_service import (
+    TeamMemorySemanticService,
+    list_memory_records,
+    memory_record_payload,
+)
 
 TEAM_RECORD_NOTE_TOOL = "team_record_note"
+TEAM_RECORD_MEMORY_TOOL = "team_record_memory"
+TEAM_ARCHIVE_MEMORY_TOOL = "team_archive_memory"
 TEAM_MARK_INBOX_HANDLED_TOOL = "team_mark_inbox_handled"
 TEAM_REQUEST_STATUS_TOOL = "team_request_status"
 TEAM_ASK_QUESTION_TOOL = "team_ask_question"
@@ -95,9 +104,12 @@ TEAM_GET_MY_IDENTITY_TOOL = "team_get_my_identity"
 TEAM_LIST_PROJECTS_TOOL = "team_list_projects"
 TEAM_GET_PROJECT_TOOL = "team_get_project"
 TEAM_LIST_RUNTIME_ATTENTION_TOOL = "team_list_runtime_attention"
+TEAM_SEARCH_MEMORY_TOOL = "team_search_memory"
 
 ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_RECORD_NOTE_TOOL,
+    TEAM_RECORD_MEMORY_TOOL,
+    TEAM_ARCHIVE_MEMORY_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_REQUEST_STATUS_TOOL,
     TEAM_ASK_QUESTION_TOOL,
@@ -150,9 +162,12 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
     TEAM_LIST_RUNTIME_ATTENTION_TOOL,
+    TEAM_SEARCH_MEMORY_TOOL,
 )
 IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_RECORD_NOTE_TOOL,
+    TEAM_RECORD_MEMORY_TOOL,
+    TEAM_ARCHIVE_MEMORY_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_REQUEST_STATUS_TOOL,
     TEAM_ASK_QUESTION_TOOL,
@@ -185,6 +200,8 @@ IMPLEMENTED_EPHEMERAL_WORKER_MCP_TOOL_NAMES = (TEAM_REPORT_EPHEMERAL_RESULT_TOOL
 
 MCP_TOOL_NAMES = (
     TEAM_RECORD_NOTE_TOOL,
+    TEAM_RECORD_MEMORY_TOOL,
+    TEAM_ARCHIVE_MEMORY_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_REQUEST_STATUS_TOOL,
     TEAM_ASK_QUESTION_TOOL,
@@ -222,6 +239,7 @@ MCP_TOOL_NAMES = (
 def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...]:
     repo = TeamStateRepository(context.runtime_dir)
     note_commands = TeamNoteCommandService(repo)
+    memory_commands = TeamMemoryCommandService(repo)
     agent_message_commands = TeamAgentMessageCommandService(repo)
     chat_commands = TeamChatCommandService(repo)
     operator_escalation_commands = TeamOperatorEscalationCommandService(repo)
@@ -318,6 +336,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     _register_slice5_tools(
         server,
         note_commands,
+        memory_commands,
         agent_message_commands,
         chat_commands,
         operator_escalation_commands,
@@ -342,7 +361,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     )
     _register_slice8_tools(server, git_release_commands, resolver, context)
     _register_slice9_tools(server, ephemeral_commands, resolver, context)
-    _register_read_tools(server, resolver)
+    _register_read_tools(server, resolver, context)
 
     for tool_name in ORDINARY_TEAM_MCP_TOOL_NAMES:
         if tool_name in IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES:
@@ -363,6 +382,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
 def _register_slice5_tools(
     server: FastMCP,
     note_commands: TeamNoteCommandService,
+    memory_commands: TeamMemoryCommandService,
     agent_message_commands: TeamAgentMessageCommandService,
     chat_commands: TeamChatCommandService,
     operator_escalation_commands: TeamOperatorEscalationCommandService,
@@ -401,6 +421,104 @@ def _register_slice5_tools(
             "Record a durable non-progress note for the current Team dispatch. "
             "Requires body and request_id."
         ),
+    )
+
+    def team_record_memory(
+        kind: str,
+        title: str,
+        summary: str,
+        request_id: str,
+        id: str | None = None,
+        project_id: str | None = None,
+        codebase_id: str | None = None,
+        agent_id: str | None = None,
+        scope: str | None = None,
+        body: str | None = None,
+        tags: list[str] | None = None,
+        source_refs: list[str] | None = None,
+        artifact_refs: list[str] | None = None,
+        artifact_paths: list[str] | None = None,
+        artifact_space_ref: str | None = None,
+        confidence: float | None = None,
+        supersedes_memory_id: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_RECORD_MEMORY_TOOL,
+        )
+        try:
+            _state, result = memory_commands.record_memory_command(
+                session_id=caller.session_id,
+                kind=kind,
+                title=title,
+                summary=summary,
+                request_id=request_id,
+                id=id,
+                project_id=project_id,
+                codebase_id=codebase_id,
+                agent_id=agent_id,
+                scope=scope,
+                body=body,
+                tags=tags,
+                source_refs=source_refs,
+                artifact_refs=artifact_refs,
+                artifact_paths=artifact_paths,
+                artifact_space_ref=artifact_space_ref,
+                confidence=confidence,
+                supersedes_memory_id=supersedes_memory_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+                artifact_publisher=_team_mcp_memory_artifact_publisher(context),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_record_memory,
+        name=TEAM_RECORD_MEMORY_TOOL,
+        description=(
+            "Record or update a durable Team memory. Normal wakes do not include "
+            "memories automatically; use team_search_memory when recall is needed."
+        ),
+    )
+
+    def team_archive_memory(
+        memory_id: str,
+        request_id: str,
+        reason: str | None = None,
+        superseded_by_memory_id: str | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_ARCHIVE_MEMORY_TOOL,
+        )
+        try:
+            _state, result = memory_commands.archive_memory_command(
+                session_id=caller.session_id,
+                memory_id=memory_id,
+                request_id=request_id,
+                reason=reason,
+                superseded_by_memory_id=superseded_by_memory_id,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_archive_memory,
+        name=TEAM_ARCHIVE_MEMORY_TOOL,
+        description="Archive or supersede a visible Team memory by id.",
     )
 
     def team_mark_inbox_handled(
@@ -1435,6 +1553,39 @@ def _team_mcp_deliverable_artifact_publisher(context: AddonContext):
     return _publish
 
 
+def _team_mcp_memory_artifact_publisher(context: AddonContext):
+    def _publish(
+        *,
+        agent: Any,
+        team_id: str,
+        project_id: str | None,
+        memory_id: str,
+        dispatch_id: str,
+        source_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        from .providers import _publish_memory_artifact_bundle
+
+        runtime_context = EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(context.runtime_dir)},
+            admin_service=context.service,
+        )
+        agent_payload = {
+            "id": getattr(agent, "id", None),
+            "session_id": getattr(agent, "session_id", None),
+        }
+        return _publish_memory_artifact_bundle(
+            runtime_context,
+            agent=agent_payload,
+            team_id=team_id,
+            project_id=project_id,
+            memory_id=memory_id,
+            dispatch_id=dispatch_id,
+            source_paths=list(source_paths or []),
+        )
+
+    return _publish
+
+
 def _register_slice9_tools(
     server: FastMCP,
     command_service: TeamEphemeralCommandService,
@@ -1644,7 +1795,11 @@ def _register_slice9_tools(
     )
 
 
-def _register_read_tools(server: FastMCP, resolver: TeamMcpContextResolver) -> None:
+def _register_read_tools(
+    server: FastMCP,
+    resolver: TeamMcpContextResolver,
+    context: AddonContext,
+) -> None:
     def team_list_tasks(
         session_id: str | None = None,
         project_id: str | None = None,
@@ -2088,6 +2243,101 @@ def _register_read_tools(server: FastMCP, resolver: TeamMcpContextResolver) -> N
         team_list_runtime_attention,
         name=TEAM_LIST_RUNTIME_ATTENTION_TOOL,
         description="List visible Team runtime attention rows with pagination.",
+    )
+
+    def team_search_memory(
+        session_id: str | None = None,
+        query_text: str | None = None,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        codebase_id: str | None = None,
+        agent_id: str | None = None,
+        kinds: list[str] | None = None,
+        statuses: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        semantic: bool = False,
+        limit: int = 20,
+        offset: int = 0,
+        score_threshold: float | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_SEARCH_MEMORY_TOOL,
+        )
+        effective_team_id = team_id or caller.agent.team_id
+        if effective_team_id is None:
+            return team_mcp_failure(
+                revision=caller.state.revision,
+                agent_id=caller.agent_id,
+                errors="team_search_memory requires a team_id for teamless agents",
+                correction_context=caller.correction_context(),
+            )
+        semantic_error = None
+        if semantic and query_text:
+            try:
+                semantic_result = TeamMemorySemanticService(
+                    QueryRuntimeContext(
+                        resolved_config={"runtime_dir": str(context.runtime_dir)},
+                        admin_service=context.service,
+                    )
+                ).semantic_search(
+                    caller.state,
+                    query_text=query_text,
+                    actor=caller.agent,
+                    team_id=effective_team_id,
+                    project_id=project_id,
+                    codebase_id=codebase_id,
+                    agent_id=agent_id,
+                    kinds=kinds,
+                    statuses=statuses,
+                    tags_any=tags_any,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                )
+                return team_mcp_success(
+                    revision=caller.state.revision,
+                    progress_made=False,
+                    agent_id=caller.agent_id,
+                    semantic=True,
+                    **semantic_result,
+                )
+            except Exception as exc:
+                semantic_error = str(exc)
+        result = list_memory_records(
+            caller.state,
+            actor=caller.agent,
+            team_id=effective_team_id,
+            project_id=project_id,
+            codebase_id=codebase_id,
+            agent_id=agent_id,
+            kinds=kinds,
+            statuses=statuses,
+            tags_any=tags_any,
+            query_text=query_text,
+            limit=limit,
+            offset=offset,
+        )
+        records = [
+            memory_record_payload(memory, include_body=False)
+            for memory in result.pop("records")
+        ]
+        return team_mcp_success(
+            revision=caller.state.revision,
+            progress_made=False,
+            agent_id=caller.agent_id,
+            semantic=False,
+            semantic_error=semantic_error,
+            records=records,
+            **result,
+        )
+
+    server.add_tool(
+        team_search_memory,
+        name=TEAM_SEARCH_MEMORY_TOOL,
+        description=(
+            "Explicitly search visible Team memory. Returns compact records only; "
+            "use filters to keep recall scoped to the current project or codebase."
+        ),
     )
 
 

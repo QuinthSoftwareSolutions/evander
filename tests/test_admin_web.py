@@ -1120,6 +1120,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert [field["key"] for field in ado_comment["fields"]] == [
         "directory_path",
         "project",
+        "query_mode",
         "wiql",
         "current_iteration",
         "team",
@@ -1146,6 +1147,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "directory_path",
         "project",
         "repo",
+        "query_mode",
         "wiql",
         "current_iteration",
         "team",
@@ -1179,6 +1181,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "include_existing",
     ]
     ado_comment_fields = {field["key"]: field for field in ado_comment["fields"]}
+    assert ado_comment_fields["query_mode"]["default_value"] == "structured_filters"
     assert ado_comment_fields["wiql"]["multiline"] is True
     assert ado_comment_fields["top"]["default_value"] == 50
     assert ado_comment_fields["comment_contains_any"]["default_value"] == []
@@ -1461,6 +1464,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert [field["key"] for field in ado_work_items["fields"]] == [
         "directory_path",
         "project",
+        "query_mode",
         "wiql",
         "current_iteration",
         "team",
@@ -1481,6 +1485,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "directory_path",
         "project",
         "repo",
+        "query_mode",
         "wiql",
         "current_iteration",
         "team",

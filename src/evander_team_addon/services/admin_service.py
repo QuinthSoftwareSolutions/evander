@@ -43,6 +43,10 @@ from ..models import (
     TeamCaseStatus,
     TeamInboxItemType,
     TeamInboxPriority,
+    TeamMemoryKind,
+    TeamMemoryRecord,
+    TeamMemoryScope,
+    TeamMemoryStatus,
     TeamRecordState,
     TeamRole,
     TeamState,
@@ -115,6 +119,36 @@ def utc_now() -> datetime:
     return _team_common.utc_now()
 
 
+def _default_memory_scope(project_id: str | None, agent_id: str | None) -> str:
+    if agent_id is not None:
+        return TeamMemoryScope.AGENT_PRIVATE.value
+    if project_id is not None:
+        return TeamMemoryScope.PROJECT.value
+    return TeamMemoryScope.TEAM_GLOBAL.value
+
+
+def _validate_admin_memory_scope(
+    state: TeamState,
+    *,
+    team_id: str,
+    project_id: str | None,
+    agent_id: str | None,
+    scope: TeamMemoryScope,
+) -> None:
+    if project_id is not None:
+        project = _require_present(state.projects, project_id, "project")
+        if project.team_id != team_id:
+            raise ValueError(f"project {project_id} belongs to another team")
+    if agent_id is not None:
+        agent = _require_present(state.agents, agent_id, "agent")
+        if agent.team_id != team_id:
+            raise ValueError(f"agent {agent_id} belongs to another team")
+    if scope == TeamMemoryScope.PROJECT and project_id is None:
+        raise ValueError("project-scoped memory requires project_id")
+    if scope == TeamMemoryScope.AGENT_PRIVATE and agent_id is None:
+        raise ValueError("agent-private memory requires agent_id")
+
+
 class TeamAdminService:
     def __init__(self, repository: TeamStateRepository) -> None:
         self._repository = repository
@@ -180,6 +214,139 @@ class TeamAdminService:
             return state
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
+
+    def create_or_update_memory(
+        self,
+        *,
+        memory_id: str | None,
+        team_id: str,
+        kind: str,
+        title: str,
+        summary: str,
+        project_id: str | None = None,
+        codebase_id: str | None = None,
+        agent_id: str | None = None,
+        scope: str | None = None,
+        body: str | None = None,
+        tags: list[str] | None = None,
+        source_refs: list[str] | None = None,
+        artifact_refs: list[str] | None = None,
+        confidence: float | None = None,
+        supersedes_memory_id: str | None = None,
+        created_by: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, TeamMemoryRecord]:
+        normalized_team_id = _required_text(team_id, "team_id")
+        normalized_memory_id = _optional_text(memory_id)
+        normalized_project_id = _optional_text(project_id)
+        normalized_agent_id = _optional_text(agent_id)
+        normalized_scope = TeamMemoryScope(
+            _optional_text(scope) or _default_memory_scope(normalized_project_id, normalized_agent_id)
+        )
+        normalized_kind = TeamMemoryKind(_required_text(kind, "kind"))
+        normalized_title = _required_text(title, "title")
+        normalized_summary = _required_text(summary, "summary")
+        normalized_tags = [value.casefold() for value in _unique_text_list(tags or [], "tags")]
+        normalized_source_refs = _unique_text_list(source_refs or [], "source_refs")
+        normalized_artifact_refs = _unique_text_list(artifact_refs or [], "artifact_refs")
+        normalized_supersedes = _optional_text(supersedes_memory_id)
+
+        created_record: TeamMemoryRecord | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal created_record
+            _require_present(state.teams, normalized_team_id, "team")
+            _validate_admin_memory_scope(
+                state,
+                team_id=normalized_team_id,
+                project_id=normalized_project_id,
+                agent_id=normalized_agent_id,
+                scope=normalized_scope,
+            )
+            effective_memory_id = normalized_memory_id or _generated_id(
+                prefix="memory",
+                labels=[normalized_team_id, normalized_title],
+                existing_ids=state.memories,
+            )
+            now = utc_now()
+            memory = state.memories.get(effective_memory_id)
+            if memory is None:
+                memory = TeamMemoryRecord(
+                    id=effective_memory_id,
+                    team_id=normalized_team_id,
+                    kind=normalized_kind,
+                    title=normalized_title,
+                    summary=normalized_summary,
+                    created_by=_optional_text(created_by) or "operator",
+                    created_at=now,
+                    updated_at=now,
+                )
+            elif memory.team_id != normalized_team_id:
+                raise ValueError(f"memory {effective_memory_id} belongs to another team")
+            memory.project_id = normalized_project_id
+            memory.codebase_id = _optional_text(codebase_id)
+            memory.agent_id = normalized_agent_id
+            memory.scope = normalized_scope
+            memory.kind = normalized_kind
+            memory.title = normalized_title
+            memory.summary = normalized_summary
+            memory.body = _optional_text(body)
+            memory.tags = list(normalized_tags)
+            memory.source_refs = list(normalized_source_refs)
+            memory.artifact_refs = list(normalized_artifact_refs)
+            memory.status = TeamMemoryStatus.ACTIVE
+            memory.superseded_by_memory_id = None
+            memory.confidence = confidence
+            memory.supersedes_memory_id = normalized_supersedes
+            memory.updated_at = now
+            state.memories[memory.id] = memory
+            if normalized_supersedes is not None:
+                superseded = _require_present(state.memories, normalized_supersedes, "memory")
+                if superseded.team_id != normalized_team_id:
+                    raise ValueError("superseded memory belongs to another team")
+                superseded.status = TeamMemoryStatus.SUPERSEDED
+                superseded.superseded_by_memory_id = memory.id
+                superseded.updated_at = now
+            created_record = memory
+            return state
+
+        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        if created_record is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("memory mutation did not produce a record")
+        return state, state.memories[created_record.id]
+
+    def archive_memory(
+        self,
+        *,
+        memory_id: str,
+        superseded_by_memory_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, TeamMemoryRecord]:
+        normalized_memory_id = _required_text(memory_id, "memory_id")
+        normalized_superseded_by = _optional_text(superseded_by_memory_id)
+        archived_record: TeamMemoryRecord | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal archived_record
+            memory = _require_present(state.memories, normalized_memory_id, "memory")
+            if normalized_superseded_by is not None:
+                replacement = _require_present(state.memories, normalized_superseded_by, "memory")
+                if replacement.team_id != memory.team_id:
+                    raise ValueError("replacement memory belongs to another team")
+            memory.status = (
+                TeamMemoryStatus.SUPERSEDED
+                if normalized_superseded_by is not None
+                else TeamMemoryStatus.ARCHIVED
+            )
+            memory.superseded_by_memory_id = normalized_superseded_by
+            memory.updated_at = utc_now()
+            archived_record = memory
+            return state
+
+        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        if archived_record is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("memory archive did not produce a record")
+        return state, state.memories[archived_record.id]
 
     def create_team(
         self,

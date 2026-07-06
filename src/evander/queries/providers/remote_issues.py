@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from evander.ado_query_mode import validate_ado_query_mode
 from evander.issues.service import IssueService
 
 from .base import QueryProviderBase
@@ -27,46 +28,53 @@ class RemoteIssuesQueryProvider(QueryProviderBase):
 
         current_iteration = _coerce_bool(payload.pop("current_iteration", None), default=False)
         wiql = _normalize_optional_string(payload.get("wiql"))
-        if provider == "azure_devops" and wiql and current_iteration:
-            raise ValueError(
-                "query:remote-issues wiql and current_iteration are mutually exclusive"
-            )
+        query_mode = _normalize_optional_string(payload.get("query_mode"))
         if provider == "github" and current_iteration:
             raise ValueError("query:remote-issues current_iteration is only valid for Azure DevOps")
         if provider == "github" and wiql:
             raise ValueError("query:remote-issues wiql is only valid for Azure DevOps")
+        if provider == "github" and query_mode:
+            raise ValueError("query:remote-issues query_mode is only valid for Azure DevOps")
+        if provider == "azure_devops":
+            query_mode = validate_ado_query_mode(
+                query_mode=query_mode,
+                wiql=wiql,
+                current_iteration=current_iteration,
+                context="query:remote-issues",
+            )
 
         context = self._context()
         if context.provider_config_resolver is None:
             raise RuntimeError("query:remote-issues provider_config_resolver is not available")
         issue_service = self._issue_service(context.provider_config_resolver)
-        return _coerce_result(
-            issue_service.query_remote_issues(
-                provider=provider,
-                directory_path=directory_path,
-                project=_normalize_optional_string(payload.get("project")),
-                repo=_normalize_optional_string(payload.get("repo")),
-                wiql=wiql,
-                current_iteration=current_iteration,
-                team=_normalize_optional_string(payload.get("team")),
-                iteration=_normalize_optional_string(payload.get("iteration")),
-                area_path=_normalize_optional_string(payload.get("area_path")),
-                states=_normalize_string_list(payload.get("states")),
-                types=_normalize_string_list(payload.get("types")),
-                tags_any=_normalize_string_list(payload.get("tags_any")),
-                text_search=_normalize_optional_string(payload.get("text_search")),
-                state=_normalize_optional_string(payload.get("state")),
-                labels_any=_normalize_string_list(payload.get("labels_any")),
-                labels_all=_normalize_string_list(payload.get("labels_all")),
-                assignee=_normalize_optional_string(payload.get("assignee")),
-                author=_normalize_optional_string(payload.get("author")),
-                mentioned=_normalize_optional_string(payload.get("mentioned")),
-                milestone=_normalize_optional_string(payload.get("milestone")),
-                since=_normalize_optional_string(payload.get("since")),
-                top=_coerce_int(payload.get("top"), default=50),
-                skip=_coerce_int(payload.get("skip"), default=0),
-            )
-        )
+        request_kwargs: dict[str, Any] = {
+            "provider": provider,
+            "directory_path": directory_path,
+            "project": _normalize_optional_string(payload.get("project")),
+            "repo": _normalize_optional_string(payload.get("repo")),
+            "wiql": wiql,
+            "current_iteration": current_iteration,
+            "team": _normalize_optional_string(payload.get("team")),
+            "iteration": _normalize_optional_string(payload.get("iteration")),
+            "area_path": _normalize_optional_string(payload.get("area_path")),
+            "states": _normalize_string_list(payload.get("states")),
+            "types": _normalize_string_list(payload.get("types")),
+            "tags_any": _normalize_string_list(payload.get("tags_any")),
+            "text_search": _normalize_optional_string(payload.get("text_search")),
+            "state": _normalize_optional_string(payload.get("state")),
+            "labels_any": _normalize_string_list(payload.get("labels_any")),
+            "labels_all": _normalize_string_list(payload.get("labels_all")),
+            "assignee": _normalize_optional_string(payload.get("assignee")),
+            "author": _normalize_optional_string(payload.get("author")),
+            "mentioned": _normalize_optional_string(payload.get("mentioned")),
+            "milestone": _normalize_optional_string(payload.get("milestone")),
+            "since": _normalize_optional_string(payload.get("since")),
+            "top": _coerce_int(payload.get("top"), default=50),
+            "skip": _coerce_int(payload.get("skip"), default=0),
+        }
+        if provider == "azure_devops":
+            request_kwargs["query_mode"] = query_mode
+        return _coerce_result(issue_service.query_remote_issues(**request_kwargs))
 
     def _query_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
@@ -76,6 +84,7 @@ class RemoteIssuesQueryProvider(QueryProviderBase):
             "directory_path",
             "project",
             "repo",
+            "query_mode",
             "wiql",
             "current_iteration",
             "team",

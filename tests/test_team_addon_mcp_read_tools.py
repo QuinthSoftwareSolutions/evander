@@ -93,6 +93,7 @@ TEAM_LIST_RUNTIME_ATTENTION_TOOL = getattr(
     "TEAM_LIST_RUNTIME_ATTENTION_TOOL",
     "team_list_runtime_attention",
 )
+TEAM_SEARCH_MEMORY_TOOL = getattr(team_mcp, "TEAM_SEARCH_MEMORY_TOOL", "team_search_memory")
 
 EXPECTED_READ_TOOL_NAMES = (
     TEAM_LIST_TASKS_TOOL,
@@ -113,6 +114,7 @@ EXPECTED_READ_TOOL_NAMES = (
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
     TEAM_LIST_RUNTIME_ATTENTION_TOOL,
+    TEAM_SEARCH_MEMORY_TOOL,
 )
 
 
@@ -284,6 +286,19 @@ def _seed_team(
         state=TeamRecordState.PENDING,
         expected_revision=repo.read().revision,
     )
+    admin.create_or_update_memory(
+        memory_id=f"{team_id}-memory",
+        team_id=team_id,
+        project_id=project_id,
+        codebase_id=f"{team_id}-repo",
+        scope="project",
+        kind="decision",
+        title=f"{team_id.title()} memory",
+        summary=f"{team_id} Qdrant memory should be explicit and compact",
+        body=f"{team_id} memory body should not appear in search results",
+        tags=["memory"],
+        expected_revision=repo.read().revision,
+    )
 
 
 def _seed_read_records(repo: TeamStateRepository) -> None:
@@ -427,6 +442,20 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
     _assert_read_success(attention_result)
     assert _items(attention_result)
 
+    memory_result = _call_tool(
+        server,
+        TEAM_SEARCH_MEMORY_TOOL,
+        {
+            "session_id": "session-alpha-dev",
+            "project_id": "alpha-project",
+            "query_text": "Qdrant",
+            "limit": 10,
+        },
+    )
+    _assert_read_success(memory_result)
+    assert [row["id"] for row in memory_result["records"]] == ["alpha-memory"]
+    assert "body" not in memory_result["records"][0]
+
     get_calls = [
         (TEAM_GET_TASK_TOOL, {"task_id": "alpha-task-a"}, "alpha-task-a"),
         (TEAM_GET_INBOX_ITEM_TOOL, {"inbox_item_id": "alpha-inbox"}, "alpha-inbox"),
@@ -460,6 +489,31 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         assert _item(result)["id"] == expected_id
 
     assert repo.read().revision == before_revision
+
+
+def test_team_search_memory_status_filter_reaches_archived_records(tmp_path: Path) -> None:
+    context = _runtime(tmp_path, allowed_tools=[TEAM_SEARCH_MEMORY_TOOL])
+    repo = _seed_read_tool_state(context.config.runtime_dir)
+    _team_admin_service(repo).archive_memory(
+        memory_id="alpha-memory",
+        expected_revision=repo.read().revision,
+    )
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        TEAM_SEARCH_MEMORY_TOOL,
+        {
+            "session_id": "session-alpha-dev",
+            "project_id": "alpha-project",
+            "statuses": ["archived"],
+            "limit": 10,
+        },
+    )
+
+    _assert_read_success(result)
+    assert [row["id"] for row in result["records"]] == ["alpha-memory"]
+    assert result["records"][0]["status"] == "archived"
 
 
 def test_team_addon_task_read_tools_surface_callers_git_work_context(

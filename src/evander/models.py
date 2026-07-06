@@ -20,6 +20,7 @@ from pydantic import (
     model_validator,
 )
 
+from evander.ado_query_mode import AdoQueryMode, normalize_ado_query_mode, validate_ado_query_mode
 from evander.approval_notification_targets import (
     normalize_approval_notification_target_ids,
 )
@@ -2272,6 +2273,7 @@ class AdoBacklogTagsUpdateRequest(BaseModel):
 
 class AdoBacklogQueryRequest(BaseModel):
     project: str | None = None
+    query_mode: AdoQueryMode | None = None
     wiql: str | None = None
     iteration: str | None = None
     area_path: str | None = None
@@ -2289,6 +2291,11 @@ class AdoBacklogQueryRequest(BaseModel):
             return None
         normalized = str(value).strip()
         return normalized or None
+
+    @field_validator("query_mode", mode="before")
+    @classmethod
+    def normalize_query_mode(cls, value: object) -> AdoQueryMode | None:
+        return normalize_ado_query_mode(value)
 
     @field_validator("states", "tags_any", mode="before")
     @classmethod
@@ -2330,6 +2337,15 @@ class AdoBacklogQueryRequest(BaseModel):
             seen.add(resolved)
             normalized.append(resolved)
         return normalized
+
+    @model_validator(mode="after")
+    def validate_query_mode_contract(self) -> "AdoBacklogQueryRequest":
+        self.query_mode = validate_ado_query_mode(
+            query_mode=self.query_mode,
+            wiql=self.wiql,
+            context="ADO backlog query",
+        )
+        return self
 
 
 class AdoBacklogQueryItem(BaseModel):

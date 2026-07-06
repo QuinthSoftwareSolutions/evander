@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-07-06 - Container Worker Codex Relay Auth
+
+- Added the MCP session token to container worker Codex OpenAI relay URLs so
+  token-protected sessions authenticate with the relay even when Codex does not
+  emit an OpenAI authorization header for the custom provider.
+- Rewrote tokenized relay auth paths before routing and logging so MCP session
+  tokens do not persist in request paths.
+- Fixed the remaining container-worker regression assertion to expect the
+  tokenized Codex relay URL produced during session bootstrap.
+
+## 2026-07-06 - Team Memory Status Fixes
+
+- Made explicit archived Team memory status filters include archived records in
+  public search results.
+- Cleared stale supersession links when a memory record is reactivated through
+  record/update paths.
+
+## 2026-07-06 - ADO Workflow Query Modes
+
+- Added explicit `query_mode` support for Azure DevOps work-item workflow
+  queries and triggers, distinguishing Structured filters from Manual WIQL
+  while preserving legacy WIQL inference for existing configs.
+- Updated the workflow editor catalog and inspector so ADO WIQL and structured
+  filter fields are presented as separate modes instead of silently competing.
+
+## 2026-07-06 - Team Add-on Memory
+
+- Added canonical Team memory records in the Team SQLite state store with
+  team/project/codebase/agent scoping, status, tags, source refs, artifact refs,
+  supersession, and compact broad payloads that omit long bodies.
+- Added Team MCP memory tools, Admin API memory routes, a compact Team Memory UI
+  tab, and workflow nodes for compact memory query plus per-team Qdrant
+  indexing/reindexing from canonical state.
+- Kept normal Team wake prompts free of memory content; agents and workflows
+  must use explicit memory search/query paths for recall.
+- Restricted Team memory command updates, archives, and supersession links to
+  memories visible to the calling agent.
+
 ## 2026-07-06 - Worker Git Mirror Scope Fix
 
 - Authorized the shared container-worker Git SSH key for read-only access to the

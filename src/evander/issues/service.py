@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 
+from evander.ado_query_mode import ADO_QUERY_MODE_MANUAL_WIQL, validate_ado_query_mode
 from evander.ado_mentions import (
     render_ado_mentions_html_prefix,
     resolve_ado_mentions,
@@ -3181,6 +3182,7 @@ class IssueService:
         directory_path: str,
         project: str | None = None,
         repo: str | None = None,
+        query_mode: str | None = None,
         wiql: str | None = None,
         current_iteration: bool = False,
         team: str | None = None,
@@ -3204,6 +3206,8 @@ class IssueService:
     ) -> dict[str, Any]:
         normalized_provider = _normalize_issue_provider(provider)
         if normalized_provider == "github":
+            if str(query_mode or "").strip():
+                raise ValueError("query_mode is only valid for Azure DevOps remote issue queries")
             adapter = self.adapters.get("github")
             if adapter is None or not hasattr(adapter, "query_remote_issues"):
                 raise ValueError("Unsupported issue provider: github")
@@ -3225,6 +3229,12 @@ class IssueService:
 
         if normalized_provider != "azure_devops":
             raise ValueError(f"Unsupported issue provider: {provider}")
+        resolved_query_mode = validate_ado_query_mode(
+            query_mode=query_mode,
+            wiql=wiql,
+            current_iteration=current_iteration,
+            context="Azure DevOps remote issue query",
+        )
         if current_iteration:
             result = self.list_remote_current_iteration_backlog_items(
                 provider="azure_devops",
@@ -3245,7 +3255,7 @@ class IssueService:
                 provider="azure_devops",
                 directory_path=directory_path,
                 project=project,
-                wiql=wiql,
+                wiql=wiql if resolved_query_mode == ADO_QUERY_MODE_MANUAL_WIQL else None,
                 iteration=iteration,
                 area_path=area_path,
                 states=states,

@@ -354,6 +354,41 @@ sending while inspecting. Team chat messages recorded by the Admin API carry
 human-operator metadata, and chat wake prompts tell the agent that the source is
 a human operator rather than another Team agent.
 
+### Team Memory
+
+The Team Add-on supports durable team-owned memory records for decisions,
+preferences, facts, runbooks, handoffs, research notes, postmortems, and other
+long-lived context. Canonical memory records live in Team SQLite state under
+`TeamState.memories`; Qdrant is a derived per-team semantic index, not the
+source of truth. Collection names are generated from the Team id, so two Teams
+do not share a semantic memory collection even when they work in the same
+directory.
+
+Memory records are intentionally compact in broad state payloads. The Admin UI
+Memory tab, Team state payloads, and memory search results include titles,
+summaries, tags, scope, refs, and status, but omit the optional long `body`.
+Detailed bodies are available through explicit memory detail APIs or tools.
+Normal Team wake prompts do not include memories automatically; agents must call
+`team_search_memory` or workflow automation must use `query:team:memory` when
+recall is useful.
+
+Agents can record memory with `team_record_memory` and archive or supersede it
+with `team_archive_memory`. Records may be team-global, project-scoped,
+agent-private, or governance-scoped. Bulky evidence should be published as
+artifacts or artifact-space refs and linked from the memory record rather than
+stored in the body.
+
+Operators and workflows can use:
+
+- `GET /api/addons/team-addon/memory`
+- `POST /api/addons/team-addon/memory`
+- `GET /api/addons/team-addon/memory/{memory_id}`
+- `PATCH /api/addons/team-addon/memory/{memory_id}`
+- `POST /api/addons/team-addon/memory/{memory_id}/archive`
+- `query:team:memory`
+- `effect:team:index-memory`
+- `effect:team:reindex-memory`
+
 Team roles are first-class state records under `TeamState.roles`. Agents store a
 `role_id` instead of a free-form role string, and role records carry the display
 name, optional project scope, default ephemeral policy, and permission list for
@@ -663,6 +698,10 @@ set:
   unknown session before completion finalization. Persistent agents are finalized
   only when the completed dispatch id matches the active Team runtime lease, so
   ordinary Discord/Teams wake completions do not affect Team dispatch state.
+- `query:team:memory` returns compact memory records from canonical Team state
+  or, when semantic search is enabled, from the Team's Qdrant collection.
+- `effect:team:index-memory` and `effect:team:reindex-memory` refresh the
+  derived Team Qdrant memory collection from canonical Team state.
 - `effect:team:mark-ephemeral-spawned`,
   `effect:team:accept-ephemeral-deliverable`, and
   `effect:team:mark-ephemeral-cleaned-up` track the ephemeral worker lifecycle
@@ -702,6 +741,8 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_reply_to_chat`
 - `team_send_operator_chat_message`
 - `team_escalate_operator`
+- `team_record_memory`
+- `team_archive_memory`
 - `team_create_case`
 - `team_update_case`
 - `team_create_task`

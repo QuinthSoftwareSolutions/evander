@@ -95,6 +95,17 @@
           Delivery
         </button>
         <button
+          id="team-view-memory-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-memory-page"
+          data-team-view="memory"
+        >
+          Memory
+        </button>
+        <button
           id="team-view-projects-tab"
           class="team-view-tab"
           type="button"
@@ -294,6 +305,25 @@
             <h2 id="focused-releases-heading">Releases</h2>
             <div class="releases-view" data-releases-view></div>
           </div>
+        </section>
+      </main>
+
+      <main
+        id="team-memory-page"
+        class="focused-team-page"
+        role="tabpanel"
+        aria-labelledby="team-view-memory-tab"
+        data-team-view-panel="memory"
+        hidden
+      >
+        <section class="content-panel" aria-labelledby="team-memory-heading">
+          <div class="focused-section-header">
+            <div>
+              <p class="section-label">Memory</p>
+              <h2 id="team-memory-heading">Team Memory</h2>
+            </div>
+          </div>
+          <div class="memory-view" data-memory-view></div>
         </section>
       </main>
 

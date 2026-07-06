@@ -82,6 +82,7 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
+from .services.memory_service import list_memory_records, memory_record_payload
 from .services.runtime_service import TeamRuntimeService
 from .providers import _session_records_by_id
 
@@ -103,6 +104,7 @@ TEAM_VIEW_IDS = (
     "governance",
     "planning",
     "timeline",
+    "memory",
     "org",
 )
 TEAM_STATE_COLLECTION_KEYS = (
@@ -123,6 +125,7 @@ TEAM_STATE_COLLECTION_KEYS = (
     "review_profiles",
     "inbox",
     "action_records",
+    "memories",
     "release_packages",
     "ephemeral_assignments",
     "git_promotions",
@@ -215,6 +218,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "tasks",
         "inbox",
     },
+    "memory": {"teams", "projects", "agents", "memories"},
 }
 TEAM_VIEW_COLLECTIONS["workspace"] = {
     "teams",
@@ -245,6 +249,7 @@ TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "review_profiles",
     "inbox",
     "action_records",
+    "memories",
     "release_packages",
     "stand_downs",
 )
@@ -2008,6 +2013,147 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             return JSONResponse({"error": "git promotion not found"}, status_code=404)
         return JSONResponse(promotion.model_dump(mode="json"))
 
+    async def list_memories(request: Request) -> JSONResponse:
+        state = repository.read()
+        statuses = _query_values(request, "statuses") or _query_values(request, "status")
+        include_archived = _query_bool(request, "include_archived") is True
+        result = list_memory_records(
+            state,
+            team_id=_query_text(request, "team_id"),
+            project_id=_query_text(request, "project_id"),
+            codebase_id=_query_text(request, "codebase_id"),
+            agent_id=_query_text(request, "agent_id"),
+            kinds=_query_values(request, "kinds") or _query_values(request, "kind"),
+            statuses=statuses,
+            tags_any=_query_values(request, "tags_any") or _query_values(request, "tag"),
+            query_text=_query_text(request, "query"),
+            include_archived=include_archived,
+            limit=_query_limited_int(request, "limit", default=20, max_value=50),
+            offset=_query_non_negative_int(request, "offset", default=0),
+        )
+        records = [
+            memory_record_payload(memory, include_body=False)
+            for memory in result.pop("records")
+        ]
+        return JSONResponse({"revision": state.revision, "memories": records, **result})
+
+    async def get_memory(request: Request) -> JSONResponse:
+        state = repository.read()
+        memory = state.memories.get(request.path_params["memory_id"])
+        if memory is None:
+            return JSONResponse({"error": "memory not found"}, status_code=404)
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "memory": memory_record_payload(memory, include_body=True),
+            }
+        )
+
+    async def create_memory(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state, memory = admin_service.create_or_update_memory(
+            memory_id=_optional(payload, "id") or _optional(payload, "memory_id"),
+            team_id=_required(payload, "team_id"),
+            project_id=_optional(payload, "project_id"),
+            codebase_id=_optional(payload, "codebase_id"),
+            agent_id=_optional(payload, "agent_id"),
+            scope=_optional(payload, "scope"),
+            kind=_required(payload, "kind"),
+            title=_required(payload, "title"),
+            summary=_required(payload, "summary"),
+            body=_optional(payload, "body"),
+            tags=_optional_string_list(payload, "tags") or [],
+            source_refs=_optional_string_list(payload, "source_refs") or [],
+            artifact_refs=_memory_artifact_refs(payload),
+            confidence=(
+                float(payload["confidence"])
+                if payload.get("confidence") is not None
+                else None
+            ),
+            supersedes_memory_id=_optional(payload, "supersedes_memory_id"),
+            created_by=_operator_identity_from_request(context.auth, request)["actor"],
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "memory": memory_record_payload(memory, include_body=True),
+            },
+            status_code=201,
+        )
+
+    async def patch_memory(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = repository.read()
+        existing = state.memories.get(request.path_params["memory_id"])
+        if existing is None:
+            return JSONResponse({"error": "memory not found"}, status_code=404)
+        next_payload = existing.model_dump(mode="json")
+        for key in (
+            "team_id",
+            "project_id",
+            "codebase_id",
+            "agent_id",
+            "scope",
+            "kind",
+            "title",
+            "summary",
+            "body",
+            "tags",
+            "source_refs",
+            "artifact_refs",
+            "confidence",
+            "supersedes_memory_id",
+        ):
+            if key in payload:
+                next_payload[key] = payload.get(key)
+        if "artifact_space_ref" in payload:
+            next_payload["artifact_space_ref"] = payload.get("artifact_space_ref")
+            next_payload["artifact_refs"] = _memory_artifact_refs(next_payload)
+        state, memory = admin_service.create_or_update_memory(
+            memory_id=existing.id,
+            team_id=_required(next_payload, "team_id"),
+            project_id=_optional(next_payload, "project_id"),
+            codebase_id=_optional(next_payload, "codebase_id"),
+            agent_id=_optional(next_payload, "agent_id"),
+            scope=_optional(next_payload, "scope"),
+            kind=_required(next_payload, "kind"),
+            title=_required(next_payload, "title"),
+            summary=_required(next_payload, "summary"),
+            body=_optional(next_payload, "body"),
+            tags=_optional_string_list(next_payload, "tags") or [],
+            source_refs=_optional_string_list(next_payload, "source_refs") or [],
+            artifact_refs=_memory_artifact_refs(next_payload),
+            confidence=(
+                float(next_payload["confidence"])
+                if next_payload.get("confidence") is not None
+                else None
+            ),
+            supersedes_memory_id=_optional(next_payload, "supersedes_memory_id"),
+            created_by=_operator_identity_from_request(context.auth, request)["actor"],
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "memory": memory_record_payload(memory, include_body=True),
+            }
+        )
+
+    async def archive_memory(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state, memory = admin_service.archive_memory(
+            memory_id=request.path_params["memory_id"],
+            superseded_by_memory_id=_optional(payload, "superseded_by_memory_id"),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "memory": memory_record_payload(memory, include_body=True),
+            }
+        )
+
     def route(path: str, handler: Any, *, methods: Sequence[str]) -> Route:
         protected_handler = handler
         if _route_requires_privileged_operations(methods):
@@ -2178,6 +2324,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             create_operator_directive,
             methods=["POST"],
         ),
+        route("/memory", list_memories, methods=["GET"]),
+        route("/memory", create_memory, methods=["POST"]),
+        route("/memory/{memory_id}", get_memory, methods=["GET"]),
+        route("/memory/{memory_id}", patch_memory, methods=["PATCH"]),
+        route("/memory/{memory_id}/archive", archive_memory, methods=["POST"]),
         route(
             "/action-records/{action_record_id}/dismiss",
             dismiss_action_record,
@@ -2638,6 +2789,8 @@ def _state_collection_slice_payload(
             rows[item_id] = task_payload_with_derived(state, item)
         elif collection == "release_packages":
             rows[item_id] = release_package_payload_with_derived(state, item)
+        elif collection == "memories":
+            rows[item_id] = memory_record_payload(item, include_body=False)
         elif hasattr(item, "model_dump"):
             rows[item_id] = item.model_dump(mode="json")
         else:
@@ -4182,3 +4335,11 @@ def _optional_string_list(payload: Mapping[str, Any], field_name: str) -> list[s
         raise ValueError(f"{field_name} must be a list of strings")
     normalized = [str(item).strip() for item in value if str(item).strip()]
     return normalized
+
+
+def _memory_artifact_refs(payload: Mapping[str, Any]) -> list[str]:
+    refs = _optional_string_list(payload, "artifact_refs") or []
+    artifact_space_ref = _optional(payload, "artifact_space_ref")
+    if artifact_space_ref is not None and artifact_space_ref not in refs:
+        refs.append(artifact_space_ref)
+    return refs

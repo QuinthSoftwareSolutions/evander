@@ -3,15 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from evander.effects.providers.base import EffectRuntimeContext
+from evander.queries.providers.base import QueryRuntimeContext
 from evander.triggers.providers.base import TriggerRuntimeContext
 from evander_team_addon.models import AgentStatus, ProjectGoal, TeamInboxItemType
 from evander_team_addon.provider_schemas import (
     TeamCreateReviewRequestEffectDefinition,
     TeamDeliverableCreatedTriggerDefinition,
+    TeamMemoryQueryDefinition,
 )
 from evander_team_addon.providers import (
     TeamCreateReviewRequestEffectProvider,
     TeamDeliverableCreatedTriggerProvider,
+    TeamIndexMemoryEffectProvider,
+    TeamMemoryQueryProvider,
+    TeamReindexMemoryEffectProvider,
     register_providers,
 )
 from evander_team_addon.repository import TeamStateRepository
@@ -138,6 +143,51 @@ def test_team_workflow_provider_registration_includes_review_primitives() -> Non
         registration.effect_providers["effect:team:create-review-request"]
         is TeamCreateReviewRequestEffectProvider
     )
+    assert (
+        registration.effect_providers["effect:team:index-memory"]
+        is TeamIndexMemoryEffectProvider
+    )
+    assert (
+        registration.effect_providers["effect:team:reindex-memory"]
+        is TeamReindexMemoryEffectProvider
+    )
+    assert registration.query_providers["query:team:memory"] is TeamMemoryQueryProvider
+
+
+def test_team_memory_query_reads_compact_canonical_records(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _admin(repo).create_or_update_memory(
+        memory_id="memory-sqlite",
+        team_id="team",
+        project_id="project",
+        scope="project",
+        kind="decision",
+        title="SQLite is canonical",
+        summary="Qdrant can be rebuilt from canonical Team memory.",
+        body="This detailed body should stay out of compact query results.",
+        tags=["memory"],
+        expected_revision=repo.read().revision,
+    )
+    provider = TeamMemoryQueryProvider()
+    provider.initialize(
+        TeamMemoryQueryDefinition(
+            id="memory-query",
+            display_name="Memory query",
+            type="query:team:memory",
+            team_id="team",
+            project_id="project",
+            query_text="rebuilt",
+            limit=5,
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["semantic"] is False
+    assert [record["id"] for record in result["records"]] == ["memory-sqlite"]
+    assert "body" not in result["records"][0]
 
 
 def test_team_deliverable_created_trigger_suppresses_existing_then_emits_new(

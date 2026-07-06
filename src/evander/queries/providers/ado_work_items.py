@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from evander.ado_query_mode import ADO_QUERY_MODE_MANUAL_WIQL, validate_ado_query_mode
 from evander.issues.service import IssueService
 from evander.models import AdoBacklogQueryRequest, AdoCurrentIterationBacklogRequest
 
@@ -24,8 +25,12 @@ class AdoWorkItemsQueryProvider(QueryProviderBase):
 
         wiql = self._normalize_optional_string(payload.get("wiql"))
         current_iteration = self._coerce_bool(payload.pop("current_iteration", None), default=False)
-        if wiql and current_iteration:
-            raise ValueError("query:ado:work-items wiql and current_iteration are mutually exclusive")
+        query_mode = validate_ado_query_mode(
+            query_mode=payload.get("query_mode"),
+            wiql=wiql,
+            current_iteration=current_iteration,
+            context="query:ado:work-items",
+        )
 
         context = self._context()
         if context.provider_config_resolver is None:
@@ -51,9 +56,12 @@ class AdoWorkItemsQueryProvider(QueryProviderBase):
             )
 
         request_payload = payload
-        if wiql:
+        request_payload["query_mode"] = query_mode
+        if query_mode == ADO_QUERY_MODE_MANUAL_WIQL:
             request_payload = {
-                key: payload[key] for key in ("project", "wiql", "top", "skip") if key in payload
+                key: request_payload[key]
+                for key in ("project", "query_mode", "wiql", "top", "skip")
+                if key in request_payload
             }
         request = AdoBacklogQueryRequest.model_validate(request_payload)
         return self._coerce_result(
@@ -79,6 +87,7 @@ class AdoWorkItemsQueryProvider(QueryProviderBase):
         for field_name in (
             "directory_path",
             "project",
+            "query_mode",
             "wiql",
             "current_iteration",
             "team",

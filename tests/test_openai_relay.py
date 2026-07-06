@@ -158,6 +158,7 @@ def test_relay_rejects_expired_session_by_query_without_invoking_transport(
 
 def test_relay_requires_mcp_session_token_for_tokenized_http_session(
     tmp_path: Path,
+    caplog,
 ) -> None:
     calls: list[dict[str, str]] = []
 
@@ -180,6 +181,7 @@ def test_relay_requires_mcp_session_token_for_tokenized_http_session(
     app = create_app(config, transport=transport)
     client = TestClient(app)
     os.environ["OPENAI_API_KEY"] = "test-key"
+    caplog.set_level("INFO", logger="evander.relays.openai")
 
     denied_missing = client.post(
         "/v1/session/session-1/responses",
@@ -194,6 +196,10 @@ def test_relay_requires_mcp_session_token_for_tokenized_http_session(
         "/v1/session/session-1/responses?mcp_session_token=correct-token&foo=bar",
         json={"model": "gpt-5.2-codex", "input": "hello"},
     )
+    allowed_path_token = client.post(
+        "/v1/session/session-1/auth/correct-token/responses?path_token=true",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
     allowed_auth_header = client.post(
         "/v1/session/session-1/responses?bar=baz",
         headers={"authorization": "Bearer correct-token"},
@@ -205,10 +211,18 @@ def test_relay_requires_mcp_session_token_for_tokenized_http_session(
     assert denied_wrong.status_code == 401
     assert denied_wrong.json() == {"error": "MCP session token is required for this session"}
     assert allowed.status_code == 200
+    assert allowed_path_token.status_code == 200
     assert allowed_auth_header.status_code == 200
+    assert "correct-token" not in caplog.text
+    assert "/auth/" not in caplog.text
+    assert "path=/v1/session/session-1/responses" in caplog.text
     assert calls == [
         {
             "url": "https://api.openai.com/v1/responses?foo=bar",
+            "mcp_token_header": "",
+        },
+        {
+            "url": "https://api.openai.com/v1/responses?path_token=true",
             "mcp_token_header": "",
         },
         {
@@ -1377,7 +1391,7 @@ def test_relay_requires_mcp_session_token_for_tokenized_websocket_session(
             pass
 
     with client.websocket_connect(
-        "/v1/session/session-1/responses?mcp_session_token=correct-token&foo=bar"
+        "/v1/session/session-1/auth/correct-token/responses?foo=bar"
     ) as websocket:
         websocket.send_text("hello upstream")
         deadline = time.time() + 1.0

@@ -156,6 +156,7 @@ class RemoteIssueCommentCreatedTriggerProvider(TriggerProviderBase):
                 directory_path=directory_path,
                 project=trigger.project,
                 repo=trigger.repo,
+                query_mode=trigger.query_mode,
                 wiql=trigger.wiql,
                 current_iteration=trigger.current_iteration,
                 team=trigger.team,

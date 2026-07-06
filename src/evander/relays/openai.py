@@ -17,6 +17,7 @@ from urllib.parse import quote, unquote, urlencode
 import httpx
 import uvicorn
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
@@ -84,6 +85,37 @@ OPENAI_COMPATIBLE_ENDPOINTS_DESCRIPTION = (
 )
 PATH_SEGMENT_SAFE_CHARS = ":@!$&'()*+,;=-._~"
 MAX_PATH_DECODE_PASSES = 5
+OPENAI_AUTH_PATH_SCOPE_TOKEN_KEY = "evander_openai_mcp_session_token"
+
+
+def _rewrite_openai_auth_path(path: str) -> tuple[str, str] | None:
+    prefix = "/v1/session/"
+    if not path.startswith(prefix):
+        return None
+    remainder = path[len(prefix) :]
+    session_id, separator, session_remainder = remainder.partition("/")
+    if separator != "/" or not session_id or not session_remainder.startswith("auth/"):
+        return None
+    token_and_path = session_remainder[len("auth/") :]
+    token, separator, upstream_path = token_and_path.partition("/")
+    if separator != "/" or not token or not upstream_path:
+        return None
+    return token, f"{prefix}{session_id}/{upstream_path}"
+
+
+class OpenAIAuthPathTokenMiddleware:
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") in {"http", "websocket"}:
+            rewritten = _rewrite_openai_auth_path(str(scope.get("path") or ""))
+            if rewritten is not None:
+                token, rewritten_path = rewritten
+                scope[OPENAI_AUTH_PATH_SCOPE_TOKEN_KEY] = token
+                scope["path"] = rewritten_path
+                scope["raw_path"] = rewritten_path.encode("utf-8")
+        await self.app(scope, receive, send)
 
 
 @dataclass(frozen=True)
@@ -485,6 +517,7 @@ class OpenAIRelay:
 
         return Starlette(
             debug=False,
+            middleware=[Middleware(OpenAIAuthPathTokenMiddleware)],
             routes=[
                 Route("/healthz", health, methods=["GET"]),
                 Route(
@@ -1469,6 +1502,9 @@ class OpenAIRelay:
             token = str(request.headers.get(name) or "").strip()
             if token:
                 return token
+        token = str(request.scope.get(OPENAI_AUTH_PATH_SCOPE_TOKEN_KEY) or "").strip()
+        if token:
+            return token
         token = OpenAIRelay._mcp_session_token_from_auth_headers(request)
         if token:
             return token

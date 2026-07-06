@@ -86,6 +86,7 @@ const teamViewIds = new Set([
   "workspace",
   "operations",
   "delivery",
+  "memory",
   "projects",
   "task-board",
   "cases",
@@ -111,6 +112,7 @@ const teamStateCollectionKeys = [
   "deliverables",
   "review_requests",
   "review_profiles",
+  "memories",
   "inbox",
   "action_records",
   "release_packages",
@@ -219,6 +221,7 @@ const elements = {
   runtimeOperationsView: document.querySelector("#runtime-operations-view"),
   runtimeFilterButtons: Array.from(document.querySelectorAll("[data-runtime-filter]")),
   reviewDeliveryView: document.querySelector("#review-delivery-view"),
+  memoryView: document.querySelector("[data-memory-view]"),
   hierarchyView: document.querySelector("#hierarchy-view"),
   agentsView: document.querySelector("#agents-view"),
   rolesView: document.querySelector("#roles-view"),
@@ -3637,6 +3640,10 @@ function renderActiveView(view = activeTeamView) {
       renderReleases();
       decorateActiveViewTooltips();
       break;
+    case "memory":
+      renderMemoryView();
+      decorateActiveViewTooltips();
+      break;
     case "projects":
       renderProjectFocus();
       refreshActiveViewSelects();
@@ -3693,6 +3700,7 @@ function renderActiveViewLoading(view = activeTeamView) {
     panel?.querySelector("[data-workspace-attention-column]") ||
     panel?.querySelector("[data-runtime-operations-view]") ||
     panel?.querySelector("[data-review-delivery-view]") ||
+    panel?.querySelector("[data-memory-view]") ||
     panel?.querySelector("[data-projects-view]") ||
     panel?.querySelector("[data-cases-view]") ||
     panel?.querySelector("[data-governance-view]") ||
@@ -3787,6 +3795,134 @@ function renderReviewDeliveryWorkspace() {
     teamGroups.map((teamGroup) => renderDeliveryTeamGroup(teamGroup, bucketStatuses)).join(""),
   );
   bindWorkspaceReviewDecisionForms();
+}
+
+function renderMemoryView() {
+  const allMemories = values(state.memories).sort(compareMemories);
+  const visibleMemories = allMemories.filter(isVisibleMemory);
+  if (!allMemories.length) {
+    renderIntoActiveTargets("[data-memory-view]", `<p class="empty-state">No Team memories recorded.</p>`);
+    return;
+  }
+  if (!visibleMemories.length) {
+    renderIntoActiveTargets("[data-memory-view]", `<p class="empty-state">No visible Team memories.</p>`);
+    return;
+  }
+  renderIntoActiveTargets(
+    "[data-memory-view]",
+    groupMemoriesByTeam(visibleMemories).map(renderMemoryTeamGroup).join(""),
+  );
+}
+
+function groupMemoriesByTeam(memories) {
+  const groups = new Map();
+  memories.forEach((memory) => {
+    const teamId = text(memory.team_id) || "";
+    if (!groups.has(teamId)) {
+      groups.set(teamId, []);
+    }
+    groups.get(teamId).push(memory);
+  });
+  return [...groups.entries()]
+    .map(([teamId, items]) => ({ teamId, team: state.teams[teamId] || null, memories: items }))
+    .sort((left, right) => {
+      const leftLabel = left.team?.name || left.teamId;
+      const rightLabel = right.team?.name || right.teamId;
+      return leftLabel.localeCompare(rightLabel) || left.teamId.localeCompare(right.teamId);
+    });
+}
+
+function renderMemoryTeamGroup(group) {
+  const activeCount = group.memories.filter((memory) => text(memory.status || "active") === "active").length;
+  return `
+    <article class="project-block">
+      <div class="project-header">
+        <div>
+          <strong>${escapeHtml(group.team?.name || group.teamId || "Unknown team")}</strong>
+          <div class="meta-line">${escapeHtml(group.teamId || "team missing")} - ${activeCount} active memory ${activeCount === 1 ? "record" : "records"}</div>
+        </div>
+      </div>
+      <ul class="task-list">
+        ${group.memories.map(renderMemoryItem).join("")}
+      </ul>
+    </article>
+  `;
+}
+
+function renderMemoryItem(memory) {
+  const project = memory.project_id ? state.projects[memory.project_id] : null;
+  const agent = memory.agent_id ? state.agents[memory.agent_id] : null;
+  const metaParts = [
+    memory.id,
+    humanizeToken(memory.kind || "other"),
+    humanizeToken(memory.scope || "team_global"),
+    project ? project.name : memory.project_id ? `project ${memory.project_id}` : "Team-wide",
+    memory.codebase_id ? `codebase ${memory.codebase_id}` : "",
+    agent ? `agent ${agentLabel(agent)}` : memory.agent_id ? `agent ${memory.agent_id}` : "",
+  ].filter(Boolean);
+  const refs = [
+    uniqueTextList(memory.source_refs).length ? `${uniqueTextList(memory.source_refs).length} source ref(s)` : "",
+    uniqueTextList(memory.artifact_refs).length ? `${uniqueTextList(memory.artifact_refs).length} artifact ref(s)` : "",
+  ].filter(Boolean);
+  return `
+    <li class="task-item">
+      <div class="task-line">
+        <strong>${escapeHtml(memory.title || memory.id)}</strong>
+        <div class="record-actions">
+          <span class="state-pill ${escapeHtml(memory.status || "active")}">${escapeHtml(humanizeToken(memory.status || "active"))}</span>
+        </div>
+      </div>
+      <div class="meta-line">${escapeHtml(metaParts.join(" - "))}</div>
+      ${memory.summary ? `<div class="meta-line">${escapeHtml(memory.summary)}</div>` : ""}
+      ${renderMemoryTags(memory)}
+      ${refs.length ? `<div class="meta-line">${escapeHtml(refs.join(" - "))}</div>` : ""}
+      ${memory.updated_at ? `<div class="meta-line">Updated ${escapeHtml(memory.updated_at)}</div>` : ""}
+    </li>
+  `;
+}
+
+function renderMemoryTags(memory) {
+  const tags = uniqueTextList(memory.tags);
+  if (!tags.length) {
+    return "";
+  }
+  return `
+    <ul class="inline-list">
+      ${tags.map((tag) => `<li><span class="state-pill neutral">${escapeHtml(tag)}</span></li>`).join("")}
+    </ul>
+  `;
+}
+
+function isVisibleMemory(memory) {
+  if (!showArchived && text(memory.status || "active") === "archived") {
+    return false;
+  }
+  const team = memory.team_id ? state.teams[memory.team_id] : null;
+  if (team && !isVisibleTeam(team)) {
+    return false;
+  }
+  const project = memory.project_id ? state.projects[memory.project_id] : null;
+  if (project && !isVisibleProject(project)) {
+    return false;
+  }
+  return true;
+}
+
+function compareMemories(left, right) {
+  return (
+    memoryStatusRank(left.status) - memoryStatusRank(right.status) ||
+    String(right.updated_at || "").localeCompare(String(left.updated_at || "")) ||
+    byId(left, right)
+  );
+}
+
+function memoryStatusRank(status) {
+  const order = {
+    active: 0,
+    superseded: 1,
+    archived: 2,
+  };
+  return order[text(status || "active")] ?? 99;
 }
 
 function renderWorkspaceDashboard() {

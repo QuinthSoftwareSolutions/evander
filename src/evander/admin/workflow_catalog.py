@@ -500,6 +500,23 @@ def _remote_issue_provider_field(*, bindable: bool = False) -> WorkflowEditorFie
     )
 
 
+def _ado_query_mode_field(*, label: str = "Query mode") -> WorkflowEditorFieldDefinition:
+    return _field(
+        "query_mode",
+        label,
+        "enum",
+        default_value="structured_filters",
+        options=[
+            _field_option("structured_filters", "Structured filters"),
+            _field_option("manual_wiql", "Manual WIQL"),
+        ],
+        description=(
+            "Structured filters uses the filter fields. Manual WIQL uses only Project, WIQL, "
+            "Top, and Skip."
+        ),
+    )
+
+
 def _remote_issue_base_fields(*, bindable: bool = False) -> list[WorkflowEditorFieldDefinition]:
     return [
         _remote_issue_provider_field(bindable=bindable),
@@ -519,13 +536,14 @@ def _remote_issue_base_fields(*, bindable: bool = False) -> list[WorkflowEditorF
             placeholder="owner/name",
             description="GitHub repository in owner/name form.",
         ),
+        _ado_query_mode_field(label="ADO query mode"),
         _field(
             "wiql",
             "ADO WIQL",
             "string",
             bindable=bindable,
             multiline=True,
-            description="Azure DevOps only. Explicit WIQL query.",
+            description="Azure DevOps Manual WIQL mode only. Structured filter fields are not applied.",
         ),
         _field(
             "current_iteration",
@@ -537,9 +555,27 @@ def _remote_issue_base_fields(*, bindable: bool = False) -> list[WorkflowEditorF
         _field("team", "ADO team", "string", bindable=bindable),
         _field("iteration", "ADO iteration path", "string", bindable=bindable),
         _field("area_path", "ADO area path", "string", bindable=bindable),
-        _field("states", "ADO states", "string_list", bindable=bindable),
-        _field("types", "ADO types", "string_list", bindable=bindable),
-        _field("tags_any", "ADO tags any", "string_list", bindable=bindable),
+        _field(
+            "states",
+            "ADO states",
+            "string_list",
+            bindable=bindable,
+            description="Azure DevOps Structured filters mode only.",
+        ),
+        _field(
+            "types",
+            "ADO types",
+            "string_list",
+            bindable=bindable,
+            description="Azure DevOps Structured filters mode only.",
+        ),
+        _field(
+            "tags_any",
+            "ADO tags any",
+            "string_list",
+            bindable=bindable,
+            description="Azure DevOps Structured filters mode only.",
+        ),
         _field(
             "state",
             "GitHub state",
@@ -860,26 +896,27 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field("directory_path", "Directory path", "string"),
             _field("project", "Project", "string"),
+            _ado_query_mode_field(),
             _field(
                 "wiql",
                 "WIQL",
                 "string",
                 multiline=True,
-                description="Explicit WIQL query. When set, filter fields are not applied.",
+                description="Manual WIQL mode only. Structured filter fields are not applied.",
             ),
             _field(
                 "current_iteration",
                 "Current iteration",
                 "boolean",
-                description="Resolve the team's current iteration before querying.",
+                description="Structured filters mode only. Resolve the team's current iteration before querying.",
             ),
             _field("team", "Team", "string"),
             _field("iteration", "Iteration path", "string"),
             _field("area_path", "Area path", "string"),
-            _field("states", "States", "string_list"),
-            _field("types", "Types", "string_list"),
-            _field("tags_any", "Tags any", "string_list"),
-            _field("text_search", "Text search", "string"),
+            _field("states", "States", "string_list", description="Structured filters mode only."),
+            _field("types", "Types", "string_list", description="Structured filters mode only."),
+            _field("tags_any", "Tags any", "string_list", description="Structured filters mode only."),
+            _field("text_search", "Text search", "string", description="Structured filters mode only."),
             _field("top", "Top", "number"),
         ],
     ),
@@ -890,27 +927,28 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field("directory_path", "Directory path", "string"),
             _field("project", "Project", "string"),
+            _ado_query_mode_field(),
             _field(
                 "wiql",
                 "WIQL",
                 "string",
                 multiline=True,
-                description="Explicit WIQL query. When set, filter fields are not applied.",
+                description="Manual WIQL mode only. Structured filter fields are not applied.",
             ),
             _field(
                 "current_iteration",
                 "Current iteration",
                 "boolean",
                 default_value=False,
-                description="Resolve the team's current iteration before querying.",
+                description="Structured filters mode only. Resolve the team's current iteration before querying.",
             ),
             _field("team", "Team", "string"),
             _field("iteration", "Iteration path", "string"),
             _field("area_path", "Area path", "string"),
-            _field("states", "States", "string_list", default_value=[]),
-            _field("types", "Types", "string_list", default_value=[]),
-            _field("tags_any", "Tags any", "string_list", default_value=[]),
-            _field("text_search", "Text search", "string"),
+            _field("states", "States", "string_list", default_value=[], description="Structured filters mode only."),
+            _field("types", "Types", "string_list", default_value=[], description="Structured filters mode only."),
+            _field("tags_any", "Tags any", "string_list", default_value=[], description="Structured filters mode only."),
+            _field("text_search", "Text search", "string", description="Structured filters mode only."),
             _field("top", "Top", "number", default_value=50),
             _field(
                 "comment_contains",
@@ -3979,28 +4017,29 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field("directory_path", "Directory path", "string", bindable=True),
             _field("project", "Project", "string", bindable=True),
+            _ado_query_mode_field(),
             _field(
                 "wiql",
                 "WIQL",
                 "string",
                 bindable=True,
                 multiline=True,
-                description="Explicit WIQL query. When set, filter fields are not applied.",
+                description="Manual WIQL mode only. Structured filter fields are not applied.",
             ),
             _field(
                 "current_iteration",
                 "Current iteration",
                 "boolean",
                 bindable=True,
-                description="Resolve the team's current iteration before querying.",
+                description="Structured filters mode only. Resolve the team's current iteration before querying.",
             ),
             _field("team", "Team", "string", bindable=True),
             _field("iteration", "Iteration path", "string", bindable=True),
             _field("area_path", "Area path", "string", bindable=True),
-            _field("states", "States", "string_list"),
-            _field("types", "Types", "string_list"),
-            _field("tags_any", "Tags any", "string_list"),
-            _field("text_search", "Text search", "string", bindable=True),
+            _field("states", "States", "string_list", description="Structured filters mode only."),
+            _field("types", "Types", "string_list", description="Structured filters mode only."),
+            _field("tags_any", "Tags any", "string_list", description="Structured filters mode only."),
+            _field("text_search", "Text search", "string", bindable=True, description="Structured filters mode only."),
             _field("top", "Top", "number", bindable=True),
             _field("skip", "Skip", "number", bindable=True),
         ],
