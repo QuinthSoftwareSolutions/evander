@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-06 - ADO Workflow Query Modes
+
+- Added explicit `query_mode` support for Azure DevOps work-item workflow
+  queries and triggers, distinguishing Structured filters from Manual WIQL
+  while preserving legacy WIQL inference for existing configs.
+- Updated the workflow editor catalog and inspector so ADO WIQL and structured
+  filter fields are presented as separate modes instead of silently competing.
+
 ## 2026-07-06 - Team Add-on Memory
 
 - Added canonical Team memory records in the Team SQLite state store with

@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from evander.ado_query_mode import AdoQueryMode, normalize_ado_query_mode, validate_ado_query_mode
 from evander.events.models import ConfigValue, TriggerDefinition
 from evander.events.internal import validate_internal_event_type
 from evander.models import DirectoryPath
@@ -166,6 +167,7 @@ class AdoWorkItemMatchingTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:ado:work-item-matching"]
     directory_path: str | None = None
     project: str | None = None
+    query_mode: AdoQueryMode | None = None
     wiql: str | None = None
     current_iteration: bool = False
     team: str | None = None
@@ -194,6 +196,11 @@ class AdoWorkItemMatchingTriggerDefinition(TriggerDefinition):
         text = str(value).strip()
         return text or None
 
+    @field_validator("query_mode", mode="before")
+    @classmethod
+    def normalize_query_mode(cls, value: object) -> AdoQueryMode | None:
+        return normalize_ado_query_mode(value)
+
     @field_validator("states", "types", "tags_any", mode="before")
     @classmethod
     def normalize_filters(cls, value: object) -> object:
@@ -201,10 +208,12 @@ class AdoWorkItemMatchingTriggerDefinition(TriggerDefinition):
 
     @model_validator(mode="after")
     def validate_query_mode(self) -> "AdoWorkItemMatchingTriggerDefinition":
-        if self.wiql and self.current_iteration:
-            raise ValueError(
-                "trigger:ado:work-item-matching wiql and current_iteration are mutually exclusive"
-            )
+        self.query_mode = validate_ado_query_mode(
+            query_mode=self.query_mode,
+            wiql=self.wiql,
+            current_iteration=self.current_iteration,
+            context="trigger:ado:work-item-matching",
+        )
         return self
 
 
@@ -212,6 +221,7 @@ class AdoWorkItemCommentCreatedTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:ado:work-item-comment-created"]
     directory_path: str | None = None
     project: str | None = None
+    query_mode: AdoQueryMode | None = None
     wiql: str | None = None
     current_iteration: bool = False
     team: str | None = None
@@ -247,6 +257,11 @@ class AdoWorkItemCommentCreatedTriggerDefinition(TriggerDefinition):
         text = str(value).strip()
         return text or None
 
+    @field_validator("query_mode", mode="before")
+    @classmethod
+    def normalize_query_mode(cls, value: object) -> AdoQueryMode | None:
+        return normalize_ado_query_mode(value)
+
     @field_validator(
         "states",
         "types",
@@ -262,10 +277,12 @@ class AdoWorkItemCommentCreatedTriggerDefinition(TriggerDefinition):
 
     @model_validator(mode="after")
     def validate_query_mode(self) -> "AdoWorkItemCommentCreatedTriggerDefinition":
-        if self.wiql and self.current_iteration:
-            raise ValueError(
-                "trigger:ado:work-item-comment-created wiql and current_iteration are mutually exclusive"
-            )
+        self.query_mode = validate_ado_query_mode(
+            query_mode=self.query_mode,
+            wiql=self.wiql,
+            current_iteration=self.current_iteration,
+            context="trigger:ado:work-item-comment-created",
+        )
         return self
 
 
@@ -275,6 +292,7 @@ class RemoteIssueMatchingTriggerDefinition(TriggerDefinition):
     directory_path: str | None = None
     project: str | None = None
     repo: str | None = None
+    query_mode: AdoQueryMode | None = None
     wiql: str | None = None
     current_iteration: bool = False
     team: str | None = None
@@ -303,6 +321,11 @@ class RemoteIssueMatchingTriggerDefinition(TriggerDefinition):
         if text == "github":
             return "github"
         raise ValueError("provider must be azure_devops or github")
+
+    @field_validator("query_mode", mode="before")
+    @classmethod
+    def normalize_query_mode(cls, value: object) -> AdoQueryMode | None:
+        return normalize_ado_query_mode(value)
 
     @field_validator(
         "directory_path",
@@ -342,16 +365,21 @@ class RemoteIssueMatchingTriggerDefinition(TriggerDefinition):
 
     @model_validator(mode="after")
     def validate_provider_query_mode(self) -> "RemoteIssueMatchingTriggerDefinition":
-        if self.provider == "azure_devops" and self.wiql and self.current_iteration:
-            raise ValueError(
-                "trigger:remote-issue-matching wiql and current_iteration are mutually exclusive"
-            )
         if self.provider == "github" and self.current_iteration:
             raise ValueError(
                 "trigger:remote-issue-matching current_iteration is only valid for Azure DevOps"
             )
         if self.provider == "github" and self.wiql:
             raise ValueError("trigger:remote-issue-matching wiql is only valid for Azure DevOps")
+        if self.provider == "github" and self.query_mode is not None:
+            raise ValueError("trigger:remote-issue-matching query_mode is only valid for Azure DevOps")
+        if self.provider == "azure_devops":
+            self.query_mode = validate_ado_query_mode(
+                query_mode=self.query_mode,
+                wiql=self.wiql,
+                current_iteration=self.current_iteration,
+                context="trigger:remote-issue-matching",
+            )
         return self
 
 

@@ -148,6 +148,7 @@ class AdoWorkItemsQueryDefinition(QueryDefinition):
     type: Literal["query:ado:work-items"]
     directory_path: ConfigValue | None = None
     project: ConfigValue | None = None
+    query_mode: ConfigValue | None = None
     wiql: ConfigValue | None = None
     current_iteration: ConfigValue | None = None
     team: ConfigValue | None = None
@@ -167,6 +168,7 @@ class RemoteIssuesQueryDefinition(QueryDefinition):
     directory_path: ConfigValue | None = None
     project: ConfigValue | None = None
     repo: ConfigValue | None = None
+    query_mode: ConfigValue | None = None
     wiql: ConfigValue | None = None
     current_iteration: ConfigValue | None = None
     team: ConfigValue | None = None

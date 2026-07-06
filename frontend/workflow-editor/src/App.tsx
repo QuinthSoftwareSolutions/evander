@@ -3876,6 +3876,27 @@ const TOOL_ARGUMENT_POLICY_STRUCTURED_NODE_TYPES = new Set([
   "effect:vm:create",
 ]);
 
+const ADO_QUERY_MODE_STRUCTURED_FILTERS = "structured_filters";
+const ADO_QUERY_MODE_MANUAL_WIQL = "manual_wiql";
+const ADO_QUERY_MODE_NODE_TYPES = new Set([
+  "query:ado:work-items",
+  "query:remote-issues",
+  "trigger:ado:work-item-matching",
+  "trigger:ado:work-item-comment-created",
+  "trigger:remote-issue-matching",
+  "trigger:remote-issue-comment-created",
+]);
+const ADO_STRUCTURED_FILTER_FIELD_KEYS = new Set([
+  "current_iteration",
+  "team",
+  "iteration",
+  "area_path",
+  "states",
+  "types",
+  "tags_any",
+  "text_search",
+]);
+
 const AGENT_CREATE_NODE_TYPE = "effect:agent:create";
 const CLIENT_RECOMPUTED_DIAGNOSTIC_CODES = new Set([
   "agent_create_missing_execution_backend",
@@ -3883,6 +3904,32 @@ const CLIENT_RECOMPUTED_DIAGNOSTIC_CODES = new Set([
 
 function supportsStructuredToolArgumentPolicies(nodeType: string | undefined): boolean {
   return Boolean(nodeType && TOOL_ARGUMENT_POLICY_STRUCTURED_NODE_TYPES.has(nodeType));
+}
+
+function isAdoQueryModeNodeType(nodeType: string | undefined): boolean {
+  return Boolean(nodeType && ADO_QUERY_MODE_NODE_TYPES.has(nodeType));
+}
+
+function effectiveAdoQueryMode(values: Record<string, unknown>): string {
+  const configuredMode = typeof values.query_mode === "string" ? values.query_mode.trim() : "";
+  if (configuredMode === ADO_QUERY_MODE_STRUCTURED_FILTERS || configuredMode === ADO_QUERY_MODE_MANUAL_WIQL) {
+    return configuredMode;
+  }
+  const wiql = typeof values.wiql === "string" ? values.wiql.trim() : "";
+  return wiql ? ADO_QUERY_MODE_MANUAL_WIQL : ADO_QUERY_MODE_STRUCTURED_FILTERS;
+}
+
+function adoQueryModeDisablesField(
+  nodeType: string | undefined,
+  fieldKey: string,
+  values: Record<string, unknown>,
+): boolean {
+  if (!isAdoQueryModeNodeType(nodeType) || fieldKey === "query_mode") return false;
+  const mode = effectiveAdoQueryMode(values);
+  if (mode === ADO_QUERY_MODE_MANUAL_WIQL) {
+    return ADO_STRUCTURED_FILTER_FIELD_KEYS.has(fieldKey);
+  }
+  return fieldKey === "wiql";
 }
 
 function normalizedAgentCreateExecutionBackend(values: Record<string, unknown>): string {
@@ -7809,6 +7856,23 @@ export default function App() {
     }
   }
 
+  function updateAdoQueryModeField(value: string) {
+    const next = { ...inspectorKnownValues };
+    if (value) {
+      next.query_mode = value;
+    } else {
+      delete next.query_mode;
+    }
+    if (value === ADO_QUERY_MODE_STRUCTURED_FILTERS) {
+      delete next.wiql;
+    }
+    if (value === ADO_QUERY_MODE_MANUAL_WIQL) {
+      delete next.current_iteration;
+    }
+    setInspectorKnownValues(next);
+    stageInspectorDraft({ knownValues: next });
+  }
+
   function updateToolArgumentPolicyDraftRows(fieldKey: string, nextRows: ToolArgumentPolicyDraftRow[]) {
     const nextToolArgumentPolicyDrafts = { ...inspectorToolArgumentPolicyDrafts, [fieldKey]: nextRows };
     const validation = toolArgumentPolicyDraftRowsToValue(nextRows);
@@ -9175,8 +9239,10 @@ export default function App() {
   function renderField(field: WorkflowEditorFieldDefinition) {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
-    const isDisabled = field.read_only || (workflowMutationLocked && !tutorialAllowsInspectorFieldEdit(field.key));
     const selectedNodeType = selectedNode?.type;
+    const isDisabled = field.read_only
+      || (workflowMutationLocked && !tutorialAllowsInspectorFieldEdit(field.key))
+      || adoQueryModeDisablesField(selectedNodeType, field.key, inspectorKnownValues);
 
     if (selectedNodeType === "query:session:list" && isSessionListMetadataFieldKey(field.key)) {
       return field.key === "metadata_equals" ? renderSessionListMetadataRules(isDisabled) : null;
@@ -9384,6 +9450,9 @@ export default function App() {
           normalizedAgentCreateExecutionBackend(inspectorKnownValues),
         )
         : field.options;
+      const enumValue = field.key === "query_mode" && isAdoQueryModeNodeType(selectedNodeType)
+        ? effectiveAdoQueryMode(inspectorKnownValues)
+        : enumOptionValue(field, value);
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
@@ -9399,8 +9468,14 @@ export default function App() {
             ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
             : (
               <select
-                value={enumOptionValue(field, value)}
-                onChange={(event) => updateKnownField(field.key, event.target.value || undefined)}
+                value={enumValue}
+                onChange={(event) => {
+                  if (field.key === "query_mode" && isAdoQueryModeNodeType(selectedNodeType)) {
+                    updateAdoQueryModeField(event.target.value);
+                  } else {
+                    updateKnownField(field.key, event.target.value || undefined);
+                  }
+                }}
                 disabled={isDisabled}
               >
                 <option value="">Select</option>

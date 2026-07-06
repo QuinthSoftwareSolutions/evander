@@ -12,6 +12,7 @@ from evander.events.models import (
     materialize_node_definition,
 )
 from evander.events.provider_models import (
+    AdoWorkItemMatchingTriggerDefinition,
     AgentEnqueuePromptEffectDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
@@ -165,6 +166,65 @@ def test_remote_issue_comment_trigger_rejects_github_wiql() -> None:
                         "provider": "github",
                         "repo": "owner/repo",
                         "wiql": "SELECT [System.Id] FROM WorkItems",
+                    },
+                }
+            )
+        )
+
+
+def test_ado_work_item_trigger_infers_manual_wiql_mode() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-ado",
+                "display_name": "ADO match",
+                "type": "trigger:ado:work-item-matching",
+                "config": {
+                    "wiql": "SELECT [System.Id] FROM WorkItems",
+                },
+            }
+        )
+    )
+
+    assert isinstance(trigger, AdoWorkItemMatchingTriggerDefinition)
+    assert trigger.query_mode == "manual_wiql"
+
+
+def test_ado_work_item_trigger_rejects_structured_mode_wiql() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="structured_filters cannot use wiql"):
+        materialize_node_definition(
+            adapter.validate_python(
+                {
+                    "id": "t-ado",
+                    "display_name": "ADO match",
+                    "type": "trigger:ado:work-item-matching",
+                    "config": {
+                        "query_mode": "structured_filters",
+                        "wiql": "SELECT [System.Id] FROM WorkItems",
+                    },
+                }
+            )
+        )
+
+
+def test_remote_issue_trigger_rejects_github_query_mode() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="query_mode is only valid for Azure DevOps"):
+        materialize_node_definition(
+            adapter.validate_python(
+                {
+                    "id": "t-remote",
+                    "display_name": "Remote issue match",
+                    "type": "trigger:remote-issue-matching",
+                    "config": {
+                        "provider": "github",
+                        "repo": "owner/repo",
+                        "query_mode": "structured_filters",
                     },
                 }
             )

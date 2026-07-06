@@ -225,9 +225,9 @@ Type-specific keys:
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
 | `trigger:issue:comment-created` | — | `provider`, `organization_url`, `project`, `directories` |
-| `trigger:ado:work-item-matching` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top` |
-| `trigger:ado:work-item-comment-created` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `comment_contains`, `comment_contains_any`, `comment_author_exclude_names`, `comment_author_exclude_ids`, `comment_case_sensitive`, `include_existing` |
-| `trigger:remote-issue-matching` | `provider` | `directory_path`, ADO: `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`; GitHub: `repo`, `state`, `labels_any`, `labels_all`, `assignee`, `author`, `mentioned`, `milestone`, `since`; common: `text_search`, `top` |
+| `trigger:ado:work-item-matching` | — | `directory_path`, `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top` |
+| `trigger:ado:work-item-comment-created` | — | `directory_path`, `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `comment_contains`, `comment_contains_any`, `comment_author_exclude_names`, `comment_author_exclude_ids`, `comment_case_sensitive`, `include_existing` |
+| `trigger:remote-issue-matching` | `provider` | `directory_path`, ADO: `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`; GitHub: `repo`, `state`, `labels_any`, `labels_all`, `assignee`, `author`, `mentioned`, `milestone`, `since`; common: `text_search`, `top` |
 | `trigger:remote-issue-comment-created` | `provider` | Same filters as `trigger:remote-issue-matching`, plus `comment_contains`, `comment_contains_any`, `comment_author_exclude_names`, `comment_author_exclude_ids`, `comment_case_sensitive`, `include_existing` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
@@ -279,6 +279,12 @@ Normalized CI completion events expose the following fields for downstream bindi
 Provider-specific fields that do not apply to a given source remain `null`, and the provider keeps
 its cursor state in `runtime/trigger-cursors-ci-runs.json`.
 
+ADO work-item query surfaces accept `query_mode=structured_filters` or `query_mode=manual_wiql`.
+Structured filters mode uses fields such as `current_iteration`, `iteration`, `states`, `types`,
+`tags_any`, and `text_search`. Manual WIQL mode uses only `project`, `wiql`, and paging fields; the
+structured filters are intentionally not applied. For compatibility, omitted `query_mode` is inferred
+as `manual_wiql` when `wiql` is present and `structured_filters` otherwise.
+
 `trigger:ado:work-item-matching` uses the same filter/query surface as `query:ado:work-items`
 without writing local issue state. It emits `work_item` on first match and again when the remote
 changed date advances. Use `effect:issue:upsert-ado-proxy` downstream when the workflow should
@@ -293,9 +299,9 @@ not built-in defaults.
 
 `trigger:remote-issue-matching` and `trigger:remote-issue-comment-created` are the provider-neutral
 remote issue intake primitives. Set `provider=azure_devops` or `provider=ado` to use the ADO
-work-item filter surface, including WIQL and current-iteration mode. Set `provider=github` to use
+work-item filter surface, including explicit `query_mode` and current-iteration mode. Set `provider=github` to use
 GitHub issue filters such as `repo`, `state`, labels, assignee, author, mentions, milestone, and
-`since`; WIQL and current-iteration mode are rejected for GitHub. The matching trigger stores
+`since`; `query_mode`, WIQL, and current-iteration mode are rejected for GitHub. The matching trigger stores
 cursors in `runtime/trigger-cursors-remote-issues.json`; the comment trigger stores cursors in
 `runtime/trigger-cursors-remote-issue-comments.json` and baselines existing comments unless
 `include_existing=true`.
@@ -776,8 +782,8 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `type` | Required keys | Optional keys |
 |---|---|---|
 | `query:agent:artifact-text` | `session_id`, `path` | `vm_user`, `outputs` |
-| `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
-| `query:remote-issues` | `provider` | `directory_path`, ADO: `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`; GitHub: `repo`, `state`, `labels_any`, `labels_all`, `assignee`, `author`, `mentioned`, `milestone`, `since`; common: `text_search`, `top`, `skip`, `outputs` |
+| `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
+| `query:remote-issues` | `provider` | `directory_path`, ADO: `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`; GitHub: `repo`, `state`, `labels_any`, `labels_all`, `assignee`, `author`, `mentioned`, `milestone`, `since`; common: `text_search`, `top`, `skip`, `outputs` |
 | `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
 | `query:issue:list` | _none beyond envelope_ | `directory_path`, `direct_only`, `states`, `exclude_states`, `source`, `source_type`, `tags_any`, `tags_all`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `limit`, `outputs` |
@@ -813,6 +819,10 @@ returns `issues` plus `count`, and uses the same directory and metadata filter
 semantics as `query:session:list`. Use `query:remote-issues` for provider-neutral
 remote discovery across Azure DevOps work items and GitHub issues; `query:ado:work-items`
 remains available as an ADO compatibility alias.
+
+For ADO work-item discovery, `query_mode=structured_filters` uses the structured filter fields,
+while `query_mode=manual_wiql` uses the explicit WIQL text and ignores structured filters. Omitted
+`query_mode` preserves legacy behavior by inferring Manual WIQL when `wiql` is set.
 
 `query:pull-request:get`, `query:pull-request:list`, `query:pull-request:feedback`,
 `effect:pull-request:update`, `effect:pull-request:add-tag`, and

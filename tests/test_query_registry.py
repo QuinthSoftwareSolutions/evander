@@ -429,6 +429,7 @@ def test_ado_work_items_query_provider_uses_wiql_and_directory_path(
         directory_path="root/team-a",
         project="example-project",
         wiql="SELECT [System.Id] FROM WorkItems WHERE [System.State] = 'Active'",
+        states=["New"],
         top=25,
         skip=5,
     )
@@ -482,6 +483,91 @@ def test_ado_work_items_query_provider_uses_wiql_and_directory_path(
         "skip": 5,
     }
     assert output["items"][0]["id"] == "101"
+
+
+def test_ado_work_items_query_provider_structured_mode_passes_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = AdoWorkItemsQueryDefinition(
+        id="query-ado-structured",
+        display_name="ADO work items",
+        type="query:ado:work-items",
+        query_mode="structured_filters",
+        project="example-project",
+        states=["New", "Active"],
+        types=["Bug"],
+        tags_any=["automation"],
+        text_search="deploy",
+    )
+    captured: dict[str, object] = {}
+
+    class StubIssueService:
+        def __init__(self, provider_config_resolver: object) -> None:
+            captured["provider_config_resolver"] = provider_config_resolver
+
+        def query_remote_backlog_items(self, **kwargs: object) -> dict[str, object]:
+            captured["request"] = kwargs
+            return {"provider": "azure_devops", "items": [], "count": 0}
+
+    monkeypatch.setattr(
+        "evander.queries.providers.ado_work_items.IssueService", StubIssueService
+    )
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(vms=[]),
+    )
+    provider = factory.build(query)
+    provider.execute()
+
+    assert captured["request"] == {
+        "provider": "azure_devops",
+        "directory_path": "root",
+        "project": "example-project",
+        "wiql": None,
+        "iteration": None,
+        "area_path": None,
+        "states": ["New", "Active"],
+        "types": ["Bug"],
+        "tags_any": ["automation"],
+        "text_search": "deploy",
+        "top": 50,
+        "skip": 0,
+    }
+
+
+def test_ado_work_items_query_provider_rejects_structured_mode_wiql() -> None:
+    query = AdoWorkItemsQueryDefinition(
+        id="query-ado-invalid",
+        display_name="ADO work items",
+        type="query:ado:work-items",
+        query_mode="structured_filters",
+        wiql="SELECT [System.Id] FROM WorkItems",
+    )
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(vms=[]),
+    )
+    provider = factory.build(query)
+
+    with pytest.raises(ValueError, match="structured_filters cannot use wiql"):
+        provider.execute()
+
+
+def test_ado_work_items_query_provider_rejects_manual_mode_without_wiql() -> None:
+    query = AdoWorkItemsQueryDefinition(
+        id="query-ado-invalid",
+        display_name="ADO work items",
+        type="query:ado:work-items",
+        query_mode="manual_wiql",
+    )
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(vms=[]),
+    )
+    provider = factory.build(query)
+
+    with pytest.raises(ValueError, match="manual_wiql requires wiql"):
+        provider.execute()
 
 
 def test_ado_work_items_query_provider_can_query_current_iteration(
@@ -611,6 +697,61 @@ def test_remote_issues_query_provider_passes_github_filters(
         "skip": 5,
     }
     assert output["items"][0]["remote_issue_id"] == "42"
+
+
+def test_remote_issues_query_provider_rejects_github_query_mode() -> None:
+    query = RemoteIssuesQueryDefinition(
+        id="query-remote",
+        display_name="Remote issues",
+        type="query:remote-issues",
+        provider="github",
+        repo="owner/repo",
+        query_mode="structured_filters",
+    )
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(vms=[]),
+    )
+    provider = factory.build(query)
+
+    with pytest.raises(ValueError, match="query_mode is only valid for Azure DevOps"):
+        provider.execute()
+
+
+def test_remote_issues_query_provider_passes_ado_query_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = RemoteIssuesQueryDefinition(
+        id="query-remote-ado",
+        display_name="Remote ADO issues",
+        type="query:remote-issues",
+        provider="ado",
+        project="APP",
+        query_mode="structured_filters",
+        states=["Committed"],
+    )
+    captured: dict[str, object] = {}
+
+    class StubIssueService:
+        def __init__(self, provider_config_resolver: object) -> None:
+            captured["provider_config_resolver"] = provider_config_resolver
+
+        def query_remote_issues(self, **kwargs: object) -> dict[str, object]:
+            captured["request"] = kwargs
+            return {"provider": "azure_devops", "items": [], "count": 0}
+
+    monkeypatch.setattr(
+        "evander.queries.providers.remote_issues.IssueService", StubIssueService
+    )
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(vms=[]),
+    )
+    provider = factory.build(query)
+    provider.execute()
+
+    assert captured["request"]["query_mode"] == "structured_filters"
+    assert captured["request"]["states"] == ["Committed"]
 
 
 def test_pull_request_list_query_provider_resolves_ado_config_and_filters(
