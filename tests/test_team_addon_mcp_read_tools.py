@@ -491,6 +491,31 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
     assert repo.read().revision == before_revision
 
 
+def test_team_search_memory_status_filter_reaches_archived_records(tmp_path: Path) -> None:
+    context = _runtime(tmp_path, allowed_tools=[TEAM_SEARCH_MEMORY_TOOL])
+    repo = _seed_read_tool_state(context.config.runtime_dir)
+    _team_admin_service(repo).archive_memory(
+        memory_id="alpha-memory",
+        expected_revision=repo.read().revision,
+    )
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        TEAM_SEARCH_MEMORY_TOOL,
+        {
+            "session_id": "session-alpha-dev",
+            "project_id": "alpha-project",
+            "statuses": ["archived"],
+            "limit": 10,
+        },
+    )
+
+    _assert_read_success(result)
+    assert [row["id"] for row in result["records"]] == ["alpha-memory"]
+    assert result["records"][0]["status"] == "archived"
+
+
 def test_team_addon_task_read_tools_surface_callers_git_work_context(
     tmp_path: Path,
 ) -> None:

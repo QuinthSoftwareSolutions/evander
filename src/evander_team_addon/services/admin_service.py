@@ -295,6 +295,7 @@ class TeamAdminService:
             memory.source_refs = list(normalized_source_refs)
             memory.artifact_refs = list(normalized_artifact_refs)
             memory.status = TeamMemoryStatus.ACTIVE
+            memory.superseded_by_memory_id = None
             memory.confidence = confidence
             memory.supersedes_memory_id = normalized_supersedes
             memory.updated_at = now

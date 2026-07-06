@@ -109,6 +109,7 @@ def list_memory_records(
 ) -> dict[str, Any]:
     kind_filter = {_required_text(value, "kinds") for value in kinds or []}
     status_filter = {_required_text(value, "statuses") for value in statuses or []}
+    include_archived = include_archived or _memory_status_filter_includes_archived(statuses)
     tag_filter = {_required_text(value, "tags_any").casefold() for value in tags_any or []}
     normalized_query = _optional_text(query_text)
     query_lower = normalized_query.casefold() if normalized_query is not None else None
@@ -302,7 +303,7 @@ class TeamMemorySemanticService:
                 kinds=kinds,
                 statuses=statuses,
                 tags_any=tags_any,
-                include_archived=False,
+                include_archived=_memory_status_filter_includes_archived(statuses),
             ):
                 continue
             records.append(memory_record_payload(memory, include_body=False, score=score))
@@ -322,6 +323,13 @@ class TeamMemorySemanticService:
 
 def _memory_limit(limit: int) -> int:
     return max(1, min(MAX_MEMORY_LIMIT, int(limit or DEFAULT_MEMORY_LIMIT)))
+
+
+def _memory_status_filter_includes_archived(statuses: Sequence[str] | None) -> bool:
+    return any(
+        _required_text(value, "statuses") == TeamMemoryStatus.ARCHIVED.value
+        for value in statuses or []
+    )
 
 
 def _memory_matches_scope(

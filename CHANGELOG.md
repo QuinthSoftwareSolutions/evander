@@ -7,6 +7,15 @@
   emit an OpenAI authorization header for the custom provider.
 - Rewrote tokenized relay auth paths before routing and logging so MCP session
   tokens do not persist in request paths.
+- Fixed the remaining container-worker regression assertion to expect the
+  tokenized Codex relay URL produced during session bootstrap.
+
+## 2026-07-06 - Team Memory Status Fixes
+
+- Made explicit archived Team memory status filters include archived records in
+  public search results.
+- Cleared stale supersession links when a memory record is reactivated through
+  record/update paths.
 
 ## 2026-07-06 - ADO Workflow Query Modes
 

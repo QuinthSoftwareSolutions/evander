@@ -4103,7 +4103,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     )
     assert "replace-registry-host=always" not in bootstrap_by_path["/home/agent/.npmrc"]["content"]
     assert (
-        'base_url = "http://relay.test:11434/v1/session/session-1"'
+        f'base_url = "http://relay.test:11434/v1/session/session-1/auth/{mcp_session_token}"'
         in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     )
     assert (

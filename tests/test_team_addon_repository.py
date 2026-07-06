@@ -865,6 +865,54 @@ def test_repository_record_memory_command_requires_dispatch_and_persists_memory(
     assert [activity.status for activity in activities] == [TeamDispatchActivityStatus.SUCCESS]
 
 
+def test_repository_record_memory_command_clears_stale_supersession_on_reactivation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    service = _command_service(repo)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-memory-reactivate")
+
+    service.record_memory_command(
+        session_id="session-backend",
+        request_id="request-memory-original",
+        id="memory-original",
+        project_id="project",
+        kind="decision",
+        title="Original decision",
+        summary="Original summary.",
+    )
+    state, replacement = service.record_memory_command(
+        session_id="session-backend",
+        request_id="request-memory-replacement",
+        id="memory-replacement",
+        project_id="project",
+        kind="decision",
+        title="Replacement decision",
+        summary="Replacement summary.",
+        supersedes_memory_id="memory-original",
+    )
+
+    assert replacement["success"] is True
+    assert state.memories["memory-original"].status == TeamMemoryStatus.SUPERSEDED
+    assert state.memories["memory-original"].superseded_by_memory_id == "memory-replacement"
+
+    state, reactivated = service.record_memory_command(
+        session_id="session-backend",
+        request_id="request-memory-reactivated",
+        id="memory-original",
+        project_id="project",
+        kind="decision",
+        title="Original decision reactivated",
+        summary="Recording without supersedes should make this active again.",
+    )
+
+    assert reactivated["success"] is True
+    reactivated_memory = state.memories["memory-original"]
+    assert reactivated_memory.status == TeamMemoryStatus.ACTIVE
+    assert reactivated_memory.superseded_by_memory_id is None
+    assert reactivated_memory.supersedes_memory_id is None
+
+
 def test_repository_record_memory_command_rejects_hidden_targets(
     tmp_path: Path,
 ) -> None:
