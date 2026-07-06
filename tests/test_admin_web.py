@@ -508,12 +508,22 @@ def _write_workflow_webhook_config(
 
 
 def _signed_webhook_headers(
-    body: bytes, *, secret: str, timestamp: int | None = None
+    body: bytes,
+    *,
+    secret: str,
+    query: dict[str, object] | None = None,
+    timestamp: int | None = None,
 ) -> dict[str, str]:
     timestamp_text = str(timestamp if timestamp is not None else int(time.time()))
+    query_material = json.dumps(
+        query or {},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
     digest = hmac.new(
         secret.encode("utf-8"),
-        timestamp_text.encode("ascii") + b"." + body,
+        timestamp_text.encode("ascii") + b"." + query_material.encode("utf-8") + b"." + body,
         hashlib.sha256,
     ).hexdigest()
     return {
@@ -8641,7 +8651,11 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    headers = _signed_webhook_headers(body, secret="webhook-secret")
+    headers = _signed_webhook_headers(
+        body,
+        secret="webhook-secret",
+        query={"source": "ci"},
+    )
 
     response = client.post(
         "/api/workflow-webhooks/build-notify?source=ci",
@@ -8705,7 +8719,12 @@ def test_workflow_webhook_ingress_keeps_distinct_query_envelopes(
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     body = b'{"target":"demo"}'
-    headers = _signed_webhook_headers(body, secret="webhook-secret")
+    headers = _signed_webhook_headers(body, secret="webhook-secret", query={"source": "ci"})
+    manual_headers = _signed_webhook_headers(
+        body,
+        secret="webhook-secret",
+        query={"source": "manual"},
+    )
     first = client.post(
         "/api/workflow-webhooks/build-notify?source=ci",
         content=body,
@@ -8719,7 +8738,7 @@ def test_workflow_webhook_ingress_keeps_distinct_query_envelopes(
     second = client.post(
         "/api/workflow-webhooks/build-notify?source=manual",
         content=body,
-        headers=headers,
+        headers=manual_headers,
     )
 
     assert first.status_code == 202
@@ -8744,10 +8763,39 @@ def test_workflow_webhook_ingress_keeps_distinct_query_envelopes(
         _expected_webhook_idempotency_key(
             trigger_id="webhook-1",
             slug="build-notify",
-            headers=headers,
+            headers=manual_headers,
             query={"source": "manual"},
         ),
     }
+
+
+def test_workflow_webhook_ingress_rejects_query_mutation_replay(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    _write_workflow_webhook_config(tmp_path)
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    body = b'{"target":"demo"}'
+    headers = _signed_webhook_headers(body, secret="webhook-secret", query={"source": "ci"})
+    accepted = client.post(
+        "/api/workflow-webhooks/build-notify?source=ci",
+        content=body,
+        headers=headers,
+    )
+    replay = client.post(
+        "/api/workflow-webhooks/build-notify?source=manual",
+        content=body,
+        headers=headers,
+    )
+
+    assert accepted.status_code == 202
+    assert replay.status_code == 401
+    assert replay.json()["error"] == "Webhook signature is invalid or missing"
+
+    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    assert len(events) == 1
+    assert events[0].payload["query"] == {"source": "ci"}
 
 
 def test_workflow_webhook_ingress_does_not_dedupe_same_body_across_slugs(

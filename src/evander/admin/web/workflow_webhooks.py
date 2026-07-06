@@ -82,17 +82,17 @@ def workflow_webhook_routes(service: AdminRuntimeComponents) -> list[Route]:
         if abs(now - webhook_timestamp) > _WEBHOOK_TIMESTAMP_TOLERANCE:
             return json_error("Webhook timestamp is invalid or stale", status_code=401)
 
+        query = _json_object_from_pairs(request.query_params.multi_items())
         signature_digest = signature_match.group(1).lower()
         expected_signature = hmac.new(
             secret.encode("utf-8"),
-            timestamp_header.encode("ascii") + b"." + raw_body,
+            _webhook_signature_material(timestamp_header, query, raw_body),
             hashlib.sha256,
         ).hexdigest()
         if not hmac.compare_digest(expected_signature, signature_digest):
             return json_error("Webhook signature is invalid or missing", status_code=401)
 
         received_at = now.isoformat().replace("+00:00", "Z")
-        query = _json_object_from_pairs(request.query_params.multi_items())
         envelope = {
             "slug": trigger.slug,
             "headers": _json_object_from_pairs(request.headers.items()),
@@ -145,6 +145,11 @@ def _json_object_from_pairs(items: Iterable[tuple[str, Any]]) -> dict[str, Any]:
 def _json_sha256(value: Any) -> str:
     material = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _webhook_signature_material(timestamp_header: str, query: dict[str, Any], body: bytes) -> bytes:
+    query_material = json.dumps(query, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return timestamp_header.encode("ascii") + b"." + query_material.encode("utf-8") + b"." + body
 
 
 def _parse_webhook_timestamp(value: str) -> datetime:

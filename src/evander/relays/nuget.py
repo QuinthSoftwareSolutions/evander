@@ -249,6 +249,12 @@ def _origin(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
 
+def _configured_feed_base_segments(base_segments: list[str]) -> list[str]:
+    if base_segments[-2:] == ["v3", "index.json"]:
+        return base_segments[:-2]
+    return base_segments
+
+
 def _build_upstream_url(
     upstream_base_url: str,
     upstream_path: str,
@@ -260,6 +266,7 @@ def _build_upstream_url(
         base_parts.path,
         field_name="configured NuGet feed base path",
     )
+    configured_feed_base_segments = _configured_feed_base_segments(base_segments)
     upstream_segments = _safe_path_segments(
         upstream_path,
         field_name="NuGet relay path",
@@ -289,7 +296,7 @@ def _build_upstream_url(
             raise ValueError("NuGet relay path is outside the configured feed")
         target_segments = upstream_segments
     else:
-        target_segments = [*base_segments, *upstream_segments]
+        target_segments = [*configured_feed_base_segments, *upstream_segments]
 
     return urlunsplit(
         (
@@ -422,10 +429,13 @@ def _azure_feed_scope(base_segments: list[str]) -> tuple[list[str], str, list[st
     feed_index = packaging_index + 1
     if len(base_segments) <= feed_index:
         return None
+    base_suffix = base_segments[feed_index + 1 :]
+    if base_suffix[-2:] == ["v3", "index.json"]:
+        base_suffix = base_suffix[:-1]
     return (
         base_segments[:packaging_index],
         base_segments[feed_index],
-        base_segments[feed_index + 1 :],
+        base_suffix,
     )
 
 

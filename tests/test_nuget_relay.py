@@ -214,6 +214,71 @@ def test_azure_proxy_allows_advertised_feed_id_resource_paths(tmp_path: Path) ->
     )
 
 
+def test_azure_proxy_allows_feed_id_resource_paths_when_base_is_service_index(
+    tmp_path: Path,
+) -> None:
+    captured_urls: list[str] = []
+    feed_id = "66666666-6666-6666-6666-666666666666"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_urls.append(str(request.url))
+        if str(request.url).endswith("/_packaging/example/nuget/v3/index.json"):
+            return httpx.Response(
+                200,
+                json={
+                    "resources": [
+                        {
+                            "@id": (
+                                "https://pkgs.dev.azure.com/example/example/"
+                                f"_packaging/{feed_id}/nuget/v3/flat2/"
+                            ),
+                            "@type": "PackageBaseAddress/3.0.0",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    config.nuget_azure_feed_base_url = (
+        "https://pkgs.dev.azure.com/example/example/_packaging/example/nuget/v3/index.json"
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["AZURE_ARTIFACTS_PAT"] = "test-pat"
+
+    index_response = client.get("/nuget/azure/v3/index.json")
+    assert index_response.status_code == 200
+    assert captured_urls[-1] == (
+        "https://pkgs.dev.azure.com/example/example/_packaging/example/nuget/v3/index.json"
+    )
+    resource_url = index_response.json()["resources"][0]["@id"]
+    assert (
+        resource_url
+        == f"http://testserver/nuget/azure/example/example/_packaging/{feed_id}/nuget/v3/flat2/"
+    )
+
+    response = client.get(
+        f"/nuget/azure/example/example/_packaging/{feed_id}/nuget/v3/flat2/pkg/index.json"
+    )
+
+    assert response.status_code == 200
+    assert (
+        captured_urls[-1]
+        == f"https://pkgs.dev.azure.com/example/example/_packaging/{feed_id}/nuget/v3/flat2/pkg/index.json"
+    )
+
+    before_rejected_url = captured_urls[-1]
+    rejected = client.get(
+        f"/nuget/azure/example/example/_packaging/{feed_id}/nuget/v2/pkg/index.json"
+    )
+
+    assert rejected.status_code == 400
+    assert "outside the configured feed" in rejected.text
+    assert captured_urls[-1] == before_rejected_url
+
+
 def test_azure_proxy_rejects_unadvertised_feed_id_resource_paths(tmp_path: Path) -> None:
     called = False
     feed_id = "22222222-2222-2222-2222-222222222222"
