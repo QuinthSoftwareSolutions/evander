@@ -84,6 +84,13 @@ type AdminState = {
   deployment?: DeploymentStatus;
 };
 
+type PrivilegedOperationsResponse = {
+  message?: string;
+  privileged_operations?: {
+    unlocked?: boolean;
+  };
+};
+
 type DeploymentStatus = {
   active: boolean;
   message: string | null;
@@ -638,15 +645,6 @@ function LoginBackgroundCanvas({ theme }: { theme: AdminTheme }) {
   }, [theme]);
 
   return <canvas ref={canvasRef} className="admin-login-flow-canvas" aria-hidden="true" />;
-}
-
-function readStoredPrivilegeUnlocked(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.sessionStorage.getItem(PRIVILEGE_UNLOCKED_STORAGE_KEY) === "true";
-  } catch {
-    return false;
-  }
 }
 
 function writeStoredPrivilegeUnlocked(unlocked: boolean) {
@@ -1362,7 +1360,7 @@ export default function AdminRoot() {
   const [session, setSession] = useState<AdminSession | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
-  const [privilegeUnlocked, setPrivilegeUnlocked] = useState<boolean>(() => readStoredPrivilegeUnlocked());
+  const [privilegeUnlocked, setPrivilegeUnlocked] = useState(false);
   const [selectedTab, setSelectedTab] = useState<AdminTab>(() => currentTab(window.location.hash));
   const [workflowHasUnsavedChanges, setWorkflowHasUnsavedChanges] = useState(false);
   const [adminState, setAdminState] = useState<AdminState | null>(null);
@@ -1400,6 +1398,11 @@ export default function AdminRoot() {
     : visibleTabs[0]?.key ?? "workflow";
   const activeTab = visibleTabs.find((tab) => tab.key === renderedTab) ?? TABS[TABS.length - 1];
   const shellBackgroundPollingEnabled = documentVisible && !selectedTab.startsWith("addon:");
+
+  function applyPrivilegeLockState(unlocked: boolean) {
+    setPrivilegeUnlocked(unlocked);
+    writeStoredPrivilegeUnlocked(unlocked);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -1457,6 +1460,7 @@ export default function AdminRoot() {
             setBrandingLoaded(true);
           }
           setSession(payload);
+          applyPrivilegeLockState(Boolean(payload.privileged_operations?.unlocked));
           setSessionError(null);
         }
       } catch (error) {
@@ -1511,6 +1515,7 @@ export default function AdminRoot() {
         );
         if (!cancelled) {
           setAdminState(payload);
+          applyPrivilegeLockState(Boolean(payload.privileged_operations?.unlocked));
           if (payload.deployment) {
             setDeploymentStatus(payload.deployment);
           }
@@ -1596,6 +1601,7 @@ export default function AdminRoot() {
         { credentials: "same-origin" },
       );
       setAdminState(payload);
+      applyPrivilegeLockState(Boolean(payload.privileged_operations?.unlocked));
       if (payload.deployment) {
         setDeploymentStatus(payload.deployment);
       }
@@ -1616,6 +1622,7 @@ export default function AdminRoot() {
         setBrandingLoaded(true);
       }
       setSession(payload);
+      applyPrivilegeLockState(Boolean(payload.privileged_operations?.unlocked));
       if (payload.auth_required && !payload.authenticated) {
         setAdminState(null);
       }
@@ -1688,6 +1695,7 @@ export default function AdminRoot() {
         setBrandingLoaded(true);
       }
       setSession(payload);
+      applyPrivilegeLockState(Boolean(payload.privileged_operations?.unlocked));
       setAdminState(null);
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Sign in failed.");
@@ -1710,7 +1718,7 @@ export default function AdminRoot() {
       }
       setSession(payload);
       setAdminState(null);
-      setPrivilegeLock(false);
+      applyPrivilegeLockState(false);
     } finally {
       setAuthBusy(false);
     }
@@ -1729,10 +1737,23 @@ export default function AdminRoot() {
     window.location.assign(loginUrl.toString());
   }
 
-  function setPrivilegeLock(unlock: boolean) {
-    setPrivilegeUnlocked(unlock);
-    writeStoredPrivilegeUnlocked(unlock);
-    setSessionError(null);
+  async function setPrivilegeLock(unlock: boolean) {
+    setAuthBusy(true);
+    try {
+      const payload = await fetchJson<PrivilegedOperationsResponse>(
+        `/api/admin/privileged/${unlock ? "unlock" : "lock"}`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+        },
+      );
+      applyPrivilegeLockState(Boolean(payload.privileged_operations?.unlocked));
+      setSessionError(null);
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : "Unable to update privileged operation lock state.");
+    } finally {
+      setAuthBusy(false);
+    }
   }
 
   async function refreshUserNotifications() {

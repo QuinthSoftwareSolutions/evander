@@ -12,6 +12,12 @@
   the same agent is already running or waiting, preventing concurrent prompt
   delivery before VM inventory reflects the active run.
 
+## 2026-07-06 - Admin Web Privileged Unlock Sync
+
+- Synced the Admin Web Lock/Unlock header control with the backend privileged
+  operation session state so workflow saves and other privileged mutations
+  succeed after a confirmed unlock.
+
 ## 2026-07-05 - Review Follow-up Security Fixes
 
 - Blocked IPv4-mapped metadata IP addresses in workflow HTTP request destination checks.
