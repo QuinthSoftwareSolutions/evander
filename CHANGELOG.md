@@ -19,8 +19,10 @@
   traversal so symlink swaps cannot escape session roots.
 - Scoped Admin Web session and approval reads to authorized directories instead of exposing
   cross-directory session or approval data.
-- Required timestamped webhook signatures over `timestamp.body` and rejected stale webhook
+- Required timestamped webhook signatures over `timestamp.query.body` and rejected stale webhook
   deliveries to close replay windows.
+- Documented the canonical query JSON component in signed workflow webhook HMAC examples,
+  including the empty-query `{}` case.
 - Included webhook query parameters in Admin Web webhook idempotency keys so same-body deliveries
   with distinct query envelopes are published separately.
 - Enforced privileged unlock checks on Team add-on mutation routes.
