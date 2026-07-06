@@ -426,6 +426,21 @@ def test_git_ssh_wrapper_read_only_prefix_allows_multiple_repos_and_denies_pushe
         assert ls_remote.returncode == 0
         assert "refs/heads/main" in ls_remote.stdout
 
+    forced_root_env = prefix_read_env.copy()
+    forced_root_env["EVANDER_GIT_ROOT"] = str(tmp_path / "wrong-git-root")
+    forced_root_env["EVANDER_GIT_ROOT_B64"] = base64.b64encode(
+        str(git_root).encode("utf-8")
+    ).decode("ascii")
+    forced_root_ls_remote = subprocess.run(
+        ["git", "ls-remote", f"ssh://evander-git-host{first_repo}", "refs/heads/main"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=forced_root_env,
+    )
+    assert forced_root_ls_remote.returncode == 0
+    assert "refs/heads/main" in forced_root_ls_remote.stdout
+
     denied_push = _git_result(
         worktree,
         "push",

@@ -24,11 +24,30 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/lib/runtime_config.sh"
 # shellcheck source=lib/git_provider_auth.sh
 source "${SCRIPT_DIR}/lib/git_provider_auth.sh"
+
+decode_base64_env_value() {
+  local value_name="$1"
+  local encoded_value="$2"
+  local decoded_value
+
+  if ! decoded_value="$(printf '%s' "${encoded_value}" | base64 -d 2>/dev/null)"; then
+    echo "Invalid base64-encoded ${value_name}." >&2
+    return 1
+  fi
+  printf '%s\n' "${decoded_value}"
+}
+
 load_root_secrets_env
 load_provider_config
 load_issue_setup_config
 
-GIT_ROOT="${EVANDER_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
+if [[ -n "${EVANDER_GIT_ROOT_B64:-}" ]]; then
+  if ! GIT_ROOT="$(decode_base64_env_value "Git root" "${EVANDER_GIT_ROOT_B64}")"; then
+    exit 1
+  fi
+else
+  GIT_ROOT="${EVANDER_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
+fi
 ROOT_REAL="$(realpath -m -- "${GIT_ROOT}")"
 ORIGINAL_COMMAND="${SSH_ORIGINAL_COMMAND:-}"
 MIRROR_SCRIPT="${SCRIPT_DIR}/mirror_issue_repo.sh"

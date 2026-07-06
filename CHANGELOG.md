@@ -5,6 +5,8 @@
 - Authorized the shared container-worker Git SSH key for read-only access to the
   configured control-plane mirror root so runtime sessions can clone any
   allowed mirror while deploy checkout metadata stays on the deployment mirror.
+- Passed that configured mirror root into the forced-command wrapper so custom
+  worker Git roots do not fall back to the deployment checkout default.
 
 ## 2026-07-06 - Agent Prompt Dispatch Lock
 
