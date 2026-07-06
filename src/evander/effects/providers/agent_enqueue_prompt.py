@@ -11,6 +11,7 @@ from evander.messaging.agent_prompt_queue import (
     AgentPromptRetryLimitExceeded,
     QueuedAgentPromptRecord,
 )
+from evander.messaging.agent_prompt_lock import prompt_lock_metadata
 from evander.events.provider_models import AgentEnqueuePromptEffectDefinition
 from evander.model_usage.runtime import (
     register_model_usage_correlation_context,
@@ -73,6 +74,10 @@ _CONTEXT_RETRY_METADATA_KEYS = (
     "agent_context_retry_max_attempts",
     "agent_context_retry_target_chars",
 )
+
+
+class _DeniedPromptLockClaim:
+    claimed = False
 
 
 def _waiting_execution_records(worker: Any, effect_type: str) -> list[Any]:
@@ -219,6 +224,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             session=active_session,
         )
 
+        dispatch_id = dispatch_id or self._make_dispatch_id(effect_id=effect.id)
+        owner_id = self._current_idempotency_key(execution_context) or dispatch_id
         summary = self._find_vm_summary(vm_name=vm_name, vm_user=vm_user)
         if self._has_active_enqueue_prompt(
             target=target,
@@ -260,7 +267,46 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "max_retries": record.max_retries,
             }
 
-        dispatch_id = dispatch_id or self._make_dispatch_id(effect_id=effect.id)
+        prompt_lock_claim = self._claim_enqueue_prompt(
+            target=target,
+            vm_name=vm_name,
+            session_id=effective_session_id,
+            owner_id=owner_id,
+            dispatch_id=dispatch_id,
+            effect_id=effect.id,
+        )
+        if prompt_lock_claim is not None and not bool(getattr(prompt_lock_claim, "claimed", False)):
+            record = self._queue_prompt(
+                target=target,
+                vm_name=vm_name,
+                session_id=effective_session_id,
+                prompt=prompt,
+                model=model,
+                vm_user=vm_user,
+                dispatch_id=dispatch_id,
+                resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
+                effect_id=effect.id,
+                queue_key=queue_key,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                context_retry_metadata=payload,
+            )
+            return {
+                "success": True,
+                "queued": True,
+                "queue_key": record.queue_key,
+                "vm_name": vm_name,
+                "session_id": effective_session_id,
+                "coalesced_count": record.coalesced_count,
+                "retry_count": record.retry_count,
+                "max_retries": record.max_retries,
+            }
+
         result = context.agent_resumer.resume_agent(
             target=target,
             prompt=prompt,
@@ -278,6 +324,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             ),
         )
         if not bool(getattr(result, "success", False)):
+            self._release_enqueue_prompt(prompt_lock_claim)
             record = self._queue_prompt(
                 target=target,
                 vm_name=vm_name,
@@ -322,6 +369,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             )
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
+            self._release_enqueue_prompt(prompt_lock_claim)
             message = (
                 "effect:agent:enqueue-prompt did not receive a thread_id from resume_agent"
             )
@@ -374,6 +422,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "queued": False,
             "vm_name": vm_name,
             "session_id": effective_session_id,
+            **self._prompt_lock_metadata(prompt_lock_claim),
         }
 
     def _execute_container(
@@ -420,6 +469,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             session=session,
         )
 
+        dispatch_id = dispatch_id or self._make_dispatch_id(effect_id=effect_id)
+        owner_id = self._current_idempotency_key(execution_context) or dispatch_id
         if self._container_session_is_busy(
             context=context,
             config=effective_config,
@@ -457,7 +508,47 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             }
 
-        dispatch_id = dispatch_id or self._make_dispatch_id(effect_id=effect_id)
+        prompt_lock_claim = self._claim_enqueue_prompt(
+            target=target,
+            vm_name=target_name,
+            session_id=session_id,
+            owner_id=owner_id,
+            dispatch_id=dispatch_id,
+            effect_id=effect_id,
+        )
+        if prompt_lock_claim is not None and not bool(getattr(prompt_lock_claim, "claimed", False)):
+            record = self._queue_prompt(
+                target=target,
+                vm_name=target_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=model,
+                vm_user=vm_user,
+                dispatch_id=dispatch_id,
+                resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
+                effect_id=effect_id,
+                queue_key=queue_key or session_id,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                context_retry_metadata=payload,
+            )
+            return {
+                "success": True,
+                "queued": True,
+                "queue_key": record.queue_key,
+                "vm_name": target_name,
+                "session_id": session_id,
+                "coalesced_count": record.coalesced_count,
+                "retry_count": record.retry_count,
+                "max_retries": record.max_retries,
+                "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            }
+
         agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
             session,
             config=effective_config,
@@ -510,6 +601,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 )
             )
         except Exception as exc:
+            self._release_enqueue_prompt(prompt_lock_claim)
             record = self._queue_prompt(
                 target=target,
                 vm_name=target_name,
@@ -577,6 +669,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "session_id": session_id,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             "execution_id": handle.execution_id,
+            **self._prompt_lock_metadata(prompt_lock_claim),
         }
 
     @classmethod
@@ -868,6 +961,56 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 current_idempotency_key=self._current_idempotency_key(execution_context),
             )
         return False
+
+    def _claim_enqueue_prompt(
+        self,
+        *,
+        target: str,
+        vm_name: str,
+        session_id: str | None,
+        owner_id: str,
+        dispatch_id: str | None,
+        effect_id: str,
+    ) -> Any | None:
+        context = self._context()
+        activity = getattr(context, "agent_prompt_activity", None)
+        claim = getattr(activity, "claim_enqueue_prompt", None)
+        if not callable(claim):
+            return None
+        try:
+            return claim(
+                target=target,
+                vm_name=vm_name,
+                session_id=session_id,
+                owner_id=owner_id,
+                dispatch_id=dispatch_id,
+                effect_id=effect_id,
+            )
+        except Exception:
+            return _DeniedPromptLockClaim()
+
+    def _release_enqueue_prompt(self, claim: Any | None) -> None:
+        if claim is None or not bool(getattr(claim, "claimed", False)):
+            return
+        context = self._context()
+        activity = getattr(context, "agent_prompt_activity", None)
+        release = getattr(activity, "release_enqueue_prompt", None)
+        if not callable(release):
+            return
+        lock_key = str(getattr(claim, "lock_key", "") or "").strip()
+        owner_id = str(getattr(claim, "owner_id", "") or "").strip()
+        if not lock_key or not owner_id:
+            return
+        try:
+            release(lock_key=lock_key, owner_id=owner_id)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _prompt_lock_metadata(claim: Any | None) -> dict[str, Any]:
+        if claim is None or not bool(getattr(claim, "claimed", False)):
+            return {}
+        return prompt_lock_metadata(getattr(claim, "record", None))
 
     def _current_idempotency_key(
         self,

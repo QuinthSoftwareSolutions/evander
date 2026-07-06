@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-06 - Agent Prompt Dispatch Lock
+
+- Serialized `effect:agent:enqueue-prompt` dispatch with a durable per-agent
+  lock so direct and queued prompts cannot start concurrently before waiting
+  execution state is visible.
+
 ## 2026-07-06 - Agent Prompt Queue Race Fix
 
 - Queued racing `effect:agent:enqueue-prompt` prompts when another prompt for

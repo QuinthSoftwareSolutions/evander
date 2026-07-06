@@ -42,6 +42,24 @@ class AgentPromptActivity(Protocol):
         current_idempotency_key: str | None = None,
     ) -> bool: ...
 
+    def claim_enqueue_prompt(
+        self,
+        *,
+        target: str,
+        vm_name: str,
+        session_id: str | None = None,
+        owner_id: str,
+        dispatch_id: str | None = None,
+        effect_id: str | None = None,
+    ) -> Any: ...
+
+    def release_enqueue_prompt(
+        self,
+        *,
+        lock_key: str,
+        owner_id: str,
+    ) -> bool: ...
+
 
 class VmPowerController(Protocol):
     def start_vm(self, target: str) -> Any: ...

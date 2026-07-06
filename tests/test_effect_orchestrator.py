@@ -49,6 +49,7 @@ from evander.messaging.agent_prompt_queue import (
     AgentPromptRetryLimitExceeded,
     QueuedAgentPromptRecord,
 )
+from evander.messaging.agent_prompt_lock import AgentPromptLockStore, agent_prompt_lock_key
 from evander.model_usage.runtime import model_usage_store
 from evander.orchestration.host_polling import HostFileLockManager
 from evander.events.models import TriggerEvent
@@ -371,6 +372,57 @@ def _await_agent_store(worker: EffectOrchestratorWorker):
     provider = worker._get_gate_provider("gate:await-agent")
     assert provider is not None
     return provider.load_state()
+
+
+def test_agent_prompt_lock_store_allows_one_owner_until_release(tmp_path: Path) -> None:
+    store = AgentPromptLockStore(tmp_path / "agent-prompt-locks.json")
+    lock_key = agent_prompt_lock_key(
+        target="session-42",
+        vm_name="vm-1",
+        session_id="session-42",
+    )
+
+    first = store.claim(
+        lock_key=lock_key,
+        owner_id="owner-1",
+        target="session-42",
+        vm_name="vm-1",
+        session_id="session-42",
+        dispatch_id="dispatch-1",
+        effect_id="effect-1",
+    )
+    second = store.claim(
+        lock_key=lock_key,
+        owner_id="owner-2",
+        target="session-42",
+        vm_name="vm-1",
+        session_id="session-42",
+        dispatch_id="dispatch-2",
+        effect_id="effect-1",
+    )
+
+    assert first.claimed is True
+    assert first.record is not None
+    assert first.record.lock_key == "session:session-42"
+    assert second.claimed is False
+    assert second.existing is not None
+    assert second.existing.owner_id == "owner-1"
+    assert store.release(lock_key=lock_key, owner_id="owner-2") is False
+    assert store.release(lock_key=lock_key, owner_id="owner-1") is True
+
+    third = store.claim(
+        lock_key=lock_key,
+        owner_id="owner-3",
+        target="session-42",
+        vm_name="vm-1",
+        session_id="session-42",
+        dispatch_id="dispatch-3",
+        effect_id="effect-1",
+    )
+
+    assert third.claimed is True
+    assert third.record is not None
+    assert third.record.owner_id == "owner-3"
 
 
 def test_matching_outbound_edges_honors_resume_target_node() -> None:
@@ -4462,6 +4514,34 @@ def test_agent_enqueue_prompt_queues_racing_prompt_while_dispatch_is_inflight(
     assert by_event["event-1"]["outputs"]["queued"] is False
     assert by_event["event-2"]["status"] == "succeeded"
     assert by_event["event-2"]["outputs"]["queued"] is True
+    lock_store_path = runtime_dir / "agent-prompt-locks.json"
+    lock_payload = json.loads(lock_store_path.read_text(encoding="utf-8"))
+    assert list(lock_payload) == ["vm:vm-1"]
+    assert lock_payload["vm:vm-1"]["owner_id"] == by_event["event-1"]["idempotency_key"]
+    assert by_event["event-1"]["outputs"]["prompt_lock_key"] == "vm:vm-1"
+    assert (
+        by_event["event-1"]["outputs"]["prompt_lock_owner_id"]
+        == by_event["event-1"]["idempotency_key"]
+    )
+
+    finalized = AgentEnqueuePromptEffectProvider.on_completion_event(
+        worker=worker,
+        queue_record=TriggerQueueRecord(
+            event_id="agent-completion-1",
+            trigger_id="__await-agent-completion__",
+            trigger_type="trigger:agent:run:completed",
+            occurred_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
+            payload={
+                "dispatch_id": by_event["event-1"]["outputs"]["dispatch_id"],
+                "vm_name": "vm-1",
+                "agent_state": "idle",
+            },
+            trace_id="trace-racing-enqueue",
+        ),
+    )
+
+    assert finalized == 1
+    assert json.loads(lock_store_path.read_text(encoding="utf-8")) == {}
 
 
 def test_queued_agent_prompt_record_accepts_optional_workflow_context() -> None:
@@ -5023,6 +5103,86 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
     assert waiting_records[0].outputs["dispatch_id"] == "caller-dispatch-1"
     assert waiting_records[0].outputs["thread_id"] == "thread-queued"
+
+
+def test_agent_enqueue_prompt_dispatch_keeps_queued_prompt_when_lock_is_held(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    resume_calls: list[dict[str, object]] = []
+    worker.queued_agent_prompt_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="hello",
+            model=None,
+            vm_user="agent",
+            dispatch_id="caller-dispatch-1",
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+    )
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
+        [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=[],
+            )
+        ]
+    )
+    worker.agent_prompt_dispatch_port = _AgentPromptDispatchPortStub(
+        resume_calls,
+        type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+    )
+    claim = worker._agent_prompt_activity.claim_enqueue_prompt(
+        target="vm-1",
+        vm_name="vm-1",
+        session_id=None,
+        owner_id="other-owner",
+        dispatch_id="other-dispatch",
+        effect_id="effect-1",
+    )
+
+    worker._run_post_completion_dispatch_hooks()
+
+    assert claim.claimed is True
+    assert resume_calls == []
+    queued_payload = json.loads(
+        (runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8")
+    )
+    assert queued_payload["vm-1"]["prompt"] == "hello"
+    assert worker.execution_store.read_all() == {}
 
 
 def test_agent_enqueue_prompt_dispatch_skips_expired_libvirt_queued_prompt(
