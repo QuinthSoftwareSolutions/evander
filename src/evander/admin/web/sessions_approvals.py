@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
+from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
@@ -682,6 +683,8 @@ def session_approval_routes(
                 ADMIN_OWNER_PERMISSION,
                 directory_path=directory_path,
             )
+        except ValidationError as exc:
+            return json_error(str(exc), status_code=400)
         except PermissionError:
             return json_error("Permission required: admin.owner", status_code=403)
         return None

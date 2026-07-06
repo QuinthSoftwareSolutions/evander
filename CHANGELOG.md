@@ -2,6 +2,9 @@
 
 ## 2026-07-06 - Security Audit Remediation
 
+- Passed repo/session metadata into Admin Web Git bootstrap calls, restricted learned Azure
+  Artifacts feed GUIDs to configured service-index resource URLs, and returned controlled errors
+  for malformed Admin Web session/approval directory filters.
 - Required token proof when MCP callers select an existing session over HTTP,
   while keeping direct in-process gateway calls compatible for trusted control-plane paths.
 - Rejected raw and encoded dot-segment escapes in the OpenAI, NuGet, and HTTP target relays,

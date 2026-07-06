@@ -297,6 +297,22 @@ def test_admin_web_approval_mutations_require_owner_unlock(
     assert service.runtime.approvals.get("approval-revoke").status == ApprovalStatus.DENIED
 
 
+def test_admin_web_session_and_approval_directory_filters_reject_malformed_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    client = _authenticated_scoped_owner_client(service, monkeypatch, directory_path="root/ops")
+
+    sessions_response = client.get("/api/admin/sessions?directory_path=bad")
+    approvals_response = client.get("/api/admin/approvals?directory_path=../x")
+
+    assert sessions_response.status_code == 400
+    assert "directory path must begin with 'root'" in sessions_response.text
+    assert approvals_response.status_code == 400
+    assert "directory path must begin with 'root'" in approvals_response.text
+
+
 def test_admin_web_session_mutations_require_owner_unlock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

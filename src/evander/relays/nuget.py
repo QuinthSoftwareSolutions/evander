@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from collections.abc import Collection, Iterator
+from collections.abc import Collection
 import json
 import os
 from pathlib import Path
@@ -176,6 +176,7 @@ class NuGetRelay:
             response_headers=upstream_response.headers,
             request=request,
             upstream_base_url=upstream_base_url,
+            upstream_url=upstream_url,
             upstream_prefix=upstream_prefix,
         )
 
@@ -204,6 +205,7 @@ class NuGetRelay:
         response_headers: httpx.Headers,
         request: Request,
         upstream_base_url: str,
+        upstream_url: str,
         upstream_prefix: str,
     ) -> tuple[bytes, str | None]:
         content_type = response_headers.get("content-type")
@@ -220,9 +222,10 @@ class NuGetRelay:
             request=request,
             upstream_base_url=upstream_base_url,
         )
-        self._azure_feed_ids.update(
-            _advertised_azure_feed_ids(payload, upstream_base_url=upstream_base_url)
-        )
+        if _is_configured_service_index_url(upstream_url, upstream_base_url):
+            self._azure_feed_ids.update(
+                _advertised_azure_feed_ids(payload, upstream_base_url=upstream_base_url)
+            )
 
         upstream_root = _origin(upstream_base_url)
         local_base = f"{request.base_url.scheme}://{request.base_url.netloc}{upstream_prefix}"
@@ -310,7 +313,15 @@ def _advertised_azure_feed_ids(payload: object, upstream_base_url: str) -> set[s
 
     upstream_root = _origin(upstream_base_url)
     allowed_feed_ids: set[str] = set()
-    for value in _iter_strings(payload):
+    resources = payload.get("resources") if isinstance(payload, dict) else None
+    if not isinstance(resources, list):
+        return set()
+    for resource in resources:
+        if not isinstance(resource, dict):
+            continue
+        value = resource.get("@id")
+        if not isinstance(value, str):
+            continue
         if not value.startswith(f"{upstream_root}/"):
             continue
         try:
@@ -326,15 +337,27 @@ def _advertised_azure_feed_ids(payload: object, upstream_base_url: str) -> set[s
     return allowed_feed_ids
 
 
-def _iter_strings(payload: object) -> Iterator[str]:
-    if isinstance(payload, dict):
-        for value in payload.values():
-            yield from _iter_strings(value)
-    elif isinstance(payload, list):
-        for value in payload:
-            yield from _iter_strings(value)
-    elif isinstance(payload, str):
-        yield payload
+def _is_configured_service_index_url(upstream_url: str, upstream_base_url: str) -> bool:
+    upstream_parts = urlsplit(upstream_url)
+    base_parts = urlsplit(upstream_base_url)
+    if upstream_parts.scheme.lower() != base_parts.scheme.lower():
+        return False
+    if upstream_parts.netloc.lower() != base_parts.netloc.lower():
+        return False
+    try:
+        upstream_segments = _safe_path_segments(
+            upstream_parts.path,
+            field_name="NuGet upstream path",
+        )
+        base_segments = _safe_path_segments(
+            base_parts.path,
+            field_name="configured NuGet feed base path",
+        )
+    except ValueError:
+        return False
+    if base_segments[-2:] == ["v3", "index.json"]:
+        return upstream_segments == base_segments
+    return upstream_segments == [*base_segments, "v3", "index.json"]
 
 
 def _packaging_path_matches_configured_feed(
