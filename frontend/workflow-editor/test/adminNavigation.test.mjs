@@ -145,6 +145,23 @@ async function createAdminPage(t, options = {}) {
       return;
     }
 
+    if (pathname === "/api/admin/privileged/unlock" || pathname === "/api/admin/privileged/lock") {
+      const unlocked = pathname.endsWith("/unlock");
+      if (options.handlePrivilegedRequest) {
+        await options.handlePrivilegedRequest({ route, pathname, unlocked });
+        return;
+      }
+      await route.fulfill(
+        jsonResponse({
+          message: unlocked ? "Privileged operations unlocked." : "Privileged operations locked.",
+          privileged_operations: {
+            unlocked,
+          },
+        }),
+      );
+      return;
+    }
+
     if (pathname === "/api/admin/user-notifications") {
       await route.fulfill(
         jsonResponse(
@@ -308,7 +325,7 @@ test("admin shell persisted collapsed navigation remains usable", async (t) => {
   assert.equal(await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY), "true");
 });
 
-test("admin shell lock toggle is local UI state", async (t) => {
+test("admin shell lock toggle syncs backend privilege state", async (t) => {
   const { address, page } = await createAdminPage(t);
   const privilegedRequests = [];
   page.on("request", (request) => {
@@ -318,13 +335,19 @@ test("admin shell lock toggle is local UI state", async (t) => {
     }
   });
   await page.addInitScript(
-    (storageKey) => window.sessionStorage.removeItem(storageKey),
+    (storageKey) => window.sessionStorage.setItem(storageKey, "true"),
     PRIVILEGE_UNLOCKED_STORAGE_KEY,
   );
 
   await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, {
     waitUntil: "domcontentloaded",
   });
+
+  await assert.doesNotReject(() => page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ state: "visible" }));
+  assert.equal(
+    await page.evaluate((storageKey) => window.sessionStorage.getItem(storageKey), PRIVILEGE_UNLOCKED_STORAGE_KEY),
+    "false",
+  );
 
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await assert.doesNotReject(() => page.getByRole("button", { name: "Lock", exact: true }).waitFor({ state: "visible" }));
@@ -339,7 +362,54 @@ test("admin shell lock toggle is local UI state", async (t) => {
     await page.evaluate((storageKey) => window.sessionStorage.getItem(storageKey), PRIVILEGE_UNLOCKED_STORAGE_KEY),
     "false",
   );
-  assert.deepEqual(privilegedRequests, []);
+  assert.deepEqual(privilegedRequests, ["/api/admin/privileged/unlock", "/api/admin/privileged/lock"]);
+});
+
+test("admin shell clears local privilege state while lock request is pending", async (t) => {
+  let markLockRequestStarted = () => {};
+  let releaseLockRequest = () => {};
+  const lockRequestStarted = new Promise((resolve) => {
+    markLockRequestStarted = resolve;
+  });
+  const lockRequestReleased = new Promise((resolve) => {
+    releaseLockRequest = resolve;
+  });
+  t.after(() => releaseLockRequest());
+
+  const { address, page } = await createAdminPage(t, {
+    async handlePrivilegedRequest({ route, unlocked }) {
+      if (!unlocked) {
+        markLockRequestStarted();
+        await lockRequestReleased;
+      }
+      await route.fulfill(
+        jsonResponse({
+          message: unlocked ? "Privileged operations unlocked." : "Privileged operations locked.",
+          privileged_operations: {
+            unlocked,
+          },
+        }),
+      );
+    },
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await assert.doesNotReject(() => page.getByRole("button", { name: "Lock", exact: true }).waitFor({ state: "visible" }));
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await lockRequestStarted;
+
+  await assert.doesNotReject(() => page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ state: "visible" }));
+  assert.equal(
+    await page.evaluate((storageKey) => window.sessionStorage.getItem(storageKey), PRIVILEGE_UNLOCKED_STORAGE_KEY),
+    "false",
+  );
+
+  releaseLockRequest();
+  await assert.doesNotReject(() => page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ state: "visible" }));
 });
 
 test("admin shell renders enabled add-on navigation in an iframe", async (t) => {

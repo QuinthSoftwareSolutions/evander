@@ -20,6 +20,7 @@ from evander.model_usage.runtime import (
     register_model_usage_correlation_context,
     resolve_runtime_dir,
 )
+from evander.messaging.agent_prompt_lock import prompt_lock_metadata
 from evander.effects.providers.resume_thread_metadata import (
     normalize_resume_thread_metadata_collection,
     resume_thread_id_from_metadata,
@@ -51,6 +52,8 @@ from evander.session_auth import session_mcp_auth_token
 logger = logging.getLogger(__name__)
 
 _ADMIN_AGENT_PROMPT_EFFECT_ID_PREFIX = "admin-agent-prompt:"
+_AGENT_ENQUEUE_PROMPT_EFFECT_TYPE = "effect:agent:enqueue-prompt"
+_ACTIVE_ENQUEUE_PROMPT_STATUSES = {"running", "waiting"}
 _QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
     "workflow_run_id",
     "mcp_tool_approval_lease_id",
@@ -60,6 +63,142 @@ _QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
     "agent_context_retry_max_attempts",
     "agent_context_retry_target_chars",
 )
+
+
+class _DeniedPromptLockClaim:
+    claimed = False
+
+
+def has_active_enqueue_prompt_for_target(
+    execution_store: Any,
+    *,
+    target: str,
+    vm_name: str,
+    session_id: str | None = None,
+    current_idempotency_key: str | None = None,
+    owner_id: str | None = None,
+) -> bool:
+    normalized_current_key = str(current_idempotency_key or "").strip()
+    normalized_owner_id = str(owner_id or "").strip()
+    try:
+        records = _list_enqueue_prompt_activity_records(execution_store)
+    except Exception:
+        return False
+    current_order_key = _current_enqueue_prompt_order_key(
+        records,
+        current_idempotency_key=normalized_current_key,
+    )
+    for execution in records:
+        execution_owner_id = str(getattr(execution, "idempotency_key", "") or "").strip()
+        if normalized_owner_id and execution_owner_id != normalized_owner_id:
+            continue
+        if normalized_current_key and execution_owner_id == normalized_current_key:
+            continue
+        if current_order_key is not None:
+            execution_order_key = _enqueue_prompt_order_key(execution)
+            if execution_order_key is not None and execution_order_key > current_order_key:
+                continue
+        if _enqueue_prompt_execution_matches_target(
+            execution,
+            session_id=session_id,
+            vm_name=vm_name,
+            target=target,
+        ):
+            return True
+    return False
+
+
+def _list_enqueue_prompt_activity_records(execution_store: Any) -> list[Any]:
+    list_executions = getattr(execution_store, "list_executions", None)
+    list_waiting = getattr(execution_store, "list_waiting_records", None)
+    read_all = getattr(execution_store, "read_all", None)
+    if callable(list_executions):
+        candidates = list_executions()
+    elif callable(list_waiting):
+        candidates = list_waiting(_AGENT_ENQUEUE_PROMPT_EFFECT_TYPE)
+    elif callable(read_all):
+        candidates = list(read_all().values())
+    else:
+        return []
+    return [record for record in candidates if _enqueue_prompt_execution_is_active(record)]
+
+
+def _current_enqueue_prompt_order_key(
+    records: list[Any],
+    *,
+    current_idempotency_key: str,
+) -> tuple[float, str] | None:
+    if not current_idempotency_key:
+        return None
+    for record in records:
+        if str(getattr(record, "idempotency_key", "") or "").strip() != current_idempotency_key:
+            continue
+        return _enqueue_prompt_order_key(record)
+    return None
+
+
+def _enqueue_prompt_order_key(execution: Any) -> tuple[float, str] | None:
+    started_at = getattr(execution, "started_at", None)
+    timestamp = started_at.timestamp() if isinstance(started_at, datetime) else None
+    if timestamp is None:
+        return None
+    return (timestamp, str(getattr(execution, "execution_id", "") or ""))
+
+
+def _enqueue_prompt_execution_is_active(execution: Any) -> bool:
+    if (
+        str(getattr(execution, "effect_type", "") or "").strip()
+        != _AGENT_ENQUEUE_PROMPT_EFFECT_TYPE
+    ):
+        return False
+    status = str(getattr(execution, "status", "") or "").strip()
+    if status in _ACTIVE_ENQUEUE_PROMPT_STATUSES:
+        return True
+    if status != "completion_pending":
+        return False
+    pending_status = str(getattr(execution, "completion_pending_status", "") or "").strip()
+    return pending_status in _ACTIVE_ENQUEUE_PROMPT_STATUSES
+
+
+def _enqueue_prompt_execution_matches_target(
+    execution: Any,
+    *,
+    session_id: str | None,
+    vm_name: str,
+    target: str,
+) -> bool:
+    normalized_session_id = str(session_id or "").strip()
+    normalized_vm_name = str(vm_name or "").strip()
+    normalized_target = str(target or "").strip()
+    outputs = getattr(execution, "outputs", None)
+    if not isinstance(outputs, dict):
+        outputs = {}
+    resolved_config = getattr(execution, "resolved_config", None)
+    if not isinstance(resolved_config, dict):
+        resolved_config = {}
+    input_payload = getattr(execution, "input_payload", None)
+    if not isinstance(input_payload, dict):
+        input_payload = {}
+    active_session_id = str(
+        outputs.get("session_id")
+        or resolved_config.get("session_id")
+        or input_payload.get("session_id")
+        or ""
+    ).strip()
+    active_vm_name = str(
+        outputs.get("vm_name")
+        or resolved_config.get("vm_name")
+        or input_payload.get("vm_name")
+        or ""
+    ).strip()
+    active_target = str(
+        resolved_config.get("target") or input_payload.get("target") or outputs.get("target") or ""
+    ).strip()
+    if normalized_session_id and active_session_id == normalized_session_id:
+        return True
+    if normalized_vm_name and active_vm_name == normalized_vm_name:
+        return True
+    return bool(normalized_target and active_target == normalized_target)
 
 
 class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
@@ -167,6 +306,17 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 record=record,
                 session=session,
             )
+            prompt_lock_claim = self._claim_enqueue_prompt_for_record(
+                worker=worker,
+                record=record,
+                queue_key=queue_key,
+                dispatch_id=dispatch_id,
+                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+            )
+            if prompt_lock_claim is not None and not bool(
+                getattr(prompt_lock_claim, "claimed", False)
+            ):
+                continue
             result = dispatch_agent_prompt(
                 worker,
                 target=record.target,
@@ -193,16 +343,21 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                     record=record,
                     thread_id=str(getattr(result, "thread_id", "") or "").strip(),
                 )
-                self._record_libvirt_waiting_execution(
+                recorded = self._record_libvirt_waiting_execution(
                     worker=worker,
                     record=record,
                     queue_key=queue_key,
                     dispatch_id=dispatch_id,
                     result=result,
                     effective_resume_thread_id=effective_resume_thread_id,
+                    prompt_lock_metadata=self._prompt_lock_metadata_from_claim(prompt_lock_claim),
                 )
+                if not recorded:
+                    continue
                 queue_store.delete(queue_key)
                 dispatched += 1
+            else:
+                self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
 
         return dispatched
 
@@ -253,6 +408,88 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 keys.add(queue_key)
         return keys
 
+    def _claim_enqueue_prompt_for_record(
+        self,
+        *,
+        worker: Any,
+        record: Any,
+        queue_key: str,
+        dispatch_id: str,
+        execution_backend: str,
+    ) -> Any | None:
+        activity = self._agent_prompt_activity(worker)
+        claim = getattr(activity, "claim_enqueue_prompt", None)
+        if not callable(claim):
+            return None
+        try:
+            return claim(
+                target=str(getattr(record, "target", "") or "").strip(),
+                vm_name=str(getattr(record, "vm_name", "") or "").strip(),
+                session_id=str(getattr(record, "session_id", "") or "").strip() or None,
+                owner_id=self._queued_prompt_lock_owner_id(
+                    record=record,
+                    queue_key=queue_key,
+                    dispatch_id=dispatch_id,
+                ),
+                dispatch_id=dispatch_id,
+                effect_id=str(getattr(record, "effect_id", "") or "").strip() or None,
+                execution_backend=execution_backend,
+            )
+        except Exception:
+            logger.warning(
+                "AgentEnqueuePromptQueueDispatchHook could not claim prompt lock "
+                "queue_key=%s dispatch_id=%s",
+                queue_key,
+                dispatch_id,
+                exc_info=True,
+            )
+            return _DeniedPromptLockClaim()
+
+    def _release_enqueue_prompt_claim(self, *, worker: Any, claim: Any | None) -> None:
+        if claim is None or not bool(getattr(claim, "claimed", False)):
+            return
+        lock_key = str(getattr(claim, "lock_key", "") or "").strip()
+        owner_id = str(getattr(claim, "owner_id", "") or "").strip()
+        if not lock_key or not owner_id:
+            return
+        activity = self._agent_prompt_activity(worker)
+        release = getattr(activity, "release_enqueue_prompt", None)
+        if not callable(release):
+            return
+        try:
+            release(lock_key=lock_key, owner_id=owner_id)
+        except Exception:
+            logger.warning(
+                "AgentEnqueuePromptQueueDispatchHook could not release prompt lock "
+                "lock_key=%s owner_id=%s",
+                lock_key,
+                owner_id,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _prompt_lock_metadata_from_claim(claim: Any | None) -> dict[str, Any]:
+        if claim is None or not bool(getattr(claim, "claimed", False)):
+            return {}
+        return prompt_lock_metadata(getattr(claim, "record", None))
+
+    @staticmethod
+    def _queued_prompt_lock_owner_id(
+        *,
+        record: Any,
+        queue_key: str,
+        dispatch_id: str,
+    ) -> str:
+        event_id = f"queued-agent-prompt:{queue_key}:{dispatch_id}"
+        return f"{event_id}::{getattr(record, 'effect_id', '')}"
+
+    @staticmethod
+    def _agent_prompt_activity(worker: Any) -> Any | None:
+        activity = getattr(worker, "_agent_prompt_activity", None)
+        if activity is not None:
+            return activity
+        return getattr(getattr(worker, "provider_factory", None), "agent_prompt_activity", None)
+
     def _dispatch_container_record_if_idle(
         self,
         *,
@@ -291,6 +528,15 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             return False
 
         dispatch_id = self._dispatch_id_for_queue_record(record)
+        prompt_lock_claim = self._claim_enqueue_prompt_for_record(
+            worker=worker,
+            record=record,
+            queue_key=queue_key,
+            dispatch_id=dispatch_id,
+            execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+        )
+        if prompt_lock_claim is not None and not bool(getattr(prompt_lock_claim, "claimed", False)):
+            return False
         execution_id = safe_effect_execution_id("agent", session_id)
         record_metadata = getattr(record, "metadata", {})
         workflow_run_id = (
@@ -360,6 +606,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 )
             )
         except Exception:
+            self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             return False
         if not self._record_container_waiting_execution(
             worker=worker,
@@ -372,11 +619,16 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             model=model,
             agent_harness=agent_harness,
             effective_resume_thread_id=effective_resume_thread_id,
+            prompt_lock_metadata=self._prompt_lock_metadata_from_claim(prompt_lock_claim),
         ):
+            destroyed = False
             try:
                 backend.destroy(handle.execution_id)
+                destroyed = True
             except Exception:
                 pass
+            if destroyed:
+                self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             return False
         queue_store.delete(queue_key)
         return True
@@ -468,6 +720,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         model: str,
         agent_harness: str,
         effective_resume_thread_id: str | None,
+        prompt_lock_metadata: dict[str, Any] | None = None,
     ) -> bool:
         execution_store = getattr(worker, "execution_store", None)
         record_execution = getattr(execution_store, "record_execution", None)
@@ -496,6 +749,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         if isinstance(getattr(record, "metadata", {}), dict):
             wake_dispatch_id = str(record.metadata.get("wake_dispatch_id") or "").strip()
         restored_metadata = self._queued_prompt_restored_metadata(record)
+        lock_metadata = dict(prompt_lock_metadata or {})
         resolved_config = {
             "target": record.target,
             "vm_name": record.vm_name,
@@ -513,6 +767,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "queue_key": queue_key,
             "wake_dispatch_id": wake_dispatch_id,
             **restored_metadata,
+            **lock_metadata,
         }
         outputs = {
             "dispatch_id": dispatch_id,
@@ -528,6 +783,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "queue_key": queue_key,
             "wake_dispatch_id": wake_dispatch_id,
             **restored_metadata,
+            **lock_metadata,
         }
         input_payload = {
             "target": record.target,
@@ -542,6 +798,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "queue_key": queue_key,
             **restored_metadata,
+            **lock_metadata,
         }
         self._restore_workflow_context(input_payload=input_payload, record=record)
         execution_record = EffectExecutionRecord(
@@ -613,6 +870,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         dispatch_id: str,
         result: Any,
         effective_resume_thread_id: str | None,
+        prompt_lock_metadata: dict[str, Any] | None = None,
     ) -> bool:
         execution_store = getattr(worker, "execution_store", None)
         record_execution = getattr(execution_store, "record_execution", None)
@@ -665,6 +923,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "execution_backend": ExecutionBackendKind.LIBVIRT_VM.value,
             "queue_key": queue_key,
+            **dict(prompt_lock_metadata or {}),
         }
         outputs = {
             "dispatch_id": dispatch_id,
@@ -675,6 +934,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "session_id": session_id,
             "execution_backend": ExecutionBackendKind.LIBVIRT_VM.value,
             "queue_key": queue_key,
+            **dict(prompt_lock_metadata or {}),
         }
         if effective_thread_id:
             outputs["thread_id"] = effective_thread_id
@@ -689,6 +949,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
             "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "queue_key": queue_key,
+            **dict(prompt_lock_metadata or {}),
         }
         self._restore_workflow_context(input_payload=input_payload, record=record)
         execution_record = EffectExecutionRecord(
@@ -782,52 +1043,14 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
 
     def _has_waiting_enqueue_prompt_for_record(self, *, worker: Any, record: Any) -> bool:
         execution_store = getattr(worker, "execution_store", None)
-        list_waiting = getattr(execution_store, "list_waiting_records", None)
-        read_all = getattr(execution_store, "read_all", None)
-        session_id = str(getattr(record, "session_id", "") or "").strip()
-        vm_name = str(getattr(record, "vm_name", "") or "").strip()
-        target = str(getattr(record, "target", "") or "").strip()
-        try:
-            if callable(list_waiting):
-                records = list_waiting("effect:agent:enqueue-prompt")
-            elif callable(read_all):
-                records = [
-                    execution
-                    for execution in read_all().values()
-                    if str(getattr(execution, "effect_type", "") or "").strip()
-                    == "effect:agent:enqueue-prompt"
-                    and str(getattr(execution, "status", "") or "").strip() == "waiting"
-                ]
-            else:
-                return False
-        except Exception:
+        if execution_store is None:
             return False
-        for execution in records:
-            outputs = getattr(execution, "outputs", None)
-            if not isinstance(outputs, dict):
-                outputs = {}
-            resolved_config = getattr(execution, "resolved_config", None)
-            if not isinstance(resolved_config, dict):
-                resolved_config = {}
-            input_payload = getattr(execution, "input_payload", None)
-            if not isinstance(input_payload, dict):
-                input_payload = {}
-            waiting_session_id = str(
-                outputs.get("session_id") or resolved_config.get("session_id") or ""
-            ).strip()
-            waiting_vm_name = str(
-                outputs.get("vm_name") or resolved_config.get("vm_name") or ""
-            ).strip()
-            waiting_target = str(
-                resolved_config.get("target") or input_payload.get("target") or ""
-            ).strip()
-            if session_id and waiting_session_id == session_id:
-                return True
-            if vm_name and waiting_vm_name == vm_name:
-                return True
-            if target and waiting_target == target:
-                return True
-        return False
+        return has_active_enqueue_prompt_for_target(
+            execution_store,
+            session_id=str(getattr(record, "session_id", "") or "").strip() or None,
+            vm_name=str(getattr(record, "vm_name", "") or "").strip(),
+            target=str(getattr(record, "target", "") or "").strip(),
+        )
 
     def _effective_record_resume_thread_id(
         self,

@@ -58,6 +58,7 @@ from evander.effects.registry import (
     EffectProviderFactory,
     EffectProviderRegistry,
 )
+from evander.orchestration.agent_prompt_activity import AgentPromptActivityRuntime
 from pydantic import BaseModel, Field, ValidationError
 
 from evander.directory_config import ContactDirectoryConfig
@@ -2117,6 +2118,63 @@ def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> Non
             "queue_key": "chat:thread-ui-1:msg-1",
         }
     ]
+
+
+def test_agent_enqueue_prompt_provider_scopes_libvirt_prompt_lock_to_vm(
+    tmp_path: Path,
+) -> None:
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:enqueue-prompt",
+        prompt="first",
+        session_id="session-42",
+        queue_key="chat:session-42:first",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    admin_service._sessions["session-84"] = admin_service._sessions[
+        "session-42"
+    ].model_copy(update={"session_id": "session-84"})
+    admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+    config = GatewayConfig(runtime_dir=tmp_path)
+    activity = AgentPromptActivityRuntime(runtime_dir=tmp_path)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+        agent_prompt_activity=activity,
+    )
+
+    first = factory.build(effect).execute()
+    second = factory.build(
+        AgentEnqueuePromptEffectDefinition(
+            id="effect-prompt-2",
+            display_name="Prompt",
+            type="effect:agent:enqueue-prompt",
+            prompt="second",
+            session_id="session-84",
+            queue_key="chat:session-84:second",
+        )
+    ).execute()
+
+    queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get(
+        "chat:session-84:second"
+    )
+
+    assert first["queued"] is False
+    assert first["prompt_lock_key"] == "vm:vm-42"
+    assert second["queued"] is True
+    assert second["queue_key"] == "chat:session-84:second"
+    assert len(admin_service.resume_calls) == 1
+    assert queued is not None
+    assert queued.target == "session-84"
+    assert queued.vm_name == "vm-42"
+    assert queued.session_id == "session-84"
 
 
 def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_key() -> None:

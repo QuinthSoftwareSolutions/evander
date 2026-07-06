@@ -11,6 +11,7 @@ from evander.events.models import (
 )
 from evander.provider_runtime.contracts import (
     AgentResumer,
+    AgentPromptActivity,
     GitBranchPromoter,
     GitBranchPusher,
     IssueUpdater,
@@ -40,6 +41,7 @@ class EffectRuntimeContext(ProviderRuntimeBase):
     vm_python_bootstrapper: VmPythonBootstrapper | None = None
     vm_frontend_bootstrapper: VmFrontendBootstrapper | None = None
     agent_resumer: AgentResumer | None = None
+    agent_prompt_activity: AgentPromptActivity | None = None
     vm_power_controller: VmPowerController | None = None
     vm_inventory: VmInventory | None = None
     vm_executor: VmExecutor | None = None

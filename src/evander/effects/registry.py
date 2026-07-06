@@ -61,6 +61,7 @@ class EffectProviderFactory:
         provider_runtime: object | None = None,
         admin_adapter: object | None = None,
         gate_adapter: object | None = None,
+        agent_prompt_activity: object | None = None,
         env: Mapping[str, str] | None = None,
         secret_resolver: Callable[[str], str | None] | None = None,
         metadata: Mapping[str, Any] | None = None,
@@ -79,6 +80,7 @@ class EffectProviderFactory:
             or provider_runtime
         )
         self._admin_adapter = self.admin_service
+        self.agent_prompt_activity = agent_prompt_activity
         self.registry = registry or EffectProviderRegistry()
         self.env = env or dict(os.environ)
         self.secret_resolver = secret_resolver
@@ -109,6 +111,7 @@ class EffectProviderFactory:
             vm_python_bootstrapper=self._provider_runtime_ports.vm_python_bootstrapper,
             vm_frontend_bootstrapper=self._provider_runtime_ports.vm_frontend_bootstrapper,
             agent_resumer=self._provider_runtime_ports.agent_resumer,
+            agent_prompt_activity=self.agent_prompt_activity,
             vm_power_controller=self._provider_runtime_ports.vm_power_controller,
             vm_inventory=self._provider_runtime_ports.vm_inventory
             or self._provider_runtime_ports.gate_vm_inventory,

@@ -763,6 +763,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
         record.finished_at = finished_at
         worker.execution_store.put(record)
         worker._update_event_delivery_state(record.event_id)
+        cls._release_enqueue_prompt_lock(
+            worker=worker,
+            record=record,
+            outputs=record.outputs,
+        )
 
     @classmethod
     def _capture_container_thread_id_from_running_logs(
@@ -1070,6 +1075,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 runtime_dir=runtime_dir,
                 dispatch_id=dispatch_id,
             )
+        cls._release_enqueue_prompt_lock(
+            worker=worker,
+            record=record,
+            outputs=merged_outputs,
+        )
         wake_dispatch_id = str(queue_record.payload.get("wake_dispatch_id") or "").strip()
         if wake_dispatch_id:
             wake_store = getattr(getattr(worker, "runtime", None), "wake_store", None)
@@ -1104,6 +1114,69 @@ class AgentPromptEffectProvider(EffectProviderBase):
                         queue_record.event_id,
                         exc_info=True,
                     )
+
+    @classmethod
+    def _release_enqueue_prompt_lock(
+        cls,
+        *,
+        worker: Any,
+        record: Any,
+        outputs: Mapping[str, Any] | None = None,
+    ) -> None:
+        if (
+            str(getattr(record, "effect_type", "") or "").strip()
+            != AGENT_ENQUEUE_PROMPT_EFFECT_TYPE
+        ):
+            return
+        lock_key = cls._record_text_value_from_sources(
+            record=record,
+            outputs=outputs,
+            key="prompt_lock_key",
+        )
+        owner_id = cls._record_text_value_from_sources(
+            record=record,
+            outputs=outputs,
+            key="prompt_lock_owner_id",
+        )
+        if not lock_key or not owner_id:
+            return
+        activity = getattr(worker, "_agent_prompt_activity", None)
+        if activity is None:
+            activity = getattr(
+                getattr(worker, "provider_factory", None), "agent_prompt_activity", None
+            )
+        release = getattr(activity, "release_enqueue_prompt", None)
+        if not callable(release):
+            return
+        try:
+            release(lock_key=lock_key, owner_id=owner_id)
+        except Exception:
+            logger.warning(
+                "Failed to release enqueue prompt lock lock_key=%s owner_id=%s",
+                lock_key,
+                owner_id,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _record_text_value_from_sources(
+        *,
+        record: Any,
+        outputs: Mapping[str, Any] | None,
+        key: str,
+    ) -> str | None:
+        for source in (
+            outputs,
+            getattr(record, "outputs", None),
+            getattr(record, "resolved_config", None),
+            getattr(record, "input_payload", None),
+        ):
+            if not isinstance(source, Mapping) or key not in source:
+                continue
+            text = str(source.get(key) or "").strip()
+            if text:
+                return text
+        return None
 
     @classmethod
     def _maybe_start_reduced_context_retry(
