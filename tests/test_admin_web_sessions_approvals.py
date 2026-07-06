@@ -297,6 +297,65 @@ def test_admin_web_approval_mutations_require_owner_unlock(
     assert service.runtime.approvals.get("approval-revoke").status == ApprovalStatus.DENIED
 
 
+def test_admin_web_session_and_approval_directory_filters_reject_malformed_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    client = _authenticated_scoped_owner_client(service, monkeypatch, directory_path="root/ops")
+
+    sessions_response = client.get("/api/admin/sessions?directory_path=bad")
+    approvals_response = client.get("/api/admin/approvals?directory_path=../x")
+
+    assert sessions_response.status_code == 400
+    assert "directory path must begin with 'root'" in sessions_response.text
+    assert approvals_response.status_code == 400
+    assert "directory path must begin with 'root'" in approvals_response.text
+
+
+@pytest.mark.parametrize("auth_mode", ["none", "local_password"])
+def test_admin_web_builtin_owner_directory_filters_reject_malformed_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, auth_mode: str
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", auth_mode)
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    if auth_mode == "local_password":
+        monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    else:
+        monkeypatch.delenv("EVANDER_ADMIN_WEB_PASSWORD", raising=False)
+        monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", raising=False)
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    _seed_session(service, "root-session")
+    service.runtime.approvals.put(
+        "root-approval",
+        ApprovalRequest(
+            request_id="root-approval",
+            session_id="root-session",
+            action_type="run_script",
+            tool_name="run_script",
+            payload_digest="digest-root",
+            human_summary="Run script",
+            payload={"script": "echo ok"},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    client = TestClient(create_app(service))
+    if auth_mode == "local_password":
+        login = client.post(
+            "/api/auth/login", json={"username": "admin", "password": "admin-pass"}
+        )
+        assert login.status_code == 200
+
+    sessions_response = client.get("/api/admin/sessions?directory_path=bad")
+    approvals_response = client.get("/api/admin/approvals?directory_path=../x")
+
+    assert sessions_response.status_code == 400
+    assert "directory path must begin with 'root'" in sessions_response.text
+    assert approvals_response.status_code == 400
+    assert "directory path must begin with 'root'" in approvals_response.text
+
+
 def test_admin_web_session_mutations_require_owner_unlock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -31,7 +31,10 @@ from evander.capacity_health import (
     top_session_storage,
 )
 from evander.managed_sections import merge_managed_section
-from evander.session_artifacts import resolve_artifact_file
+from evander.session_artifacts import (
+    open_relative_regular_file_no_follow,
+    read_artifact_text_no_follow,
+)
 
 from .docker_runtime import DockerContainerRuntime
 from .models import (
@@ -85,6 +88,10 @@ _SESSION_STORAGE_TELEMETRY_TTL_SECONDS = 60.0
 _SESSION_STORAGE_WARMING_MESSAGE = (
     "worker session storage scan is warming; use refresh=1 to wait for a full scan"
 )
+_DESTINATION_NOFOLLOW_ERROR = (
+    "destination_path must stay below /home/agent and must not contain symlinks "
+    "or non-directory segments"
+)
 
 
 @dataclass(frozen=True)
@@ -92,6 +99,12 @@ class _SessionStorageTelemetryCacheEntry:
     telemetry: WorkerSessionStorageTelemetry
     collected_at_monotonic: float
     refresh_generation: int
+
+
+@dataclass(frozen=True)
+class _ContainerFileSnapshot:
+    content: bytes
+    mode: int
 
 
 class WorkerDaemon:
@@ -122,9 +135,7 @@ class WorkerDaemon:
         self.worker_root = worker_root
         self.store = WorkerJobStore(runtime_dir / "worker-jobs.json")
         self.allowed_git_source_prefixes = tuple(
-            prefix.strip()
-            for prefix in (allowed_git_source_prefixes or ())
-            if str(prefix).strip()
+            prefix.strip() for prefix in (allowed_git_source_prefixes or ()) if str(prefix).strip()
         )
         self.git_ssh_source_dir = Path(git_ssh_source_dir) if git_ssh_source_dir else None
         self.container_runtime = container_runtime or DockerContainerRuntime(
@@ -147,9 +158,7 @@ class WorkerDaemon:
             container_host=mssql_container_host,
             sqlcmd_path=mssql_sqlcmd_path,
         )
-        self._session_storage_telemetry_ttl_seconds = max(
-            0.0, float(storage_telemetry_ttl_seconds)
-        )
+        self._session_storage_telemetry_ttl_seconds = max(0.0, float(storage_telemetry_ttl_seconds))
         self._session_storage_telemetry_lock = threading.Lock()
         self._session_storage_telemetry_cache: _SessionStorageTelemetryCacheEntry | None = None
         self._session_storage_telemetry_refreshing = False
@@ -632,11 +641,7 @@ class WorkerDaemon:
                 ):
                     continue
                 for message in _claude_messages_from_session_event(event):
-                    if (
-                        not message
-                        or _is_session_message_artifact(message)
-                        or message in seen
-                    ):
+                    if not message or _is_session_message_artifact(message) or message in seen:
                         continue
                     seen.add(message)
                     messages.append(message)
@@ -689,19 +694,13 @@ class WorkerDaemon:
                 paths=paths,
                 destination_path=entry.destination_path,
             )
-            destination = root / relative_path
-            self._ensure_resolved_destination_stays_under_root(
-                root=root,
-                destination=destination,
-                container_path=container_path,
-            )
-            if destination.exists() and not entry.overwrite:
-                raise ValueError(f"destination already exists: {container_path}")
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            self._ensure_resolved_destination_stays_under_root(
-                root=root,
-                destination=destination,
-                container_path=container_path,
+            existing_snapshot = (
+                self._read_container_file_snapshot(
+                    root=root,
+                    relative_path=relative_path,
+                )
+                if entry.overwrite
+                else None
             )
             if entry.content_base64 is not None:
                 desired_content = base64.b64decode(entry.content_base64)
@@ -709,7 +708,9 @@ class WorkerDaemon:
                 content_text = entry.content or ""
                 if entry.merge_strategy == "managed_section":
                     existing_text = (
-                        destination.read_text(encoding="utf-8") if destination.is_file() else ""
+                        existing_snapshot.content.decode("utf-8")
+                        if existing_snapshot is not None
+                        else ""
                     )
                     content_text = merge_managed_section(
                         existing_text,
@@ -721,24 +722,30 @@ class WorkerDaemon:
             desired_mode = (
                 int(self._normalize_mode(entry.mode), 8) if entry.mode is not None else None
             )
-            if destination.is_file() and entry.overwrite:
-                content_matches = destination.read_bytes() == desired_content
+            if existing_snapshot is not None and entry.overwrite:
+                content_matches = existing_snapshot.content == desired_content
                 mode_matches = (
-                    desired_mode is None
-                    or stat.S_IMODE(destination.stat().st_mode) == desired_mode
+                    desired_mode is None or stat.S_IMODE(existing_snapshot.mode) == desired_mode
                 )
                 if content_matches and mode_matches:
                     continue
                 if content_matches and desired_mode is not None:
-                    destination.chmod(desired_mode)
+                    self._chmod_container_file(
+                        root=root,
+                        relative_path=relative_path,
+                        mode=desired_mode,
+                        container_path=container_path,
+                    )
                     copied_paths.append(container_path)
                     continue
-            if entry.content_base64 is not None:
-                destination.write_bytes(desired_content)
-            else:
-                destination.write_text(desired_content.decode("utf-8"), encoding="utf-8")
-            if desired_mode is not None:
-                destination.chmod(desired_mode)
+            self._write_container_file(
+                root=root,
+                relative_path=relative_path,
+                content=desired_content,
+                overwrite=entry.overwrite,
+                mode=desired_mode,
+                container_path=container_path,
+            )
             copied_paths.append(container_path)
         return WorkerFileWriteRecord(
             session_id=session_id,
@@ -752,11 +759,7 @@ class WorkerDaemon:
             WorkerSessionPaths.resolve_session_root(self.worker_root, session_id)
         )
         root = session_root / "artifacts"
-        artifact_path = resolve_artifact_file(root, relative_path)
-        try:
-            return artifact_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("artifact file is not valid UTF-8 text") from exc
+        return read_artifact_text_no_follow(root, relative_path)
 
     def provision_mssql_database(
         self,
@@ -869,10 +872,7 @@ class WorkerDaemon:
         *,
         now: float,
     ) -> bool:
-        return (
-            now - cached.collected_at_monotonic
-            >= self._session_storage_telemetry_ttl_seconds
-        )
+        return now - cached.collected_at_monotonic >= self._session_storage_telemetry_ttl_seconds
 
     def _start_session_storage_telemetry_refresh_locked(self) -> None:
         if self._session_storage_telemetry_refreshing:
@@ -1106,9 +1106,7 @@ class WorkerDaemon:
                     totals["file_count"] += 1
                     totals["size_bytes"] += size_bytes
                     if session_id is not None:
-                        session_sizes[session_id] = (
-                            session_sizes.get(session_id, 0) + size_bytes
-                        )
+                        session_sizes[session_id] = session_sizes.get(session_id, 0) + size_bytes
                     continue
 
                 errors.append(
@@ -1392,13 +1390,11 @@ class WorkerDaemon:
         )
         if target_dir.is_symlink():
             raise ValueError(
-                f"repo target already exists and is not a directory: "
-                f"/home/agent/repos/{repo_name}"
+                f"repo target already exists and is not a directory: /home/agent/repos/{repo_name}"
             )
         if target_dir.exists() and not target_dir.is_dir():
             raise ValueError(
-                f"repo target already exists and is not a directory: "
-                f"/home/agent/repos/{repo_name}"
+                f"repo target already exists and is not a directory: /home/agent/repos/{repo_name}"
             )
         if target_dir.exists() and any(target_dir.iterdir()):
             if self._is_git_checkout_for_source(
@@ -1433,9 +1429,7 @@ class WorkerDaemon:
 
     def _ensure_allowed_git_source(self, repo_source: str) -> None:
         if not self.allowed_git_source_prefixes:
-            raise ValueError(
-                "worker Git source prefixes are not configured; refusing repo_source"
-            )
+            raise ValueError("worker Git source prefixes are not configured; refusing repo_source")
         if not any(repo_source.startswith(prefix) for prefix in self.allowed_git_source_prefixes):
             allowed = ", ".join(self.allowed_git_source_prefixes)
             raise ValueError(
@@ -1522,9 +1516,7 @@ class WorkerDaemon:
         destination_path: str,
     ) -> tuple[Path, Path, str]:
         normalized = destination_path.strip()
-        for container_root, host_root in (
-            ("/home/agent", paths.agent_home),
-        ):
+        for container_root, host_root in (("/home/agent", paths.agent_home),):
             if normalized == container_root:
                 raise ValueError(f"destination_path must name a file below {container_root}")
             prefix = f"{container_root}/"
@@ -1541,6 +1533,91 @@ class WorkerDaemon:
                 raise ValueError(f"destination_path must stay below {container_root}")
             return host_root, relative, f"{container_root}/{relative.as_posix()}"
         raise ValueError("destination_path must be under /home/agent")
+
+    @staticmethod
+    def _read_container_file_snapshot(
+        *,
+        root: Path,
+        relative_path: Path,
+    ) -> _ContainerFileSnapshot | None:
+        fd = open_relative_regular_file_no_follow(
+            root,
+            relative_path.as_posix(),
+            flags=os.O_RDONLY,
+            missing_ok=True,
+            path_label="destination_path",
+            unsafe_path_message=_DESTINATION_NOFOLLOW_ERROR,
+        )
+        if fd is None:
+            return None
+        with os.fdopen(fd, "rb") as handle:
+            file_stat = os.fstat(handle.fileno())
+            return _ContainerFileSnapshot(
+                content=handle.read(),
+                mode=file_stat.st_mode,
+            )
+
+    @staticmethod
+    def _chmod_container_file(
+        *,
+        root: Path,
+        relative_path: Path,
+        mode: int,
+        container_path: str,
+    ) -> None:
+        fd = open_relative_regular_file_no_follow(
+            root,
+            relative_path.as_posix(),
+            flags=os.O_RDONLY,
+            path_label="destination_path",
+            unsafe_path_message=_DESTINATION_NOFOLLOW_ERROR,
+        )
+        if fd is None:
+            raise FileNotFoundError(f"destination_path is not a regular file: {container_path}")
+        try:
+            os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _write_container_file(
+        *,
+        root: Path,
+        relative_path: Path,
+        content: bytes,
+        overwrite: bool,
+        mode: int | None,
+        container_path: str,
+    ) -> None:
+        flags = os.O_WRONLY | os.O_CREAT
+        if not overwrite:
+            flags |= os.O_EXCL
+        else:
+            flags = os.O_RDWR | os.O_CREAT
+        fd = open_relative_regular_file_no_follow(
+            root,
+            relative_path.as_posix(),
+            flags=flags,
+            mode=mode if mode is not None else 0o666,
+            create_parents=True,
+            path_label="destination_path",
+            already_exists_message=f"destination already exists: {container_path}",
+            unsafe_path_message=_DESTINATION_NOFOLLOW_ERROR,
+        )
+        if fd is None:
+            raise FileNotFoundError(f"destination_path is not a regular file: {container_path}")
+        try:
+            os.ftruncate(fd, 0)
+            remaining = memoryview(content)
+            while remaining:
+                written = os.write(fd, remaining)
+                if written == 0:
+                    raise OSError("failed to write destination file")
+                remaining = remaining[written:]
+            if mode is not None:
+                os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
 
     @staticmethod
     def _ensure_resolved_destination_stays_under_root(
@@ -1601,17 +1678,14 @@ def _repo_source_requires_git_ssh(repo_source: str | None) -> bool:
     if not repo_source:
         return False
     normalized = repo_source.strip()
-    return normalized.startswith("ssh://") or bool(
-        re.match(r"^[^/@:\s]+@[^:\s]+:.+", normalized)
-    )
+    return normalized.startswith("ssh://") or bool(re.match(r"^[^/@:\s]+@[^:\s]+:.+", normalized))
 
 
 def _git_subprocess_env(agent_home: Path) -> dict[str, str]:
     return os.environ | {
         "HOME": str(agent_home),
         "GIT_SSH_COMMAND": (
-            f"ssh -F {agent_home / '.ssh' / 'config'} "
-            f"-i {agent_home / '.ssh' / 'evander-git'}"
+            f"ssh -F {agent_home / '.ssh' / 'config'} -i {agent_home / '.ssh' / 'evander-git'}"
         ),
     }
 
@@ -1631,10 +1705,14 @@ def _worker_job_uses_claude(record: WorkerJobRecord) -> bool:
         if isinstance(command, list) and all(isinstance(item, str) for item in command)
         else str(command or "")
     ).casefold()
-    return "evander_claude_json_to_log" in command_text or re.search(
-        r"(^|\s)claude(\s|$)",
-        command_text,
-    ) is not None
+    return (
+        "evander_claude_json_to_log" in command_text
+        or re.search(
+            r"(^|\s)claude(\s|$)",
+            command_text,
+        )
+        is not None
+    )
 
 
 def _worker_job_uses_codex(record: WorkerJobRecord) -> bool:
@@ -1651,10 +1729,14 @@ def _worker_job_uses_codex(record: WorkerJobRecord) -> bool:
         if isinstance(command, list) and all(isinstance(item, str) for item in command)
         else str(command or "")
     ).casefold()
-    return "evander_codex_json_to_log" in command_text or re.search(
-        r"(^|\s)codex(\s|$)",
-        command_text,
-    ) is not None
+    return (
+        "evander_codex_json_to_log" in command_text
+        or re.search(
+            r"(^|\s)codex(\s|$)",
+            command_text,
+        )
+        is not None
+    )
 
 
 def _codex_session_outcome(
@@ -1793,7 +1875,9 @@ def _codex_event_is_token_count(event: dict[str, object]) -> bool:
     return isinstance(payload, dict) and str(payload.get("type") or "") == "token_count"
 
 
-def _codex_token_count_details(event: dict[str, object]) -> tuple[dict[str, int] | None, int | None]:
+def _codex_token_count_details(
+    event: dict[str, object],
+) -> tuple[dict[str, int] | None, int | None]:
     candidates: list[dict[str, object]] = []
     info = event.get("info")
     if isinstance(info, dict):
@@ -1859,10 +1943,14 @@ def _codex_event_error_message(event: dict[str, object]) -> str:
 def _codex_provider_kind(metadata: dict[str, object] | None) -> str:
     if not isinstance(metadata, dict):
         return "unknown"
-    mode = _codex_first_text(
-        metadata.get("model_provider_mode"),
-        metadata.get("openai_provider_mode"),
-    ).strip().casefold()
+    mode = (
+        _codex_first_text(
+            metadata.get("model_provider_mode"),
+            metadata.get("openai_provider_mode"),
+        )
+        .strip()
+        .casefold()
+    )
     if mode in _CODEX_LOCAL_MODEL_PROVIDER_MODES:
         return "local_model"
     if mode in {"openai_public", "azure_openai", "anthropic"}:
@@ -1908,10 +1996,7 @@ def _codex_outcome_log_line(outcome: dict[str, object]) -> str:
             "codex failed: task_complete did not include a final agent message; "
             f"context limit suspected{suffix}"
         )
-    return (
-        "codex failed: task_complete did not include a final agent message"
-        f"{suffix}"
-    )
+    return f"codex failed: task_complete did not include a final agent message{suffix}"
 
 
 def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
@@ -2156,16 +2241,12 @@ def _latest_codex_timestamp(current: str | None, candidate: object) -> str | Non
         return current
     if current is None:
         return (
-            str(candidate).strip()
-            if isinstance(candidate, str)
-            else parsed_candidate.isoformat()
+            str(candidate).strip() if isinstance(candidate, str) else parsed_candidate.isoformat()
         )
     parsed_current = _parse_codex_timestamp(current)
     if parsed_current is None or parsed_candidate > parsed_current:
         return (
-            str(candidate).strip()
-            if isinstance(candidate, str)
-            else parsed_candidate.isoformat()
+            str(candidate).strip() if isinstance(candidate, str) else parsed_candidate.isoformat()
         )
     return current
 
@@ -2258,11 +2339,14 @@ def _codex_running_context_messages(
 
 
 def _codex_function_call_summary(payload: dict[str, object]) -> str:
-    name = _codex_first_text(
-        payload.get("name"),
-        payload.get("tool_name"),
-        payload.get("function_name"),
-    ) or "tool"
+    name = (
+        _codex_first_text(
+            payload.get("name"),
+            payload.get("tool_name"),
+            payload.get("function_name"),
+        )
+        or "tool"
+    )
     arguments = _json_object_from_string(payload.get("arguments"))
     command = _codex_command_from_arguments(arguments)
     cwd = _codex_first_text(

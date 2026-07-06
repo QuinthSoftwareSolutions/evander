@@ -344,12 +344,13 @@ workflow node-completion queue records are runtime plumbing and are not stable o
 active webhook trigger. The configured `slug` must match `[A-Za-z0-9_.-]+`, be unique across the
 active composed config, and is used as the public path segment. `secret_env` names the host
 environment variable that contains the HMAC secret. `event_type` is optional and defaults to
-`webhook.<slug>`. Requests must include
-`X-Evander-Signature-256: sha256=<hex>` and the signature must be computed over the exact raw
-request body bytes using HMAC-SHA256. The webhook ingress accepts JSON object bodies only. The
+`webhook.<slug>`. Requests must include `X-Evander-Timestamp` with a Unix timestamp within five
+minutes of the Admin Web clock and `X-Evander-Signature-256: sha256=<hex>`. The signature must be
+computed over `<timestamp>.<raw request body bytes>` using HMAC-SHA256. The webhook ingress accepts
+JSON object bodies only. The
 durable event stored for the trigger is `external.<event_type>`, and downstream trigger output is
 the webhook envelope with `slug`, `headers`, `query`, `body`, `received_at`, `remote_addr`, and
-`signature_header`.
+`signature_header` and `timestamp_header`.
 
 Use `gate:filter`, `gate:map`, `gate:deserialize`, and `gate:dedupe` downstream when you need to
 reshape or suppress webhook deliveries after the trigger fires.
@@ -1209,9 +1210,9 @@ root directory-scoped config and host environment:
 | `EVANDER_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
 | `EVANDER_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
 | `EVANDER_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
-| `EVANDER_GIT_REPO` | host shell | `scripts/bootstrap_git_vm.sh` writable SSH key binding; accepts a bare repo path or name under `EVANDER_GIT_ROOT`. |
+| `EVANDER_GIT_REPO` | host shell | `scripts/bootstrap_git_vm.sh` SSH key repository binding for read-only or writable access; accepts a bare repo path or name under `EVANDER_GIT_ROOT`. |
 | `EVANDER_GIT_SESSION_ID` | host shell or guest `/etc/evander/session.env` | `scripts/bootstrap_git_vm.sh` writable SSH key binding for `refs/heads/agents/<session-id>/...`. |
-| `EVANDER_GIT_READ_ONLY` | host shell | `scripts/bootstrap_git_vm.sh` when forcing read-only Git SSH access. |
+| `EVANDER_GIT_READ_ONLY` | host shell | `scripts/bootstrap_git_vm.sh` when forcing repo-scoped read-only Git SSH access. |
 | `EVANDER_GIT_REQUIRE_WRITE_METADATA` | host shell | `scripts/bootstrap_git_vm.sh` when missing repo/session metadata should fail instead of installing read-only access. |
 | `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat toggle). |
 | `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat prompt). |

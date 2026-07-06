@@ -259,7 +259,7 @@ from evander.gateway.tool_audit import (
     _tool_call_context,
     _tool_call_duration_ms,
 )
-from evander.session_auth import verify_mcp_session_token
+from evander.session_auth import verify_mcp_session_proof_token, verify_mcp_session_token
 
 logger = logging.getLogger(__name__)
 
@@ -292,9 +292,7 @@ AdoMentionRefsArgument = Annotated[
 _APPROVAL_REQUEST_ID_PARAMETER_SCHEMA = {
     "anyOf": [{"type": "string"}, {"type": "null"}],
     "default": None,
-    "description": (
-        "Optional approval request id for retrying an approval-gated tool invocation."
-    ),
+    "description": ("Optional approval request id for retrying an approval-gated tool invocation."),
     "title": "Approval Request Id",
 }
 
@@ -536,9 +534,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             visible_tool_names=visible_tool_names,
             last_protocol_version=str(protocol_version or "").strip() or None,
             last_workflow_run_id=str(workflow_run_id or "").strip() or None,
-            last_mcp_tool_approval_lease_id=(
-                str(mcp_tool_approval_lease_id or "").strip() or None
-            ),
+            last_mcp_tool_approval_lease_id=(str(mcp_tool_approval_lease_id or "").strip() or None),
         )
         transport_session_map[normalized_transport_session_id] = normalized_session_id
 
@@ -597,10 +593,17 @@ def create_server(context: RuntimeContext) -> FastMCP:
         arguments["session_id"] = resolved_session_id
         call_context.session_id = resolved_session_id
 
-    def _mcp_session_token_valid(session_id: str, supplied_token: str | None) -> bool:
+    def _mcp_session_token_valid(
+        session_id: str,
+        supplied_token: str | None,
+        *,
+        require_proof: bool = False,
+    ) -> bool:
         session = context.session_repository.get_session(session_id)
         if session is None:
             return True
+        if require_proof:
+            return verify_mcp_session_proof_token(session, supplied_token)
         return verify_mcp_session_token(session, supplied_token)
 
     def audit_success(
@@ -796,7 +799,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
         ),
     )
 
-
     register_communication_tools(
         server,
         context,
@@ -807,9 +809,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
             artifact_payloads=artifact_helpers.artifact_payloads,
             artifact_audit_summaries=artifact_helpers.artifact_audit_summaries,
-            communication_target_audit_fields=(
-                artifact_helpers.communication_target_audit_fields
-            ),
+            communication_target_audit_fields=(artifact_helpers.communication_target_audit_fields),
             record_email_draft_snapshot=email_helpers.record_email_draft_snapshot,
             send_email_draft=email_helpers.send_email_draft,
             audit_inline_media_operation=inline_media_helpers.audit_inline_media_operation,
@@ -851,9 +851,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             config=context.config,
             service=context,
         )
-        addon_mcp_tool_names.extend(
-            register_addon_mcp_tools(addon, server, addon_context)
-        )
+        addon_mcp_tool_names.extend(register_addon_mcp_tools(addon, server, addon_context))
     if addon_mcp_tool_names:
         context.policy.set_extra_mcp_tool_names(addon_mcp_tool_names)
 
@@ -909,7 +907,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.get_session(session_id)
         except PolicyError:
             return []
-        if not verify_mcp_session_token(session, _mcp_session_token_from_request(request)):
+        if not verify_mcp_session_proof_token(
+            session,
+            _mcp_session_token_from_request(request),
+        ):
             return []
 
         visible_tool_names = {
@@ -1155,8 +1156,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 )
             if str(approval.tool_name or approval.action_type).strip() != tool_value:
                 raise PolicyError(
-                    f"Approval request {supplied_request_id} is not for tool "
-                    f"{tool_value}"
+                    f"Approval request {supplied_request_id} is not for tool {tool_value}"
                 )
         except PolicyError as exc:
             approval_request_id = getattr(exc, "approval_request_id", None) or supplied_request_id
@@ -1223,11 +1223,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
         if _mcp_session_token_valid(
             call_context.session_id,
             call_context.mcp_session_token,
+            require_proof=_MCP_REQUEST_CONTEXT.get() is not None,
         ):
             return
-        tool_value: McpToolName = (
-            ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
-        )
+        tool_value: McpToolName = ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
         message = "MCP session token is required for this session"
         audit_failure(
             call_context.session_id,
@@ -1279,9 +1278,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 and "approval_request_id" in model_fields
                 and "approval_request_id" in raw_arguments
             ):
-                dispatch_arguments["approval_request_id"] = raw_arguments.get(
-                    "approval_request_id"
-                )
+                dispatch_arguments["approval_request_id"] = raw_arguments.get("approval_request_id")
             dispatch_call_args = list(call_args)
             dispatch_call_kwargs = dict(call_kwargs)
             if len(dispatch_call_args) > 1:

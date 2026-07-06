@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, unquote, urlencode
 
 import httpx
 import uvicorn
@@ -67,6 +67,23 @@ HOSTED_WEB_SEARCH_TOOL_TYPES = {
     "web_search",
     "web_search_preview",
 }
+OPENAI_COMPATIBLE_HTTP_ENDPOINTS = {
+    ("GET", "models"),
+    ("POST", "responses"),
+    ("POST", "responses/compact"),
+    ("POST", "chat/completions"),
+    ("POST", "completions"),
+    ("POST", "embeddings"),
+}
+OPENAI_COMPATIBLE_WEBSOCKET_ENDPOINTS = {
+    "responses",
+}
+OPENAI_COMPATIBLE_ENDPOINTS_DESCRIPTION = (
+    "OpenAI relay currently supports GET /v1/models and POST /v1/responses, "
+    "/v1/responses/compact, /v1/chat/completions, /v1/completions, and /v1/embeddings"
+)
+PATH_SEGMENT_SAFE_CHARS = ":@!$&'()*+,;=-._~"
+MAX_PATH_DECODE_PASSES = 5
 
 
 @dataclass(frozen=True)
@@ -180,11 +197,7 @@ class OpenAIRelay:
                 api_key = os.environ.get(api_key_env) if api_key_env else None
                 if not api_key:
                     return JSONResponse(
-                        {
-                            "error": (
-                                f"Host environment variable {api_key_env} is not set."
-                            )
-                        },
+                        {"error": (f"Host environment variable {api_key_env} is not set.")},
                         status_code=503,
                     )
 
@@ -277,6 +290,14 @@ class OpenAIRelay:
                         headers=relay._response_headers(upstream_response),
                         media_type=upstream_response.headers.get("content-type"),
                     )
+
+            try:
+                upstream_path = relay._supported_openai_compatible_http_path(
+                    method=request.method,
+                    upstream_path=upstream_path,
+                )
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=501)
 
             openai_compatible_upstream = relay._openai_compatible_upstream(request_context.config)
             if not openai_compatible_upstream.api_key:
@@ -419,12 +440,20 @@ class OpenAIRelay:
                 await websocket.close(code=1008, reason=reason)
                 return
 
+            upstream_path = websocket.path_params["path"]
+            try:
+                upstream_path = relay._supported_openai_compatible_websocket_path(
+                    upstream_path=upstream_path,
+                )
+            except ValueError as exc:
+                await websocket.close(code=1008, reason=str(exc))
+                return
+
             openai_compatible_upstream = relay._openai_compatible_upstream(request_context.config)
             if not openai_compatible_upstream.api_key:
                 await websocket.close(code=1011, reason="missing upstream API key")
                 return
 
-            upstream_path = websocket.path_params["path"]
             upstream_url = relay._upstream_websocket_url(
                 base_url=openai_compatible_upstream.base_url,
                 upstream_path=upstream_path,
@@ -755,9 +784,7 @@ class OpenAIRelay:
         if not isinstance(payload, dict):
             return OperatorSteeringInjection(request_body=request_body)
 
-        correlation_context = self._active_model_usage_correlation_context(
-            session_id=session_id
-        )
+        correlation_context = self._active_model_usage_correlation_context(session_id=session_id)
         if correlation_context is None:
             return OperatorSteeringInjection(request_body=request_body)
 
@@ -1263,6 +1290,27 @@ class OpenAIRelay:
         }
 
     @staticmethod
+    def _supported_openai_compatible_http_path(*, method: str, upstream_path: str) -> str:
+        normalized_method = str(method or "").upper()
+        normalized_path = _canonical_relay_path(
+            upstream_path,
+            field_name="OpenAI relay path",
+        )
+        if (normalized_method, normalized_path) not in OPENAI_COMPATIBLE_HTTP_ENDPOINTS:
+            raise ValueError(OPENAI_COMPATIBLE_ENDPOINTS_DESCRIPTION)
+        return normalized_path
+
+    @staticmethod
+    def _supported_openai_compatible_websocket_path(*, upstream_path: str) -> str:
+        normalized_path = _canonical_relay_path(
+            upstream_path,
+            field_name="OpenAI websocket relay path",
+        )
+        if normalized_path not in OPENAI_COMPATIBLE_WEBSOCKET_ENDPOINTS:
+            raise ValueError("OpenAI websocket relay currently supports only /v1/responses")
+        return normalized_path
+
+    @staticmethod
     def _anthropic_upstream_path(upstream_path: str) -> str:
         normalized = upstream_path.strip().lstrip("/")
         if normalized == "v1":
@@ -1537,7 +1585,10 @@ class OpenAIRelay:
     def _upstream_http_url(
         cls, *, base_url: str, upstream_path: str, query_items: list[tuple[str, str]]
     ) -> str:
-        upstream_url = f"{base_url.rstrip('/')}/{upstream_path}"
+        upstream_url = (
+            f"{base_url.rstrip('/')}/"
+            f"{_canonical_relay_path(upstream_path, field_name='OpenAI relay path')}"
+        )
         filtered_query = cls._filtered_query_string(query_items)
         if filtered_query:
             upstream_url = f"{upstream_url}?{filtered_query}"
@@ -1572,9 +1623,7 @@ class OpenAIRelay:
         try:
             payload = json.loads(request_body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError(
-                "Azure OpenAI responses requests must contain valid JSON"
-            ) from exc
+            raise ValueError("Azure OpenAI responses requests must contain valid JSON") from exc
         if not isinstance(payload, dict):
             raise ValueError("Azure OpenAI responses requests must be a JSON object")
 
@@ -1601,7 +1650,10 @@ class OpenAIRelay:
         cls, *, base_url: str, upstream_path: str, query_items: list[tuple[str, str]]
     ) -> str:
         base_url = cls._websocket_base_url(base_url.rstrip("/"))
-        upstream_url = f"{base_url}/{upstream_path}"
+        upstream_url = (
+            f"{base_url}/"
+            f"{_canonical_relay_path(upstream_path, field_name='OpenAI websocket relay path')}"
+        )
         filtered_query = cls._filtered_query_string(query_items)
         if filtered_query:
             upstream_url = f"{upstream_url}?{filtered_query}"
@@ -1810,6 +1862,40 @@ def _websocket_message_declares_hosted_web_search(message: str | bytes) -> bool:
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
         return False
     return _payload_declares_hosted_web_search(payload)
+
+
+def _canonical_relay_path(path: object, *, field_name: str) -> str:
+    segments = _safe_path_segments(path, field_name=field_name)
+    return "/".join(quote(segment, safe=PATH_SEGMENT_SAFE_CHARS) for segment in segments)
+
+
+def _safe_path_segments(path: object, *, field_name: str) -> list[str]:
+    raw_path = str(path or "").lstrip("/")
+    if not raw_path:
+        return []
+    segments: list[str] = []
+    for raw_segment in raw_path.split("/"):
+        if not raw_segment:
+            continue
+        segment = _fully_unquote_path_segment(raw_segment, field_name=field_name)
+        if segment in {".", ".."}:
+            raise ValueError(f"{field_name} must not contain dot segments")
+        if "/" in segment or "\\" in segment:
+            raise ValueError(f"{field_name} must not contain encoded path separators")
+        segments.append(segment)
+    return segments
+
+
+def _fully_unquote_path_segment(segment: str, *, field_name: str) -> str:
+    decoded = segment
+    for _ in range(MAX_PATH_DECODE_PASSES):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            return decoded
+        decoded = next_decoded
+    if unquote(decoded) != decoded:
+        raise ValueError(f"{field_name} is too deeply percent-encoded")
+    return decoded
 
 
 def _payload_declares_hosted_web_search(payload: Any) -> bool:

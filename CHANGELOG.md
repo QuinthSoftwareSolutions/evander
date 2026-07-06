@@ -23,6 +23,44 @@
 - Treat pending Admin Web Lock requests as locally locked before the backend
   responds so privileged UI actions close immediately when an operator locks.
 
+## 2026-07-06 - Security Audit Remediation
+
+- Passed repo/session metadata into Admin Web Git bootstrap calls, restricted learned Azure
+  Artifacts feed GUIDs to configured service-index resource URLs, and returned controlled errors
+  for malformed Admin Web session/approval directory filters, including built-in admin auth paths.
+- Bound Admin Web webhook signatures to query parameters and allowed Azure Artifacts NuGet
+  resource paths when the configured feed base URL is the service-index URL.
+- Preserved existing `authorized_keys` ownership during Git bootstrap atomic replacement and
+  resolved relative Azure NuGet package paths containing `_packaging` under the configured feed.
+- Required token proof when MCP callers select an existing session over HTTP,
+  while keeping direct in-process gateway calls compatible for trusted control-plane paths.
+- Required privileged unlock before Team add-on GET cost requests can run transcript backfills.
+- Rejected raw and encoded dot-segment escapes in the OpenAI, NuGet, and HTTP target relays,
+  constrained NuGet Azure Packaging shortcuts to the configured feed scope, and limited the
+  OpenAI relay to known OpenAI-compatible endpoints before forwarding host credentials.
+- Hardened worker session file writes and artifact text reads with descriptor-based no-follow
+  traversal so symlink swaps cannot escape session roots.
+- Scoped Admin Web session and approval reads to authorized directories instead of exposing
+  cross-directory session or approval data.
+- Required timestamped webhook signatures over `timestamp.query.body` and rejected stale webhook
+  deliveries to close replay windows.
+- Documented the canonical query JSON component in signed workflow webhook HMAC examples,
+  including the empty-query `{}` case.
+- Included webhook query parameters in Admin Web webhook idempotency keys so same-body deliveries
+  with distinct query envelopes are published separately.
+- Enforced privileged unlock checks on Team add-on mutation routes.
+- Restricted guest Git keys to their authorized bare repository for read operations and preserved
+  the existing session branch write scope.
+- Required read-only Git key bootstrap to carry authorized repository metadata and rejected
+  unscoped read-only forced-command entries.
+- Allowed Azure Artifacts NuGet resource URLs that use feed GUID paths after the relay observes
+  those IDs in the configured feed service index.
+- Kept the workflow-editor setup build path compatible with apt-installed Node 18 by pinning Vite
+  tooling to the Node 18-compatible major line.
+- Validated guest Git public keys before rewriting `authorized_keys` so malformed keys cannot
+  erase existing entries.
+- Updated vulnerable workflow-editor development dependencies and lockfile entries.
+
 ## 2026-07-05 - Review Follow-up Security Fixes
 
 - Blocked IPv4-mapped metadata IP addresses in workflow HTTP request destination checks.

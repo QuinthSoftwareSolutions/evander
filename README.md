@@ -505,25 +505,32 @@ example `${{trigger-external-deploy.payload.target}}`.
 ### Signed Workflow Webhooks
 
 For public inbound workflows, configure `trigger:http:webhook` and POST to
-`/api/workflow-webhooks/{slug}`. The request body must be a JSON object, and the signature header
-must be `X-Evander-Signature-256: sha256=<hex>`, where the HMAC-SHA256 is computed over the
-exact raw request body bytes with the configured secret.
+`/api/workflow-webhooks/{slug}`. The request body must be a JSON object. Requests must include
+`X-Evander-Timestamp` with a Unix timestamp that is within five minutes of the Admin Web clock and
+`X-Evander-Signature-256: sha256=<hex>`, where the HMAC-SHA256 is computed over
+`<timestamp>.<canonical query JSON>.<raw request body bytes>` with the configured secret. The
+canonical query JSON uses sorted keys and compact separators, and is `{}` when the request URL has
+no query string. Repeated query keys are encoded as arrays in request order.
 
 The webhook trigger stores the durable event as `external.webhook.<slug>` by default, exposes the
-webhook envelope downstream, and leaves payload shaping to gates such as `gate:filter`,
+webhook envelope downstream with the signature and timestamp headers, and leaves payload shaping to
+gates such as `gate:filter`,
 `gate:map`, `gate:deserialize`, and `gate:dedupe`.
 
 ```bash
 WEBHOOK_BODY='{"target":"demo"}'
+WEBHOOK_QUERY_JSON='{}'
 WEBHOOK_SECRET='replace-with-your-secret'
+WEBHOOK_TIMESTAMP="$(date +%s)"
 SIG="$(
-  printf '%s' "$WEBHOOK_BODY" |
+  printf '%s.%s.%s' "$WEBHOOK_TIMESTAMP" "$WEBHOOK_QUERY_JSON" "$WEBHOOK_BODY" |
     openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex |
     awk '{print $2}'
 )"
 
 curl -X POST http://127.0.0.1:8100/api/workflow-webhooks/deploy \
   -H "Content-Type: application/json" \
+  -H "X-Evander-Timestamp: ${WEBHOOK_TIMESTAMP}" \
   -H "X-Evander-Signature-256: sha256=${SIG}" \
   -d "$WEBHOOK_BODY"
 ```
@@ -531,11 +538,20 @@ curl -X POST http://127.0.0.1:8100/api/workflow-webhooks/deploy \
 ```python
 import hashlib
 import hmac
+import json
 import os
+import time
 
 body = b'{"target":"demo"}'
+query = {}
 secret = os.environ["WEBHOOK_SECRET"].encode()
-signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
+timestamp = str(int(time.time()))
+query_material = json.dumps(query, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+signature = hmac.new(
+    secret,
+    timestamp.encode("ascii") + b"." + query_material.encode("utf-8") + b"." + body,
+    hashlib.sha256,
+).hexdigest()
 print(signature)
 ```
 
@@ -670,8 +686,9 @@ refreshes the issue-numbered host mirror in one command. The lower-level
 `bootstrap_git_vm.sh` helper installs a dedicated guest SSH key and a restricted host
 `authorized_keys` entry so guests can push Git branches without needing your host password or
 general shell access. Writable guest keys are bound to one bare repo and
-`refs/heads/agents/<session-id>/...` namespace; if the helper cannot determine repo/session
-metadata, it installs read-only Git access instead. Issue mirrors also carry a `post-receive`
+`refs/heads/agents/<session-id>/...` namespace. Read-only guest keys are still bound to one bare
+repo; if the helper cannot determine repo metadata, it refuses to install an unscoped key. Issue
+mirrors also carry a `post-receive`
 hook so host-side automation can promote pushed `agents/...` branches into the trusted clone, push
 the review branch to `origin`, and create the upstream PR automatically.
 Issue mirrors also remember their source settings, so later guest `git fetch` / `git pull`

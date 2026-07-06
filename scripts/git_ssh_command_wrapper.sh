@@ -7,7 +7,7 @@ Usage: git_ssh_command_wrapper.sh
 
 Forced-command wrapper used by host authorized_keys entries for guest Git SSH
 access. It validates that the requested repository lives under the configured
-Git root, enforces repo/session metadata for guest write commands,
+Git root, enforces repo scope for read commands and repo/session metadata for writes,
 auto-refreshes issue mirrors for guest read commands when mirror metadata is
 available, and then hands the command to git-shell.
 EOF
@@ -119,16 +119,11 @@ AUTH_REF_PREFIX="$(
   decode_auth_value "${EVANDER_GIT_AUTH_REF_PREFIX:-}" "${EVANDER_GIT_AUTH_REF_PREFIX_B64:-}"
 )"
 
-require_write_authorization() {
-  local auth_repo_real expected_prefix hook_path
+require_authorized_repo_scope() {
+  local auth_repo_real
 
-  if [[ "${AUTH_ACCESS}" != "write" ]]; then
-    echo "Git SSH key is read-only; repo/session metadata is required for pushes." >&2
-    exit 1
-  fi
-
-  if [[ -z "${AUTH_REPO_RAW}" || -z "${AUTH_SESSION_ID}" || -z "${AUTH_REF_PREFIX}" ]]; then
-    echo "Git write access requires authorized repo, session, and ref-prefix metadata." >&2
+  if [[ -z "${AUTH_REPO_RAW}" ]]; then
+    echo "Git SSH key is missing authorized repository metadata." >&2
     exit 1
   fi
 
@@ -145,6 +140,39 @@ require_write_authorization() {
     echo "Git SSH key is not authorized for repository: ${REPO_REAL}" >&2
     exit 1
   fi
+
+  printf '%s\n' "${auth_repo_real}"
+}
+
+require_read_authorization() {
+  case "${AUTH_ACCESS}" in
+    write)
+      require_authorized_repo_scope >/dev/null
+      ;;
+    read-only)
+      require_authorized_repo_scope >/dev/null
+      ;;
+    *)
+      echo "Unsupported Git SSH auth access mode: ${AUTH_ACCESS}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+require_write_authorization() {
+  local auth_repo_real expected_prefix hook_path
+
+  if [[ "${AUTH_ACCESS}" != "write" ]]; then
+    echo "Git SSH key is read-only; repo/session metadata is required for pushes." >&2
+    exit 1
+  fi
+
+  if [[ -z "${AUTH_REPO_RAW}" || -z "${AUTH_SESSION_ID}" || -z "${AUTH_REF_PREFIX}" ]]; then
+    echo "Git write access requires authorized repo, session, and ref-prefix metadata." >&2
+    exit 1
+  fi
+
+  auth_repo_real="$(require_authorized_repo_scope)"
 
   if [[ -z "${AUTH_SESSION_ID}" || "${AUTH_SESSION_ID}" == */* || "${AUTH_SESSION_ID}" == "." || "${AUTH_SESSION_ID}" == ".." ]]; then
     echo "Authorized Git session id must be a single non-empty ref path component." >&2
@@ -176,6 +204,9 @@ require_write_authorization() {
 }
 
 case "${ORIGINAL_COMMAND}" in
+  git-upload-pack\ *|git-upload-archive\ *)
+    require_read_authorization
+    ;;
   git-receive-pack\ *)
     require_write_authorization
     ;;

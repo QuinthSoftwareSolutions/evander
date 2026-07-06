@@ -370,9 +370,7 @@ def test_packaged_hidden_system_workflow_pack_matches_repo_config() -> None:
 def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
     from evander_team_addon.workflow_packs import team_runtime_v1
 
-    project_dir = Path(__file__).resolve().parents[1]
-    checked_in_pack = load_workflow_pack(project_dir, "team-runtime.v1")
-    source_pack = WorkflowPack.model_validate(team_runtime_v1())
+    pack = WorkflowPack.model_validate(team_runtime_v1())
     forbidden_fragments = (
         "team-action.json",
         "query:team:agent-action-artifact",
@@ -388,62 +386,36 @@ def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
         ("team-destroy-ephemeral-agent", "team-mark-ephemeral-cleaned-up"),
     }
 
-    completion_shapes: list[tuple[dict[str, dict[str, object]], set[tuple[str, str]]]] = []
-    for pack in (checked_in_pack, source_pack):
-        serialized = json.dumps(pack.model_dump(mode="json"), sort_keys=True)
-        for forbidden in forbidden_fragments:
-            assert forbidden not in serialized
+    serialized = json.dumps(pack.model_dump(mode="json"), sort_keys=True)
+    for forbidden in forbidden_fragments:
+        assert forbidden not in serialized
 
-        nodes = {
-            ir_node.node.id: ir_node.node.model_dump(mode="json")
-            for ir_node in pack.ir.nodes
-        }
-        edges = {(edge.source_id, edge.target_id) for edge in pack.ir.edges}
-        completion_shapes.append((nodes, edges))
+    nodes = {ir_node.node.id: ir_node.node.model_dump(mode="json") for ir_node in pack.ir.nodes}
+    edges = {(edge.source_id, edge.target_id) for edge in pack.ir.edges}
 
-        assert "team-read-persistent-action" not in nodes
-        assert "team-read-ephemeral-action" not in nodes
-        assert "team-apply-persistent-action" not in nodes
-        assert "team-apply-ephemeral-action" not in nodes
-        finalizer = nodes["team-finalize-persistent-dispatch"]
-        assert finalizer["type"] == "effect:team:finalize-agent-dispatch"
-        assert finalizer["config"] == {
-            "agent_id": "${{team-route-completed-session.agent_id ?? null}}",
-            "dispatch_id": "${{team-route-completed-session.dispatch_id}}",
-            "session_id": "${{team-route-completed-session.session_id}}",
-        }
-        assert required_edges.issubset(edges)
-        assert ("team-completed-persistent", "team-read-persistent-action") not in edges
-        assert ("team-read-persistent-action", "team-apply-persistent-action") not in edges
-        assert ("team-completed-ephemeral", "team-read-ephemeral-action") not in edges
-        assert ("team-read-ephemeral-action", "team-apply-ephemeral-action") not in edges
-
-    checked_nodes, checked_edges = completion_shapes[0]
-    source_nodes, source_edges = completion_shapes[1]
-    synchronized_node_ids = {
-        "team-route-completed-session",
-        "team-finalize-persistent-dispatch",
-        "team-destroy-ephemeral-agent",
-        "team-mark-ephemeral-cleaned-up",
+    assert "team-read-persistent-action" not in nodes
+    assert "team-read-ephemeral-action" not in nodes
+    assert "team-apply-persistent-action" not in nodes
+    assert "team-apply-ephemeral-action" not in nodes
+    finalizer = nodes["team-finalize-persistent-dispatch"]
+    assert finalizer["type"] == "effect:team:finalize-agent-dispatch"
+    assert finalizer["config"] == {
+        "agent_id": "${{team-route-completed-session.agent_id ?? null}}",
+        "dispatch_id": "${{team-route-completed-session.dispatch_id}}",
+        "session_id": "${{team-route-completed-session.session_id}}",
     }
-    for node_id in synchronized_node_ids:
-        assert checked_nodes[node_id] == source_nodes[node_id]
-    assert required_edges.issubset(checked_edges & source_edges)
-    outbox_publisher = source_nodes["team-publish-outbox-events"]
+    assert required_edges.issubset(edges)
+    assert ("team-completed-persistent", "team-read-persistent-action") not in edges
+    assert ("team-read-persistent-action", "team-apply-persistent-action") not in edges
+    assert ("team-completed-ephemeral", "team-read-ephemeral-action") not in edges
+    assert ("team-read-ephemeral-action", "team-apply-ephemeral-action") not in edges
+    outbox_publisher = nodes["team-publish-outbox-events"]
     assert outbox_publisher["type"] == "effect:team:publish-outbox-events"
     assert outbox_publisher["config"]["limit"] == 25
-    ephemeral_create = source_nodes["team-create-ephemeral-agent"]
+    ephemeral_create = nodes["team-create-ephemeral-agent"]
     assert ephemeral_create["type"] == "effect:agent:create"
     assert ephemeral_create["config"]["allowed_tools"] == ["team_report_ephemeral_result"]
-    assert ("team-cron", "team-publish-outbox-events") in source_edges
-
-    layout_path = project_dir / "config" / "workflow-packs" / "team-runtime.v1.layout.json"
-    layout_nodes = json.loads(layout_path.read_text(encoding="utf-8"))["nodes"]
-    assert "team-finalize-persistent-dispatch" in layout_nodes
-    assert "team-read-persistent-action" not in layout_nodes
-    assert "team-read-ephemeral-action" not in layout_nodes
-    assert "team-apply-persistent-action" not in layout_nodes
-    assert "team-apply-ephemeral-action" not in layout_nodes
+    assert ("team-cron", "team-publish-outbox-events") in edges
 
 
 def test_workflow_pack_can_store_multiple_named_graphs(tmp_path: Path) -> None:

@@ -177,9 +177,7 @@ def test_setup_tui_install_preflight_failure_returns_to_checklist(
     assert result == manager.load_state()
 
 
-def test_setup_tui_launch_failure_returns_to_checklist(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_setup_tui_launch_failure_returns_to_checklist(tmp_path: Path, monkeypatch, capsys) -> None:
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
     monkeypatch.setattr(manager, "required_ready", lambda state: True)
@@ -472,10 +470,22 @@ def test_setup_admin_frontend_asset_build_installs_approved_nodejs_npm(
         "nodejs=18.19.1",
         "npm=9.2.0",
     ] in [call["args"] for call in run_calls]
-    assert ["/bin/npm", "ci", "--no-audit", "--no-fund"] in [
-        call["args"] for call in run_calls
-    ]
+    assert ["/bin/npm", "ci", "--no-audit", "--no-fund"] in [call["args"] for call in run_calls]
     assert ["/bin/npm", "run", "build"] in [call["args"] for call in run_calls]
+
+
+def test_setup_admin_frontend_tooling_supports_apt_node_18() -> None:
+    frontend_dir = ROOT / "frontend" / "workflow-editor"
+    package_json = json.loads((frontend_dir / "package.json").read_text(encoding="utf-8"))
+    package_lock = json.loads((frontend_dir / "package-lock.json").read_text(encoding="utf-8"))
+
+    assert package_json["devDependencies"]["vite"].startswith("^6.")
+    assert package_json["devDependencies"]["@vitejs/plugin-react"].startswith("^4.")
+    assert "^18.0.0" in package_lock["packages"]["node_modules/vite"]["engines"]["node"]
+    assert (
+        "^14.18.0 || >=16.0.0"
+        == package_lock["packages"]["node_modules/@vitejs/plugin-react"]["engines"]["node"]
+    )
 
 
 def test_setup_admin_frontend_asset_build_stops_when_nodejs_npm_is_rejected(
@@ -507,9 +517,7 @@ def test_setup_admin_frontend_asset_build_stops_when_nodejs_npm_is_rejected(
     )
 
     with pytest.raises(SetupDependencyInstallRejected):
-        manager._ensure_admin_frontend_assets(
-            approve_nodejs_npm_install=lambda versions: False
-        )
+        manager._ensure_admin_frontend_assets(approve_nodejs_npm_install=lambda versions: False)
 
 
 def test_setup_tui_launch_exits_when_dependency_install_is_rejected(
@@ -568,9 +576,7 @@ def test_setup_launch_starts_local_worker_for_same_host_container(
     assert ["sudo", "systemctl", "restart", "evander-worker-daemon.service"] in run_calls
 
 
-def test_setup_tui_omits_nonfunctional_setup_profile_choice(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_setup_tui_omits_nonfunctional_setup_profile_choice(tmp_path: Path, monkeypatch) -> None:
     clear_calls = []
     monkeypatch.setattr("evander.setup.tui.click.clear", lambda: clear_calls.append(True))
     runner = CliRunner()
@@ -593,9 +599,7 @@ def test_setup_tui_omits_nonfunctional_setup_profile_choice(
     assert len(clear_calls) >= 2
 
 
-def test_setup_tui_supports_discouraged_no_auth_admin_web(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_setup_tui_supports_discouraged_no_auth_admin_web(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("evander.setup.tui.click.clear", lambda: None)
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
@@ -659,7 +663,9 @@ def test_setup_tui_checklist_arrow_navigation_wraps(tmp_path: Path, monkeypatch)
 def test_setup_tui_raw_key_reader_collects_arrow_escape_sequence(monkeypatch) -> None:
     reads = iter([b"\x1b", b"[", b"B"])
     monkeypatch.setattr(setup_tui.os, "read", lambda fd, count: next(reads))
-    monkeypatch.setattr(setup_tui.select, "select", lambda reads, writes, errors, timeout: (reads, [], []))
+    monkeypatch.setattr(
+        setup_tui.select, "select", lambda reads, writes, errors, timeout: (reads, [], [])
+    )
 
     assert setup_tui._read_key_bytes(0) == b"\x1b[B"
 
@@ -724,9 +730,7 @@ def test_setup_tui_interactive_admin_no_auth_requires_confirmation(
     assert payload["admin_web"]["password_configured"] is False
 
 
-def test_setup_tui_interactive_execution_model_single_select(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_setup_tui_interactive_execution_model_single_select(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("evander.setup.tui.click.clear", lambda: None)
     _patch_tui_keys(monkeypatch, "down", "enter")
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")

@@ -507,12 +507,43 @@ def _write_workflow_webhook_config(
     )
 
 
-def _signed_webhook_headers(body: bytes, *, secret: str) -> dict[str, str]:
-    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+def _signed_webhook_headers(
+    body: bytes,
+    *,
+    secret: str,
+    query: dict[str, object] | None = None,
+    timestamp: int | None = None,
+) -> dict[str, str]:
+    timestamp_text = str(timestamp if timestamp is not None else int(time.time()))
+    query_material = json.dumps(
+        query or {},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        timestamp_text.encode("ascii") + b"." + query_material.encode("utf-8") + b"." + body,
+        hashlib.sha256,
+    ).hexdigest()
     return {
         "Content-Type": "application/json",
+        "X-Evander-Timestamp": timestamp_text,
         "X-Evander-Signature-256": f"sha256={digest}",
     }
+
+
+def _expected_webhook_idempotency_key(
+    *,
+    trigger_id: str,
+    slug: str,
+    headers: dict[str, str],
+    query: dict[str, object],
+) -> str:
+    signature_key = headers["X-Evander-Signature-256"].replace("=", ":", 1)
+    query_material = json.dumps(query, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    query_digest = hashlib.sha256(query_material.encode("utf-8")).hexdigest()
+    return f"webhook:{trigger_id}:{slug}:{signature_key}:query-sha256:{query_digest}"
 
 
 def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
@@ -8620,7 +8651,11 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    headers = _signed_webhook_headers(body, secret="webhook-secret")
+    headers = _signed_webhook_headers(
+        body,
+        secret="webhook-secret",
+        query={"source": "ci"},
+    )
 
     response = client.post(
         "/api/workflow-webhooks/build-notify?source=ci",
@@ -8637,7 +8672,7 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     assert response.status_code == 202
     assert repeat.status_code == 202
     assert auth_required.status_code == 401
-    assert response.json()["event_id"] != repeat.json()["event_id"]
+    assert response.json()["event_id"] == repeat.json()["event_id"]
     assert response.json()["event_type"] == "external.webhook.build-notify"
     assert response.json()["correlation_key"] == "webhook:build-notify"
     assert response.json()["source"] == {
@@ -8660,17 +8695,107 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     assert response.json()["payload"]["body"] == {"target": "demo", "options": {"dry_run": True}}
     assert response.json()["payload"]["query"] == {"source": "ci"}
     assert response.json()["payload"]["signature_header"] == headers["X-Evander-Signature-256"]
+    assert response.json()["payload"]["timestamp_header"] == headers["X-Evander-Timestamp"]
     assert response.json()["payload"]["received_at"].endswith("Z")
     assert response.json()["payload"]["remote_addr"]
 
     events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
-    assert len(events) == 2
-    assert {event.event_id for event in events} == {
-        response.json()["event_id"],
-        repeat.json()["event_id"],
-    }
+    assert len(events) == 1
+    assert events[0].event_id == response.json()["event_id"]
     assert {event.event_type for event in events} == {"external.webhook.build-notify"}
-    assert [event.idempotency_key for event in events] == [None, None]
+    assert events[0].idempotency_key == _expected_webhook_idempotency_key(
+        trigger_id="webhook-1",
+        slug="build-notify",
+        headers=headers,
+        query={"source": "ci"},
+    )
+
+
+def test_workflow_webhook_ingress_keeps_distinct_query_envelopes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    _write_workflow_webhook_config(tmp_path)
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    body = b'{"target":"demo"}'
+    headers = _signed_webhook_headers(body, secret="webhook-secret", query={"source": "ci"})
+    manual_headers = _signed_webhook_headers(
+        body,
+        secret="webhook-secret",
+        query={"source": "manual"},
+    )
+    first = client.post(
+        "/api/workflow-webhooks/build-notify?source=ci",
+        content=body,
+        headers=headers,
+    )
+    repeat = client.post(
+        "/api/workflow-webhooks/build-notify?source=ci",
+        content=body,
+        headers=headers,
+    )
+    second = client.post(
+        "/api/workflow-webhooks/build-notify?source=manual",
+        content=body,
+        headers=manual_headers,
+    )
+
+    assert first.status_code == 202
+    assert repeat.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["event_id"] == repeat.json()["event_id"]
+    assert first.json()["event_id"] != second.json()["event_id"]
+
+    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    assert len(events) == 2
+    assert [event.payload["query"] for event in events] == [
+        {"source": "ci"},
+        {"source": "manual"},
+    ]
+    assert {event.idempotency_key for event in events} == {
+        _expected_webhook_idempotency_key(
+            trigger_id="webhook-1",
+            slug="build-notify",
+            headers=headers,
+            query={"source": "ci"},
+        ),
+        _expected_webhook_idempotency_key(
+            trigger_id="webhook-1",
+            slug="build-notify",
+            headers=manual_headers,
+            query={"source": "manual"},
+        ),
+    }
+
+
+def test_workflow_webhook_ingress_rejects_query_mutation_replay(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    _write_workflow_webhook_config(tmp_path)
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    body = b'{"target":"demo"}'
+    headers = _signed_webhook_headers(body, secret="webhook-secret", query={"source": "ci"})
+    accepted = client.post(
+        "/api/workflow-webhooks/build-notify?source=ci",
+        content=body,
+        headers=headers,
+    )
+    replay = client.post(
+        "/api/workflow-webhooks/build-notify?source=manual",
+        content=body,
+        headers=headers,
+    )
+
+    assert accepted.status_code == 202
+    assert replay.status_code == 401
+    assert replay.json()["error"] == "Webhook signature is invalid or missing"
+
+    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    assert len(events) == 1
+    assert events[0].payload["query"] == {"source": "ci"}
 
 
 def test_workflow_webhook_ingress_does_not_dedupe_same_body_across_slugs(
@@ -8739,7 +8864,20 @@ def test_workflow_webhook_ingress_does_not_dedupe_same_body_across_slugs(
         "build-notify",
         "deploy-notify",
     }
-    assert [event.idempotency_key for event in events] == [None, None]
+    assert {event.idempotency_key for event in events} == {
+        _expected_webhook_idempotency_key(
+            trigger_id="webhook-build",
+            slug="build-notify",
+            headers=headers,
+            query={},
+        ),
+        _expected_webhook_idempotency_key(
+            trigger_id="webhook-deploy",
+            slug="deploy-notify",
+            headers=headers,
+            query={},
+        ),
+    }
 
 
 @pytest.mark.parametrize(
@@ -8778,12 +8916,47 @@ def test_workflow_webhook_ingress_rejects_bad_hmac(tmp_path: Path, monkeypatch) 
         content=body,
         headers={
             "Content-Type": "application/json",
+            "X-Evander-Timestamp": str(int(time.time())),
             "X-Evander-Signature-256": "sha256=" + ("0" * 64),
         },
     )
 
     assert response.status_code == 401
     assert response.json()["error"] == "Webhook signature is invalid or missing"
+
+
+def test_workflow_webhook_ingress_rejects_missing_or_stale_timestamp(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    _write_workflow_webhook_config(tmp_path)
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    body = b'{"target":"demo"}'
+    missing_timestamp = client.post(
+        "/api/workflow-webhooks/build-notify",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Evander-Signature-256": "sha256=" + ("0" * 64),
+        },
+    )
+    stale_timestamp = client.post(
+        "/api/workflow-webhooks/build-notify",
+        content=body,
+        headers=_signed_webhook_headers(
+            body,
+            secret="webhook-secret",
+            timestamp=int(time.time()) - 600,
+        ),
+    )
+
+    assert missing_timestamp.status_code == 401
+    assert missing_timestamp.json()["error"] == "Webhook timestamp is invalid or stale"
+    assert stale_timestamp.status_code == 401
+    assert stale_timestamp.json()["error"] == "Webhook timestamp is invalid or stale"
+    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    assert events == []
 
 
 def test_workflow_webhook_ingress_rejects_invalid_json_and_non_object_body(
@@ -9937,6 +10110,153 @@ def test_admin_web_approval_decisions_use_approval_directory_permission(
     assert decision.json()["request"]["status"] == "denied"
     assert revoke.status_code == 200
     assert revoke.json()["request"]["status"] == "denied"
+
+
+def test_admin_web_session_reads_use_directory_owner_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    ops = service.directory_admin.create_child(parent="root", name="ops")
+    finance = service.directory_admin.create_child(parent="root", name="finance")
+    assert ops.ok is True and ops.data is not None
+    assert finance.ok is True and finance.data is not None
+    ops_path = ops.data.details.directory.path
+    finance_path = finance.data.details.directory.path
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="ops-session",
+            vm_id="vm-ops",
+            directory_path=ops_path,
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="finance-session",
+            vm_id="vm-finance",
+            directory_path=finance_path,
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.remove_user_group_assignment(
+        login="ops-owner@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="ops-owner@example.com", group_id=OWNER_GROUP_ID, directory_path=ops_path
+    )
+    store.set_local_password(login="ops-owner@example.com", password="ops-pass")
+    client = TestClient(app)
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "ops-owner@example.com", "password": "ops-pass"},
+    )
+
+    all_sessions = client.get("/api/admin/sessions", params={"include_expired": "true"})
+    ops_sessions = client.get(
+        "/api/admin/sessions",
+        params={"directory_path": ops_path, "include_expired": "true"},
+    )
+    finance_sessions = client.get(
+        "/api/admin/sessions",
+        params={"directory_path": finance_path, "include_expired": "true"},
+    )
+    ops_detail = client.get("/api/admin/sessions/ops-session")
+    finance_detail = client.get("/api/admin/sessions/finance-session")
+
+    assert login.status_code == 200
+    assert all_sessions.status_code == 200
+    assert [item["session_id"] for item in all_sessions.json()["items"]] == ["ops-session"]
+    assert ops_sessions.status_code == 200
+    assert [item["session_id"] for item in ops_sessions.json()["items"]] == ["ops-session"]
+    assert finance_sessions.status_code == 403
+    assert ops_detail.status_code == 200
+    assert ops_detail.json()["session"]["session_id"] == "ops-session"
+    assert finance_detail.status_code == 403
+
+
+def test_admin_web_approval_reads_use_directory_owner_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    ops = service.directory_admin.create_child(parent="root", name="ops")
+    finance = service.directory_admin.create_child(parent="root", name="finance")
+    assert ops.ok is True and ops.data is not None
+    assert finance.ok is True and finance.data is not None
+    ops_path = ops.data.details.directory.path
+    finance_path = finance.data.details.directory.path
+    service.runtime.approvals.put(
+        "ops-approval",
+        ApprovalRequest(
+            request_id="ops-approval",
+            session_id="ops-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="abc",
+            human_summary="send ops email",
+            payload={"body": "ops"},
+            directory_path=ops_path,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    service.runtime.approvals.put(
+        "finance-approval",
+        ApprovalRequest(
+            request_id="finance-approval",
+            session_id="finance-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="def",
+            human_summary="send finance email",
+            payload={"body": "finance"},
+            directory_path=finance_path,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.remove_user_group_assignment(
+        login="ops-owner@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="ops-owner@example.com", group_id=OWNER_GROUP_ID, directory_path=ops_path
+    )
+    store.set_local_password(login="ops-owner@example.com", password="ops-pass")
+    client = TestClient(app)
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "ops-owner@example.com", "password": "ops-pass"},
+    )
+
+    all_approvals = client.get("/api/admin/approvals")
+    ops_approvals = client.get("/api/admin/approvals", params={"directory_path": ops_path})
+    finance_approvals = client.get("/api/admin/approvals", params={"directory_path": finance_path})
+    ops_detail = client.get("/api/admin/approvals/ops-approval")
+    finance_detail = client.get("/api/admin/approvals/finance-approval")
+
+    assert login.status_code == 200
+    assert all_approvals.status_code == 200
+    assert [item["request_id"] for item in all_approvals.json()["items"]] == ["ops-approval"]
+    assert all_approvals.json()["health"]["total"] == 1
+    assert ops_approvals.status_code == 200
+    assert [item["request_id"] for item in ops_approvals.json()["items"]] == ["ops-approval"]
+    assert finance_approvals.status_code == 403
+    assert ops_detail.status_code == 200
+    assert ops_detail.json()["request"]["request_id"] == "ops-approval"
+    assert finance_detail.status_code == 403
 
 
 def _assert_json_schema_requires_every_object_property(

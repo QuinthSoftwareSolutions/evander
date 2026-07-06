@@ -14081,6 +14081,12 @@ def test_clone_repo_into_vm_clones_repo(tmp_path: Path, monkeypatch: Any) -> Non
         cmd[0].endswith("bootstrap_git_vm.sh") and cmd[1:] == ["lab-vm", "agent"]
         for cmd in captured_cmds
     )
+    bootstrap_env = next(
+        env for cmd, env in captured_runs if cmd[0].endswith("bootstrap_git_vm.sh")
+    )
+    assert bootstrap_env is not None
+    assert bootstrap_env["EVANDER_GIT_REPO"] == "sample-repo"
+    assert bootstrap_env["EVANDER_GIT_SESSION_ID"] == "lab-session"
     assert any(
         cmd[0] == "ssh" and cmd[-3:] == ["agent@192.168.250.10", "bash", "-s"]
         for cmd in captured_cmds
