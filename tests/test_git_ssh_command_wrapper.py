@@ -181,6 +181,31 @@ def test_git_ssh_wrapper_enforces_repo_and_session_ref_prefix_for_pushes(
         == expected_sha
     )
 
+    allowed_read = subprocess.run(
+        [
+            "git",
+            "ls-remote",
+            f"ssh://evander-git-host{allowed_repo}",
+            "refs/heads/agents/session-1/topic",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=push_env,
+    )
+    assert allowed_read.returncode == 0
+    assert "refs/heads/agents/session-1/topic" in allowed_read.stdout
+
+    denied_cross_repo_read = subprocess.run(
+        ["git", "ls-remote", f"ssh://evander-git-host{other_repo}"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=push_env,
+    )
+    assert denied_cross_repo_read.returncode != 0
+    assert "Git SSH key is not authorized for repository" in denied_cross_repo_read.stderr
+
     wrong_prefix = _git_result(
         worktree,
         "push",
@@ -228,7 +253,7 @@ def test_git_ssh_wrapper_enforces_repo_and_session_ref_prefix_for_pushes(
     assert missing_other_ref.returncode != 0
 
 
-def test_git_ssh_wrapper_without_write_metadata_allows_reads_and_denies_pushes(
+def test_git_ssh_wrapper_read_only_requires_repo_scope_and_denies_pushes(
     tmp_path: Path,
 ) -> None:
     sandbox_root = tmp_path / "sandbox"
@@ -249,8 +274,16 @@ def test_git_ssh_wrapper_without_write_metadata_allows_reads_and_denies_pushes(
         capture_output=True,
         env=env,
     )
+    subprocess.run(
+        [str(create_remote_script), "other"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
 
     bare_repo = git_root / "readonly.git"
+    other_repo = git_root / "other.git"
     worktree = tmp_path / "worktree"
     subprocess.run(["git", "init", str(worktree)], check=True, text=True, capture_output=True)
     _git(worktree, "checkout", "-b", "main")
@@ -280,15 +313,42 @@ def test_git_ssh_wrapper_without_write_metadata_allows_reads_and_denies_pushes(
         capture_output=True,
         env=read_env,
     )
+    assert ls_remote.returncode != 0
+    assert "Git SSH key is missing authorized repository metadata." in ls_remote.stderr
+
+    scoped_read_env = read_env.copy()
+    scoped_read_env.update(
+        {
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
+        }
+    )
+    ls_remote = subprocess.run(
+        ["git", "ls-remote", remote_url, "refs/heads/main"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=scoped_read_env,
+    )
     assert ls_remote.returncode == 0
     assert "refs/heads/main" in ls_remote.stdout
+
+    denied_cross_repo_read = subprocess.run(
+        ["git", "ls-remote", f"ssh://evander-git-host{other_repo}"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=scoped_read_env,
+    )
+    assert denied_cross_repo_read.returncode != 0
+    assert "Git SSH key is not authorized for repository" in denied_cross_repo_read.stderr
 
     denied_push = _git_result(
         worktree,
         "push",
         remote_url,
         "HEAD:refs/heads/agents/session-1/topic",
-        env=read_env,
+        env=scoped_read_env,
     )
     assert denied_push.returncode != 0
     assert "Git SSH key is read-only; repo/session metadata is required for pushes." in (
@@ -383,6 +443,8 @@ def test_git_ssh_wrapper_refreshes_issue_mirror_before_upload_pack(tmp_path: Pat
     wrapper_env.update(
         {
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
@@ -516,6 +578,8 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     wrapper_env.update(
         {
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
@@ -654,6 +718,8 @@ def test_git_ssh_wrapper_preserves_local_output_refs_during_shared_mirror_refres
     wrapper_env.update(
         {
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
@@ -750,6 +816,8 @@ def test_git_ssh_wrapper_can_disable_shared_mirror_auto_refresh(tmp_path: Path) 
     wrapper_env.update(
         {
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
@@ -866,6 +934,8 @@ def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload
     wrapper_env.update(
         {
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
@@ -977,6 +1047,8 @@ def test_git_ssh_wrapper_preserves_existing_refs_when_shared_mirror_refresh_fail
     wrapper_env.update(
         {
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
@@ -1090,6 +1162,8 @@ def test_git_ssh_wrapper_preserves_pr_notes_during_shared_mirror_refresh(tmp_pat
     wrapper_env.update(
         {
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
@@ -1223,6 +1297,8 @@ def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refr
     wrapper_env.update(
         {
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
@@ -1326,6 +1402,8 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_with_non_origin_remote(tmp_path
     wrapper_env.update(
         {
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )

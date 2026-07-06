@@ -165,9 +165,7 @@ def test_relay_requires_mcp_session_token_for_tokenized_http_session(
         calls.append(
             {
                 "url": str(request.url),
-                "mcp_token_header": request.headers.get(
-                    "x-evander-mcp-session-token", ""
-                ),
+                "mcp_token_header": request.headers.get("x-evander-mcp-session-token", ""),
             }
         )
         return httpx.Response(200, json={"id": "resp_test", "object": "response"})
@@ -203,13 +201,9 @@ def test_relay_requires_mcp_session_token_for_tokenized_http_session(
     )
 
     assert denied_missing.status_code == 401
-    assert denied_missing.json() == {
-        "error": "MCP session token is required for this session"
-    }
+    assert denied_missing.json() == {"error": "MCP session token is required for this session"}
     assert denied_wrong.status_code == 401
-    assert denied_wrong.json() == {
-        "error": "MCP session token is required for this session"
-    }
+    assert denied_wrong.json() == {"error": "MCP session token is required for this session"}
     assert allowed.status_code == 200
     assert allowed_auth_header.status_code == 200
     assert calls == [
@@ -248,6 +242,113 @@ def test_relay_injects_authorization_header(tmp_path: Path) -> None:
     assert captured["authorization"] == "Bearer test-key"
     assert captured["accept-encoding"] == "identity"
     assert captured["path"] == "/v1/responses"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload", "expected_upstream_path"),
+    [
+        ("GET", "/v1/session/session-1/models", None, "/v1/models"),
+        (
+            "POST",
+            "/v1/session/session-1/chat/completions",
+            {"model": "gpt-5.2-codex", "messages": []},
+            "/v1/chat/completions",
+        ),
+        (
+            "POST",
+            "/v1/session/session-1/embeddings",
+            {"model": "text-embedding-3-small", "input": "hello"},
+            "/v1/embeddings",
+        ),
+    ],
+)
+def test_relay_allows_supported_openai_compatible_paths(
+    tmp_path: Path,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+    expected_upstream_path: str,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["path"] = request.url.path
+        return httpx.Response(200, json={"ok": True})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    kwargs = {"json": payload} if payload is not None else {}
+
+    response = client.request(method, path, **kwargs)
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer test-key"
+    assert captured["path"] == expected_upstream_path
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("GET", "/v1/session/session-1/files", None),
+        ("DELETE", "/v1/session/session-1/files/file_123", None),
+        ("POST", "/v1/session/session-1/fine_tuning/jobs", {"model": "gpt-5.2-codex"}),
+    ],
+)
+def test_relay_rejects_unsupported_openai_paths_without_forwarding_host_auth(
+    tmp_path: Path,
+    method: str,
+    path: str,
+    payload: dict[str, object] | None,
+) -> None:
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"ok": True})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    kwargs = {"json": payload} if payload is not None else {}
+
+    response = client.request(method, path, **kwargs)
+
+    assert response.status_code == 501
+    assert "OpenAI relay currently supports" in response.text
+    assert called is False
+
+
+def test_relay_rejects_encoded_dot_segments_without_forwarding_host_auth(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"ok": True})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    response = client.post(
+        "/v1/session/session-1/responses/%2e%2e/files",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
+
+    assert response.status_code == 501
+    assert "dot segments" in response.text
+    assert called is False
 
 
 def test_relay_rejects_hosted_web_search_for_session_without_flag(tmp_path: Path) -> None:
@@ -1176,6 +1277,36 @@ def test_relay_proxies_websocket_messages_and_injects_auth(tmp_path: Path) -> No
     assert all(not key.lower().startswith("sec-websocket-") for key in headers)
 
 
+def test_relay_rejects_unsupported_openai_websocket_paths_without_connecting_upstream(
+    tmp_path: Path,
+) -> None:
+    connected = False
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str], timeout_seconds: float):
+        nonlocal connected
+        del url, headers, timeout_seconds
+        connected = True
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    client = TestClient(relay.create_app())
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/v1/session/session-1/files"):
+            pass
+
+    assert exc_info.value.code == 1008
+    assert "only /v1/responses" in str(exc_info.value.reason)
+    assert connected is False
+    assert upstream.sent_messages == []
+
+
 def test_relay_rejects_expired_websocket_session_without_upstream_connection(
     tmp_path: Path,
 ) -> None:
@@ -1262,9 +1393,7 @@ def test_relay_requires_mcp_session_token_for_tokenized_websocket_session(
     assert captured["url"] == "wss://api.openai.com/v1/responses?foo=bar"
     headers = captured["headers"]
     assert isinstance(headers, dict)
-    assert "x-evander-mcp-session-token" not in {
-        key.lower() for key in headers
-    }
+    assert "x-evander-mcp-session-token" not in {key.lower() for key in headers}
 
 
 def test_relay_rejects_websocket_hosted_web_search_without_session_flag(

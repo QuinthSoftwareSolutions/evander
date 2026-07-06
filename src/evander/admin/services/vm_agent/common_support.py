@@ -389,6 +389,8 @@ class VmAgentAdminSupport:
                 "EVANDER_GIT_HOST": issue_setup.git_host,
                 "EVANDER_GIT_USER": issue_setup.git_user,
                 "EVANDER_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
+                "EVANDER_GIT_REPO": repo_name,
+                "EVANDER_GIT_SESSION_ID": session_id,
             },
         )
         if completed.returncode != 0:

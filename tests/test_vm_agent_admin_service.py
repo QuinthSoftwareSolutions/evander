@@ -4,12 +4,13 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.services import VmAgentAdminDependencies, VmAgentAdminService
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
 from evander.admin.services.local_issue_identity import LocalIssueIdentityResolver
@@ -414,6 +415,63 @@ def _vm_agent_dependencies(admin: FakeAdmin, **overrides: Any) -> VmAgentAdminDe
         clone_repo_into_vm=lambda **kwargs: admin._clone_repo_into_vm(**kwargs),
         **overrides,
     )
+
+
+def test_clone_repo_into_vm_guest_passes_repo_session_metadata_to_git_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = FakeAdmin()
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+    captured_runs: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured_runs.append((cmd, dict(kwargs)))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("evander.admin.services.vm_agent.vm_repo._run_subprocess", fake_run)
+    monkeypatch.setattr(
+        "evander.admin.services.vm_agent.vm_repo._resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_agent.vm_repo._ssh_options",
+        lambda _vm_name, _vm_ip, private_key_path: ["-i", str(private_key_path)],
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_agent.vm_repo._guest_agent_pr_note_helper_b64",
+        lambda _project_dir: "agent-pr-note-helper",
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_agent.vm_repo._guest_push_agent_helper_b64",
+        lambda _project_dir: "agent-push-helper",
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_agent.vm_repo._guest_sync_base_helper_b64",
+        lambda _project_dir: "sync-base-helper",
+    )
+
+    result = service.clone_repo_into_vm_guest(
+        vm_name="vm-1",
+        vm_user="agent",
+        session_id="session-1",
+        repo_name="repo",
+        issue_setup=SimpleNamespace(
+            git_root="/srv/git",
+            git_host="127.0.0.1",
+            git_user="git",
+            git_ssh_alias="issue-git",
+        ),
+        vm_ip="192.0.2.10",
+    )
+
+    assert result == "/home/agent/repo"
+    bootstrap_env = next(
+        kwargs["env"]
+        for cmd, kwargs in captured_runs
+        if cmd[0].endswith("bootstrap_git_vm.sh")
+    )
+    assert bootstrap_env["EVANDER_GIT_REPO"] == "repo"
+    assert bootstrap_env["EVANDER_GIT_SESSION_ID"] == "session-1"
 
 
 def test_vm_agent_admin_service_uses_explicit_ports_for_boundary_operations(

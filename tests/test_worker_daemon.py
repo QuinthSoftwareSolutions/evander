@@ -247,9 +247,7 @@ def test_worker_api_allows_safe_dotted_session_ids(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 201
-    assert (
-        tmp_path / "worker-root" / "sessions" / "session.1" / "metadata.json"
-    ).is_file()
+    assert (tmp_path / "worker-root" / "sessions" / "session.1" / "metadata.json").is_file()
 
 
 def test_worker_api_telemetry_refresh_query_requests_blocking_refresh(
@@ -738,9 +736,9 @@ def test_session_prepare_and_file_write_surface_targets_durable_paths(tmp_path: 
     ]
     root = tmp_path / "worker-root" / "sessions" / "session-1"
     assert (root / "agent_home" / "AGENTS.md").read_text(encoding="utf-8") == "# Agent\n"
-    assert (
-        root / "agent_home" / "repos" / "Repo" / "AGENT_TASK.yaml"
-    ).read_text(encoding="utf-8") == "task: test\n"
+    assert (root / "agent_home" / "repos" / "Repo" / "AGENT_TASK.yaml").read_text(
+        encoding="utf-8"
+    ) == "task: test\n"
 
 
 def test_session_file_write_skips_identical_existing_content_and_mode(tmp_path: Path) -> None:
@@ -931,6 +929,81 @@ def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
     assert response.status_code == 200
     assert response.text == "daily summary\n"
     assert escaped.status_code == 400
+
+
+def test_session_artifact_text_endpoint_rejects_symlink_leaf_inside_artifacts(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+    artifact_dir = tmp_path / "worker-root" / "sessions" / "session-1" / "artifacts" / "reports"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "summary.txt").write_text("daily summary\n", encoding="utf-8")
+    (artifact_dir / "link.txt").symlink_to("summary.txt")
+
+    normal = client.get(
+        "/v1/sessions/session-1/artifacts/reports/summary.txt",
+        headers=_auth(),
+    )
+    linked = client.get(
+        "/v1/sessions/session-1/artifacts/reports/link.txt",
+        headers=_auth(),
+    )
+
+    assert normal.status_code == 200
+    assert normal.text == "daily summary\n"
+    assert linked.status_code == 400
+    assert "symlinks" in linked.json()["error"]
+
+
+def test_session_artifact_text_endpoint_does_not_follow_leaf_symlink_swapped_at_read_sink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+    artifact_dir = tmp_path / "worker-root" / "sessions" / "session-1" / "artifacts" / "reports"
+    artifact_dir.mkdir(parents=True)
+    artifact = artifact_dir / "summary.txt"
+    artifact.write_text("daily summary\n", encoding="utf-8")
+    outside = tmp_path / "host-secret.txt"
+    outside.write_text("host secret\n", encoding="utf-8")
+    original_open = os.open
+
+    def swap_leaf_to_symlink_before_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == "summary.txt" and not artifact.is_symlink():
+            artifact.unlink()
+            artifact.symlink_to(outside)
+        if dir_fd is None:
+            return original_open(path, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swap_leaf_to_symlink_before_open)
+
+    response = client.get(
+        "/v1/sessions/session-1/artifacts/reports/summary.txt",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 400
+    assert "symlinks" in response.json()["error"]
+    assert outside.read_text(encoding="utf-8") == "host secret\n"
 
 
 def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Path) -> None:
@@ -1315,9 +1388,7 @@ def test_session_file_write_rejects_symlink_escape_from_worker_roots(
     assert prepared.status_code == 201
     outside = tmp_path / "outside"
     outside.mkdir()
-    repo_root = (
-        tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "repos"
-    )
+    repo_root = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "repos"
     (repo_root / "link").symlink_to(outside, target_is_directory=True)
 
     response = client.post(
@@ -1336,6 +1407,53 @@ def test_session_file_write_rejects_symlink_escape_from_worker_roots(
     assert response.status_code == 400
     assert "must stay below /home/agent" in response.json()["error"]
     assert not (outside / "escape.txt").exists()
+
+
+def test_session_file_write_rejects_leaf_symlink_swapped_at_write_sink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    outside = tmp_path / "outside.txt"
+    outside.write_text("host secret\n", encoding="utf-8")
+    original_open = os.open
+    leaf_open_count = 0
+
+    def swap_leaf_to_symlink_before_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal leaf_open_count
+        if path == "AGENTS.md":
+            leaf_open_count += 1
+        if path == "AGENTS.md" and leaf_open_count == 2 and not target.exists():
+            target.symlink_to(outside)
+        if dir_fd is None:
+            return original_open(path, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swap_leaf_to_symlink_before_open)
+
+    response = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={"files": [{"destination_path": "/home/agent/AGENTS.md", "content": "# Agent\n"}]},
+    )
+
+    assert response.status_code == 400
+    assert "must stay below /home/agent" in response.json()["error"]
+    assert outside.read_text(encoding="utf-8") == "host secret\n"
+    assert target.is_symlink()
 
 
 def test_session_repo_clone_clones_into_named_repo_under_agent_home(tmp_path: Path) -> None:
@@ -1554,9 +1672,7 @@ def test_worker_job_store_migrates_legacy_workspace_path_records(tmp_path: Path)
                 "artifacts_path": str(
                     tmp_path / "worker-root" / "sessions" / "legacy-session" / "artifacts"
                 ),
-                "logs_path": str(
-                    tmp_path / "worker-root" / "sessions" / "legacy-session" / "logs"
-                ),
+                "logs_path": str(tmp_path / "worker-root" / "sessions" / "legacy-session" / "logs"),
                 "metadata": {},
             }
         },
@@ -1752,11 +1868,7 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     session_response = client.get("/v1/jobs/job-1/logs?mode=session", headers=_auth())
 
     assert response.status_code == 200
-    assert response.text == (
-        f"session id: {thread_id}\n"
-        "I am checking the repo now.\n"
-        "Done.\n"
-    )
+    assert response.text == (f"session id: {thread_id}\nI am checking the repo now.\nDone.\n")
     assert raw_response.status_code == 200
     assert raw_response.text == f"session id: {thread_id}\n"
     assert session_response.status_code == 200
@@ -1793,14 +1905,7 @@ def test_execution_logs_skip_codex_no_response_requested_artifact(tmp_path: Path
         logs_path=str(paths.logs),
     )
     session_dir = (
-        paths.agent_home
-        / ".config"
-        / "evander"
-        / "codex"
-        / "sessions"
-        / "2026"
-        / "05"
-        / "05"
+        paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "05" / "05"
     )
     session_dir.mkdir(parents=True)
     rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
@@ -1827,11 +1932,7 @@ def test_execution_logs_skip_codex_no_response_requested_artifact(tmp_path: Path
 
     output = daemon.get_logs(record, mode="execution")
 
-    assert output == (
-        f"session id: {thread_id}\n"
-        "latest raw output\n"
-        "real session status\n"
-    )
+    assert output == (f"session id: {thread_id}\nlatest raw output\nreal session status\n")
 
 
 def test_completed_codex_job_records_missing_final_message_as_failure(tmp_path: Path) -> None:
@@ -1863,14 +1964,7 @@ def test_completed_codex_job_records_missing_final_message_as_failure(tmp_path: 
         metadata={"agent_provider": "codex", "model_provider_mode": "local_openai"},
     )
     session_dir = (
-        paths.agent_home
-        / ".config"
-        / "evander"
-        / "codex"
-        / "sessions"
-        / "2026"
-        / "05"
-        / "05"
+        paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "05" / "05"
     )
     session_dir.mkdir(parents=True)
     rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
@@ -1952,14 +2046,7 @@ def test_completed_codex_job_allows_null_task_complete_after_assistant_text(
         metadata={"agent_provider": "codex", "model_provider_mode": "local_openai"},
     )
     session_dir = (
-        paths.agent_home
-        / ".config"
-        / "evander"
-        / "codex"
-        / "sessions"
-        / "2026"
-        / "05"
-        / "05"
+        paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "05" / "05"
     )
     session_dir.mkdir(parents=True)
     rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
@@ -1988,10 +2075,7 @@ def test_completed_codex_job_allows_null_task_complete_after_assistant_text(
 
     assert "codex_outcome" not in inspected.metadata
     assert inspected.error is None
-    assert daemon.get_logs(inspected, mode="execution") == (
-        f"session id: {thread_id}\n"
-        "Done.\n"
-    )
+    assert daemon.get_logs(inspected, mode="execution") == (f"session id: {thread_id}\nDone.\n")
 
 
 def test_execution_logs_limit_resumed_thread_to_job_window(tmp_path: Path) -> None:
@@ -2022,14 +2106,7 @@ def test_execution_logs_limit_resumed_thread_to_job_window(tmp_path: Path) -> No
         logs_path=str(paths.logs),
     )
     session_dir = (
-        paths.agent_home
-        / ".config"
-        / "evander"
-        / "codex"
-        / "sessions"
-        / "2026"
-        / "05"
-        / "05"
+        paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "05" / "05"
     )
     session_dir.mkdir(parents=True)
     rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
@@ -2059,8 +2136,7 @@ def test_execution_logs_limit_resumed_thread_to_job_window(tmp_path: Path) -> No
     )
 
     assert daemon.get_logs(record, mode="execution") == (
-        f"session id: {thread_id}\n"
-        "message during this job\n"
+        f"session id: {thread_id}\nmessage during this job\n"
     )
 
 
@@ -2157,14 +2233,7 @@ def test_logs_recover_claude_messages_from_project_jsonl(tmp_path: Path) -> None
         encoding="utf-8",
     )
     codex_session_dir = (
-        paths.agent_home
-        / ".config"
-        / "evander"
-        / "codex"
-        / "sessions"
-        / "2026"
-        / "06"
-        / "08"
+        paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "06" / "08"
     )
     codex_session_dir.mkdir(parents=True)
     (codex_session_dir / f"rollout-2026-06-08T04-26-03-{thread_id}.jsonl").write_text(
@@ -2183,13 +2252,10 @@ def test_logs_recover_claude_messages_from_project_jsonl(tmp_path: Path) -> None
     )
 
     assert daemon.get_logs(record, mode="session") == (
-        "old Claude message\n"
-        "Claude response during this job.\n"
-        "later Claude message\n"
+        "old Claude message\nClaude response during this job.\nlater Claude message\n"
     )
     assert daemon.get_logs(record, mode="execution") == (
-        f"session id: {thread_id}\n"
-        "Claude response during this job.\n"
+        f"session id: {thread_id}\nClaude response during this job.\n"
     )
 
 
@@ -2251,11 +2317,7 @@ def test_execution_logs_skip_claude_no_response_requested_artifact(tmp_path: Pat
 
     output = daemon.get_logs(record, mode="execution")
 
-    assert output == (
-        f"session id: {thread_id}\n"
-        "latest raw output\n"
-        "real Claude status\n"
-    )
+    assert output == (f"session id: {thread_id}\nlatest raw output\nreal Claude status\n")
 
 
 def test_logs_recover_live_codex_messages_without_thread_id_in_container_output(
@@ -2431,20 +2493,11 @@ def test_raw_logs_reconstruct_removed_codex_job_from_session_timestamps(
     )
     log_path = paths.logs / "job-1.log"
     log_path.write_text(
-        f"session id: {thread_id}\n"
-        "message during this job\n"
-        "message after this job\n",
+        f"session id: {thread_id}\nmessage during this job\nmessage after this job\n",
         encoding="utf-8",
     )
     session_dir = (
-        paths.agent_home
-        / ".config"
-        / "evander"
-        / "codex"
-        / "sessions"
-        / "2026"
-        / "05"
-        / "05"
+        paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "05" / "05"
     )
     session_dir.mkdir(parents=True)
     rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
@@ -2475,12 +2528,10 @@ def test_raw_logs_reconstruct_removed_codex_job_from_session_timestamps(
     )
 
     assert daemon.get_logs(record, mode="raw") == (
-        f"session id: {thread_id}\n"
-        "message during this job\n"
+        f"session id: {thread_id}\nmessage during this job\n"
     )
     assert log_path.read_text(encoding="utf-8") == (
-        f"session id: {thread_id}\n"
-        "message during this job\n"
+        f"session id: {thread_id}\nmessage during this job\n"
     )
 
 

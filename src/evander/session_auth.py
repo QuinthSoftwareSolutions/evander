@@ -66,14 +66,25 @@ def session_requires_mcp_token(session: Any) -> bool:
     return session_mcp_auth_token_hash(session) is not None
 
 
-def verify_mcp_session_token(session: Any, supplied_token: str | None) -> bool:
-    expected_hash = session_mcp_auth_token_hash(session)
-    if expected_hash is None:
-        return True
+def _mcp_session_token_matches_hash(expected_hash: str, supplied_token: str | None) -> bool:
     token = str(supplied_token or "").strip()
     if not token:
         return False
     return hmac.compare_digest(expected_hash, mcp_session_token_hash(token))
+
+
+def verify_mcp_session_token(session: Any, supplied_token: str | None) -> bool:
+    expected_hash = session_mcp_auth_token_hash(session)
+    if expected_hash is None:
+        return True
+    return _mcp_session_token_matches_hash(expected_hash, supplied_token)
+
+
+def verify_mcp_session_proof_token(session: Any, supplied_token: str | None) -> bool:
+    expected_hash = session_mcp_auth_token_hash(session)
+    if expected_hash is None:
+        return False
+    return _mcp_session_token_matches_hash(expected_hash, supplied_token)
 
 
 def ensure_session_mcp_auth_token(session: Any) -> tuple[Any, str]:
@@ -92,7 +103,5 @@ def redact_mcp_session_token_query(query: str | None) -> str:
     redacted = []
     token_param_names = set(MCP_SESSION_TOKEN_QUERY_PARAM_NAMES)
     for key, value in parse_qsl(query, keep_blank_values=True):
-        redacted.append(
-            (key, MCP_SESSION_TOKEN_REDACTION if key in token_param_names else value)
-        )
+        redacted.append((key, MCP_SESSION_TOKEN_REDACTION if key in token_param_names else value))
     return urlencode(redacted)

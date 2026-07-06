@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
+from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
@@ -23,14 +24,17 @@ from evander.admin.web.shared import (
 from evander.models import (
     ApprovalGrantSettings,
     ApprovalPayloadMode,
+    ApprovalQueueHealth,
     ApprovalRequest,
     ApprovalStatus,
+    DirectoryPath,
     McpToolPolicyRule,
     SessionSummary,
     ToolName,
     WakeScheduledRequest,
     normalize_mcp_tool_policies,
     tool_name_value,
+    utc_now,
 )
 from evander.policy import mandatory_approval_required_for_tool
 
@@ -402,6 +406,27 @@ def _approval_review_payload(review: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _approval_queue_health_payload(items: list[ApprovalRequest]) -> dict[str, Any]:
+    health = ApprovalQueueHealth(total=len(items))
+    pending_ages: list[int] = []
+    now = utc_now()
+    for request in items:
+        if request.status == ApprovalStatus.PENDING:
+            health.pending += 1
+            pending_ages.append(int((now - request.created_at).total_seconds()))
+        elif request.status == ApprovalStatus.APPROVED:
+            health.approved += 1
+        elif request.status == ApprovalStatus.DENIED:
+            health.denied += 1
+        elif request.status == ApprovalStatus.EXPIRED:
+            health.expired += 1
+        elif request.status == ApprovalStatus.EXHAUSTED:
+            health.exhausted += 1
+    if pending_ages:
+        health.oldest_pending_age_seconds = max(pending_ages)
+    return health.model_dump(mode="json")
+
+
 def _json_revision(payload: Any) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -632,15 +657,25 @@ def session_approval_routes(
 ) -> list[BaseRoute]:
     policy_summary_cache = _SessionPolicySummaryCache()
 
+    def _validated_directory_path(directory_path: object | None) -> str | None:
+        if directory_path is None:
+            return None
+        value = str(directory_path).strip() or "root"
+        return DirectoryPath(segments=value).as_posix()
+
     def _owner_privileged_error(
         request: Request, *, directory_path: object | None = None
     ) -> JSONResponse | None:
+        try:
+            normalized_directory_path = _validated_directory_path(directory_path)
+        except ValidationError as exc:
+            return json_error(str(exc), status_code=400)
         if request_has_privileged_operations(
             auth=auth,
             service=service,
             request=request,
             required_permission=ADMIN_OWNER_PERMISSION,
-            directory_path=directory_path,
+            directory_path=normalized_directory_path,
         ):
             return None
         return json_error("Privileged operations are locked.", status_code=403)
@@ -649,6 +684,32 @@ def session_approval_routes(
         if request_has_privileged_operations(auth=auth, service=service, request=request):
             return None
         return json_error("Privileged operations are locked.", status_code=403)
+
+    def _owner_read_error(
+        request: Request, *, directory_path: object | None = None
+    ) -> JSONResponse | None:
+        try:
+            normalized_directory_path = _validated_directory_path(directory_path)
+            auth.require_permission(
+                request,
+                ADMIN_OWNER_PERMISSION,
+                directory_path=normalized_directory_path,
+            )
+        except ValidationError as exc:
+            return json_error(str(exc), status_code=400)
+        except PermissionError:
+            return json_error("Permission required: admin.owner", status_code=403)
+        return None
+
+    def _can_read_directory(
+        request: Request,
+        directory_path: object | None,
+        cache: dict[str, bool],
+    ) -> bool:
+        cache_key = str(directory_path or "root").strip() or "root"
+        if cache_key not in cache:
+            cache[cache_key] = _owner_read_error(request, directory_path=cache_key) is None
+        return cache[cache_key]
 
     def _approval_request_or_error(
         request_id: str,
@@ -660,22 +721,18 @@ def session_approval_routes(
 
     async def approvals_index(request: Request) -> JSONResponse:
         params = request.query_params
+        requested_directory_path = params.get("directory_path")
+        if requested_directory_path is not None:
+            auth_error = _owner_read_error(request, directory_path=requested_directory_path)
+            if auth_error is not None:
+                return auth_error
         try:
             statuses = _parse_statuses(params.get("statuses"))
             direct_only = _parse_bool(params.get("direct_only"))
             min_age_seconds = _parse_int(params.get("min_age_seconds"))
             items = service.approval_audit_admin.list_approval_requests(
                 statuses=statuses,
-                directory_path=params.get("directory_path"),
-                direct_only=direct_only,
-                session_id=params.get("session_id"),
-                vm_id=params.get("vm_id"),
-                tool_name=params.get("tool_name"),
-                min_age_seconds=min_age_seconds,
-            )
-            health = service.approval_audit_admin.approval_queue_health(
-                statuses=statuses,
-                directory_path=params.get("directory_path"),
+                directory_path=requested_directory_path,
                 direct_only=direct_only,
                 session_id=params.get("session_id"),
                 vm_id=params.get("vm_id"),
@@ -684,10 +741,14 @@ def session_approval_routes(
             )
         except ValueError as exc:
             return json_error(str(exc))
+        auth_cache: dict[str, bool] = {}
+        items = [
+            item for item in items if _can_read_directory(request, item.directory_path, auth_cache)
+        ]
         return JSONResponse(
             {
                 "items": [_approval_payload(item) for item in items],
-                "health": health.model_dump(mode="json"),
+                "health": _approval_queue_health_payload(items),
             }
         )
 
@@ -696,6 +757,13 @@ def session_approval_routes(
 
     async def get_approval_detail(request: Request) -> JSONResponse:
         request_id = request.path_params.get("request_id", "")
+        approval_request, load_error = _approval_request_or_error(request_id)
+        if load_error is not None:
+            return load_error
+        assert approval_request is not None
+        auth_error = _owner_read_error(request, directory_path=approval_request.directory_path)
+        if auth_error is not None:
+            return auth_error
         try:
             review = service.approval_audit_admin.get_approval_review(request_id)
         except ValueError as exc:
@@ -796,15 +864,24 @@ def session_approval_routes(
 
     async def list_sessions(request: Request) -> JSONResponse:
         params = request.query_params
+        requested_directory_path = params.get("directory_path")
+        if requested_directory_path is not None:
+            auth_error = _owner_read_error(request, directory_path=requested_directory_path)
+            if auth_error is not None:
+                return auth_error
         try:
             items = service.vm_agent_admin.list_sessions(
                 include_expired=_parse_bool(params.get("include_expired")),
                 expired_only=_parse_bool(params.get("expired_only")),
-                directory_path=params.get("directory_path"),
+                directory_path=requested_directory_path,
                 direct_only=_parse_bool(params.get("direct_only")),
             )
         except ValueError as exc:
             return json_error(str(exc))
+        auth_cache: dict[str, bool] = {}
+        items = [
+            item for item in items if _can_read_directory(request, item.directory_path, auth_cache)
+        ]
         active_items = [item for item in items if not item.is_expired]
         expired_items = [item for item in items if item.is_expired]
         return JSONResponse(
@@ -895,6 +972,12 @@ def session_approval_routes(
         session_id = request.path_params.get("session_id", "")
         try:
             summary = _get_session_summary(session_id)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=404)
+        auth_error = _owner_read_error(request, directory_path=summary.directory_path)
+        if auth_error is not None:
+            return auth_error
+        try:
             wake_schedules = service.operations_admin.list_wake_schedules(session_id=session_id)
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
