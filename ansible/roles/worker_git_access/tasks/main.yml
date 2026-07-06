@@ -100,7 +100,7 @@
     mode: "0600"
     regexp: "{{ evander_worker_git_public_key.split()[1] | regex_escape }}"
     line: >-
-      from="{{ evander_worker_git_allowed_from }}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="{{ evander_control_plane_deploy_path }}/scripts/git_ssh_command_wrapper.sh" {{ evander_worker_git_public_key }}
+      from="{{ evander_worker_git_allowed_from }}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="EVANDER_GIT_AUTH_ACCESS=read-only EVANDER_GIT_AUTH_REPO_B64={{ evander_worker_repo_mirror_path | b64encode }} {{ evander_control_plane_deploy_path }}/scripts/git_ssh_command_wrapper.sh" {{ evander_worker_git_public_key }}
   delegate_to: "{{ evander_control_plane_host }}"
   when: evander_worker_install_control_plane_git_authorized_key | bool
 
