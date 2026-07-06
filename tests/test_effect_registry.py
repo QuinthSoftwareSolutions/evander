@@ -2783,7 +2783,7 @@ def test_container_session_files_propagate_mcp_token_to_relay_clients() -> None:
     by_path = {entry["destination_path"]: entry["content"] for entry in files}
 
     assert (
-        'base_url = "http://relay.test:11434/v1/session/session-1"'
+        'base_url = "http://relay.test:11434/v1/session/session-1/auth/correct-token"'
         in by_path["/home/agent/.codex/config.toml"]
     )
     assert (

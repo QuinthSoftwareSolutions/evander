@@ -668,8 +668,14 @@ def relay_base_url_with_mcp_path_token(
 def container_session_openai_base_url(
     config: GatewayConfig,
     session_id: str,
+    *,
+    mcp_session_token: str | None = None,
 ) -> str:
-    return f"{container_worker_guest_openai_base_url(config).rstrip('/')}/session/{session_id}"
+    base_url = f"{container_worker_guest_openai_base_url(config).rstrip('/')}/session/{session_id}"
+    return relay_base_url_with_mcp_path_token(
+        base_url,
+        mcp_session_token=mcp_session_token,
+    )
 
 
 def container_session_anthropic_base_url(
@@ -754,6 +760,7 @@ def build_container_session_files(
     session_openai_base_url = container_session_openai_base_url(
         config,
         session_id,
+        mcp_session_token=mcp_session_token,
     )
     session_anthropic_base_url = container_session_anthropic_base_url(
         config,

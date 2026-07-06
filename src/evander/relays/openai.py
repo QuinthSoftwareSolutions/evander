@@ -488,6 +488,11 @@ class OpenAIRelay:
             routes=[
                 Route("/healthz", health, methods=["GET"]),
                 Route(
+                    "/v1/session/{session_id}/auth/{mcp_session_token}/{path:path}",
+                    proxy,
+                    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+                ),
+                Route(
                     "/v1/session/{session_id}/{path:path}",
                     proxy,
                     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
@@ -498,6 +503,10 @@ class OpenAIRelay:
                     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
                 ),
                 Route("/v1/{path:path}", proxy, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]),
+                WebSocketRoute(
+                    "/v1/session/{session_id}/auth/{mcp_session_token}/{path:path}",
+                    websocket_proxy,
+                ),
                 WebSocketRoute("/v1/session/{session_id}/{path:path}", websocket_proxy),
                 WebSocketRoute("/v1/{path:path}", websocket_proxy),
             ],
@@ -1469,6 +1478,9 @@ class OpenAIRelay:
             token = str(request.headers.get(name) or "").strip()
             if token:
                 return token
+        token = str(request.path_params.get("mcp_session_token") or "").strip()
+        if token:
+            return token
         token = OpenAIRelay._mcp_session_token_from_auth_headers(request)
         if token:
             return token

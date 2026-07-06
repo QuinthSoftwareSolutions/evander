@@ -194,6 +194,10 @@ def test_relay_requires_mcp_session_token_for_tokenized_http_session(
         "/v1/session/session-1/responses?mcp_session_token=correct-token&foo=bar",
         json={"model": "gpt-5.2-codex", "input": "hello"},
     )
+    allowed_path_token = client.post(
+        "/v1/session/session-1/auth/correct-token/responses?path_token=true",
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    )
     allowed_auth_header = client.post(
         "/v1/session/session-1/responses?bar=baz",
         headers={"authorization": "Bearer correct-token"},
@@ -205,10 +209,15 @@ def test_relay_requires_mcp_session_token_for_tokenized_http_session(
     assert denied_wrong.status_code == 401
     assert denied_wrong.json() == {"error": "MCP session token is required for this session"}
     assert allowed.status_code == 200
+    assert allowed_path_token.status_code == 200
     assert allowed_auth_header.status_code == 200
     assert calls == [
         {
             "url": "https://api.openai.com/v1/responses?foo=bar",
+            "mcp_token_header": "",
+        },
+        {
+            "url": "https://api.openai.com/v1/responses?path_token=true",
             "mcp_token_header": "",
         },
         {

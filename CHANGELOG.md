@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-06 - Container Worker Codex Relay Auth
+
+- Added the MCP session token to container worker Codex OpenAI relay URLs so
+  token-protected sessions authenticate with the relay even when Codex does not
+  emit an OpenAI authorization header for the custom provider.
+
 ## 2026-07-06 - ADO Workflow Query Modes
 
 - Added explicit `query_mode` support for Azure DevOps work-item workflow
