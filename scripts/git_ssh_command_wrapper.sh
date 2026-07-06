@@ -7,7 +7,7 @@ Usage: git_ssh_command_wrapper.sh
 
 Forced-command wrapper used by host authorized_keys entries for guest Git SSH
 access. It validates that the requested repository lives under the configured
-Git root, enforces repo scope for read commands and repo/session metadata for writes,
+Git root, enforces repo or prefix scope for read commands and repo/session metadata for writes,
 auto-refreshes issue mirrors for guest read commands when mirror metadata is
 available, and then hands the command to git-shell.
 EOF
@@ -112,6 +112,9 @@ fi
 
 AUTH_ACCESS="${EVANDER_GIT_AUTH_ACCESS:-read-only}"
 AUTH_REPO_RAW="$(decode_auth_value "${EVANDER_GIT_AUTH_REPO:-}" "${EVANDER_GIT_AUTH_REPO_B64:-}")"
+AUTH_REPO_PREFIX_RAW="$(
+  decode_auth_value "${EVANDER_GIT_AUTH_REPO_PREFIX:-}" "${EVANDER_GIT_AUTH_REPO_PREFIX_B64:-}"
+)"
 AUTH_SESSION_ID="$(
   decode_auth_value "${EVANDER_GIT_AUTH_SESSION_ID:-}" "${EVANDER_GIT_AUTH_SESSION_ID_B64:-}"
 )"
@@ -144,13 +147,60 @@ require_authorized_repo_scope() {
   printf '%s\n' "${auth_repo_real}"
 }
 
+resolve_authorized_repo_prefix_real() {
+  local prefix_value="$1"
+  local prefix_path
+
+  if [[ "${prefix_value}" == /* ]]; then
+    prefix_path="${prefix_value}"
+  else
+    prefix_path="${GIT_ROOT}/${prefix_value}"
+  fi
+
+  realpath -m -- "${prefix_path}"
+}
+
+require_authorized_repo_prefix_scope() {
+  local auth_prefix_real
+
+  if [[ -z "${AUTH_REPO_PREFIX_RAW}" ]]; then
+    echo "Git SSH key is missing authorized repository metadata." >&2
+    exit 1
+  fi
+
+  auth_prefix_real="$(resolve_authorized_repo_prefix_real "${AUTH_REPO_PREFIX_RAW}")"
+  case "${auth_prefix_real}" in
+    "${ROOT_REAL}"|"${ROOT_REAL}"/*) ;;
+    *)
+      echo "Authorized repository prefix is outside the allowed Git root." >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ "${REPO_REAL}" != "${auth_prefix_real}" ]]; then
+    case "${REPO_REAL}" in
+      "${auth_prefix_real}"/*) ;;
+      *)
+        echo "Git SSH key is not authorized for repository: ${REPO_REAL}" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  printf '%s\n' "${auth_prefix_real}"
+}
+
 require_read_authorization() {
   case "${AUTH_ACCESS}" in
     write)
       require_authorized_repo_scope >/dev/null
       ;;
     read-only)
-      require_authorized_repo_scope >/dev/null
+      if [[ -n "${AUTH_REPO_RAW}" ]]; then
+        require_authorized_repo_scope >/dev/null
+      else
+        require_authorized_repo_prefix_scope >/dev/null
+      fi
       ;;
     *)
       echo "Unsupported Git SSH auth access mode: ${AUTH_ACCESS}" >&2

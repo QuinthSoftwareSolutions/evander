@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import subprocess
 from pathlib import Path
@@ -354,6 +355,102 @@ def test_git_ssh_wrapper_read_only_requires_repo_scope_and_denies_pushes(
     assert "Git SSH key is read-only; repo/session metadata is required for pushes." in (
         denied_push.stderr
     )
+
+
+def test_git_ssh_wrapper_read_only_prefix_allows_multiple_repos_and_denies_pushes(
+    tmp_path: Path,
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    _copy_git_ssh_scripts(repo_root, sandbox_root)
+    env = _base_git_env(git_root)
+
+    create_remote_script = scripts_dir / "create_git_remote.sh"
+    subprocess.run(
+        [str(create_remote_script), "first"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    subprocess.run(
+        [str(create_remote_script), "second"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    first_repo = git_root / "first.git"
+    second_repo = git_root / "second.git"
+    worktree = tmp_path / "worktree"
+    subprocess.run(["git", "init", str(worktree)], check=True, text=True, capture_output=True)
+    _git(worktree, "checkout", "-b", "main")
+    (worktree / "README.md").write_text("seed\n", encoding="utf-8")
+    _git(worktree, "add", "README.md", env=env)
+    _git(worktree, "commit", "-m", "Seed", env=env)
+    _git(worktree, "remote", "add", "first", str(first_repo))
+    _git(worktree, "remote", "add", "second", str(second_repo))
+    _git(worktree, "push", "first", "HEAD:refs/heads/main", env=env)
+    _git(worktree, "push", "second", "HEAD:refs/heads/main", env=env)
+
+    fake_ssh = tmp_path / "fake-ssh"
+    _write_fake_ssh(fake_ssh)
+    wrapper_script = scripts_dir / "git_ssh_command_wrapper.sh"
+    prefix_read_env = env.copy()
+    prefix_read_env.update(
+        {
+            "GIT_SSH_COMMAND": str(fake_ssh),
+            "GIT_SSH_VARIANT": "ssh",
+            "EVANDER_TEST_WRAPPER": str(wrapper_script),
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO_PREFIX_B64": base64.b64encode(
+                str(git_root).encode("utf-8")
+            ).decode("ascii"),
+        }
+    )
+
+    for repo in (first_repo, second_repo):
+        ls_remote = subprocess.run(
+            ["git", "ls-remote", f"ssh://evander-git-host{repo}", "refs/heads/main"],
+            check=False,
+            text=True,
+            capture_output=True,
+            env=prefix_read_env,
+        )
+        assert ls_remote.returncode == 0
+        assert "refs/heads/main" in ls_remote.stdout
+
+    denied_push = _git_result(
+        worktree,
+        "push",
+        f"ssh://evander-git-host{first_repo}",
+        "HEAD:refs/heads/agents/session-1/topic",
+        env=prefix_read_env,
+    )
+    assert denied_push.returncode != 0
+    assert "Git SSH key is read-only; repo/session metadata is required for pushes." in (
+        denied_push.stderr
+    )
+
+    string_prefix_env = prefix_read_env.copy()
+    string_prefix_env["EVANDER_GIT_AUTH_REPO_PREFIX_B64"] = base64.b64encode(
+        str(git_root / "fir").encode("utf-8")
+    ).decode("ascii")
+    denied_string_prefix = subprocess.run(
+        ["git", "ls-remote", f"ssh://evander-git-host{first_repo}", "refs/heads/main"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=string_prefix_env,
+    )
+    assert denied_string_prefix.returncode != 0
+    assert "Git SSH key is not authorized for repository" in denied_string_prefix.stderr
 
 
 def test_git_ssh_wrapper_refreshes_issue_mirror_before_upload_pack(tmp_path: Path) -> None:
