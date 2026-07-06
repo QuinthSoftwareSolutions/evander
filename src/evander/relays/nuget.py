@@ -280,7 +280,7 @@ def _build_upstream_url(
     # are rewritten onto the guest-facing relay and called back, appending them to
     # the configured feed base duplicates the feed path. Honor that shortcut for
     # the configured feed name and for feed IDs observed in the service index.
-    if "_packaging" in upstream_segments:
+    if _is_origin_rooted_packaging_path(upstream_segments, base_segments):
         if not _packaging_path_matches_configured_feed(
             upstream_segments,
             base_segments,
@@ -300,6 +300,18 @@ def _build_upstream_url(
             "",
         )
     )
+
+
+def _is_origin_rooted_packaging_path(
+    upstream_segments: list[str],
+    base_segments: list[str],
+) -> bool:
+    feed_scope = _azure_feed_scope(base_segments)
+    if feed_scope is None:
+        return False
+    base_prefix, _configured_feed, _base_suffix = feed_scope
+    packaging_scope = [*base_prefix, "_packaging"]
+    return upstream_segments[: len(packaging_scope)] == packaging_scope
 
 
 def _advertised_azure_feed_ids(payload: object, upstream_base_url: str) -> set[str]:

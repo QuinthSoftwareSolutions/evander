@@ -140,6 +140,32 @@ def test_azure_proxy_allows_packaging_path_under_configured_feed(
     )
 
 
+def test_azure_proxy_appends_relative_packaging_package_paths_to_configured_feed(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["AZURE_ARTIFACTS_PAT"] = "test-pat"
+
+    response = client.get("/nuget/azure/v3/flat2/_packaging/index.json")
+
+    assert response.status_code == 200
+    assert captured["authorization"].startswith("Basic ")
+    assert (
+        captured["url"]
+        == "https://pkgs.dev.azure.com/example/example/_packaging/example/nuget/v3/flat2/_packaging/index.json"
+    )
+
+
 def test_azure_proxy_allows_advertised_feed_id_resource_paths(tmp_path: Path) -> None:
     captured_urls: list[str] = []
     feed_id = "11111111-1111-1111-1111-111111111111"

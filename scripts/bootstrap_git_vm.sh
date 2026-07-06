@@ -173,6 +173,9 @@ lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 filtered = [line for line in lines if needle not in line]
 filtered.append(entry)
 temp_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+if path.exists():
+    existing_stat = path.stat()
+    os.chown(temp_path, existing_stat.st_uid, existing_stat.st_gid)
 os.replace(temp_path, path)
 PY
   then

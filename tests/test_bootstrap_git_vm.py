@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -156,6 +158,53 @@ def test_bootstrap_git_vm_atomically_replaces_existing_valid_guest_public_key_en
     assert updated_authorized_keys.count(public_key_body) == 1
     assert "command=" in updated_authorized_keys
     assert "keep-me" in updated_authorized_keys
+
+
+def test_bootstrap_git_vm_preserves_authorized_keys_group_during_atomic_replace(
+    tmp_path: Path,
+) -> None:
+    alternate_groups = [gid for gid in os.getgroups() if gid != os.getgid()]
+    if not alternate_groups:
+        pytest.skip("requires a supplementary group to exercise ownership preservation")
+
+    _, bootstrap_script = _copy_bootstrap_sandbox(tmp_path)
+    home = tmp_path / "home"
+    ssh_dir = home / ".ssh"
+    ssh_dir.mkdir(parents=True)
+    key_path = tmp_path / "guest-key"
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key_path)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    public_key = key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
+    authorized_keys = ssh_dir / "authorized_keys"
+    authorized_keys.write_text(
+        f'from="192.168.250.0/24",command="old" {public_key}\n',
+        encoding="utf-8",
+    )
+    try:
+        os.chown(authorized_keys, os.getuid(), alternate_groups[0])
+    except PermissionError:
+        pytest.skip("current user cannot change file group")
+    original_stat = authorized_keys.stat()
+    fake_bin = _write_fake_bin(tmp_path)
+
+    result = subprocess.run(
+        [str(bootstrap_script), "vm-test"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=_bootstrap_env(tmp_path, home, public_key, fake_bin),
+    )
+
+    assert result.returncode == 0, result.stderr
+    updated_stat = authorized_keys.stat()
+    assert (updated_stat.st_uid, updated_stat.st_gid) == (
+        original_stat.st_uid,
+        original_stat.st_gid,
+    )
 
 
 def test_bootstrap_git_vm_rejects_read_only_key_without_repo_scope(tmp_path: Path) -> None:
