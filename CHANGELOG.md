@@ -19,6 +19,8 @@
   cross-directory session or approval data.
 - Required timestamped webhook signatures over `timestamp.body` and rejected stale webhook
   deliveries to close replay windows.
+- Included webhook query parameters in Admin Web webhook idempotency keys so same-body deliveries
+  with distinct query envelopes are published separately.
 - Enforced privileged unlock checks on Team add-on mutation routes.
 - Restricted guest Git keys to their authorized bare repository for read operations and preserved
   the existing session branch write scope.

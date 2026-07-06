@@ -523,6 +523,19 @@ def _signed_webhook_headers(
     }
 
 
+def _expected_webhook_idempotency_key(
+    *,
+    trigger_id: str,
+    slug: str,
+    headers: dict[str, str],
+    query: dict[str, object],
+) -> str:
+    signature_key = headers["X-Evander-Signature-256"].replace("=", ":", 1)
+    query_material = json.dumps(query, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    query_digest = hashlib.sha256(query_material.encode("utf-8")).hexdigest()
+    return f"webhook:{trigger_id}:{slug}:{signature_key}:query-sha256:{query_digest}"
+
+
 def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
@@ -8676,8 +8689,65 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     assert len(events) == 1
     assert events[0].event_id == response.json()["event_id"]
     assert {event.event_type for event in events} == {"external.webhook.build-notify"}
-    signature_key = headers["X-Evander-Signature-256"].replace("=", ":", 1)
-    assert events[0].idempotency_key == (f"webhook:webhook-1:build-notify:{signature_key}")
+    assert events[0].idempotency_key == _expected_webhook_idempotency_key(
+        trigger_id="webhook-1",
+        slug="build-notify",
+        headers=headers,
+        query={"source": "ci"},
+    )
+
+
+def test_workflow_webhook_ingress_keeps_distinct_query_envelopes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    _write_workflow_webhook_config(tmp_path)
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    body = b'{"target":"demo"}'
+    headers = _signed_webhook_headers(body, secret="webhook-secret")
+    first = client.post(
+        "/api/workflow-webhooks/build-notify?source=ci",
+        content=body,
+        headers=headers,
+    )
+    repeat = client.post(
+        "/api/workflow-webhooks/build-notify?source=ci",
+        content=body,
+        headers=headers,
+    )
+    second = client.post(
+        "/api/workflow-webhooks/build-notify?source=manual",
+        content=body,
+        headers=headers,
+    )
+
+    assert first.status_code == 202
+    assert repeat.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["event_id"] == repeat.json()["event_id"]
+    assert first.json()["event_id"] != second.json()["event_id"]
+
+    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    assert len(events) == 2
+    assert [event.payload["query"] for event in events] == [
+        {"source": "ci"},
+        {"source": "manual"},
+    ]
+    assert {event.idempotency_key for event in events} == {
+        _expected_webhook_idempotency_key(
+            trigger_id="webhook-1",
+            slug="build-notify",
+            headers=headers,
+            query={"source": "ci"},
+        ),
+        _expected_webhook_idempotency_key(
+            trigger_id="webhook-1",
+            slug="build-notify",
+            headers=headers,
+            query={"source": "manual"},
+        ),
+    }
 
 
 def test_workflow_webhook_ingress_does_not_dedupe_same_body_across_slugs(
@@ -8746,10 +8816,19 @@ def test_workflow_webhook_ingress_does_not_dedupe_same_body_across_slugs(
         "build-notify",
         "deploy-notify",
     }
-    signature_key = headers["X-Evander-Signature-256"].replace("=", ":", 1)
     assert {event.idempotency_key for event in events} == {
-        f"webhook:webhook-build:build-notify:{signature_key}",
-        f"webhook:webhook-deploy:deploy-notify:{signature_key}",
+        _expected_webhook_idempotency_key(
+            trigger_id="webhook-build",
+            slug="build-notify",
+            headers=headers,
+            query={},
+        ),
+        _expected_webhook_idempotency_key(
+            trigger_id="webhook-deploy",
+            slug="deploy-notify",
+            headers=headers,
+            query={},
+        ),
     }
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 from collections.abc import Iterable
@@ -91,10 +92,11 @@ def workflow_webhook_routes(service: AdminRuntimeComponents) -> list[Route]:
             return json_error("Webhook signature is invalid or missing", status_code=401)
 
         received_at = now.isoformat().replace("+00:00", "Z")
+        query = _json_object_from_pairs(request.query_params.multi_items())
         envelope = {
             "slug": trigger.slug,
             "headers": _json_object_from_pairs(request.headers.items()),
-            "query": _json_object_from_pairs(request.query_params.multi_items()),
+            "query": query,
             "body": body,
             "received_at": received_at,
             "remote_addr": _remote_addr(request),
@@ -107,7 +109,10 @@ def workflow_webhook_routes(service: AdminRuntimeComponents) -> list[Route]:
                 event_type=trigger.event_type,
                 payload=envelope,
                 correlation_key=f"webhook:{trigger.slug}",
-                idempotency_key=(f"webhook:{trigger.id}:{trigger.slug}:sha256:{signature_digest}"),
+                idempotency_key=(
+                    f"webhook:{trigger.id}:{trigger.slug}:sha256:{signature_digest}:"
+                    f"query-sha256:{_json_sha256(query)}"
+                ),
                 source={
                     "source_type": "webhook",
                     "source_name": trigger.slug,
@@ -135,6 +140,11 @@ def _json_object_from_pairs(items: Iterable[tuple[str, Any]]) -> dict[str, Any]:
             continue
         result[normalized_key] = value
     return result
+
+
+def _json_sha256(value: Any) -> str:
+    material = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _parse_webhook_timestamp(value: str) -> datetime:
