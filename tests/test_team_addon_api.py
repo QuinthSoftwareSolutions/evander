@@ -2370,6 +2370,52 @@ def test_team_addon_admin_api_costs_default_skips_backfill_and_uses_threadpool(
     assert "backfill" not in response.json()
 
 
+def test_team_addon_admin_api_costs_get_backfill_requires_privileged_unlock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "none")
+    runtime_dir = tmp_path / "runtime"
+    _seed_runtime_operations_state(runtime_dir)
+    cost_calls: list[bool] = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    def fake_costs_payload(self, *, backfill_transcripts: bool = False):
+        cost_calls.append(backfill_transcripts)
+        return {
+            "generated_at": "2026-06-16T12:00:00+00:00",
+            "coverage_status": "complete",
+            "coverage_reasons": [],
+            "team_costs": {},
+            "governance_group_costs": {},
+            "project_costs": {},
+            "unattributed_costs": None,
+            "source_counts": {},
+            "events_count": 0,
+            "priced_events_count": 0,
+            "unpriced_events_count": 0,
+        }
+
+    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
+    client = _client(tmp_path, unlock_privileged=False)
+
+    locked_response = client.get("/api/addons/team-addon/costs?backfill=true")
+    read_response = client.get("/api/addons/team-addon/costs?backfill=false")
+    unlock_response = client.post("/api/admin/privileged/unlock")
+    unlocked_response = client.get("/api/addons/team-addon/costs?backfill=true")
+
+    assert locked_response.status_code == 403
+    assert locked_response.json()["error"] == "Privileged operations are locked."
+    assert read_response.status_code == 200
+    assert unlock_response.status_code == 200
+    assert unlock_response.json()["privileged_operations"]["unlocked"] is True
+    assert unlocked_response.status_code == 200
+    assert cost_calls == [False, True]
+
+
 def test_team_addon_admin_api_costs_backfill_endpoint_runs_backfill_in_threadpool(
     tmp_path: Path,
     monkeypatch,

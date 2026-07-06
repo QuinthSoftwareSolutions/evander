@@ -406,6 +406,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def get_costs(request: Request) -> JSONResponse:
         backfill = _query_bool(request, "backfill")
+        if backfill is True:
+            if locked_response := _privileged_operations_locked_response(context, request):
+                return locked_response
         payload = await run_in_threadpool(
             _team_costs_payload,
             context,
@@ -2235,16 +2238,24 @@ def _route_requires_privileged_operations(methods: Sequence[str]) -> bool:
 
 def _with_privileged_operations(context: AddonContext, handler):
     async def _wrapped(request: Request) -> JSONResponse:
-        auth = getattr(context, "auth", None)
-        if auth is None or not request_has_privileged_operations(
-            auth=auth,
-            service=getattr(context, "service", None),
-            request=request,
-        ):
-            return JSONResponse({"error": "Privileged operations are locked."}, status_code=403)
+        if locked_response := _privileged_operations_locked_response(context, request):
+            return locked_response
         return await handler(request)
 
     return _wrapped
+
+
+def _privileged_operations_locked_response(
+    context: AddonContext, request: Request
+) -> JSONResponse | None:
+    auth = getattr(context, "auth", None)
+    if auth is None or not request_has_privileged_operations(
+        auth=auth,
+        service=getattr(context, "service", None),
+        request=request,
+    ):
+        return JSONResponse({"error": "Privileged operations are locked."}, status_code=403)
+    return None
 
 
 def _request_wants_view_scoped_response(request: Request) -> bool:

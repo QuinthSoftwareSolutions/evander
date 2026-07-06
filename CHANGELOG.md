@@ -9,6 +9,7 @@
   resolved relative Azure NuGet package paths containing `_packaging` under the configured feed.
 - Required token proof when MCP callers select an existing session over HTTP,
   while keeping direct in-process gateway calls compatible for trusted control-plane paths.
+- Required privileged unlock before Team add-on GET cost requests can run transcript backfills.
 - Rejected raw and encoded dot-segment escapes in the OpenAI, NuGet, and HTTP target relays,
   constrained NuGet Azure Packaging shortcuts to the configured feed scope, and limited the
   OpenAI relay to known OpenAI-compatible endpoints before forwarding host credentials.
