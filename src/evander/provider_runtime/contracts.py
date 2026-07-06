@@ -51,6 +51,7 @@ class AgentPromptActivity(Protocol):
         owner_id: str,
         dispatch_id: str | None = None,
         effect_id: str | None = None,
+        execution_backend: str | None = None,
     ) -> Any: ...
 
     def release_enqueue_prompt(

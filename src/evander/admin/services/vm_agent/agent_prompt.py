@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.orchestration.agent_prompt_activity import AgentPromptActivityRuntime
+
 from evander.admin.services.vm_agent.common import (
     AgentEnqueuePromptEffectDefinition,
     Any,
@@ -76,6 +78,7 @@ class VmAgentPromptMixin:
         provider = EffectProviderFactory(
             provider_config_resolver=self.runtime.provider_config,
             admin_service=self,
+            agent_prompt_activity=self._direct_agent_prompt_activity(),
         ).build(effect, directory_path=directory_path)
         dispatch_started_at = datetime.now(UTC)
         try:
@@ -92,6 +95,18 @@ class VmAgentPromptMixin:
             if queued_result is None:
                 raise
             result = queued_result
+        if backend == "libvirt_vm" and not bool(result.get("queued")):
+            self._record_direct_libvirt_admin_prompt_execution(
+                effect_id=effect_id,
+                target=target,
+                target_name=target_name,
+                session_id=session_id,
+                prompt=prompt,
+                resume_thread_id=resume_thread_id,
+                vm_user=vm_user,
+                directory_path=directory_path,
+                result=result,
+            )
         if (
             backend == "container_worker_vm"
             and not bool(result.get("queued"))
@@ -166,6 +181,118 @@ class VmAgentPromptMixin:
             "message": f"Queued prompt for {queued_target_name}",
             "dispatch_error": str(error),
         }
+
+    def _direct_agent_prompt_activity(self) -> AgentPromptActivityRuntime:
+        return AgentPromptActivityRuntime(
+            runtime_dir=self.config.runtime_dir,
+            execution_store=self._direct_agent_prompt_execution_store(),
+        )
+
+    def _direct_agent_prompt_execution_store(self) -> Any:
+        from evander.daemons.effect_orchestrator import (
+            JsonExecutionStore,
+            SqliteExecutionStore,
+        )
+
+        stores = self._workflow_run_store_paths()
+        if self._workflow_uses_sqlite_store(stores):
+            return SqliteExecutionStore(Path(stores["orchestration_store_path"]))
+        return JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+
+    def _record_direct_libvirt_admin_prompt_execution(
+        self,
+        *,
+        effect_id: str,
+        target: str,
+        target_name: str,
+        session_id: str | None,
+        prompt: str,
+        resume_thread_id: str | None,
+        vm_user: str,
+        directory_path: str,
+        result: Mapping[str, Any],
+    ) -> None:
+        dispatch_id = str(result.get("dispatch_id") or "").strip()
+        thread_id = str(result.get("thread_id") or "").strip()
+        lock_metadata = {
+            key: str(result.get(key) or "").strip()
+            for key in ("prompt_lock_key", "prompt_lock_owner_id")
+            if str(result.get(key) or "").strip()
+        }
+        if not dispatch_id or not thread_id or not lock_metadata:
+            raise RuntimeError(
+                "prompt-agent libvirt dispatch did not include execution tracking identifiers"
+            )
+
+        from evander.daemons.effect_orchestrator import EffectExecutionRecord
+
+        agent_key = session_id or target_name
+        event_id = f"admin-agent-prompt:{agent_key}:{dispatch_id}"
+        idempotency_key = f"{event_id}::{effect_id}"
+        execution_store = self._direct_agent_prompt_execution_store()
+        if execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
+            return
+
+        resolved_config = {
+            "target": target,
+            "vm_name": target_name,
+            "session_id": session_id,
+            "prompt": prompt,
+            "model": result.get("model"),
+            "vm_user": vm_user,
+            "resume_thread_id": resume_thread_id,
+            "directory_path": directory_path,
+            "execution_backend": "libvirt_vm",
+            "queue_key": effect_id,
+            **lock_metadata,
+        }
+        input_payload = {
+            "target": target,
+            "vm_name": target_name,
+            "session_id": session_id,
+            "prompt": prompt,
+            "model": result.get("model"),
+            "vm_user": vm_user,
+            "resume_thread_id": resume_thread_id,
+            "queue_key": effect_id,
+            **lock_metadata,
+        }
+        outputs = dict(result)
+        outputs.update(
+            {
+                "dispatch_id": dispatch_id,
+                "thread_id": thread_id,
+                "success": True,
+                "queued": False,
+                "vm_name": target_name,
+                "session_id": session_id,
+                "execution_backend": "libvirt_vm",
+                "queue_key": effect_id,
+                **lock_metadata,
+            }
+        )
+        now = datetime.now(UTC)
+        execution_store.record_execution(
+            EffectExecutionRecord(
+                execution_id=(
+                    f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"
+                ),
+                idempotency_key=idempotency_key,
+                event_id=event_id,
+                trace_id=f"admin-agent-prompt:{agent_key}",
+                source_node_id=effect_id,
+                source_trigger_type="admin:agent:prompt",
+                effect_id=effect_id,
+                effect_type="effect:agent:enqueue-prompt",
+                status="waiting",
+                started_at=now,
+                finished_at=now,
+                resolved_config_hash=self._stable_json_revision(resolved_config),
+                resolved_config=resolved_config,
+                input_payload=input_payload,
+                outputs=outputs,
+            )
+        )
 
     def _record_direct_container_admin_prompt_execution(
         self,

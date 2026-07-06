@@ -5,6 +5,9 @@
 - Serialized `effect:agent:enqueue-prompt` dispatch with a durable per-agent
   lock so direct and queued prompts cannot start concurrently before waiting
   execution state is visible.
+- Routed Admin Web prompt-agent dispatches through the same durable lock,
+  recorded libvirt direct dispatches as waiting executions for lock release,
+  and keyed libvirt locks by VM so multi-session targets serialize correctly.
 
 ## 2026-07-06 - Agent Prompt Queue Race Fix
 
@@ -17,6 +20,8 @@
 - Synced the Admin Web Lock/Unlock header control with the backend privileged
   operation session state so workflow saves and other privileged mutations
   succeed after a confirmed unlock.
+- Treat pending Admin Web Lock requests as locally locked before the backend
+  responds so privileged UI actions close immediately when an operator locks.
 
 ## 2026-07-05 - Review Follow-up Security Fixes
 

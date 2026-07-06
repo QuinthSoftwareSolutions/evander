@@ -3228,6 +3228,167 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
     assert result["status"] == "dispatched"
 
 
+def test_run_admin_agent_action_prompt_agent_queues_when_prompt_lock_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.messaging.agent_prompt_lock import AgentPromptLockStore, agent_prompt_lock_key
+
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="evander-receptionist-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(
+            lambda self, **kwargs: [
+                VmSummary(
+                    vm_name="evander-receptionist-vm",
+                    power_state="shut off",
+                    agent_state="stopped",
+                    session_ids=["receptionist-session"],
+                )
+            ],
+            service.vm_agent_admin,
+        ),
+    )
+    lock_store = AgentPromptLockStore(
+        service.config.runtime_dir / "agent-prompt-locks.json"
+    )
+    lock_store.claim(
+        lock_key=agent_prompt_lock_key(
+            target="receptionist-session",
+            vm_name="evander-receptionist-vm",
+            session_id="receptionist-session",
+            execution_backend="libvirt_vm",
+        ),
+        owner_id="workflow-owner",
+        target="receptionist-session",
+        vm_name="evander-receptionist-vm",
+        session_id="receptionist-session",
+        dispatch_id="workflow-dispatch",
+        effect_id="workflow-effect",
+    )
+
+    resume_calls: list[dict[str, object]] = []
+
+    def fake_resume_agent(
+        self: AdminRuntimeComponents,
+        target: str,
+        prompt: str,
+        **kwargs: object,
+    ) -> VmActionResult:
+        del self, target, prompt, kwargs
+        resume_calls.append({})
+        return VmActionResult(
+            success=True,
+            vm_name="evander-receptionist-vm",
+            action="resume_issue_agent",
+            message="ok",
+            thread_id="thread-new-1",
+        )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "resume_agent",
+        MethodType(fake_resume_agent, service.vm_agent_admin),
+    )
+
+    result = service.vm_agent_admin.run_admin_agent_action(
+        "receptionist-session",
+        "prompt-agent",
+        backend="libvirt_vm",
+        payload={"prompt": "Continue the investigation"},
+    )
+
+    queue_key = "admin-agent-prompt:libvirt_vm:receptionist-session"
+    queued = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json").get(
+        queue_key
+    )
+
+    assert result["success"] is True
+    assert result["queued"] is True
+    assert result["status"] == "queued"
+    assert result["queue_key"] == queue_key
+    assert resume_calls == []
+    assert queued is not None
+    assert queued.target == "receptionist-session"
+    assert queued.vm_name == "evander-receptionist-vm"
+    assert queued.session_id == "receptionist-session"
+    assert queued.prompt == "Continue the investigation"
+
+
+def test_run_admin_agent_action_prompt_agent_records_libvirt_waiting_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="evander-receptionist-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(
+            lambda self, **kwargs: [
+                VmSummary(
+                    vm_name="evander-receptionist-vm",
+                    power_state="shut off",
+                    agent_state="stopped",
+                    session_ids=["receptionist-session"],
+                )
+            ],
+            service.vm_agent_admin,
+        ),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "resume_agent",
+        MethodType(
+            lambda self, *args, **kwargs: VmActionResult(
+                success=True,
+                vm_name="evander-receptionist-vm",
+                action="resume_issue_agent",
+                message="ok",
+                thread_id="thread-new-1",
+            ),
+            service.vm_agent_admin,
+        ),
+    )
+
+    result = service.vm_agent_admin.run_admin_agent_action(
+        "receptionist-session",
+        "prompt-agent",
+        backend="libvirt_vm",
+        payload={"prompt": "Continue the investigation"},
+    )
+
+    stores = service.workflow_config_admin._workflow_run_store_paths()
+    if service.workflow_config_admin._workflow_uses_sqlite_store(stores):
+        execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
+    else:
+        execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+    records = list(execution_store.read_all().values())
+
+    assert result["queued"] is False
+    assert result["prompt_lock_key"] == "vm:evander-receptionist-vm"
+    assert len(records) == 1
+    assert records[0].status == "waiting"
+    assert records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert records[0].resolved_config["execution_backend"] == "libvirt_vm"
+    assert records[0].outputs["prompt_lock_key"] == "vm:evander-receptionist-vm"
+    assert records[0].outputs["prompt_lock_owner_id"] == result["prompt_lock_owner_id"]
+
+
 def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_after_queueing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

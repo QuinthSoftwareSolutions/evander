@@ -274,6 +274,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             owner_id=owner_id,
             dispatch_id=dispatch_id,
             effect_id=effect.id,
+            execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
         )
         if prompt_lock_claim is not None and not bool(getattr(prompt_lock_claim, "claimed", False)):
             record = self._queue_prompt(
@@ -515,6 +516,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             owner_id=owner_id,
             dispatch_id=dispatch_id,
             effect_id=effect_id,
+            execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
         )
         if prompt_lock_claim is not None and not bool(getattr(prompt_lock_claim, "claimed", False)):
             record = self._queue_prompt(
@@ -971,6 +973,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         owner_id: str,
         dispatch_id: str | None,
         effect_id: str,
+        execution_backend: str | None,
     ) -> Any | None:
         context = self._context()
         activity = getattr(context, "agent_prompt_activity", None)
@@ -985,6 +988,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 owner_id=owner_id,
                 dispatch_id=dispatch_id,
                 effect_id=effect_id,
+                execution_backend=execution_backend,
             )
         except Exception:
             return _DeniedPromptLockClaim()

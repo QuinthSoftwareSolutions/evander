@@ -39,11 +39,15 @@ def agent_prompt_lock_key(
     target: str,
     vm_name: str,
     session_id: str | None = None,
+    execution_backend: str | None = None,
 ) -> str:
+    normalized_backend = str(execution_backend or "").strip()
+    normalized_vm_name = str(vm_name or "").strip()
+    if normalized_backend in {"libvirt", "libvirt_vm"} and normalized_vm_name:
+        return f"vm:{normalized_vm_name}"
     normalized_session_id = str(session_id or "").strip()
     if normalized_session_id:
         return f"session:{normalized_session_id}"
-    normalized_vm_name = str(vm_name or "").strip()
     if normalized_vm_name:
         return f"vm:{normalized_vm_name}"
     normalized_target = str(target or "").strip()

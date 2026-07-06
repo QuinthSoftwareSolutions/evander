@@ -311,6 +311,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 record=record,
                 queue_key=queue_key,
                 dispatch_id=dispatch_id,
+                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
             )
             if prompt_lock_claim is not None and not bool(
                 getattr(prompt_lock_claim, "claimed", False)
@@ -414,6 +415,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         record: Any,
         queue_key: str,
         dispatch_id: str,
+        execution_backend: str,
     ) -> Any | None:
         activity = self._agent_prompt_activity(worker)
         claim = getattr(activity, "claim_enqueue_prompt", None)
@@ -431,6 +433,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 ),
                 dispatch_id=dispatch_id,
                 effect_id=str(getattr(record, "effect_id", "") or "").strip() or None,
+                execution_backend=execution_backend,
             )
         except Exception:
             logger.warning(
@@ -530,6 +533,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             record=record,
             queue_key=queue_key,
             dispatch_id=dispatch_id,
+            execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
         )
         if prompt_lock_claim is not None and not bool(getattr(prompt_lock_claim, "claimed", False)):
             return False
