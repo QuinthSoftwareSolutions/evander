@@ -53,6 +53,8 @@
   the existing session branch write scope.
 - Required read-only Git key bootstrap to carry authorized repository metadata and rejected
   unscoped read-only forced-command entries.
+- Scoped worker VM deploy checkout SSH keys to the generated control-plane deployment mirror so
+  private worker repo checkout satisfies the Git wrapper's read-only metadata requirement.
 - Allowed Azure Artifacts NuGet resource URLs that use feed GUID paths after the relay observes
   those IDs in the configured feed service index.
 - Kept the workflow-editor setup build path compatible with apt-installed Node 18 by pinning Vite

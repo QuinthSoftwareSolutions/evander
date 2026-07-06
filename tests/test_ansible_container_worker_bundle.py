@@ -603,6 +603,8 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert "IdentityFile ~/.ssh/evander-git" in role
     assert "Authorize worker Git key on the control plane" in role
     assert "git_ssh_command_wrapper.sh" in role
+    assert "EVANDER_GIT_AUTH_ACCESS=read-only" in role
+    assert "EVANDER_GIT_AUTH_REPO_B64={{ evander_worker_repo_mirror_path | b64encode }}" in role
     assert "Ensure control-plane deployment repo mirror exists" in role
     assert "scripts/create_git_remote.sh" in role
     assert "evander.mirrorSource" in role
