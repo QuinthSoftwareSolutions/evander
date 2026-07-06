@@ -27,6 +27,7 @@ from evander.models import (
     ApprovalQueueHealth,
     ApprovalRequest,
     ApprovalStatus,
+    DirectoryPath,
     McpToolPolicyRule,
     SessionSummary,
     ToolName,
@@ -656,15 +657,25 @@ def session_approval_routes(
 ) -> list[BaseRoute]:
     policy_summary_cache = _SessionPolicySummaryCache()
 
+    def _validated_directory_path(directory_path: object | None) -> str | None:
+        if directory_path is None:
+            return None
+        value = str(directory_path).strip() or "root"
+        return DirectoryPath(segments=value).as_posix()
+
     def _owner_privileged_error(
         request: Request, *, directory_path: object | None = None
     ) -> JSONResponse | None:
+        try:
+            normalized_directory_path = _validated_directory_path(directory_path)
+        except ValidationError as exc:
+            return json_error(str(exc), status_code=400)
         if request_has_privileged_operations(
             auth=auth,
             service=service,
             request=request,
             required_permission=ADMIN_OWNER_PERMISSION,
-            directory_path=directory_path,
+            directory_path=normalized_directory_path,
         ):
             return None
         return json_error("Privileged operations are locked.", status_code=403)
@@ -678,10 +689,11 @@ def session_approval_routes(
         request: Request, *, directory_path: object | None = None
     ) -> JSONResponse | None:
         try:
+            normalized_directory_path = _validated_directory_path(directory_path)
             auth.require_permission(
                 request,
                 ADMIN_OWNER_PERMISSION,
-                directory_path=directory_path,
+                directory_path=normalized_directory_path,
             )
         except ValidationError as exc:
             return json_error(str(exc), status_code=400)
