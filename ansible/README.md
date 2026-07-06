@@ -513,7 +513,8 @@ worker public key into the control-plane Git user's `authorized_keys` with
 `git_ssh_command_wrapper.sh` as the forced command and `from=<worker-private-cidr-or-ip>` via
 `evander_worker_git_allowed_from`. The worker daemon receives the same SSH directory through
 `--git-ssh-source-dir` and copies that restricted config/key into each session `agent_home`, so
-in-container `git fetch` and `git push agent` use only the control-plane mirror.
+in-container `git fetch` can read control-plane mirrors under `evander_git_root` while pushes
+remain disabled for the shared worker key.
 
 The default allowed Git source prefix is
 `ssh://{{ evander_git_ssh_alias }}{{ evander_git_root }}/`. The worker rejects
