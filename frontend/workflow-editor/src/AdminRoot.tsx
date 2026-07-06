@@ -1739,6 +1739,9 @@ export default function AdminRoot() {
 
   async function setPrivilegeLock(unlock: boolean) {
     setAuthBusy(true);
+    if (!unlock) {
+      applyPrivilegeLockState(false);
+    }
     try {
       const payload = await fetchJson<PrivilegedOperationsResponse>(
         `/api/admin/privileged/${unlock ? "unlock" : "lock"}`,
