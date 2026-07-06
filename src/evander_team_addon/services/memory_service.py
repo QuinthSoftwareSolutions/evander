@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID, uuid5
 
@@ -41,7 +41,9 @@ def team_memory_collection_name(team_id: str) -> str:
 
 
 def team_memory_point_id(memory_id: str) -> str:
-    return str(uuid5(TEAM_MEMORY_POINT_NAMESPACE, f"team-memory:{_required_text(memory_id, 'memory_id')}"))
+    return str(
+        uuid5(TEAM_MEMORY_POINT_NAMESPACE, f"team-memory:{_required_text(memory_id, 'memory_id')}")
+    )
 
 
 def team_memory_index_text(memory: TeamMemoryRecord) -> str:
@@ -113,7 +115,7 @@ def list_memory_records(
     rows = [
         memory
         for memory in state.memories.values()
-        if _memory_visible(state, memory, actor=actor)
+        if memory_visible_to_actor(state, memory, actor=actor)
         and _memory_matches_scope(
             memory,
             team_id=team_id,
@@ -285,7 +287,7 @@ class TeamMemorySemanticService:
             memory = state.memories.get(memory_id)
             if memory is None:
                 continue
-            if not _memory_visible(state, memory, actor=actor):
+            if not memory_visible_to_actor(state, memory, actor=actor):
                 continue
             if not _memory_matches_scope(
                 memory,
@@ -347,7 +349,7 @@ def _memory_matches_scope(
     return True
 
 
-def _memory_visible(
+def memory_visible_to_actor(
     state: TeamState,
     memory: TeamMemoryRecord,
     *,
@@ -355,18 +357,18 @@ def _memory_visible(
 ) -> bool:
     if actor is None:
         return True
-    if memory.scope == TeamMemoryScope.AGENT_PRIVATE:
-        return memory.agent_id == actor.id
     visible_team_ids = _visible_team_ids(state, actor)
     if memory.team_id not in visible_team_ids:
         return False
+    if memory.scope == TeamMemoryScope.AGENT_PRIVATE:
+        return memory.agent_id == actor.id
     if memory.scope == TeamMemoryScope.PROJECT and memory.project_id is not None:
         return memory.project_id in _visible_project_ids(state, actor)
     return True
 
 
 def _visible_team_ids(state: TeamState, actor: PersistentAgent) -> set[str]:
-    visible = {team.id for team in state.teams.values() if team.manager_agent_id == actor.id}
+    visible = _managed_team_ids(state, actor)
     if actor.team_id is not None:
         visible.add(actor.team_id)
     return visible
@@ -375,12 +377,56 @@ def _visible_team_ids(state: TeamState, actor: PersistentAgent) -> set[str]:
 def _visible_project_ids(state: TeamState, actor: PersistentAgent) -> set[str]:
     visible = set(agent_project_ids(state, actor.id))
     visible.update(agent_lead_project_ids(state, actor.id))
+    if actor.role_id is not None:
+        role = state.roles.get(actor.role_id)
+        if role is not None and role.project_id is not None:
+            visible.add(role.project_id)
+    managed_team_ids = _managed_team_ids(state, actor)
     for project in state.projects.values():
         if project.lead_agent_id == actor.id:
             visible.add(project.id)
-        if project.team_id in _visible_team_ids(state, actor):
+        if project.team_id in managed_team_ids:
             visible.add(project.id)
+    for subordinate_id in _subordinate_agent_ids(state, actor):
+        visible.update(agent_project_ids(state, subordinate_id))
+        visible.update(agent_lead_project_ids(state, subordinate_id))
     return visible
+
+
+def _managed_team_ids(state: TeamState, actor: PersistentAgent) -> set[str]:
+    return {team.id for team in state.teams.values() if team.manager_agent_id == actor.id}
+
+
+def _subordinate_agent_ids(state: TeamState, actor: PersistentAgent) -> set[str]:
+    result: set[str] = set()
+    actor_id = actor.id
+    stack = list(actor.subordinate_agent_ids)
+    while stack:
+        agent_id = stack.pop()
+        if agent_id in result:
+            continue
+        result.add(agent_id)
+        agent = state.agents.get(agent_id)
+        if agent is not None:
+            stack.extend(agent.subordinate_agent_ids)
+    for agent in state.agents.values():
+        if agent.id != actor_id and _reports_under(state, agent.id, actor_id):
+            result.add(agent.id)
+    return result
+
+
+def _reports_under(state: TeamState, agent_id: str, ancestor_id: str) -> bool:
+    seen: set[str] = set()
+    current = state.agents.get(agent_id)
+    while current is not None and current.reports_to_agent_id is not None:
+        parent_id = current.reports_to_agent_id
+        if parent_id == ancestor_id:
+            return True
+        if parent_id in seen:
+            return False
+        seen.add(parent_id)
+        current = state.agents.get(parent_id)
+    return False
 
 
 def _memory_text_matches(memory: TeamMemoryRecord, query_lower: str) -> bool:
@@ -455,7 +501,10 @@ def _semantic_filter(
     if codebase_id is not None:
         should.extend(
             [
-                {"key": "codebase_id", "match": {"value": _required_text(codebase_id, "codebase_id")}},
+                {
+                    "key": "codebase_id",
+                    "match": {"value": _required_text(codebase_id, "codebase_id")},
+                },
                 {"key": "scope", "match": {"value": TeamMemoryScope.TEAM_GLOBAL.value}},
             ]
         )
@@ -470,6 +519,7 @@ __all__ = [
     "MAX_MEMORY_LIMIT",
     "TeamMemorySemanticService",
     "list_memory_records",
+    "memory_visible_to_actor",
     "memory_record_payload",
     "team_memory_collection_name",
     "team_memory_index_text",

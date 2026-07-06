@@ -24,6 +24,8 @@
   indexing/reindexing from canonical state.
 - Kept normal Team wake prompts free of memory content; agents and workflows
   must use explicit memory search/query paths for recall.
+- Restricted Team memory command updates, archives, and supersession links to
+  memories visible to the calling agent.
 
 ## 2026-07-06 - Worker Git Mirror Scope Fix
 

@@ -15,6 +15,7 @@ from ...models import (
     _unique_text_list,
 )
 from ..domain.common import _optional_text, _required_text
+from ..memory_service import memory_visible_to_actor
 from .deliverable_helpers import _safe_deliverable_artifact_paths
 from .executor import TeamCommandExecutor
 from .types import (
@@ -59,14 +60,15 @@ class TeamMemoryCommandService(TeamCommandExecutor):
         normalized_kind = TeamMemoryKind(_required_text(kind, "kind"))
         normalized_title = _required_text(title, "title")
         normalized_summary = _required_text(summary, "summary")
-        normalized_scope = TeamMemoryScope(_optional_text(scope) or _default_scope(project_id, agent_id))
-        normalized_tags = [
-            value.casefold() for value in _unique_text_list(tags or [], "tags")
-        ]
+        normalized_scope = TeamMemoryScope(
+            _optional_text(scope) or _default_scope(project_id, agent_id)
+        )
+        normalized_tags = [value.casefold() for value in _unique_text_list(tags or [], "tags")]
         normalized_source_refs = _unique_text_list(source_refs or [], "source_refs")
         normalized_artifact_refs = _unique_text_list(artifact_refs or [], "artifact_refs")
         normalized_artifact_paths = _safe_deliverable_artifact_paths(artifact_paths or [])
         normalized_artifact_space_ref = _optional_text(artifact_space_ref)
+        normalized_supersedes = _optional_text(supersedes_memory_id)
         if normalized_artifact_space_ref is not None:
             normalized_artifact_refs = _append_unique(
                 normalized_artifact_refs,
@@ -99,7 +101,7 @@ class TeamMemoryCommandService(TeamCommandExecutor):
             "artifact_refs": sorted(normalized_artifact_refs),
             "artifact_paths": sorted(normalized_artifact_paths),
             "confidence": confidence,
-            "supersedes_memory_id": _optional_text(supersedes_memory_id),
+            "supersedes_memory_id": normalized_supersedes,
             "handled_inbox_item_ids": sorted(normalized_handled_ids),
             "correlation_id": context.correlation_id,
             "causation_id": context.causation_id,
@@ -122,11 +124,13 @@ class TeamMemoryCommandService(TeamCommandExecutor):
                 )
             memory_id = _optional_text(id) or f"memory-{uuid4().hex}"
             existing = state.memories.get(memory_id)
-            if existing is not None and existing.team_id != agent.team_id:
-                raise TeamCommandValidationError(
-                    code="memory_scope_conflict",
-                    message=f"memory {memory_id} belongs to another team",
-                    correction_context={"memory_id": memory_id},
+            if existing is not None:
+                _validate_memory_mutable_by_agent(
+                    state,
+                    existing,
+                    agent=agent,
+                    memory_id=memory_id,
+                    correction_field="memory_id",
                 )
             target_agent_id = _optional_text(agent_id)
             if normalized_scope == TeamMemoryScope.AGENT_PRIVATE:
@@ -144,6 +148,23 @@ class TeamMemoryCommandService(TeamCommandExecutor):
                 agent_id=target_agent_id,
                 scope=normalized_scope,
             )
+            superseded: TeamMemoryRecord | None = None
+            if normalized_supersedes is not None:
+                superseded = state.memories.get(normalized_supersedes)
+                if superseded is None:
+                    raise TeamCommandValidationError(
+                        code="missing_superseded_memory",
+                        message=f"superseded memory {normalized_supersedes} does not exist",
+                        correction_context={"supersedes_memory_id": normalized_supersedes},
+                    )
+                _validate_memory_mutable_by_agent(
+                    state,
+                    superseded,
+                    agent=agent,
+                    memory_id=normalized_supersedes,
+                    correction_field="supersedes_memory_id",
+                    memory_label="superseded memory",
+                )
             refs = list(normalized_artifact_refs)
             published_refs = _publish_memory_artifacts(
                 agent=agent,
@@ -181,23 +202,10 @@ class TeamMemoryCommandService(TeamCommandExecutor):
             memory.artifact_refs = refs
             memory.status = TeamMemoryStatus.ACTIVE
             memory.confidence = confidence
-            memory.supersedes_memory_id = _optional_text(supersedes_memory_id)
+            memory.supersedes_memory_id = normalized_supersedes
             memory.updated_at = now
             state.memories[memory.id] = memory
-            if memory.supersedes_memory_id is not None:
-                superseded = state.memories.get(memory.supersedes_memory_id)
-                if superseded is None:
-                    raise TeamCommandValidationError(
-                        code="missing_superseded_memory",
-                        message=f"superseded memory {memory.supersedes_memory_id} does not exist",
-                        correction_context={"supersedes_memory_id": memory.supersedes_memory_id},
-                    )
-                if superseded.team_id != memory.team_id:
-                    raise TeamCommandValidationError(
-                        code="memory_scope_conflict",
-                        message="superseded memory belongs to another team",
-                        correction_context={"supersedes_memory_id": memory.supersedes_memory_id},
-                    )
+            if superseded is not None:
                 superseded.status = TeamMemoryStatus.SUPERSEDED
                 superseded.superseded_by_memory_id = memory.id
                 superseded.updated_at = now
@@ -260,6 +268,11 @@ class TeamMemoryCommandService(TeamCommandExecutor):
                     code="invalid_command_scope",
                     message="team_archive_memory requires an active agent dispatch",
                 )
+            if agent.team_id is None:
+                raise TeamCommandValidationError(
+                    code="team_required",
+                    message="team_archive_memory requires a Team agent",
+                )
             memory = state.memories.get(normalized_memory_id)
             if memory is None:
                 raise TeamCommandValidationError(
@@ -267,17 +280,28 @@ class TeamMemoryCommandService(TeamCommandExecutor):
                     message=f"memory {normalized_memory_id} does not exist",
                     correction_context={"memory_id": normalized_memory_id},
                 )
-            if memory.team_id != agent.team_id:
-                raise TeamCommandValidationError(
-                    code="memory_scope_conflict",
-                    message=f"memory {normalized_memory_id} belongs to another team",
-                    correction_context={"memory_id": normalized_memory_id},
-                )
-            if memory.scope == TeamMemoryScope.AGENT_PRIVATE and memory.agent_id != agent.id:
-                raise TeamCommandValidationError(
-                    code="memory_scope_conflict",
-                    message="agent-private memory can only be archived by its owner",
-                    correction_context={"memory_id": normalized_memory_id},
+            _validate_memory_mutable_by_agent(
+                state,
+                memory,
+                agent=agent,
+                memory_id=normalized_memory_id,
+                correction_field="memory_id",
+            )
+            if normalized_superseded_by is not None:
+                replacement = state.memories.get(normalized_superseded_by)
+                if replacement is None:
+                    raise TeamCommandValidationError(
+                        code="missing_superseding_memory",
+                        message=f"replacement memory {normalized_superseded_by} does not exist",
+                        correction_context={"superseded_by_memory_id": normalized_superseded_by},
+                    )
+                _validate_memory_mutable_by_agent(
+                    state,
+                    replacement,
+                    agent=agent,
+                    memory_id=normalized_superseded_by,
+                    correction_field="superseded_by_memory_id",
+                    memory_label="replacement memory",
                 )
             now = utc_now()
             memory.status = (
@@ -303,6 +327,29 @@ class TeamMemoryCommandService(TeamCommandExecutor):
             handled_inbox_item_ids=[],
             apply_command=_apply,
             require_active_dispatch=True,
+        )
+
+
+def _validate_memory_mutable_by_agent(
+    state: TeamState,
+    memory: TeamMemoryRecord,
+    *,
+    agent: Any,
+    memory_id: str,
+    correction_field: str,
+    memory_label: str = "memory",
+) -> None:
+    if memory.team_id != agent.team_id:
+        raise TeamCommandValidationError(
+            code="memory_scope_conflict",
+            message=f"{memory_label} {memory_id} belongs to another team",
+            correction_context={correction_field: memory_id},
+        )
+    if not memory_visible_to_actor(state, memory, actor=agent):
+        raise TeamCommandValidationError(
+            code="memory_scope_conflict",
+            message=f"{memory_label} {memory_id} is not visible to the caller",
+            correction_context={correction_field: memory_id},
         )
 
 
