@@ -224,6 +224,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             raise RuntimeError(
                 "container worker backend does not support session Git write keys"
             )
+        _remove_session_git_write_access(context, session_id)
         key_record = provision_git_write_key(
             session_id=session_id,
             git_host=mirror_resolver.git_host,

@@ -12,6 +12,10 @@
   `git push-agent` can push both refs in one operation.
 - Made read-only clone reruns remove prior container Git write-key authorization
   and scrub stale `push-agent` checkout configuration.
+- Hardened the container Git write-key lifecycle so worker-managed SSH files
+  reject guest-created symlinks, write-mode key rotation revokes the previous
+  host `authorized_keys` entry, and destroy by execution/container target
+  revokes write access before session metadata is deleted.
 
 ## 2026-07-07 - Container Worker Empty Codex Output Handling
 

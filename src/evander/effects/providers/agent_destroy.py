@@ -199,32 +199,80 @@ class AgentDestroyEffectProvider(EffectProviderBase):
         context: EffectRuntimeContext,
         target: str,
     ) -> None:
+        session = self._resolve_container_cleanup_session(context, target)
+        if session is None:
+            return
+        metadata = getattr(session, "metadata", {})
+        if not isinstance(metadata, dict):
+            return
+        git_access = metadata.get("container_git_write_access")
+        if not isinstance(git_access, dict):
+            return
+        public_key_body = normalize_optional_string(git_access.get("public_key_body"))
+        authorized_keys_path = normalize_optional_string(git_access.get("authorized_keys_path"))
+        if not public_key_body or not authorized_keys_path:
+            return
+        remove_git_authorized_key_by_public_key_body(
+            authorized_keys_path=authorized_keys_path,
+            public_key_body=public_key_body,
+        )
+
+    def _resolve_container_cleanup_session(
+        self,
+        context: EffectRuntimeContext,
+        target: str,
+    ) -> Any | None:
         admin_service = self._admin_service(context)
         runtime = getattr(admin_service, "runtime", None)
         repository = getattr(runtime, "session_repository", None)
         get_session = getattr(repository, "get_session", None)
         resolve_session_target = getattr(repository, "resolve_session_target", None)
         if not callable(get_session):
-            return
+            return None
         try:
             session = get_session(target)
-            if session is None and callable(resolve_session_target):
-                session = resolve_session_target(target)
-            if session is None:
-                return
-            metadata = getattr(session, "metadata", {})
-            if not isinstance(metadata, dict):
-                return
-            git_access = metadata.get("container_git_write_access")
-            if not isinstance(git_access, dict):
-                return
-            public_key_body = normalize_optional_string(git_access.get("public_key_body"))
-            authorized_keys_path = normalize_optional_string(git_access.get("authorized_keys_path"))
-            if not public_key_body or not authorized_keys_path:
-                return
-            remove_git_authorized_key_by_public_key_body(
-                authorized_keys_path=authorized_keys_path,
-                public_key_body=public_key_body,
-            )
+            if session is not None:
+                return session
+            for owner in (
+                admin_service,
+                getattr(admin_service, "vm_agent_admin", None),
+            ):
+                session = self._resolve_container_cleanup_session_from_owner(
+                    owner,
+                    target,
+                    get_session=get_session,
+                )
+                if session is not None:
+                    return session
+            if callable(resolve_session_target):
+                return resolve_session_target(target)
         except Exception:
-            return
+            return None
+        return None
+
+    @staticmethod
+    def _resolve_container_cleanup_session_from_owner(
+        owner: Any,
+        target: str,
+        *,
+        get_session: Any,
+    ) -> Any | None:
+        if owner is None:
+            return None
+        for resolver_name in (
+            "_resolve_container_agent_session",
+            "resolve_container_agent_session",
+        ):
+            resolver = getattr(owner, resolver_name, None)
+            if not callable(resolver):
+                continue
+            resolved = resolver(target, require_session=False)
+            if not isinstance(resolved, tuple) or len(resolved) != 2:
+                continue
+            session, record = resolved
+            if session is not None:
+                return session
+            session_id = normalize_optional_string(getattr(record, "session_id", None))
+            if session_id:
+                return get_session(session_id)
+        return None

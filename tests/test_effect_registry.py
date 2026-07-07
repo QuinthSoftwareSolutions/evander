@@ -4952,6 +4952,91 @@ def test_agent_clone_container_read_only_mode_skips_write_key_and_push_alias(
     assert 'rm -f "$HOME/.ssh/evander-git-write"' in command
 
 
+def test_agent_clone_container_write_rerun_removes_previous_write_access(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    authorized_keys = tmp_path / "agent-authorized-keys"
+    authorized_keys.write_text(
+        "\n".join(
+            [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey old",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe keep",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "container_git_write_access": {
+                    "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
+                    "authorized_keys_path": str(authorized_keys),
+                    "authorized_repo_path": "/git-remotes/repo-abcdef123456.git",
+                    "authorized_ref_prefix": "refs/heads/agents/session-1/",
+                    "authorized_pr_notes_ref": "refs/notes/agent-pr/84097828fc31",
+                },
+                "keep": "metadata",
+            },
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        project_dir=Path.cwd(),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
+    )
+    git_auth_calls = _stub_container_git_authorization(monkeypatch, tmp_path)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCloneRepoEffectDefinition(
+            id="agent-clone",
+            display_name="Clone",
+            type="effect:agent:clone-repo",
+            session_id="session-1",
+            repo_source="/tmp/repo",
+        )
+    ).execute()
+
+    manifest = session_repository.get_session("session-1")
+    assert manifest is not None
+    authorized_keys_text = authorized_keys.read_text(encoding="utf-8")
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys_text
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe" in authorized_keys_text
+    assert output["git_write_access"]["public_key_body"] == "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey"
+    assert (
+        manifest.metadata["container_git_write_access"]["public_key_body"]
+        == "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey"
+    )
+    assert manifest.metadata["keep"] == "metadata"
+    assert git_auth_calls[0]["authorized_keys_path"] == authorized_keys
+
+
 def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5857,6 +5942,114 @@ def test_agent_destroy_provider_deletes_container_session(tmp_path) -> None:
         session_repository.get_session("session-container").metadata["container_lifecycle"]["state"]
         == "cleaned_up"
     )
+
+
+@pytest.mark.parametrize("target", ["exec-1", "container-target"])
+def test_agent_destroy_provider_revokes_container_write_key_for_resolved_target(
+    tmp_path,
+    target: str,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text(
+        "\n".join(
+            [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey old",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe keep",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-container",
+            vm_id=None,
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "container_git_write_access": {
+                    "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
+                    "authorized_keys_path": str(authorized_keys),
+                },
+            },
+        )
+    )
+
+    class DeleteAdminStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.calls: list[tuple[str, str | None]] = []
+
+        def _resolve_container_agent_session(
+            self,
+            agent_id: str,
+            *,
+            require_session: bool,
+        ):
+            if agent_id in {"exec-1", "container-target"}:
+                return (
+                    session_repository.get_session("session-container"),
+                    SimpleNamespace(
+                        session_id="session-container",
+                        target_name="container-target",
+                    ),
+                )
+            session = session_repository.get_session(agent_id)
+            if session is not None:
+                return session, None
+            if require_session:
+                raise ValueError(f"Unknown container worker agent target: {agent_id}")
+            return None, None
+
+        resolve_container_agent_session = _resolve_container_agent_session
+
+        def delete_admin_agent(self, agent_id: str, *, backend: str | None = None):
+            self.calls.append((agent_id, backend))
+            session_repository.delete_session("session-container")
+            return {
+                "success": True,
+                "target_name": "container-target",
+                "status": "deleted",
+                "session_id": "session-container",
+                "message": "Deleted container worker session",
+            }
+
+    admin_service = DeleteAdminStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentDestroyEffectDefinition(
+            id="agent-destroy",
+            display_name="Destroy",
+            type="effect:agent:destroy",
+            target=target,
+            execution_backend="container_worker_vm",
+        )
+    ).execute()
+
+    authorized_keys_text = authorized_keys.read_text(encoding="utf-8")
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys_text
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe" in authorized_keys_text
+    assert admin_service.calls == [(target, "container_worker_vm")]
+    assert output["success"] is True
+    assert output["session_id"] == "session-container"
+    assert session_repository.get_session("session-container") is None
 
 
 def test_agent_exec_provider_delegates_libvirt_sessions_to_vm_exec(tmp_path) -> None:

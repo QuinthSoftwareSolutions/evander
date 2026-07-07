@@ -667,9 +667,7 @@ def test_worker_provisions_session_git_write_key_and_preserves_config(
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    daemon.prepare_session(
-        WorkerSessionPrepareRequest(session_id="session-1", metadata={})
-    )
+    daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1", metadata={}))
 
     record = daemon.provision_git_write_key(
         "session-1",
@@ -697,6 +695,77 @@ def test_worker_provisions_session_git_write_key_and_preserves_config(
     )
 
     assert (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8") == config_text
+
+
+def test_worker_rejects_symlinked_git_write_ssh_directory(tmp_path: Path) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    victim_dir = tmp_path / "victim-ssh"
+    victim_dir.mkdir()
+    os.chmod(victim_dir, 0o755)
+    (paths.agent_home / ".ssh").symlink_to(victim_dir, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="Managed SSH"):
+        daemon.provision_git_write_key(
+            "session-1",
+            WorkerGitWriteKeyRequest(
+                git_host="10.2.0.4",
+                git_user="agent",
+                git_ssh_alias="evander-git-host",
+            ),
+        )
+
+    assert stat.S_IMODE(victim_dir.stat().st_mode) == 0o755
+
+
+@pytest.mark.parametrize(
+    "unsafe_name",
+    ["evander-git-write", "evander-git-write.pub", "config"],
+)
+def test_worker_rejects_symlinked_git_write_managed_files(
+    tmp_path: Path,
+    unsafe_name: str,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    ssh_dir = paths.agent_home / ".ssh"
+    ssh_dir.mkdir()
+    private_key = ssh_dir / "evander-git-write"
+    public_key = ssh_dir / "evander-git-write.pub"
+    if unsafe_name != private_key.name:
+        private_key.write_text("private key\n", encoding="utf-8")
+    if unsafe_name != public_key.name:
+        public_key.write_text(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerKey worker\n",
+            encoding="utf-8",
+        )
+    victim = tmp_path / f"victim-{unsafe_name.replace('.', '-')}"
+    victim.write_text("host-owned\n", encoding="utf-8")
+    os.chmod(victim, 0o644)
+    (ssh_dir / unsafe_name).symlink_to(victim)
+
+    with pytest.raises(ValueError, match="symlink"):
+        daemon.provision_git_write_key(
+            "session-1",
+            WorkerGitWriteKeyRequest(
+                git_host="10.2.0.4",
+                git_user="agent",
+                git_ssh_alias="evander-git-host",
+            ),
+        )
+
+    assert victim.read_text(encoding="utf-8") == "host-owned\n"
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o644
 
 
 def test_worker_api_provisions_session_git_write_key(
