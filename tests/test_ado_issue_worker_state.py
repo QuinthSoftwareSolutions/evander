@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1283,9 +1284,7 @@ def test_poll_once_skips_comments_for_processed_unchanged_items(
     def fake_fetch_comments(**kwargs):
         nonlocal comment_calls
         comment_calls += 1
-        return [
-            {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
-        ]
+        return [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}]
 
     monkeypatch.setattr(
         "evander.daemons.ado_issue_worker.fetch_work_item_comments",
@@ -1671,6 +1670,8 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
         "notify_wake_socket_for_lock",
         lambda lock_path: wake_paths.append(Path(lock_path)) or True,
     )
+    feedback_created_at = datetime.now(UTC).replace(microsecond=0) - timedelta(days=1)
+    feedback_cursor = feedback_created_at.isoformat().replace("+00:00", "Z")
 
     def fake_poll(self, *, client, repo, pr_id, cursor):
         assert repo == "org/repo"
@@ -1687,11 +1688,11 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
                     comment_id="1",
                     author="jonathan",
                     body="@<C74221CB-EE08-6A83-9055-AF01C3333112> please fix this",
-                    created_at="2026-04-08T05:33:41.433000Z",
+                    created_at=feedback_cursor,
                     metadata={"mentioned_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"]},
                 )
             ],
-            next_cursor="2026-04-08T05:33:41.433000Z",
+            next_cursor=feedback_cursor,
         )
 
     monkeypatch.setattr(ado_worker.AzureDevOpsFeedbackAdapter, "poll", fake_poll)
@@ -1738,7 +1739,7 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
     )
     assert (
         cursor_payload["trigger-pr-feedback"]["stream_cursors"]["azure_devops:org/repo:6070"]
-        == "2026-04-08T05:33:41.433000Z"
+        == feedback_cursor
     )
 
 
@@ -1879,6 +1880,8 @@ def test_publish_directory_pr_feedback_events_handles_agent_authored_feedback(
         "notify_wake_socket_for_lock",
         lambda lock_path: wake_paths.append(Path(lock_path)) or True,
     )
+    feedback_created_at = datetime.now(UTC).replace(microsecond=0) - timedelta(days=1)
+    feedback_cursor = feedback_created_at.isoformat().replace("+00:00", "Z")
 
     def fake_poll(self, *, client, repo, pr_id, cursor):
         assert repo == "org/repo"
@@ -1895,14 +1898,14 @@ def test_publish_directory_pr_feedback_events_handles_agent_authored_feedback(
                     comment_id="5",
                     author="evander Bot",
                     body="@<C74221CB-EE08-6A83-9055-AF01C3333112> already handled.",
-                    created_at="2026-04-08T05:33:41.433000Z",
+                    created_at=feedback_cursor,
                     metadata={
                         "mentioned_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
                         "prior_thread_comment_author_names": ["evander Bot", "jonathan"],
                     },
                 )
             ],
-            next_cursor="2026-04-08T05:33:41.433000Z",
+            next_cursor=feedback_cursor,
         )
 
     monkeypatch.setattr(ado_worker.AzureDevOpsFeedbackAdapter, "poll", fake_poll)
@@ -1917,9 +1920,7 @@ def test_publish_directory_pr_feedback_events_handles_agent_authored_feedback(
 
     assert published == expected_published
     assert wake_paths == (
-        [worker_config.runtime_dir / "effect-orchestrator.lock"]
-        if expected_published
-        else []
+        [worker_config.runtime_dir / "effect-orchestrator.lock"] if expected_published else []
     )
     queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
     events = queue.list_pending(trigger_id="trigger-pr-feedback")
@@ -2173,9 +2174,7 @@ def test_publish_directory_pr_feedback_events_uses_explicit_pr_query_candidates_
             "cursor": "cursor-1",
         }
         return SimpleNamespace(
-            pull_requests=[
-                SimpleNamespace(provider="azure_devops", repo="org/repo", pr_id="6070")
-            ]
+            pull_requests=[SimpleNamespace(provider="azure_devops", repo="org/repo", pr_id="6070")]
         )
 
     monkeypatch.setattr(
@@ -2263,7 +2262,9 @@ def test_publish_directory_pr_feedback_events_uses_explicit_pr_query_candidates_
         (worker_config.runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8")
     )
     assert (
-        cursor_payload["trigger-pr-feedback-explicit"]["stream_cursors"]["azure_devops:org/repo:6070"]
+        cursor_payload["trigger-pr-feedback-explicit"]["stream_cursors"][
+            "azure_devops:org/repo:6070"
+        ]
         == "2026-04-08T05:33:41.433000Z"
     )
 
@@ -2358,9 +2359,7 @@ def test_publish_directory_pr_feedback_events_keeps_explicit_stream_unbound_with
     def fake_list_pull_requests(self, **kwargs):
         assert kwargs["status"] == "active"
         return SimpleNamespace(
-            pull_requests=[
-                SimpleNamespace(provider="azure_devops", repo="org/repo", pr_id="6070")
-            ]
+            pull_requests=[SimpleNamespace(provider="azure_devops", repo="org/repo", pr_id="6070")]
         )
 
     monkeypatch.setattr(
@@ -2504,9 +2503,7 @@ def test_publish_directory_pr_completion_events_uses_explicit_pr_query_candidate
             "cursor": "cursor-2",
         }
         return SimpleNamespace(
-            pull_requests=[
-                SimpleNamespace(provider="azure_devops", repo="org/repo", pr_id="6070")
-            ]
+            pull_requests=[SimpleNamespace(provider="azure_devops", repo="org/repo", pr_id="6070")]
         )
 
     monkeypatch.setattr(
@@ -2947,9 +2944,9 @@ def test_publish_directory_pr_feedback_events_skips_missing_pr_stream_and_contin
     cursor_payload = json.loads(
         (worker_config.runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8")
     )
-    assert "azure_devops:org/repo:100" not in cursor_payload["trigger-pr-feedback"][
-        "stream_cursors"
-    ]
+    assert (
+        "azure_devops:org/repo:100" not in cursor_payload["trigger-pr-feedback"]["stream_cursors"]
+    )
     assert (
         cursor_payload["trigger-pr-feedback"]["stream_cursors"]["azure_devops:org/repo:200"]
         == "2026-05-13T09:00:00Z"
@@ -3030,6 +3027,8 @@ def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
 
     monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+    feedback_created_at = datetime.now(UTC).replace(microsecond=0) - timedelta(days=1)
+    feedback_cursor = feedback_created_at.isoformat().replace("+00:00", "Z")
 
     def fake_poll(self, *, client, repo, pr_id, cursor):
         return SimpleNamespace(
@@ -3043,10 +3042,10 @@ def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
                     comment_id="2",
                     author="Truman Bot",
                     body="Bot reply",
-                    created_at="2026-04-08T05:35:01.273000Z",
+                    created_at=feedback_cursor,
                 )
             ],
-            next_cursor="2026-04-08T05:35:01.273000Z",
+            next_cursor=feedback_cursor,
         )
 
     monkeypatch.setattr(ado_worker.AzureDevOpsFeedbackAdapter, "poll", fake_poll)
@@ -3222,7 +3221,7 @@ def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: Wo
                             "organization_url": "https://dev.azure.com/example-org",
                             "project": "Example Project",
                             "enabled": False,
-                        }
+                        },
                     ],
                     "edges": [],
                 },
@@ -3278,7 +3277,7 @@ def test_load_ado_pr_completed_triggers_resolves_workflow_packs(
                             "organization_url": "https://dev.azure.com/example-org",
                             "project": "Example Project",
                             "enabled": False,
-                        }
+                        },
                     ],
                     "edges": [],
                 },

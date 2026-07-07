@@ -83,6 +83,13 @@ one_line_base64() {
   printf '%s' "$1" | base64 | tr -d '\n'
 }
 
+agent_pr_notes_ref_for_session() {
+  local session_id="$1"
+  local digest
+  digest="$(printf '%s' "${session_id}" | sha256sum | awk '{print $1}')"
+  printf 'refs/notes/agent-pr/%s\n' "${digest:0:12}"
+}
+
 resolve_git_auth_repo() {
   local repo_value="$1"
   local repo_path
@@ -299,6 +306,7 @@ fi
 AUTH_ACCESS="read-only"
 AUTH_REPO_REAL=""
 AUTH_REF_PREFIX=""
+AUTH_PR_NOTES_REF=""
 if [[ -n "${GIT_AUTH_REPO_INPUT}" ]]; then
   AUTH_REPO_REAL="$(resolve_git_auth_repo "${GIT_AUTH_REPO_INPUT}")"
   case "${AUTH_REPO_REAL}" in
@@ -324,6 +332,7 @@ elif [[ -n "${AUTH_REPO_REAL}" && -n "${GIT_SESSION_ID}" ]]; then
     exit 1
   fi
   AUTH_REF_PREFIX="refs/heads/agents/${GIT_SESSION_ID}/"
+  AUTH_PR_NOTES_REF="$(agent_pr_notes_ref_for_session "${GIT_SESSION_ID}")"
   AUTH_ACCESS="write"
 elif is_truthy "${EVANDER_GIT_REQUIRE_WRITE_METADATA:-0}"; then
   echo "Cannot install writable Git SSH access without repo/session metadata." >&2
@@ -343,6 +352,7 @@ if [[ "${AUTH_ACCESS}" == "write" ]]; then
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_REPO_B64=$(one_line_base64 "${AUTH_REPO_REAL}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_SESSION_ID_B64=$(one_line_base64 "${GIT_SESSION_ID}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_REF_PREFIX_B64=$(one_line_base64 "${AUTH_REF_PREFIX}")"
+  FORCED_COMMAND+=" EVANDER_GIT_AUTH_PR_NOTES_REF_B64=$(one_line_base64 "${AUTH_PR_NOTES_REF}")"
   FORCED_COMMAND+=" ${WRAPPER_PATH}"
 else
   FORCED_COMMAND="EVANDER_GIT_AUTH_ACCESS=read-only"
@@ -363,6 +373,7 @@ if [[ "${AUTH_ACCESS}" == "write" ]]; then
   echo "Write access is limited to:"
   echo "  repo: ${AUTH_REPO_REAL}"
   echo "  ref prefix: ${AUTH_REF_PREFIX}"
+  echo "  PR notes ref: ${AUTH_PR_NOTES_REF}"
 else
   echo "Read-only access is limited to:"
   echo "  repo: ${AUTH_REPO_REAL}"

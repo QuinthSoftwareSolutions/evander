@@ -3919,7 +3919,7 @@ function effectiveAdoQueryMode(values: Record<string, unknown>): string {
   return wiql ? ADO_QUERY_MODE_MANUAL_WIQL : ADO_QUERY_MODE_STRUCTURED_FILTERS;
 }
 
-function adoQueryModeDisablesField(
+function adoQueryModeHidesField(
   nodeType: string | undefined,
   fieldKey: string,
   values: Record<string, unknown>,
@@ -3930,6 +3930,23 @@ function adoQueryModeDisablesField(
     return ADO_STRUCTURED_FILTER_FIELD_KEYS.has(fieldKey);
   }
   return fieldKey === "wiql";
+}
+
+function pruneAdoQueryModeHiddenFieldValues(
+  nodeType: string | undefined,
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isAdoQueryModeNodeType(nodeType)) return values;
+  const nextValues = { ...values };
+  for (const fieldKey of ADO_STRUCTURED_FILTER_FIELD_KEYS) {
+    if (adoQueryModeHidesField(nodeType, fieldKey, values)) {
+      delete nextValues[fieldKey];
+    }
+  }
+  if (adoQueryModeHidesField(nodeType, "wiql", values)) {
+    delete nextValues.wiql;
+  }
+  return nextValues;
 }
 
 function normalizedAgentCreateExecutionBackend(values: Record<string, unknown>): string {
@@ -7342,6 +7359,9 @@ export default function App() {
     if (selectedNode.type === AGENT_CREATE_NODE_TYPE && selectedCatalogEntry) {
       nextKnownValues = pruneAgentCreateBackendFieldValues(nextKnownValues, selectedCatalogEntry.fields);
     }
+    if (isAdoQueryModeNodeType(selectedNode.type)) {
+      nextKnownValues = pruneAdoQueryModeHiddenFieldValues(selectedNode.type, nextKnownValues);
+    }
 
     return removeUndefinedValues({
       id: rawId,
@@ -7867,10 +7887,26 @@ export default function App() {
       delete next.wiql;
     }
     if (value === ADO_QUERY_MODE_MANUAL_WIQL) {
-      delete next.current_iteration;
+      for (const fieldKey of ADO_STRUCTURED_FILTER_FIELD_KEYS) {
+        delete next[fieldKey];
+      }
     }
-    setInspectorKnownValues(next);
-    stageInspectorDraft({ knownValues: next });
+    const nextKnownValues = pruneAdoQueryModeHiddenFieldValues(selectedNode?.type, next);
+    let nextStringListDrafts = inspectorStringListDrafts;
+    if (value === ADO_QUERY_MODE_MANUAL_WIQL) {
+      nextStringListDrafts = { ...inspectorStringListDrafts };
+      for (const fieldKey of ADO_STRUCTURED_FILTER_FIELD_KEYS) {
+        delete nextStringListDrafts[fieldKey];
+      }
+    }
+    setInspectorKnownValues(nextKnownValues);
+    if (nextStringListDrafts !== inspectorStringListDrafts) {
+      setInspectorStringListDrafts(nextStringListDrafts);
+    }
+    stageInspectorDraft({
+      knownValues: nextKnownValues,
+      ...(nextStringListDrafts !== inspectorStringListDrafts ? { stringListDrafts: nextStringListDrafts } : {}),
+    });
   }
 
   function updateToolArgumentPolicyDraftRows(fieldKey: string, nextRows: ToolArgumentPolicyDraftRow[]) {
@@ -9237,12 +9273,14 @@ export default function App() {
   }
 
   function renderField(field: WorkflowEditorFieldDefinition) {
+    const selectedNodeType = selectedNode?.type;
+    if (adoQueryModeHidesField(selectedNodeType, field.key, inspectorKnownValues)) {
+      return null;
+    }
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
-    const selectedNodeType = selectedNode?.type;
     const isDisabled = field.read_only
-      || (workflowMutationLocked && !tutorialAllowsInspectorFieldEdit(field.key))
-      || adoQueryModeDisablesField(selectedNodeType, field.key, inspectorKnownValues);
+      || (workflowMutationLocked && !tutorialAllowsInspectorFieldEdit(field.key));
 
     if (selectedNodeType === "query:session:list" && isSessionListMetadataFieldKey(field.key)) {
       return field.key === "metadata_equals" ? renderSessionListMetadataRules(isDisabled) : null;

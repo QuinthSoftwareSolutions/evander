@@ -123,6 +123,8 @@ session manifest and worker directories, `effect:agent:clone-repo` clones into
 `effect:agent:exec`
 runs deterministic setup commands in a transient worker job, and `effect:agent:prompt`
 starts a disposable worker job for Codex and removes the job after completion.
+Container clone jobs default to a session-scoped writable Git key so `git push-agent` works;
+set `git_access_mode: read-only` on `effect:agent:clone-repo` for fetch-only sessions.
 `effect:agent:destroy` is the cleanup counterpart: VM-backed sessions destroy the linked VM,
 while container-backed sessions delete worker-side files and jobs but keep the host session
 manifest and container execution mappings as cleanup tombstones. Admin Web > Sessions surfaces

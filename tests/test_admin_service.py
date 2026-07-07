@@ -11721,11 +11721,28 @@ def test_delete_session_cleans_detached_worker_state(
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text(
+        "\n".join(
+            [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey old",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe keep",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="detached-session",
             allowed_tools=[],
             expires_at=now + timedelta(hours=1),
+            metadata={
+                "container_git_write_access": {
+                    "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
+                    "authorized_keys_path": str(authorized_keys),
+                },
+            },
         ),
     )
     repository = ContainerWorkerExecutionRepository(
@@ -11781,6 +11798,10 @@ def test_delete_session_cleans_detached_worker_state(
     assert repository.read_all() == {}
     assert "worker_session_deleted=1" in result.message
     assert "removed_mappings=1" in result.message
+    assert "git_write_access_revoked=1" in result.message
+    authorized_keys_text = authorized_keys.read_text(encoding="utf-8")
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys_text
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe" in authorized_keys_text
 
 
 def test_cleanup_container_session_records_cleaned_up_tombstone(
@@ -11994,6 +12015,17 @@ def test_delete_admin_agent_deletes_container_session_and_prunes_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text(
+        "\n".join(
+            [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey old",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe keep",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -12004,6 +12036,10 @@ def test_delete_admin_agent_deletes_container_session_and_prunes_context(
             metadata={
                 "execution_backend": "container_worker_vm",
                 "target_name": "container-target",
+                "container_git_write_access": {
+                    "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
+                    "authorized_keys_path": str(authorized_keys),
+                },
             },
         ),
     )
@@ -12080,6 +12116,10 @@ def test_delete_admin_agent_deletes_container_session_and_prunes_context(
     assert fake_backend.deleted_sessions == ["container-session"]
     pr_map_payload = json.loads(service.config.pr_map_path.read_text(encoding="utf-8"))
     assert set(pr_map_payload["entries"]) == {"azure_devops:org/other:1"}
+    authorized_keys_text = authorized_keys.read_text(encoding="utf-8")
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys_text
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe" in authorized_keys_text
+    assert "git_write_access_revoked=1" in result["message"]
     feedback_payload = PrFeedbackStore(
         service.config.runtime_dir / "pr-feedback-store.json"
     ).read_raw()
@@ -12140,6 +12180,17 @@ def test_delete_admin_agent_destroys_running_container_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text(
+        "\n".join(
+            [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey old",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe keep",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -12150,6 +12201,10 @@ def test_delete_admin_agent_destroys_running_container_execution(
             metadata={
                 "execution_backend": "container_worker_vm",
                 "target_name": "container-target",
+                "container_git_write_access": {
+                    "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
+                    "authorized_keys_path": str(authorized_keys),
+                },
             },
         ),
     )
@@ -12192,6 +12247,10 @@ def test_delete_admin_agent_destroys_running_container_execution(
     assert result["status"] == "deleted"
     assert fake_backend.destroyed == ["exec-1"]
     assert fake_backend.deleted_sessions == ["container-session"]
+    authorized_keys_text = authorized_keys.read_text(encoding="utf-8")
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys_text
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe" in authorized_keys_text
+    assert "git_write_access_revoked=1" in result["message"]
     assert service.runtime.session_repository.get_session("container-session") is None
     assert repository.read_all() == {}
 

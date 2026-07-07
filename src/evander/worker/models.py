@@ -306,6 +306,41 @@ class WorkerRepoCloneRecord(BaseModel):
     cloned: bool
 
 
+class WorkerGitWriteKeyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    git_host: str
+    git_user: str
+    git_ssh_alias: str
+    key_name: str = "evander-git-write"
+
+    @field_validator("git_host", "git_user", "git_ssh_alias", mode="before")
+    @classmethod
+    def normalize_required_string(cls, value: object, info: ValidationInfo) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError(f"{info.field_name} is required")
+        if "\n" in text or "\r" in text:
+            raise ValueError(f"{info.field_name} must not contain newlines")
+        return text
+
+    @field_validator("key_name", mode="before")
+    @classmethod
+    def normalize_key_name(cls, value: object) -> str:
+        return str(validate_worker_component_id(value, field_name="key_name"))
+
+
+class WorkerGitWriteKeyRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    public_key: str
+    public_key_body: str
+    key_path: str
+    config_path: str
+    git_ssh_alias: str
+
+
 class WorkerFileWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

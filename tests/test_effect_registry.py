@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -119,9 +121,7 @@ class _ContainerResolverStub:
         del session_id
         return self.config
 
-    def resolve_contacts_for_directory(
-        self, directory_path: str | None
-    ) -> ContactDirectoryConfig:
+    def resolve_contacts_for_directory(self, directory_path: str | None) -> ContactDirectoryConfig:
         del directory_path
         return self.contacts_config
 
@@ -157,6 +157,7 @@ class _FakeContainerBackend:
     def __init__(self) -> None:
         self.prepared_sessions: list[dict[str, object]] = []
         self.cloned_repos: list[dict[str, object]] = []
+        self.git_write_keys: list[dict[str, object]] = []
         self.written_files: list[dict[str, object]] = []
         self.prepared_specs: list[object] = []
         self.started_specs: list[object] = []
@@ -186,6 +187,17 @@ class _FakeContainerBackend:
             guest_repo_name=repo_name,
             remote_url=kwargs["repo_source"],
             cloned=self.clone_result_cloned,
+        )
+
+    def provision_git_write_key(self, **kwargs):
+        self.git_write_keys.append(kwargs)
+        return SimpleNamespace(
+            session_id=kwargs["session_id"],
+            public_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey test-key",
+            public_key_body="AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
+            key_path="/home/agent/.ssh/evander-git-write",
+            config_path="/home/agent/.ssh/config",
+            git_ssh_alias=kwargs["git_ssh_alias"],
         )
 
     def write_files(self, **kwargs):
@@ -227,6 +239,10 @@ class _FakeContainerGitMirrorResolver:
     ) -> None:
         self.worker_repo_source = worker_repo_source
         self.canonical_repo_source = canonical_repo_source
+        self.git_root_path = Path("/git-remotes")
+        self.git_host = "10.2.0.4"
+        self.git_user = "agent"
+        self.git_ssh_alias = "evander-git-host"
         self.resolved: list[dict[str, object]] = []
 
     def resolve(self, **kwargs):
@@ -238,6 +254,37 @@ class _FakeContainerGitMirrorResolver:
             mirror_name="repo-abcdef123456",
             mirror_path="/git-remotes/repo-abcdef123456.git",
         )
+
+
+def _stub_container_git_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+
+    def fake_authorized_keys_path_for_user(git_user: str) -> Path:
+        return tmp_path / f"{git_user}-authorized-keys"
+
+    def fake_install_git_write_authorized_key(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            authorized_keys_path=Path(kwargs["authorized_keys_path"]),
+            public_key_body="AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
+            authorized_repo_path=Path(kwargs["authorized_repo_path"]),
+            authorized_ref_prefix=f"refs/heads/agents/{kwargs['session_id']}/",
+            authorized_pr_notes_ref="refs/notes/agent-pr/84097828fc31",
+            allowed_from=str(kwargs["allowed_from"]),
+        )
+
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.authorized_keys_path_for_user",
+        fake_authorized_keys_path_for_user,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.install_git_write_authorized_key",
+        fake_install_git_write_authorized_key,
+    )
+    return calls
 
 
 @dataclass
@@ -849,10 +896,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
     assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
-    assert (
-        admin_service.create_vm_calls[0]["metadata"]["model_provider_mode"]
-        == "local_openai"
-    )
+    assert admin_service.create_vm_calls[0]["metadata"]["model_provider_mode"] == "local_openai"
 
 
 def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_path: Path) -> None:
@@ -1558,9 +1602,7 @@ def test_agent_create_libvirt_upsert_preserves_existing_vm_image_when_selector_o
         "image_ref": "dotnet-agent.qcow2",
         "template_alias": "dotnet",
     }
-    assert session_repository.get_session("lab-session").metadata["workflow"] == {
-        "state": "active"
-    }
+    assert session_repository.get_session("lab-session").metadata["workflow"] == {"state": "active"}
 
 
 def test_agent_create_libvirt_upsert_replaces_existing_vm_image_when_selector_provided(
@@ -2138,9 +2180,9 @@ def test_agent_enqueue_prompt_provider_scopes_libvirt_prompt_lock_to_vm(
         bootstrap_frontend_in_vm_calls=[],
         resume_calls=[],
     )
-    admin_service._sessions["session-84"] = admin_service._sessions[
-        "session-42"
-    ].model_copy(update={"session_id": "session-84"})
+    admin_service._sessions["session-84"] = admin_service._sessions["session-42"].model_copy(
+        update={"session_id": "session-84"}
+    )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
     config = GatewayConfig(runtime_dir=tmp_path)
     activity = AgentPromptActivityRuntime(runtime_dir=tmp_path)
@@ -2530,8 +2572,9 @@ def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> Non
     assert "exec resume dispatch-effect-agent-enqueue-prompt-1-deadbeef" not in command
     assert "codex exec --json" in command
     assert "codex features list" in command
+    assert "EVANDER_CODEX_JSON_FILTER_STARTED_AT" in command
     assert (
-        'codex exec --json --dangerously-bypass-approvals-and-sandbox '
+        "codex exec --json --dangerously-bypass-approvals-and-sandbox "
         '--skip-git-repo-check "${codex_feature_args[@]}" --model'
     ) in command
     assert "-s danger-full-access" in command
@@ -2565,7 +2608,7 @@ def test_container_prompt_command_uses_resume_last_for_same_context_without_thre
     assert "--json" in command
     assert "codex features list" in command
     assert (
-        'codex exec resume --last --json --dangerously-bypass-approvals-and-sandbox '
+        "codex exec resume --last --json --dangerously-bypass-approvals-and-sandbox "
         '--skip-git-repo-check "${codex_feature_args[@]}" --model'
     ) in command
     assert "-s danger-full-access" not in command
@@ -2603,10 +2646,7 @@ def test_container_prompt_command_supports_claude_provider() -> None:
     assert "--mcp-config /home/agent/.claude/mcp-config.json" in command
     assert "claude mcp remove -s user evander" in command
     assert "claude mcp add --transport http -s user evander" in command
-    assert (
-        "evander_sync_claude_mcp_server /home/agent/.claude/mcp-config.json"
-        in command
-    )
+    assert "evander_sync_claude_mcp_server /home/agent/.claude/mcp-config.json" in command
     assert "printf '%s' 'check teams' | claude -p" in command
     assert "--mcp-config /home/agent/.claude/mcp-config.json 'check teams'" not in command
     assert "evander_claude_json_to_log" in command
@@ -2662,7 +2702,7 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
     by_path = {entry["destination_path"]: entry["content"] for entry in files}
     combined_content = "\n".join(by_path.values())
 
-    assert by_path["/home/agent/.codex/config.toml"] == (
+    expected_codex_config = (
         'model = "gpt-5.4"\n'
         'model_provider = "evander_openai_relay"\n'
         'model_reasoning_effort = "high"\n'
@@ -2684,9 +2724,13 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
         '[projects."/home/agent"]\n'
         'trust_level = "trusted"\n'
     )
-    assert "OPENAI_API_KEY=\"${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}\"" in by_path[
-        "/home/agent/.profile"
-    ]
+    assert by_path["/home/agent/.codex/config.toml"] == expected_codex_config
+    assert by_path["/home/agent/.config/evander/codex/config.toml"] == expected_codex_config
+    assert by_path["/home/agent/.config/agent-sandbox/codex/config.toml"] == expected_codex_config
+    assert (
+        'OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"'
+        in by_path["/home/agent/.profile"]
+    )
     assert "azure_openai_endpoint" not in combined_content
     assert "azure_openai_api_key_env" not in combined_content
     assert "azure_openai_model_deployments" not in combined_content
@@ -2725,7 +2769,7 @@ def test_container_session_files_include_claude_provider_config() -> None:
         "ANTHROPIC_BASE_URL=http://relay.test:11434/session/session-1\n"
         in by_path["/home/agent/.evander/session.env"]
     )
-    assert "model = \"claude-sonnet-4-6\"" in by_path["/home/agent/.codex/config.toml"]
+    assert 'model = "claude-sonnet-4-6"' in by_path["/home/agent/.codex/config.toml"]
     assert by_path["/home/agent/.claude/settings.json"] == (
         "{\n"
         '  "attribution": {\n'
@@ -2787,9 +2831,10 @@ def test_container_session_files_propagate_mcp_token_to_relay_clients() -> None:
         in by_path["/home/agent/.codex/config.toml"]
     )
     assert (
-        '"ANTHROPIC_AUTH_TOKEN": "correct-token"'
-        in by_path["/home/agent/.claude/settings.json"]
+        'base_url = "http://relay.test:11434/v1/session/session-1/auth/correct-token"'
+        in by_path["/home/agent/.config/agent-sandbox/codex/config.toml"]
     )
+    assert '"ANTHROPIC_AUTH_TOKEN": "correct-token"' in by_path["/home/agent/.claude/settings.json"]
     assert (
         '"ANTHROPIC_BASE_URL": "http://relay.test:11434/session/session-1"'
         in by_path["/home/agent/.claude/settings.json"]
@@ -2799,12 +2844,15 @@ def test_container_session_files_propagate_mcp_token_to_relay_clients() -> None:
         in by_path["/home/agent/.codex/config.toml"]
     )
     assert (
+        'url = "http://relay.test:8000/mcp?session_id=session-1&mcp_session_token=correct-token"'
+        in by_path["/home/agent/.config/agent-sandbox/codex/config.toml"]
+    )
+    assert (
         "HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777/auth/correct-token\n"
         in by_path["/home/agent/.evander/session.env"]
     )
     assert (
-        "EVANDER_MCP_SESSION_TOKEN=correct-token\n"
-        in by_path["/home/agent/.evander/session.env"]
+        "EVANDER_MCP_SESSION_TOKEN=correct-token\n" in by_path["/home/agent/.evander/session.env"]
     )
     assert (
         'export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"'
@@ -2930,9 +2978,7 @@ def test_claude_json_log_filter_handles_stream_json_events() -> None:
         },
         {
             "type": "assistant",
-            "message": {
-                "content": [{"type": "text", "text": "I am checking the repo now."}]
-            },
+            "message": {"content": [{"type": "text", "text": "I am checking the repo now."}]},
         },
         {"type": "result", "result": "Done."},
     ]
@@ -2945,9 +2991,7 @@ def test_claude_json_log_filter_handles_stream_json_events() -> None:
     )
 
     assert completed.stdout == (
-        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
-        "I am checking the repo now.\n"
-        "Done.\n"
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\nI am checking the repo now.\nDone.\n"
     )
 
 
@@ -3029,16 +3073,152 @@ def test_codex_json_log_filter_reports_missing_final_message() -> None:
     completed = subprocess.run(
         ["python3", "-c", _codex_json_log_filter_script()],
         input="\n".join(json.dumps(event) for event in events) + "\n",
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
 
+    assert completed.returncode == 1
     assert completed.stdout == (
         "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
         "codex failed: task_complete did not include a final agent message "
         "(last_total_tokens=64000)\n"
     )
+
+
+def test_codex_json_log_filter_fails_when_no_agent_message_is_emitted() -> None:
+    events = [
+        {"type": "session_meta", "payload": {"id": "019de31a-8393-71d2-8990-e5f4fb0a4df2"}},
+    ]
+
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "codex failed: no agent message was emitted\n"
+    )
+
+
+def test_codex_json_log_filter_falls_back_to_codex_home_session_jsonl(
+    tmp_path: Path,
+) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    codex_home = tmp_path / "codex-home"
+    session_dir = codex_home / "sessions" / "2026" / "07" / "07"
+    session_dir.mkdir(parents=True)
+    filter_started_at = time.time()
+    current_event_at = datetime.fromtimestamp(filter_started_at + 1.0, UTC).isoformat()
+    rollout = session_dir / f"rollout-2026-07-07T08-38-04-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": current_event_at,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "posted the Teams reply",
+                    },
+                },
+                {
+                    "timestamp": current_event_at,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_complete",
+                        "last_agent_message": "posted the Teams reply",
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(rollout, (filter_started_at + 1.0, filter_started_at + 1.0))
+    events = [
+        {"type": "session_meta", "payload": {"id": thread_id}},
+    ]
+
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CODEX_HOME": str(codex_home),
+            "HOME": str(tmp_path / "home"),
+            "EVANDER_CODEX_JSON_FILTER_STARTED_AT": str(filter_started_at),
+        },
+    )
+
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\nposted the Teams reply\n"
+    )
+
+
+def test_codex_json_log_filter_does_not_replay_stale_session_jsonl(
+    tmp_path: Path,
+) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    codex_home = tmp_path / "codex-home"
+    session_dir = codex_home / "sessions" / "2026" / "07" / "07"
+    session_dir.mkdir(parents=True)
+    filter_started_at = time.time()
+    stale_event_at = datetime.fromtimestamp(filter_started_at - 60.0, UTC).isoformat()
+    stale_rollout = session_dir / f"rollout-2026-07-07T08-30-00-{thread_id}.jsonl"
+    stale_rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": stale_event_at,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "old Teams reply",
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(stale_rollout, (filter_started_at + 1.0, filter_started_at + 1.0))
+    events = [
+        {"type": "session_meta", "payload": {"id": thread_id}},
+    ]
+
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CODEX_HOME": str(codex_home),
+            "HOME": str(tmp_path / "home"),
+            "EVANDER_CODEX_JSON_FILTER_STARTED_AT": str(filter_started_at),
+        },
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "codex failed: no agent message was emitted\n"
+    )
+    assert "old Teams reply" not in completed.stdout
 
 
 def test_container_thread_id_from_logs_parses_json_filter_output() -> None:
@@ -3188,8 +3368,9 @@ def test_context_exhausted_container_completion_does_not_retry_after_limit(
         execution_store=store,
         provider_factory=SimpleNamespace(admin_service=SimpleNamespace(runtime=None)),
         _update_event_delivery_state=lambda event_id: None,
-        _publish_completion_event_from_record=lambda **kwargs: published.append(kwargs)
-        or "published-1",
+        _publish_completion_event_from_record=lambda **kwargs: (
+            published.append(kwargs) or "published-1"
+        ),
     )
     record = SimpleNamespace(
         execution_id="effect-exec-1",
@@ -3415,9 +3596,7 @@ def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
     assert output["queued"] is True
     assert output["retry_count"] == 1
     assert output["max_retries"] == 1
-    AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").delete(
-        "chat:thread-1:msg-1"
-    )
+    AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").delete("chat:thread-1:msg-1")
 
     with pytest.raises(EffectProviderExecutionError) as exc_info:
         factory.build(effect).execute()
@@ -3427,9 +3606,10 @@ def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
     assert exc_info.value.outputs["queued"] is False
     assert exc_info.value.outputs["retry_count"] == 2
     assert exc_info.value.outputs["max_retries"] == 1
-    assert AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get(
-        "chat:thread-1:msg-1"
-    ) is None
+    assert (
+        AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get("chat:thread-1:msg-1")
+        is None
+    )
 
 
 def test_agent_enqueue_prompt_keeps_distinct_busy_messages_for_same_metadata_key(
@@ -3843,9 +4023,7 @@ def test_agent_enqueue_prompt_provider_rejects_expired_session_before_resume_age
         provider_config_resolver=_ResolverStub(),
         admin_service=admin_service,
         provider_runtime=SimpleNamespace(
-            session_lookup=SimpleNamespace(
-                read_all_sessions=lambda: dict(admin_service._sessions)
-            )
+            session_lookup=SimpleNamespace(read_all_sessions=lambda: dict(admin_service._sessions))
         ),
     )
 
@@ -3916,6 +4094,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         sync_added_discord_session_cursors=lambda **kwargs: sync_calls.append(kwargs),
     )
     backend = _FakeContainerBackend()
+    git_auth_calls = _stub_container_git_authorization(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "evander.effects.providers.agent_create.container_backend",
         lambda context, config: backend,
@@ -4023,12 +4202,18 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.web_search_enabled is True
     assert manifest.metadata["workflow"] == {"state": "active"}
     assert manifest.metadata["labels"] == {"agent_role": "reviewer"}
-    assert sync_calls == [
-        {
-            "previous_session": None,
-            "updated_session": manifest,
-        }
-    ]
+    expected_git_write_access = {
+        "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
+        "authorized_keys_path": str(tmp_path / "agent-authorized-keys"),
+        "authorized_repo_path": "/git-remotes/repo-abcdef123456.git",
+        "authorized_ref_prefix": "refs/heads/agents/session-1/",
+        "authorized_pr_notes_ref": "refs/notes/agent-pr/84097828fc31",
+        "allowed_from": "worker.test",
+        "git_ssh_alias": "evander-git-host",
+    }
+    assert manifest.metadata["container_git_write_access"] == expected_git_write_access
+    assert sync_calls[0]["previous_session"] is None
+    assert sync_calls[0]["updated_session"].session_id == manifest.session_id
     assert create["execution_backend"] == "container_worker_vm"
     assert create["agent_home"] == "/home/agent"
     assert create["repo_root"] == "/home/agent/repos"
@@ -4036,15 +4221,24 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert clone["remote_url"] == "ssh://evander-git-host/git-remotes/repo.git"
     assert clone["canonical_repo_source"] == "https://example.test/org/repo.git"
     assert clone["pr_notes_ref"] == "refs/notes/agent-pr/84097828fc31"
+    assert clone["git_access_mode"] == "write"
+    assert clone["git_write_access"] == expected_git_write_access
     assert copied["copied_paths"] == ["/home/agent/repos/repo/AGENT_TASK.yaml"]
     assert prompted["execution_backend"] == "container_worker_vm"
     assert "output_mode" not in prompted
     assert backend.prepared_sessions[0]["session_id"] == "session-1"
     assert mirror_resolver.resolved[0]["repo_source"] == "/tmp/repo"
-    assert (
-        backend.cloned_repos[0]["repo_source"]
-        == "ssh://evander-git-host/git-remotes/repo.git"
-    )
+    assert backend.git_write_keys == [
+        {
+            "session_id": "session-1",
+            "git_host": "10.2.0.4",
+            "git_user": "agent",
+            "git_ssh_alias": "evander-git-host",
+        }
+    ]
+    assert git_auth_calls[0]["allowed_from"] == "worker.test"
+    assert git_auth_calls[0]["authorized_repo_path"] == "/git-remotes/repo-abcdef123456.git"
+    assert backend.cloned_repos[0]["repo_source"] == "ssh://evander-git-host/git-remotes/repo.git"
     assert backend.cloned_repos[0]["repo_name"] == "repo"
     bootstrap_files = backend.written_files[0]["files"]
     bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
@@ -4057,14 +4251,8 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     )
     mcp_session_token = mcp_token_line.split("=", 1)[1]
     assert mcp_session_token
-    assert (
-        "EVANDER_SESSION_ID=session-1"
-        in session_env
-    )
-    assert (
-        "EVANDER_ARTIFACTS_DIR=/artifacts"
-        in session_env
-    )
+    assert "EVANDER_SESSION_ID=session-1" in session_env
+    assert "EVANDER_ARTIFACTS_DIR=/artifacts" in session_env
     assert (
         f"HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777/auth/{mcp_session_token}"
         in session_env
@@ -4073,26 +4261,11 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         f"EVANDER_HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777/auth/{mcp_session_token}"
         in session_env
     )
-    assert (
-        "PIP_INDEX_URL=http://nexus.test:8081/repository/pypi-all/simple"
-        in session_env
-    )
-    assert (
-        "NPM_CONFIG_REGISTRY=http://nexus.test:8081/repository/npm-all/"
-        in session_env
-    )
-    assert (
-        "GIT_TERMINAL_PROMPT=0"
-        in session_env
-    )
-    assert (
-        "GIT_HTTP_LOW_SPEED_LIMIT=1"
-        in session_env
-    )
-    assert (
-        "GIT_HTTP_LOW_SPEED_TIME=15"
-        in session_env
-    )
+    assert "PIP_INDEX_URL=http://nexus.test:8081/repository/pypi-all/simple" in session_env
+    assert "NPM_CONFIG_REGISTRY=http://nexus.test:8081/repository/npm-all/" in session_env
+    assert "GIT_TERMINAL_PROMPT=0" in session_env
+    assert "GIT_HTTP_LOW_SPEED_LIMIT=1" in session_env
+    assert "GIT_HTTP_LOW_SPEED_TIME=15" in session_env
     assert (
         "trusted-host = nexus.test"
         in bootstrap_by_path["/home/agent/.config/pip/pip.conf"]["content"]
@@ -4125,9 +4298,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     )
     assert "DOTNET_NOLOGO" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "EVANDER_NODE_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert (
-        "EVANDER_PLAYWRIGHT_RUNTIME" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    )
+    assert "EVANDER_PLAYWRIGHT_RUNTIME" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "PLAYWRIGHT_BROWSERS_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert (
         "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" in bootstrap_by_path["/home/agent/.profile"]["content"]
@@ -4279,8 +4450,7 @@ def test_agent_create_container_can_override_npm_registry_url(
         in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
-        "registry=http://facade.test:11881/"
-        in bootstrap_by_path["/home/agent/.npmrc"]["content"]
+        "registry=http://facade.test:11881/" in bootstrap_by_path["/home/agent/.npmrc"]["content"]
     )
     assert "replace-registry-host=always" in bootstrap_by_path["/home/agent/.npmrc"]["content"]
 
@@ -4628,6 +4798,7 @@ def test_agent_clone_container_skips_config_job_when_repo_already_prepared(
     )
     backend = _FakeContainerBackend()
     backend.clone_result_cloned = False
+    _stub_container_git_authorization(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
@@ -4656,8 +4827,9 @@ def test_agent_clone_container_skips_config_job_when_repo_already_prepared(
     assert backend.written_files[0]["files"][0]["destination_path"].endswith("agent-pr-note")
     assert backend.written_files[0]["files"][1]["destination_path"].endswith("push-agent")
     assert backend.written_files[0]["files"][2]["destination_path"].endswith("sync-base")
-    assert backend.started_specs == []
-    assert backend.destroyed == []
+    assert len(backend.started_specs) == 1
+    assert "config alias.push-agent" in str(backend.started_specs[0].command)
+    assert backend.destroyed == [backend.started_specs[0].target_name]
 
 
 def test_agent_clone_container_passes_explicit_bare_repo_to_mirror_resolver(
@@ -4685,6 +4857,7 @@ def test_agent_clone_container_passes_explicit_bare_repo_to_mirror_resolver(
         )
     )
     backend = _FakeContainerBackend()
+    _stub_container_git_authorization(monkeypatch, tmp_path)
     mirror_resolver = _FakeContainerGitMirrorResolver()
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
@@ -4718,6 +4891,326 @@ def test_agent_clone_container_passes_explicit_bare_repo_to_mirror_resolver(
     )
     assert mirror_resolver.resolved[0]["bare_repo_name"] == "evander.git"
     assert mirror_resolver.resolved[0]["bare_repo_path"] is None
+
+
+def test_agent_clone_container_read_only_mode_skips_write_key_and_push_alias(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCloneRepoEffectDefinition(
+            id="agent-clone",
+            display_name="Clone",
+            type="effect:agent:clone-repo",
+            session_id="session-1",
+            repo_source="/tmp/repo",
+            git_access_mode="read-only",
+        )
+    ).execute()
+
+    cleanup_command = str(backend.started_specs[0].command)
+    command = str(backend.started_specs[-1].command)
+    assert output["git_access_mode"] == "read-only"
+    assert output["git_write_access"] is None
+    assert backend.git_write_keys == []
+    assert backend.started_specs[0].metadata["effect_type"] == (
+        "effect:agent:clone-repo:git-write-cleanup"
+    )
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in cleanup_command
+    assert "config alias.push-agent" not in command
+    assert 'git config evander.pushAgentAvailable "false"' in command
+    assert 'git config evander.gitAccessMode "$GIT_ACCESS_MODE"' in command
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in command
+
+
+def test_agent_clone_container_write_rerun_removes_previous_write_access(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    authorized_keys = tmp_path / "agent-authorized-keys"
+    authorized_keys.write_text(
+        "\n".join(
+            [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey old",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe keep",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "container_git_write_access": {
+                    "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
+                    "authorized_keys_path": str(authorized_keys),
+                    "authorized_repo_path": "/git-remotes/repo-abcdef123456.git",
+                    "authorized_ref_prefix": "refs/heads/agents/session-1/",
+                    "authorized_pr_notes_ref": "refs/notes/agent-pr/84097828fc31",
+                },
+                "keep": "metadata",
+            },
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        project_dir=Path.cwd(),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
+    )
+    git_auth_calls = _stub_container_git_authorization(monkeypatch, tmp_path)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCloneRepoEffectDefinition(
+            id="agent-clone",
+            display_name="Clone",
+            type="effect:agent:clone-repo",
+            session_id="session-1",
+            repo_source="/tmp/repo",
+        )
+    ).execute()
+
+    manifest = session_repository.get_session("session-1")
+    assert manifest is not None
+    authorized_keys_text = authorized_keys.read_text(encoding="utf-8")
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys_text
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe" in authorized_keys_text
+    assert output["git_write_access"]["public_key_body"] == "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey"
+    assert (
+        manifest.metadata["container_git_write_access"]["public_key_body"]
+        == "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey"
+    )
+    assert manifest.metadata["keep"] == "metadata"
+    assert git_auth_calls[0]["authorized_keys_path"] == authorized_keys
+
+
+def test_agent_clone_container_rolls_back_write_key_when_metadata_persist_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"keep": "metadata"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        project_dir=Path.cwd(),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
+    )
+    _stub_container_git_authorization(monkeypatch, tmp_path)
+    rollback_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.remove_git_authorized_key_by_public_key_body",
+        lambda **kwargs: rollback_calls.append(kwargs) or True,
+    )
+
+    def fail_upsert_session(session: SessionManifest) -> None:
+        raise RuntimeError("metadata store failed")
+
+    session_repository.upsert_session = fail_upsert_session  # type: ignore[method-assign]
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(RuntimeError, match="metadata store failed"):
+        factory.build(
+            AgentCloneRepoEffectDefinition(
+                id="agent-clone",
+                display_name="Clone",
+                type="effect:agent:clone-repo",
+                session_id="session-1",
+                repo_source="/tmp/repo",
+            )
+        ).execute()
+
+    assert rollback_calls == [
+        {
+            "authorized_keys_path": tmp_path / "agent-authorized-keys",
+            "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
+        }
+    ]
+
+
+def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey old\n",
+        encoding="utf-8",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "container_git_write_access": {
+                    "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
+                    "authorized_keys_path": str(authorized_keys),
+                    "authorized_repo_path": "/git-remotes/repo-abcdef123456.git",
+                    "authorized_ref_prefix": "refs/heads/agents/session-1/",
+                    "authorized_pr_notes_ref": "refs/notes/agent-pr/84097828fc31",
+                },
+                "keep": "metadata",
+            },
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.clone_result_cloned = False
+    original_clone_repo = backend.clone_repo
+
+    def clone_repo_after_cleanup(**kwargs):
+        assert len(backend.started_specs) == 1
+        assert backend.started_specs[0].metadata["effect_type"] == (
+            "effect:agent:clone-repo:git-write-cleanup"
+        )
+        assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys.read_text(
+            encoding="utf-8"
+        )
+        manifest = session_repository.get_session("session-1")
+        assert manifest is not None
+        assert "container_git_write_access" not in manifest.metadata
+        return original_clone_repo(**kwargs)
+
+    backend.clone_repo = clone_repo_after_cleanup
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCloneRepoEffectDefinition(
+            id="agent-clone",
+            display_name="Clone",
+            type="effect:agent:clone-repo",
+            session_id="session-1",
+            repo_source="/tmp/repo",
+            git_access_mode="read-only",
+        )
+    ).execute()
+
+    cleanup_command = str(backend.started_specs[0].command)
+    command = str(backend.started_specs[-1].command)
+    manifest = session_repository.get_session("session-1")
+    assert manifest is not None
+    assert output["git_access_mode"] == "read-only"
+    assert output["git_write_access"] is None
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys.read_text(encoding="utf-8")
+    assert "container_git_write_access" not in manifest.metadata
+    assert manifest.metadata["keep"] == "metadata"
+    assert backend.git_write_keys == []
+    assert len(backend.started_specs) == 2
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in cleanup_command
+    assert "config alias.push-agent" not in command
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in command
+    assert backend.destroyed == [
+        backend.started_specs[0].target_name,
+        backend.started_specs[1].target_name,
+    ]
 
 
 def test_agent_create_container_noops_when_session_exists(
@@ -4890,9 +5383,7 @@ def test_agent_create_container_upserts_when_session_exists(
         "AGENT_PROVIDER=claude\n"
         in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
-    assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"][
-        "content"
-    ]
+    assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
 
 
 def test_agent_create_container_upsert_preserves_omitted_allowed_contacts(
@@ -5110,13 +5601,27 @@ def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of()
         clone_branch="main",
     )
 
-    assert (
-        "PUSH_REMOTE_URL=ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git"
-        in command
-    )
+    assert "PUSH_REMOTE_URL=ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git" in command
     assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
     assert 'git remote set-url origin "$CANONICAL_REMOTE_URL"' in command
     assert 'git config "url.${PUSH_REMOTE_URL}.insteadOf" "$CANONICAL_REMOTE_URL"' in command
+
+
+def test_agent_clone_container_read_only_command_disables_push_agent_alias() -> None:
+    command = AgentCloneRepoEffectProvider._container_git_config_command(
+        session_id="session-1",
+        target_dir="/home/agent/repos/repo",
+        repo_source="https://dev.azure.com/org/project/_git/repo",
+        remote_url="ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git",
+        clone_branch="main",
+        git_access_mode="read-only",
+    )
+
+    assert "GIT_ACCESS_MODE=read-only" in command
+    assert "PUSH_REMOTE_URL=''" in command
+    assert "config alias.push-agent" not in command
+    assert 'git config evander.pushAgentAvailable "false"' in command
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in command
 
 
 def test_agent_clone_container_configures_git_author_identity() -> None:
@@ -5533,6 +6038,96 @@ def test_agent_destroy_provider_deletes_container_session(tmp_path) -> None:
         session_repository.get_session("session-container").metadata["container_lifecycle"]["state"]
         == "cleaned_up"
     )
+
+
+@pytest.mark.parametrize("target", ["exec-1", "container-target"])
+def test_agent_destroy_provider_delegates_container_delete_for_resolved_target(
+    tmp_path,
+    target: str,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-container",
+            vm_id=None,
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+
+    class DeleteAdminStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.calls: list[tuple[str, str | None]] = []
+
+        def _resolve_container_agent_session(
+            self,
+            agent_id: str,
+            *,
+            require_session: bool,
+        ):
+            if agent_id in {"exec-1", "container-target"}:
+                return (
+                    session_repository.get_session("session-container"),
+                    SimpleNamespace(
+                        session_id="session-container",
+                        target_name="container-target",
+                    ),
+                )
+            session = session_repository.get_session(agent_id)
+            if session is not None:
+                return session, None
+            if require_session:
+                raise ValueError(f"Unknown container worker agent target: {agent_id}")
+            return None, None
+
+        resolve_container_agent_session = _resolve_container_agent_session
+
+        def delete_admin_agent(self, agent_id: str, *, backend: str | None = None):
+            self.calls.append((agent_id, backend))
+            session_repository.delete_session("session-container")
+            return {
+                "success": True,
+                "target_name": "container-target",
+                "status": "deleted",
+                "session_id": "session-container",
+                "message": "Deleted container worker session",
+            }
+
+    admin_service = DeleteAdminStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentDestroyEffectDefinition(
+            id="agent-destroy",
+            display_name="Destroy",
+            type="effect:agent:destroy",
+            target=target,
+            execution_backend="container_worker_vm",
+        )
+    ).execute()
+
+    assert admin_service.calls == [(target, "container_worker_vm")]
+    assert output["success"] is True
+    assert output["session_id"] == "session-container"
+    assert session_repository.get_session("session-container") is None
 
 
 def test_agent_exec_provider_delegates_libvirt_sessions_to_vm_exec(tmp_path) -> None:

@@ -288,6 +288,7 @@ class GatewayConfig(BaseModel):
     container_worker_job_timeout_seconds: float = Field(default=1800.0, gt=0)
     container_worker_request_timeout_seconds: float = Field(default=30.0, gt=0)
     container_worker_workspace_persistence: str = Field(default="session", min_length=1)
+    container_worker_git_allowed_from: str | None = None
     container_worker_guest_openai_base_url: str | None = None
     container_worker_guest_anthropic_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None
@@ -769,6 +770,14 @@ class GatewayConfig(BaseModel):
     @field_validator("container_worker_mssql_host", mode="before")
     @classmethod
     def normalize_container_worker_mssql_host(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("container_worker_git_allowed_from", mode="before")
+    @classmethod
+    def normalize_container_worker_git_allowed_from(cls, value: object) -> object:
         if value is None:
             return None
         text = str(value).strip()

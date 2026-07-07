@@ -10,6 +10,7 @@ from evander.admin.services.vm_agent.common import (
     SessionSummary,
     _VM_ARTIFACT_TEXT_READ_COMMAND,
     _prune_approvals_for_sessions,
+    _revoke_container_git_write_access_for_session,
     _resolve_session_target,
     normalize_artifact_relative_path,
     sanitize_text,
@@ -46,6 +47,7 @@ class VmAgentContainerSessionActionMixin:
                 "Delete the agent instead so backend cleanup can run."
             )
 
+        git_write_access_revoked = _revoke_container_git_write_access_for_session(manifest)
         worker_session_deleted, removed_mappings = self._delete_detached_worker_session_state(
             session_id
         )
@@ -61,6 +63,8 @@ class VmAgentContainerSessionActionMixin:
             cleanup_parts.append(f"removed_approvals={removed_approvals}")
         if removed_assistant_mappings:
             cleanup_parts.append(f"removed_assistant_mappings={removed_assistant_mappings}")
+        if git_write_access_revoked:
+            cleanup_parts.append("git_write_access_revoked=1")
         if cleanup_parts:
             result.message = f"{result.message}; " + " ".join(cleanup_parts)
         return result

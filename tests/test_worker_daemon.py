@@ -23,7 +23,11 @@ from evander.capacity_health import (
     TelemetryStatus,
 )
 from evander.worker.service import WorkerDaemon
-from evander.worker.models import WorkerRepoCloneRequest
+from evander.worker.models import (
+    WorkerGitWriteKeyRequest,
+    WorkerRepoCloneRequest,
+    WorkerSessionPrepareRequest,
+)
 from evander.worker_daemon import (
     WorkerDiskTelemetry,
     WorkerJobRecord,
@@ -620,6 +624,228 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
         f"ssh -F {paths.agent_home / '.ssh' / 'config'} "
         f"-i {paths.agent_home / '.ssh' / 'evander-git'}"
     )
+
+
+def test_worker_provisions_session_git_write_key_and_preserves_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ssh_source = tmp_path / "git-ssh"
+    ssh_source.mkdir()
+    (ssh_source / "evander-git").write_text("read key\n", encoding="utf-8")
+    (ssh_source / "evander-git.pub").write_text("read key pub\n", encoding="utf-8")
+    (ssh_source / "config").write_text(
+        "\n".join(
+            [
+                "# BEGIN evander git host",
+                "Host evander-git-host",
+                "  HostName 10.2.0.4",
+                "  User agent",
+                "  IdentityFile ~/.ssh/evander-git",
+                "# END evander git host",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    runtime = FakeContainerRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+        git_ssh_source_dir=ssh_source,
+    )
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        key_path = Path(args[-1])
+        key_path.write_text("private key\n", encoding="utf-8")
+        key_path.with_suffix(".pub").write_text(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerKey worker\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1", metadata={}))
+
+    record = daemon.provision_git_write_key(
+        "session-1",
+        WorkerGitWriteKeyRequest(
+            git_host="10.2.0.4",
+            git_user="agent",
+            git_ssh_alias="evander-git-host",
+        ),
+    )
+
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    config_text = (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8")
+    assert record.public_key_body == "AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerKey"
+    assert "# BEGIN evander git host" not in config_text
+    assert "# BEGIN evander git write host" in config_text
+    assert "IdentityFile ~/.ssh/evander-git-write" in config_text
+
+    daemon.start_job(
+        WorkerJobRequest(
+            session_id="session-1",
+            job_id="job-1",
+            image="runner:latest",
+            command=["true"],
+        )
+    )
+
+    assert (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8") == config_text
+
+
+def test_worker_rejects_symlinked_git_write_ssh_directory(tmp_path: Path) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    victim_dir = tmp_path / "victim-ssh"
+    victim_dir.mkdir()
+    os.chmod(victim_dir, 0o755)
+    (paths.agent_home / ".ssh").symlink_to(victim_dir, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="Managed SSH"):
+        daemon.provision_git_write_key(
+            "session-1",
+            WorkerGitWriteKeyRequest(
+                git_host="10.2.0.4",
+                git_user="agent",
+                git_ssh_alias="evander-git-host",
+            ),
+        )
+
+    assert stat.S_IMODE(victim_dir.stat().st_mode) == 0o755
+
+
+@pytest.mark.parametrize(
+    "unsafe_name",
+    ["evander-git-write", "evander-git-write.pub", "config"],
+)
+def test_worker_rejects_symlinked_git_write_managed_files(
+    tmp_path: Path,
+    unsafe_name: str,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    ssh_dir = paths.agent_home / ".ssh"
+    ssh_dir.mkdir()
+    private_key = ssh_dir / "evander-git-write"
+    public_key = ssh_dir / "evander-git-write.pub"
+    if unsafe_name != private_key.name:
+        private_key.write_text("private key\n", encoding="utf-8")
+    if unsafe_name != public_key.name:
+        public_key.write_text(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerKey worker\n",
+            encoding="utf-8",
+        )
+    victim = tmp_path / f"victim-{unsafe_name.replace('.', '-')}"
+    victim.write_text("host-owned\n", encoding="utf-8")
+    os.chmod(victim, 0o644)
+    (ssh_dir / unsafe_name).symlink_to(victim)
+
+    with pytest.raises(ValueError, match="symlink"):
+        daemon.provision_git_write_key(
+            "session-1",
+            WorkerGitWriteKeyRequest(
+                git_host="10.2.0.4",
+                git_user="agent",
+                git_ssh_alias="evander-git-host",
+            ),
+        )
+
+    assert victim.read_text(encoding="utf-8") == "host-owned\n"
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+
+
+def test_worker_api_provisions_session_git_write_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        key_path = Path(args[-1])
+        key_path.write_text("private key\n", encoding="utf-8")
+        key_path.with_suffix(".pub").write_text(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerApiKey worker\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/v1/sessions/session-1/git/write-key",
+        headers=_auth(),
+        json={
+            "git_host": "10.2.0.4",
+            "git_user": "agent",
+            "git_ssh_alias": "evander-git-host",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["public_key_body"] == "AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerApiKey"
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    config_text = (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8")
+    assert "Host evander-git-host" in config_text
+    assert "IdentityFile ~/.ssh/evander-git-write" in config_text
+
+
+def test_worker_provisions_dotted_git_write_key_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeContainerRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        key_path = Path(args[-1])
+        key_path.write_text("private key\n", encoding="utf-8")
+        key_path.with_name(f"{key_path.name}.pub").write_text(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerDottedKey worker\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1", metadata={}))
+
+    record = daemon.provision_git_write_key(
+        "session-1",
+        WorkerGitWriteKeyRequest(
+            git_host="10.2.0.4",
+            git_user="agent",
+            git_ssh_alias="evander-git-host",
+            key_name="foo.bar",
+        ),
+    )
+
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    ssh_dir = paths.agent_home / ".ssh"
+    assert record.public_key_body == "AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerDottedKey"
+    assert (ssh_dir / "foo.bar").read_text(encoding="utf-8") == "private key\n"
+    assert (ssh_dir / "foo.bar.pub").is_file()
+    assert "IdentityFile ~/.ssh/foo.bar" in (ssh_dir / "config").read_text(encoding="utf-8")
+    assert not list(ssh_dir.glob(".foo.bar-*"))
 
 
 def test_worker_daemon_read_telemetry_degrades_when_sqlite_job_store_is_unavailable(
@@ -1935,6 +2161,58 @@ def test_execution_logs_skip_codex_no_response_requested_artifact(tmp_path: Path
     assert output == (f"session id: {thread_id}\nlatest raw output\nreal session status\n")
 
 
+def test_execution_logs_read_legacy_agent_sandbox_codex_home(tmp_path: Path) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\nlatest raw output\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["true"],
+        container_name="agent-worker-job-1",
+        status="running",
+        started_at=started_at,
+        finished_at=None,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    session_dir = (
+        paths.agent_home / ".config" / "agent-sandbox" / "codex" / "sessions" / "2026" / "05" / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": (started_at + timedelta(seconds=20)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "legacy home status"},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    output = daemon.get_logs(record, mode="execution")
+
+    assert output == (f"session id: {thread_id}\nlatest raw output\nlegacy home status\n")
+
+
 def test_completed_codex_job_records_missing_final_message_as_failure(tmp_path: Path) -> None:
     thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
     started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
@@ -2012,6 +2290,63 @@ def test_completed_codex_job_records_missing_final_message_as_failure(tmp_path: 
         f"session id: {thread_id}\n"
         "codex failed: task_complete did not include a final agent message; "
         "context limit suspected (last_total_tokens=64000)\n"
+    )
+
+
+def test_completed_codex_job_records_session_meta_only_as_failure(tmp_path: Path) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    finished_at = started_at + timedelta(minutes=1)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["bash", "-lc", "codex exec --json prompt | evander_codex_json_to_log"],
+        container_name="agent-worker-job-1",
+        status="exited",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+        metadata={"agent_provider": "codex"},
+    )
+    session_dir = (
+        paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "05" / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        json.dumps(
+            {
+                "timestamp": (started_at + timedelta(seconds=5)).isoformat(),
+                "type": "session_meta",
+                "payload": {"id": thread_id},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    outcome = inspected.metadata["codex_outcome"]
+    assert outcome["status"] == "failed"
+    assert outcome["reason"] == "codex_no_final_message"
+    assert inspected.error == "Codex ended without a final agent message."
+    assert daemon.get_logs(inspected, mode="execution") == (
+        f"session id: {thread_id}\n"
+        "codex failed: task_complete did not include a final agent message\n"
     )
 
 

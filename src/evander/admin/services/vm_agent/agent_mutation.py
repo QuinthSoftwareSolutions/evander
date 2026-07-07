@@ -10,6 +10,7 @@ from evander.admin.services.vm_agent.common import (
     _prune_approvals_for_sessions,
     _prune_pr_feedback_store,
     _prune_pr_map,
+    _revoke_container_git_write_access_for_session,
     _resolve_session_approval_notification_target_ids,
     _session_policy_update_from_payload,
     _sync_added_discord_session_cursors,
@@ -209,6 +210,7 @@ class VmAgentMutationMixin:
         )
         if not session_id:
             raise ValueError(f"Unknown container worker agent target: {agent_id}")
+        git_write_access_revoked = _revoke_container_git_write_access_for_session(session)
         target_name = (
             self._container_session_target_name(session)
             if session is not None
@@ -271,7 +273,8 @@ class VmAgentMutationMixin:
                 f"removed_pr_map_entries={removed_pr_map_entries} "
                 f"removed_feedback_cursors={removed_cursors} "
                 f"removed_feedback_items={removed_feedback} "
-                f"worker_session_deleted={int(worker_session_removed)}"
+                f"worker_session_deleted={int(worker_session_removed)} "
+                f"git_write_access_revoked={int(git_write_access_revoked)}"
             ),
             "status": "deleted",
             "session_id": session_id,

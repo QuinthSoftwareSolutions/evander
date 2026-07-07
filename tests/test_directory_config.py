@@ -1464,6 +1464,24 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(
     }
 
 
+def test_directory_config_store_accepts_container_worker_git_allowed_from(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+
+    provider_payload = config_store.write(
+        team.path,
+        domain="providers",
+        payload={"container_worker_git_allowed_from": "10.2.1.4/32"},
+    )
+
+    assert provider_payload == {"container_worker_git_allowed_from": "10.2.1.4/32"}
+
+
 def test_directory_config_store_validates_automation_domain_and_updates_metadata(
     tmp_path: Path,
 ) -> None:

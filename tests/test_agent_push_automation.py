@@ -16,9 +16,11 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     assert "EVANDER_GIT_AUTH_REPO_B64" in bootstrap_git
     assert "EVANDER_GIT_AUTH_SESSION_ID_B64" in bootstrap_git
     assert "EVANDER_GIT_AUTH_REF_PREFIX_B64" in bootstrap_git
+    assert "EVANDER_GIT_AUTH_PR_NOTES_REF_B64" in bootstrap_git
     assert "EVANDER_GIT_AUTH_ACCESS=read-only" in bootstrap_git
     assert "hooks/pre-receive" in create_remote
     assert "EVANDER_GIT_AUTH_ENFORCE" in create_remote
+    assert "EVANDER_GIT_AUTH_PR_NOTES_REF" in create_remote
     assert "hooks/post-receive" in create_remote
     assert "handle_git_push_trigger.sh" in create_remote
     assert "handle_agent_push.sh" not in create_remote

@@ -140,6 +140,9 @@ AUTH_SESSION_ID="$(
 AUTH_REF_PREFIX="$(
   decode_auth_value "${EVANDER_GIT_AUTH_REF_PREFIX:-}" "${EVANDER_GIT_AUTH_REF_PREFIX_B64:-}"
 )"
+AUTH_PR_NOTES_REF="$(
+  decode_auth_value "${EVANDER_GIT_AUTH_PR_NOTES_REF:-}" "${EVANDER_GIT_AUTH_PR_NOTES_REF_B64:-}"
+)"
 
 require_authorized_repo_scope() {
   local auth_repo_real
@@ -229,7 +232,7 @@ require_read_authorization() {
 }
 
 require_write_authorization() {
-  local auth_repo_real expected_prefix hook_path
+  local auth_repo_real expected_prefix hook_path pr_notes_ref
 
   if [[ "${AUTH_ACCESS}" != "write" ]]; then
     echo "Git SSH key is read-only; repo/session metadata is required for pushes." >&2
@@ -259,6 +262,12 @@ require_write_authorization() {
     exit 1
   fi
 
+  pr_notes_ref="$(authorized_pr_notes_ref)"
+  if ! git check-ref-format "${pr_notes_ref}" >/dev/null 2>&1; then
+    echo "Authorized Git PR notes ref is not valid: ${pr_notes_ref}" >&2
+    exit 1
+  fi
+
   hook_path="${REPO_REAL}/hooks/pre-receive"
   if [[ ! -x "${hook_path}" ]] || ! grep -q "EVANDER_GIT_AUTH_ENFORCE" "${hook_path}"; then
     echo "Repository is missing the Evander Git auth pre-receive hook; rerun create_git_remote.sh or mirror_issue_repo.sh for this repo." >&2
@@ -270,6 +279,19 @@ require_write_authorization() {
   export EVANDER_GIT_AUTH_REPO="${auth_repo_real}"
   export EVANDER_GIT_AUTH_SESSION_ID="${AUTH_SESSION_ID}"
   export EVANDER_GIT_AUTH_REF_PREFIX="${AUTH_REF_PREFIX}"
+  export EVANDER_GIT_AUTH_PR_NOTES_REF="${pr_notes_ref}"
+}
+
+authorized_pr_notes_ref() {
+  local digest
+
+  if [[ -n "${AUTH_PR_NOTES_REF}" ]]; then
+    printf '%s\n' "${AUTH_PR_NOTES_REF}"
+    return 0
+  fi
+
+  digest="$(printf '%s' "${AUTH_SESSION_ID}" | sha256sum | awk '{print $1}')"
+  printf 'refs/notes/agent-pr/%s\n' "${digest:0:12}"
 }
 
 case "${ORIGINAL_COMMAND}" in

@@ -167,6 +167,7 @@ def test_agent_clone_repo_uses_session_container_image(
             resolve=lambda **kwargs: SimpleNamespace(
                 worker_repo_source="ssh://evander-git-host/agents/repo.git",
                 canonical_repo_source="git@example.test/repo.git",
+                mirror_path=tmp_path / "repo.git",
                 repo_name="repo",
             )
         ),
@@ -179,6 +180,7 @@ def test_agent_clone_repo_uses_session_container_image(
             type="effect:agent:clone-repo",
             session_id="session-1",
             repo_source="git@example.test/repo.git",
+            git_access_mode="read-only",
         ),
         _context(tmp_path, session_repository),
     )

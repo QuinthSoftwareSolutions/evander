@@ -282,6 +282,7 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
     git_author_email: ConfigValue | None = None
     git_committer_name: ConfigValue | None = None
     git_committer_email: ConfigValue | None = None
+    git_access_mode: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "AgentCloneRepoEffectDefinition":
@@ -289,6 +290,22 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
         if not any(value is not None for value in selectors):
             raise ValueError("effect:agent:clone-repo requires target, session_id, or vm_name")
         return self
+
+    @field_validator("git_access_mode", mode="before")
+    @classmethod
+    def normalize_git_access_mode(cls, value: object) -> ConfigValue | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and "${{" in value:
+            return value
+        normalized = str(value).strip().casefold().replace("_", "-")
+        if not normalized:
+            return None
+        if normalized in {"read-only", "readonly", "read"}:
+            return "read-only"
+        if normalized in {"write", "writable"}:
+            return "write"
+        raise ValueError("effect:agent:clone-repo git_access_mode must be write or read-only")
 
 
 class AgentBootstrapFrontendEffectDefinition(EffectDefinition):

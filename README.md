@@ -604,6 +604,8 @@ inside the guest by default. `sync-base` merges the latest configured base branc
 while `push-agent` verifies the destination and base branches before using the safe
 session-namespaced push pattern. The guest-side PID and state files live under
 `/home/agent/.evander/`; root-owned transcript logs live under `/var/log/evander/agent-runs/`.
+For container-worker sessions, the clone effect provisions a session-scoped Git SSH key for that
+push path by default; set `git_access_mode` to `read-only` when the session should only fetch.
 VM and container agents share `/artifacts` as the workflow-readable artifacts
 folder. Agents can call the `stage_artifact` MCP tool to copy a file or
 directory from `/home/agent` into this folder without leaving their working
@@ -686,8 +688,9 @@ refreshes the issue-numbered host mirror in one command. The lower-level
 `bootstrap_git_vm.sh` helper installs a dedicated guest SSH key and a restricted host
 `authorized_keys` entry so guests can push Git branches without needing your host password or
 general shell access. Writable guest keys are bound to one bare repo and
-`refs/heads/agents/<session-id>/...` namespace. Read-only guest keys are still bound to one bare
-repo; if the helper cannot determine repo metadata, it refuses to install an unscoped key. Issue
+`refs/heads/agents/<session-id>/...` namespace plus the session PR notes ref. Read-only guest keys
+are still bound to one bare repo; if the helper cannot determine repo metadata, it refuses to
+install an unscoped key. Issue
 mirrors also carry a `post-receive`
 hook so host-side automation can promote pushed `agents/...` branches into the trusted clone, push
 the review branch to `origin`, and create the upstream PR automatically.

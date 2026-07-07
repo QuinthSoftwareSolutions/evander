@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import logging
 import os
@@ -35,6 +36,7 @@ from evander.session_artifacts import (
     open_relative_regular_file_no_follow,
     read_artifact_text_no_follow,
 )
+from evander.git_ssh_authorized_keys import public_key_body_from_line
 
 from .docker_runtime import DockerContainerRuntime
 from .models import (
@@ -43,6 +45,8 @@ from .models import (
     WorkerFileWriteRecord,
     WorkerJobRecord,
     WorkerJobRequest,
+    WorkerGitWriteKeyRecord,
+    WorkerGitWriteKeyRequest,
     WorkerDiskTelemetry,
     WorkerJobTelemetry,
     WorkerMssqlDatabaseDeleteRecord,
@@ -680,6 +684,64 @@ class WorkerDaemon:
             guest_repo_name=repo_name,
             remote_url=request.repo_source,
             cloned=cloned,
+        )
+
+    def provision_git_write_key(
+        self,
+        session_id: str,
+        request: WorkerGitWriteKeyRequest,
+    ) -> WorkerGitWriteKeyRecord:
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        ssh_dir = paths.agent_home / ".ssh"
+        self._ensure_managed_ssh_dir(ssh_dir)
+
+        key_path = ssh_dir / request.key_name
+        if not self._managed_regular_file_exists_no_follow(key_path, label="Git write private key"):
+            self._generate_git_write_key_pair(
+                ssh_dir=ssh_dir,
+                key_path=key_path,
+                session_id=paths.session_id,
+            )
+        self._chmod_regular_file_no_follow(
+            key_path,
+            0o600,
+            label="Git write private key",
+        )
+        public_key_path = key_path.with_suffix(key_path.suffix + ".pub")
+        public_key = self._read_managed_text_file_no_follow(
+            public_key_path,
+            label="Git write public key",
+        ).strip()
+        self._chmod_regular_file_no_follow(
+            public_key_path,
+            0o644,
+            label="Git write public key",
+        )
+
+        config_path = ssh_dir / "config"
+        self._write_git_write_ssh_config(
+            config_path=config_path,
+            git_ssh_alias=request.git_ssh_alias,
+            git_host=request.git_host,
+            git_user=request.git_user,
+            identity_file=f"~/.ssh/{request.key_name}",
+        )
+        metadata = self._read_session_metadata(paths)
+        metadata["git_write_key"] = {
+            "public_key_body": public_key_body_from_line(public_key),
+            "key_path": str(key_path),
+            "config_path": str(config_path),
+            "git_ssh_alias": request.git_ssh_alias,
+            "updated_at": now_utc().isoformat(),
+        }
+        self._write_session_metadata(paths, metadata)
+        return WorkerGitWriteKeyRecord(
+            session_id=paths.session_id,
+            public_key=public_key,
+            public_key_body=public_key_body_from_line(public_key),
+            key_path=str(key_path),
+            config_path=str(config_path),
+            git_ssh_alias=request.git_ssh_alias,
         )
 
     def write_files(
@@ -1458,18 +1520,282 @@ class WorkerDaemon:
                 )
             return
         target_dir = paths.agent_home / ".ssh"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target_dir.chmod(0o700)
+        self._ensure_managed_ssh_dir(target_dir)
         for name in ("evander-git", "evander-git.pub", "config", "known_hosts"):
+            if name == "config" and self._managed_regular_file_exists_no_follow(
+                target_dir / "evander-git-write",
+                label="Git write private key",
+            ):
+                continue
             source = source_dir / name
             if not source.is_file():
                 continue
             destination = target_dir / name
-            shutil.copy2(source, destination)
-            if name.endswith(".pub"):
-                destination.chmod(0o644)
-            else:
-                destination.chmod(0o600)
+            self._write_managed_bytes_file_no_follow(
+                destination,
+                source.read_bytes(),
+                mode=0o644 if name.endswith(".pub") else 0o600,
+                label=f"SSH {name}",
+            )
+
+    @staticmethod
+    def _managed_regular_file_exists_no_follow(
+        path: Path,
+        *,
+        label: str,
+    ) -> bool:
+        try:
+            stat_result = path.lstat()
+        except FileNotFoundError:
+            return False
+        if stat.S_ISLNK(stat_result.st_mode):
+            raise ValueError(f"{label} must not be a symlink")
+        if not stat.S_ISREG(stat_result.st_mode):
+            raise ValueError(f"{label} must be a regular file")
+        return True
+
+    @classmethod
+    def _ensure_managed_ssh_dir(cls, ssh_dir: Path) -> None:
+        try:
+            ssh_dir.mkdir(parents=True, exist_ok=True)
+        except FileExistsError:
+            pass
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            fd = os.open(ssh_dir, flags)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise ValueError("Managed SSH directory must not be a symlink") from exc
+            if exc.errno == errno.ENOTDIR:
+                raise ValueError("Managed SSH path must be a directory") from exc
+            raise
+        try:
+            stat_result = os.fstat(fd)
+            if not stat.S_ISDIR(stat_result.st_mode):
+                raise ValueError("Managed SSH path must be a directory")
+            os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
+
+    @classmethod
+    def _generate_git_write_key_pair(
+        cls,
+        *,
+        ssh_dir: Path,
+        key_path: Path,
+        session_id: str,
+    ) -> None:
+        private_temp = ssh_dir / f".{key_path.name}-{uuid.uuid4().hex}"
+        public_temp = private_temp.with_name(f"{private_temp.name}.pub")
+        try:
+            cls._validate_managed_file_target_no_follow(
+                key_path,
+                label="Git write private key",
+            )
+            cls._validate_managed_file_target_no_follow(
+                key_path.with_suffix(key_path.suffix + ".pub"),
+                label="Git write public key",
+            )
+            subprocess.run(
+                [
+                    "ssh-keygen",
+                    "-q",
+                    "-t",
+                    "ed25519",
+                    "-N",
+                    "",
+                    "-C",
+                    f"evander-git-write@{session_id}",
+                    "-f",
+                    str(private_temp),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            cls._replace_with_managed_temp_file_no_follow(
+                key_path,
+                private_temp,
+                mode=0o600,
+                label="Git write private key",
+            )
+            cls._replace_with_managed_temp_file_no_follow(
+                key_path.with_suffix(key_path.suffix + ".pub"),
+                public_temp,
+                mode=0o644,
+                label="Git write public key",
+            )
+        finally:
+            for temp_path in (private_temp, public_temp):
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+    @classmethod
+    def _open_regular_file_no_follow(cls, path: Path, *, label: str, flags: int) -> int:
+        try:
+            fd = os.open(
+                path,
+                flags | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise ValueError(f"{label} must not be a symlink") from exc
+            if exc.errno in {errno.EISDIR, errno.ENOTDIR}:
+                raise ValueError(f"{label} must be a regular file") from exc
+            raise
+        try:
+            stat_result = os.fstat(fd)
+            if not stat.S_ISREG(stat_result.st_mode):
+                raise ValueError(f"{label} must be a regular file")
+        except Exception:
+            os.close(fd)
+            raise
+        return fd
+
+    @classmethod
+    def _read_managed_text_file_no_follow(cls, path: Path, *, label: str) -> str:
+        fd = cls._open_regular_file_no_follow(path, label=label, flags=os.O_RDONLY)
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            return handle.read()
+
+    @classmethod
+    def _chmod_regular_file_no_follow(cls, path: Path, mode: int, *, label: str) -> None:
+        fd = cls._open_regular_file_no_follow(path, label=label, flags=os.O_RDONLY)
+        try:
+            os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
+
+    @classmethod
+    def _validate_managed_file_target_no_follow(cls, path: Path, *, label: str) -> None:
+        cls._managed_regular_file_exists_no_follow(path, label=label)
+
+    @classmethod
+    def _write_managed_bytes_file_no_follow(
+        cls,
+        path: Path,
+        content: bytes,
+        *,
+        mode: int,
+        label: str,
+    ) -> None:
+        cls._validate_managed_file_target_no_follow(path, label=label)
+        temp_path = path.with_name(f".{path.name}-{uuid.uuid4().hex}")
+        fd = os.open(
+            temp_path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            mode,
+        )
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            cls._replace_with_managed_temp_file_no_follow(
+                path,
+                temp_path,
+                mode=mode,
+                label=label,
+            )
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+    @classmethod
+    def _write_managed_text_file_no_follow(
+        cls,
+        path: Path,
+        content: str,
+        *,
+        mode: int,
+        label: str,
+    ) -> None:
+        cls._write_managed_bytes_file_no_follow(
+            path,
+            content.encode("utf-8"),
+            mode=mode,
+            label=label,
+        )
+
+    @classmethod
+    def _replace_with_managed_temp_file_no_follow(
+        cls,
+        path: Path,
+        temp_path: Path,
+        *,
+        mode: int,
+        label: str,
+    ) -> None:
+        cls._validate_managed_file_target_no_follow(path, label=label)
+        cls._chmod_regular_file_no_follow(temp_path, mode, label=f"temporary {label}")
+        os.replace(temp_path, path)
+
+    @classmethod
+    def _write_git_write_ssh_config(
+        cls,
+        *,
+        config_path: Path,
+        git_ssh_alias: str,
+        git_host: str,
+        git_user: str,
+        identity_file: str,
+    ) -> None:
+        cls._ensure_managed_ssh_dir(config_path.parent)
+        begin = "# BEGIN evander git write host"
+        end = "# END evander git write host"
+        text = (
+            cls._read_managed_text_file_no_follow(config_path, label="SSH config")
+            if cls._managed_regular_file_exists_no_follow(
+                config_path,
+                label="SSH config",
+            )
+            else ""
+        )
+        for marker_begin, marker_end in (
+            ("# BEGIN evander git host", "# END evander git host"),
+            (begin, end),
+        ):
+            while marker_begin in text and marker_end in text:
+                start = text.index(marker_begin)
+                stop = text.index(marker_end, start) + len(marker_end)
+                suffix = "\n" if stop < len(text) and text[stop : stop + 1] == "\n" else ""
+                text = text[:start].rstrip() + "\n" + text[stop + len(suffix) :].lstrip("\n")
+        block = "\n".join(
+            [
+                begin,
+                f"Host {git_ssh_alias}",
+                f"  HostName {git_host}",
+                f"  User {git_user}",
+                f"  IdentityFile {identity_file}",
+                "  IdentitiesOnly yes",
+                "  StrictHostKeyChecking accept-new",
+                end,
+                "",
+            ]
+        )
+        if text.strip():
+            text = text.rstrip() + "\n\n" + block
+        else:
+            text = block
+        cls._write_managed_text_file_no_follow(
+            config_path,
+            text,
+            mode=0o600,
+            label="SSH config",
+        )
 
     def _session_record(
         self,
@@ -1799,7 +2125,9 @@ def _codex_session_outcome(
             "reason": _CODEX_OUTCOME_REASON_TURN_FAILED,
             "message": f"Codex reported {explicit_failure_event_type}: {explicit_failure_message}",
         }
-    elif task_complete_without_final_message and not assistant_text_seen:
+    elif (
+        task_complete_without_final_message or finished_at is not None
+    ) and not assistant_text_seen:
         context_limit_suspected = _codex_context_limit_suspected(
             provider_kind=provider_kind,
             last_token_usage=last_token_usage,
@@ -2002,6 +2330,7 @@ def _codex_outcome_log_line(outcome: dict[str, object]) -> str:
 def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
     roots = [
         agent_home / ".config" / "evander" / "codex" / "sessions",
+        agent_home / ".config" / "agent-sandbox" / "codex" / "sessions",
         agent_home / ".codex" / "sessions",
     ]
     paths: dict[Path, None] = {}
@@ -2021,6 +2350,7 @@ def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
 def _recent_codex_session_ids(agent_home: Path, *, limit: int = 5) -> list[str]:
     roots = [
         agent_home / ".config" / "evander" / "codex" / "sessions",
+        agent_home / ".config" / "agent-sandbox" / "codex" / "sessions",
         agent_home / ".codex" / "sessions",
     ]
     paths: dict[Path, None] = {}

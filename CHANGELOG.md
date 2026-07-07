@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-07-07 - Container Worker Git Write Access
+
+- Restored writable `git push-agent` support for container-worker agents by
+  provisioning session-scoped Git SSH keys authorized only for the session's
+  `refs/heads/agents/<session-id>/...` namespace.
+- Kept read-only Git access available through `effect:agent:clone-repo`
+  `git_access_mode: read-only`, while default container clone behavior now
+  matches VM agents with writable agent-branch pushes.
+- Authorized the session PR notes ref alongside the agent branch namespace so
+  `git push-agent` can push both refs in one operation.
+- Made read-only clone reruns remove prior container Git write-key authorization
+  and scrub stale `push-agent` checkout configuration.
+- Hardened the container Git write-key lifecycle so worker-managed SSH files
+  reject guest-created symlinks, write-mode key rotation revokes the previous
+  host `authorized_keys` entry, and destroy by execution/container target
+  revokes write access before session metadata is deleted.
+- Moved container Git write-key revocation into the shared Admin delete path and
+  fixed dotted worker Git write-key names so temporary public keys are resolved
+  by appending `.pub` to the generated private-key path.
+- Rejected multiline container Git write public keys before composing host
+  `authorized_keys` entries, and scrubbed stale worker write-key files before
+  read-only clone reruns fetch from the control-plane mirror.
+- Serialized host `authorized_keys` updates and rolled back newly installed
+  write keys when session metadata persistence fails.
+
+## 2026-07-07 - Container Worker Empty Codex Output Handling
+
+- Failed container-worker Codex prompt jobs that emit only a session id and no
+  agent message, preventing Teams wakeups from persisting unusable resume
+  thread ids as successful responses.
+- Wrote tokenized Codex relay config into the legacy container `CODEX_HOME`
+  path used by older runner images so Teams wakeups authenticate correctly.
+- Limited Codex JSONL fallback replay to events from the current invocation so
+  resumed container sessions do not reuse stale assistant text from older runs.
+- Treated Codex failure diagnostics as empty-response logs so failed empty turns
+  do not persist unusable resume thread ids.
+
 ## 2026-07-06 - Container Worker Codex Relay Auth
 
 - Added the MCP session token to container worker Codex OpenAI relay URLs so
@@ -24,6 +61,8 @@
   while preserving legacy WIQL inference for existing configs.
 - Updated the workflow editor catalog and inspector so ADO WIQL and structured
   filter fields are presented as separate modes instead of silently competing.
+- Hid the inactive ADO WIQL or structured-filter fields for the selected query
+  mode and pruned hidden structured-filter drafts when switching to Manual WIQL.
 
 ## 2026-07-06 - Team Add-on Memory
 
