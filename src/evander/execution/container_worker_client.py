@@ -13,6 +13,8 @@ import httpx
 from evander.worker.models import (
     WorkerFileWriteRequest,
     WorkerFileWriteRecord,
+    WorkerGitWriteKeyRecord,
+    WorkerGitWriteKeyRequest,
     WorkerJobRecord,
     WorkerJobRequest,
     WorkerMssqlDatabaseDeleteRecord,
@@ -99,6 +101,20 @@ class ContainerWorkerClient:
         )
         return WorkerRepoCloneRecord.model_validate(
             self._json_dict(response, operation="clone repo")
+        )
+
+    def provision_git_write_key(
+        self,
+        session_id: str,
+        request: WorkerGitWriteKeyRequest,
+    ) -> WorkerGitWriteKeyRecord:
+        response = self._request(
+            "POST",
+            f"/v1/sessions/{session_id}/git/write-key",
+            json=request.model_dump(mode="json", exclude_none=True),
+        )
+        return WorkerGitWriteKeyRecord.model_validate(
+            self._json_dict(response, operation="provision git write key")
         )
 
     def write_files(

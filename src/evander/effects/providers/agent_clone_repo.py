@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import ipaddress
 from pathlib import Path
 import posixpath
 import shlex
@@ -12,6 +13,10 @@ from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStat
 from evander.events.provider_models import AgentCloneRepoEffectDefinition
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
 from evander.git_mirror import ContainerGitMirrorResolver
+from evander.git_ssh_authorized_keys import (
+    authorized_keys_path_for_user,
+    install_git_write_authorized_key,
+)
 
 from .agent_session import (
     container_shell_preamble,
@@ -58,6 +63,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "git_author_email": effect.git_author_email,
             "git_committer_name": effect.git_committer_name,
             "git_committer_email": effect.git_committer_email,
+            "git_access_mode": effect.git_access_mode,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -95,7 +101,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             payload.get("repo_source"), "effect:agent:clone-repo requires repo_source"
         )
         clone_branch = normalize_optional_string(payload.get("clone_branch"))
-        mirror = _container_git_mirror_resolver(context, directory_path).resolve(
+        mirror_resolver = _container_git_mirror_resolver(context, directory_path)
+        mirror = mirror_resolver.resolve(
             repo_source=repo_source,
             canonical_repo_source=normalize_optional_string(payload.get("canonical_origin_url")),
             bare_repo_name=normalize_optional_string(payload.get("bare_repo_name")),
@@ -123,7 +130,18 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             session_id=session_id,
             target_dir=result.target_dir,
         )
-        if result.cloned:
+        git_access_mode = normalize_git_access_mode(payload.get("git_access_mode"))
+        write_access_metadata: dict[str, object] | None = None
+        if git_access_mode == "write" and _remote_url_requires_git_ssh(result.remote_url):
+            write_access_metadata = self._provision_container_git_write_access(
+                backend=backend,
+                config=config,
+                context=context,
+                session_id=session_id,
+                mirror_resolver=mirror_resolver,
+                mirror_path=mirror.mirror_path,
+            )
+        if result.cloned or write_access_metadata is not None:
             self._configure_container_git(
                 backend=backend,
                 config=config,
@@ -134,6 +152,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 repo_source=mirror.canonical_repo_source,
                 remote_url=result.remote_url,
                 clone_branch=clone_branch,
+                git_access_mode=git_access_mode,
                 git_author_identity=git_author_identity,
                 git_committer_identity=git_committer_identity,
                 timeout_seconds=float(config.container_worker_job_timeout_seconds),
@@ -151,6 +170,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "remote_url": result.remote_url,
             "canonical_repo_source": mirror.canonical_repo_source,
             "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
+            "git_access_mode": git_access_mode,
+            "git_write_access": write_access_metadata,
             "execution_backend": "container_worker_vm",
             "vm_name": None,
         }
@@ -185,6 +206,49 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             ],
         )
 
+    def _provision_container_git_write_access(
+        self,
+        *,
+        backend: Any,
+        config: Any,
+        context: Any,
+        session_id: str,
+        mirror_resolver: ContainerGitMirrorResolver,
+        mirror_path: Path,
+    ) -> dict[str, object]:
+        provision_git_write_key = getattr(backend, "provision_git_write_key", None)
+        if not callable(provision_git_write_key):
+            raise RuntimeError(
+                "container worker backend does not support session Git write keys"
+            )
+        key_record = provision_git_write_key(
+            session_id=session_id,
+            git_host=mirror_resolver.git_host,
+            git_user=mirror_resolver.git_user,
+            git_ssh_alias=mirror_resolver.git_ssh_alias,
+        )
+        project_dir = Path(getattr(context.admin_service, "project_dir", Path.cwd()))
+        allowed_from = container_worker_git_allowed_from(config)
+        installed = install_git_write_authorized_key(
+            public_key=str(key_record.public_key),
+            git_root=mirror_resolver.git_root_path,
+            authorized_repo_path=mirror_path,
+            session_id=session_id,
+            allowed_from=allowed_from,
+            wrapper_path=project_dir / "scripts" / "git_ssh_command_wrapper.sh",
+            authorized_keys_path=authorized_keys_path_for_user(mirror_resolver.git_user),
+        )
+        metadata = {
+            "public_key_body": installed.public_key_body,
+            "authorized_keys_path": str(installed.authorized_keys_path),
+            "authorized_repo_path": str(installed.authorized_repo_path),
+            "authorized_ref_prefix": installed.authorized_ref_prefix,
+            "allowed_from": installed.allowed_from,
+            "git_ssh_alias": mirror_resolver.git_ssh_alias,
+        }
+        _record_session_git_write_access(context, session_id, metadata)
+        return metadata
+
     def _configure_container_git(
         self,
         *,
@@ -197,6 +261,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         repo_source: str,
         remote_url: str,
         clone_branch: str | None,
+        git_access_mode: str,
         git_author_identity: GitIdentity | None,
         git_committer_identity: GitIdentity | None,
         timeout_seconds: float,
@@ -208,6 +273,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             repo_source=repo_source,
             remote_url=remote_url,
             clone_branch=clone_branch,
+            git_access_mode=git_access_mode,
             git_author_identity=git_author_identity,
             git_committer_identity=git_committer_identity,
         )
@@ -274,6 +340,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         repo_source: str,
         remote_url: str,
         clone_branch: str | None,
+        git_access_mode: str = "write",
         git_identity: GitIdentity | None = None,
         git_author_identity: GitIdentity | None = None,
         git_committer_identity: GitIdentity | None = None,
@@ -281,7 +348,12 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         if git_author_identity is None and git_identity is not None:
             git_author_identity = git_identity
         canonical_remote_url = repo_source.strip() if _is_remote_git_source(repo_source) else ""
-        push_remote_url = _container_reachable_git_remote_url(remote_url)
+        normalized_git_access_mode = normalize_git_access_mode(git_access_mode)
+        push_remote_url = (
+            _container_reachable_git_remote_url(remote_url)
+            if normalized_git_access_mode == "write"
+            else None
+        )
         pr_notes_ref = agent_pr_notes_ref_for_session(session_id)
         git_user_identity = git_author_identity or _DEFAULT_GIT_IDENTITY
         lines = [
@@ -293,6 +365,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             f"SESSION_ID={shlex.quote(session_id)}",
             f"BRANCH_SUFFIX={shlex.quote(session_id)}",
             f"PR_NOTES_REF={shlex.quote(pr_notes_ref)}",
+            f"GIT_ACCESS_MODE={shlex.quote(normalized_git_access_mode)}",
             "WORK_BRANCH=work",
             'if [ -n "$PUSH_REMOTE_URL" ]; then',
             '  if git remote get-url agent >/dev/null 2>&1; then git remote set-url agent "$PUSH_REMOTE_URL"; else git remote add agent "$PUSH_REMOTE_URL"; fi',
@@ -319,9 +392,10 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             'git config evander.sessionId "$SESSION_ID"',
             'git config evander.branchSuffix "$BRANCH_SUFFIX"',
             'git config evander.prNotesRef "$PR_NOTES_REF"',
+            'git config evander.gitAccessMode "$GIT_ACCESS_MODE"',
         ]
         if clone_branch:
-            lines.insert(8, f"CLONE_BRANCH={shlex.quote(clone_branch)}")
+            lines.insert(9, f"CLONE_BRANCH={shlex.quote(clone_branch)}")
         if git_author_identity is not None:
             lines.extend(
                 [
@@ -481,6 +555,79 @@ def _container_git_mirror_resolver(context: Any, directory_path: str) -> Contain
         git_user=issue_setup.git_user,
         git_ssh_alias=issue_setup.git_ssh_alias,
     )
+
+
+def normalize_git_access_mode(value: object) -> str:
+    normalized = str(value or "write").strip().casefold().replace("_", "-")
+    if normalized in {"", "write", "writable"}:
+        return "write"
+    if normalized in {"read-only", "readonly", "read"}:
+        return "read-only"
+    raise ValueError("effect:agent:clone-repo git_access_mode must be write or read-only")
+
+
+def container_worker_git_allowed_from(config: Any) -> str:
+    configured = normalize_optional_string(getattr(config, "container_worker_git_allowed_from", None))
+    if configured:
+        return configured
+    base_url = normalize_optional_string(getattr(config, "container_worker_base_url", None))
+    if not base_url:
+        raise ValueError(
+            "container_worker_git_allowed_from or container_worker_base_url is required "
+            "for container Git write access"
+        )
+    host = urlparse(base_url).hostname
+    if not host:
+        raise ValueError(f"Could not determine worker host from container_worker_base_url: {base_url}")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    suffix = 32 if address.version == 4 else 128
+    return f"{address}/{suffix}"
+
+
+def _remote_url_requires_git_ssh(remote_url: str) -> bool:
+    normalized = str(remote_url or "").strip()
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    if parsed.scheme == "ssh":
+        return True
+    return bool(normalized.startswith("git@") or "@" in normalized.partition(":")[0])
+
+
+def _record_session_git_write_access(
+    context: Any,
+    session_id: str,
+    metadata: dict[str, object],
+) -> None:
+    patch = {"container_git_write_access": metadata}
+    update_target = getattr(context, "session_metadata_updater", None)
+    update_fn = getattr(update_target, "session_update_metadata", None)
+    if callable(update_fn):
+        try:
+            update_fn(target=session_id, metadata=patch)
+            return
+        except Exception:
+            pass
+    runtime = getattr(getattr(context, "admin_service", None), "runtime", None)
+    repository = getattr(runtime, "session_repository", None)
+    get_session = getattr(repository, "get_session", None)
+    upsert_session = getattr(repository, "upsert_session", None)
+    if not callable(get_session) or not callable(upsert_session):
+        return
+    try:
+        session = get_session(session_id)
+        if session is None:
+            return
+        current_metadata = getattr(session, "metadata", {})
+        if not isinstance(current_metadata, dict):
+            current_metadata = {}
+        updated_metadata = {**current_metadata, **patch}
+        upsert_session(session.model_copy(update={"metadata": updated_metadata}))
+    except Exception:
+        return
 
 
 def _git_author_identity_from_payload(payload: Mapping[str, Any]) -> GitIdentity | None:

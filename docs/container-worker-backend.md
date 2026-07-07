@@ -413,6 +413,12 @@ and fails before contacting the worker if the upstream refresh fails or the requ
 present. The in-container repo can still record the canonical upstream URL with Git `insteadOf`, but
 all fetch and push traffic goes through the private restricted-SSH mirror.
 
+Clone jobs default to writable Git access. The control plane asks the worker daemon to generate a
+per-session SSH key, installs that public key on the control-plane Git user with a forced command
+scoped to the mirror and `refs/heads/agents/<session-id>/...`, and configures the repo-local
+`git push-agent` alias. Set `git_access_mode` to `read-only` on `effect:agent:clone-repo` when a
+container session should only fetch through the worker's shared read-only key.
+
 `effect:agent:create` on `container_worker_vm` writes the session bootstrap files under
 `/home/agent`: `.evander/session.env`, shell profiles, Codex config in both supported
 locations, Claude Code settings and MCP config, and NuGet config when `nuget=true`. The Codex

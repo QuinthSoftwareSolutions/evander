@@ -9,6 +9,8 @@ from evander.worker.models import (
     SAFE_ID_PATTERN,
     WorkerFileWriteRequest,
     WorkerFileWriteRecord,
+    WorkerGitWriteKeyRecord,
+    WorkerGitWriteKeyRequest,
     WorkerJobRequest,
     WorkerMssqlDatabaseDeleteRecord,
     WorkerMssqlDatabaseListRecord,
@@ -265,6 +267,23 @@ class ContainerWorkerVmExecutionBackend:
                 repo_source=repo_source,
                 clone_branch=clone_branch,
                 repo_name=repo_name,
+            ),
+        )
+
+    def provision_git_write_key(
+        self,
+        *,
+        session_id: str,
+        git_host: str,
+        git_user: str,
+        git_ssh_alias: str,
+    ) -> WorkerGitWriteKeyRecord:
+        return self.client.provision_git_write_key(
+            session_id,
+            WorkerGitWriteKeyRequest(
+                git_host=git_host,
+                git_user=git_user,
+                git_ssh_alias=git_ssh_alias,
             ),
         )
 

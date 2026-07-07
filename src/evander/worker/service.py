@@ -35,6 +35,7 @@ from evander.session_artifacts import (
     open_relative_regular_file_no_follow,
     read_artifact_text_no_follow,
 )
+from evander.git_ssh_authorized_keys import public_key_body_from_line
 
 from .docker_runtime import DockerContainerRuntime
 from .models import (
@@ -43,6 +44,8 @@ from .models import (
     WorkerFileWriteRecord,
     WorkerJobRecord,
     WorkerJobRequest,
+    WorkerGitWriteKeyRecord,
+    WorkerGitWriteKeyRequest,
     WorkerDiskTelemetry,
     WorkerJobTelemetry,
     WorkerMssqlDatabaseDeleteRecord,
@@ -680,6 +683,66 @@ class WorkerDaemon:
             guest_repo_name=repo_name,
             remote_url=request.repo_source,
             cloned=cloned,
+        )
+
+    def provision_git_write_key(
+        self,
+        session_id: str,
+        request: WorkerGitWriteKeyRequest,
+    ) -> WorkerGitWriteKeyRecord:
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        ssh_dir = paths.agent_home / ".ssh"
+        ssh_dir.mkdir(parents=True, exist_ok=True)
+        ssh_dir.chmod(0o700)
+
+        key_path = ssh_dir / request.key_name
+        if not key_path.exists():
+            subprocess.run(
+                [
+                    "ssh-keygen",
+                    "-q",
+                    "-t",
+                    "ed25519",
+                    "-N",
+                    "",
+                    "-C",
+                    f"evander-git-write@{paths.session_id}",
+                    "-f",
+                    str(key_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        key_path.chmod(0o600)
+        public_key_path = key_path.with_suffix(key_path.suffix + ".pub")
+        public_key = public_key_path.read_text(encoding="utf-8").strip()
+        public_key_path.chmod(0o644)
+
+        config_path = ssh_dir / "config"
+        self._write_git_write_ssh_config(
+            config_path=config_path,
+            git_ssh_alias=request.git_ssh_alias,
+            git_host=request.git_host,
+            git_user=request.git_user,
+            identity_file=f"~/.ssh/{request.key_name}",
+        )
+        metadata = self._read_session_metadata(paths)
+        metadata["git_write_key"] = {
+            "public_key_body": public_key_body_from_line(public_key),
+            "key_path": str(key_path),
+            "config_path": str(config_path),
+            "git_ssh_alias": request.git_ssh_alias,
+            "updated_at": now_utc().isoformat(),
+        }
+        self._write_session_metadata(paths, metadata)
+        return WorkerGitWriteKeyRecord(
+            session_id=paths.session_id,
+            public_key=public_key,
+            public_key_body=public_key_body_from_line(public_key),
+            key_path=str(key_path),
+            config_path=str(config_path),
+            git_ssh_alias=request.git_ssh_alias,
         )
 
     def write_files(
@@ -1461,6 +1524,8 @@ class WorkerDaemon:
         target_dir.mkdir(parents=True, exist_ok=True)
         target_dir.chmod(0o700)
         for name in ("evander-git", "evander-git.pub", "config", "known_hosts"):
+            if name == "config" and (target_dir / "evander-git-write").is_file():
+                continue
             source = source_dir / name
             if not source.is_file():
                 continue
@@ -1470,6 +1535,51 @@ class WorkerDaemon:
                 destination.chmod(0o644)
             else:
                 destination.chmod(0o600)
+
+    @staticmethod
+    def _write_git_write_ssh_config(
+        *,
+        config_path: Path,
+        git_ssh_alias: str,
+        git_host: str,
+        git_user: str,
+        identity_file: str,
+    ) -> None:
+        begin = "# BEGIN evander git write host"
+        end = "# END evander git write host"
+        text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+        for marker_begin, marker_end in (
+            ("# BEGIN evander git host", "# END evander git host"),
+            (begin, end),
+        ):
+            while marker_begin in text and marker_end in text:
+                start = text.index(marker_begin)
+                stop = text.index(marker_end, start) + len(marker_end)
+                suffix = "\n" if stop < len(text) and text[stop : stop + 1] == "\n" else ""
+                text = (
+                    text[:start].rstrip()
+                    + "\n"
+                    + text[stop + len(suffix) :].lstrip("\n")
+                )
+        block = "\n".join(
+            [
+                begin,
+                f"Host {git_ssh_alias}",
+                f"  HostName {git_host}",
+                f"  User {git_user}",
+                f"  IdentityFile {identity_file}",
+                "  IdentitiesOnly yes",
+                "  StrictHostKeyChecking accept-new",
+                end,
+                "",
+            ]
+        )
+        if text.strip():
+            text = text.rstrip() + "\n\n" + block
+        else:
+            text = block
+        config_path.write_text(text, encoding="utf-8")
+        config_path.chmod(0o600)
 
     def _session_record(
         self,

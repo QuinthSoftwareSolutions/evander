@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-07 - Container Worker Git Write Access
+
+- Restored writable `git push-agent` support for container-worker agents by
+  provisioning session-scoped Git SSH keys authorized only for the session's
+  `refs/heads/agents/<session-id>/...` namespace.
+- Kept read-only Git access available through `effect:agent:clone-repo`
+  `git_access_mode: read-only`, while default container clone behavior now
+  matches VM agents with writable agent-branch pushes.
+
 ## 2026-07-06 - Container Worker Codex Relay Auth
 
 - Added the MCP session token to container worker Codex OpenAI relay URLs so

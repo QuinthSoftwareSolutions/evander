@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from evander.events.provider_models import AgentDestroyEffectDefinition
+from evander.git_ssh_authorized_keys import remove_git_authorized_key_by_public_key_body
 
 from .agent_session import (
     effective_config_for_directory,
@@ -98,6 +99,8 @@ class AgentDestroyEffectProvider(EffectProviderBase):
                 "effect:agent:destroy admin_service.delete_admin_agent is not available"
             )
         target = self._target_from_payload(payload)
+        if execution_backend == "container_worker_vm":
+            self._cleanup_container_git_write_access(context, target)
         result = delete_admin_agent(target, backend=execution_backend)
         if not isinstance(result, Mapping):
             raise RuntimeError(
@@ -190,3 +193,38 @@ class AgentDestroyEffectProvider(EffectProviderBase):
         if context.admin_service is None:
             raise RuntimeError("effect:agent:destroy admin_service is not available")
         return context.admin_service
+
+    def _cleanup_container_git_write_access(
+        self,
+        context: EffectRuntimeContext,
+        target: str,
+    ) -> None:
+        admin_service = self._admin_service(context)
+        runtime = getattr(admin_service, "runtime", None)
+        repository = getattr(runtime, "session_repository", None)
+        get_session = getattr(repository, "get_session", None)
+        resolve_session_target = getattr(repository, "resolve_session_target", None)
+        if not callable(get_session):
+            return
+        try:
+            session = get_session(target)
+            if session is None and callable(resolve_session_target):
+                session = resolve_session_target(target)
+            if session is None:
+                return
+            metadata = getattr(session, "metadata", {})
+            if not isinstance(metadata, dict):
+                return
+            git_access = metadata.get("container_git_write_access")
+            if not isinstance(git_access, dict):
+                return
+            public_key_body = normalize_optional_string(git_access.get("public_key_body"))
+            authorized_keys_path = normalize_optional_string(git_access.get("authorized_keys_path"))
+            if not public_key_body or not authorized_keys_path:
+                return
+            remove_git_authorized_key_by_public_key_body(
+                authorized_keys_path=authorized_keys_path,
+                public_key_body=public_key_body,
+            )
+        except Exception:
+            return

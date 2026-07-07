@@ -13,6 +13,7 @@ from starlette.routing import Route
 from .models import (
     DEFAULT_WORKER_ROOT,
     WorkerFileWriteRequest,
+    WorkerGitWriteKeyRequest,
     WorkerJobRequest,
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
@@ -79,6 +80,20 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             payload = await request.json()
             clone_request = WorkerRepoCloneRequest.model_validate(payload)
             record = daemon.clone_repo(request.path_params["session_id"], clone_request)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except subprocess.CalledProcessError as exc:
+            return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
+        return JSONResponse(record.model_dump(mode="json"))
+
+    async def provision_session_git_write_key(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            key_request = WorkerGitWriteKeyRequest.model_validate(payload)
+            record = daemon.provision_git_write_key(
+                request.path_params["session_id"],
+                key_request,
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except subprocess.CalledProcessError as exc:
@@ -229,6 +244,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/v1/telemetry", telemetry, methods=["GET"]),
             Route("/v1/sessions", prepare_session, methods=["POST"]),
             Route("/v1/sessions/{session_id}/repo", clone_session_repo, methods=["POST"]),
+            Route(
+                "/v1/sessions/{session_id}/git/write-key",
+                provision_session_git_write_key,
+                methods=["POST"],
+            ),
             Route("/v1/sessions/{session_id}/files", write_session_files, methods=["POST"]),
             Route(
                 "/v1/sessions/{session_id}/artifacts/{artifact_path:path}",

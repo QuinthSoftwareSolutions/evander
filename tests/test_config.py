@@ -233,6 +233,12 @@ def test_container_worker_image_selector_rejects_unknown_selector() -> None:
         )
 
 
+def test_container_worker_git_allowed_from_is_normalized() -> None:
+    config = GatewayConfig(container_worker_git_allowed_from=" 10.2.1.4/32 ")
+
+    assert config.container_worker_git_allowed_from == "10.2.1.4/32"
+
+
 def test_tool_argument_policies_round_trip_through_config_models() -> None:
     payload = {
         "tool_argument_policies": {

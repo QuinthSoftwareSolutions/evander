@@ -604,6 +604,8 @@ inside the guest by default. `sync-base` merges the latest configured base branc
 while `push-agent` verifies the destination and base branches before using the safe
 session-namespaced push pattern. The guest-side PID and state files live under
 `/home/agent/.evander/`; root-owned transcript logs live under `/var/log/evander/agent-runs/`.
+For container-worker sessions, the clone effect provisions a session-scoped Git SSH key for that
+push path by default; set `git_access_mode` to `read-only` when the session should only fetch.
 VM and container agents share `/artifacts` as the workflow-readable artifacts
 folder. Agents can call the `stage_artifact` MCP tool to copy a file or
 directory from `/home/agent` into this folder without leaving their working

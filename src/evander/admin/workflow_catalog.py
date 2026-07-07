@@ -2185,6 +2185,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("vm_user", "VM user", "string", bindable=True),
             _field("directory_path", "Directory path", "string", bindable=True),
             _field(
+                "git_access_mode",
+                "Git access mode",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional container-worker Git access mode. "
+                    "Use write for git push-agent or read-only for fetch-only sessions."
+                ),
+            ),
+            _field(
                 "git_author_name",
                 "Git author name",
                 "string",

@@ -23,7 +23,11 @@ from evander.capacity_health import (
     TelemetryStatus,
 )
 from evander.worker.service import WorkerDaemon
-from evander.worker.models import WorkerRepoCloneRequest
+from evander.worker.models import (
+    WorkerGitWriteKeyRequest,
+    WorkerRepoCloneRequest,
+    WorkerSessionPrepareRequest,
+)
 from evander.worker_daemon import (
     WorkerDiskTelemetry,
     WorkerJobRecord,
@@ -620,6 +624,115 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
         f"ssh -F {paths.agent_home / '.ssh' / 'config'} "
         f"-i {paths.agent_home / '.ssh' / 'evander-git'}"
     )
+
+
+def test_worker_provisions_session_git_write_key_and_preserves_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ssh_source = tmp_path / "git-ssh"
+    ssh_source.mkdir()
+    (ssh_source / "evander-git").write_text("read key\n", encoding="utf-8")
+    (ssh_source / "evander-git.pub").write_text("read key pub\n", encoding="utf-8")
+    (ssh_source / "config").write_text(
+        "\n".join(
+            [
+                "# BEGIN evander git host",
+                "Host evander-git-host",
+                "  HostName 10.2.0.4",
+                "  User agent",
+                "  IdentityFile ~/.ssh/evander-git",
+                "# END evander git host",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    runtime = FakeContainerRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+        git_ssh_source_dir=ssh_source,
+    )
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        key_path = Path(args[-1])
+        key_path.write_text("private key\n", encoding="utf-8")
+        key_path.with_suffix(".pub").write_text(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerKey worker\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    daemon.prepare_session(
+        WorkerSessionPrepareRequest(session_id="session-1", metadata={})
+    )
+
+    record = daemon.provision_git_write_key(
+        "session-1",
+        WorkerGitWriteKeyRequest(
+            git_host="10.2.0.4",
+            git_user="agent",
+            git_ssh_alias="evander-git-host",
+        ),
+    )
+
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    config_text = (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8")
+    assert record.public_key_body == "AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerKey"
+    assert "# BEGIN evander git host" not in config_text
+    assert "# BEGIN evander git write host" in config_text
+    assert "IdentityFile ~/.ssh/evander-git-write" in config_text
+
+    daemon.start_job(
+        WorkerJobRequest(
+            session_id="session-1",
+            job_id="job-1",
+            image="runner:latest",
+            command=["true"],
+        )
+    )
+
+    assert (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8") == config_text
+
+
+def test_worker_api_provisions_session_git_write_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        key_path = Path(args[-1])
+        key_path.write_text("private key\n", encoding="utf-8")
+        key_path.with_suffix(".pub").write_text(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerApiKey worker\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/v1/sessions/session-1/git/write-key",
+        headers=_auth(),
+        json={
+            "git_host": "10.2.0.4",
+            "git_user": "agent",
+            "git_ssh_alias": "evander-git-host",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["public_key_body"] == "AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerApiKey"
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    config_text = (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8")
+    assert "Host evander-git-host" in config_text
+    assert "IdentityFile ~/.ssh/evander-git-write" in config_text
 
 
 def test_worker_daemon_read_telemetry_degrades_when_sqlite_job_store_is_unavailable(

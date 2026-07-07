@@ -757,6 +757,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "guest_repo_name": {"type": "string"},
         "remote_url": {"type": "string"},
         "pr_notes_ref": {"type": "string"},
+        "git_access_mode": {"type": "string"},
+        "git_write_access": {"type": ["object", "null"]},
         "execution_backend": {"type": "string"},
         "vm_name": {"type": "string"},
     },
@@ -1250,7 +1252,6 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "review_branch": {"type": "string"},
         "target_branch": {"type": "string"},
         "remote_name": {"type": "string"},
-        "commit_sha": {"type": ["string", "null"]},
     },
     "effect:git:push-branch": {
         "success": {"type": "boolean"},

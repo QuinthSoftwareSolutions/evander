@@ -90,6 +90,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "container_worker_request_timeout_seconds",
             "container_worker_token_env",
             "container_worker_workspace_persistence",
+            "container_worker_git_allowed_from",
             "container_worker_guest_openai_base_url",
             "container_worker_guest_anthropic_base_url",
             "container_worker_guest_gateway_url",
