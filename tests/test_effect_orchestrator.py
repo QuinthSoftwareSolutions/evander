@@ -359,9 +359,7 @@ class _ContainerDispatchBackendStub:
         self.destroyed.append(execution_id)
 
 
-def _edge(
-    source_id: str, target_id: str, *, source_port: str | None = None
-) -> dict[str, str]:
+def _edge(source_id: str, target_id: str, *, source_port: str | None = None) -> dict[str, str]:
     edge = {"source_id": source_id, "target_id": target_id}
     if source_port is not None:
         edge["source_port"] = source_port
@@ -630,9 +628,7 @@ def test_effect_orchestrator_executes_state_nodes_with_graph_isolation(
     execution_payload = json.loads(
         (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
     )
-    records_by_effect_id = {
-        record["effect_id"]: record for record in execution_payload.values()
-    }
+    records_by_effect_id = {record["effect_id"]: record for record in execution_payload.values()}
 
     alpha_effect = records_by_effect_id["effect-alpha-state"]
     alpha_query = records_by_effect_id["query-alpha-state"]
@@ -654,12 +650,8 @@ def test_effect_orchestrator_executes_state_nodes_with_graph_isolation(
 
     state_payload = json.loads((runtime_dir / "workflow-state.json").read_text(encoding="utf-8"))
     graph_state_records = state_payload["records"]["root"]
-    assert graph_state_records["graph-alpha"]["workflow"]["cursor"]["value"] == {
-        "counter": 1
-    }
-    assert graph_state_records["graph-beta"]["workflow"]["cursor"]["value"] == {
-        "counter": 2
-    }
+    assert graph_state_records["graph-alpha"]["workflow"]["cursor"]["value"] == {"counter": 1}
+    assert graph_state_records["graph-beta"]["workflow"]["cursor"]["value"] == {"counter": 2}
 
 
 def test_effect_orchestrator_rejects_state_nodes_without_persisted_graph_metadata(
@@ -668,7 +660,7 @@ def test_effect_orchestrator_rejects_state_nodes_without_persisted_graph_metadat
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     state_path = runtime_dir / "workflow-state.json"
-    state_path.write_text("{\"sentinel\": true}", encoding="utf-8")
+    state_path.write_text('{"sentinel": true}', encoding="utf-8")
 
     config = GatewayConfig(runtime_dir=runtime_dir)
     valid_worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
@@ -737,7 +729,7 @@ def test_effect_orchestrator_rejects_state_nodes_without_persisted_graph_metadat
     with pytest.raises(ValueError, match="persisted workflow graph metadata"):
         worker.run_once()
 
-    assert state_path.read_text(encoding="utf-8") == "{\"sentinel\": true}"
+    assert state_path.read_text(encoding="utf-8") == '{"sentinel": true}'
 
 
 def test_effect_orchestrator_threads_graph_metadata_into_provider_contexts(
@@ -808,11 +800,15 @@ def test_effect_orchestrator_threads_graph_metadata_into_provider_contexts(
     worker.run_once()
 
     assert effect_factory.build_calls
-    assert all(call == {
-        "effect_id": "effect-1",
-        "directory_path": "root/team-a",
-        "graph_id": "graph-1",
-    } for call in effect_factory.build_calls)
+    assert all(
+        call
+        == {
+            "effect_id": "effect-1",
+            "directory_path": "root/team-a",
+            "graph_id": "graph-1",
+        }
+        for call in effect_factory.build_calls
+    )
     assert query_factory.build_calls == [
         {
             "effect_id": "query-1",
@@ -1249,9 +1245,13 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     assert by_effect["effect-1"]["binding_trace"]["entries"][0]["config_path"] == "$.vm_name"
     assert by_effect["effect-1"]["binding_trace"]["entries"][0]["reference"] == "gate-1.vm_name"
     assert by_effect["effect-2"]["binding_trace"]["entries"][0]["config_path"] == "$.session_id"
-    assert by_effect["effect-2"]["binding_trace"]["entries"][0]["reference"] == "effect-1.session_id"
+    assert (
+        by_effect["effect-2"]["binding_trace"]["entries"][0]["reference"] == "effect-1.session_id"
+    )
     assert by_effect["effect-2"]["binding_trace"]["entries"][1]["config_path"] == "$.prompt"
-    assert by_effect["effect-2"]["binding_trace"]["entries"][1]["reference"] == "effect-1.session_id"
+    assert (
+        by_effect["effect-2"]["binding_trace"]["entries"][1]["reference"] == "effect-1.session_id"
+    )
     gate_payload = json.loads(
         (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
     )
@@ -4571,9 +4571,7 @@ def test_queued_agent_prompt_record_accepts_optional_workflow_context() -> None:
 
     assert without_context.workflow_context is None
     assert without_context.workflow_for_execution_ids is None
-    assert with_context.workflow_context == {
-        "gate-map": {"ticket": {"issue_id": "ISSUE-1"}}
-    }
+    assert with_context.workflow_context == {"gate-map": {"ticket": {"issue_id": "ISSUE-1"}}}
     assert with_context.workflow_for_execution_ids == {"for-1": "event-for-1"}
 
 
@@ -4976,9 +4974,7 @@ def test_agent_enqueue_prompt_queued_started_loopback_preserves_for_gate_state(
     queued_payload = json.loads(
         (runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8")
     )
-    assert queued_payload["vm-1"]["workflow_for_execution_ids"] == {
-        "for-1": "event-for-queued-1"
-    }
+    assert queued_payload["vm-1"]["workflow_for_execution_ids"] == {"for-1": "event-for-queued-1"}
 
     resume_calls: list[dict[str, object]] = []
     worker.agent_run_status_port = _AgentRunStatusPortStub(
@@ -5294,8 +5290,9 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
     backend_calls: list[tuple[object, object]] = []
     monkeypatch.setattr(
         "evander.effects.providers.lifecycle_hooks.build_execution_backend",
-        lambda config, admin_service: backend_calls.append((config, admin_service))
-        or _ContainerDispatchBackendStub(),
+        lambda config, admin_service: (
+            backend_calls.append((config, admin_service)) or _ContainerDispatchBackendStub()
+        ),
     )
     worker = SimpleNamespace(
         queued_agent_prompt_store=queue_store,
@@ -5412,11 +5409,7 @@ def test_agent_enqueue_prompt_dispatch_reads_and_updates_resume_thread_metadata_
             vm_id="vm-1",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-            metadata={
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-existing"
-                }
-            },
+            metadata={"agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"}},
         )
     )
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
@@ -5757,11 +5750,7 @@ def test_agent_enqueue_prompt_dispatch_serializes_distinct_queue_keys_for_same_s
             vm_id="vm-1",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-            metadata={
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-existing"
-                }
-            },
+            metadata={"agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"}},
         )
     )
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
@@ -6067,9 +6056,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
                 "execution_backend": "container_worker_vm",
                 "target_name": "truman",
                 "container_worker": {"image": "runner:queue-image"},
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-existing"
-                },
+                "agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"},
             },
         )
     )
@@ -7402,13 +7389,13 @@ def test_vm_copy_files_template_source_renders_bindings_before_dispatch(tmp_path
                 },
                 {
                     "id": "effect-2",
-                        "display_name": "Copy files",
-                        "type": "effect:vm:copy-files",
-                        "target": "${{effect-1.session_id}}",
-                        "allowed_source_roots": [str(tmp_path)],
-                        "files": [
-                            {
-                                "source_path": str(template_path),
+                    "display_name": "Copy files",
+                    "type": "effect:vm:copy-files",
+                    "target": "${{effect-1.session_id}}",
+                    "allowed_source_roots": [str(tmp_path)],
+                    "files": [
+                        {
+                            "source_path": str(template_path),
                             "source_format": "template",
                             "destination_path": "/home/agent/AGENTS.md",
                             "overwrite": True,
@@ -9196,8 +9183,7 @@ def test_deserialize_gate_emits_parsed_object_outputs(tmp_path: Path) -> None:
                     "type": "effect:agent:prompt",
                     "session_id": "session-1",
                     "prompt": (
-                        "Review ${{gate-deserialize.title}} "
-                        "${{gate-deserialize.metadata.priority}}"
+                        "Review ${{gate-deserialize.title}} ${{gate-deserialize.metadata.priority}}"
                     ),
                 }
             ],
@@ -9220,9 +9206,7 @@ def test_deserialize_gate_emits_parsed_object_outputs(tmp_path: Path) -> None:
             trigger_type="trigger:cron",
             occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
             payload={
-                "payload_text": (
-                    '{"title":"Fix relay","metadata":{"priority":"P1"},"count":2}'
-                )
+                "payload_text": ('{"title":"Fix relay","metadata":{"priority":"P1"},"count":2}')
             },
         )
     )
@@ -9487,8 +9471,7 @@ def test_aggregate_gate_emits_totals_for_downstream_bindings(tmp_path: Path) -> 
     )
     effect_record = next(iter(effect_payload.values()))
     assert (
-        effect_record["resolved_config"]["prompt"]
-        == "Tokens 43 across 3 event(s); average 21.5."
+        effect_record["resolved_config"]["prompt"] == "Tokens 43 across 3 event(s); average 21.5."
     )
 
 
@@ -9727,9 +9710,7 @@ def test_merge_gate_preserves_guaranteed_pre_branch_context(tmp_path: Path) -> N
     ]
     assert after_records
     assert all(record["status"] == "succeeded" for record in after_records)
-    assert {record["resolved_config"]["session_id"] for record in after_records} == {
-        "session-pre"
-    }
+    assert {record["resolved_config"]["session_id"] for record in after_records} == {"session-pre"}
 
 
 def test_merge_gate_drops_branch_local_context(tmp_path: Path) -> None:
@@ -9815,9 +9796,9 @@ def test_merge_gate_drops_branch_local_context(tmp_path: Path) -> None:
     ]
     assert after_records
     assert all(record["status"] == "failed" for record in after_records)
-    assert {
-        record["binding_error"] for record in after_records
-    } == {"Output reference node 'effect-a' is not available in this upstream path"}
+    assert {record["binding_error"] for record in after_records} == {
+        "Output reference node 'effect-a' is not available in this upstream path"
+    }
 
 
 def test_debounce_gate_preserves_context_for_delayed_release(tmp_path: Path) -> None:
@@ -9935,9 +9916,7 @@ def test_event_emit_effect_evaluates_payload_and_writes_internal_event(tmp_path:
             "edges": [_edge("trigger-1", "emit-plan")],
         }
     )
-    worker = EffectOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     worker.event_queue.publish(
         TriggerEvent(
             event_id="input-event-1",
@@ -10146,9 +10125,7 @@ def test_event_emit_effect_invalid_event_type_fails_clearly(tmp_path: Path) -> N
             "edges": [_edge("trigger-1", "emit-invalid")],
         }
     )
-    worker = EffectOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     worker.event_queue.publish(
         TriggerEvent(
             event_id="input-event-1",
@@ -10202,9 +10179,7 @@ def test_event_emit_effect_retry_uses_idempotency_key(tmp_path: Path) -> None:
             "edges": [_edge("trigger-1", "emit-once")],
         }
     )
-    worker = EffectOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     worker.event_queue.publish(
         TriggerEvent(
             event_id="input-event-1",
@@ -10275,9 +10250,7 @@ def test_event_schedule_effect_resolves_bindings_and_writes_pending_record(
             "edges": [_edge("trigger-1", "schedule-plan")],
         }
     )
-    worker = EffectOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     worker.event_queue.publish(
         TriggerEvent(
             event_id="input-event-1",
@@ -10299,7 +10272,9 @@ def test_event_schedule_effect_resolves_bindings_and_writes_pending_record(
     worker.run_once()
 
     executions = [
-        record for record in worker.execution_store.list_executions() if record.effect_id == "schedule-plan"
+        record
+        for record in worker.execution_store.list_executions()
+        if record.effect_id == "schedule-plan"
     ]
     assert executions[-1].status == "succeeded"
     assert executions[-1].outputs["created"] is True
@@ -10360,9 +10335,7 @@ def test_event_schedule_effect_duplicate_idempotency_returns_original_record_wit
             "edges": [_edge("trigger-1", "schedule-once")],
         }
     )
-    worker = EffectOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
 
     worker.event_queue.publish(
         TriggerEvent(
@@ -10403,7 +10376,9 @@ def test_event_schedule_effect_duplicate_idempotency_returns_original_record_wit
     second_schedule_record = next(iter(second_schedule.values()))
 
     executions = [
-        record for record in worker.execution_store.list_executions() if record.effect_id == "schedule-once"
+        record
+        for record in worker.execution_store.list_executions()
+        if record.effect_id == "schedule-once"
     ]
     assert len(executions) == 2
     assert sorted(record.outputs["created"] for record in executions) == [False, True]

@@ -120,9 +120,7 @@ class _ContainerResolverStub:
         del session_id
         return self.config
 
-    def resolve_contacts_for_directory(
-        self, directory_path: str | None
-    ) -> ContactDirectoryConfig:
+    def resolve_contacts_for_directory(self, directory_path: str | None) -> ContactDirectoryConfig:
         del directory_path
         return self.contacts_config
 
@@ -896,10 +894,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
     assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
-    assert (
-        admin_service.create_vm_calls[0]["metadata"]["model_provider_mode"]
-        == "local_openai"
-    )
+    assert admin_service.create_vm_calls[0]["metadata"]["model_provider_mode"] == "local_openai"
 
 
 def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_path: Path) -> None:
@@ -1605,9 +1600,7 @@ def test_agent_create_libvirt_upsert_preserves_existing_vm_image_when_selector_o
         "image_ref": "dotnet-agent.qcow2",
         "template_alias": "dotnet",
     }
-    assert session_repository.get_session("lab-session").metadata["workflow"] == {
-        "state": "active"
-    }
+    assert session_repository.get_session("lab-session").metadata["workflow"] == {"state": "active"}
 
 
 def test_agent_create_libvirt_upsert_replaces_existing_vm_image_when_selector_provided(
@@ -2185,9 +2178,9 @@ def test_agent_enqueue_prompt_provider_scopes_libvirt_prompt_lock_to_vm(
         bootstrap_frontend_in_vm_calls=[],
         resume_calls=[],
     )
-    admin_service._sessions["session-84"] = admin_service._sessions[
-        "session-42"
-    ].model_copy(update={"session_id": "session-84"})
+    admin_service._sessions["session-84"] = admin_service._sessions["session-42"].model_copy(
+        update={"session_id": "session-84"}
+    )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
     config = GatewayConfig(runtime_dir=tmp_path)
     activity = AgentPromptActivityRuntime(runtime_dir=tmp_path)
@@ -2578,7 +2571,7 @@ def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> Non
     assert "codex exec --json" in command
     assert "codex features list" in command
     assert (
-        'codex exec --json --dangerously-bypass-approvals-and-sandbox '
+        "codex exec --json --dangerously-bypass-approvals-and-sandbox "
         '--skip-git-repo-check "${codex_feature_args[@]}" --model'
     ) in command
     assert "-s danger-full-access" in command
@@ -2612,7 +2605,7 @@ def test_container_prompt_command_uses_resume_last_for_same_context_without_thre
     assert "--json" in command
     assert "codex features list" in command
     assert (
-        'codex exec resume --last --json --dangerously-bypass-approvals-and-sandbox '
+        "codex exec resume --last --json --dangerously-bypass-approvals-and-sandbox "
         '--skip-git-repo-check "${codex_feature_args[@]}" --model'
     ) in command
     assert "-s danger-full-access" not in command
@@ -2650,10 +2643,7 @@ def test_container_prompt_command_supports_claude_provider() -> None:
     assert "--mcp-config /home/agent/.claude/mcp-config.json" in command
     assert "claude mcp remove -s user evander" in command
     assert "claude mcp add --transport http -s user evander" in command
-    assert (
-        "evander_sync_claude_mcp_server /home/agent/.claude/mcp-config.json"
-        in command
-    )
+    assert "evander_sync_claude_mcp_server /home/agent/.claude/mcp-config.json" in command
     assert "printf '%s' 'check teams' | claude -p" in command
     assert "--mcp-config /home/agent/.claude/mcp-config.json 'check teams'" not in command
     assert "evander_claude_json_to_log" in command
@@ -2734,9 +2724,10 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
     assert by_path["/home/agent/.codex/config.toml"] == expected_codex_config
     assert by_path["/home/agent/.config/evander/codex/config.toml"] == expected_codex_config
     assert by_path["/home/agent/.config/agent-sandbox/codex/config.toml"] == expected_codex_config
-    assert "OPENAI_API_KEY=\"${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}\"" in by_path[
-        "/home/agent/.profile"
-    ]
+    assert (
+        'OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"'
+        in by_path["/home/agent/.profile"]
+    )
     assert "azure_openai_endpoint" not in combined_content
     assert "azure_openai_api_key_env" not in combined_content
     assert "azure_openai_model_deployments" not in combined_content
@@ -2775,7 +2766,7 @@ def test_container_session_files_include_claude_provider_config() -> None:
         "ANTHROPIC_BASE_URL=http://relay.test:11434/session/session-1\n"
         in by_path["/home/agent/.evander/session.env"]
     )
-    assert "model = \"claude-sonnet-4-6\"" in by_path["/home/agent/.codex/config.toml"]
+    assert 'model = "claude-sonnet-4-6"' in by_path["/home/agent/.codex/config.toml"]
     assert by_path["/home/agent/.claude/settings.json"] == (
         "{\n"
         '  "attribution": {\n'
@@ -2840,10 +2831,7 @@ def test_container_session_files_propagate_mcp_token_to_relay_clients() -> None:
         'base_url = "http://relay.test:11434/v1/session/session-1/auth/correct-token"'
         in by_path["/home/agent/.config/agent-sandbox/codex/config.toml"]
     )
-    assert (
-        '"ANTHROPIC_AUTH_TOKEN": "correct-token"'
-        in by_path["/home/agent/.claude/settings.json"]
-    )
+    assert '"ANTHROPIC_AUTH_TOKEN": "correct-token"' in by_path["/home/agent/.claude/settings.json"]
     assert (
         '"ANTHROPIC_BASE_URL": "http://relay.test:11434/session/session-1"'
         in by_path["/home/agent/.claude/settings.json"]
@@ -2861,8 +2849,7 @@ def test_container_session_files_propagate_mcp_token_to_relay_clients() -> None:
         in by_path["/home/agent/.evander/session.env"]
     )
     assert (
-        "EVANDER_MCP_SESSION_TOKEN=correct-token\n"
-        in by_path["/home/agent/.evander/session.env"]
+        "EVANDER_MCP_SESSION_TOKEN=correct-token\n" in by_path["/home/agent/.evander/session.env"]
     )
     assert (
         'export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"'
@@ -2988,9 +2975,7 @@ def test_claude_json_log_filter_handles_stream_json_events() -> None:
         },
         {
             "type": "assistant",
-            "message": {
-                "content": [{"type": "text", "text": "I am checking the repo now."}]
-            },
+            "message": {"content": [{"type": "text", "text": "I am checking the repo now."}]},
         },
         {"type": "result", "result": "Done."},
     ]
@@ -3003,9 +2988,7 @@ def test_claude_json_log_filter_handles_stream_json_events() -> None:
     )
 
     assert completed.stdout == (
-        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
-        "I am checking the repo now.\n"
-        "Done.\n"
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\nI am checking the repo now.\nDone.\n"
     )
 
 
@@ -3316,8 +3299,9 @@ def test_context_exhausted_container_completion_does_not_retry_after_limit(
         execution_store=store,
         provider_factory=SimpleNamespace(admin_service=SimpleNamespace(runtime=None)),
         _update_event_delivery_state=lambda event_id: None,
-        _publish_completion_event_from_record=lambda **kwargs: published.append(kwargs)
-        or "published-1",
+        _publish_completion_event_from_record=lambda **kwargs: (
+            published.append(kwargs) or "published-1"
+        ),
     )
     record = SimpleNamespace(
         execution_id="effect-exec-1",
@@ -3543,9 +3527,7 @@ def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
     assert output["queued"] is True
     assert output["retry_count"] == 1
     assert output["max_retries"] == 1
-    AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").delete(
-        "chat:thread-1:msg-1"
-    )
+    AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").delete("chat:thread-1:msg-1")
 
     with pytest.raises(EffectProviderExecutionError) as exc_info:
         factory.build(effect).execute()
@@ -3555,9 +3537,10 @@ def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
     assert exc_info.value.outputs["queued"] is False
     assert exc_info.value.outputs["retry_count"] == 2
     assert exc_info.value.outputs["max_retries"] == 1
-    assert AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get(
-        "chat:thread-1:msg-1"
-    ) is None
+    assert (
+        AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get("chat:thread-1:msg-1")
+        is None
+    )
 
 
 def test_agent_enqueue_prompt_keeps_distinct_busy_messages_for_same_metadata_key(
@@ -3971,9 +3954,7 @@ def test_agent_enqueue_prompt_provider_rejects_expired_session_before_resume_age
         provider_config_resolver=_ResolverStub(),
         admin_service=admin_service,
         provider_runtime=SimpleNamespace(
-            session_lookup=SimpleNamespace(
-                read_all_sessions=lambda: dict(admin_service._sessions)
-            )
+            session_lookup=SimpleNamespace(read_all_sessions=lambda: dict(admin_service._sessions))
         ),
     )
 
@@ -4200,14 +4181,8 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     )
     mcp_session_token = mcp_token_line.split("=", 1)[1]
     assert mcp_session_token
-    assert (
-        "EVANDER_SESSION_ID=session-1"
-        in session_env
-    )
-    assert (
-        "EVANDER_ARTIFACTS_DIR=/artifacts"
-        in session_env
-    )
+    assert "EVANDER_SESSION_ID=session-1" in session_env
+    assert "EVANDER_ARTIFACTS_DIR=/artifacts" in session_env
     assert (
         f"HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777/auth/{mcp_session_token}"
         in session_env
@@ -4216,26 +4191,11 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         f"EVANDER_HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777/auth/{mcp_session_token}"
         in session_env
     )
-    assert (
-        "PIP_INDEX_URL=http://nexus.test:8081/repository/pypi-all/simple"
-        in session_env
-    )
-    assert (
-        "NPM_CONFIG_REGISTRY=http://nexus.test:8081/repository/npm-all/"
-        in session_env
-    )
-    assert (
-        "GIT_TERMINAL_PROMPT=0"
-        in session_env
-    )
-    assert (
-        "GIT_HTTP_LOW_SPEED_LIMIT=1"
-        in session_env
-    )
-    assert (
-        "GIT_HTTP_LOW_SPEED_TIME=15"
-        in session_env
-    )
+    assert "PIP_INDEX_URL=http://nexus.test:8081/repository/pypi-all/simple" in session_env
+    assert "NPM_CONFIG_REGISTRY=http://nexus.test:8081/repository/npm-all/" in session_env
+    assert "GIT_TERMINAL_PROMPT=0" in session_env
+    assert "GIT_HTTP_LOW_SPEED_LIMIT=1" in session_env
+    assert "GIT_HTTP_LOW_SPEED_TIME=15" in session_env
     assert (
         "trusted-host = nexus.test"
         in bootstrap_by_path["/home/agent/.config/pip/pip.conf"]["content"]
@@ -4268,9 +4228,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     )
     assert "DOTNET_NOLOGO" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "EVANDER_NODE_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert (
-        "EVANDER_PLAYWRIGHT_RUNTIME" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    )
+    assert "EVANDER_PLAYWRIGHT_RUNTIME" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "PLAYWRIGHT_BROWSERS_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert (
         "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" in bootstrap_by_path["/home/agent/.profile"]["content"]
@@ -4422,8 +4380,7 @@ def test_agent_create_container_can_override_npm_registry_url(
         in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert (
-        "registry=http://facade.test:11881/"
-        in bootstrap_by_path["/home/agent/.npmrc"]["content"]
+        "registry=http://facade.test:11881/" in bootstrap_by_path["/home/agent/.npmrc"]["content"]
     )
     assert "replace-registry-host=always" in bootstrap_by_path["/home/agent/.npmrc"]["content"]
 
@@ -5094,9 +5051,7 @@ def test_agent_create_container_upserts_when_session_exists(
         "AGENT_PROVIDER=claude\n"
         in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
-    assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"][
-        "content"
-    ]
+    assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
 
 
 def test_agent_create_container_upsert_preserves_omitted_allowed_contacts(
@@ -5314,10 +5269,7 @@ def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of()
         clone_branch="main",
     )
 
-    assert (
-        "PUSH_REMOTE_URL=ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git"
-        in command
-    )
+    assert "PUSH_REMOTE_URL=ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git" in command
     assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
     assert 'git remote set-url origin "$CANONICAL_REMOTE_URL"' in command
     assert 'git config "url.${PUSH_REMOTE_URL}.insteadOf" "$CANONICAL_REMOTE_URL"' in command
