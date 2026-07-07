@@ -6585,7 +6585,8 @@ def test_agent_prompt_finalize_waiting_record_marks_wake_completion_from_wake_di
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
     wake_store = WakeRequestStore(runtime_dir / "wake-requests-store.json")
-    scheduled_for = datetime(2026, 4, 7, 14, 0, 0, tzinfo=timezone.utc)
+    completed_at = datetime.now(timezone.utc).replace(microsecond=0)
+    scheduled_for = completed_at - timedelta(minutes=5)
     wake_store.schedule_resume_request(
         session_id="session-1",
         prompt="Resume work.",
@@ -6605,7 +6606,7 @@ def test_agent_prompt_finalize_waiting_record_marks_wake_completion_from_wake_di
             resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
             resume_mode="same_context",
             scheduled_for=scheduled_for,
-            dispatched_at=datetime(2026, 4, 7, 14, 0, 5, tzinfo=timezone.utc),
+            dispatched_at=scheduled_for + timedelta(seconds=5),
             source="scheduled_once",
         )
     )
@@ -6633,11 +6634,14 @@ def test_agent_prompt_finalize_waiting_record_marks_wake_completion_from_wake_di
         },
     )
     queue_record = TriggerQueueRecord(
-        event_id="__await-agent-completion__:effect-dispatch-123:2026-04-07T14:05:00Z",
+        event_id=(
+            "__await-agent-completion__:effect-dispatch-123:"
+            f"{completed_at.isoformat().replace('+00:00', 'Z')}"
+        ),
         trigger_id="__await-agent-completion__",
         trigger_type="trigger:agent:run:completed",
         trace_id="trace-1",
-        occurred_at=datetime(2026, 4, 7, 14, 5, 0, tzinfo=timezone.utc),
+        occurred_at=completed_at,
         payload={
             "dispatch_id": "effect-dispatch-123",
             "wake_dispatch_id": "wake-dispatch-1",
@@ -6651,7 +6655,7 @@ def test_agent_prompt_finalize_waiting_record_marks_wake_completion_from_wake_di
             },
         },
         delivery_state="delivered",
-        delivered_at=datetime(2026, 4, 7, 14, 5, 0, tzinfo=timezone.utc),
+        delivered_at=completed_at,
         idempotency_key="__await-agent-completion__:effect-dispatch-123",
     )
 

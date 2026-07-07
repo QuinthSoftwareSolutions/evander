@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,7 +57,8 @@ def test_mark_wake_completed_from_event_prefers_wake_dispatch_id(
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
     wake_store = WakeRequestStore(runtime_dir / "wake-requests-store.json")
-    scheduled_for = datetime(2026, 4, 7, 14, 0, 0, tzinfo=UTC)
+    completed_at = datetime.now(UTC).replace(microsecond=0)
+    scheduled_for = completed_at - timedelta(minutes=5)
     wake_store.schedule_resume_request(
         session_id="session-14724",
         prompt="Resume work.",
@@ -77,7 +78,7 @@ def test_mark_wake_completed_from_event_prefers_wake_dispatch_id(
             resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
             resume_mode="same_context",
             scheduled_for=scheduled_for,
-            dispatched_at=datetime(2026, 4, 7, 14, 0, 5, tzinfo=UTC),
+            dispatched_at=scheduled_for + timedelta(seconds=5),
             source="scheduled_once",
         )
     )
@@ -90,7 +91,7 @@ def test_mark_wake_completed_from_event_prefers_wake_dispatch_id(
         ip_address="192.0.2.10",
         agent_state="idle",
         agent_repo_names=["ExampleIndustryAPP"],
-        last_state_update_at=datetime(2026, 4, 7, 14, 5, 0, tzinfo=UTC),
+        last_state_update_at=completed_at,
         dispatch_id="effect-dispatch-123",
     )
     event = watcher.build_agent_run_completed_event(
@@ -207,7 +208,8 @@ def test_await_agent_completion_marks_matching_wake_request_completed(
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
     wake_store = WakeRequestStore(runtime_dir / "wake-requests-store.json")
-    scheduled_for = datetime(2026, 4, 7, 14, 0, 0, tzinfo=UTC)
+    completed_at = datetime.now(UTC).replace(microsecond=0)
+    scheduled_for = completed_at - timedelta(minutes=5)
     wake_store.schedule_resume_request(
         session_id="session-14724",
         prompt="Resume work.",
@@ -227,7 +229,7 @@ def test_await_agent_completion_marks_matching_wake_request_completed(
             resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
             resume_mode="same_context",
             scheduled_for=scheduled_for,
-            dispatched_at=datetime(2026, 4, 7, 14, 0, 5, tzinfo=UTC),
+            dispatched_at=scheduled_for + timedelta(seconds=5),
             source="scheduled_once",
         )
     )
@@ -250,7 +252,7 @@ def test_await_agent_completion_marks_matching_wake_request_completed(
                     ip_address="192.0.2.10",
                     agent_state="idle",
                     agent_repo_names=[],
-                    last_state_update_at=datetime(2026, 4, 7, 14, 5, 0, tzinfo=UTC),
+                    last_state_update_at=completed_at,
                     dispatch_id="dispatch-123",
                 )
             ]
@@ -289,7 +291,7 @@ def test_await_agent_completion_marks_matching_wake_request_completed(
     completed = wake_store.get_request("wake-1")
     assert completed is not None
     assert completed.status == "completed_or_acknowledged"
-    assert completed.completed_at == datetime(2026, 4, 7, 14, 5, 0, tzinfo=UTC)
+    assert completed.completed_at == completed_at
     assert completed.last_dispatch_id == "dispatch-123"
     assert completed.last_dispatch_status == "dispatched"
     assert completed.completion_evidence["trigger_type"] == "trigger:agent:run:completed"

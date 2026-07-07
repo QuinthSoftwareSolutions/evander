@@ -1903,6 +1903,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "clone_branch",
         "vm_user",
         "directory_path",
+        "git_access_mode",
         "git_author_name",
         "git_author_email",
         "git_committer_name",
