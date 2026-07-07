@@ -6191,7 +6191,10 @@ def test_container_prompt_completion_without_agent_output_fails_without_persisti
         )
     )
     backend = _ContainerDispatchBackendStub()
-    backend.logs = "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+    backend.logs = (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "codex failed: no agent message was emitted\n"
+    )
     backend.status = SimpleNamespace(
         status=ExecutionStatusKind.STOPPED,
         message=None,

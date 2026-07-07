@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
+import fcntl
 import os
 import pwd
 import tempfile
@@ -95,14 +97,15 @@ def remove_git_authorized_key_by_public_key_body(
     if not body:
         return False
     path = Path(authorized_keys_path)
-    if not path.exists():
-        return False
-    lines = path.read_text(encoding="utf-8").splitlines()
-    filtered = [line for line in lines if body not in line]
-    if len(filtered) == len(lines):
-        return False
-    _write_authorized_keys(path, filtered)
-    return True
+    with _authorized_keys_update_lock(path):
+        if not path.exists():
+            return False
+        lines = path.read_text(encoding="utf-8").splitlines()
+        filtered = [line for line in lines if body not in line]
+        if len(filtered) == len(lines):
+            return False
+        _write_authorized_keys(path, filtered)
+        return True
 
 
 def public_key_body_from_line(public_key: str) -> str:
@@ -156,15 +159,37 @@ def _replace_authorized_key_entry(
 ) -> None:
     if not public_key_body:
         raise ValueError("refusing authorized_keys update with empty public key body")
+    with _authorized_keys_update_lock(authorized_keys_path):
+        existing = (
+            authorized_keys_path.read_text(encoding="utf-8").splitlines()
+            if authorized_keys_path.exists()
+            else []
+        )
+        filtered = [line for line in existing if public_key_body not in line]
+        filtered.append(entry)
+        _write_authorized_keys(authorized_keys_path, filtered)
+
+
+@contextmanager
+def _authorized_keys_update_lock(authorized_keys_path: Path):
     authorized_keys_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = (
-        authorized_keys_path.read_text(encoding="utf-8").splitlines()
-        if authorized_keys_path.exists()
-        else []
-    )
-    filtered = [line for line in existing if public_key_body not in line]
-    filtered.append(entry)
-    _write_authorized_keys(authorized_keys_path, filtered)
+    lock_path = authorized_keys_path.with_name(f".{authorized_keys_path.name}.lock")
+    with lock_path.open("a", encoding="utf-8") as handle:
+        try:
+            stat_source = (
+                authorized_keys_path if authorized_keys_path.exists() else lock_path.parent
+            )
+            stat_result = stat_source.stat()
+            if os.geteuid() == 0:
+                os.chown(lock_path, stat_result.st_uid, stat_result.st_gid)
+            os.chmod(lock_path, 0o600)
+        except OSError:
+            pass
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _write_authorized_keys(path: Path, lines: list[str]) -> None:

@@ -5042,6 +5042,76 @@ def test_agent_clone_container_write_rerun_removes_previous_write_access(
     assert git_auth_calls[0]["authorized_keys_path"] == authorized_keys
 
 
+def test_agent_clone_container_rolls_back_write_key_when_metadata_persist_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"keep": "metadata"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        project_dir=Path.cwd(),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
+    )
+    _stub_container_git_authorization(monkeypatch, tmp_path)
+    rollback_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.remove_git_authorized_key_by_public_key_body",
+        lambda **kwargs: rollback_calls.append(kwargs) or True,
+    )
+
+    def fail_upsert_session(session: SessionManifest) -> None:
+        raise RuntimeError("metadata store failed")
+
+    session_repository.upsert_session = fail_upsert_session  # type: ignore[method-assign]
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(RuntimeError, match="metadata store failed"):
+        factory.build(
+            AgentCloneRepoEffectDefinition(
+                id="agent-clone",
+                display_name="Clone",
+                type="effect:agent:clone-repo",
+                session_id="session-1",
+                repo_source="/tmp/repo",
+            )
+        ).execute()
+
+    assert rollback_calls == [
+        {
+            "authorized_keys_path": tmp_path / "agent-authorized-keys",
+            "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
+        }
+    ]
+
+
 def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

@@ -626,9 +626,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
     ) -> int:
         timeout_seconds = cls._container_job_timeout_seconds(backend)
         started_at = (
-            cls._container_status_started_at(status)
-            or record.finished_at
-            or record.started_at
+            cls._container_status_started_at(status) or record.finished_at or record.started_at
         )
         elapsed_seconds = cls._elapsed_seconds_since(started_at)
         if elapsed_seconds is None or elapsed_seconds <= timeout_seconds:
@@ -718,9 +716,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         except Exception as exc:  # noqa: BLE001
             destroy_error = str(exc)
             stop_error = (
-                f"{stop_error}; destroy failed: {destroy_error}"
-                if stop_error
-                else destroy_error
+                f"{stop_error}; destroy failed: {destroy_error}" if stop_error else destroy_error
             )
         return stop_error
 
@@ -853,8 +849,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
             thread_id=thread_id,
         )
         resume_thread_metadata_key = cls._resume_thread_metadata_key_from_record(record)
-        resume_thread_metadata_collection = (
-            cls._resume_thread_metadata_collection_from_record(record)
+        resume_thread_metadata_collection = cls._resume_thread_metadata_collection_from_record(
+            record
         )
         metadata_patch = resume_thread_metadata_patch(
             collection=resume_thread_metadata_collection,
@@ -1122,9 +1118,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     "trigger_event_id": queue_record.event_id,
                     "trigger_type": queue_record.trigger_type,
                     "dispatch_id": wake_dispatch_id,
-                    "session_id": queue_record.payload.get("session_id") or scope.get(
-                        "session_id"
-                    ),
+                    "session_id": queue_record.payload.get("session_id") or scope.get("session_id"),
                     "directory_path": scope.get("directory_path"),
                     "vm_user": scope.get("vm_user"),
                     "agent_state": queue_record.payload.get("agent_state"),
@@ -1134,7 +1128,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     mark_completed(
                         wake_dispatch_id,
                         completed_at=completed_at,
-                        evidence={key: value for key, value in evidence.items() if value is not None},
+                        evidence={
+                            key: value for key, value in evidence.items() if value is not None
+                        },
                     )
                 except Exception:
                     logger.warning(
@@ -1230,9 +1226,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
         session_id = str(merged_outputs.get("session_id") or "").strip()
         previous_execution_id = str(
-            merged_outputs.get("worker_execution_id")
-            or merged_outputs.get("execution_id")
-            or ""
+            merged_outputs.get("worker_execution_id") or merged_outputs.get("execution_id") or ""
         ).strip()
         if not session_id or not previous_execution_id:
             merged_outputs["context_retry_skipped_reason"] = "missing_session_or_execution_id"
@@ -1310,9 +1304,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                                 session_id=session_id,
                                 session=session,
                             ),
-                            web_search_enabled=bool(
-                                getattr(session, "web_search_enabled", False)
-                            ),
+                            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
                         ),
                         metadata={
                             "effect_type": str(getattr(record, "effect_type", "") or ""),
@@ -1919,7 +1911,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
         useful_lines = [
             line.strip()
             for line in str(logs or "").splitlines()
-            if line.strip() and not cls._is_container_session_id_log_line(line)
+            if line.strip()
+            and not cls._is_container_session_id_log_line(line)
+            and not cls._is_codex_failure_diagnostic_log_line(line)
         ]
         return not useful_lines
 
@@ -1927,6 +1921,10 @@ class AgentPromptEffectProvider(EffectProviderBase):
     def _is_container_session_id_log_line(line: str) -> bool:
         normalized = str(line or "").strip().casefold()
         return normalized.startswith("session id:") and len(normalized.split()) == 3
+
+    @staticmethod
+    def _is_codex_failure_diagnostic_log_line(line: str) -> bool:
+        return str(line or "").strip().casefold().startswith("codex failed:")
 
     @staticmethod
     def _failed_codex_outcome_from_status_metadata(

@@ -255,7 +255,14 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "allowed_from": installed.allowed_from,
             "git_ssh_alias": mirror_resolver.git_ssh_alias,
         }
-        _record_session_git_write_access(context, session_id, metadata)
+        try:
+            _record_session_git_write_access(context, session_id, metadata)
+        except Exception:
+            remove_git_authorized_key_by_public_key_body(
+                authorized_keys_path=installed.authorized_keys_path,
+                public_key_body=installed.public_key_body,
+            )
+            raise
         return metadata
 
     def _remove_container_git_write_key_files(
@@ -680,29 +687,29 @@ def _record_session_git_write_access(
     patch = {"container_git_write_access": metadata}
     update_target = getattr(context, "session_metadata_updater", None)
     update_fn = getattr(update_target, "session_update_metadata", None)
+    update_error: Exception | None = None
     if callable(update_fn):
         try:
             update_fn(target=session_id, metadata=patch)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            update_error = exc
     runtime = getattr(getattr(context, "admin_service", None), "runtime", None)
     repository = getattr(runtime, "session_repository", None)
     get_session = getattr(repository, "get_session", None)
     upsert_session = getattr(repository, "upsert_session", None)
     if not callable(get_session) or not callable(upsert_session):
-        return
-    try:
-        session = get_session(session_id)
-        if session is None:
-            return
-        current_metadata = getattr(session, "metadata", {})
-        if not isinstance(current_metadata, dict):
-            current_metadata = {}
-        updated_metadata = {**current_metadata, **patch}
-        upsert_session(session.model_copy(update={"metadata": updated_metadata}))
-    except Exception:
-        return
+        raise RuntimeError("Could not record container Git write access metadata") from update_error
+    session = get_session(session_id)
+    if session is None:
+        raise RuntimeError(
+            f"Could not record container Git write access metadata for missing session: {session_id}"
+        ) from update_error
+    current_metadata = getattr(session, "metadata", {})
+    if not isinstance(current_metadata, dict):
+        current_metadata = {}
+    updated_metadata = {**current_metadata, **patch}
+    upsert_session(session.model_copy(update={"metadata": updated_metadata}))
 
 
 def _remove_session_git_write_access(

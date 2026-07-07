@@ -19,6 +19,8 @@
 - Rejected multiline container Git write public keys before composing host
   `authorized_keys` entries, and scrubbed stale worker write-key files before
   read-only clone reruns fetch from the control-plane mirror.
+- Serialized host `authorized_keys` updates and rolled back newly installed
+  write keys when session metadata persistence fails.
 
 ## 2026-07-07 - Container Worker Empty Codex Output Handling
 
@@ -29,6 +31,8 @@
   path used by older runner images so Teams wakeups authenticate correctly.
 - Limited Codex JSONL fallback replay to events from the current invocation so
   resumed container sessions do not reuse stale assistant text from older runs.
+- Treated Codex failure diagnostics as empty-response logs so failed empty turns
+  do not persist unusable resume thread ids.
 
 ## 2026-07-06 - Container Worker Codex Relay Auth
 

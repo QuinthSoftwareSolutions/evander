@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
+import evander.git_ssh_authorized_keys as git_keys
 from evander.git_ssh_authorized_keys import (
     install_git_write_authorized_key,
     remove_git_authorized_key_by_public_key_body,
@@ -112,3 +116,63 @@ def test_install_git_write_authorized_key_rejects_path_session_id(tmp_path) -> N
             wrapper_path=wrapper,
             authorized_keys_path=tmp_path / "authorized_keys",
         )
+
+
+def test_parallel_git_write_key_installs_preserve_both_entries(tmp_path, monkeypatch) -> None:
+    git_root = tmp_path / "git-remotes"
+    repo = git_root / "repo.git"
+    repo.mkdir(parents=True)
+    wrapper = tmp_path / "git_ssh_command_wrapper.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    authorized_keys = tmp_path / "authorized_keys"
+    original_write_authorized_keys = git_keys._write_authorized_keys
+
+    def slow_write_authorized_keys(path, lines):
+        time.sleep(0.05)
+        original_write_authorized_keys(path, lines)
+
+    monkeypatch.setattr(git_keys, "_write_authorized_keys", slow_write_authorized_keys)
+    start = threading.Barrier(3)
+    errors: list[BaseException] = []
+
+    def install(public_key: str, session_id: str) -> None:
+        try:
+            start.wait(timeout=5)
+            install_git_write_authorized_key(
+                public_key=public_key,
+                git_root=git_root,
+                authorized_repo_path=repo,
+                session_id=session_id,
+                allowed_from="10.2.1.4/32",
+                wrapper_path=wrapper,
+                authorized_keys_path=authorized_keys,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(
+            target=install,
+            args=(
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestParallelKeyOne key-1",
+                "session-1",
+            ),
+        ),
+        threading.Thread(
+            target=install,
+            args=(
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestParallelKeyTwo key-2",
+                "session-2",
+            ),
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    start.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert errors == []
+    text = authorized_keys.read_text(encoding="utf-8")
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAITestParallelKeyOne" in text
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAITestParallelKeyTwo" in text
