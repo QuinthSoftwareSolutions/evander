@@ -20,6 +20,8 @@
   thread ids as successful responses.
 - Wrote tokenized Codex relay config into the legacy container `CODEX_HOME`
   path used by older runner images so Teams wakeups authenticate correctly.
+- Limited Codex JSONL fallback replay to events from the current invocation so
+  resumed container sessions do not reuse stale assistant text from older runs.
 
 ## 2026-07-06 - Container Worker Codex Relay Auth
 

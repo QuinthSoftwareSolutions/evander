@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -2571,6 +2572,7 @@ def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> Non
     assert "exec resume dispatch-effect-agent-enqueue-prompt-1-deadbeef" not in command
     assert "codex exec --json" in command
     assert "codex features list" in command
+    assert "EVANDER_CODEX_JSON_FILTER_STARTED_AT" in command
     assert (
         "codex exec --json --dangerously-bypass-approvals-and-sandbox "
         '--skip-git-repo-check "${codex_feature_args[@]}" --model'
@@ -3111,12 +3113,16 @@ def test_codex_json_log_filter_falls_back_to_codex_home_session_jsonl(
     codex_home = tmp_path / "codex-home"
     session_dir = codex_home / "sessions" / "2026" / "07" / "07"
     session_dir.mkdir(parents=True)
-    (session_dir / f"rollout-2026-07-07T08-38-04-{thread_id}.jsonl").write_text(
+    filter_started_at = time.time()
+    current_event_at = datetime.fromtimestamp(filter_started_at + 1.0, UTC).isoformat()
+    rollout = session_dir / f"rollout-2026-07-07T08-38-04-{thread_id}.jsonl"
+    rollout.write_text(
         "\n".join(
             json.dumps(event)
             for event in [
                 {"type": "session_meta", "payload": {"id": thread_id}},
                 {
+                    "timestamp": current_event_at,
                     "type": "event_msg",
                     "payload": {
                         "type": "agent_message",
@@ -3124,6 +3130,7 @@ def test_codex_json_log_filter_falls_back_to_codex_home_session_jsonl(
                     },
                 },
                 {
+                    "timestamp": current_event_at,
                     "type": "event_msg",
                     "payload": {
                         "type": "task_complete",
@@ -3135,6 +3142,7 @@ def test_codex_json_log_filter_falls_back_to_codex_home_session_jsonl(
         + "\n",
         encoding="utf-8",
     )
+    os.utime(rollout, (filter_started_at + 1.0, filter_started_at + 1.0))
     events = [
         {"type": "session_meta", "payload": {"id": thread_id}},
     ]
@@ -3145,12 +3153,72 @@ def test_codex_json_log_filter_falls_back_to_codex_home_session_jsonl(
         check=True,
         capture_output=True,
         text=True,
-        env={**os.environ, "CODEX_HOME": str(codex_home), "HOME": str(tmp_path / "home")},
+        env={
+            **os.environ,
+            "CODEX_HOME": str(codex_home),
+            "HOME": str(tmp_path / "home"),
+            "EVANDER_CODEX_JSON_FILTER_STARTED_AT": str(filter_started_at),
+        },
     )
 
     assert completed.stdout == (
         "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\nposted the Teams reply\n"
     )
+
+
+def test_codex_json_log_filter_does_not_replay_stale_session_jsonl(
+    tmp_path: Path,
+) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    codex_home = tmp_path / "codex-home"
+    session_dir = codex_home / "sessions" / "2026" / "07" / "07"
+    session_dir.mkdir(parents=True)
+    filter_started_at = time.time()
+    stale_event_at = datetime.fromtimestamp(filter_started_at - 60.0, UTC).isoformat()
+    stale_rollout = session_dir / f"rollout-2026-07-07T08-30-00-{thread_id}.jsonl"
+    stale_rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": stale_event_at,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "old Teams reply",
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(stale_rollout, (filter_started_at + 1.0, filter_started_at + 1.0))
+    events = [
+        {"type": "session_meta", "payload": {"id": thread_id}},
+    ]
+
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CODEX_HOME": str(codex_home),
+            "HOME": str(tmp_path / "home"),
+            "EVANDER_CODEX_JSON_FILTER_STARTED_AT": str(filter_started_at),
+        },
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "codex failed: no agent message was emitted\n"
+    )
+    assert "old Teams reply" not in completed.stdout
 
 
 def test_container_thread_id_from_logs_parses_json_filter_output() -> None:
@@ -4954,9 +5022,7 @@ def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
     assert manifest is not None
     assert output["git_access_mode"] == "read-only"
     assert output["git_write_access"] is None
-    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys.read_text(
-        encoding="utf-8"
-    )
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys.read_text(encoding="utf-8")
     assert "container_git_write_access" not in manifest.metadata
     assert manifest.metadata["keep"] == "metadata"
     assert backend.git_write_keys == []

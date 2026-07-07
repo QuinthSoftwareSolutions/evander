@@ -1136,10 +1136,18 @@ def _codex_json_log_filter_script() -> str:
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 TEXT_PART_TYPES = {"text", "output_text", "assistant_message"}
 ASSISTANT_ITEM_TYPES = {"assistant_message", "message", "final_message"}
+try:
+    FILTER_STARTED_AT = float(os.environ.get("EVANDER_CODEX_JSON_FILTER_STARTED_AT", ""))
+except ValueError:
+    FILTER_STARTED_AT = 0.0
+if FILTER_STARTED_AT <= 0:
+    FILTER_STARTED_AT = time.time()
 thread_id_printed = False
 current_thread_id = ""
 printed_messages = set()
@@ -1161,6 +1169,31 @@ def first_text(*values):
         if isinstance(value, str) and value:
             return value
     return ""
+
+
+def event_timestamp_seconds(event):
+    if not isinstance(event, dict):
+        return None
+    timestamp = event.get("timestamp")
+    if not isinstance(timestamp, str) or not timestamp.strip():
+        return None
+    text = timestamp.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def event_is_from_current_invocation(event):
+    timestamp = event_timestamp_seconds(event)
+    if timestamp is None:
+        return False
+    return timestamp >= FILTER_STARTED_AT
 
 
 def content_text(value):
@@ -1359,8 +1392,23 @@ def session_jsonl_paths(thread_id):
     return sorted(paths, key=lambda path: (path.stat().st_mtime, str(path)))
 
 
+def current_invocation_session_jsonl_paths(thread_id):
+    recent = []
+    for path in session_jsonl_paths(thread_id):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime >= FILTER_STARTED_AT:
+            recent.append((mtime, str(path), path))
+    if not recent:
+        return []
+    recent.sort(reverse=True)
+    return [recent[0][2]]
+
+
 def replay_session_jsonl_messages():
-    for path in session_jsonl_paths(current_thread_id):
+    for path in current_invocation_session_jsonl_paths(current_thread_id):
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -1371,6 +1419,8 @@ def replay_session_jsonl_messages():
             except Exception:
                 continue
             if not isinstance(event, dict):
+                continue
+            if not event_is_from_current_invocation(event):
                 continue
             event_type = str(event.get("type") or "")
             if event_type == "token_count":
@@ -1477,6 +1527,8 @@ def _codex_json_log_filter_shell() -> str:
         "    cat\n"
         "  fi\n"
         "}\n\n"
+        "EVANDER_CODEX_JSON_FILTER_STARTED_AT=$(date +%s.%N 2>/dev/null || date +%s)\n"
+        "export EVANDER_CODEX_JSON_FILTER_STARTED_AT\n"
     )
 
 
