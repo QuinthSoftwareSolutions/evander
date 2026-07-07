@@ -804,6 +804,50 @@ def test_worker_api_provisions_session_git_write_key(
     assert "IdentityFile ~/.ssh/evander-git-write" in config_text
 
 
+def test_worker_provisions_dotted_git_write_key_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeContainerRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        key_path = Path(args[-1])
+        key_path.write_text("private key\n", encoding="utf-8")
+        key_path.with_name(f"{key_path.name}.pub").write_text(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerDottedKey worker\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1", metadata={}))
+
+    record = daemon.provision_git_write_key(
+        "session-1",
+        WorkerGitWriteKeyRequest(
+            git_host="10.2.0.4",
+            git_user="agent",
+            git_ssh_alias="evander-git-host",
+            key_name="foo.bar",
+        ),
+    )
+
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    ssh_dir = paths.agent_home / ".ssh"
+    assert record.public_key_body == "AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerDottedKey"
+    assert (ssh_dir / "foo.bar").read_text(encoding="utf-8") == "private key\n"
+    assert (ssh_dir / "foo.bar.pub").is_file()
+    assert "IdentityFile ~/.ssh/foo.bar" in (ssh_dir / "config").read_text(encoding="utf-8")
+    assert not list(ssh_dir.glob(".foo.bar-*"))
+
+
 def test_worker_daemon_read_telemetry_degrades_when_sqlite_job_store_is_unavailable(
     tmp_path: Path,
 ) -> None:

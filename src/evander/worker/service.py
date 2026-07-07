@@ -1591,7 +1591,7 @@ class WorkerDaemon:
         session_id: str,
     ) -> None:
         private_temp = ssh_dir / f".{key_path.name}-{uuid.uuid4().hex}"
-        public_temp = private_temp.with_suffix(".pub")
+        public_temp = private_temp.with_name(f"{private_temp.name}.pub")
         try:
             cls._validate_managed_file_target_no_follow(
                 key_path,

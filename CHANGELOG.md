@@ -16,6 +16,9 @@
   reject guest-created symlinks, write-mode key rotation revokes the previous
   host `authorized_keys` entry, and destroy by execution/container target
   revokes write access before session metadata is deleted.
+- Moved container Git write-key revocation into the shared Admin delete path and
+  fixed dotted worker Git write-key names so temporary public keys are resolved
+  by appending `.pub` to the generated private-key path.
 - Rejected multiline container Git write public keys before composing host
   `authorized_keys` entries, and scrubbed stale worker write-key files before
   read-only clone reruns fetch from the control-plane mirror.

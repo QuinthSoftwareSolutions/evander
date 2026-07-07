@@ -6041,7 +6041,7 @@ def test_agent_destroy_provider_deletes_container_session(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("target", ["exec-1", "container-target"])
-def test_agent_destroy_provider_revokes_container_write_key_for_resolved_target(
+def test_agent_destroy_provider_delegates_container_delete_for_resolved_target(
     tmp_path,
     target: str,
 ) -> None:
@@ -6049,17 +6049,6 @@ def test_agent_destroy_provider_revokes_container_write_key_for_resolved_target(
         runtime_dir=tmp_path,
         execution_backend="libvirt_vm",
         container_worker_base_url="http://worker.test",
-    )
-    authorized_keys = tmp_path / "authorized_keys"
-    authorized_keys.write_text(
-        "\n".join(
-            [
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey old",
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe keep",
-                "",
-            ]
-        ),
-        encoding="utf-8",
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     session_repository.upsert_session(
@@ -6073,10 +6062,6 @@ def test_agent_destroy_provider_revokes_container_write_key_for_resolved_target(
             metadata={
                 "execution_backend": "container_worker_vm",
                 "target_name": "container-target",
-                "container_git_write_access": {
-                    "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
-                    "authorized_keys_path": str(authorized_keys),
-                },
             },
         )
     )
@@ -6139,9 +6124,6 @@ def test_agent_destroy_provider_revokes_container_write_key_for_resolved_target(
         )
     ).execute()
 
-    authorized_keys_text = authorized_keys.read_text(encoding="utf-8")
-    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys_text
-    assert "AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe" in authorized_keys_text
     assert admin_service.calls == [(target, "container_worker_vm")]
     assert output["success"] is True
     assert output["session_id"] == "session-container"
