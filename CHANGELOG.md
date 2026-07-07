@@ -24,6 +24,8 @@
   while preserving legacy WIQL inference for existing configs.
 - Updated the workflow editor catalog and inspector so ADO WIQL and structured
   filter fields are presented as separate modes instead of silently competing.
+- Hid the inactive ADO WIQL or structured-filter fields for the selected query
+  mode and pruned hidden structured-filter drafts when switching to Manual WIQL.
 
 ## 2026-07-06 - Team Add-on Memory
 
