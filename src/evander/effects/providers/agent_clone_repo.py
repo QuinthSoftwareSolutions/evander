@@ -120,6 +120,17 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 "directory_path": session.directory_path if session is not None else directory_path,
             },
         )
+        git_access_mode = normalize_git_access_mode(payload.get("git_access_mode"))
+        if git_access_mode == "read-only":
+            _remove_session_git_write_access(context, session_id)
+            self._remove_container_git_write_key_files(
+                backend=backend,
+                config=config,
+                session=session,
+                session_id=session_id,
+                directory_path=session.directory_path if session is not None else directory_path,
+                timeout_seconds=float(config.container_worker_job_timeout_seconds),
+            )
         result = backend.clone_repo(
             session_id=session_id,
             repo_source=mirror.worker_repo_source,
@@ -131,7 +142,6 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             session_id=session_id,
             target_dir=result.target_dir,
         )
-        git_access_mode = normalize_git_access_mode(payload.get("git_access_mode"))
         write_access_metadata: dict[str, object] | None = None
         if git_access_mode == "write" and _remote_url_requires_git_ssh(result.remote_url):
             write_access_metadata = self._provision_container_git_write_access(
@@ -142,8 +152,6 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 mirror_resolver=mirror_resolver,
                 mirror_path=mirror.mirror_path,
             )
-        elif git_access_mode == "read-only":
-            _remove_session_git_write_access(context, session_id)
         if result.cloned or write_access_metadata is not None or git_access_mode == "read-only":
             self._configure_container_git(
                 backend=backend,
@@ -190,9 +198,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             session_id=session_id,
             files=[
                 {
-                    "destination_path": (
-                        f"{target_dir.rstrip('/')}/.evander/bin/agent-pr-note"
-                    ),
+                    "destination_path": (f"{target_dir.rstrip('/')}/.evander/bin/agent-pr-note"),
                     "content": self._agent_pr_note_helper_content(),
                     "mode": "0755",
                 },
@@ -221,9 +227,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
     ) -> dict[str, object]:
         provision_git_write_key = getattr(backend, "provision_git_write_key", None)
         if not callable(provision_git_write_key):
-            raise RuntimeError(
-                "container worker backend does not support session Git write keys"
-            )
+            raise RuntimeError("container worker backend does not support session Git write keys")
         _remove_session_git_write_access(context, session_id)
         key_record = provision_git_write_key(
             session_id=session_id,
@@ -253,6 +257,65 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         }
         _record_session_git_write_access(context, session_id, metadata)
         return metadata
+
+    def _remove_container_git_write_key_files(
+        self,
+        *,
+        backend: Any,
+        config: Any,
+        session: Any,
+        session_id: str,
+        directory_path: str,
+        timeout_seconds: float,
+    ) -> None:
+        execution_id = safe_effect_execution_id("clone-git-cleanup", session_id)
+        command = (
+            container_shell_preamble().rstrip()
+            + "\n"
+            + 'rm -f "$HOME/.ssh/evander-git-write" '
+            + '"$HOME/.ssh/evander-git-write.pub" "$HOME/.ssh/config"\n'
+        )
+        handle = backend.start(
+            backend.prepare(
+                ExecutionSpec(
+                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                    target_name=execution_id,
+                    session_id=session_id,
+                    directory_path=directory_path,
+                    image=container_worker_image_for_session(session, config),
+                    command=command,
+                    metadata={
+                        "effect_type": "effect:agent:clone-repo:git-write-cleanup",
+                    },
+                )
+            )
+        )
+        logs = ""
+        status = None
+        try:
+            status = wait_for_container_execution(
+                backend,
+                handle.execution_id,
+                timeout_seconds=timeout_seconds,
+            )
+            try:
+                logs = str(backend.get_log_snapshot(handle.execution_id, lines=200) or "")
+            except Exception:
+                logs = ""
+        finally:
+            try:
+                backend.destroy(handle.execution_id)
+            except Exception:
+                pass
+        if status is None or status.status != ExecutionStatusKind.STOPPED:
+            message = (
+                normalize_optional_string(getattr(status, "message", None)) if status else None
+            )
+            raise RuntimeError(
+                message
+                or normalize_optional_string(logs)
+                or "Failed to remove stale container worker Git write key"
+            )
 
     def _configure_container_git(
         self,
@@ -313,7 +376,9 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             except Exception:
                 pass
         if status is None or status.status != ExecutionStatusKind.STOPPED:
-            message = normalize_optional_string(getattr(status, "message", None)) if status else None
+            message = (
+                normalize_optional_string(getattr(status, "message", None)) if status else None
+            )
             raise RuntimeError(
                 message
                 or normalize_optional_string(logs)
@@ -380,18 +445,18 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "  fi",
             '  git config evander.pushAgentAvailable "true"',
             "else",
-            '  git remote remove agent >/dev/null 2>&1 || true',
-            '  git config --unset-all alias.push-agent >/dev/null 2>&1 || true',
+            "  git remote remove agent >/dev/null 2>&1 || true",
+            "  git config --unset-all alias.push-agent >/dev/null 2>&1 || true",
             '  git config evander.pushAgentAvailable "false"',
             '  rm -f "$HOME/.ssh/evander-git-write" "$HOME/.ssh/evander-git-write.pub" "$HOME/.ssh/config"',
             "fi",
             f"git config user.name {shlex.quote(git_user_identity.name)}",
             f"git config user.email {shlex.quote(git_user_identity.email)}",
-            'BASE_BRANCH=${CLONE_BRANCH:-}',
+            "BASE_BRANCH=${CLONE_BRANCH:-}",
             'if [ -z "$BASE_BRANCH" ]; then BASE_BRANCH=$(git branch --show-current || true); fi',
             'if [ -n "$BASE_BRANCH" ]; then git config evander.baseBranch "$BASE_BRANCH"; fi',
             'git config evander.workBranch "$WORK_BRANCH"',
-            'CURRENT_BRANCH=$(git branch --show-current || true)',
+            "CURRENT_BRANCH=$(git branch --show-current || true)",
             'if [ "$CURRENT_BRANCH" != "$WORK_BRANCH" ]; then',
             '  if git show-ref --verify --quiet "refs/heads/$WORK_BRANCH"; then git switch "$WORK_BRANCH"; else git switch -c "$WORK_BRANCH"; fi',
             "fi",
@@ -573,7 +638,9 @@ def normalize_git_access_mode(value: object) -> str:
 
 
 def container_worker_git_allowed_from(config: Any) -> str:
-    configured = normalize_optional_string(getattr(config, "container_worker_git_allowed_from", None))
+    configured = normalize_optional_string(
+        getattr(config, "container_worker_git_allowed_from", None)
+    )
     if configured:
         return configured
     base_url = normalize_optional_string(getattr(config, "container_worker_base_url", None))
@@ -584,7 +651,9 @@ def container_worker_git_allowed_from(config: Any) -> str:
         )
     host = urlparse(base_url).hostname
     if not host:
-        raise ValueError(f"Could not determine worker host from container_worker_base_url: {base_url}")
+        raise ValueError(
+            f"Could not determine worker host from container_worker_base_url: {base_url}"
+        )
     try:
         address = ipaddress.ip_address(host)
     except ValueError:

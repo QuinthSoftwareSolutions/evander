@@ -16,6 +16,9 @@
   reject guest-created symlinks, write-mode key rotation revokes the previous
   host `authorized_keys` entry, and destroy by execution/container target
   revokes write access before session metadata is deleted.
+- Rejected multiline container Git write public keys before composing host
+  `authorized_keys` entries, and scrubbed stale worker write-key files before
+  read-only clone reruns fetch from the control-plane mirror.
 
 ## 2026-07-07 - Container Worker Empty Codex Output Handling
 

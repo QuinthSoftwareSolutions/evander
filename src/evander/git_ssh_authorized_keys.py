@@ -49,7 +49,7 @@ def install_git_write_authorized_key(
     wrapper_path: str | Path,
     authorized_keys_path: str | Path,
 ) -> InstalledGitAuthorizedKey:
-    public_key_body = public_key_body_from_line(public_key)
+    public_key_line, public_key_body = _validated_public_key_line(public_key)
     git_root_real = Path(git_root).resolve(strict=False)
     repo_real = Path(authorized_repo_path).resolve(strict=False)
     try:
@@ -72,7 +72,7 @@ def install_git_write_authorized_key(
     entry = (
         f'from="{allowed_from_value}",no-agent-forwarding,no-port-forwarding,'
         f'no-pty,no-user-rc,no-X11-forwarding,command="{_escape_authorized_command(forced_command)}" '
-        f"{public_key.strip()}"
+        f"{public_key_line}"
     )
     path = Path(authorized_keys_path)
     _replace_authorized_key_entry(path, public_key_body, entry)
@@ -106,18 +106,22 @@ def remove_git_authorized_key_by_public_key_body(
 
 
 def public_key_body_from_line(public_key: str) -> str:
-    parts = str(public_key or "").strip().split()
+    return _validated_public_key_line(public_key)[1]
+
+
+def _validated_public_key_line(public_key: str) -> tuple[str, str]:
+    normalized = str(public_key or "").strip()
+    if "\n" in normalized or "\r" in normalized:
+        raise ValueError("public key must be a single line")
+    parts = normalized.split()
     if len(parts) < 2:
         raise ValueError("public key is missing key material")
     key_type, key_body = parts[0], parts[1]
-    if (
-        key_type not in _SUPPORTED_PUBLIC_KEY_TYPES
-        and not key_type.startswith("ecdsa-sha2-nistp")
-    ):
+    if key_type not in _SUPPORTED_PUBLIC_KEY_TYPES and not key_type.startswith("ecdsa-sha2-nistp"):
         raise ValueError("public key has an unsupported key type")
     if not key_body:
         raise ValueError("public key is missing key material")
-    return key_body
+    return normalized, key_body
 
 
 def authorized_ref_prefix_for_session(session_id: str) -> str:

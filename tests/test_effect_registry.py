@@ -4942,10 +4942,15 @@ def test_agent_clone_container_read_only_mode_skips_write_key_and_push_alias(
         )
     ).execute()
 
-    command = str(backend.started_specs[0].command)
+    cleanup_command = str(backend.started_specs[0].command)
+    command = str(backend.started_specs[-1].command)
     assert output["git_access_mode"] == "read-only"
     assert output["git_write_access"] is None
     assert backend.git_write_keys == []
+    assert backend.started_specs[0].metadata["effect_type"] == (
+        "effect:agent:clone-repo:git-write-cleanup"
+    )
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in cleanup_command
     assert "config alias.push-agent" not in command
     assert 'git config evander.pushAgentAvailable "false"' in command
     assert 'git config evander.gitAccessMode "$GIT_ACCESS_MODE"' in command
@@ -5078,6 +5083,22 @@ def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
     )
     backend = _FakeContainerBackend()
     backend.clone_result_cloned = False
+    original_clone_repo = backend.clone_repo
+
+    def clone_repo_after_cleanup(**kwargs):
+        assert len(backend.started_specs) == 1
+        assert backend.started_specs[0].metadata["effect_type"] == (
+            "effect:agent:clone-repo:git-write-cleanup"
+        )
+        assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys.read_text(
+            encoding="utf-8"
+        )
+        manifest = session_repository.get_session("session-1")
+        assert manifest is not None
+        assert "container_git_write_access" not in manifest.metadata
+        return original_clone_repo(**kwargs)
+
+    backend.clone_repo = clone_repo_after_cleanup
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
@@ -5102,7 +5123,8 @@ def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
         )
     ).execute()
 
-    command = str(backend.started_specs[0].command)
+    cleanup_command = str(backend.started_specs[0].command)
+    command = str(backend.started_specs[-1].command)
     manifest = session_repository.get_session("session-1")
     assert manifest is not None
     assert output["git_access_mode"] == "read-only"
@@ -5111,10 +5133,14 @@ def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
     assert "container_git_write_access" not in manifest.metadata
     assert manifest.metadata["keep"] == "metadata"
     assert backend.git_write_keys == []
-    assert len(backend.started_specs) == 1
+    assert len(backend.started_specs) == 2
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in cleanup_command
     assert "config alias.push-agent" not in command
     assert 'rm -f "$HOME/.ssh/evander-git-write"' in command
-    assert backend.destroyed == [backend.started_specs[0].target_name]
+    assert backend.destroyed == [
+        backend.started_specs[0].target_name,
+        backend.started_specs[1].target_name,
+    ]
 
 
 def test_agent_create_container_noops_when_session_exists(

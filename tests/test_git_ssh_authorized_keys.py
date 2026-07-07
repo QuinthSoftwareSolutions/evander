@@ -65,6 +65,36 @@ def test_install_git_write_authorized_key_rejects_repo_outside_git_root(tmp_path
         )
 
 
+def test_install_git_write_authorized_key_rejects_multiline_public_key(tmp_path) -> None:
+    git_root = tmp_path / "git-remotes"
+    repo = git_root / "repo.git"
+    repo.mkdir(parents=True)
+    wrapper = tmp_path / "git_ssh_command_wrapper.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe keep\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="single line"):
+        install_git_write_authorized_key(
+            public_key=(
+                f"{PUBLIC_KEY}\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIInjected unrestricted"
+            ),
+            git_root=git_root,
+            authorized_repo_path=repo,
+            session_id="session-1",
+            allowed_from="10.2.1.4/32",
+            wrapper_path=wrapper,
+            authorized_keys_path=authorized_keys,
+        )
+
+    assert authorized_keys.read_text(encoding="utf-8") == (
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe keep\n"
+    )
+
+
 def test_install_git_write_authorized_key_rejects_path_session_id(tmp_path) -> None:
     git_root = tmp_path / "git-remotes"
     repo = git_root / "repo.git"
