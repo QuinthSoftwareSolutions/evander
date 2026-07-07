@@ -16,6 +16,7 @@ from evander.git_mirror import ContainerGitMirrorResolver
 from evander.git_ssh_authorized_keys import (
     authorized_keys_path_for_user,
     install_git_write_authorized_key,
+    remove_git_authorized_key_by_public_key_body,
 )
 
 from .agent_session import (
@@ -141,7 +142,9 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 mirror_resolver=mirror_resolver,
                 mirror_path=mirror.mirror_path,
             )
-        if result.cloned or write_access_metadata is not None:
+        elif git_access_mode == "read-only":
+            _remove_session_git_write_access(context, session_id)
+        if result.cloned or write_access_metadata is not None or git_access_mode == "read-only":
             self._configure_container_git(
                 backend=backend,
                 config=config,
@@ -243,6 +246,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "authorized_keys_path": str(installed.authorized_keys_path),
             "authorized_repo_path": str(installed.authorized_repo_path),
             "authorized_ref_prefix": installed.authorized_ref_prefix,
+            "authorized_pr_notes_ref": installed.authorized_pr_notes_ref,
             "allowed_from": installed.allowed_from,
             "git_ssh_alias": mirror_resolver.git_ssh_alias,
         }
@@ -378,6 +382,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             '  git remote remove agent >/dev/null 2>&1 || true',
             '  git config --unset-all alias.push-agent >/dev/null 2>&1 || true',
             '  git config evander.pushAgentAvailable "false"',
+            '  rm -f "$HOME/.ssh/evander-git-write" "$HOME/.ssh/evander-git-write.pub" "$HOME/.ssh/config"',
             "fi",
             f"git config user.name {shlex.quote(git_user_identity.name)}",
             f"git config user.email {shlex.quote(git_user_identity.email)}",
@@ -628,6 +633,37 @@ def _record_session_git_write_access(
         upsert_session(session.model_copy(update={"metadata": updated_metadata}))
     except Exception:
         return
+
+
+def _remove_session_git_write_access(
+    context: Any,
+    session_id: str,
+) -> None:
+    runtime = getattr(getattr(context, "admin_service", None), "runtime", None)
+    repository = getattr(runtime, "session_repository", None)
+    get_session = getattr(repository, "get_session", None)
+    upsert_session = getattr(repository, "upsert_session", None)
+    if not callable(get_session) or not callable(upsert_session):
+        return
+    session = get_session(session_id)
+    if session is None:
+        return
+    current_metadata = getattr(session, "metadata", {})
+    if not isinstance(current_metadata, dict):
+        return
+    git_access = current_metadata.get("container_git_write_access")
+    if not isinstance(git_access, dict):
+        return
+    public_key_body = normalize_optional_string(git_access.get("public_key_body"))
+    authorized_keys_path = normalize_optional_string(git_access.get("authorized_keys_path"))
+    if public_key_body and authorized_keys_path:
+        remove_git_authorized_key_by_public_key_body(
+            authorized_keys_path=authorized_keys_path,
+            public_key_body=public_key_body,
+        )
+    updated_metadata = dict(current_metadata)
+    updated_metadata.pop("container_git_write_access", None)
+    upsert_session(session.model_copy(update={"metadata": updated_metadata}))
 
 
 def _git_author_identity_from_payload(payload: Mapping[str, Any]) -> GitIdentity | None:

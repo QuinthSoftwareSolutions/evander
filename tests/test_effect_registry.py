@@ -271,6 +271,7 @@ def _stub_container_git_authorization(
             public_key_body="AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
             authorized_repo_path=Path(kwargs["authorized_repo_path"]),
             authorized_ref_prefix=f"refs/heads/agents/{kwargs['session_id']}/",
+            authorized_pr_notes_ref="refs/notes/agent-pr/84097828fc31",
             allowed_from=str(kwargs["allowed_from"]),
         )
 
@@ -4138,6 +4139,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         "authorized_keys_path": str(tmp_path / "agent-authorized-keys"),
         "authorized_repo_path": "/git-remotes/repo-abcdef123456.git",
         "authorized_ref_prefix": "refs/heads/agents/session-1/",
+        "authorized_pr_notes_ref": "refs/notes/agent-pr/84097828fc31",
         "allowed_from": "worker.test",
         "git_ssh_alias": "evander-git-host",
     }
@@ -4879,6 +4881,89 @@ def test_agent_clone_container_read_only_mode_skips_write_key_and_push_alias(
     assert "config alias.push-agent" not in command
     assert 'git config evander.pushAgentAvailable "false"' in command
     assert 'git config evander.gitAccessMode "$GIT_ACCESS_MODE"' in command
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in command
+
+
+def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey old\n",
+        encoding="utf-8",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "container_git_write_access": {
+                    "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
+                    "authorized_keys_path": str(authorized_keys),
+                    "authorized_repo_path": "/git-remotes/repo-abcdef123456.git",
+                    "authorized_ref_prefix": "refs/heads/agents/session-1/",
+                    "authorized_pr_notes_ref": "refs/notes/agent-pr/84097828fc31",
+                },
+                "keep": "metadata",
+            },
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.clone_result_cloned = False
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCloneRepoEffectDefinition(
+            id="agent-clone",
+            display_name="Clone",
+            type="effect:agent:clone-repo",
+            session_id="session-1",
+            repo_source="/tmp/repo",
+            git_access_mode="read-only",
+        )
+    ).execute()
+
+    command = str(backend.started_specs[0].command)
+    manifest = session_repository.get_session("session-1")
+    assert manifest is not None
+    assert output["git_access_mode"] == "read-only"
+    assert output["git_write_access"] is None
+    assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys.read_text(
+        encoding="utf-8"
+    )
+    assert "container_git_write_access" not in manifest.metadata
+    assert manifest.metadata["keep"] == "metadata"
+    assert backend.git_write_keys == []
+    assert len(backend.started_specs) == 1
+    assert "config alias.push-agent" not in command
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in command
+    assert backend.destroyed == [backend.started_specs[0].target_name]
 
 
 def test_agent_create_container_noops_when_session_exists(
@@ -5289,6 +5374,7 @@ def test_agent_clone_container_read_only_command_disables_push_agent_alias() -> 
     assert "PUSH_REMOTE_URL=''" in command
     assert "config alias.push-agent" not in command
     assert 'git config evander.pushAgentAvailable "false"' in command
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in command
 
 
 def test_agent_clone_container_configures_git_author_identity() -> None:

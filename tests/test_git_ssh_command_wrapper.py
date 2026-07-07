@@ -181,6 +181,22 @@ def test_git_ssh_wrapper_enforces_repo_and_session_ref_prefix_for_pushes(
         _git_dir(allowed_repo, "rev-parse", "refs/heads/agents/session-1/topic").stdout.strip()
         == expected_sha
     )
+    notes_ref = "refs/notes/agent-pr/84097828fc31"
+    _git(worktree, "notes", f"--ref={notes_ref}", "add", "-m", "PR summary", "HEAD", env=env)
+    _git(
+        worktree,
+        "push",
+        "agent",
+        "HEAD:refs/heads/agents/session-1/topic-with-note",
+        notes_ref,
+        env=push_env,
+    )
+    assert (
+        _git_dir(allowed_repo, "rev-parse", "refs/heads/agents/session-1/topic-with-note")
+        .stdout.strip()
+        == expected_sha
+    )
+    assert _git_dir(allowed_repo, "rev-parse", notes_ref).stdout.strip()
 
     allowed_read = subprocess.run(
         [
@@ -229,6 +245,18 @@ def test_git_ssh_wrapper_enforces_repo_and_session_ref_prefix_for_pushes(
         capture_output=True,
     )
     assert missing_wrong_prefix_ref.returncode != 0
+
+    wrong_notes_ref = "refs/notes/agent-pr/not-this-session"
+    _git(worktree, "notes", f"--ref={wrong_notes_ref}", "add", "-f", "-m", "Wrong", "HEAD", env=env)
+    wrong_notes_push = _git_result(
+        worktree,
+        "push",
+        "agent",
+        wrong_notes_ref,
+        env=push_env,
+    )
+    assert wrong_notes_push.returncode != 0
+    assert "or PR notes ref 'refs/notes/agent-pr/84097828fc31'" in wrong_notes_push.stderr
 
     repo_mismatch = _git_result(
         worktree,

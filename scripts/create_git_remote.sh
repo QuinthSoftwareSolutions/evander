@@ -117,6 +117,21 @@ AUTH_SESSION_ID="$(
 AUTH_REF_PREFIX="$(
   decode_auth_value "${EVANDER_GIT_AUTH_REF_PREFIX:-}" "${EVANDER_GIT_AUTH_REF_PREFIX_B64:-}"
 )"
+AUTH_PR_NOTES_REF="$(
+  decode_auth_value "${EVANDER_GIT_AUTH_PR_NOTES_REF:-}" "${EVANDER_GIT_AUTH_PR_NOTES_REF_B64:-}"
+)"
+
+authorized_pr_notes_ref() {
+  local digest
+
+  if [[ -n "${AUTH_PR_NOTES_REF}" ]]; then
+    printf '%s\n' "${AUTH_PR_NOTES_REF}"
+    return 0
+  fi
+
+  digest="$(printf '%s' "${AUTH_SESSION_ID}" | sha256sum | awk '{print $1}')"
+  printf 'refs/notes/agent-pr/%s\n' "${digest:0:12}"
+}
 
 if [[ "${AUTH_ACCESS}" != "write" ]]; then
   echo "Git SSH key is read-only; repo/session metadata is required for pushes." >&2
@@ -156,12 +171,19 @@ if ! git check-ref-format "${AUTH_REF_PREFIX}probe" >/dev/null 2>&1; then
   exit 1
 fi
 
+auth_pr_notes_ref="$(authorized_pr_notes_ref)"
+if ! git check-ref-format "${auth_pr_notes_ref}" >/dev/null 2>&1; then
+  echo "Authorized Git PR notes ref is not valid: ${auth_pr_notes_ref}" >&2
+  exit 1
+fi
+
 while read -r _oldrev _newrev refname; do
   [[ -n "${refname}" ]] || continue
   case "${refname}" in
     "${AUTH_REF_PREFIX}"*) ;;
+    "${auth_pr_notes_ref}") ;;
     *)
-      echo "Ref '${refname}' is outside authorized prefix '${AUTH_REF_PREFIX}'." >&2
+      echo "Ref '${refname}' is outside authorized prefix '${AUTH_REF_PREFIX}' or PR notes ref '${auth_pr_notes_ref}'." >&2
       exit 1
       ;;
   esac

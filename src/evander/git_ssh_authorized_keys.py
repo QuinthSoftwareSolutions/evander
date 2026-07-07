@@ -7,6 +7,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from evander.git_pr_notes import agent_pr_notes_ref_for_session
+
 
 _SUPPORTED_PUBLIC_KEY_TYPES = {
     "ssh-rsa",
@@ -22,6 +24,7 @@ class InstalledGitAuthorizedKey:
     public_key_body: str
     authorized_repo_path: Path
     authorized_ref_prefix: str
+    authorized_pr_notes_ref: str
     allowed_from: str
 
 
@@ -54,6 +57,7 @@ def install_git_write_authorized_key(
     except ValueError as exc:
         raise ValueError(f"authorized repo must be under Git root: {git_root_real}") from exc
     ref_prefix = authorized_ref_prefix_for_session(session_id)
+    pr_notes_ref = agent_pr_notes_ref_for_session(session_id)
     wrapper_real = Path(wrapper_path).resolve(strict=False)
     if not wrapper_real.exists():
         raise ValueError(f"Git SSH wrapper does not exist: {wrapper_real}")
@@ -62,6 +66,7 @@ def install_git_write_authorized_key(
         repo_path=repo_real,
         session_id=session_id,
         ref_prefix=ref_prefix,
+        pr_notes_ref=pr_notes_ref,
         wrapper_path=wrapper_real,
     )
     entry = (
@@ -76,6 +81,7 @@ def install_git_write_authorized_key(
         public_key_body=public_key_body,
         authorized_repo_path=repo_real,
         authorized_ref_prefix=ref_prefix,
+        authorized_pr_notes_ref=pr_notes_ref,
         allowed_from=allowed_from_value,
     )
 
@@ -126,6 +132,7 @@ def _authorized_write_forced_command(
     repo_path: Path,
     session_id: str,
     ref_prefix: str,
+    pr_notes_ref: str,
     wrapper_path: Path,
 ) -> str:
     return (
@@ -133,6 +140,7 @@ def _authorized_write_forced_command(
         f" EVANDER_GIT_AUTH_REPO_B64={_one_line_base64(str(repo_path))}"
         f" EVANDER_GIT_AUTH_SESSION_ID_B64={_one_line_base64(session_id)}"
         f" EVANDER_GIT_AUTH_REF_PREFIX_B64={_one_line_base64(ref_prefix)}"
+        f" EVANDER_GIT_AUTH_PR_NOTES_REF_B64={_one_line_base64(pr_notes_ref)}"
         f" {wrapper_path}"
     )
 

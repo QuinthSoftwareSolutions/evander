@@ -33,11 +33,13 @@ def test_install_git_write_authorized_key_scopes_repo_and_session(tmp_path) -> N
     text = authorized_keys.read_text(encoding="utf-8")
     assert record.public_key_body == "AAAAC3NzaC1lZDI1NTE5AAAAITestAuthorizedKey"
     assert record.authorized_ref_prefix == "refs/heads/agents/session-1/"
+    assert record.authorized_pr_notes_ref == "refs/notes/agent-pr/84097828fc31"
     assert 'from="10.2.1.4/32"' in text
     assert "EVANDER_GIT_AUTH_ACCESS=write" in text
     assert "EVANDER_GIT_AUTH_REPO_B64=" in text
     assert "EVANDER_GIT_AUTH_SESSION_ID_B64=" in text
     assert "EVANDER_GIT_AUTH_REF_PREFIX_B64=" in text
+    assert "EVANDER_GIT_AUTH_PR_NOTES_REF_B64=" in text
     assert str(wrapper) in text
 
     assert remove_git_authorized_key_by_public_key_body(

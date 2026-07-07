@@ -8,6 +8,10 @@
 - Kept read-only Git access available through `effect:agent:clone-repo`
   `git_access_mode: read-only`, while default container clone behavior now
   matches VM agents with writable agent-branch pushes.
+- Authorized the session PR notes ref alongside the agent branch namespace so
+  `git push-agent` can push both refs in one operation.
+- Made read-only clone reruns remove prior container Git write-key authorization
+  and scrub stale `push-agent` checkout configuration.
 
 ## 2026-07-07 - Container Worker Empty Codex Output Handling
 
