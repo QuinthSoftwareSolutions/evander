@@ -6178,6 +6178,125 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert "teams:chat-1:agent_thread_id" not in refreshed_session.metadata
 
 
+def test_container_prompt_completion_without_agent_output_fails_without_persisting_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "truman",
+                "agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"},
+            },
+        )
+    )
+    backend = _ContainerDispatchBackendStub()
+    backend.logs = "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.STOPPED,
+        message=None,
+        metadata={},
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_prompt.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    published_events: list[tuple[str | None, dict[str, object]]] = []
+    started_at = datetime.now(timezone.utc)
+    record = EffectExecutionRecord(
+        execution_id="effect-exec-1",
+        idempotency_key="event-1::effect-agent-enqueue-prompt-1",
+        event_id="event-1",
+        trace_id="trace-1",
+        source_node_id="trigger-1",
+        source_trigger_type="trigger:teams:direct-message",
+        effect_id="effect-agent-enqueue-prompt-1",
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        started_at=started_at,
+        finished_at=started_at,
+        resolved_config_hash="hash",
+        resolved_config={"directory_path": "root", "vm_user": "agent"},
+        input_payload={},
+        outputs={
+            "dispatch_id": "caller-dispatch-2",
+            "execution_backend": "container_worker_vm",
+            "execution_id": "agent-session-1",
+            "session_id": "session-1",
+            "resume_thread_metadata_key": "teams:chat-1:agent_thread_id",
+        },
+    )
+    execution_store.put(record)
+    worker = SimpleNamespace(
+        config=config,
+        execution_store=execution_store,
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda session_id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
+            published_events.append((branch_port, outputs)) or "effect-completed"
+        ),
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.RUNNING,
+        message=None,
+        metadata={},
+    )
+    reconciled = AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker)
+
+    assert reconciled == 0
+    running_record = list(execution_store.read_all().values())[0]
+    assert "thread_id" not in running_record.outputs
+    refreshed_session = session_repository.get_session("session-1")
+    assert refreshed_session is not None
+    assert refreshed_session.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
+        "thread-existing"
+    )
+
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.STOPPED,
+        message=None,
+        metadata={},
+    )
+    reconciled = AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker)
+
+    assert reconciled == 1
+    assert backend.destroyed == ["agent-session-1"]
+    final_record = list(execution_store.read_all().values())[0]
+    assert final_record.status == "succeeded"
+    assert final_record.outputs["success"] is False
+    assert final_record.outputs["agent_state"] == "failed"
+    assert final_record.outputs["message"] == (
+        "container worker job completed without an agent response"
+    )
+    assert final_record.outputs["codex_outcome"]["reason"] == "codex_no_final_message"
+    assert published_events[-1][1]["success"] is False
+    refreshed_session = session_repository.get_session("session-1")
+    assert refreshed_session is not None
+    assert refreshed_session.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
+        "thread-existing"
+    )
+
+
 def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

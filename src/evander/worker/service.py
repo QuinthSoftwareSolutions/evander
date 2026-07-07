@@ -1909,7 +1909,9 @@ def _codex_session_outcome(
             "reason": _CODEX_OUTCOME_REASON_TURN_FAILED,
             "message": f"Codex reported {explicit_failure_event_type}: {explicit_failure_message}",
         }
-    elif task_complete_without_final_message and not assistant_text_seen:
+    elif (
+        task_complete_without_final_message or finished_at is not None
+    ) and not assistant_text_seen:
         context_limit_suspected = _codex_context_limit_suspected(
             provider_kind=provider_kind,
             last_token_usage=last_token_usage,
@@ -2112,6 +2114,7 @@ def _codex_outcome_log_line(outcome: dict[str, object]) -> str:
 def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
     roots = [
         agent_home / ".config" / "evander" / "codex" / "sessions",
+        agent_home / ".config" / "agent-sandbox" / "codex" / "sessions",
         agent_home / ".codex" / "sessions",
     ]
     paths: dict[Path, None] = {}
@@ -2131,6 +2134,7 @@ def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
 def _recent_codex_session_ids(agent_home: Path, *, limit: int = 5) -> list[str]:
     roots = [
         agent_home / ".config" / "evander" / "codex" / "sessions",
+        agent_home / ".config" / "agent-sandbox" / "codex" / "sessions",
         agent_home / ".codex" / "sessions",
     ]
     paths: dict[Path, None] = {}

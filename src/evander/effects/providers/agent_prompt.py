@@ -71,6 +71,11 @@ _DEFAULT_CONTAINER_WORKER_JOB_TIMEOUT_SECONDS = 1800.0
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY = "interrupt_in_progress"
+_CONTAINER_CODEX_NO_FINAL_MESSAGE_REASON = "codex_no_final_message"
+_CONTAINER_CODEX_NO_FINAL_MESSAGE = "Codex ended without a final agent message."
+_CONTAINER_COMPLETED_WITHOUT_AGENT_RESPONSE = (
+    "container worker job completed without an agent response"
+)
 
 
 def _prompt_error_outputs(
@@ -579,7 +584,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
         except Exception:
             logs = ""
         thread_id = cls._thread_id_from_logs(logs)
-        if thread_id:
+        failed_codex_outcome = cls._failed_codex_outcome_from_status_metadata(
+            getattr(status, "metadata", None)
+        )
+        no_agent_response = cls._container_logs_indicate_no_agent_response(logs)
+        if thread_id and failed_codex_outcome is None and not no_agent_response:
             cls._store_container_thread_id(
                 worker=worker,
                 record=record,
@@ -631,7 +640,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         except Exception:
             logs = ""
         thread_id = cls._thread_id_from_logs(logs)
-        if thread_id:
+        if thread_id and not cls._container_logs_indicate_no_agent_response(logs):
             cls._store_container_thread_id(
                 worker=worker,
                 record=record,
@@ -787,7 +796,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         except Exception:
             return
         thread_id = cls._thread_id_from_logs(logs)
-        if not thread_id:
+        if not thread_id or cls._container_logs_indicate_no_agent_response(logs):
             return
         cls._store_container_thread_id(
             worker=worker,
@@ -981,6 +990,20 @@ class AgentPromptEffectProvider(EffectProviderBase):
         dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
         wake_dispatch_id = str(record.outputs.get("wake_dispatch_id") or "").strip()
         thread_id = cls._thread_id_from_logs(logs) or str(record.outputs.get("thread_id") or "")
+        failed_codex_outcome = cls._failed_codex_outcome_from_status_metadata(status_metadata)
+        no_agent_response = (
+            failed_codex_outcome is None
+            and success
+            and cls._container_logs_indicate_no_agent_response(logs)
+        )
+        if failed_codex_outcome is not None:
+            success = False
+            message = message or str(
+                failed_codex_outcome.get("message") or _CONTAINER_CODEX_NO_FINAL_MESSAGE
+            )
+        elif no_agent_response:
+            success = False
+            message = message or _CONTAINER_COMPLETED_WITHOUT_AGENT_RESPONSE
         payload: dict[str, object] = {
             "dispatch_id": dispatch_id,
             "thread_id": thread_id,
@@ -1006,6 +1029,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
             if failure_reason is not None:
                 payload["failure_kind"] = CONTEXT_EXHAUSTION_FAILURE_KIND
                 payload["failure_reason"] = failure_reason
+        if no_agent_response and "codex_outcome" not in payload:
+            payload["codex_outcome"] = {
+                "status": "failed",
+                "reason": _CONTAINER_CODEX_NO_FINAL_MESSAGE_REASON,
+                "message": _CONTAINER_CODEX_NO_FINAL_MESSAGE,
+            }
         if wake_dispatch_id:
             payload["wake_dispatch_id"] = wake_dispatch_id
         return TriggerQueueRecord(
@@ -1882,3 +1911,33 @@ class AgentPromptEffectProvider(EffectProviderBase):
     @classmethod
     def _thread_id_from_logs(cls, logs: str) -> str | None:
         return container_thread_id_from_logs(logs)
+
+    @classmethod
+    def _container_logs_indicate_no_agent_response(cls, logs: str) -> bool:
+        if not cls._thread_id_from_logs(logs):
+            return False
+        useful_lines = [
+            line.strip()
+            for line in str(logs or "").splitlines()
+            if line.strip() and not cls._is_container_session_id_log_line(line)
+        ]
+        return not useful_lines
+
+    @staticmethod
+    def _is_container_session_id_log_line(line: str) -> bool:
+        normalized = str(line or "").strip().casefold()
+        return normalized.startswith("session id:") and len(normalized.split()) == 3
+
+    @staticmethod
+    def _failed_codex_outcome_from_status_metadata(
+        status_metadata: Mapping[str, Any] | None,
+    ) -> Mapping[str, Any] | None:
+        if not isinstance(status_metadata, Mapping):
+            return None
+        codex_outcome = status_metadata.get("codex_outcome")
+        if not isinstance(codex_outcome, Mapping):
+            return None
+        status = str(codex_outcome.get("status") or "").strip().casefold()
+        if status != "failed":
+            return None
+        return codex_outcome

@@ -9,6 +9,14 @@
   `git_access_mode: read-only`, while default container clone behavior now
   matches VM agents with writable agent-branch pushes.
 
+## 2026-07-07 - Container Worker Empty Codex Output Handling
+
+- Failed container-worker Codex prompt jobs that emit only a session id and no
+  agent message, preventing Teams wakeups from persisting unusable resume
+  thread ids as successful responses.
+- Wrote tokenized Codex relay config into the legacy container `CODEX_HOME`
+  path used by older runner images so Teams wakeups authenticate correctly.
+
 ## 2026-07-06 - Container Worker Codex Relay Auth
 
 - Added the MCP session token to container worker Codex OpenAI relay URLs so

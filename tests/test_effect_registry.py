@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -2708,7 +2709,7 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
     by_path = {entry["destination_path"]: entry["content"] for entry in files}
     combined_content = "\n".join(by_path.values())
 
-    assert by_path["/home/agent/.codex/config.toml"] == (
+    expected_codex_config = (
         'model = "gpt-5.4"\n'
         'model_provider = "evander_openai_relay"\n'
         'model_reasoning_effort = "high"\n'
@@ -2730,6 +2731,9 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
         '[projects."/home/agent"]\n'
         'trust_level = "trusted"\n'
     )
+    assert by_path["/home/agent/.codex/config.toml"] == expected_codex_config
+    assert by_path["/home/agent/.config/evander/codex/config.toml"] == expected_codex_config
+    assert by_path["/home/agent/.config/agent-sandbox/codex/config.toml"] == expected_codex_config
     assert "OPENAI_API_KEY=\"${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}\"" in by_path[
         "/home/agent/.profile"
     ]
@@ -2833,6 +2837,10 @@ def test_container_session_files_propagate_mcp_token_to_relay_clients() -> None:
         in by_path["/home/agent/.codex/config.toml"]
     )
     assert (
+        'base_url = "http://relay.test:11434/v1/session/session-1/auth/correct-token"'
+        in by_path["/home/agent/.config/agent-sandbox/codex/config.toml"]
+    )
+    assert (
         '"ANTHROPIC_AUTH_TOKEN": "correct-token"'
         in by_path["/home/agent/.claude/settings.json"]
     )
@@ -2843,6 +2851,10 @@ def test_container_session_files_propagate_mcp_token_to_relay_clients() -> None:
     assert (
         'url = "http://relay.test:8000/mcp?session_id=session-1&mcp_session_token=correct-token"'
         in by_path["/home/agent/.codex/config.toml"]
+    )
+    assert (
+        'url = "http://relay.test:8000/mcp?session_id=session-1&mcp_session_token=correct-token"'
+        in by_path["/home/agent/.config/agent-sandbox/codex/config.toml"]
     )
     assert (
         "HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777/auth/correct-token\n"
@@ -3075,15 +3087,85 @@ def test_codex_json_log_filter_reports_missing_final_message() -> None:
     completed = subprocess.run(
         ["python3", "-c", _codex_json_log_filter_script()],
         input="\n".join(json.dumps(event) for event in events) + "\n",
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
 
+    assert completed.returncode == 1
     assert completed.stdout == (
         "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
         "codex failed: task_complete did not include a final agent message "
         "(last_total_tokens=64000)\n"
+    )
+
+
+def test_codex_json_log_filter_fails_when_no_agent_message_is_emitted() -> None:
+    events = [
+        {"type": "session_meta", "payload": {"id": "019de31a-8393-71d2-8990-e5f4fb0a4df2"}},
+    ]
+
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "codex failed: no agent message was emitted\n"
+    )
+
+
+def test_codex_json_log_filter_falls_back_to_codex_home_session_jsonl(
+    tmp_path: Path,
+) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    codex_home = tmp_path / "codex-home"
+    session_dir = codex_home / "sessions" / "2026" / "07" / "07"
+    session_dir.mkdir(parents=True)
+    (session_dir / f"rollout-2026-07-07T08-38-04-{thread_id}.jsonl").write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "posted the Teams reply",
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_complete",
+                        "last_agent_message": "posted the Teams reply",
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    events = [
+        {"type": "session_meta", "payload": {"id": thread_id}},
+    ]
+
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "CODEX_HOME": str(codex_home), "HOME": str(tmp_path / "home")},
+    )
+
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\nposted the Teams reply\n"
     )
 
 

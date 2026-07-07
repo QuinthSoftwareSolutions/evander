@@ -75,7 +75,9 @@ def default_agent_model_for_provider(
     agent_provider: str | None = None,
     config: GatewayConfig | None = None,
 ) -> str:
-    provider = normalize_optional_string(agent_provider) or default_agent_provider_for_config(config)
+    provider = normalize_optional_string(agent_provider) or default_agent_provider_for_config(
+        config
+    )
     if provider == "claude":
         return DEFAULT_CLAUDE_AGENT_MODEL
     return DEFAULT_CODEX_AGENT_MODEL
@@ -111,9 +113,7 @@ def normalize_existing_agent_behavior(value: Any) -> str:
         return "upsert"
     if normalized in {"noop", "no-op", "no op"}:
         return "noop"
-    raise ValueError(
-        "effect:agent:create existing_agent_behavior must be one of: upsert, noop"
-    )
+    raise ValueError("effect:agent:create existing_agent_behavior must be one of: upsert, noop")
 
 
 def required_string(value: Any, message: str) -> str:
@@ -216,9 +216,7 @@ def contacts_config_for_directory(
     directory_path: str | None,
 ) -> ContactDirectoryConfig:
     for resolver in _provider_config_resolvers(context):
-        resolve_contacts_for_directory = getattr(
-            resolver, "resolve_contacts_for_directory", None
-        )
+        resolve_contacts_for_directory = getattr(resolver, "resolve_contacts_for_directory", None)
         if callable(resolve_contacts_for_directory):
             return resolve_contacts_for_directory(directory_path)
     raise RuntimeError("contacts_config_for_directory is not available")
@@ -388,7 +386,9 @@ def resolve_active_session_if_available(
     if session is None:
         return None, None
     ensure_session_not_expired(session)
-    session_id = normalize_optional_string(getattr(session, "session_id", None)) or normalized_target
+    session_id = (
+        normalize_optional_string(getattr(session, "session_id", None)) or normalized_target
+    )
     return session_id, session
 
 
@@ -500,9 +500,7 @@ def build_container_session_manifest(
                 if tool not in resolved_tools:
                     resolved_tools.append(tool)
 
-    resolved_teams_channel_allowlist = normalize_teams_channel_allowlist(
-        teams_channel_allowlist
-    )
+    resolved_teams_channel_allowlist = normalize_teams_channel_allowlist(teams_channel_allowlist)
     resolved_teams_chat_allowlist = normalize_teams_chat_allowlist(teams_chat_allowlist)
     resolved_teams_user_allowlist = normalize_teams_user_allowlist(teams_user_allowlist)
     resolved_email_mailboxes = email_mailboxes or (
@@ -619,9 +617,7 @@ def container_worker_guest_nuget_relay_base_url(config: GatewayConfig) -> str:
 
 
 def container_worker_guest_http_target_relay_base_url(config: GatewayConfig) -> str:
-    configured = normalize_optional_string(
-        config.container_worker_guest_http_target_relay_base_url
-    )
+    configured = normalize_optional_string(config.container_worker_guest_http_target_relay_base_url)
     if configured:
         return configured
     return _service_url_from_gateway_url(
@@ -771,6 +767,12 @@ def build_container_session_files(
         session_id,
         mcp_session_token=mcp_session_token,
     )
+    codex_config_content = _codex_config_content(
+        model=resolved_model,
+        openai_base_url=session_openai_base_url,
+        gateway_url=session_gateway_url,
+        web_search_enabled=web_search_enabled,
+    )
     session_env_values = {
         "EVANDER_SESSION_ID": session_id,
         "AGENT_PROVIDER": resolved_agent_provider,
@@ -835,22 +837,17 @@ def build_container_session_files(
         {
             "destination_path": "/home/agent/.codex/config.toml",
             "mode": "0600",
-            "content": _codex_config_content(
-                model=resolved_model,
-                openai_base_url=session_openai_base_url,
-                gateway_url=session_gateway_url,
-                web_search_enabled=web_search_enabled,
-            ),
+            "content": codex_config_content,
         },
         {
             "destination_path": "/home/agent/.config/evander/codex/config.toml",
             "mode": "0600",
-            "content": _codex_config_content(
-                model=resolved_model,
-                openai_base_url=session_openai_base_url,
-                gateway_url=session_gateway_url,
-                web_search_enabled=web_search_enabled,
-            ),
+            "content": codex_config_content,
+        },
+        {
+            "destination_path": "/home/agent/.config/agent-sandbox/codex/config.toml",
+            "mode": "0600",
+            "content": codex_config_content,
         },
         {
             "destination_path": "/home/agent/.claude/settings.json",
@@ -1137,14 +1134,19 @@ evander_sync_claude_mcp_server /home/agent/.claude/mcp-config.json
 def _codex_json_log_filter_script() -> str:
     return r"""
 import json
+import os
 import sys
+from pathlib import Path
 
 TEXT_PART_TYPES = {"text", "output_text", "assistant_message"}
 ASSISTANT_ITEM_TYPES = {"assistant_message", "message", "final_message"}
 thread_id_printed = False
+current_thread_id = ""
 printed_messages = set()
 last_token_usage = {}
 assistant_text_seen = False
+failure_printed = False
+task_complete_without_final_message = False
 
 
 def first_string(*values):
@@ -1204,6 +1206,27 @@ def print_assistant_message(message):
     print_message(message)
 
 
+def print_failure(message):
+    global failure_printed
+    failure_printed = True
+    print_message(message)
+
+
+def remember_thread_id(thread_id):
+    global current_thread_id, thread_id_printed
+    if not thread_id:
+        return
+    current_thread_id = thread_id
+    if not thread_id_printed:
+        print(f"session id: {thread_id}", flush=True)
+        thread_id_printed = True
+
+
+def mark_task_complete_without_final_message():
+    global task_complete_without_final_message
+    task_complete_without_final_message = True
+
+
 def int_value(value):
     if isinstance(value, bool):
         return None
@@ -1250,6 +1273,10 @@ def no_final_message_diagnostic():
     return "codex failed: task_complete did not include a final agent message" + suffix
 
 
+def no_agent_message_diagnostic():
+    return "codex failed: no agent message was emitted"
+
+
 def thread_id_from_event(event):
     thread = event.get("thread")
     payload = event.get("payload")
@@ -1292,6 +1319,86 @@ def text_from_item_completed(event):
     )
 
 
+def codex_session_roots():
+    roots = []
+    codex_home = first_string(os.environ.get("CODEX_HOME"))
+    if codex_home:
+        roots.append(Path(codex_home) / "sessions")
+    home = Path(os.environ.get("HOME") or "/home/agent")
+    roots.extend(
+        [
+            home / ".config" / "agent-sandbox" / "codex" / "sessions",
+            home / ".config" / "evander" / "codex" / "sessions",
+            home / ".codex" / "sessions",
+        ]
+    )
+    unique = []
+    seen = set()
+    for root in roots:
+        text = str(root)
+        if text in seen:
+            continue
+        seen.add(text)
+        unique.append(root)
+    return unique
+
+
+def session_jsonl_paths(thread_id):
+    if not thread_id:
+        return []
+    paths = {}
+    for root in codex_session_roots():
+        if not root.is_dir():
+            continue
+        try:
+            for path in root.rglob(f"*{thread_id}*.jsonl"):
+                if path.is_file():
+                    paths[path] = None
+        except OSError:
+            continue
+    return sorted(paths, key=lambda path: (path.stat().st_mtime, str(path)))
+
+
+def replay_session_jsonl_messages():
+    for path in session_jsonl_paths(current_thread_id):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for raw_line in lines:
+            try:
+                event = json.loads(raw_line)
+            except Exception:
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("type") or "")
+            if event_type == "token_count":
+                update_token_usage(event)
+                continue
+            if event_type == "event_msg":
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                payload_type = str(payload.get("type") or "")
+                if payload_type == "agent_message":
+                    print_assistant_message(first_text(payload.get("message")))
+                elif payload_type == "token_count":
+                    update_token_usage(event)
+                elif payload_type == "task_complete":
+                    message = first_text(payload.get("last_agent_message"))
+                    if message:
+                        print_assistant_message(message)
+                    elif not assistant_text_seen:
+                        mark_task_complete_without_final_message()
+                continue
+            if event_type == "response_item":
+                print_assistant_message(text_from_response_item(event))
+                continue
+            if event_type == "item.completed":
+                print_assistant_message(text_from_item_completed(event))
+
+
 for raw_line in sys.stdin:
     raw_line = raw_line.rstrip("\n")
     try:
@@ -1306,16 +1413,12 @@ for raw_line in sys.stdin:
     if event_type == "session_meta":
         payload = event.get("payload")
         thread_id = first_string(payload.get("id") if isinstance(payload, dict) else None)
-        if thread_id and not thread_id_printed:
-            print(f"session id: {thread_id}", flush=True)
-            thread_id_printed = True
+        remember_thread_id(thread_id)
         continue
 
     if event_type == "thread.started":
         thread_id = thread_id_from_event(event)
-        if thread_id and not thread_id_printed:
-            print(f"session id: {thread_id}", flush=True)
-            thread_id_printed = True
+        remember_thread_id(thread_id)
         continue
 
     if event_type == "token_count":
@@ -1335,7 +1438,7 @@ for raw_line in sys.stdin:
                 if message:
                     print_assistant_message(message)
                 elif not assistant_text_seen:
-                    print_message(no_final_message_diagnostic())
+                    mark_task_complete_without_final_message()
         continue
 
     if event_type == "response_item":
@@ -1349,7 +1452,18 @@ for raw_line in sys.stdin:
     if event_type in {"error", "turn.failed"}:
         message = first_string(event.get("message"), event.get("error"))
         if message:
-            print(f"codex {event_type}: {message}", flush=True)
+            print_failure(f"codex {event_type}: {message}")
+
+if not assistant_text_seen:
+    replay_session_jsonl_messages()
+if not assistant_text_seen:
+    if task_complete_without_final_message:
+        print_failure(no_final_message_diagnostic())
+    elif not failure_printed:
+        print_failure(no_agent_message_diagnostic())
+    sys.exit(1)
+if failure_printed:
+    sys.exit(1)
 """
 
 
@@ -1516,7 +1630,7 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
                 'export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"',
                 'export PLAYWRIGHT_MCP_SANDBOX="0"',
                 'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && command -v node >/dev/null 2>&1; then',
-                "  if _evander_playwright_chromium=\"$(node -e 'const fs = require(\"fs\"); const path = require(\"path\"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, \"playwright\")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);' 2>/dev/null)\" && [ -n \"$_evander_playwright_chromium\" ]; then",
+                '  if _evander_playwright_chromium="$(node -e \'const fs = require("fs"); const path = require("path"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);\' 2>/dev/null)" && [ -n "$_evander_playwright_chromium" ]; then',
                 '    export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$_evander_playwright_chromium"',
                 "  fi",
                 "  unset _evander_playwright_chromium",
