@@ -113,6 +113,11 @@ def _assert_forbidden(response) -> None:
     assert response.json()["error"] == "Privileged operations are locked."
 
 
+def _assert_permission_forbidden(response) -> None:
+    assert response.status_code == 403
+    assert response.json()["error"] == "Permission required: admin.owner"
+
+
 def test_locked_owner_cannot_mutate_worker_or_directory_configuration(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -223,22 +228,28 @@ def test_unlocked_non_owner_cannot_mutate_worker_or_directory_configuration(
         MethodType(stop_background_worker, service.operations_admin),
     )
 
-    _assert_forbidden(
+    _assert_permission_forbidden(
         non_owner.put(
             "/api/workers/trigger-orchestrator/config",
             json=_worker_config_payload(non_owner),
         )
     )
-    _assert_forbidden(non_owner.post("/api/workers/trigger-orchestrator/actions/start"))
-    _assert_forbidden(non_owner.post("/api/workers/trigger-orchestrator/actions/stop"))
-    _assert_forbidden(
+    _assert_permission_forbidden(
+        non_owner.post("/api/workers/trigger-orchestrator/actions/start")
+    )
+    _assert_permission_forbidden(
+        non_owner.post("/api/workers/trigger-orchestrator/actions/stop")
+    )
+    _assert_permission_forbidden(
         non_owner.post(
             "/api/configuration/directories",
             json={"parent_path": "root", "name": "blocked"},
         )
     )
-    _assert_forbidden(non_owner.delete("/api/configuration/directories?directory_path=root/ops"))
-    _assert_forbidden(
+    _assert_permission_forbidden(
+        non_owner.delete("/api/configuration/directories?directory_path=root/ops")
+    )
+    _assert_permission_forbidden(
         non_owner.put(
             "/api/configuration/domains/providers?directory_path=root",
             json=_directory_domain_payload(non_owner),

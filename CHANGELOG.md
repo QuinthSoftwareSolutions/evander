@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-08 - Admin Web Configuration Permission Errors
+
+- Returned explicit `admin.owner` permission errors for unlocked Admin Web
+  configuration mutations when the user lacks owner access, instead of
+  reporting that privileged operations are locked.
+
 ## 2026-07-07 - Container Worker Git Write Access
 
 - Restored writable `git push-agent` support for container-worker agents by
