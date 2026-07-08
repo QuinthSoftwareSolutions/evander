@@ -17,7 +17,7 @@ from evander.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_PO
 from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.config_tooltips import CONFIG_FIELD_TOOLTIPS
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
-from evander.admin.web.shared import AdminWebAuth, request_has_privileged_operations
+from evander.admin.web.shared import AdminWebAuth
 from evander.config import (
     AdoWorkerGlobalConfig,
     AssistantSettingsConfig,
@@ -1353,15 +1353,19 @@ def worker_config_routes(
     def _require_config_mutation_access(
         request: Request, *, directory_path: str | None = None
     ) -> JSONResponse | None:
-        if request_has_privileged_operations(
-            auth=auth,
-            service=service,
-            request=request,
-            required_permission=ADMIN_OWNER_PERMISSION,
-            directory_path=directory_path,
-        ):
-            return None
-        return _error_response("Privileged operations are locked.", status_code=403)
+        try:
+            auth.require(request)
+        except PermissionError as exc:
+            return _error_response(str(exc) or "Authentication required", status_code=403)
+        if not auth.privileged_for_request(request):
+            return _error_response("Privileged operations are locked.", status_code=403)
+        try:
+            auth.require_permission(
+                request, ADMIN_OWNER_PERMISSION, directory_path=directory_path
+            )
+        except PermissionError as exc:
+            return _error_response(str(exc), status_code=403)
+        return None
 
     async def list_workers(_: Request) -> JSONResponse:
         workers = [
@@ -1502,13 +1506,9 @@ def worker_config_routes(
         return JSONResponse(service.model_usage_admin.read_model_pricing_catalog_status())
 
     async def put_model_pricing_catalog(request: Request) -> JSONResponse:
-        if not request_has_privileged_operations(
-            auth=auth,
-            service=service,
-            request=request,
-            required_permission=ADMIN_OWNER_PERMISSION,
-        ):
-            return _error_response("Privileged operations are locked.", status_code=403)
+        access_error = _require_config_mutation_access(request)
+        if access_error is not None:
+            return access_error
         try:
             payload = await _json_body(request)
         except ValueError as exc:
@@ -1609,15 +1609,9 @@ def worker_config_routes(
                 merged_payloads_by_source: dict[str, dict[str, Any]] = {}
                 for source_domain, source_payload in payloads_by_source.items():
                     if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
-                        if not request_has_privileged_operations(
-                            auth=auth,
-                            service=service,
-                            request=request,
-                            required_permission=ADMIN_OWNER_PERMISSION,
-                        ):
-                            return _error_response(
-                                "Privileged operations are locked.", status_code=403
-                            )
+                        access_error = _require_config_mutation_access(request)
+                        if access_error is not None:
+                            return access_error
                         existing_settings = domain_snapshots[source_domain]["raw"]["config"]
                         merged_settings = dict(existing_settings)
                         merged_settings.update(source_payload)
