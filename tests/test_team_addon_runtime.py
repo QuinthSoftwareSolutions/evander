@@ -2003,7 +2003,9 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
     assert "Team Add-on Chat tab" in prompt
     assert f"Human operator message ID: {message.id}" in prompt
     assert f"Reply with the {TEAM_REPLY_TO_CHAT_TOOL} MCP tool" in prompt
+    assert "Current dispatch Team state mutation: allowed" in prompt
     assert "ordinary Team MCP tools granted to this chat wake" in prompt
+    assert "Ignore earlier transcript statements that a prior chat wake was reply-only" in prompt
     assert "team-action.json" not in prompt
     assert "schema_version" not in prompt
     assert "dispatch_id" not in prompt
@@ -2070,6 +2072,7 @@ def test_wake_due_agents_provider_grants_reply_only_chat_tool_when_mutation_disa
     assert session_store.sessions["session-backend"].allowed_tools == [TEAM_REPLY_TO_CHAT_TOOL]
     prompt = str(resumer.calls[0]["prompt"])
     assert "reply-only" in prompt
+    assert "Current dispatch Team state mutation: allowed" not in prompt
     assert "ordinary Team MCP tools granted to this chat wake" not in prompt
 
 

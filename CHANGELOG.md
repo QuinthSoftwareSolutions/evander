@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-09 - Team Add-on Chat Mutation Guidance
+
+- Clarified Team Chat wake prompts when mutations are allowed so agents do not
+  treat stale prior reply-only transcript text as applying to the current
+  dispatch.
+- Refreshed Admin shell privilege state when add-on iframes load so an Admin Web
+  restart cannot leave Team Chat looking unlocked after the server has reset
+  privileged operations to locked.
+
 ## 2026-07-09 - Team Add-on Chat Notification Sound
 
 - Added an optional built-in Team chat notification chime for newly received

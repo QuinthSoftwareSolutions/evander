@@ -704,10 +704,12 @@ function AddonView({
   tab,
   selectedDirectoryPath,
   privilegedUnlocked,
+  onFrameLoad,
 }: {
   tab: AdminTabDefinition;
   selectedDirectoryPath: string;
   privilegedUnlocked: boolean;
+  onFrameLoad?: () => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const iframeSrcKey = `${tab.uiPath ?? ""}\n${selectedDirectoryPath}`;
@@ -734,6 +736,11 @@ function AddonView({
     postPrivilegeState();
   }, [privilegedUnlocked, iframeSrc]);
 
+  function handleFrameLoad() {
+    postPrivilegeState();
+    onFrameLoad?.();
+  }
+
   if (tab.uiPath) {
     return (
       <iframe
@@ -741,7 +748,7 @@ function AddonView({
         className="admin-addon-frame"
         title={tab.label}
         src={iframeSrc}
-        onLoad={postPrivilegeState}
+        onLoad={handleFrameLoad}
         sandbox="allow-forms allow-modals allow-same-origin allow-scripts"
       />
     );
@@ -2160,6 +2167,9 @@ export default function AdminRoot() {
                 tab={activeTab}
                 selectedDirectoryPath={selectedDirectoryPath}
                 privilegedUnlocked={privilegeUnlocked}
+                onFrameLoad={() => {
+                  void refreshAuthSession();
+                }}
               />
             ) : (
               <PlaceholderView title={activeTab.label} description={activeTab.description} />

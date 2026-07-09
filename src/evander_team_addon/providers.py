@@ -4551,9 +4551,13 @@ def _build_team_chat_prompt(
     agent_display_name = _team_chat_agent_display_name(agent)
     message_id = _required_text(_object_field(message, "id"), "message.id")
     mutation_guidance = (
-        "If the operator explicitly asks you to change Team state, you may also "
-        "use the ordinary Team MCP tools granted to this chat wake. Do not mutate "
-        "Team state for a thank-you, acknowledgement, or no-op reply.\n\n"
+        "Current dispatch Team state mutation: allowed. You have ordinary Team "
+        "MCP tools granted to this chat wake. If the current operator message, "
+        "together with recent transcript context, asks you to change Team state, "
+        "use the relevant ordinary Team MCP tools in this dispatch before replying. "
+        "Ignore earlier transcript statements that a prior chat wake was reply-only; "
+        "tool grants are per-dispatch. Do not mutate Team state for a thank-you, "
+        "acknowledgement, or no-op reply.\n\n"
         if mutation_allowed
         else "This chat wake is reply-only. Do not mutate Team state; use only "
         f"{TEAM_REPLY_TO_CHAT_TOOL}.\n\n"
