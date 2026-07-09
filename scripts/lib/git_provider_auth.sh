@@ -91,7 +91,7 @@ git_fetch_remote_with_auth() {
   )
 
   if [[ "${GIT_PROVIDER_REMOTE_URL}" != "${remote_url}" ]]; then
-    command+=(-c "remote.${remote_name}.url=${GIT_PROVIDER_REMOTE_URL}")
+    command+=(-c "url.${GIT_PROVIDER_REMOTE_URL}.insteadOf=${remote_url}")
   fi
   if [[ -n "${GIT_PROVIDER_HTTP_EXTRA_HEADER}" ]]; then
     command+=(-c "http.extraHeader=${GIT_PROVIDER_HTTP_EXTRA_HEADER}")
