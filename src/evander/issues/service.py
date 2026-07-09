@@ -50,6 +50,22 @@ _ADO_PROXY_SYNC_FIELDS = (
     "System.ChangedDate",
 )
 _ADO_WORK_ITEMS_BATCH_LIMIT = 200
+_ADO_ACTIVITY_BOOKKEEPING_FIELDS = {
+    "Microsoft.VSTS.Common.StateChangeDate",
+    "System.AuthorizedAs",
+    "System.AuthorizedDate",
+    "System.BoardColumn",
+    "System.BoardColumnDone",
+    "System.ChangedBy",
+    "System.ChangedDate",
+    "System.CommentCount",
+    "System.History",
+    "System.PersonId",
+    "System.Rev",
+    "System.RevisedDate",
+    "System.Watermark",
+}
+_ADO_ACTIVITY_BOOKKEEPING_FIELD_PREFIXES = ("WEF_",)
 _IMAGE_EXTENSIONS = {
     ".apng",
     ".avif",
@@ -305,6 +321,34 @@ def _ado_activity_identity_matches(query: str | None, value: Any) -> bool:
     return text.casefold() in _ado_activity_identity_values(value)
 
 
+def _ado_activity_max_candidates(value: int) -> int:
+    return max(1, min(int(value), 1000))
+
+
+def _ado_update_field_new_value(fields: dict[str, Any], name: str) -> Any:
+    payload = fields.get(name)
+    if not isinstance(payload, dict):
+        return None
+    return payload.get("newValue")
+
+
+def _ado_activity_is_bookkeeping_field(name: str) -> bool:
+    normalized = str(name or "").strip()
+    if not normalized:
+        return True
+    if normalized in _ADO_ACTIVITY_BOOKKEEPING_FIELDS:
+        return True
+    return any(normalized.startswith(prefix) for prefix in _ADO_ACTIVITY_BOOKKEEPING_FIELD_PREFIXES)
+
+
+def _ado_meaningful_update_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: payload
+        for name, payload in fields.items()
+        if not _ado_activity_is_bookkeeping_field(name)
+    }
+
+
 def _artifact_filename(artifact: dict[str, Any]) -> str:
     return str(
         artifact.get("normalized_safe_filename")
@@ -459,6 +503,8 @@ class IssueProviderAdapter(Protocol):
         tags_any: list[str] | None = None,
         top: int = 100,
         skip: int = 0,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
     ) -> dict[str, Any]: ...
 
     def list_current_iteration_backlog_items(
@@ -1534,6 +1580,8 @@ class AzureDevOpsIssueAdapter:
         tags_any: list[str] | None = None,
         top: int = 100,
         skip: int = 0,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
     ) -> dict[str, Any]:
         organization_url, configured_project, pat = self._resolve_connection(directory_path)
         normalized_project = str(project or configured_project).strip()
@@ -1554,20 +1602,32 @@ class AzureDevOpsIssueAdapter:
         )
         normalized_top = max(1, min(int(top), 200))
         normalized_skip = max(0, int(skip))
-        candidate_page_size = 200
+        normalized_max_candidates = _ado_activity_max_candidates(max_candidates)
+        candidate_page_size = 200 if exhaustive else min(200, normalized_max_candidates)
         candidate_skip = 0
         candidate_total_matches: int | None = None
         candidate_scanned_count = 0
+        candidate_scan_complete = True
         matched_items: list[dict[str, Any]] = []
         with httpx.Client(timeout=self.timeout_seconds) as client:
             while True:
+                remaining_candidates = (
+                    None
+                    if exhaustive
+                    else max(0, normalized_max_candidates - candidate_scanned_count)
+                )
+                if remaining_candidates == 0:
+                    candidate_scan_complete = False
+                    break
                 candidates = self._query_backlog_items_core(
                     client,
                     organization_url=organization_url,
                     project=normalized_project,
                     auth_header=auth_header,
                     wiql=wiql,
-                    top=candidate_page_size,
+                    top=candidate_page_size
+                    if remaining_candidates is None
+                    else min(candidate_page_size, remaining_candidates),
                     skip=candidate_skip,
                     include_relations=False,
                 )
@@ -1616,10 +1676,25 @@ class AzureDevOpsIssueAdapter:
                     )
                 raw_next_skip = candidate_paging.get("next_skip")
                 next_candidate_skip = raw_next_skip if isinstance(raw_next_skip, int) else None
+                scanned_all_reported_candidates = (
+                    candidate_total_matches is not None
+                    and candidate_scanned_count >= candidate_total_matches
+                )
+                if not exhaustive and candidate_scanned_count >= normalized_max_candidates:
+                    candidate_scan_complete = not (
+                        candidate_paging.get("has_more")
+                        or (
+                            candidate_total_matches is not None
+                            and candidate_scanned_count < candidate_total_matches
+                        )
+                    )
+                    break
                 if next_candidate_skip is not None and next_candidate_skip > candidate_skip:
                     candidate_skip = next_candidate_skip
                     continue
                 if not candidate_paging.get("has_more") or not candidate_items:
+                    break
+                if scanned_all_reported_candidates:
                     break
                 candidate_skip += len(candidate_items)
         total_activity_matches = len(matched_items)
@@ -1637,9 +1712,14 @@ class AzureDevOpsIssueAdapter:
             "total_activity_matches": total_activity_matches,
             "candidate_total_matches": candidate_total_matches,
             "candidate_scanned_count": candidate_scanned_count,
-            "has_more": next_skip is not None,
+            "candidate_scan_complete": candidate_scan_complete,
+            "total_matches_complete": candidate_scan_complete,
+            "total_activity_matches_complete": candidate_scan_complete,
+            "has_more": next_skip is not None or not candidate_scan_complete,
             "next_skip": next_skip,
             "activity_types": sorted(normalized_types),
+            "exhaustive": exhaustive,
+            "max_candidates": normalized_max_candidates,
         }
         return {
             "provider": self.provider_name,
@@ -1747,20 +1827,41 @@ class AzureDevOpsIssueAdapter:
             for update in item.get("updates") or []:
                 if not isinstance(update, dict):
                     continue
-                revised_at = _parse_ado_datetime_optional(update.get("revised_at"))
-                revised_by = update.get("revised_by")
-                revised_identity = (
-                    update.get("revised_by_identity")
-                    if isinstance(update.get("revised_by_identity"), dict)
-                    else {}
+                changed_fields = (
+                    update.get("fields") if isinstance(update.get("fields"), dict) else {}
                 )
+                meaningful_fields = _ado_meaningful_update_fields(changed_fields)
+                if changed_fields and not meaningful_fields:
+                    continue
+                semantic_changed_by = _ado_update_field_new_value(
+                    changed_fields, "System.ChangedBy"
+                )
+                semantic_changed_at = _ado_update_field_new_value(
+                    changed_fields, "System.ChangedDate"
+                )
+                revised_at = _parse_ado_datetime_optional(
+                    semantic_changed_at
+                ) or _parse_ado_datetime_optional(update.get("revised_at"))
+                revised_by = (
+                    self._normalize_assigned_to(semantic_changed_by)
+                    if semantic_changed_by is not None
+                    else None
+                ) or update.get("revised_by")
+                revised_identity = (
+                    assigned_to_identity(semantic_changed_by)
+                    if semantic_changed_by is not None
+                    else None
+                )
+                if not revised_identity:
+                    revised_identity = (
+                        update.get("revised_by_identity")
+                        if isinstance(update.get("revised_by_identity"), dict)
+                        else {}
+                    )
                 if not _datetime_in_range(revised_at, since=since, until=until):
                     continue
                 if not _ado_activity_identity_matches(actor, revised_identity or revised_by):
                     continue
-                changed_fields = (
-                    update.get("fields") if isinstance(update.get("fields"), dict) else {}
-                )
                 records.append(
                     {
                         "activity_type": "changed",
@@ -1768,10 +1869,10 @@ class AzureDevOpsIssueAdapter:
                         "occurred_at": revised_at,
                         "actor": str(revised_by or "").strip() or None,
                         "actor_identity": revised_identity,
-                        "summary": "Updated fields: " + ", ".join(sorted(changed_fields.keys()))
-                        if changed_fields
+                        "summary": "Updated fields: " + ", ".join(sorted(meaningful_fields.keys()))
+                        if meaningful_fields
                         else "Work item update",
-                        "fields": changed_fields,
+                        "fields": meaningful_fields,
                         "raw": update,
                     }
                 )
@@ -3324,6 +3425,8 @@ class IssueService:
         tags_any: list[str] | None = None,
         top: int = 100,
         skip: int = 0,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
         if adapter is None:
@@ -3340,6 +3443,8 @@ class IssueService:
             tags_any=tags_any,
             top=top,
             skip=skip,
+            exhaustive=exhaustive,
+            max_candidates=max_candidates,
         )
 
     def list_remote_current_iteration_backlog_items(

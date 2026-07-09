@@ -931,10 +931,19 @@ A transport-terminated warning without client-visible failure can be expected fo
   - required `since` timestamp
   - optional `until`, `project`, `actor`, `activity_types`, `states`, `types`, `tags_any`
   - paging inputs: `top` (default `100`, max `200`) and `skip` (default `0`)
+  - scan controls: `max_candidates` (default `50`, max `1000`) and `exhaustive` (default `false`)
 - `activity_types` defaults to `["created", "changed", "commented"]`.
+- By default the tool bounds the number of matching candidate work items it expands into detailed
+  activity records. Set `exhaustive=true` only when exact totals are needed and the wider ADO scan
+  cost is acceptable.
+- Update-history records use the semantic `System.ChangedBy.newValue` and
+  `System.ChangedDate.newValue` fields when ADO provides them, and metadata-only revisions are
+  omitted from the default activity output.
 - Response payload includes matching work items and per-item `activities` records with the matched
   actor, timestamp, provenance (`created_field`, `changed_field`, `update`, or `comment`), and raw
-  provider payload snippets.
+  provider payload snippets. Paging includes `candidate_scan_complete` and
+  `total_activity_matches_complete`; when either is `false`, totals only describe the scanned
+  candidates.
 
 ## Host-Side Azure DevOps Current Iteration Backlog Tool
 
@@ -1858,10 +1867,15 @@ without exposing provider credentials in the VM.
      and preserve provider-specific details in `raw`.
    - `resolve_ado_identity(query)` to resolve `me`, an email/UPN, display name, ADO id, or descriptor
      before using personal activity filters.
-   - `list_ado_pr_comment_activity(repo, since, author?, until?, project?, statuses?, top?, skip?)`
+   - `list_ado_pr_comment_activity(repo, since, author?, until?, project?, statuses?, top?, skip?,
+     exhaustive?, max_candidates?)`
      to find ADO PR comments matching an author and date range.
-   - `list_ado_pr_commit_activity(repo, since, author?, until?, project?, statuses?, top?, skip?)`
+   - `list_ado_pr_commit_activity(repo, since, author?, until?, project?, statuses?, top?, skip?,
+     exhaustive?, max_candidates?)`
      to find ADO PR commits matching an author and date range.
+     These PR activity tools default to scanning at most 50 candidate PRs before fetching
+     comment/commit details; set `exhaustive=true` when exact totals across all candidate PRs are
+     required.
 3. Post threaded replies (when needed):
    - `post_pr_feedback_reply(provider, repo, pr_id, body_text, thread_id/comment_id, idempotency_key)`
 4. Cursor advancement:

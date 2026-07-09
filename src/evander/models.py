@@ -1869,6 +1869,8 @@ class AdoPrCommentActivityRequest(BaseModel):
     include_system_comments: bool = False
     top: int = Field(default=100, ge=1, le=200)
     skip: int = Field(default=0, ge=0)
+    exhaustive: bool = False
+    max_candidates: int = Field(default=50, ge=1, le=1000)
 
     @field_validator("repo", "author", "project", mode="before")
     @classmethod
@@ -1929,6 +1931,8 @@ class AdoPrCommitActivityRequest(BaseModel):
     statuses: list[str] = Field(default_factory=list)
     top: int = Field(default=100, ge=1, le=200)
     skip: int = Field(default=0, ge=0)
+    exhaustive: bool = False
+    max_candidates: int = Field(default=50, ge=1, le=1000)
 
     @field_validator("repo", "author", "project", mode="before")
     @classmethod
@@ -2649,6 +2653,8 @@ class AdoWorkItemActivityRequest(BaseModel):
     tags_any: list[str] = Field(default_factory=list)
     top: int = Field(default=100, ge=1, le=200)
     skip: int = Field(default=0, ge=0)
+    exhaustive: bool = False
+    max_candidates: int = Field(default=50, ge=1, le=1000)
 
     @field_validator("project", "actor", mode="before")
     @classmethod

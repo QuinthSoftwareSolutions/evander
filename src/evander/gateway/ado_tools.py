@@ -930,6 +930,8 @@ def register_ado_tools(
         tags_any: list[str] | None = None,
         top: int = 100,
         skip: int = 0,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
         *,
         session_id: str | None = None,
         ctx: Context | None = None,
@@ -949,6 +951,8 @@ def register_ado_tools(
             tags_any=tags_any or [],
             top=top,
             skip=skip,
+            exhaustive=exhaustive,
+            max_candidates=max_candidates,
         )
         args = request.model_dump(mode="json")
         try:
@@ -969,6 +973,8 @@ def register_ado_tools(
                 tags_any=request.tags_any,
                 top=request.top,
                 skip=request.skip,
+                exhaustive=request.exhaustive,
+                max_candidates=request.max_candidates,
             )
             response_model = AdoWorkItemActivityResponse.model_validate(remote_payload)
             payload = response_model.model_dump(mode="json")
@@ -1318,6 +1324,8 @@ def register_ado_tools(
         include_system_comments: bool = False,
         top: int = 100,
         skip: int = 0,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
     ) -> dict[str, Any]:
         request = AdoPrCommentActivityRequest(
             session_id=session_id.strip(),
@@ -1330,6 +1338,8 @@ def register_ado_tools(
             include_system_comments=include_system_comments,
             top=top,
             skip=skip,
+            exhaustive=exhaustive,
+            max_candidates=max_candidates,
         )
         args = request.model_dump(mode="json")
         try:
@@ -1348,6 +1358,8 @@ def register_ado_tools(
                 include_system_comments=request.include_system_comments,
                 top=request.top,
                 skip=request.skip,
+                exhaustive=request.exhaustive,
+                max_candidates=request.max_candidates,
             )
             result = AdoPrCommentActivityResponse.model_validate(response).model_dump(mode="json")
             audit_success(
@@ -1394,6 +1406,8 @@ def register_ado_tools(
         statuses: list[str] | None = None,
         top: int = 100,
         skip: int = 0,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
     ) -> dict[str, Any]:
         request = AdoPrCommitActivityRequest(
             session_id=session_id.strip(),
@@ -1405,6 +1419,8 @@ def register_ado_tools(
             statuses=statuses or [],
             top=top,
             skip=skip,
+            exhaustive=exhaustive,
+            max_candidates=max_candidates,
         )
         args = request.model_dump(mode="json")
         try:
@@ -1422,6 +1438,8 @@ def register_ado_tools(
                 statuses=request.statuses,
                 top=request.top,
                 skip=request.skip,
+                exhaustive=request.exhaustive,
+                max_candidates=request.max_candidates,
             )
             result = AdoPrCommitActivityResponse.model_validate(response).model_dump(mode="json")
             audit_success(

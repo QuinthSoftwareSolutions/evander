@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-09 - ADO Activity Add-on
+
+- Added the opt-in `ado-activity-addon`, with host-side MCP tools and workflow
+  providers for syncing exhaustive Azure DevOps work-item, PR comment, and PR
+  commit activity into a durable SQLite index.
+- Added paged `query:ado:activity` and `query_ado_activity_index` surfaces for
+  fast indexed weekly activity reads without rerunning the slow live ADO scans.
+
 ## 2026-07-08 - Configurable Shell Helper Secrets File
 
 - Added `EVANDER_SECRETS_ENV_FILE` for host-side shell helpers, preserving
@@ -10,6 +18,15 @@
   per-agent key repair.
 - Embedded configured secrets-file paths into Git SSH forced commands as
   `EVANDER_SECRETS_ENV_FILE_B64` for direct bootstrap compatibility.
+
+## 2026-07-08 - ADO Activity Attribution And Scan Bounds
+
+- Corrected Azure DevOps work-item update activity attribution to prefer each
+  revision's semantic `System.ChangedBy` and `System.ChangedDate` field values,
+  while suppressing metadata-only update rows.
+- Bounded default ADO work-item, PR comment, and PR commit activity scans to 50
+  candidates with `max_candidates`/`exhaustive` controls and explicit partial
+  scan metadata in paging responses.
 
 ## 2026-07-08 - Admin Web Configuration Permission Errors
 

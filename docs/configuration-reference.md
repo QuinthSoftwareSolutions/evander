@@ -198,6 +198,15 @@ environment; optional
 `provider_state.bokio.integration_token_env` can point the add-on at different
 environment variable names without storing the token value in config.
 
+For the bundled ADO Activity Add-on, enabling `ado-activity-addon` exposes the
+`sync_ado_activity_index` and `query_ado_activity_index` MCP tools, and makes
+`effect:ado:sync-activity-index` and `query:ado:activity` workflow providers
+available when the trigger/effect orchestrators use the same add-on loader. It
+stores a durable SQLite index under
+`runtime/addons/ado-activity-addon/state.db`. Syncs reuse the host-side Azure
+DevOps credentials from the selected directory config; PR comment/commit syncs
+require `repo`, while work-item syncs can run by project/work-item filters.
+
 Wake sockets are internal runtime artifacts, not operator-facing config fields. The trigger worker
 listens on the path derived from `lock_path` with `.wake.sock`, and the effect worker listens on the
 path derived from `effect_lock_path` with `.wake.sock`.
@@ -596,6 +605,7 @@ Type-specific keys:
 | `effect:ado:add-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:remove-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
+| `effect:ado:sync-activity-index` | `since` | `until`, `directory_path`, `scope`, `actor`, `project`, `repo`, `states`, `types`, `tags_any`, `statuses`, `include_system_comments`, `outputs` |
 | `effect:pull-request:add-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `organization_url`, `project`, `outputs` |
 | `effect:pull-request:remove-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `organization_url`, `project`, `outputs` |
 | `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
@@ -788,6 +798,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 |---|---|---|
 | `query:agent:artifact-text` | `session_id`, `path` | `vm_user`, `outputs` |
 | `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
+| `query:ado:activity` | `since` | `until`, `directory_path`, `actor`, `activity_kinds`, `project`, `repo`, `work_item_id`, `pr_id`, `top`, `cursor`, `include_raw`, `outputs` |
 | `query:remote-issues` | `provider` | `directory_path`, ADO: `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`; GitHub: `repo`, `state`, `labels_any`, `labels_all`, `assignee`, `author`, `mentioned`, `milestone`, `since`; common: `text_search`, `top`, `skip`, `outputs` |
 | `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
