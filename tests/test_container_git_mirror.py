@@ -68,6 +68,13 @@ def _has_ref(bare_repo: Path, ref: str) -> bool:
     return completed.returncode == 0
 
 
+def _bare_config(bare_repo: Path, key: str) -> str:
+    return _git_stdout(
+        ["git", f"--git-dir={bare_repo}", "config", "--get", key],
+        cwd=ROOT,
+    )
+
+
 def test_container_git_mirror_resolves_remote_url_to_private_ssh_mirror(
     tmp_path: Path,
 ) -> None:
@@ -175,6 +182,29 @@ def test_container_git_mirror_honors_explicit_bare_repo_name(tmp_path: Path) -> 
     )
 
     assert _has_ref(mirror.mirror_path, "refs/heads/release/preserve")
+
+
+def test_container_git_mirror_explicit_bare_repo_uses_local_source_without_canonical_fetch(
+    tmp_path: Path,
+) -> None:
+    source = _source_repo(tmp_path / "true-app")
+    canonical = f"file://{tmp_path / 'unreachable-canonical.git'}"
+    _run(["git", "remote", "add", "origin", canonical], cwd=source)
+    _run(["git", "config", "branch.main.remote", "origin"], cwd=source)
+    _run(["git", "config", "branch.main.merge", "refs/heads/main"], cwd=source)
+
+    mirror = _resolver(tmp_path).resolve(
+        repo_source=str(source),
+        canonical_repo_source=canonical,
+        bare_repo_name="true-app.git",
+        clone_branch="main",
+    )
+
+    assert mirror.canonical_repo_source == canonical
+    assert _has_ref(mirror.mirror_path, "refs/heads/main")
+    assert _bare_config(mirror.mirror_path, "evander.mirrorSyncRemote") == "0"
+    assert _bare_config(mirror.mirror_path, "evander.mirrorForceLocal") == "1"
+    assert _bare_config(mirror.mirror_path, "evander.canonicalOriginUrl") == canonical
 
 
 @pytest.mark.parametrize(

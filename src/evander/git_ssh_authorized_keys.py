@@ -30,6 +30,14 @@ class InstalledGitAuthorizedKey:
     allowed_from: str
 
 
+@dataclass(frozen=True)
+class InstalledGitReadPrefixAuthorizedKey:
+    authorized_keys_path: Path
+    public_key_body: str
+    authorized_repo_prefix: Path
+    allowed_from: str
+
+
 def authorized_keys_path_for_user(git_user: str) -> Path:
     normalized = str(git_user or "").strip()
     if not normalized:
@@ -39,6 +47,39 @@ def authorized_keys_path_for_user(git_user: str) -> Path:
     except KeyError as exc:
         raise ValueError(f"Git user does not exist: {normalized}") from exc
     return Path(home) / ".ssh" / "authorized_keys"
+
+
+def install_git_read_prefix_authorized_key(
+    *,
+    public_key: str,
+    git_root: str | Path,
+    allowed_from: str,
+    wrapper_path: str | Path,
+    authorized_keys_path: str | Path,
+) -> InstalledGitReadPrefixAuthorizedKey:
+    public_key_line, public_key_body = _validated_public_key_line(public_key)
+    git_root_real = Path(git_root).resolve(strict=False)
+    wrapper_real = Path(wrapper_path).resolve(strict=False)
+    if not wrapper_real.exists():
+        raise ValueError(f"Git SSH wrapper does not exist: {wrapper_real}")
+    allowed_from_value = _validate_authorized_keys_option_value(allowed_from, "allowed_from")
+    forced_command = _authorized_read_prefix_forced_command(
+        repo_prefix=git_root_real,
+        wrapper_path=wrapper_real,
+    )
+    entry = (
+        f'from="{allowed_from_value}",no-agent-forwarding,no-port-forwarding,'
+        f'no-pty,no-user-rc,no-X11-forwarding,command="{_escape_authorized_command(forced_command)}" '
+        f"{public_key_line}"
+    )
+    path = Path(authorized_keys_path)
+    _replace_authorized_key_entry(path, public_key_body, entry)
+    return InstalledGitReadPrefixAuthorizedKey(
+        authorized_keys_path=path,
+        public_key_body=public_key_body,
+        authorized_repo_prefix=git_root_real,
+        allowed_from=allowed_from_value,
+    )
 
 
 def install_git_write_authorized_key(
@@ -148,6 +189,20 @@ def _authorized_write_forced_command(
         f" EVANDER_GIT_AUTH_SESSION_ID_B64={_one_line_base64(session_id)}"
         f" EVANDER_GIT_AUTH_REF_PREFIX_B64={_one_line_base64(ref_prefix)}"
         f" EVANDER_GIT_AUTH_PR_NOTES_REF_B64={_one_line_base64(pr_notes_ref)}"
+        f" {wrapper_path}"
+    )
+
+
+def _authorized_read_prefix_forced_command(
+    *,
+    repo_prefix: Path,
+    wrapper_path: Path,
+) -> str:
+    repo_prefix_text = str(repo_prefix)
+    return (
+        f"EVANDER_GIT_ROOT_B64={_one_line_base64(repo_prefix_text)}"
+        " EVANDER_GIT_AUTH_ACCESS=read-only"
+        f" EVANDER_GIT_AUTH_REPO_PREFIX_B64={_one_line_base64(repo_prefix_text)}"
         f" {wrapper_path}"
     )
 

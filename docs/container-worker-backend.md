@@ -411,7 +411,10 @@ URLs to the clone API. The control plane resolves and refreshes a deterministic 
 the configured `git_root`, rewrites the worker clone URL to `ssh://<git_ssh_alias><git_root>/<mirror>.git`,
 and fails before contacting the worker if the upstream refresh fails or the requested branch is not
 present. The in-container repo can still record the canonical upstream URL with Git `insteadOf`, but
-all fetch and push traffic goes through the private restricted-SSH mirror.
+all fetch and push traffic goes through the private restricted-SSH mirror. When a Team project names
+an explicit local mirror with `bare_repo_name` or `bare_repo_path`, the control plane refreshes that
+mirror from the configured host checkout and records the canonical origin only as metadata; it does
+not contact the host checkout's upstream remote during agent wake preparation.
 
 Clone jobs default to writable Git access. The control plane asks the worker daemon to generate a
 per-session SSH key, installs that public key on the control-plane Git user with a forced command

@@ -22,6 +22,10 @@ from evander.admin.web.frontend_assets import (
     missing_admin_frontend_assets,
 )
 from evander.bootstrap import load_runtime_gateway_config
+from evander.git_ssh_authorized_keys import (
+    authorized_keys_path_for_user,
+    install_git_read_prefix_authorized_key,
+)
 from evander.runtime import build_runtime
 
 UTC = timezone.utc
@@ -43,6 +47,9 @@ DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11435/v1"
 LOCAL_CONTAINER_WORKER_SERVICE = "evander-worker-daemon.service"
 LOCAL_CONTAINER_WORKER_ROOT = Path("/var/lib/agent-worker")
 LOCAL_CONTAINER_WORKER_RUNTIME_DIR = LOCAL_CONTAINER_WORKER_ROOT / "runtime"
+LOCAL_CONTAINER_WORKER_GIT_KEY_NAME = "evander-git"
+LOCAL_CONTAINER_WORKER_GIT_SSH_HOST = "127.0.0.1"
+LOCAL_CONTAINER_WORKER_GIT_ALLOWED_FROM = "127.0.0.1"
 
 PROVIDER_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
@@ -957,6 +964,15 @@ class SetupManager:
         self._ensure_container_worker_secret(state)
         run_user = _setup_run_user()
         run_group = _primary_group_for_user(run_user)
+        git_root = _local_worker_git_root(self.project_dir)
+        git_ssh_alias = _local_worker_git_ssh_alias()
+        git_ssh_source_dir = _local_worker_git_ssh_source_dir(run_user)
+        self._ensure_local_container_worker_git_access(
+            git_user=_setup_git_user(),
+            git_root=git_root,
+            git_ssh_alias=git_ssh_alias,
+            git_ssh_source_dir=git_ssh_source_dir,
+        )
         unit_content = self._local_container_worker_unit_content(state, run_user=run_user)
         tmp = (
             Path(os.environ.get("TMPDIR", "/tmp"))
@@ -999,14 +1015,126 @@ class SetupManager:
         finally:
             tmp.unlink(missing_ok=True)
 
+    def _ensure_local_container_worker_git_access(
+        self,
+        *,
+        git_user: str,
+        git_root: Path,
+        git_ssh_alias: str,
+        git_ssh_source_dir: Path,
+    ) -> None:
+        public_key = self._ensure_local_container_worker_git_key(
+            git_ssh_source_dir,
+            key_name=LOCAL_CONTAINER_WORKER_GIT_KEY_NAME,
+        )
+        self._write_local_container_worker_git_ssh_config(
+            git_ssh_source_dir / "config",
+            git_ssh_alias=git_ssh_alias,
+            git_host=LOCAL_CONTAINER_WORKER_GIT_SSH_HOST,
+            git_user=git_user,
+            identity_file=f"~/.ssh/{LOCAL_CONTAINER_WORKER_GIT_KEY_NAME}",
+        )
+        install_git_read_prefix_authorized_key(
+            public_key=public_key,
+            git_root=git_root,
+            allowed_from=LOCAL_CONTAINER_WORKER_GIT_ALLOWED_FROM,
+            wrapper_path=self.project_dir / "scripts" / "git_ssh_command_wrapper.sh",
+            authorized_keys_path=authorized_keys_path_for_user(git_user),
+        )
+
+    def _ensure_local_container_worker_git_key(self, ssh_dir: Path, *, key_name: str) -> str:
+        ssh_dir.mkdir(parents=True, exist_ok=True)
+        ssh_dir.chmod(0o700)
+        key_path = ssh_dir / key_name
+        pub_path = ssh_dir / f"{key_name}.pub"
+        legacy_key_path = ssh_dir / "agent-sandbox-git"
+        legacy_pub_path = ssh_dir / "agent-sandbox-git.pub"
+        if not key_path.exists() and legacy_key_path.is_file():
+            shutil.copyfile(legacy_key_path, key_path)
+            key_path.chmod(0o600)
+        if key_path.exists() and not pub_path.exists() and legacy_pub_path.is_file():
+            shutil.copyfile(legacy_pub_path, pub_path)
+            pub_path.chmod(0o644)
+        if not key_path.exists() and pub_path.exists():
+            raise ValueError(f"worker Git private key is missing: {key_path}")
+        if not key_path.exists():
+            subprocess.run(
+                [
+                    "ssh-keygen",
+                    "-t",
+                    "ed25519",
+                    "-N",
+                    "",
+                    "-C",
+                    f"{key_name}@local-container-worker",
+                    "-f",
+                    str(key_path),
+                ],
+                check=True,
+            )
+        elif not pub_path.exists():
+            completed = subprocess.run(
+                ["ssh-keygen", "-y", "-f", str(key_path)],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            pub_path.write_text(
+                f"{completed.stdout.strip()} {key_name}@local-container-worker\n",
+                encoding="utf-8",
+            )
+        key_path.chmod(0o600)
+        pub_path.chmod(0o644)
+        return pub_path.read_text(encoding="utf-8").strip()
+
+    def _write_local_container_worker_git_ssh_config(
+        self,
+        config_path: Path,
+        *,
+        git_ssh_alias: str,
+        git_host: str,
+        git_user: str,
+        identity_file: str,
+    ) -> None:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.parent.chmod(0o700)
+        begin = "# BEGIN evander local worker git host"
+        end = "# END evander local worker git host"
+        text = config_path.read_text(encoding="utf-8") if config_path.is_file() else ""
+        for marker_begin, marker_end in (
+            ("# BEGIN evander git host", "# END evander git host"),
+            (begin, end),
+        ):
+            while marker_begin in text and marker_end in text:
+                start = text.index(marker_begin)
+                stop = text.index(marker_end, start) + len(marker_end)
+                suffix = "\n" if stop < len(text) and text[stop : stop + 1] == "\n" else ""
+                text = text[:start].rstrip() + "\n" + text[stop + len(suffix) :].lstrip("\n")
+        block = "\n".join(
+            [
+                begin,
+                f"Host {git_ssh_alias}",
+                f"  HostName {git_host}",
+                f"  User {git_user}",
+                f"  IdentityFile {identity_file}",
+                "  IdentitiesOnly yes",
+                "  StrictHostKeyChecking accept-new",
+                end,
+                "",
+            ]
+        )
+        content = block if not text.strip() else block + "\n" + text.strip() + "\n"
+        config_path.write_text(content, encoding="utf-8")
+        config_path.chmod(0o600)
+
     def _local_container_worker_unit_content(
         self, state: SetupState, *, run_user: str | None = None
     ) -> str:
         run_user = run_user or _setup_run_user()
         container_user = _container_user_for_run_user(run_user)
         git_root = _local_worker_git_root(self.project_dir)
-        git_ssh_alias = os.environ.get("EVANDER_GIT_SSH_ALIAS", "").strip() or "evander-git-host"
-        git_ssh_source_dir = _home_for_user(run_user) / ".ssh"
+        git_ssh_alias = _local_worker_git_ssh_alias()
+        git_ssh_source_dir = _local_worker_git_ssh_source_dir(run_user)
         allowed_git_source_prefix = f"ssh://{git_ssh_alias}{git_root}/"
         worker_host, worker_port = _local_container_worker_bind(state)
         return "\n".join(
@@ -1177,6 +1305,14 @@ def _setup_run_user() -> str:
 
 def _setup_git_user() -> str:
     return os.environ.get("EVANDER_GIT_USER", "").strip() or _setup_run_user()
+
+
+def _local_worker_git_ssh_alias() -> str:
+    return os.environ.get("EVANDER_GIT_SSH_ALIAS", "").strip() or "evander-git-host"
+
+
+def _local_worker_git_ssh_source_dir(run_user: str) -> Path:
+    return _home_for_user(run_user) / ".ssh"
 
 
 def _primary_group_for_user(user: str) -> str:

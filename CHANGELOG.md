@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-09 - Same-Host Worker Git Setup Repair
+
+- Made guided same-host container-worker setup install and authorize the worker
+  read-only Git key with repo-prefix metadata, including repair for legacy
+  `agent-sandbox-git` key filenames.
+
+## 2026-07-09 - Team Project Mirror Wake Prep
+
+- Kept explicit Team project Git mirrors on local host-checkout refresh during
+  container-worker wake prep, recording canonical upstream URLs as metadata
+  without fetching the checkout's upstream remote.
+
 ## 2026-07-09 - Team Add-on Chat Mutation Guidance
 
 - Clarified Team Chat wake prompts when mutations are allowed so agents do not
