@@ -47,9 +47,36 @@ DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11435/v1"
 LOCAL_CONTAINER_WORKER_SERVICE = "evander-worker-daemon.service"
 LOCAL_CONTAINER_WORKER_ROOT = Path("/var/lib/agent-worker")
 LOCAL_CONTAINER_WORKER_RUNTIME_DIR = LOCAL_CONTAINER_WORKER_ROOT / "runtime"
+LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT = LOCAL_CONTAINER_WORKER_ROOT / "toolchain-cache"
 LOCAL_CONTAINER_WORKER_GIT_KEY_NAME = "evander-git"
 LOCAL_CONTAINER_WORKER_GIT_SSH_HOST = "127.0.0.1"
 LOCAL_CONTAINER_WORKER_GIT_ALLOWED_FROM = "127.0.0.1"
+LOCAL_CONTAINER_WORKER_READONLY_MOUNTS = (
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "dotnet",
+        "/opt/evander/toolchains/dotnet",
+    ),
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "dotnet-tools",
+        "/opt/evander/toolchains/dotnet-tools",
+    ),
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "node-v24.14.0",
+        "/opt/evander/toolchains/node-v24.14.0",
+    ),
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "playwright-runtime",
+        "/opt/evander/playwright-runtime",
+    ),
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "ms-playwright",
+        "/opt/evander/ms-playwright",
+    ),
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "nuget-cache-ro",
+        "/opt/evander/nuget-cache-ro",
+    ),
+)
 
 PROVIDER_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
@@ -993,6 +1020,11 @@ class SetupManager:
                     "0750",
                     str(LOCAL_CONTAINER_WORKER_ROOT),
                     str(LOCAL_CONTAINER_WORKER_RUNTIME_DIR),
+                    str(LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT),
+                    *[
+                        str(host_path)
+                        for host_path, _container_path in LOCAL_CONTAINER_WORKER_READONLY_MOUNTS
+                    ],
                 ],
                 check=True,
             )
@@ -1137,6 +1169,10 @@ class SetupManager:
         git_ssh_source_dir = _local_worker_git_ssh_source_dir(run_user)
         allowed_git_source_prefix = f"ssh://{git_ssh_alias}{git_root}/"
         worker_host, worker_port = _local_container_worker_bind(state)
+        readonly_mount_args = " ".join(
+            f"--readonly-mount {host_path}:{container_path}"
+            for host_path, container_path in LOCAL_CONTAINER_WORKER_READONLY_MOUNTS
+        )
         return "\n".join(
             [
                 "[Unit]",
@@ -1160,7 +1196,8 @@ class SetupManager:
                     "--sandbox-profile default "
                     f"--container-user {container_user} "
                     f"--allowed-git-source-prefix {allowed_git_source_prefix} "
-                    f"--git-ssh-source-dir {git_ssh_source_dir}"
+                    f"--git-ssh-source-dir {git_ssh_source_dir} "
+                    f"{readonly_mount_args}"
                 ),
                 "Restart=on-failure",
                 "RestartSec=5",

@@ -369,6 +369,28 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
     assert "--container-user " in unit
     assert f"--allowed-git-source-prefix ssh://evander-git-host{ROOT / 'git-remotes'}/" in unit
     assert "--git-ssh-source-dir /home/operator/.ssh" in unit
+    assert (
+        "--readonly-mount "
+        "/var/lib/agent-worker/toolchain-cache/dotnet:/opt/evander/toolchains/dotnet"
+    ) in unit
+    assert (
+        "--readonly-mount "
+        "/var/lib/agent-worker/toolchain-cache/node-v24.14.0:"
+        "/opt/evander/toolchains/node-v24.14.0"
+    ) in unit
+    assert (
+        "--readonly-mount "
+        "/var/lib/agent-worker/toolchain-cache/playwright-runtime:"
+        "/opt/evander/playwright-runtime"
+    ) in unit
+    assert (
+        "--readonly-mount "
+        "/var/lib/agent-worker/toolchain-cache/ms-playwright:/opt/evander/ms-playwright"
+    ) in unit
+    assert (
+        "--readonly-mount "
+        "/var/lib/agent-worker/toolchain-cache/nuget-cache-ro:/opt/evander/nuget-cache-ro"
+    ) in unit
     assert "Requires=docker.service" in unit
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-09 - Local Container Worker Toolchain Mounts
+
+- Made guided same-host container-worker setup create the local worker
+  toolchain cache directories and mount them read-only into worker containers so
+  generated dotnet, Node, Playwright, browser, and NuGet profile paths resolve
+  at runtime.
+
 ## 2026-07-09 - Team Late Review State Guard
 
 - Reopened accepted deliverables and tasks when a new pending review request is
