@@ -1552,9 +1552,6 @@ function bindRecordEditing() {
         setStatus("This chat history is read-only.", "error");
         return;
       }
-      if (!guardTeamMutation("start chats")) {
-        return;
-      }
       chatNewPickerOpen = !chatNewPickerOpen;
       renderChat();
       return;
@@ -1563,9 +1560,6 @@ function bindRecordEditing() {
     const chatAgentButton = event.target.closest("[data-chat-agent-id]");
     if (chatAgentButton) {
       event.preventDefault();
-      if (!guardTeamMutation("start chats")) {
-        return;
-      }
       void createOrFocusChat(chatAgentButton.dataset.chatAgentId);
       return;
     }
@@ -2069,8 +2063,6 @@ const lockedMutationControlSelectors = [
   ["[data-avatar-upload-agent-id]", "upload avatars"],
   ["[data-avatar-remove-agent-id]", "remove avatars"],
   ["[data-cost-backfill-refresh]", "refresh transcript costs"],
-  ["[data-chat-new]", "start chats"],
-  ["[data-chat-agent-id]", "start chats"],
   ["[data-agent-call-agent-id]", "start voice calls"],
   ["[data-agent-call-mute]", "change voice calls"],
   ["[data-agent-call-end]", "end voice calls"],
@@ -2084,7 +2076,6 @@ const lockedMutationControlSelectors = [
   ["#update-task-form button[type='submit']", "update tasks"],
   ["#decide-review-form button[type='submit']", "record review decisions"],
   ["#edit-record-form button[type='submit']", "save changes"],
-  ["form[data-chat-message-form] button[type='submit']", "send chat messages"],
 ];
 
 function applyLockedMutationControls(root = document) {
@@ -3493,9 +3484,6 @@ function applyChatSnapshot(payload, expectedConversationId) {
 }
 
 async function createOrFocusChat(agentId) {
-  if (!guardTeamMutation("start chats")) {
-    return;
-  }
   const normalizedAgentId = text(agentId);
   if (!normalizedAgentId) {
     return;
@@ -3540,9 +3528,6 @@ async function createOrFocusChat(agentId) {
 }
 
 async function submitChatMessage(form) {
-  if (!guardTeamMutation("send chat messages")) {
-    return;
-  }
   const conversation = selectedChatConversation();
   if (!conversation || chatSending) {
     return;

@@ -122,6 +122,7 @@ class TeamChatService:
         conversation_id: str,
         body: str,
         created_by: str | None = None,
+        allow_team_mutations: bool = True,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, TeamConversationMessage]:
         normalized_conversation_id = _required_text(conversation_id, "conversation_id")
@@ -141,6 +142,18 @@ class TeamChatService:
                 raise ValueError(f"agent {agent.id} is archived")
             now = utc_now()
             message_id = f"chatmsg-{uuid4().hex}"
+            metadata = {
+                key: value
+                for key, value in {
+                    "sender_kind": "human_operator",
+                    "operator_user_id": conversation.operator_user_id,
+                    "operator_display_name": conversation.operator_display_name,
+                    "created_by": normalized_created_by,
+                }.items()
+                if value
+            }
+            if not allow_team_mutations:
+                metadata["allow_team_mutations"] = False
             state.conversation_messages[message_id] = TeamConversationMessage(
                 id=message_id,
                 conversation_id=conversation.id,
@@ -148,16 +161,7 @@ class TeamChatService:
                 message_type="text",
                 body=normalized_body,
                 status="created",
-                metadata={
-                    key: value
-                    for key, value in {
-                        "sender_kind": "human_operator",
-                        "operator_user_id": conversation.operator_user_id,
-                        "operator_display_name": conversation.operator_display_name,
-                        "created_by": normalized_created_by,
-                    }.items()
-                    if value
-                },
+                metadata=metadata,
                 created_at=now,
                 updated_at=now,
             )

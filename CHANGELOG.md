@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-09 - Team Add-on Locked Chat Access
+
+- Allowed the built-in Team chat client to start conversations and send
+  messages while privileged operations are locked, while marking those queued
+  chat wakes as reply-only so locked-mode chat cannot grant Team mutation tools.
+
 ## 2026-07-09 - Team Add-on Chat Scroll Stability
 
 - Kept the built-in Team chat client anchored to the current thread while

@@ -5412,6 +5412,50 @@ test("team add-on Chat send keeps the selected message list anchored during send
   );
 });
 
+test("team add-on Chat remains usable while privileged operations are locked", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+  });
+  const page = await openBrowserPage(
+    t,
+    port,
+    { viewport: { width: 1280, height: 720 } },
+    "/addons/team-addon/?privileged_unlocked=false",
+  );
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator(".chat-thread-title").getByText("Ada").waitFor({ state: "visible" });
+
+  const newChatButton = page.getByRole("button", { name: "New chat" });
+  assert.equal(await newChatButton.isDisabled(), false);
+  assert.equal(await newChatButton.getAttribute("title"), null);
+  await newChatButton.click();
+  const pickerAgent = page.locator('[data-chat-agent-id="scroll-agent-01"]');
+  await pickerAgent.waitFor({ state: "visible" });
+  assert.equal(await pickerAgent.isDisabled(), false);
+  assert.equal(await pickerAgent.getAttribute("title"), null);
+
+  const body = "Please summarize this while the Team lock is enabled.";
+  await page.locator('.chat-composer textarea[name="body"]').fill(body);
+  const sendButton = page.getByRole("button", { name: "Send" });
+  assert.equal(await sendButton.isDisabled(), false);
+  assert.equal(await sendButton.getAttribute("title"), null);
+  await sendButton.click();
+
+  await page.locator(".chat-message").getByText(body).waitFor({ state: "visible" });
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead/messages" &&
+          request.payload?.body === body,
+      ),
+    "expected locked-mode chat send to post through the built-in chat client",
+  );
+});
+
 test("team add-on Chat refresh preserves a conversation selected while the list response is in flight", async (t) => {
   let holdConversationList = false;
   let releaseRefreshResponse = null;
