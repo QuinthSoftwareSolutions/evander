@@ -21,7 +21,8 @@ class AdoActivityRepository:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS activity_records (
-                    activity_id TEXT PRIMARY KEY,
+                    record_key TEXT PRIMARY KEY,
+                    activity_id TEXT NOT NULL,
                     activity_kind TEXT NOT NULL,
                     occurred_at TEXT NOT NULL,
                     actor_display_name TEXT,
@@ -45,33 +46,17 @@ class AdoActivityRepository:
                     source_updated_at TEXT
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_ado_activity_occurred
-                    ON activity_records (occurred_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_ado_activity_kind
-                    ON activity_records (activity_kind);
-                CREATE INDEX IF NOT EXISTS idx_ado_activity_actor_unique
-                    ON activity_records (actor_unique_name);
-                CREATE INDEX IF NOT EXISTS idx_ado_activity_actor_email
-                    ON activity_records (actor_email);
-                CREATE INDEX IF NOT EXISTS idx_ado_activity_directory
-                    ON activity_records (directory_path);
-                CREATE INDEX IF NOT EXISTS idx_ado_activity_project
-                    ON activity_records (project);
-                CREATE INDEX IF NOT EXISTS idx_ado_activity_repo
-                    ON activity_records (repo);
-                CREATE INDEX IF NOT EXISTS idx_ado_activity_work_item
-                    ON activity_records (work_item_id);
-                CREATE INDEX IF NOT EXISTS idx_ado_activity_pr
-                    ON activity_records (pr_id);
-
                 CREATE TABLE IF NOT EXISTS sync_state (
                     sync_key TEXT PRIMARY KEY,
+                    directory_path TEXT,
                     complete_through TEXT,
                     updated_at TEXT NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}'
                 );
                 """
             )
+            self._migrate_schema(conn)
+            self._ensure_indexes(conn)
 
     def upsert_records(self, records: list[Mapping[str, Any]]) -> dict[str, int]:
         if not records:
@@ -83,9 +68,10 @@ class AdoActivityRepository:
         with self._connect() as conn:
             for record in records:
                 activity_id = _required(record, "activity_id")
+                record_key = _record_key(record)
                 existed = conn.execute(
-                    "SELECT 1 FROM activity_records WHERE activity_id = ?",
-                    (activity_id,),
+                    "SELECT 1 FROM activity_records WHERE record_key = ?",
+                    (record_key,),
                 ).fetchone()
                 if existed:
                     updated += 1
@@ -94,6 +80,7 @@ class AdoActivityRepository:
                 conn.execute(
                     """
                     INSERT INTO activity_records (
+                        record_key,
                         activity_id,
                         activity_kind,
                         occurred_at,
@@ -116,8 +103,8 @@ class AdoActivityRepository:
                         ingested_at,
                         source_revision,
                         source_updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(activity_id) DO UPDATE SET
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(record_key) DO UPDATE SET
                         activity_kind = excluded.activity_kind,
                         occurred_at = excluded.occurred_at,
                         actor_display_name = excluded.actor_display_name,
@@ -141,6 +128,7 @@ class AdoActivityRepository:
                         source_updated_at = excluded.source_updated_at
                     """,
                     (
+                        record_key,
                         activity_id,
                         _required(record, "activity_kind"),
                         _to_iso(record.get("occurred_at")),
@@ -237,11 +225,8 @@ class AdoActivityRepository:
                 [*params, limit, offset],
             ).fetchall()
             states = conn.execute(
-                """
-                SELECT sync_key, complete_through, updated_at, metadata_json
-                FROM sync_state
-                ORDER BY sync_key
-                """
+                _sync_state_query(directory_path),
+                _sync_state_params(directory_path),
             ).fetchall()
 
         items = [_row_to_item(row, include_raw=include_raw) for row in rows]
@@ -265,6 +250,7 @@ class AdoActivityRepository:
         self,
         *,
         sync_key: str,
+        directory_path: str | None,
         complete_through: datetime | None,
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
@@ -272,26 +258,208 @@ class AdoActivityRepository:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO sync_state (sync_key, complete_through, updated_at, metadata_json)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO sync_state (
+                    sync_key,
+                    directory_path,
+                    complete_through,
+                    updated_at,
+                    metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(sync_key) DO UPDATE SET
+                    directory_path = excluded.directory_path,
                     complete_through = excluded.complete_through,
                     updated_at = excluded.updated_at,
                     metadata_json = excluded.metadata_json
                 """,
                 (
                     sync_key,
+                    _text(directory_path),
                     _to_iso_or_none(complete_through),
                     _utc_now_iso(),
                     _json_dumps(metadata or {}),
                 ),
             )
 
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        activity_columns = _table_columns(conn, "activity_records")
+        if activity_columns and "record_key" not in activity_columns:
+            conn.execute("ALTER TABLE activity_records RENAME TO activity_records_legacy")
+            conn.executescript(
+                """
+                CREATE TABLE activity_records (
+                    record_key TEXT PRIMARY KEY,
+                    activity_id TEXT NOT NULL,
+                    activity_kind TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    actor_display_name TEXT,
+                    actor_unique_name TEXT,
+                    actor_email TEXT,
+                    directory_path TEXT,
+                    organization_url TEXT,
+                    project TEXT,
+                    repo TEXT,
+                    work_item_id TEXT,
+                    pr_id TEXT,
+                    title TEXT,
+                    state TEXT,
+                    work_item_type TEXT,
+                    url TEXT,
+                    summary TEXT,
+                    changed_fields_json TEXT NOT NULL DEFAULT '{}',
+                    raw_json TEXT NOT NULL DEFAULT '{}',
+                    ingested_at TEXT NOT NULL,
+                    source_revision TEXT,
+                    source_updated_at TEXT
+                );
+                """
+            )
+            for row in conn.execute("SELECT * FROM activity_records_legacy").fetchall():
+                record = dict(row)
+                record["record_key"] = _record_key(record)
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO activity_records (
+                        record_key,
+                        activity_id,
+                        activity_kind,
+                        occurred_at,
+                        actor_display_name,
+                        actor_unique_name,
+                        actor_email,
+                        directory_path,
+                        organization_url,
+                        project,
+                        repo,
+                        work_item_id,
+                        pr_id,
+                        title,
+                        state,
+                        work_item_type,
+                        url,
+                        summary,
+                        changed_fields_json,
+                        raw_json,
+                        ingested_at,
+                        source_revision,
+                        source_updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record["record_key"],
+                        record.get("activity_id"),
+                        record.get("activity_kind"),
+                        record.get("occurred_at"),
+                        record.get("actor_display_name"),
+                        record.get("actor_unique_name"),
+                        record.get("actor_email"),
+                        record.get("directory_path"),
+                        record.get("organization_url"),
+                        record.get("project"),
+                        record.get("repo"),
+                        record.get("work_item_id"),
+                        record.get("pr_id"),
+                        record.get("title"),
+                        record.get("state"),
+                        record.get("work_item_type"),
+                        record.get("url"),
+                        record.get("summary"),
+                        record.get("changed_fields_json") or "{}",
+                        record.get("raw_json") or "{}",
+                        record.get("ingested_at") or _utc_now_iso(),
+                        record.get("source_revision"),
+                        record.get("source_updated_at"),
+                    ),
+                )
+            conn.execute("DROP TABLE activity_records_legacy")
+
+        sync_columns = _table_columns(conn, "sync_state")
+        if sync_columns and "directory_path" not in sync_columns:
+            conn.execute("ALTER TABLE sync_state ADD COLUMN directory_path TEXT")
+            conn.execute(
+                """
+                UPDATE sync_state
+                SET directory_path = CASE
+                    WHEN instr(sync_key, ':') > 0
+                    THEN substr(sync_key, 1, instr(sync_key, ':') - 1)
+                    ELSE NULL
+                END
+                WHERE directory_path IS NULL
+                """
+            )
+
+    def _ensure_indexes(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_occurred
+                ON activity_records (occurred_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_id
+                ON activity_records (activity_id);
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_kind
+                ON activity_records (activity_kind);
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_actor_unique
+                ON activity_records (actor_unique_name);
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_actor_email
+                ON activity_records (actor_email);
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_directory
+                ON activity_records (directory_path);
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_project
+                ON activity_records (project);
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_repo
+                ON activity_records (repo);
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_work_item
+                ON activity_records (work_item_id);
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_pr
+                ON activity_records (pr_id);
+            CREATE INDEX IF NOT EXISTS idx_ado_activity_sync_directory
+                ON sync_state (directory_path);
+            """
+        )
+
     def _connect(self) -> sqlite3.Connection:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+
+def _sync_state_query(directory_path: str | None) -> str:
+    if _text(directory_path) is None:
+        return """
+                SELECT sync_key, complete_through, updated_at, metadata_json
+                FROM sync_state
+                ORDER BY sync_key
+                """
+    return """
+            SELECT sync_key, complete_through, updated_at, metadata_json
+            FROM sync_state
+            WHERE directory_path = ?
+            ORDER BY sync_key
+            """
+
+
+def _sync_state_params(directory_path: str | None) -> tuple[str, ...]:
+    normalized = _text(directory_path)
+    return () if normalized is None else (normalized,)
+
+
+def _record_key(record: Mapping[str, Any]) -> str:
+    return _json_dumps(
+        [
+            _text(record.get("directory_path")),
+            _text(record.get("organization_url")),
+            _text(record.get("project")),
+            _text(record.get("repo")),
+            _required(record, "activity_id"),
+        ]
+    )
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
 
 
 def _row_to_item(row: sqlite3.Row, *, include_raw: bool) -> dict[str, Any]:

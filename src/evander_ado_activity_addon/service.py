@@ -103,6 +103,7 @@ class AdoActivityIndexService:
                         project=project,
                         repo=None,
                     ),
+                    directory_path=directory_path,
                     complete_through=sync_until,
                     metadata={"actor": actor, "states": states or [], "types": types or []},
                 )
@@ -127,6 +128,7 @@ class AdoActivityIndexService:
                         project=project,
                         repo=repo,
                     ),
+                    directory_path=directory_path,
                     complete_through=sync_until,
                     metadata={"actor": actor, "statuses": statuses or []},
                 )
@@ -150,6 +152,7 @@ class AdoActivityIndexService:
                         project=project,
                         repo=repo,
                     ),
+                    directory_path=directory_path,
                     complete_through=sync_until,
                     metadata={"actor": actor, "statuses": statuses or []},
                 )

@@ -4,11 +4,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+
 from evander.addons import AddonContext
+from evander.effects.providers.base import EffectRuntimeContext
 from evander.queries.providers.base import QueryRuntimeContext
 from evander_ado_activity_addon.mcp import register_mcp_tools
-from evander_ado_activity_addon.models import AdoActivityQueryDefinition
-from evander_ado_activity_addon.providers import AdoActivityQueryProvider
+from evander_ado_activity_addon.models import (
+    AdoActivityQueryDefinition,
+    AdoActivitySyncEffectDefinition,
+)
+from evander_ado_activity_addon.providers import (
+    AdoActivityQueryProvider,
+    AdoActivitySyncEffectProvider,
+)
 from evander_ado_activity_addon.repository import AdoActivityRepository
 from evander_ado_activity_addon.service import AdoActivityIndexService
 
@@ -92,6 +102,77 @@ def test_ado_activity_repository_filters_and_pages(tmp_path: Path) -> None:
     assert other_dir["items"] == []
 
 
+def test_ado_activity_repository_scopes_duplicate_activity_ids_by_directory(
+    tmp_path: Path,
+) -> None:
+    repo = AdoActivityRepository(tmp_path)
+
+    counts = repo.upsert_records(
+        [
+            {
+                "activity_id": "work-item:changed:101:update:5",
+                "activity_kind": "work_item_changed",
+                "occurred_at": datetime(2026, 7, 7, 10, tzinfo=UTC),
+                "directory_path": "root",
+                "project": "APP",
+                "work_item_id": "101",
+                "summary": "Root update",
+            },
+            {
+                "activity_id": "work-item:changed:101:update:5",
+                "activity_kind": "work_item_changed",
+                "occurred_at": datetime(2026, 7, 7, 11, tzinfo=UTC),
+                "directory_path": "other-dir",
+                "project": "APP",
+                "work_item_id": "101",
+                "summary": "Other directory update",
+            },
+        ]
+    )
+
+    assert counts == {"inserted": 2, "updated": 0}
+    root_result = repo.query(
+        since=datetime(2026, 7, 7, tzinfo=UTC),
+        directory_path="root",
+    )
+    other_result = repo.query(
+        since=datetime(2026, 7, 7, tzinfo=UTC),
+        directory_path="other-dir",
+    )
+    assert root_result["items"][0]["summary"] == "Root update"
+    assert other_result["items"][0]["summary"] == "Other directory update"
+
+
+def test_ado_activity_repository_filters_sync_state_by_directory(tmp_path: Path) -> None:
+    repo = AdoActivityRepository(tmp_path)
+    repo.update_sync_state(
+        sync_key="root:work_items:APP:*",
+        directory_path="root",
+        complete_through=datetime(2026, 7, 8, tzinfo=UTC),
+        metadata={"actor": "alex@example.com"},
+    )
+    repo.update_sync_state(
+        sync_key="other-dir:work_items:Secret:*",
+        directory_path="other-dir",
+        complete_through=datetime(2026, 7, 8, tzinfo=UTC),
+        metadata={"actor": "other@example.com"},
+    )
+
+    result = repo.query(
+        since=datetime(2026, 7, 7, tzinfo=UTC),
+        directory_path="root",
+    )
+
+    assert result["index"]["sync_state"] == [
+        {
+            "sync_key": "root:work_items:APP:*",
+            "complete_through": "2026-07-08T00:00:00.000000Z",
+            "updated_at": result["index"]["sync_state"][0]["updated_at"],
+            "metadata": {"actor": "alex@example.com"},
+        }
+    ]
+
+
 def test_ado_activity_query_provider_reads_index_for_runtime_directory(tmp_path: Path) -> None:
     addon_dir = tmp_path / "addons" / "ado-activity-addon"
     repo = AdoActivityRepository(addon_dir)
@@ -128,6 +209,43 @@ def test_ado_activity_query_provider_reads_index_for_runtime_directory(tmp_path:
     assert result["count"] == 1
     assert result["items"][0]["work_item_id"] == "101"
     assert result["items"][0]["directory_path"] == "root"
+
+
+def test_ado_activity_sync_provider_coerces_json_datetime_values(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class FakeService:
+        def __init__(self, *, addon_runtime_dir, provider_config_resolver) -> None:
+            assert addon_runtime_dir == tmp_path / "addons" / "ado-activity-addon"
+
+        def sync(self, **kwargs):
+            captured.update(kwargs)
+            return {"inserted": 0, "updated": 0, "records": 0}
+
+    monkeypatch.setattr("evander_ado_activity_addon.providers.AdoActivityIndexService", FakeService)
+    provider = AdoActivitySyncEffectProvider()
+    provider.initialize(
+        AdoActivitySyncEffectDefinition(
+            type="effect:ado:sync-activity-index",
+            since=datetime(2026, 7, 1, tzinfo=UTC),
+            scope="work_items",
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    provider.execute(
+        resolved_config={
+            "since": "2026-07-07T00:00:00Z",
+            "until": "2026-07-08T00:00:00Z",
+            "scope": "work_items",
+        }
+    )
+
+    assert captured["since"] == datetime(2026, 7, 7, tzinfo=UTC)
+    assert captured["until"] == datetime(2026, 7, 8, tzinfo=UTC)
 
 
 def test_ado_activity_sync_indexes_work_item_activity(
@@ -259,3 +377,10 @@ def test_ado_activity_mcp_tools_register_and_query_index(tmp_path: Path) -> None
     assert result["count"] == 1
     assert result["items"][0]["pr_id"] == "12"
     assert policy.calls == [("session-1", "query_ado_activity_index")]
+
+    with pytest.raises(ToolError, match="directory_path must match"):
+        tools["query_ado_activity_index"](
+            since="2026-07-07T00:00:00Z",
+            directory_path="other-dir",
+            session_id="session-1",
+        )

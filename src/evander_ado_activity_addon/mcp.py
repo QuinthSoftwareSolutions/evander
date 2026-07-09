@@ -73,9 +73,7 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         session = _require_tool(session_id, ctx, SYNC_ADO_ACTIVITY_INDEX_TOOL)
-        effective_directory_path = (
-            _optional(directory_path) or getattr(session, "directory_path", None) or "root"
-        )
+        effective_directory_path = _session_directory_path(session, requested=directory_path)
         return _service().sync(
             since=_parse_datetime(since),
             until=_parse_optional_datetime(until),
@@ -113,9 +111,7 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         session = _require_tool(session_id, ctx, QUERY_ADO_ACTIVITY_INDEX_TOOL)
-        effective_directory_path = (
-            _optional(directory_path) or getattr(session, "directory_path", None) or "root"
-        )
+        effective_directory_path = _session_directory_path(session, requested=directory_path)
         return _service().query(
             since=_parse_datetime(since),
             until=_parse_optional_datetime(until),
@@ -147,6 +143,14 @@ def _parse_datetime(value: str) -> datetime:
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     return datetime.fromisoformat(text)
+
+
+def _session_directory_path(session: Any, *, requested: str | None) -> str:
+    authorized = _optional(getattr(session, "directory_path", None)) or "root"
+    requested_path = _optional(requested)
+    if requested_path is not None and requested_path != authorized:
+        raise ToolError("directory_path must match the authorized session directory")
+    return authorized
 
 
 def _optional(value: object) -> str | None:

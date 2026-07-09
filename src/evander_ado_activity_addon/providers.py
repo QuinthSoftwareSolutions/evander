@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -76,8 +77,8 @@ class AdoActivityQueryProvider(_AdoActivityProviderMixin, QueryProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = self._payload(resolved_config)
         result = self._service().query(
-            since=_required(payload, "since"),
-            until=payload.get("until"),
+            since=_required_datetime(payload, "since"),
+            until=_optional_datetime(payload.get("until"), "until"),
             actor=_optional(payload.get("actor")),
             activity_kinds=_strings(payload.get("activity_kinds")),
             directory_path=self._directory_path(payload),
@@ -96,8 +97,8 @@ class AdoActivitySyncEffectProvider(_AdoActivityProviderMixin, EffectProviderBas
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = self._payload(resolved_config)
         result = self._service().sync(
-            since=_required(payload, "since"),
-            until=payload.get("until"),
+            since=_required_datetime(payload, "since"),
+            until=_optional_datetime(payload.get("until"), "until"),
             directory_path=self._directory_path(payload),
             scope=str(payload.get("scope") or "all"),
             actor=_optional(payload.get("actor")),
@@ -156,6 +157,32 @@ def _required(payload: Mapping[str, Any], key: str) -> Any:
     if value is None or str(value).strip() == "":
         raise ValueError(f"{key} is required")
     return value
+
+
+def _required_datetime(payload: Mapping[str, Any], key: str) -> datetime:
+    return _datetime_value(_required(payload, key), key)
+
+
+def _optional_datetime(value: Any, key: str) -> datetime | None:
+    if value is None or str(value).strip() == "":
+        return None
+    return _datetime_value(value, key)
+
+
+def _datetime_value(value: Any, key: str) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError as exc:
+            raise ValueError(f"{key} must be an ISO 8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _optional(value: Any) -> str | None:
