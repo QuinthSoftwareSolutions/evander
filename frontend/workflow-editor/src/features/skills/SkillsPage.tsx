@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import { fetchJson, formatTimestamp } from "../admin/api";
+import { ApiError, fetchJson, formatTimestamp } from "../admin/api";
 import type {
   SkillLibraryDetail,
   SkillLibraryItem,
@@ -8,6 +8,21 @@ import type {
   SkillMutationResponse,
   SkillResponse,
 } from "../admin/types";
+
+type SkillWorkflowReference = {
+  scope: string | null;
+  path: string | null;
+  workflow_pack: string | null;
+  node_id: string | null;
+  node_type: string | null;
+  display_name: string | null;
+  field_path: string | null;
+  reference_count: number | null;
+};
+
+type SkillDeleteConflictState = {
+  references: SkillWorkflowReference[];
+};
 
 async function loadSkills(): Promise<SkillLibraryItem[]> {
   const payload = await fetchJson<SkillListResponse>("/api/admin/skills");
@@ -31,6 +46,67 @@ function skillNameFromFileName(fileName: string): string {
   return fileName.replace(/\.md$/i, "").trim();
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function optionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function skillWorkflowReferenceFromPayload(value: unknown): SkillWorkflowReference | null {
+  if (!isRecord(value)) return null;
+  return {
+    scope: optionalString(value.scope),
+    path: optionalString(value.path),
+    workflow_pack: optionalString(value.workflow_pack),
+    node_id: optionalString(value.node_id),
+    node_type: optionalString(value.node_type),
+    display_name: optionalString(value.display_name),
+    field_path: optionalString(value.field_path),
+    reference_count: optionalNumber(value.reference_count),
+  };
+}
+
+function skillDeleteConflictFromError(error: unknown): SkillDeleteConflictState | null {
+  if (!(error instanceof ApiError) || error.status !== 409 || !isRecord(error.payload)) return null;
+  const details = error.payload.details;
+  if (!isRecord(details) || !Array.isArray(details.references)) return null;
+  const references = details.references
+    .map(skillWorkflowReferenceFromPayload)
+    .filter((reference): reference is SkillWorkflowReference => reference !== null);
+  if (references.length === 0) return null;
+  return {
+    references,
+  };
+}
+
+function workflowReferenceTitle(reference: SkillWorkflowReference): string {
+  const label = reference.display_name ?? reference.node_id ?? "Workflow node";
+  return reference.node_type ? `${label} (${reference.node_type})` : label;
+}
+
+function workflowReferenceLocation(reference: SkillWorkflowReference): string {
+  const parts: string[] = [];
+  if (reference.workflow_pack) {
+    parts.push(`Pack ${reference.workflow_pack}`);
+  } else if (reference.scope === "inline") {
+    parts.push("Inline workflow config");
+  } else if (reference.scope) {
+    parts.push(reference.scope);
+  }
+  if (reference.path) parts.push(reference.path);
+  if (reference.field_path) parts.push(reference.field_path);
+  if (reference.reference_count && reference.reference_count > 1) {
+    parts.push(`${reference.reference_count} references`);
+  }
+  return parts.join(" / ") || "Workflow reference";
+}
+
 export function SkillsPage() {
   const [items, setItems] = useState<SkillLibraryItem[]>([]);
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -44,6 +120,7 @@ export function SkillsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [deleteConflict, setDeleteConflict] = useState<SkillDeleteConflictState | null>(null);
 
   const selectedSummary = useMemo(
     () => items.find((item) => item.name === selectedName) ?? null,
@@ -58,6 +135,8 @@ export function SkillsPage() {
       if (current && nextItems.some((item) => item.name === current)) return current;
       return nextItems[0]?.name ?? null;
     });
+    setError(null);
+    setDeleteConflict(null);
   }
 
   useEffect(() => {
@@ -73,8 +152,12 @@ export function SkillsPage() {
             : nextItems[0]?.name ?? null,
         );
         setError(null);
+        setDeleteConflict(null);
       } catch (reason: unknown) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+          setDeleteConflict(null);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -99,8 +182,12 @@ export function SkillsPage() {
         setSelectedSkill(detail);
         setEditContent(detail.content);
         setError(null);
+        setDeleteConflict(null);
       } catch (reason: unknown) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+          setDeleteConflict(null);
+        }
       }
     };
     void refresh();
@@ -113,12 +200,14 @@ export function SkillsPage() {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".md")) {
       setError("Only Markdown files are accepted.");
+      setDeleteConflict(null);
       return;
     }
     setUploadFileName(file.name);
     setUploadContent(await file.text());
     setUploadName((current) => current || skillNameFromFileName(file.name));
     setError(null);
+    setDeleteConflict(null);
   }
 
   async function handleUpload(event: FormEvent) {
@@ -139,8 +228,10 @@ export function SkillsPage() {
       setReplaceExisting(false);
       await refreshSkills(payload.skill.name);
       setError(null);
+      setDeleteConflict(null);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      setDeleteConflict(null);
       setStatus(null);
     } finally {
       setBusy(null);
@@ -162,8 +253,10 @@ export function SkillsPage() {
       setStatus(`Saved ${payload.skill.name}.`);
       await refreshSkills(payload.skill.name);
       setError(null);
+      setDeleteConflict(null);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      setDeleteConflict(null);
       setStatus(null);
     } finally {
       setBusy(null);
@@ -183,8 +276,10 @@ export function SkillsPage() {
       setStatus(`Deleted ${deletedName}.`);
       await refreshSkills(null);
       setError(null);
+      setDeleteConflict(null);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      setDeleteConflict(skillDeleteConflictFromError(reason));
       setStatus(null);
     } finally {
       setBusy(null);
@@ -236,7 +331,24 @@ export function SkillsPage() {
           </div>
         </div>
 
-        {error ? <div className="callout warning-callout">{error}</div> : null}
+        {error ? (
+          <div className="callout warning-callout">
+            <div>{error}</div>
+            {deleteConflict ? (
+              <div className="skill-delete-conflict">
+                <div className="skill-delete-conflict-heading">Workflow references</div>
+                <ul className="skill-delete-reference-list" aria-label="Workflow references">
+                  {deleteConflict.references.map((reference, index) => (
+                    <li key={`${reference.workflow_pack ?? "inline"}:${reference.node_id ?? index}:${index}`}>
+                      <strong>{workflowReferenceTitle(reference)}</strong>
+                      <span>{workflowReferenceLocation(reference)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {status ? <div className="callout">{status}</div> : null}
 
         <div className="detail-grid skills-detail-grid">

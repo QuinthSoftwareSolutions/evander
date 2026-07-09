@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-09 - Skill Delete Workflow Reference Guard
+
+- Blocked deletion of managed Codex skills that are still referenced by workflow
+  create-agent/create-VM effects, returning conflict details instead of silently
+  changing workflow behavior.
+
 ## 2026-07-09 - Same-Host Worker Git Setup Repair
 
 - Made guided same-host container-worker setup install and authorize the worker
