@@ -107,10 +107,17 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /chatReadMarkers/);
   assert.match(script, /chatConversationHasUnread/);
   assert.match(script, /team-view-tab-badge/);
+  assert.match(script, /chatNotificationSoundStorageKey/);
+  assert.match(script, /data-chat-notification-sound/);
+  assert.match(script, /maybePlayChatNotificationSound/);
+  assert.match(script, /maybePlayChatCollectionNotificationSound/);
+  assert.match(script, /document\.hasFocus/);
+  assert.match(script, /AudioContext/);
   assert.match(
     stylesheet,
     /\.chat-sidebar\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0, auto\) minmax\(0, 1fr\);/,
   );
+  assert.match(stylesheet, /\.chat-sound-toggle/);
   assert.match(stylesheet, /\.chat-conversation-row\.has-unread/);
   assert.match(stylesheet, /\.chat-unread-badge/);
   assert.match(stylesheet, /\.team-view-tab\.has-unread/);
@@ -1895,7 +1902,14 @@ async function createTeamAddonServer(
   });
   const address = server.address();
   assert.ok(address && typeof address === "object" && "port" in address);
-  return { port: address.port, requests, state, timelineRequests, costResponses, chatRequests };
+  const emitChatSnapshots = (conversationId = null) => {
+    for (const stream of openChatStreams) {
+      if (conversationId === null || stream.conversationId === conversationId) {
+        writeChatStreamSnapshot(stream, state);
+      }
+    }
+  };
+  return { port: address.port, requests, state, timelineRequests, costResponses, chatRequests, emitChatSnapshots };
 }
 
 function materializationDuplicateError(state, payload, template) {
@@ -5453,6 +5467,125 @@ test("team add-on Chat remains usable while privileged operations are locked", a
           request.payload?.body === body,
       ),
     "expected locked-mode chat send to post through the built-in chat client",
+  );
+});
+
+test("team add-on Chat notification sound is gated by focus and sender", async (t) => {
+  const { port, emitChatSnapshots, requests, state } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator(".chat-thread-title").getByText("Ada").waitFor({ state: "visible" });
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "GET" &&
+          request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead/stream",
+      ),
+    "expected selected chat stream to open",
+  );
+
+  await page.evaluate(() => {
+    class FakeAudioContext {
+      constructor() {
+        this.currentTime = 1;
+        this.destination = {};
+        this.state = "running";
+      }
+
+      createOscillator() {
+        return {
+          frequency: {
+            setValueAtTime() {},
+            exponentialRampToValueAtTime() {},
+          },
+          connect() {},
+          disconnect() {},
+          start(time) {
+            window.__teamChatSoundStarts = [...(window.__teamChatSoundStarts || []), time];
+          },
+          stop() {},
+          set onended(_handler) {},
+        };
+      }
+
+      createGain() {
+        return {
+          gain: {
+            setValueAtTime() {},
+            exponentialRampToValueAtTime() {},
+          },
+          connect() {},
+          disconnect() {},
+        };
+      }
+
+      resume() {
+        return Promise.resolve();
+      }
+    }
+
+    Object.defineProperty(window, "AudioContext", { configurable: true, value: FakeAudioContext });
+    Object.defineProperty(document, "hasFocus", { configurable: true, value: () => false });
+  });
+
+  const conversation = state.conversations["conversation-alpha-lead"];
+  state.revision += 1;
+  state.conversation_messages["sound-operator"] = {
+    id: "sound-operator",
+    conversation_id: conversation.id,
+    sender: "operator",
+    message_type: "text",
+    body: "Operator message should not chime.",
+    status: "sent",
+    dispatch_id: null,
+    voice_session_id: null,
+    source_message_id: null,
+    error: null,
+    metadata: {},
+    created_at: "2026-06-09T03:00:00Z",
+    updated_at: "2026-06-09T03:00:00Z",
+  };
+  conversation.last_message_preview = "Operator message should not chime.";
+  conversation.updated_at = "2026-06-09T03:00:00Z";
+  conversation.last_interaction_at = "2026-06-09T03:00:00Z";
+  emitChatSnapshots(conversation.id);
+  await page.locator(".chat-message").getByText("Operator message should not chime.").waitFor({
+    state: "visible",
+  });
+  assert.equal(await page.evaluate(() => (window.__teamChatSoundStarts || []).length), 0);
+
+  state.revision += 1;
+  state.conversation_messages["sound-agent"] = {
+    id: "sound-agent",
+    conversation_id: conversation.id,
+    sender: "agent",
+    message_type: "text",
+    body: "Agent message should chime.",
+    status: "sent",
+    dispatch_id: null,
+    voice_session_id: null,
+    source_message_id: null,
+    error: null,
+    metadata: {},
+    created_at: "2026-06-09T03:01:00Z",
+    updated_at: "2026-06-09T03:01:00Z",
+  };
+  conversation.last_message_preview = "Agent message should chime.";
+  conversation.updated_at = "2026-06-09T03:01:00Z";
+  conversation.last_interaction_at = "2026-06-09T03:01:00Z";
+  emitChatSnapshots(conversation.id);
+
+  await page.locator(".chat-message").getByText("Agent message should chime.").waitFor({
+    state: "visible",
+  });
+  await waitForCondition(
+    async () => (await page.evaluate(() => (window.__teamChatSoundStarts || []).length)) === 1,
+    "expected an unfocused incoming agent chat message to play one notification sound",
   );
 });
 

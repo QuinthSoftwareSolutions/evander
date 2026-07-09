@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-09 - Team Add-on Chat Notification Sound
+
+- Added an optional built-in Team chat notification chime for newly received
+  agent messages when the operator window is not focused, with a compact
+  per-browser sound toggle and debounce.
+
 ## 2026-07-09 - Team Add-on Locked Chat Access
 
 - Allowed the built-in Team chat client to start conversations and send

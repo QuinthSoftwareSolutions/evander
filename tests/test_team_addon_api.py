@@ -1882,6 +1882,12 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "chatReadMarkers" in script.text
     assert "chatConversationHasUnread" in script.text
     assert "team-view-tab-badge" in script.text
+    assert "chatNotificationSoundStorageKey" in script.text
+    assert "data-chat-notification-sound" in script.text
+    assert "maybePlayChatNotificationSound" in script.text
+    assert "maybePlayChatCollectionNotificationSound" in script.text
+    assert "document.hasFocus" in script.text
+    assert "AudioContext" in script.text
     assert "syncTeamStateFromChatPayload(payload)" in script.text
     assert "new EventSource" in script.text
     assert 'document.addEventListener("visibilitychange"' in script.text
@@ -1910,6 +1916,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".chat-conversation-row.has-unread" in stylesheet.text
     assert ".chat-unread-badge" in stylesheet.text
     assert ".team-view-tab.has-unread" in stylesheet.text
+    assert ".chat-sound-toggle" in stylesheet.text
     assert ".field-tooltip-bubble" in stylesheet.text
     assert ".cost-counter" in stylesheet.text
     assert ".cost-counter--warning" in stylesheet.text

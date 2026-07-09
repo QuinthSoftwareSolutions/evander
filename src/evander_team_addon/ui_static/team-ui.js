@@ -80,6 +80,7 @@ const defaultPlanningTaskStates = new Set([
 const defaultTeamView = "people";
 const teamViewStorageKey = "team-addon:active-view";
 const chatReadStorageKey = "team-addon:chat:read-markers";
+const chatNotificationSoundStorageKey = "team-addon:chat:notification-sound-muted";
 const noTeamRecordId = "__teamless__";
 const noTeamRecordName = "No team";
 const teamViewIds = new Set([
@@ -138,6 +139,9 @@ let chatSending = false;
 let chatStream = null;
 let chatStreamConversationId = null;
 let chatStreamErrorRefreshPending = false;
+let chatNotificationSoundMuted = readChatNotificationSoundMuted();
+let chatNotificationAudioContext = null;
+let lastChatNotificationSoundAt = 0;
 let bootstrapLoaded = false;
 const loadedTeamViews = new Set();
 const loadingTeamViews = new Map();
@@ -211,6 +215,7 @@ const projectRecordPageSize = 10;
 const chatMessagePageSize = 50;
 const chatTopLoadThresholdPx = 48;
 const chatBottomStickinessPx = 96;
+const chatNotificationSoundThrottleMs = 1500;
 const teamRequestTimeoutMs = 60000;
 let pendingChatScroll = null;
 const chatOlderMessageLoads = new Set();
@@ -1417,6 +1422,13 @@ function bindForms() {
   });
 
   document.addEventListener("change", (event) => {
+    const soundToggle = event.target?.closest?.("[data-chat-notification-sound]");
+    if (soundToggle instanceof HTMLInputElement) {
+      chatNotificationSoundMuted = !soundToggle.checked;
+      storeChatNotificationSoundMuted();
+      return;
+    }
+
     const select = event.target?.closest?.("[data-chat-operator-select]");
     if (!select) {
       return;
@@ -3218,7 +3230,11 @@ function applyChatCollectionPayload(
   if (requestId !== chatRequestId) {
     return;
   }
+  const previousConversations = new Map(
+    chatState.conversations.map((conversation) => [text(conversation.id), conversation]),
+  );
   chatState = normalizeChat(payload);
+  maybePlayChatCollectionNotificationSound(previousConversations, chatState.conversations);
   selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
   syncStateAgentsFromChat(chatState);
   const responseCandidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
@@ -3458,6 +3474,7 @@ function applyChatSnapshot(payload, expectedConversationId) {
   if (!conversation?.id || text(conversation.id) !== text(expectedConversationId)) {
     return;
   }
+  const previousConversation = chatConversationById(expectedConversationId);
   chatState = normalizeChat({ ...chatState, ...chatScopeFields(payload) });
   const scrollSnapshot = captureChatScroll(expectedConversationId);
   const shouldStickToBottom =
@@ -3466,6 +3483,10 @@ function applyChatSnapshot(payload, expectedConversationId) {
     chatIsScrolledNearBottom(expectedConversationId);
   syncTeamStateFromChatPayload(payload);
   replaceChatConversation(conversation);
+  maybePlayChatNotificationSound(
+    previousConversation,
+    chatConversationById(expectedConversationId),
+  );
   chatState = {
     ...chatState,
     loading: false,
@@ -6976,6 +6997,95 @@ function storeChatReadMarkers() {
   }
 }
 
+function readChatNotificationSoundMuted() {
+  try {
+    return window.localStorage.getItem(chatNotificationSoundStorageKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function storeChatNotificationSoundMuted() {
+  try {
+    window.localStorage.setItem(chatNotificationSoundStorageKey, String(chatNotificationSoundMuted));
+  } catch {
+    // Storage can be unavailable in hardened browser contexts.
+  }
+}
+
+function maybePlayChatNotificationSound(previousConversation, nextConversation) {
+  if (chatNotificationSoundMuted || chatWindowIsFocused()) {
+    return;
+  }
+  if (!previousConversation || !nextConversation) {
+    return;
+  }
+  const previousNewestMessageId = chatConversationNewestMessageId(previousConversation);
+  const nextNewestMessageId = chatConversationNewestMessageId(nextConversation);
+  if (!nextNewestMessageId || previousNewestMessageId === nextNewestMessageId) {
+    return;
+  }
+  if (chatConversationNewestSender(nextConversation) === "operator") {
+    return;
+  }
+  const now = Date.now();
+  if (now - lastChatNotificationSoundAt < chatNotificationSoundThrottleMs) {
+    return;
+  }
+  lastChatNotificationSoundAt = now;
+  void playChatNotificationSound().catch(() => {
+    // Browsers may block audio until the operator has interacted with the page.
+  });
+}
+
+function maybePlayChatCollectionNotificationSound(previousConversations, nextConversations) {
+  if (!(previousConversations instanceof Map) || !Array.isArray(nextConversations)) {
+    return;
+  }
+  nextConversations.forEach((conversation) => {
+    const conversationId = text(conversation?.id);
+    if (conversationId) {
+      maybePlayChatNotificationSound(previousConversations.get(conversationId), conversation);
+    }
+  });
+}
+
+function chatWindowIsFocused() {
+  return typeof document.hasFocus === "function"
+    ? document.hasFocus()
+    : document.visibilityState === "visible";
+}
+
+async function playChatNotificationSound() {
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  if (typeof AudioContextConstructor !== "function") {
+    return;
+  }
+  if (!chatNotificationAudioContext || chatNotificationAudioContext.state === "closed") {
+    chatNotificationAudioContext = new AudioContextConstructor();
+  }
+  if (chatNotificationAudioContext.state === "suspended") {
+    await chatNotificationAudioContext.resume();
+  }
+  const audioTime = chatNotificationAudioContext.currentTime;
+  const oscillator = chatNotificationAudioContext.createOscillator();
+  const gain = chatNotificationAudioContext.createGain();
+  oscillator.type = "sine";
+  oscillator.frequency.setValueAtTime(880, audioTime);
+  oscillator.frequency.exponentialRampToValueAtTime(1320, audioTime + 0.08);
+  gain.gain.setValueAtTime(0.0001, audioTime);
+  gain.gain.exponentialRampToValueAtTime(0.12, audioTime + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, audioTime + 0.18);
+  oscillator.connect(gain);
+  gain.connect(chatNotificationAudioContext.destination);
+  oscillator.onended = () => {
+    oscillator.disconnect();
+    gain.disconnect();
+  };
+  oscillator.start(audioTime);
+  oscillator.stop(audioTime + 0.2);
+}
+
 function chatConversationNewestMessageId(conversation) {
   return text(conversation?.newest_message_id) || text(conversationMessages(conversation).at(-1)?.id);
 }
@@ -7315,6 +7425,17 @@ function renderChatThreadHeader(conversation, agent, label, readOnly) {
         </div>
       </div>
       <div class="chat-thread-actions">
+        <label
+          class="chat-sound-toggle"
+          title="Play a short sound when agent messages arrive and this window is not focused."
+        >
+          <input
+            type="checkbox"
+            data-chat-notification-sound
+            ${chatNotificationSoundMuted ? "" : "checked"}
+          />
+          <span>Sound</span>
+        </label>
         <button
           type="button"
           data-agent-call-agent-id="${escapeAttr(conversation.agent_id)}"
