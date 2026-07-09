@@ -642,7 +642,6 @@ auto_refresh_mirror() {
   local mirror_source mirror_remote_name mirror_sync_remote mirror_force_local mirror_auto_refresh source_mode resolved_repo_path
   local stored_base_branch preferred_base_branch default_base_branch local_default_ref remote_default_ref
   local local_ahead remote_ahead
-  local sync_failed=0
   local stage_namespace="refs/evander/staged-mirror"
   local -a mirror_args=()
   local -a mirror_refspecs=()
@@ -750,14 +749,15 @@ auto_refresh_mirror() {
       exit 1
     fi
 
-    if ! git_fetch_remote_with_auth "${resolved_repo_path}" "${mirror_remote_name}" --prune >/dev/null 2>&1; then
-      sync_failed=1
+    if ! git_fetch_remote_with_auth "${resolved_repo_path}" "${mirror_remote_name}" --prune >/dev/null; then
+      echo "Failed to refresh mirror source remote '${mirror_remote_name}' in ${resolved_repo_path}; refusing to serve stale refs." >&2
+      exit 1
     fi
 
     default_base_branch="$(
       default_base_branch_for_remote "${resolved_repo_path}" "${mirror_remote_name}" "${preferred_base_branch}"
     )"
-    if (( sync_failed == 0 )) && [[ -n "${default_base_branch}" ]]; then
+    if [[ -n "${default_base_branch}" ]]; then
       local_default_ref="refs/heads/${default_base_branch}"
       remote_default_ref="refs/remotes/${mirror_remote_name}/${default_base_branch}"
       if git -C "${resolved_repo_path}" show-ref --verify --quiet "${local_default_ref}" \

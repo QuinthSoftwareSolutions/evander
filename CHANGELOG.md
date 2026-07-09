@@ -18,6 +18,8 @@
   per-agent key repair.
 - Granted the configured Git SSH user least-privilege access to migrated local
   secrets files so stamped mirrors can refresh from private canonical remotes.
+- Refused to serve stale Git mirror refs when `mirrorSyncRemote` requires a
+  trusted checkout remote fetch and that fetch fails.
 
 ## 2026-07-08 - ADO Activity Attribution And Scan Bounds
 
