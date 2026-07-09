@@ -21,6 +21,29 @@ from evander.admin.services.vm_agent.common import (
 
 
 class VmAgentRepoMixin:
+    def _record_mirror_secrets_env_file(self, bare_repo_path: Path) -> None:
+        secrets_env_file = os.environ.get("EVANDER_SECRETS_ENV_FILE", "").strip()
+        if not secrets_env_file:
+            return
+        if "\n" in secrets_env_file or "\r" in secrets_env_file:
+            raise RuntimeError("EVANDER_SECRETS_ENV_FILE must be a single-line path")
+        result = _run_subprocess(
+            [
+                "git",
+                f"--git-dir={bare_repo_path}",
+                "config",
+                "evander.secretsEnvFile",
+                secrets_env_file,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                (result.stderr or result.stdout or "").strip()
+                or f"Failed to record secrets env file for {bare_repo_path}"
+            )
+
     def _resolve_repo_source(self, repo_source: str) -> tuple[str, str]:
         resolve_script = self.project_dir / "scripts" / "resolve_repo_source.sh"
         path_result = _run_subprocess(
@@ -157,6 +180,7 @@ class VmAgentRepoMixin:
                 (mirror_force_local_result.stderr or mirror_force_local_result.stdout or "").strip()
                 or f"Failed to record mirror force-local policy for {bare_repo_path}"
             )
+        self._record_mirror_secrets_env_file(bare_repo_path)
         canonical_origin_url = _resolve_canonical_origin_url_for_repo(
             resolved_repo_path, mirror_remote_name
         )

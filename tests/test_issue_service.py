@@ -1403,6 +1403,135 @@ def test_query_work_item_activity_filters_created_comments_and_updates(
     }
 
 
+def test_query_work_item_activity_uses_update_changed_by_for_actor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "My Project", "pat"),
+    )
+
+    def make_responses() -> list[httpx.Response]:
+        return [
+            httpx.Response(200, json={"workItems": [{"id": 101}]}),
+            httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": 101,
+                            "fields": {
+                                "System.TeamProject": "My Project",
+                                "System.Title": "Activity item",
+                                "System.State": "Active",
+                                "System.WorkItemType": "Task",
+                            },
+                        }
+                    ]
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "id": 101,
+                    "fields": {
+                        "System.TeamProject": "My Project",
+                        "System.Title": "Activity item",
+                        "System.State": "Active",
+                        "System.WorkItemType": "Task",
+                    },
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": 5,
+                            "rev": 5,
+                            "revisedDate": "2026-06-02T10:00:00Z",
+                            "revisedBy": {
+                                "displayName": "Jonathan Quinth",
+                                "uniqueName": "jonathan@example.com",
+                            },
+                            "fields": {
+                                "System.ChangedBy": {
+                                    "newValue": {
+                                        "displayName": "Other User",
+                                        "uniqueName": "other@example.com",
+                                    }
+                                },
+                                "System.ChangedDate": {"newValue": "2026-06-02T10:00:00Z"},
+                                "System.Tags": {
+                                    "oldValue": "old-tag",
+                                    "newValue": "old-tag; review",
+                                },
+                            },
+                        },
+                        {
+                            "id": 6,
+                            "rev": 6,
+                            "revisedDate": "2026-06-02T11:00:00Z",
+                            "revisedBy": {
+                                "displayName": "Jonathan Quinth",
+                                "uniqueName": "jonathan@example.com",
+                            },
+                            "fields": {
+                                "System.ChangedBy": {
+                                    "newValue": {
+                                        "displayName": "Other User",
+                                        "uniqueName": "other@example.com",
+                                    }
+                                },
+                                "System.ChangedDate": {"newValue": "2026-06-02T11:00:00Z"},
+                                "System.Rev": {"newValue": 6},
+                                "System.Watermark": {"newValue": 12345},
+                            },
+                        },
+                    ]
+                },
+            ),
+        ]
+
+    calls: list[dict[str, object]] = []
+    current_responses = {"items": make_responses()}
+    monkeypatch.setattr(
+        "evander.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, current_responses["items"]),
+    )
+
+    wrong_actor_result = adapter.query_work_item_activity(
+        directory_path="root",
+        actor="jonathan@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        until=datetime(2026, 6, 3, tzinfo=UTC),
+        activity_types=["changed"],
+    )
+    assert wrong_actor_result["count"] == 0
+
+    current_responses["items"] = make_responses()
+    result = adapter.query_work_item_activity(
+        directory_path="root",
+        actor="other@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        until=datetime(2026, 6, 3, tzinfo=UTC),
+        activity_types=["changed"],
+    )
+
+    assert result["count"] == 1
+    activities = result["items"][0]["activities"]
+    assert len(activities) == 1
+    activity = activities[0]
+    assert activity["actor"] == "Other User"
+    assert activity["actor_identity"]["unique_name"] == "other@example.com"
+    assert activity["summary"] == "Updated fields: System.Tags"
+    assert activity["fields"] == {
+        "System.Tags": {"oldValue": "old-tag", "newValue": "old-tag; review"}
+    }
+
+
 @pytest.mark.parametrize(
     ("skip", "expected_ids", "expected_next_skip"),
     [
@@ -1510,6 +1639,84 @@ def test_query_work_item_activity_paginates_after_activity_filtering(
     batch_body = calls[1]["json"]
     assert isinstance(batch_body, dict)
     assert batch_body["ids"] == [202, 101, 102]
+
+
+def test_query_work_item_activity_bounds_candidate_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "My Project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"workItems": [{"id": 101}, {"id": 102}, {"id": 103}]}),
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {"id": 101, "fields": {"System.Title": "First"}},
+                    {"id": 102, "fields": {"System.Title": "Second"}},
+                ]
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "id": 101,
+                "fields": {
+                    "System.TeamProject": "My Project",
+                    "System.Title": "First",
+                    "System.CreatedDate": "2026-06-02T10:00:00Z",
+                    "System.CreatedBy": {
+                        "displayName": "Alex Example",
+                        "uniqueName": "alex@example.com",
+                    },
+                },
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "id": 102,
+                "fields": {
+                    "System.TeamProject": "My Project",
+                    "System.Title": "Second",
+                    "System.CreatedDate": "2026-06-02T11:00:00Z",
+                    "System.CreatedBy": {
+                        "displayName": "Alex Example",
+                        "uniqueName": "alex@example.com",
+                    },
+                },
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "evander.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses),
+    )
+
+    result = adapter.query_work_item_activity(
+        directory_path="root",
+        actor="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        until=datetime(2026, 6, 3, tzinfo=UTC),
+        activity_types=["created"],
+        max_candidates=2,
+    )
+
+    assert [item["id"] for item in result["items"]] == ["101", "102"]
+    assert result["paging"]["candidate_scanned_count"] == 2
+    assert result["paging"]["candidate_scan_complete"] is False
+    assert result["paging"]["total_matches_complete"] is False
+    assert result["paging"]["total_activity_matches_complete"] is False
+    assert result["paging"]["has_more"] is True
+    batch_body = calls[1]["json"]
+    assert isinstance(batch_body, dict)
+    assert batch_body["ids"] == [101, 102]
+    assert all("103" not in str(call["url"]) for call in calls)
 
 
 def test_delete_issue_soft_delete_uses_destroy_false_and_returns_payload_project(

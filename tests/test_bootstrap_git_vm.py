@@ -160,6 +160,39 @@ def test_bootstrap_git_vm_atomically_replaces_existing_valid_guest_public_key_en
     assert "keep-me" in updated_authorized_keys
 
 
+def test_bootstrap_git_vm_does_not_embed_configured_secrets_env_file(tmp_path: Path) -> None:
+    _, bootstrap_script = _copy_bootstrap_sandbox(tmp_path)
+    home = tmp_path / "home"
+    ssh_dir = home / ".ssh"
+    ssh_dir.mkdir(parents=True)
+    key_path = tmp_path / "guest-key"
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key_path)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    public_key = key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
+    authorized_keys = ssh_dir / "authorized_keys"
+    fake_bin = _write_fake_bin(tmp_path)
+    secrets_env_file = tmp_path / "local-secrets.env"
+    env = _bootstrap_env(tmp_path, home, public_key, fake_bin)
+    env["EVANDER_SECRETS_ENV_FILE"] = str(secrets_env_file)
+
+    result = subprocess.run(
+        [str(bootstrap_script), "vm-test"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    updated_authorized_keys = authorized_keys.read_text(encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+    assert "EVANDER_SECRETS_ENV_FILE" not in updated_authorized_keys
+    assert str(secrets_env_file) not in updated_authorized_keys
+
+
 def test_bootstrap_git_vm_preserves_authorized_keys_group_during_atomic_replace(
     tmp_path: Path,
 ) -> None:

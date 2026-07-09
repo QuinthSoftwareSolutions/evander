@@ -704,6 +704,35 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
     assert messages[1]["body"] == "The dependency task is still open."
 
 
+def test_team_addon_admin_api_allows_locked_chat_as_reply_only(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path, unlock_privileged=False)
+
+    created = client.post(
+        "/api/addons/team-addon/conversations",
+        json={"agent_id": "backend", "expected_revision": repo.read().revision},
+    )
+
+    assert created.status_code == 201
+    conversation = created.json()["conversations"][0]
+
+    sent = client.post(
+        f"/api/addons/team-addon/conversations/{conversation['id']}/messages",
+        json={
+            "body": "Can you summarize the blocker?",
+            "expected_revision": created.json()["revision"],
+        },
+    )
+
+    assert sent.status_code == 202
+    message = sent.json()["message"]
+    assert message["status"] == "queued"
+    assert message["metadata"]["allow_team_mutations"] is False
+    reread = TeamStateRepository(tmp_path / "runtime").read()
+    stored_message = reread.conversation_messages[message["id"]]
+    assert stored_message.metadata["allow_team_mutations"] is False
+
+
 def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     tmp_path: Path,
     monkeypatch,
@@ -1853,6 +1882,12 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "chatReadMarkers" in script.text
     assert "chatConversationHasUnread" in script.text
     assert "team-view-tab-badge" in script.text
+    assert "chatNotificationSoundStorageKey" in script.text
+    assert "data-chat-notification-sound" in script.text
+    assert "maybePlayChatNotificationSound" in script.text
+    assert "maybePlayChatCollectionNotificationSound" in script.text
+    assert "document.hasFocus" in script.text
+    assert "AudioContext" in script.text
     assert "syncTeamStateFromChatPayload(payload)" in script.text
     assert "new EventSource" in script.text
     assert 'document.addEventListener("visibilitychange"' in script.text
@@ -1881,6 +1916,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert ".chat-conversation-row.has-unread" in stylesheet.text
     assert ".chat-unread-badge" in stylesheet.text
     assert ".team-view-tab.has-unread" in stylesheet.text
+    assert ".chat-sound-toggle" in stylesheet.text
     assert ".field-tooltip-bubble" in stylesheet.text
     assert ".cost-counter" in stylesheet.text
     assert ".cost-counter--warning" in stylesheet.text

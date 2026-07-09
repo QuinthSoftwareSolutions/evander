@@ -110,6 +110,7 @@ from .domain.release_packages import _build_release_package
 from .domain.review import (
     _cascade_review_decision,
     _is_review_decision_state,
+    _reopen_accepted_deliverable_for_pending_review,
     _review_profile_for_request,
 )
 from .domain.work_due import _mark_agent_work_due
@@ -2530,7 +2531,7 @@ class TeamAdminService:
                     f"reviewer {normalized_reviewer_agent_id} is not in the same team as deliverable "
                     f"{normalized_deliverable_id}"
                 )
-            _profile, profile_error = _review_profile_for_request(
+            profile, profile_error = _review_profile_for_request(
                 state_model,
                 profile_id=review_profile_id,
                 expected_team_id=reviewer.team_id,
@@ -2539,11 +2540,14 @@ class TeamAdminService:
             )
             if profile_error is not None:
                 raise ValueError(profile_error)
+            effective_review_profile_id = review_profile_id
+            if profile is not None and effective_review_profile_id is None:
+                effective_review_profile_id = profile.id
             effective_review_request_id = normalized_review_request_id or _generated_id(
                 prefix="review",
                 labels=[
                     normalized_deliverable_id,
-                    review_profile_id or normalized_reviewer_agent_id,
+                    effective_review_profile_id or normalized_reviewer_agent_id,
                 ],
                 existing_ids=state_model.review_requests,
             )
@@ -2552,15 +2556,16 @@ class TeamAdminService:
                 effective_review_request_id,
                 "review request",
             )
+            now = utc_now()
             review = ReviewRequest(
                 id=effective_review_request_id,
                 deliverable_id=normalized_deliverable_id,
                 reviewer_agent_id=normalized_reviewer_agent_id,
                 state=state,
                 findings=findings or [],
-                review_profile_id=review_profile_id,
+                review_profile_id=effective_review_profile_id,
                 instructions=instructions,
-                created_at=utc_now(),
+                created_at=now,
                 decision_at=decision_at,
             )
             state_model.review_requests[review.id] = review
@@ -2568,6 +2573,18 @@ class TeamAdminService:
                 deliverable.review_request_ids,
                 review.id,
             )
+            if state in {
+                TeamRecordState.PENDING,
+                TeamRecordState.IN_PROGRESS,
+                TeamRecordState.BLOCKED,
+            }:
+                reopened = _reopen_accepted_deliverable_for_pending_review(
+                    deliverable=deliverable,
+                    task=task,
+                    now=now,
+                )
+                if reopened:
+                    _recalculate_project_status(state_model, task.project_id)
             return state_model
 
         return self._repository.update(_mutate, expected_revision=expected_revision)

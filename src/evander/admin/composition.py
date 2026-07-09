@@ -471,7 +471,10 @@ def _build_admin_runtime_components(
         )
     )
     worker_control_admin = WorkerControlAdminService()
-    skill_admin = SkillAdminService(skill_library)
+    skill_admin = SkillAdminService(
+        skill_library,
+        workflow_config_admin=workflow_config_admin,
+    )
     approval_audit_admin = ApprovalAuditAdminService(
         ApprovalAuditAdminDependencies(
             runtime=runtime,

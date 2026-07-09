@@ -30,6 +30,14 @@ BUNDLED_ADDON_MANIFESTS = {
     "bokio-addon": "evander_bokio_addon",
     "skatteverket-addon": "evander_skatteverket_addon",
     "mssql-seed-addon": "evander_mssql_seed_addon",
+    "ado-activity-addon": "evander_ado_activity_addon",
+}
+BUNDLED_ADDON_PACKAGE_DATA = {
+    "evander_team_addon": ["addon.json", "ui_static/*"],
+    "evander_bokio_addon": ["addon.json", "ui_static/*"],
+    "evander_skatteverket_addon": ["addon.json", "ui_static/*"],
+    "evander_mssql_seed_addon": ["addon.json", "ui_static/*"],
+    "evander_ado_activity_addon": ["addon.json"],
 }
 
 
@@ -81,6 +89,23 @@ def test_bundled_bokio_addon_packaging_contract_is_declared() -> None:
     assert (PROJECT_ROOT / "src/evander_bokio_addon/ui_static/bokio-ui.css").is_file()
 
 
+def test_bundled_ado_activity_addon_packaging_contract_is_declared() -> None:
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    addon_entry_points = pyproject["project"]["entry-points"]["evander.addons"]
+    package_data = pyproject["tool"]["setuptools"]["package-data"]
+
+    assert addon_entry_points["ado_activity"] == "evander_ado_activity_addon:register_addon"
+    assert package_data["evander_ado_activity_addon"] == ["addon.json"]
+    assert json.loads(
+        (PROJECT_ROOT / "src/evander_ado_activity_addon/addon.json").read_text(encoding="utf-8")
+    ) == {"addon_id": "ado-activity-addon", "module": "evander_ado_activity_addon"}
+
+    addon = importlib.import_module("evander_ado_activity_addon").register_addon()
+    assert addon.mcp_tools is not None
+    assert addon.workflow_providers is not None
+
+
 def test_bundled_addon_manifests_are_scannable_from_src() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     package_data = pyproject["tool"]["setuptools"]["package-data"]
@@ -99,7 +124,7 @@ def test_bundled_addon_manifests_are_scannable_from_src() -> None:
             "addon_id": addon_id,
             "module": module_name,
         }
-        assert package_data[module_name] == ["addon.json", "ui_static/*"]
+        assert package_data[module_name] == BUNDLED_ADDON_PACKAGE_DATA[module_name]
         assert discovered[addon_id].source == f"package:src/{module_name}"
         assert discovered[addon_id].error is None
 
@@ -793,3 +818,32 @@ def test_bundled_bokio_addon_workflow_providers_are_optional() -> None:
     catalog_entries = {entry.type: entry for entry in enabled.workflow_editor_catalog_entries}
     assert catalog_entries["query:bokio:company"].label == "Bokio company"
     assert catalog_entries["effect:bokio:create-bank-payment"].description
+
+
+def test_bundled_ado_activity_addon_workflow_providers_are_optional() -> None:
+    disabled = load_provider_plugins(
+        module_names=[],
+        include_entry_points=False,
+        include_builtin=False,
+    )
+    assert "query:ado:activity" not in disabled.query_providers
+    assert "effect:ado:sync-activity-index" not in disabled.effect_providers
+
+    enabled = load_provider_plugins(
+        module_names=[],
+        include_entry_points=False,
+        include_builtin=False,
+        addon_loader=AddonLoaderConfig(
+            modules=["evander_ado_activity_addon"],
+            enabled_addon_ids=["ado-activity-addon"],
+        ),
+    )
+
+    assert "addon:ado-activity-addon" in enabled.loaded_plugins
+    assert "query:ado:activity" in enabled.query_providers
+    assert "effect:ado:sync-activity-index" in enabled.effect_providers
+    assert "query:ado:activity" in enabled.node_definition_resolvers
+    assert "effect:ado:sync-activity-index" in enabled.node_definition_resolvers
+    catalog_entries = {entry.type: entry for entry in enabled.workflow_editor_catalog_entries}
+    assert catalog_entries["query:ado:activity"].label == "ADO activity index query"
+    assert catalog_entries["effect:ado:sync-activity-index"].description

@@ -2972,6 +2972,208 @@ def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
     assert client.get("/api/admin/skills/demo.skill").status_code == 404
 
 
+def test_admin_web_delete_skill_blocks_inline_workflow_references(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+    _unlock_privileged_operations(client)
+    assert (
+        client.post(
+            "/api/admin/skills",
+            json={"name": "demo.skill", "content": "# Demo\n"},
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/admin/skills",
+            json={"name": "keep.skill", "content": "# Keep\n"},
+        ).status_code
+        == 201
+    )
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "effects": [
+                {
+                    "id": "create-agent",
+                    "display_name": "Create agent",
+                    "type": "effect:agent:create",
+                    "execution_backend": "container_worker_vm",
+                    "session_id": "agent-session",
+                    "codex_skills": ["demo.skill", "keep.skill"],
+                },
+                {
+                    "id": "create-vm",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-skill-test",
+                    "codex_skills": ["demo.skill"],
+                },
+            ],
+            "edges": [],
+        },
+        "layout": {"nodes": {}},
+        "expected_revision": _workflow_expected_revision(client),
+    }
+    save_response = client.put("/api/workflow-editor/document", json=payload)
+    assert save_response.status_code == 200
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    saved_config_before_delete = config_path.read_text(encoding="utf-8")
+
+    delete_response = client.delete("/api/admin/skills/demo.skill")
+
+    assert delete_response.status_code == 409
+    assert (
+        delete_response.json()["error"]
+        == "Cannot delete Codex skill demo.skill: it is referenced by workflows."
+    )
+    assert config_path.read_text(encoding="utf-8") == saved_config_before_delete
+    assert client.get("/api/admin/skills/demo.skill").status_code == 200
+    details = delete_response.json()["details"]
+    assert details["skill_name"] == "demo.skill"
+    references_by_node = {reference["node_id"]: reference for reference in details["references"]}
+    assert set(references_by_node) == {"create-agent", "create-vm"}
+    assert references_by_node["create-agent"] == {
+        "scope": "inline",
+        "path": str(config_path),
+        "node_id": "create-agent",
+        "node_type": "effect:agent:create",
+        "display_name": "Create agent",
+        "field_path": "config.codex_skills",
+        "reference_count": 1,
+    }
+    assert references_by_node["create-vm"]["field_path"] == "config.codex_skills"
+    assert references_by_node["create-vm"]["scope"] == "inline"
+    saved_config = json.loads(saved_config_before_delete)
+    effects_by_id = {effect["id"]: effect for effect in saved_config["effects"]}
+    assert effects_by_id["create-agent"]["config"]["codex_skills"] == [
+        "demo.skill",
+        "keep.skill",
+    ]
+    assert effects_by_id["create-vm"]["config"]["codex_skills"] == ["demo.skill"]
+    catalog_payload = client.get("/api/workflow-editor/catalog").json()
+    agent_create = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create"
+    )
+    codex_skills = next(
+        field for field in agent_create["fields"] if field["key"] == "codex_skills"
+    )
+    assert codex_skills["options"] == [
+        {"value": "demo.skill", "label": "demo.skill"},
+        {"value": "keep.skill", "label": "keep.skill"},
+    ]
+
+
+def test_admin_web_delete_skill_blocks_workflow_pack_references(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_path = packs_dir / "pack-a.v1.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "graphs": [],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "node": {
+                                "id": "create-agent",
+                                "display_name": "Create agent",
+                                "type": "effect:agent:create",
+                                "config": {
+                                    "execution_backend": "container_worker_vm",
+                                    "session_id": "agent-session",
+                                    "codex_skills": ["demo.skill", "keep.skill"],
+                                },
+                            }
+                        },
+                        {
+                            "id": "create-vm",
+                            "display_name": "Create VM",
+                            "type": "effect:vm:create",
+                            "vm_name": "vm-skill-test",
+                            "codex_skills": "demo.skill",
+                        },
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "workflow_packs": ["pack-a.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+    assert (
+        client.post(
+            "/api/admin/skills",
+            json={"name": "demo.skill", "content": "# Demo\n"},
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/admin/skills",
+            json={"name": "keep.skill", "content": "# Keep\n"},
+        ).status_code
+        == 201
+    )
+    pack_payload_before_delete = pack_path.read_text(encoding="utf-8")
+
+    delete_response = client.delete("/api/admin/skills/demo.skill")
+
+    assert delete_response.status_code == 409
+    assert (
+        delete_response.json()["error"]
+        == "Cannot delete Codex skill demo.skill: it is referenced by workflows."
+    )
+    assert pack_path.read_text(encoding="utf-8") == pack_payload_before_delete
+    assert client.get("/api/admin/skills/demo.skill").status_code == 200
+    details = delete_response.json()["details"]
+    assert details["skill_name"] == "demo.skill"
+    references_by_node = {reference["node_id"]: reference for reference in details["references"]}
+    assert references_by_node["create-agent"] == {
+        "scope": "pack",
+        "path": str(pack_path),
+        "node_id": "create-agent",
+        "node_type": "effect:agent:create",
+        "display_name": "Create agent",
+        "field_path": "config.codex_skills",
+        "reference_count": 1,
+        "workflow_pack": "pack-a.v1.json",
+    }
+    assert references_by_node["create-vm"] == {
+        "scope": "pack",
+        "path": str(pack_path),
+        "node_id": "create-vm",
+        "node_type": "effect:vm:create",
+        "display_name": "Create VM",
+        "field_path": "codex_skills",
+        "reference_count": 1,
+        "workflow_pack": "pack-a.v1.json",
+    }
+    pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
+    nodes = pack_payload["ir"]["nodes"]
+    assert nodes[0]["node"]["config"]["codex_skills"] == ["demo.skill", "keep.skill"]
+    assert nodes[1]["codex_skills"] == "demo.skill"
+
+
 def test_admin_web_skills_api_rejects_json_errors(tmp_path: Path) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     assert client.post("/api/admin/privileged/unlock").status_code == 200

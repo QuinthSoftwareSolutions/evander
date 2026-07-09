@@ -7651,6 +7651,53 @@ select {
   grid-template-columns: minmax(18rem, 0.8fr) minmax(22rem, 1.2fr);
 }
 
+.skill-delete-conflict {
+  margin-top: 0.75rem;
+}
+
+.skill-delete-conflict-heading {
+  margin-bottom: 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.skill-delete-reference-list {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.skill-delete-reference-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(134, 86, 0, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.skill-delete-reference-list strong,
+.skill-delete-reference-list span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.skill-delete-reference-list strong {
+  color: #4f3500;
+}
+
+.skill-delete-reference-list span {
+  color: #704f13;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
 .skill-editor {
   min-height: 26rem;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -10138,6 +10185,19 @@ button.mobile-record-card:focus-visible,
   background: #2d2412;
   border-color: rgba(163, 128, 49, 0.34);
   color: #f0d183;
+}
+
+:root[data-theme="dark"] .skill-delete-reference-list li {
+  border-color: rgba(240, 209, 131, 0.16);
+  background: rgba(9, 14, 18, 0.24);
+}
+
+:root[data-theme="dark"] .skill-delete-reference-list strong {
+  color: #ffe1a0;
+}
+
+:root[data-theme="dark"] .skill-delete-reference-list span {
+  color: #d9bd79;
 }
 
 :root[data-theme="dark"] .empty-state {

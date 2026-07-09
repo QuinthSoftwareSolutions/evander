@@ -3826,14 +3826,18 @@ class AzureDevOpsPrQueryProvider:
         include_system_comments: bool = False,
         top: int = 100,
         skip: int = 0,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
     ) -> AdoPrCommentActivityResponse:
         repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         project_name = _normalize_optional_text(project) or self.project
         status_values = _activity_statuses(statuses)
-        pull_requests = self._activity_pull_request_candidates(
+        pull_requests, candidate_scan_complete = self._activity_pull_request_candidates(
             repo=repo,
             project=project_name,
             statuses=status_values,
+            exhaustive=exhaustive,
+            max_candidates=max_candidates,
         )
         comments: list[dict[str, Any]] = []
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -3926,6 +3930,7 @@ class AzureDevOpsPrQueryProvider:
             if skip + len(paged_comments) < total_activity_count
             else None
         )
+        has_more = next_skip is not None or not candidate_scan_complete
         return AdoPrCommentActivityResponse(
             repo=repo,
             project=project_name,
@@ -3935,11 +3940,16 @@ class AzureDevOpsPrQueryProvider:
                 "skip": skip,
                 "top": top,
                 "candidate_count": len(pull_requests),
+                "candidate_scanned_count": len(pull_requests),
+                "candidate_scan_complete": candidate_scan_complete,
                 "total_activity_count": total_activity_count,
+                "total_activity_count_complete": candidate_scan_complete,
                 "returned_count": len(paged_comments),
-                "has_more": next_skip is not None,
+                "has_more": has_more,
                 "next_skip": next_skip,
                 "statuses": status_values,
+                "exhaustive": exhaustive,
+                "max_candidates": _activity_max_candidates(max_candidates),
             },
         )
 
@@ -3954,14 +3964,18 @@ class AzureDevOpsPrQueryProvider:
         statuses: list[str] | None = None,
         top: int = 100,
         skip: int = 0,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
     ) -> AdoPrCommitActivityResponse:
         repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         project_name = _normalize_optional_text(project) or self.project
         status_values = _activity_statuses(statuses)
-        pull_requests = self._activity_pull_request_candidates(
+        pull_requests, candidate_scan_complete = self._activity_pull_request_candidates(
             repo=repo,
             project=project_name,
             statuses=status_values,
+            exhaustive=exhaustive,
+            max_candidates=max_candidates,
         )
         commits: list[dict[str, Any]] = []
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -4035,6 +4049,7 @@ class AzureDevOpsPrQueryProvider:
             if skip + len(paged_commits) < total_activity_count
             else None
         )
+        has_more = next_skip is not None or not candidate_scan_complete
         return AdoPrCommitActivityResponse(
             repo=repo,
             project=project_name,
@@ -4044,11 +4059,16 @@ class AzureDevOpsPrQueryProvider:
                 "skip": skip,
                 "top": top,
                 "candidate_count": len(pull_requests),
+                "candidate_scanned_count": len(pull_requests),
+                "candidate_scan_complete": candidate_scan_complete,
                 "total_activity_count": total_activity_count,
+                "total_activity_count_complete": candidate_scan_complete,
                 "returned_count": len(paged_commits),
-                "has_more": next_skip is not None,
+                "has_more": has_more,
                 "next_skip": next_skip,
                 "statuses": status_values,
+                "exhaustive": exhaustive,
+                "max_candidates": _activity_max_candidates(max_candidates),
             },
         )
 
@@ -4058,23 +4078,32 @@ class AzureDevOpsPrQueryProvider:
         repo: str,
         project: str,
         statuses: list[str],
-    ) -> list[PullRequestItem]:
+        exhaustive: bool,
+        max_candidates: int,
+    ) -> tuple[list[PullRequestItem], bool]:
         page_size = 200
+        candidate_limit = None if exhaustive else _activity_max_candidates(max_candidates)
         candidates: dict[tuple[str, str, str], PullRequestItem] = {}
-        for status in statuses:
+        for status_index, status in enumerate(statuses):
             page_skip = 0
             page_cursor: str | None = None
             seen_pages: set[tuple[int, str | None]] = set()
             while True:
+                remaining = (
+                    None if candidate_limit is None else max(0, candidate_limit - len(candidates))
+                )
+                if remaining == 0:
+                    return list(candidates.values()), False
                 page_key = (page_skip, page_cursor)
                 if page_key in seen_pages:
                     break
                 seen_pages.add(page_key)
+                request_top = page_size if remaining is None else min(page_size, remaining)
                 response = self.list_pull_requests(
                     repo=repo,
                     project=project,
                     status=status,
-                    top=page_size,
+                    top=request_top,
                     skip=page_skip,
                     cursor=page_cursor,
                     include_links=True,
@@ -4082,6 +4111,9 @@ class AzureDevOpsPrQueryProvider:
                 for item in response.pull_requests:
                     candidates[(item.provider, item.repo, item.pr_id)] = item
                 paging = response.paging or {}
+                if candidate_limit is not None and len(candidates) >= candidate_limit:
+                    more_statuses = status_index < len(statuses) - 1
+                    return list(candidates.values()), not (paging.get("has_more") or more_statuses)
                 next_cursor = str(response.next_cursor or paging.get("next_cursor") or "").strip()
                 if next_cursor and next_cursor != page_cursor:
                     page_cursor = next_cursor
@@ -4098,7 +4130,7 @@ class AzureDevOpsPrQueryProvider:
                     break
                 page_skip += len(response.pull_requests)
                 page_cursor = None
-        return list(candidates.values())
+        return list(candidates.values()), True
 
     def list_pull_requests(
         self,
@@ -4884,6 +4916,10 @@ def _activity_statuses(statuses: list[str] | None = None) -> list[str]:
     return [item for item in _expand_pull_request_statuses(statuses=raw) if item is not None]
 
 
+def _activity_max_candidates(value: int) -> int:
+    return max(1, min(int(value), 1000))
+
+
 @dataclass(frozen=True)
 class _PullRequestTagExpression:
     kind: Literal["tag", "and", "or", "not"]
@@ -5221,6 +5257,8 @@ class PrQueryService:
         include_system_comments: bool = False,
         top: int = 100,
         skip: int = 0,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
     ) -> AdoPrCommentActivityResponse:
         provider_name = "azure_devops"
         if provider_name not in self.providers:
@@ -5238,6 +5276,8 @@ class PrQueryService:
             include_system_comments=include_system_comments,
             top=top,
             skip=skip,
+            exhaustive=exhaustive,
+            max_candidates=max_candidates,
         )
 
     def list_ado_pr_commit_activity(
@@ -5251,6 +5291,8 @@ class PrQueryService:
         statuses: list[str] | None = None,
         top: int = 100,
         skip: int = 0,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
     ) -> AdoPrCommitActivityResponse:
         provider_name = "azure_devops"
         if provider_name not in self.providers:
@@ -5267,6 +5309,8 @@ class PrQueryService:
             statuses=statuses,
             top=top,
             skip=skip,
+            exhaustive=exhaustive,
+            max_candidates=max_candidates,
         )
 
     def update_pull_request(

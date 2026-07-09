@@ -30,6 +30,9 @@ Environment:
   EVANDER_MIRROR_SYNC_REMOTE_DEFAULT
                 Default local-source sync mode when no explicit flag is passed.
                 Set to 1 (default) to sync local sources; set to 0 to opt out.
+  EVANDER_SECRETS_ENV_FILE
+                Optional host secrets env file path stored on the bare mirror so
+                future Git SSH forced commands can reload mirror-refresh secrets.
 USAGE
 }
 
@@ -384,6 +387,13 @@ git --git-dir="${BARE_REPO_PATH}" config evander.mirrorSource "${REPO_SOURCE}"
 git --git-dir="${BARE_REPO_PATH}" config evander.mirrorRemoteName "${REMOTE_NAME}"
 git --git-dir="${BARE_REPO_PATH}" config evander.mirrorSyncRemote "${SYNC_REMOTE}"
 git --git-dir="${BARE_REPO_PATH}" config evander.mirrorForceLocal "${FORCE_LOCAL}"
+if [[ -n "${EVANDER_SECRETS_ENV_FILE:-}" ]]; then
+  if [[ "${EVANDER_SECRETS_ENV_FILE}" == *$'\n'* || "${EVANDER_SECRETS_ENV_FILE}" == *$'\r'* ]]; then
+    echo "EVANDER_SECRETS_ENV_FILE must be a single-line path." >&2
+    exit 1
+  fi
+  git --git-dir="${BARE_REPO_PATH}" config evander.secretsEnvFile "${EVANDER_SECRETS_ENV_FILE}"
+fi
 git --git-dir="${BARE_REPO_PATH}" config --unset-all evander.mirrorRefspec >/dev/null 2>&1 || true
 
 CANONICAL_ORIGIN_URL=""

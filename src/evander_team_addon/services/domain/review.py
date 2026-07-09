@@ -55,25 +55,86 @@ def _review_profile_for_request(
     reviewer: PersistentAgent,
 ) -> tuple[ReviewProfile | None, str | None]:
     if profile_id is None:
-        return None, None
+        return _implicit_review_profile_for_request(
+            state,
+            expected_team_id=expected_team_id,
+            project_id=project_id,
+            reviewer=reviewer,
+        )
     profile = state.review_profiles.get(profile_id)
     if profile is None:
         return None, f"review request references missing review profile {profile_id}"
-    if profile.archived:
-        return None, f"review profile {profile_id} is archived"
-    if profile.team_id != expected_team_id:
-        return (
-            None,
-            f"review profile {profile_id} is not in the same team as reviewer {reviewer.id}",
-        )
-    if profile.project_id is not None and profile.project_id != project_id:
-        return None, f"review profile {profile_id} does not apply to project {project_id}"
-    if profile.applicable_role_ids and reviewer.role_id not in profile.applicable_role_ids:
-        return (
-            None,
-            f"review profile {profile_id} does not apply to reviewer role {reviewer.role_id}",
-        )
+    error = _review_profile_request_error(
+        profile,
+        expected_team_id=expected_team_id,
+        project_id=project_id,
+        reviewer=reviewer,
+    )
+    if error is not None:
+        return None, error
     return profile, None
+
+
+def _implicit_review_profile_for_request(
+    state: TeamState,
+    *,
+    expected_team_id: str,
+    project_id: str | None,
+    reviewer: PersistentAgent,
+) -> tuple[ReviewProfile | None, str | None]:
+    candidates = [
+        profile
+        for profile in state.review_profiles.values()
+        if _review_profile_request_error(
+            profile,
+            expected_team_id=expected_team_id,
+            project_id=project_id,
+            reviewer=reviewer,
+        )
+        is None
+    ]
+    if project_id is not None:
+        scoped = [profile for profile in candidates if profile.project_id == project_id]
+        if scoped:
+            candidates = scoped
+        else:
+            candidates = [profile for profile in candidates if profile.project_id is None]
+    else:
+        candidates = [profile for profile in candidates if profile.project_id is None]
+
+    candidates.sort(key=lambda profile: profile.id)
+    if not candidates:
+        return None, None
+    if len(candidates) == 1:
+        return candidates[0], None
+    role_label = reviewer.role_id or "none"
+    project_label = project_id or "none"
+    profile_ids = ", ".join(profile.id for profile in candidates)
+    return (
+        None,
+        "multiple review profiles apply to reviewer role "
+        f"{role_label} for project {project_label}; pass review_profile_id explicitly: "
+        f"{profile_ids}",
+    )
+
+
+def _review_profile_request_error(
+    profile: ReviewProfile,
+    *,
+    expected_team_id: str,
+    project_id: str | None,
+    reviewer: PersistentAgent,
+) -> str | None:
+    if profile.archived:
+        return f"review profile {profile.id} is archived"
+    if profile.team_id != expected_team_id:
+        return f"review profile {profile.id} is not in the same team as reviewer {reviewer.id}"
+    if profile.project_id is not None and profile.project_id != project_id:
+        return f"review profile {profile.id} does not apply to project {project_id}"
+    if profile.applicable_role_ids and reviewer.role_id not in profile.applicable_role_ids:
+        return f"review profile {profile.id} does not apply to reviewer role {reviewer.role_id}"
+    return None
+
 
 def _apply_review_request(
     state: TeamState,
@@ -81,6 +142,7 @@ def _apply_review_request(
     actor: PersistentAgent,
     request: dict[str, Any],
     result: dict[str, Any],
+    projects_to_recalc: set[str] | None = None,
 ) -> str | None:
     deliverable_id = _required_text(request.get("deliverable_id"), "deliverable_id")
     deliverable = state.deliverables.get(deliverable_id)
@@ -120,12 +182,21 @@ def _apply_review_request(
     if profile_error is not None:
         result["errors"].append(profile_error)
         return None
+    if profile is not None and profile_id is None:
+        profile_id = profile.id
     existing_review = _active_review_request_for_reviewer(
         state,
         deliverable_id=deliverable_id,
         reviewer_id=reviewer_id,
     )
+    now = utc_now()
     if existing_review is not None:
+        _reopen_accepted_deliverable_for_pending_review(
+            deliverable=deliverable,
+            task=task,
+            now=now,
+            projects_to_recalc=projects_to_recalc,
+        )
         result.setdefault("existing_review_request_ids", []).append(existing_review.id)
         return existing_review.id
     review_id = _optional_text(request.get("id"))
@@ -138,7 +209,6 @@ def _apply_review_request(
     if review_id in state.review_requests:
         result["errors"].append(f"review request {review_id} already exists")
         return None
-    now = utc_now()
     review = ReviewRequest(
         id=review_id,
         deliverable_id=deliverable_id,
@@ -152,6 +222,12 @@ def _apply_review_request(
     deliverable.review_request_ids = _append_unique(
         deliverable.review_request_ids,
         review.id,
+    )
+    _reopen_accepted_deliverable_for_pending_review(
+        deliverable=deliverable,
+        task=task,
+        now=now,
+        projects_to_recalc=projects_to_recalc,
     )
     payload: dict[str, Any] = {
         "kind": "review_request",
@@ -201,6 +277,26 @@ def _apply_review_request(
         now=now,
     )
     return review.id
+
+
+def _reopen_accepted_deliverable_for_pending_review(
+    *,
+    deliverable: Any,
+    task: Any | None,
+    now: datetime,
+    projects_to_recalc: set[str] | None = None,
+) -> bool:
+    reopened = False
+    if deliverable.state == TeamRecordState.ACCEPTED:
+        deliverable.state = TeamRecordState.PENDING
+        reopened = True
+    if task is not None and task.state == TeamTaskState.ACCEPTED:
+        _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+        task.updated_at = now
+        reopened = True
+    if reopened and task is not None and projects_to_recalc is not None:
+        projects_to_recalc.add(task.project_id)
+    return reopened
 
 def _active_review_request_for_reviewer(
     state: TeamState,
@@ -432,6 +528,7 @@ def _cascade_review_decision(
 __all__ = [
     "_review_profile_for_request",
     "_apply_review_request",
+    "_reopen_accepted_deliverable_for_pending_review",
     "_active_review_request_for_reviewer",
     "_review_request_was_created",
     "_apply_review_decision",

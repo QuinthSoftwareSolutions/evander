@@ -793,6 +793,7 @@ class TeamAgentActionService:
                         actor=agent,
                         request=review_request,
                         result=result,
+                        projects_to_recalc=projects_to_recalc,
                     )
                 except ValueError as exc:
                     _append_action_item_error(result, "review_requests", index, exc)

@@ -8,14 +8,37 @@ from evander.repositories.skills_library import (
     SkillLibraryMetadata,
     SkillLibraryRepository,
     normalize_skill_names,
+    validate_skill_name,
 )
+
+
+class SkillDeletionBlockedByWorkflowReferences(ValueError):
+    def __init__(self, skill_name: str, references: list[dict[str, object]]) -> None:
+        super().__init__(
+            f"Cannot delete Codex skill {skill_name}: it is referenced by workflows."
+        )
+        self.skill_name = skill_name
+        self.references = references
+
+    @property
+    def details(self) -> dict[str, object]:
+        return {
+            "skill_name": self.skill_name,
+            "references": self.references,
+        }
 
 
 class SkillAdminService:
     """Admin service for managed Codex skill-library operations."""
 
-    def __init__(self, skill_library: SkillLibraryRepository) -> None:
+    def __init__(
+        self,
+        skill_library: SkillLibraryRepository,
+        *,
+        workflow_config_admin: Any | None = None,
+    ) -> None:
         self._skill_library = skill_library
+        self._workflow_config_admin = workflow_config_admin
 
     def list_skills(self) -> list[SkillLibraryMetadata]:
         return self._skill_library.list_skills()
@@ -36,7 +59,23 @@ class SkillAdminService:
         return self._skill_library.get_skill(name)
 
     def delete_skill(self, name: str) -> SkillLibraryMetadata:
-        return self._skill_library.delete_skill(name)
+        normalized_name = validate_skill_name(name)
+        if not self._skill_library.has_skill(normalized_name):
+            raise LookupError(f"Unknown skill: {normalized_name}")
+        reference_finder = getattr(
+            self._workflow_config_admin,
+            "find_managed_codex_skill_references",
+            None,
+        )
+        if callable(reference_finder):
+            result = reference_finder(normalized_name)
+            references = list(getattr(result, "references", []) or [])
+            if references:
+                raise SkillDeletionBlockedByWorkflowReferences(
+                    normalized_name,
+                    references,
+                )
+        return self._skill_library.delete_skill(normalized_name)
 
     def validate_managed_codex_skills(
         self, skill_names: list[str] | tuple[str, ...] | None

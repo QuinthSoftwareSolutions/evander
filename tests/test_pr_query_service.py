@@ -1127,11 +1127,92 @@ def test_azure_query_provider_pages_comment_activity_after_scanning_candidates(
         skip=1,
     )
 
-    assert pull_request_queries == [(200, 0)]
+    assert pull_request_queries == [(50, 0)]
     assert result.count == 1
     assert result.comments[0].comment_id == "3"
     assert result.paging["total_activity_count"] == 2
     assert result.paging["has_more"] is False
+
+
+def test_azure_query_provider_bounds_comment_activity_candidate_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pull_request_queries: list[tuple[int | None, int | None]] = []
+    thread_paths: list[str] = []
+    pull_requests = [
+        {
+            "pullRequestId": 17,
+            "title": "First PR",
+            "status": "active",
+            "creationDate": "2026-06-01T00:00:00Z",
+        },
+        {
+            "pullRequestId": 18,
+            "title": "Second PR",
+            "status": "active",
+            "creationDate": "2026-06-02T00:00:00Z",
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pullrequests"):
+            top_value = request.url.params.get("$top")
+            skip_value = request.url.params.get("$skip")
+            top = int(top_value) if top_value is not None else None
+            skip = int(skip_value) if skip_value is not None else 0
+            pull_request_queries.append((top, skip))
+            values = pull_requests[skip : skip + top] if top is not None else pull_requests[skip:]
+            return httpx.Response(200, json={"count": len(values), "value": values})
+        if request.url.path.endswith("/pullRequests/17/threads"):
+            thread_paths.append(request.url.path)
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": 501,
+                            "comments": [
+                                {
+                                    "id": 1,
+                                    "publishedDate": "2026-06-04T10:00:00Z",
+                                    "author": {
+                                        "displayName": "Alex Example",
+                                        "uniqueName": "alex@example.com",
+                                    },
+                                    "content": "Bounded scan comment.",
+                                    "commentType": "text",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+        if request.url.path.endswith("/pullRequests/18/threads"):
+            pytest.fail("bounded activity scan fetched a candidate past max_candidates")
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.list_pr_comment_activity(
+        repo="repo-1",
+        author="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        statuses=["active"],
+        max_candidates=1,
+    )
+
+    assert pull_request_queries == [(1, 0)]
+    assert thread_paths == ["/org/proj/_apis/git/repositories/repo-1/pullRequests/17/threads"]
+    assert result.count == 1
+    assert result.paging["candidate_scanned_count"] == 1
+    assert result.paging["candidate_scan_complete"] is False
+    assert result.paging["total_activity_count_complete"] is False
+    assert result.paging["has_more"] is True
 
 
 def test_azure_query_provider_lists_pr_commit_activity_by_author_and_date(
@@ -1293,8 +1374,83 @@ def test_azure_query_provider_pages_commit_activity_after_scanning_candidates(
         skip=1,
     )
 
-    assert pull_request_queries == [(200, 0)]
+    assert pull_request_queries == [(50, 0)]
     assert result.count == 1
     assert result.commits[0].commit_id == "older"
     assert result.paging["total_activity_count"] == 2
     assert result.paging["has_more"] is False
+
+
+def test_azure_query_provider_bounds_commit_activity_candidate_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pull_request_queries: list[tuple[int | None, int | None]] = []
+    commit_paths: list[str] = []
+    pull_requests = [
+        {
+            "pullRequestId": 17,
+            "title": "First PR",
+            "status": "active",
+            "creationDate": "2026-06-01T00:00:00Z",
+        },
+        {
+            "pullRequestId": 18,
+            "title": "Second PR",
+            "status": "active",
+            "creationDate": "2026-06-02T00:00:00Z",
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pullrequests"):
+            top_value = request.url.params.get("$top")
+            skip_value = request.url.params.get("$skip")
+            top = int(top_value) if top_value is not None else None
+            skip = int(skip_value) if skip_value is not None else 0
+            pull_request_queries.append((top, skip))
+            values = pull_requests[skip : skip + top] if top is not None else pull_requests[skip:]
+            return httpx.Response(200, json={"count": len(values), "value": values})
+        if request.url.path.endswith("/pullRequests/17/commits"):
+            commit_paths.append(request.url.path)
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "commitId": "abc123",
+                            "comment": "Bounded scan commit",
+                            "author": {
+                                "name": "Alex Example",
+                                "email": "alex@example.com",
+                                "date": "2026-06-04T10:00:00Z",
+                            },
+                        }
+                    ]
+                },
+            )
+        if request.url.path.endswith("/pullRequests/18/commits"):
+            pytest.fail("bounded activity scan fetched a candidate past max_candidates")
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.list_pr_commit_activity(
+        repo="repo-1",
+        author="alex@example.com",
+        since=datetime(2026, 6, 1, tzinfo=UTC),
+        statuses=["active"],
+        max_candidates=1,
+    )
+
+    assert pull_request_queries == [(1, 0)]
+    assert commit_paths == ["/org/proj/_apis/git/repositories/repo-1/pullRequests/17/commits"]
+    assert result.count == 1
+    assert result.paging["candidate_scanned_count"] == 1
+    assert result.paging["candidate_scan_complete"] is False
+    assert result.paging["total_activity_count_complete"] is False
+    assert result.paging["has_more"] is True

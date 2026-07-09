@@ -85,6 +85,7 @@ from evander.repositories.orchestration import (
     JsonWorkflowConfigSnapshotRepository,
     SqliteWorkflowConfigSnapshotRepository,
 )
+from evander.repositories.skills_library import validate_skill_name
 from evander.repositories.triggers import (
     JsonTriggerEventRepository,
     TriggerConfigDocument,
@@ -145,6 +146,12 @@ class WorkflowConfigAdminDependencies:
     admin_config_mutation_lock: Callable[[], ContextManager[None]]
     normalize_directory_reference: Callable[[str | None], str]
     workflow_reports_admin: Any | None = None
+
+
+@dataclass(slots=True)
+class WorkflowSkillReferenceSearchResult:
+    skill_name: str
+    references: list[dict[str, object]]
 
 
 class WorkflowConfigAdminService:
@@ -257,6 +264,15 @@ class WorkflowConfigAdminService:
             workflow_pack=workflow_pack,
             actor=actor,
         )
+
+    def find_managed_codex_skill_references(
+        self, skill_name: str
+    ) -> WorkflowSkillReferenceSearchResult:
+        normalized_skill_name = validate_skill_name(skill_name)
+        with self.admin_config_mutation_lock():
+            return self._find_managed_codex_skill_references_unlocked(
+                normalized_skill_name
+            )
 
     def create_workflow_pack(
         self,
@@ -603,6 +619,156 @@ class WorkflowConfigAdminService:
         if not isinstance(workflow_packs, list):
             return []
         return [self._workflow_editor_pack_reference(pack) for pack in workflow_packs]
+
+    @staticmethod
+    def _managed_codex_skill_reference_count(value: object, skill_name: str) -> int:
+        if isinstance(value, list):
+            return sum(
+                1 for item in value if isinstance(item, str) and item.strip() == skill_name
+            )
+        if isinstance(value, str) and "${{" not in value and value.strip() == skill_name:
+            return 1
+        return 0
+
+    @classmethod
+    def _find_managed_codex_skill_references_in_node(
+        cls,
+        node: object,
+        skill_name: str,
+        *,
+        scope: str,
+        path: Path,
+        workflow_pack: str | None = None,
+    ) -> list[dict[str, object]]:
+        if not isinstance(node, dict):
+            return []
+        node_type = str(node.get("type") or "").strip()
+        if node_type not in {"effect:agent:create", "effect:vm:create"}:
+            return []
+
+        references: list[dict[str, object]] = []
+        for container, field_path in (
+            (node, "codex_skills"),
+            (
+                node.get("config") if isinstance(node.get("config"), dict) else None,
+                "config.codex_skills",
+            ),
+        ):
+            if not isinstance(container, dict) or "codex_skills" not in container:
+                continue
+            reference_count = cls._managed_codex_skill_reference_count(
+                container["codex_skills"],
+                skill_name,
+            )
+            if not reference_count:
+                continue
+            reference: dict[str, object] = {
+                "scope": scope,
+                "path": str(path),
+                "node_id": str(node.get("id") or "").strip() or None,
+                "node_type": node_type,
+                "display_name": str(node.get("display_name") or "").strip() or None,
+                "field_path": field_path,
+                "reference_count": reference_count,
+            }
+            if workflow_pack is not None:
+                reference["workflow_pack"] = workflow_pack
+            references.append(reference)
+        return references
+
+    @classmethod
+    def _find_managed_codex_skill_references_in_ir_payload(
+        cls,
+        ir_payload: object,
+        skill_name: str,
+        *,
+        scope: str,
+        path: Path,
+        workflow_pack: str | None = None,
+    ) -> list[dict[str, object]]:
+        if not isinstance(ir_payload, dict):
+            return []
+        nodes = ir_payload.get("nodes")
+        if not isinstance(nodes, list):
+            return []
+
+        references: list[dict[str, object]] = []
+        for entry in nodes:
+            node = entry.get("node") if isinstance(entry, dict) and "node" in entry else entry
+            references.extend(
+                cls._find_managed_codex_skill_references_in_node(
+                    node,
+                    skill_name,
+                    scope=scope,
+                    path=path,
+                    workflow_pack=workflow_pack,
+                )
+            )
+        return references
+
+    @classmethod
+    def _find_managed_codex_skill_references_in_workflow_config_payload(
+        cls,
+        payload: dict[str, object],
+        skill_name: str,
+        *,
+        path: Path,
+    ) -> list[dict[str, object]]:
+        references: list[dict[str, object]] = []
+
+        effects = payload.get("effects")
+        if isinstance(effects, list):
+            for effect in effects:
+                references.extend(
+                    cls._find_managed_codex_skill_references_in_node(
+                        effect,
+                        skill_name,
+                        scope="inline",
+                        path=path,
+                    )
+                )
+
+        references.extend(
+            cls._find_managed_codex_skill_references_in_ir_payload(
+                payload.get("workflow_ir"),
+                skill_name,
+                scope="inline",
+                path=path,
+            )
+        )
+        return references
+
+    def _find_managed_codex_skill_references_unlocked(
+        self, skill_name: str
+    ) -> WorkflowSkillReferenceSearchResult:
+        config_path, _config_exists, raw_config = self._workflow_editor_read_raw_worker_config()
+        references = self._find_managed_codex_skill_references_in_workflow_config_payload(
+            raw_config,
+            skill_name,
+            path=config_path,
+        )
+
+        for pack_reference in self._workflow_editor_configured_pack_references(raw_config):
+            pack_path = self._workflow_editor_pack_path(pack_reference)
+            if not pack_path.exists():
+                continue
+            pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
+            if not isinstance(pack_payload, dict):
+                raise ValueError(f"workflow pack file {pack_path} must contain a JSON object")
+            references.extend(
+                self._find_managed_codex_skill_references_in_ir_payload(
+                    pack_payload.get("ir"),
+                    skill_name,
+                    scope="pack",
+                    path=pack_path,
+                    workflow_pack=pack_reference,
+                )
+            )
+
+        return WorkflowSkillReferenceSearchResult(
+            skill_name=skill_name,
+            references=references,
+        )
 
     def _workflow_editor_read_raw_worker_config(self) -> tuple[Path, bool, dict[str, object]]:
         config_path = self._worker_global_config_path("trigger-orchestrator")

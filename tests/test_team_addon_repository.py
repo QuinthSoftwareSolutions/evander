@@ -7855,6 +7855,72 @@ def test_request_review_command_returns_next_action_hint(tmp_path: Path) -> None
     }
 
 
+def test_request_review_command_applies_matching_profile_and_enqueues_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo, applicable_role_ids=["project__worker"])
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-review")
+
+    state, result = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        deliverable_id="deliverable",
+        reviewer_agent_id="worker",
+        instructions="Check the slice carefully.",
+        request_id="request-review-profile-wake",
+    )
+
+    assert result["success"] is True
+    review = state.review_requests[result["review_request_id"]]
+    assert review.review_profile_id == "profile"
+    review_item = next(
+        item
+        for item in state.inbox.values()
+        if item.payload.get("review_request_id") == result["review_request_id"]
+    )
+    assert review_item.payload["review_profile"]["id"] == "profile"
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["agent_id"] == "worker"
+    outbox_records = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+    assert [record.id for record in outbox_records] == result["outbox_record_ids"]
+    assert outbox_records[0].status == TeamOutboxStatus.PENDING
+    assert outbox_records[0].payload["payload"]["agent_id"] == "worker"
+
+
+def test_submit_deliverable_for_review_command_enqueues_reviewer_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task", owner_agent_id="backend")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit-review")
+
+    _state, result = _command_service(repo).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={"task_id": "task", "summary": "Ready for review."},
+        reviews=[{"reviewer_agent_id": "worker", "instructions": "Check the implementation."}],
+        request_id="request-submit-review-wake",
+    )
+
+    assert result["success"] is True
+    assert result["created_review_request_ids"]
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["agent_id"] == "worker"
+    outbox_records = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+    assert [record.id for record in outbox_records] == result["outbox_record_ids"]
+
+
 def test_request_review_command_is_idempotent_for_active_reviewer_request(
     tmp_path: Path,
 ) -> None:
@@ -8093,6 +8159,64 @@ def test_apply_agent_action_multi_review_holds_back_deliverable(tmp_path: Path) 
     state, _ = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
+            "review_decisions": [{"review_request_id": "review-2", "state": "accepted"}],
+        },
+    )
+    assert state.deliverables["deliverable"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+
+
+def test_apply_agent_action_late_review_request_reopens_accepted_work(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "First review.",
+                }
+            ],
+        },
+    )
+    state, _ = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [{"review_request_id": "review-1", "state": "accepted"}],
+        },
+    )
+    assert state.deliverables["deliverable"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-2",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "lead",
+                    "instructions": "Late release-blocking review.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["created_review_request_ids"] == ["review-2"]
+    assert state.review_requests["review-2"].state == TeamRecordState.PENDING
+    assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    state, _ = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
             "review_decisions": [{"review_request_id": "review-2", "state": "accepted"}],
         },
     )
@@ -10652,6 +10776,72 @@ def test_apply_agent_action_review_request_with_profile(tmp_path: Path) -> None:
     criterion_ids = [c["id"] for c in payload["review_profile"]["criteria"]]
     assert criterion_ids == ["tests", "docs"]
     assert payload["review_profile"]["criteria"][0]["required"] is True
+
+
+def test_apply_agent_action_review_request_auto_selects_matching_profile(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo, applicable_role_ids=["project__worker"])
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "Use the matching checklist.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.review_requests["review-1"].review_profile_id == "profile"
+    inbox_item = next(
+        item
+        for item in state.inbox.values()
+        if item.payload.get("review_request_id") == "review-1"
+    )
+    assert inbox_item.payload["review_profile"]["id"] == "profile"
+
+
+def test_apply_agent_action_review_request_ambiguous_auto_profile_errors(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(
+        repo,
+        profile_id="profile-a",
+        applicable_role_ids=["project__worker"],
+    )
+    _seed_review_profile(
+        repo,
+        profile_id="profile-b",
+        applicable_role_ids=["project__worker"],
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("multiple review profiles apply" in error for error in result["errors"])
+    assert state.review_requests == {}
 
 
 def test_apply_agent_action_review_request_archived_profile_errors(tmp_path: Path) -> None:

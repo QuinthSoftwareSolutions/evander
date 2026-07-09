@@ -116,11 +116,13 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     request_id=normalized_request_id,
                 )
             review_result = {"errors": [], "created_inbox_item_ids": []}
+            projects_to_recalc: set[str] = set()
             created_id = _apply_review_request(
                 state,
                 actor=agent,
                 request=review_payload,
                 result=review_result,
+                projects_to_recalc=projects_to_recalc,
             )
             if created_id is None:
                 raise TeamCommandValidationError(
@@ -133,6 +135,8 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     },
                 )
             review = state.review_requests[created_id]
+            for project_id in sorted(projects_to_recalc):
+                _recalculate_project_status(state, project_id)
             existing_review_ids = list(review_result.get("existing_review_request_ids", []))
             created_review_ids = (
                 [created_id] if _review_request_was_created(review_result, created_id) else []
@@ -158,6 +162,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "created_review_request_ids": created_review_ids,
                     "existing_review_request_ids": existing_review_ids,
                     "created_inbox_item_ids": created_inbox_ids,
+                    "events": list(review_result.get("events") or []),
                     "deliverable_id": review.deliverable_id,
                     "reviewer_agent_id": review.reviewer_agent_id,
                     "intent_recorded": True,

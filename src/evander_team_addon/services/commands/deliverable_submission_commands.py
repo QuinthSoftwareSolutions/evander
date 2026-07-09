@@ -327,6 +327,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                         review_result.get("existing_review_request_ids", [])
                     ),
                     "created_inbox_item_ids": created_inbox_ids,
+                    "events": list(review_result.get("events") or []),
                     "published_artifact_refs": published_refs,
                     "published_deliverable_artifacts": [
                         dict(record) for record in published_records

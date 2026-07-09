@@ -1065,6 +1065,10 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             conversation_id=conversation_id,
             body=_required(payload, "body"),
             created_by=identity["actor"],
+            allow_team_mutations=_request_has_unlocked_privileged_operations(
+                context,
+                request,
+            ),
             expected_revision=_expected_revision(payload),
         )
         conversation = state.conversations[conversation_id]
@@ -2154,9 +2158,20 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             }
         )
 
-    def route(path: str, handler: Any, *, methods: Sequence[str]) -> Route:
+    def route(
+        path: str,
+        handler: Any,
+        *,
+        methods: Sequence[str],
+        require_privileged: bool | None = None,
+    ) -> Route:
         protected_handler = handler
-        if _route_requires_privileged_operations(methods):
+        needs_privileged = (
+            _route_requires_privileged_operations(methods)
+            if require_privileged is None
+            else require_privileged
+        )
+        if needs_privileged:
             protected_handler = _with_privileged_operations(context, protected_handler)
         return Route(path, _with_errors(protected_handler), methods=methods)
 
@@ -2205,7 +2220,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route("/roles/{role_id}", get_role, methods=["GET"]),
         route("/roles/{role_id}", patch_role, methods=["PATCH"]),
         route("/conversations", list_conversations, methods=["GET"]),
-        route("/conversations", create_conversation, methods=["POST"]),
+        route(
+            "/conversations",
+            create_conversation,
+            methods=["POST"],
+            require_privileged=False,
+        ),
         route(
             "/conversations/{conversation_id}",
             get_conversation,
@@ -2225,6 +2245,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             "/conversations/{conversation_id}/messages",
             send_conversation_message,
             methods=["POST"],
+            require_privileged=False,
         ),
         route("/agents", register_agent, methods=["POST"]),
         route("/agents/{agent_id}", patch_agent, methods=["PATCH"]),
@@ -2396,15 +2417,23 @@ def _with_privileged_operations(context: AddonContext, handler):
     return _wrapped
 
 
-def _privileged_operations_locked_response(
+def _request_has_unlocked_privileged_operations(
     context: AddonContext, request: Request
-) -> JSONResponse | None:
+) -> bool:
     auth = getattr(context, "auth", None)
-    if auth is None or not request_has_privileged_operations(
+    if auth is None:
+        return False
+    return request_has_privileged_operations(
         auth=auth,
         service=getattr(context, "service", None),
         request=request,
-    ):
+    )
+
+
+def _privileged_operations_locked_response(
+    context: AddonContext, request: Request
+) -> JSONResponse | None:
+    if not _request_has_unlocked_privileged_operations(context, request):
         return JSONResponse({"error": "Privileged operations are locked."}, status_code=403)
     return None
 

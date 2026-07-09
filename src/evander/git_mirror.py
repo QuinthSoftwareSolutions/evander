@@ -75,11 +75,13 @@ class ContainerGitMirrorResolver:
             mirror_path = self.git_root_path / f"{mirror_name}.git"
         else:
             mirror_name, mirror_path = explicit_mirror_target
+        source_is_remote = _is_remote_git_source(original_repo_source)
         preferred_canonical_repo_source = _optional_text(canonical_repo_source)
         resolved_canonical_repo_source = preferred_canonical_repo_source or self._canonical_repo_source(
             original_repo_source=original_repo_source,
             resolved_repo_path=resolved_repo_path,
         )
+        sync_local_remote = not explicit_project_mirror
 
         with self._mirror_initialization_lock(mirror_name):
             self._ensure_bare_remote(mirror_name)
@@ -90,6 +92,8 @@ class ContainerGitMirrorResolver:
                     original_repo_source=original_repo_source,
                     canonical_repo_source=resolved_canonical_repo_source,
                     preferred_remote_url=preferred_canonical_repo_source,
+                    sync_local_remote=sync_local_remote,
+                    force_local=explicit_project_mirror and not source_is_remote,
                     prune_stale_branches=not explicit_project_mirror,
                 )
                 if clone_branch:
@@ -222,6 +226,8 @@ class ContainerGitMirrorResolver:
         original_repo_source: str,
         canonical_repo_source: str,
         preferred_remote_url: str | None = None,
+        sync_local_remote: bool = True,
+        force_local: bool = False,
         prune_stale_branches: bool = True,
     ) -> None:
         remote_name = _mirror_remote_name_for_repo(
@@ -229,7 +235,7 @@ class ContainerGitMirrorResolver:
             resolved_repo_path,
             preferred_remote_url=preferred_remote_url,
         )
-        if not _is_remote_git_source(original_repo_source):
+        if sync_local_remote and not _is_remote_git_source(original_repo_source):
             _sync_and_validate_local_remote(self, resolved_repo_path, remote_name)
         refspecs = _mirror_fetch_refspecs(self, resolved_repo_path, remote_name)
         if not refspecs:
@@ -251,16 +257,24 @@ class ContainerGitMirrorResolver:
             if _is_remote_git_source(original_repo_source)
             else str(Path(resolved_repo_path).resolve(strict=False))
         )
-        mirror_sync_remote = "1" if _git_remote_url(self, resolved_repo_path, remote_name) else "0"
+        mirror_sync_remote = (
+            "1"
+            if sync_local_remote and _git_remote_url(self, resolved_repo_path, remote_name)
+            else "0"
+        )
+        mirror_force_local = "1" if force_local else "0"
         for key, value in (
             ("evander.trustedRepoPath", str(Path(resolved_repo_path).resolve(strict=False))),
             ("evander.mirrorSource", mirror_source),
             ("evander.mirrorRemoteName", remote_name),
             ("evander.mirrorSyncRemote", mirror_sync_remote),
-            ("evander.mirrorForceLocal", "0"),
+            ("evander.mirrorForceLocal", mirror_force_local),
             ("evander.canonicalOriginUrl", canonical_repo_source),
+            ("evander.secretsEnvFile", self.env.get("EVANDER_SECRETS_ENV_FILE", "").strip()),
         ):
             if value:
+                if key == "evander.secretsEnvFile" and ("\n" in value or "\r" in value):
+                    raise RuntimeError("EVANDER_SECRETS_ENV_FILE must be a single-line path")
                 self._run(["git", f"--git-dir={mirror_path}", "config", key, value])
         default_base_branch = _default_base_branch_for_repo_remote(
             self, resolved_repo_path, remote_name

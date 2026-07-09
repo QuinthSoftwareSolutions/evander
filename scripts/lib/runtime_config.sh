@@ -3,7 +3,29 @@
 load_root_secrets_env() {
   local secrets_env="${ROOT_DIR}/secrets.env"
 
-  [[ -f "${secrets_env}" ]] || return 0
+  if [[ -n "${EVANDER_SECRETS_ENV_FILE:-}" ]]; then
+    secrets_env="${EVANDER_SECRETS_ENV_FILE}"
+  fi
+
+  if [[ -z "${secrets_env}" ]]; then
+    echo "Configured secrets env file path is empty." >&2
+    return 1
+  fi
+
+  if [[ "${secrets_env}" == *$'\n'* || "${secrets_env}" == *$'\r'* ]]; then
+    echo "Configured secrets env file path must be a single line." >&2
+    return 1
+  fi
+
+  [[ -e "${secrets_env}" ]] || return 0
+  if [[ ! -f "${secrets_env}" ]]; then
+    echo "Configured secrets env file is not a file: ${secrets_env}" >&2
+    return 1
+  fi
+  if [[ ! -r "${secrets_env}" ]]; then
+    echo "Configured secrets env file is not readable: ${secrets_env}" >&2
+    return 1
+  fi
 
   set -a
   # shellcheck source=/dev/null

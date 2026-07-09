@@ -65,6 +65,7 @@ def test_mirror_issue_repo_excludes_stale_agent_and_review_refs(tmp_path: Path) 
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
             "EVANDER_GIT_ROOT": str(git_root),
+            "EVANDER_SECRETS_ENV_FILE": str(tmp_path / "local-secrets.env"),
             "USER": os.environ.get("USER", "test-user"),
         }
     )
@@ -86,6 +87,10 @@ def test_mirror_issue_repo_excludes_stale_agent_and_review_refs(tmp_path: Path) 
     )
 
     bare_repo = git_root / "14357_repo.git"
+    assert (
+        _git_dir(bare_repo, "config", "--get", "evander.secretsEnvFile").stdout.strip()
+        == str(tmp_path / "local-secrets.env")
+    )
     main_sha = _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip()
     _git_dir(
         bare_repo,

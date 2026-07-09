@@ -1,5 +1,98 @@
 # Changelog
 
+## 2026-07-09 - Team Late Review State Guard
+
+- Reopened accepted deliverables and tasks when a new pending review request is
+  added after acceptance, keeping late release-blocking reviews from being
+  ignored by accepted state.
+- Hardened reply-only Team Chat prompts so agents must state that no mutation
+  occurred instead of promising or implying queued state changes.
+
+## 2026-07-09 - Team Review Profile Wake Fixes
+
+- Auto-selected a single active matching Team review profile when review
+  requests omit `review_profile_id`, while reporting ambiguous profile matches
+  instead of choosing arbitrarily.
+- Preserved reviewer wake events from Team review-request commands so newly
+  assigned reviewers are queued through the immediate wake outbox path.
+
+## 2026-07-09 - Skill Delete Workflow Reference Guard
+
+- Blocked deletion of managed Codex skills that are still referenced by workflow
+  create-agent/create-VM effects, returning conflict details instead of silently
+  changing workflow behavior.
+
+## 2026-07-09 - Same-Host Worker Git Setup Repair
+
+- Made guided same-host container-worker setup install and authorize the worker
+  read-only Git key with repo-prefix metadata, including repair for legacy
+  `agent-sandbox-git` key filenames.
+
+## 2026-07-09 - Team Project Mirror Wake Prep
+
+- Kept explicit Team project Git mirrors on local host-checkout refresh during
+  container-worker wake prep, recording canonical upstream URLs as metadata
+  without fetching the checkout's upstream remote.
+
+## 2026-07-09 - Team Add-on Chat Mutation Guidance
+
+- Clarified Team Chat wake prompts when mutations are allowed so agents do not
+  treat stale prior reply-only transcript text as applying to the current
+  dispatch.
+- Refreshed Admin shell privilege state when add-on iframes load so an Admin Web
+  restart cannot leave Team Chat looking unlocked after the server has reset
+  privileged operations to locked.
+
+## 2026-07-09 - Team Add-on Chat Notification Sound
+
+- Added an optional built-in Team chat notification chime for newly received
+  agent messages when the operator window is not focused, with a compact
+  per-browser sound toggle and debounce.
+
+## 2026-07-09 - Team Add-on Locked Chat Access
+
+- Allowed the built-in Team chat client to start conversations and send
+  messages while privileged operations are locked, while marking those queued
+  chat wakes as reply-only so locked-mode chat cannot grant Team mutation tools.
+
+## 2026-07-09 - Team Add-on Chat Scroll Stability
+
+- Kept the built-in Team chat client anchored to the current thread while
+  sending messages and while same-conversation refreshes arrive, avoiding
+  transient jumps to the beginning of long chats.
+
+## 2026-07-09 - ADO Activity Add-on
+
+- Added the opt-in `ado-activity-addon`, with host-side MCP tools and workflow
+  providers for syncing exhaustive Azure DevOps work-item, PR comment, and PR
+  commit activity into a durable SQLite index.
+- Added paged `query:ado:activity` and `query_ado_activity_index` surfaces for
+  fast indexed weekly activity reads without rerunning the slow live ADO scans.
+
+## 2026-07-08 - Configurable Shell Helper Secrets File
+
+- Added `EVANDER_SECRETS_ENV_FILE` for host-side shell helpers, preserving
+  repo-root `secrets.env` as the default while allowing deployments to point Git
+  mirror refresh and PR helpers at another host-local secrets file.
+- Stored configured secrets-file paths on bare mirrors as `evander.secretsEnvFile`
+  so Git SSH forced commands can reload mirror-refresh credentials without
+  per-agent key repair.
+- Granted the configured Git SSH user least-privilege access to migrated local
+  secrets files so stamped mirrors can refresh from private canonical remotes.
+- Refused to serve stale Git mirror refs when `mirrorSyncRemote` requires a
+  trusted checkout remote fetch and that fetch fails.
+- Fixed PAT-backed Azure DevOps mirror refreshes so remote-name fetches rewrite
+  the existing SSH remote to HTTPS instead of appending an unused second URL.
+
+## 2026-07-08 - ADO Activity Attribution And Scan Bounds
+
+- Corrected Azure DevOps work-item update activity attribution to prefer each
+  revision's semantic `System.ChangedBy` and `System.ChangedDate` field values,
+  while suppressing metadata-only update rows.
+- Bounded default ADO work-item, PR comment, and PR commit activity scans to 50
+  candidates with `max_candidates`/`exhaustive` controls and explicit partial
+  scan metadata in paging responses.
+
 ## 2026-07-08 - Admin Web Configuration Permission Errors
 
 - Returned explicit `admin.owner` permission errors for unlocked Admin Web

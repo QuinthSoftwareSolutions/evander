@@ -1048,6 +1048,20 @@ button.team-record-kind-tab strong {
   margin: 0;
 }
 
+.chat-sound-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.chat-sound-toggle input {
+  margin: 0;
+}
+
 .chat-new-picker {
   border: 1px solid var(--line);
   border-radius: 8px;

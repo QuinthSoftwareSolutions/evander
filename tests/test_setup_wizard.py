@@ -6,6 +6,7 @@ import subprocess
 import pytest
 from typer.testing import CliRunner
 
+import evander.setup.engine as setup_engine
 from evander.cli import app
 from evander.setup import tui as setup_tui
 from evander.setup.engine import (
@@ -70,6 +71,34 @@ def test_setup_secret_status_uses_sudo_aware_read_for_default_secret_file(
 
     assert reads == [(Path("/etc/evander/local-secrets.env"), True)]
     assert status["required"]["openai"]["set"] is True
+
+
+def test_setup_root_owned_secret_grants_git_ssh_user_acl(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[list[str]] = []
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(tmp_dir))
+    monkeypatch.setenv("SUDO_USER", "operator")
+    monkeypatch.setenv("EVANDER_GIT_USER", "git-user")
+    monkeypatch.setattr(setup_engine.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(setup_engine.shutil, "which", lambda command: "/usr/bin/setfacl")
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(setup_engine.subprocess, "run", fake_run)
+
+    setup_engine._upsert_env_file(
+        Path("/etc/evander/local-secrets.env"),
+        {"AZURE_DEVOPS_PR_PAT": "token"},
+        root_owned=True,
+    )
+
+    assert ["sudo", "setfacl", "-m", "u:git-user:--x", "/etc/evander"] in calls
+    assert ["sudo", "setfacl", "-m", "u:git-user:r--", "/etc/evander/local-secrets.env"] in calls
 
 
 def test_setup_admin_web_can_use_no_auth_without_password(tmp_path: Path) -> None:
@@ -341,6 +370,100 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
     assert f"--allowed-git-source-prefix ssh://evander-git-host{ROOT / 'git-remotes'}/" in unit
     assert "--git-ssh-source-dir /home/operator/.ssh" in unit
     assert "Requires=docker.service" in unit
+
+
+def test_setup_local_container_worker_git_access_generates_read_key_and_prefix_auth(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    home = tmp_path / "home" / "operator"
+    authorized_keys = tmp_path / "authorized_keys"
+    git_root = tmp_path / "git-remotes"
+    generated_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGenerated generated"
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(setup_engine, "_home_for_user", lambda user: home)
+    monkeypatch.setattr(
+        setup_engine,
+        "authorized_keys_path_for_user",
+        lambda user: authorized_keys,
+    )
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        assert args[:6] == ["ssh-keygen", "-t", "ed25519", "-N", "", "-C"]
+        key_path = Path(args[-1])
+        key_path.write_text("private key\n", encoding="utf-8")
+        key_path.with_suffix(key_path.suffix + ".pub").write_text(
+            generated_public_key + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(setup_engine.subprocess, "run", fake_run)
+
+    manager._ensure_local_container_worker_git_access(
+        git_user="git-user",
+        git_root=git_root,
+        git_ssh_alias="evander-git-host",
+        git_ssh_source_dir=setup_engine._local_worker_git_ssh_source_dir("operator"),
+    )
+
+    ssh_dir = home / ".ssh"
+    assert calls
+    assert (ssh_dir / "evander-git").read_text(encoding="utf-8") == "private key\n"
+    assert (ssh_dir / "evander-git.pub").read_text(encoding="utf-8").strip() == (
+        generated_public_key
+    )
+    assert oct((ssh_dir / "evander-git").stat().st_mode & 0o777) == "0o600"
+    assert "Host evander-git-host" in (ssh_dir / "config").read_text(encoding="utf-8")
+    auth_text = authorized_keys.read_text(encoding="utf-8")
+    assert "EVANDER_GIT_AUTH_ACCESS=read-only" in auth_text
+    assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64=" in auth_text
+    assert str(ROOT / "scripts" / "git_ssh_command_wrapper.sh") in auth_text
+
+
+def test_setup_local_container_worker_git_access_repairs_legacy_key_name(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    home = tmp_path / "home" / "operator"
+    ssh_dir = home / ".ssh"
+    ssh_dir.mkdir(parents=True)
+    (ssh_dir / "agent-sandbox-git").write_text("legacy private key\n", encoding="utf-8")
+    legacy_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILegacy legacy"
+    (ssh_dir / "agent-sandbox-git.pub").write_text(legacy_public_key + "\n", encoding="utf-8")
+    (ssh_dir / "config").write_text(
+        "\n".join(
+            [
+                "Host existing",
+                "  HostName example.test",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    authorized_keys = tmp_path / "authorized_keys"
+
+    monkeypatch.setattr(
+        setup_engine,
+        "authorized_keys_path_for_user",
+        lambda user: authorized_keys,
+    )
+
+    manager._ensure_local_container_worker_git_access(
+        git_user="git-user",
+        git_root=tmp_path / "git-remotes",
+        git_ssh_alias="agent-sandbox-git-host",
+        git_ssh_source_dir=ssh_dir,
+    )
+
+    assert (ssh_dir / "evander-git").read_text(encoding="utf-8") == "legacy private key\n"
+    assert (ssh_dir / "evander-git.pub").read_text(encoding="utf-8").strip() == legacy_public_key
+    config_text = (ssh_dir / "config").read_text(encoding="utf-8")
+    assert config_text.index("Host agent-sandbox-git-host") < config_text.index("Host existing")
+    assert "IdentityFile ~/.ssh/evander-git" in config_text
+    assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64=" in authorized_keys.read_text(encoding="utf-8")
 
 
 def test_setup_local_container_worker_unit_uses_configured_base_url(tmp_path: Path) -> None:

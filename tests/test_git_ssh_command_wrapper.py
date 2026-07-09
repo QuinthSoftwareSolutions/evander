@@ -282,6 +282,147 @@ def test_git_ssh_wrapper_enforces_repo_and_session_ref_prefix_for_pushes(
     assert missing_other_ref.returncode != 0
 
 
+def test_git_ssh_wrapper_prefers_repo_configured_secrets_env_file_over_env(
+    tmp_path: Path,
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    _copy_git_ssh_scripts(repo_root, sandbox_root)
+    env = _base_git_env(git_root)
+
+    bare_repo = git_root / "allowed.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(bare_repo)],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    env_secrets_env_file = tmp_path / "env-secrets.env"
+    env_secrets_env_file.write_text(
+        'AZURE_DEVOPS_PR_PAT="from-env-secrets"\n',
+        encoding="utf-8",
+    )
+    repo_secrets_env_file = tmp_path / "repo-secrets.env"
+    repo_secrets_env_file.write_text(
+        'AZURE_DEVOPS_PR_PAT="from-repo-configured-secrets"\n',
+        encoding="utf-8",
+    )
+    _git_dir(bare_repo, "config", "evander.secretsEnvFile", str(repo_secrets_env_file))
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    git_shell_log = tmp_path / "git-shell.log"
+    fake_git_shell = fake_bin / "git-shell"
+    fake_git_shell.write_text(
+        (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"printf 'AZURE_DEVOPS_PR_PAT=%s\\n' \"${{AZURE_DEVOPS_PR_PAT:-}}\" > {git_shell_log}\n"
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(fake_git_shell, 0o755)
+
+    wrapper_script = scripts_dir / "git_ssh_command_wrapper.sh"
+    wrapper_env = env.copy()
+    wrapper_env.pop("AZURE_DEVOPS_PR_PAT", None)
+    wrapper_env.update(
+        {
+            "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
+            "EVANDER_SECRETS_ENV_FILE": str(env_secrets_env_file),
+            "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
+        }
+    )
+
+    result = subprocess.run(
+        [str(wrapper_script)],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=wrapper_env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert git_shell_log.read_text(encoding="utf-8") == (
+        "AZURE_DEVOPS_PR_PAT=from-repo-configured-secrets\n"
+    )
+
+
+def test_git_ssh_wrapper_loads_secrets_env_file_from_repo_config(tmp_path: Path) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    _copy_git_ssh_scripts(repo_root, sandbox_root)
+    env = _base_git_env(git_root)
+
+    bare_repo = git_root / "allowed.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(bare_repo)],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    secrets_env_file = tmp_path / "local-secrets.env"
+    secrets_env_file.write_text(
+        'AZURE_DEVOPS_PR_PAT="from-repo-configured-secrets"\n',
+        encoding="utf-8",
+    )
+    _git_dir(bare_repo, "config", "evander.secretsEnvFile", str(secrets_env_file))
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    git_shell_log = tmp_path / "git-shell.log"
+    fake_git_shell = fake_bin / "git-shell"
+    fake_git_shell.write_text(
+        (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"printf 'AZURE_DEVOPS_PR_PAT=%s\\n' \"${{AZURE_DEVOPS_PR_PAT:-}}\" > {git_shell_log}\n"
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(fake_git_shell, 0o755)
+
+    wrapper_script = scripts_dir / "git_ssh_command_wrapper.sh"
+    wrapper_env = env.copy()
+    wrapper_env.pop("AZURE_DEVOPS_PR_PAT", None)
+    wrapper_env.pop("EVANDER_SECRETS_ENV_FILE", None)
+    wrapper_env.update(
+        {
+            "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
+            "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
+        }
+    )
+
+    result = subprocess.run(
+        [str(wrapper_script)],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=wrapper_env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert git_shell_log.read_text(encoding="utf-8") == (
+        "AZURE_DEVOPS_PR_PAT=from-repo-configured-secrets\n"
+    )
+
+
 def test_git_ssh_wrapper_read_only_requires_repo_scope_and_denies_pushes(
     tmp_path: Path,
 ) -> None:
@@ -740,6 +881,122 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     assert _git(source_repo, "branch", "--show-current").stdout.strip() == "work"
     assert _git(source_repo, "rev-parse", "main").stdout.strip() == updated_sha
     assert git_shell_log.read_text(encoding="utf-8").strip() == f"git-upload-pack '{bare_repo}'"
+
+
+def test_git_ssh_wrapper_refuses_stale_shared_mirror_when_source_sync_fails(
+    tmp_path: Path,
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    for relative_path in (
+        "scripts/git_ssh_command_wrapper.sh",
+        "scripts/mirror_issue_repo.sh",
+        "scripts/create_git_remote.sh",
+        "scripts/resolve_repo_source.sh",
+        "scripts/lib/runtime_config.sh",
+        "scripts/lib/git_provider_auth.sh",
+    ):
+        _copy_script(repo_root, sandbox_root, relative_path)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Test User",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test User",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+            "EVANDER_GIT_ROOT": str(git_root),
+        }
+    )
+
+    origin_bare = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True
+    )
+    source_repo = tmp_path / "source"
+    subprocess.run(
+        ["git", "clone", str(origin_bare), str(source_repo)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    _git(source_repo, "checkout", "-b", "main")
+    (source_repo / "README.md").write_text("v1\n", encoding="utf-8")
+    _git(source_repo, "add", "README.md", env=env)
+    _git(source_repo, "commit", "-m", "Initial commit", env=env)
+    _git(source_repo, "push", "-u", "origin", "main", env=env)
+    subprocess.run(
+        ["git", f"--git-dir={origin_bare}", "symbolic-ref", "HEAD", "refs/heads/main"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    create_remote_script = scripts_dir / "create_git_remote.sh"
+    subprocess.run(
+        [str(create_remote_script), "shared-repo"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    bare_repo = git_root / "shared-repo.git"
+    _git_dir(
+        bare_repo,
+        "fetch",
+        "--prune",
+        str(source_repo),
+        "+refs/heads/*:refs/heads/*",
+        "+refs/tags/*:refs/tags/*",
+    )
+    _git_dir(bare_repo, "config", "evander.mirrorSource", str(source_repo))
+    _git_dir(bare_repo, "config", "evander.mirrorRemoteName", "origin")
+    _git_dir(bare_repo, "config", "evander.mirrorSyncRemote", "1")
+    _git_dir(bare_repo, "config", "evander.mirrorForceLocal", "0")
+    _git_dir(bare_repo, "config", "evander.baseBranch", "main")
+    _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
+    initial_sha = _git(source_repo, "rev-parse", "HEAD").stdout.strip()
+
+    _git(source_repo, "remote", "set-url", "origin", str(tmp_path / "missing-origin.git"))
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    git_shell_log = tmp_path / "git-shell.log"
+    fake_git_shell = fake_bin / "git-shell"
+    fake_git_shell.write_text(
+        f"#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$2\" > {git_shell_log}\n",
+        encoding="utf-8",
+    )
+    os.chmod(fake_git_shell, 0o755)
+
+    wrapper_script = scripts_dir / "git_ssh_command_wrapper.sh"
+    wrapper_env = env.copy()
+    wrapper_env.update(
+        {
+            "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
+            "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
+        }
+    )
+    result = subprocess.run(
+        [str(wrapper_script)],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=wrapper_env,
+    )
+
+    assert result.returncode != 0
+    assert "refusing to serve stale refs" in result.stderr
+    assert not git_shell_log.exists()
+    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == initial_sha
 
 
 def test_git_ssh_wrapper_preserves_local_output_refs_during_shared_mirror_refresh(

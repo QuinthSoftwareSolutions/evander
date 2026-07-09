@@ -68,6 +68,11 @@ def test_install_systemd_units_retires_legacy_agent_sandbox_units() -> None:
 
     assert 'LEGACY_LOCAL_SECRETS_FILE="/etc/agent-sandbox/local-secrets.env"' in text
     assert 'LOCAL_SECRETS_FILE="/etc/evander/local-secrets.env"' in text
+    assert "Environment=EVANDER_SECRETS_ENV_FILE=%s" in text
+    assert "grant_local_secrets_git_access" in text
+    assert 'local git_user="${EVANDER_GIT_USER:-${RUN_USER}}"' in text
+    assert 'setfacl -m "u:${git_user}:--x" "${secrets_dir}"' in text
+    assert 'setfacl -m "u:${git_user}:r--" "${secrets_file}"' in text
     assert "migrate_legacy_local_secrets" in text
     assert "retire_legacy_agent_sandbox_units" in text
     assert "agent-sandbox-gateway.service" in text

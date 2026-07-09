@@ -142,6 +142,11 @@ git --git-dir=/path/to/evander/git-remotes/ExampleIndustryAPP.git config evander
 ```
 
 After that, the next guest-side `git fetch` or `git pull` refreshes the host bare repo automatically.
+Shell helpers load repo-root `secrets.env` by default. If mirror refresh credentials live elsewhere,
+set `EVANDER_SECRETS_ENV_FILE` while creating or refreshing the bare mirror; Evander records that
+path as `evander.secretsEnvFile` in the bare repo config. The Git SSH wrapper reads that trusted
+repo config before refreshing the mirror, so existing authorized keys can use the new path after the
+mirror is stamped. The forced-command user must be able to read the configured file.
 
 ## VM Workflow
 
