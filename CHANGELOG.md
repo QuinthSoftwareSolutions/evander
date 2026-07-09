@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-09 - Team Review Profile Wake Fixes
+
+- Auto-selected a single active matching Team review profile when review
+  requests omit `review_profile_id`, while reporting ambiguous profile matches
+  instead of choosing arbitrarily.
+- Preserved reviewer wake events from Team review-request commands so newly
+  assigned reviewers are queued through the immediate wake outbox path.
+
 ## 2026-07-09 - Skill Delete Workflow Reference Guard
 
 - Blocked deletion of managed Codex skills that are still referenced by workflow

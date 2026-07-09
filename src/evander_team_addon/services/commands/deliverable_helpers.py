@@ -286,7 +286,7 @@ def _plan_command_review_requests_for_deliverable(
         _validate_command_recipient_active(reviewer)
         _validate_command_same_team(actor, reviewer)
         profile_id = _optional_text(review_request.get("review_profile_id"))
-        _profile, profile_error = _review_profile_for_request(
+        profile, profile_error = _review_profile_for_request(
             state,
             profile_id=profile_id,
             expected_team_id=actor.team_id or "",
@@ -304,10 +304,15 @@ def _plan_command_review_requests_for_deliverable(
                     "project_id": task.project_id,
                 },
             )
+        if profile is not None and profile_id is None:
+            profile_id = profile.id
         review_id = _command_review_request_id(
             state,
             deliverable_id=deliverable_id,
-            review_request=review_request,
+            review_request={
+                **dict(review_request),
+                "review_profile_id": profile_id,
+            },
             request_id=request_id,
             existing_ids=reserved_review_ids,
         )
@@ -323,6 +328,7 @@ def _plan_command_review_requests_for_deliverable(
                 **dict(review_request),
                 "id": review_id,
                 "deliverable_id": deliverable_id,
+                "review_profile_id": profile_id,
             }
         )
     return planned

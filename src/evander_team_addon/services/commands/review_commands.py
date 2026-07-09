@@ -158,6 +158,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "created_review_request_ids": created_review_ids,
                     "existing_review_request_ids": existing_review_ids,
                     "created_inbox_item_ids": created_inbox_ids,
+                    "events": list(review_result.get("events") or []),
                     "deliverable_id": review.deliverable_id,
                     "reviewer_agent_id": review.reviewer_agent_id,
                     "intent_recorded": True,

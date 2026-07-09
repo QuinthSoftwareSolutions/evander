@@ -2530,7 +2530,7 @@ class TeamAdminService:
                     f"reviewer {normalized_reviewer_agent_id} is not in the same team as deliverable "
                     f"{normalized_deliverable_id}"
                 )
-            _profile, profile_error = _review_profile_for_request(
+            profile, profile_error = _review_profile_for_request(
                 state_model,
                 profile_id=review_profile_id,
                 expected_team_id=reviewer.team_id,
@@ -2539,11 +2539,14 @@ class TeamAdminService:
             )
             if profile_error is not None:
                 raise ValueError(profile_error)
+            effective_review_profile_id = review_profile_id
+            if profile is not None and effective_review_profile_id is None:
+                effective_review_profile_id = profile.id
             effective_review_request_id = normalized_review_request_id or _generated_id(
                 prefix="review",
                 labels=[
                     normalized_deliverable_id,
-                    review_profile_id or normalized_reviewer_agent_id,
+                    effective_review_profile_id or normalized_reviewer_agent_id,
                 ],
                 existing_ids=state_model.review_requests,
             )
@@ -2558,7 +2561,7 @@ class TeamAdminService:
                 reviewer_agent_id=normalized_reviewer_agent_id,
                 state=state,
                 findings=findings or [],
-                review_profile_id=review_profile_id,
+                review_profile_id=effective_review_profile_id,
                 instructions=instructions,
                 created_at=utc_now(),
                 decision_at=decision_at,

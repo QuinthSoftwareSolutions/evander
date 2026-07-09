@@ -55,25 +55,86 @@ def _review_profile_for_request(
     reviewer: PersistentAgent,
 ) -> tuple[ReviewProfile | None, str | None]:
     if profile_id is None:
-        return None, None
+        return _implicit_review_profile_for_request(
+            state,
+            expected_team_id=expected_team_id,
+            project_id=project_id,
+            reviewer=reviewer,
+        )
     profile = state.review_profiles.get(profile_id)
     if profile is None:
         return None, f"review request references missing review profile {profile_id}"
-    if profile.archived:
-        return None, f"review profile {profile_id} is archived"
-    if profile.team_id != expected_team_id:
-        return (
-            None,
-            f"review profile {profile_id} is not in the same team as reviewer {reviewer.id}",
-        )
-    if profile.project_id is not None and profile.project_id != project_id:
-        return None, f"review profile {profile_id} does not apply to project {project_id}"
-    if profile.applicable_role_ids and reviewer.role_id not in profile.applicable_role_ids:
-        return (
-            None,
-            f"review profile {profile_id} does not apply to reviewer role {reviewer.role_id}",
-        )
+    error = _review_profile_request_error(
+        profile,
+        expected_team_id=expected_team_id,
+        project_id=project_id,
+        reviewer=reviewer,
+    )
+    if error is not None:
+        return None, error
     return profile, None
+
+
+def _implicit_review_profile_for_request(
+    state: TeamState,
+    *,
+    expected_team_id: str,
+    project_id: str | None,
+    reviewer: PersistentAgent,
+) -> tuple[ReviewProfile | None, str | None]:
+    candidates = [
+        profile
+        for profile in state.review_profiles.values()
+        if _review_profile_request_error(
+            profile,
+            expected_team_id=expected_team_id,
+            project_id=project_id,
+            reviewer=reviewer,
+        )
+        is None
+    ]
+    if project_id is not None:
+        scoped = [profile for profile in candidates if profile.project_id == project_id]
+        if scoped:
+            candidates = scoped
+        else:
+            candidates = [profile for profile in candidates if profile.project_id is None]
+    else:
+        candidates = [profile for profile in candidates if profile.project_id is None]
+
+    candidates.sort(key=lambda profile: profile.id)
+    if not candidates:
+        return None, None
+    if len(candidates) == 1:
+        return candidates[0], None
+    role_label = reviewer.role_id or "none"
+    project_label = project_id or "none"
+    profile_ids = ", ".join(profile.id for profile in candidates)
+    return (
+        None,
+        "multiple review profiles apply to reviewer role "
+        f"{role_label} for project {project_label}; pass review_profile_id explicitly: "
+        f"{profile_ids}",
+    )
+
+
+def _review_profile_request_error(
+    profile: ReviewProfile,
+    *,
+    expected_team_id: str,
+    project_id: str | None,
+    reviewer: PersistentAgent,
+) -> str | None:
+    if profile.archived:
+        return f"review profile {profile.id} is archived"
+    if profile.team_id != expected_team_id:
+        return f"review profile {profile.id} is not in the same team as reviewer {reviewer.id}"
+    if profile.project_id is not None and profile.project_id != project_id:
+        return f"review profile {profile.id} does not apply to project {project_id}"
+    if profile.applicable_role_ids and reviewer.role_id not in profile.applicable_role_ids:
+        return f"review profile {profile.id} does not apply to reviewer role {reviewer.role_id}"
+    return None
+
 
 def _apply_review_request(
     state: TeamState,
@@ -120,6 +181,8 @@ def _apply_review_request(
     if profile_error is not None:
         result["errors"].append(profile_error)
         return None
+    if profile is not None and profile_id is None:
+        profile_id = profile.id
     existing_review = _active_review_request_for_reviewer(
         state,
         deliverable_id=deliverable_id,
