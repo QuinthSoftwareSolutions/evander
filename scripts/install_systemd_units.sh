@@ -451,7 +451,9 @@ migrate_legacy_local_secrets() {
     dropin_dir="${SYSTEMD_DIR}/${unit}.d"
     dropin_path="${dropin_dir}/10-local-secrets.conf"
     install -d -m 0755 "${dropin_dir}"
-    printf '[Service]\nEnvironmentFile=-%s\n' "${LOCAL_SECRETS_FILE}" > "${dropin_path}"
+    printf '[Service]\nEnvironment=EVANDER_SECRETS_ENV_FILE=%s\nEnvironmentFile=-%s\n' \
+      "${LOCAL_SECRETS_FILE}" \
+      "${LOCAL_SECRETS_FILE}" > "${dropin_path}"
   done
 }
 

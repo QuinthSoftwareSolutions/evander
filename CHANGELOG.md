@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-08 - Configurable Shell Helper Secrets File
+
+- Added `EVANDER_SECRETS_ENV_FILE` for host-side shell helpers, preserving
+  repo-root `secrets.env` as the default while allowing deployments to point Git
+  mirror refresh and PR helpers at another host-local secrets file.
+- Stored configured secrets-file paths on bare mirrors as `evander.secretsEnvFile`
+  so Git SSH forced commands can reload mirror-refresh credentials without
+  per-agent key repair.
+- Embedded configured secrets-file paths into Git SSH forced commands as
+  `EVANDER_SECRETS_ENV_FILE_B64` for direct bootstrap compatibility.
+
 ## 2026-07-08 - Admin Web Configuration Permission Errors
 
 - Returned explicit `admin.owner` permission errors for unlocked Admin Web

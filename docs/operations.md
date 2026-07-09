@@ -2926,10 +2926,15 @@ After review and tests pass, push the reviewed branch to `origin` and optionally
 
 This is the preferred flow: VM -> quarantine bare repo -> trusted host clone -> `origin`/PR.
 
-For Azure DevOps origins, set `AZURE_DEVOPS_PR_PAT` in the environment so the PR helper and
-mirror-refresh path can authenticate automatically against the Azure-hosted canonical repository. When
-`open_agent_pr.sh` has an Azure work item id, or a session id like `issue-14084-...`, it also
-associates the PR with that work item in Azure DevOps.
+For Azure DevOps origins, set `AZURE_DEVOPS_PR_PAT` in the environment or in the configured secrets
+env file so the PR helper and mirror-refresh path can authenticate automatically against the
+Azure-hosted canonical repository. Repo-root `secrets.env` is the default for shell helpers; set
+`EVANDER_SECRETS_ENV_FILE` in services that create or refresh bare mirrors when secrets live in a
+different host-local file such as `/etc/evander/local-secrets.env`. Mirror creation stores that path
+as `evander.secretsEnvFile` in the bare repo config so later agent fetches through SSH can reload
+the same host-side secrets without per-agent key repair. When `open_agent_pr.sh` has an Azure work
+item id, or a session id like `issue-14084-...`, it also associates the PR with that work item in
+Azure DevOps.
 
 When a workflow only needs to update an existing PR source branch from a trusted host checkout, use
 `effect:git:push-branch` instead of `effect:pr:create`. The typed push effect keeps the destination

@@ -282,6 +282,142 @@ def test_git_ssh_wrapper_enforces_repo_and_session_ref_prefix_for_pushes(
     assert missing_other_ref.returncode != 0
 
 
+def test_git_ssh_wrapper_loads_configured_secrets_env_file_from_b64(tmp_path: Path) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    _copy_git_ssh_scripts(repo_root, sandbox_root)
+    env = _base_git_env(git_root)
+
+    bare_repo = git_root / "allowed.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(bare_repo)],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    secrets_env_file = tmp_path / "local-secrets.env"
+    secrets_env_file.write_text(
+        'AZURE_DEVOPS_PR_PAT="from-configured-secrets"\n',
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    git_shell_log = tmp_path / "git-shell.log"
+    fake_git_shell = fake_bin / "git-shell"
+    fake_git_shell.write_text(
+        (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"printf 'AZURE_DEVOPS_PR_PAT=%s\\n' \"${{AZURE_DEVOPS_PR_PAT:-}}\" > {git_shell_log}\n"
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(fake_git_shell, 0o755)
+
+    wrapper_script = scripts_dir / "git_ssh_command_wrapper.sh"
+    wrapper_env = env.copy()
+    wrapper_env.pop("AZURE_DEVOPS_PR_PAT", None)
+    wrapper_env.update(
+        {
+            "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
+            "EVANDER_SECRETS_ENV_FILE_B64": base64.b64encode(
+                str(secrets_env_file).encode("utf-8")
+            ).decode("ascii"),
+            "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
+        }
+    )
+
+    result = subprocess.run(
+        [str(wrapper_script)],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=wrapper_env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert git_shell_log.read_text(encoding="utf-8") == (
+        "AZURE_DEVOPS_PR_PAT=from-configured-secrets\n"
+    )
+
+
+def test_git_ssh_wrapper_loads_secrets_env_file_from_repo_config(tmp_path: Path) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    _copy_git_ssh_scripts(repo_root, sandbox_root)
+    env = _base_git_env(git_root)
+
+    bare_repo = git_root / "allowed.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(bare_repo)],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    secrets_env_file = tmp_path / "local-secrets.env"
+    secrets_env_file.write_text(
+        'AZURE_DEVOPS_PR_PAT="from-repo-configured-secrets"\n',
+        encoding="utf-8",
+    )
+    _git_dir(bare_repo, "config", "evander.secretsEnvFile", str(secrets_env_file))
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    git_shell_log = tmp_path / "git-shell.log"
+    fake_git_shell = fake_bin / "git-shell"
+    fake_git_shell.write_text(
+        (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"printf 'AZURE_DEVOPS_PR_PAT=%s\\n' \"${{AZURE_DEVOPS_PR_PAT:-}}\" > {git_shell_log}\n"
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(fake_git_shell, 0o755)
+
+    wrapper_script = scripts_dir / "git_ssh_command_wrapper.sh"
+    wrapper_env = env.copy()
+    wrapper_env.pop("AZURE_DEVOPS_PR_PAT", None)
+    wrapper_env.pop("EVANDER_SECRETS_ENV_FILE", None)
+    wrapper_env.pop("EVANDER_SECRETS_ENV_FILE_B64", None)
+    wrapper_env.update(
+        {
+            "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "EVANDER_GIT_AUTH_ACCESS": "read-only",
+            "EVANDER_GIT_AUTH_REPO": str(bare_repo),
+            "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
+        }
+    )
+
+    result = subprocess.run(
+        [str(wrapper_script)],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=wrapper_env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert git_shell_log.read_text(encoding="utf-8") == (
+        "AZURE_DEVOPS_PR_PAT=from-repo-configured-secrets\n"
+    )
+
+
 def test_git_ssh_wrapper_read_only_requires_repo_scope_and_denies_pushes(
     tmp_path: Path,
 ) -> None:

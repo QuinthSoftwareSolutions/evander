@@ -259,8 +259,11 @@ class ContainerGitMirrorResolver:
             ("evander.mirrorSyncRemote", mirror_sync_remote),
             ("evander.mirrorForceLocal", "0"),
             ("evander.canonicalOriginUrl", canonical_repo_source),
+            ("evander.secretsEnvFile", self.env.get("EVANDER_SECRETS_ENV_FILE", "").strip()),
         ):
             if value:
+                if key == "evander.secretsEnvFile" and ("\n" in value or "\r" in value):
+                    raise RuntimeError("EVANDER_SECRETS_ENV_FILE must be a single-line path")
                 self._run(["git", f"--git-dir={mirror_path}", "config", key, value])
         default_base_branch = _default_base_branch_for_repo_remote(
             self, resolved_repo_path, remote_name

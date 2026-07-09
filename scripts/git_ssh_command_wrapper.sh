@@ -623,6 +623,23 @@ repo_config_values_with_legacy() {
   fi
 }
 
+load_repo_configured_secrets_env() {
+  local repo_real="$1"
+  local secrets_env_file
+
+  if [[ -n "${EVANDER_SECRETS_ENV_FILE_B64:-}" || -n "${EVANDER_SECRETS_ENV_FILE:-}" ]]; then
+    return 0
+  fi
+
+  secrets_env_file="$(
+    repo_config_value_with_legacy \
+      "${repo_real}" evander.secretsEnvFile agent-sandbox.secretsEnvFile
+  )"
+  [[ -n "${secrets_env_file}" ]] || return 0
+  export EVANDER_SECRETS_ENV_FILE="${secrets_env_file}"
+  load_root_secrets_env
+}
+
 auto_refresh_mirror() {
   local repo_real="$1"
   local original_command="$2"
@@ -813,6 +830,7 @@ auto_refresh_mirror() {
   fi
 }
 
+load_repo_configured_secrets_env "${REPO_REAL}"
 auto_refresh_mirror "${REPO_REAL}" "${ORIGINAL_COMMAND}"
 
 exec git-shell -c "${ORIGINAL_COMMAND}"

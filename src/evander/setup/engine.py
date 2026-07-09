@@ -895,7 +895,11 @@ class SetupManager:
 
     def _install_secret_dropins(self, state: SetupState) -> None:
         secret_file = str(self.secret_file_path(state))
-        content = f"[Service]\nEnvironmentFile=-{secret_file}\n"
+        content = (
+            "[Service]\n"
+            f"Environment=EVANDER_SECRETS_ENV_FILE={secret_file}\n"
+            f"EnvironmentFile=-{secret_file}\n"
+        )
         tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"evander-secret-dropin-{secrets.token_hex(8)}.conf"
         tmp.write_text(content, encoding="utf-8")
         try:

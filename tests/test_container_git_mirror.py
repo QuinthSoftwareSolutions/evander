@@ -48,13 +48,14 @@ def _source_repo(path: Path) -> Path:
     return path
 
 
-def _resolver(tmp_path: Path) -> ContainerGitMirrorResolver:
+def _resolver(tmp_path: Path, *, env: dict[str, str] | None = None) -> ContainerGitMirrorResolver:
     return ContainerGitMirrorResolver(
         project_dir=ROOT,
         git_root=tmp_path / "git-remotes",
         git_host="10.0.0.10",
         git_user="gitbot",
         git_ssh_alias="evander-git-host",
+        env=env,
     )
 
 
@@ -98,6 +99,23 @@ def test_container_git_mirror_resolves_remote_url_to_private_ssh_mirror(
     assert trusted_repo_path == mirror.resolved_repo_path
     assert _has_ref(mirror.mirror_path, "refs/heads/main")
     assert _has_ref(mirror.mirror_path, "refs/heads/feature/test")
+
+
+def test_container_git_mirror_records_configured_secrets_env_file(tmp_path: Path) -> None:
+    source = _source_repo(tmp_path / "source")
+    secrets_env_file = tmp_path / "local-secrets.env"
+    resolver = _resolver(tmp_path, env={"EVANDER_SECRETS_ENV_FILE": str(secrets_env_file)})
+
+    mirror = resolver.resolve(repo_source=str(source), clone_branch="main")
+
+    configured_path = subprocess.run(
+        ["git", f"--git-dir={mirror.mirror_path}", "config", "--get", "evander.secretsEnvFile"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert configured_path == str(secrets_env_file)
 
 
 def test_container_git_mirror_uses_hash_to_avoid_same_basename_collisions(

@@ -1235,13 +1235,14 @@ root directory-scoped config and host environment:
 | `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat toggle). |
 | `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat prompt). |
 | `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (post-exec resume prompt metadata). |
+| `EVANDER_SECRETS_ENV_FILE` | host shell or service environment | Shared shell helpers (`scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, `scripts/git_ssh_command_wrapper.sh`, `scripts/handle_agent_push.sh`) when host secrets live outside repo-root `secrets.env`; mirror creation records this path as `evander.secretsEnvFile` so Git SSH forced commands can reload mirror-refresh secrets. |
 | `EVANDER_AZURE_DEVOPS_PR_PAT_ENV` | `runtime/directory-config/root/providers.json` or host shell | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` (alternate env var name for Azure DevOps PAT). |
-| `AZURE_DEVOPS_PR_PAT` | host shell or `secrets.env` | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` when Azure DevOps remotes are accessed over HTTPS. |
-| `RETELL_API_KEY` | host shell or `secrets.env` | `src/evander/retell_phone.py` / `src/evander/gateway.py` when Retell phone-call tools use the default `retell_api_key_env`. |
-| `OPENAI_API_KEY` | host shell or `secrets.env` | `src/evander/voice_sessions.py` when Team Add-on browser direct agent calls use the default `openai_realtime_api_key_env` to mint ephemeral Realtime client secrets. |
-| `DIDWW_SIP_BRIDGE_TOKEN` | host shell or `secrets.env` | `src/evander/voice_sessions.py` when `phone_call_backend` is `openai_realtime_didww` and the default `didww_sip_bridge_token_env` is used. |
-| `VOICE_MEDIA_CONTROLLER_TOKEN` | host shell or `secrets.env` | `src/evander/gateway.py` voice media controller endpoints when Realtime bridges create delegated origin-agent queries. |
-| `ASTERISK_ARI_PASSWORD` | host shell or `secrets.env` | `src/evander/didww_sip_bridge.py` for Asterisk ARI control of DIDWW outbound calls. |
+| `AZURE_DEVOPS_PR_PAT` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` when Azure DevOps remotes are accessed over HTTPS. |
+| `RETELL_API_KEY` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `src/evander/retell_phone.py` / `src/evander/gateway.py` when Retell phone-call tools use the default `retell_api_key_env`. |
+| `OPENAI_API_KEY` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `src/evander/voice_sessions.py` when Team Add-on browser direct agent calls use the default `openai_realtime_api_key_env` to mint ephemeral Realtime client secrets. |
+| `DIDWW_SIP_BRIDGE_TOKEN` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `src/evander/voice_sessions.py` when `phone_call_backend` is `openai_realtime_didww` and the default `didww_sip_bridge_token_env` is used. |
+| `VOICE_MEDIA_CONTROLLER_TOKEN` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `src/evander/gateway.py` voice media controller endpoints when Realtime bridges create delegated origin-agent queries. |
+| `ASTERISK_ARI_PASSWORD` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `src/evander/didww_sip_bridge.py` for Asterisk ARI control of DIDWW outbound calls. |
 | `EVANDER_PR_NOTES_REF` | host shell | `scripts/handle_agent_push.sh` (PR notes ref). |
 | `EVANDER_PR_FIXED_BODY_FILE` | host shell | `scripts/handle_agent_push.sh` (host-wide override that prepends markdown to PR body). |
 | `EVANDER_PR_BODY_MAX_BYTES` | host shell | `scripts/handle_agent_push.sh` (body truncation limit). |

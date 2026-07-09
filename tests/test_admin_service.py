@@ -15016,6 +15016,7 @@ def test_sync_repo_into_bare_remote_sets_head_to_default_branch(
     service = build_admin_runtime(write_config(tmp_path))
     issue_setup = service.vm_agent_admin._resolve_issue_setup("root", root_dir=Path(__file__).resolve().parents[1])
     captured_cmds: list[list[str]] = []
+    monkeypatch.setenv("EVANDER_SECRETS_ENV_FILE", "/etc/evander/local-secrets.env")
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured_cmds.append(cmd)
@@ -15086,6 +15087,17 @@ def test_sync_repo_into_bare_remote_sets_head_to_default_branch(
             "config",
             "evander.mirrorSyncRemote",
             "1",
+        ]
+        for cmd in captured_cmds
+    )
+    assert any(
+        cmd
+        == [
+            "git",
+            f"--git-dir={issue_setup.git_root}/sample-repo.git",
+            "config",
+            "evander.secretsEnvFile",
+            "/etc/evander/local-secrets.env",
         ]
         for cmd in captured_cmds
     )
