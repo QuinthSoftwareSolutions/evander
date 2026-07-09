@@ -22,8 +22,6 @@ Environment:
   EVANDER_GIT_REPO          Bare repo path or name under EVANDER_GIT_ROOT to allow access.
   EVANDER_GIT_SESSION_ID    Session id allowed to push refs/heads/agents/<session-id>/...
                             Defaults to EVANDER_SESSION_ID from the guest session env.
-  EVANDER_SECRETS_ENV_FILE  Optional host secrets env file path to embed in the
-                            Git forced command for mirror refresh auth.
   EVANDER_GIT_READ_ONLY     Set to 1 to force repo-scoped read-only Git SSH access.
   EVANDER_GIT_REQUIRE_WRITE_METADATA
                             Set to 1 to fail instead of installing read-only access
@@ -83,17 +81,6 @@ is_truthy() {
 
 one_line_base64() {
   printf '%s' "$1" | base64 | tr -d '\n'
-}
-
-append_forced_command_secrets_env_file() {
-  local secrets_env_file="${EVANDER_SECRETS_ENV_FILE:-}"
-
-  [[ -n "${secrets_env_file}" ]] || return 0
-  if [[ "${secrets_env_file}" == *$'\n'* || "${secrets_env_file}" == *$'\r'* ]]; then
-    echo "EVANDER_SECRETS_ENV_FILE must be a single-line path." >&2
-    exit 1
-  fi
-  FORCED_COMMAND+=" EVANDER_SECRETS_ENV_FILE_B64=$(one_line_base64 "${secrets_env_file}")"
 }
 
 agent_pr_notes_ref_for_session() {
@@ -366,12 +353,10 @@ if [[ "${AUTH_ACCESS}" == "write" ]]; then
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_SESSION_ID_B64=$(one_line_base64 "${GIT_SESSION_ID}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_REF_PREFIX_B64=$(one_line_base64 "${AUTH_REF_PREFIX}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_PR_NOTES_REF_B64=$(one_line_base64 "${AUTH_PR_NOTES_REF}")"
-  append_forced_command_secrets_env_file
   FORCED_COMMAND+=" ${WRAPPER_PATH}"
 else
   FORCED_COMMAND="EVANDER_GIT_AUTH_ACCESS=read-only"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_REPO_B64=$(one_line_base64 "${AUTH_REPO_REAL}")"
-  append_forced_command_secrets_env_file
   FORCED_COMMAND+=" ${WRAPPER_PATH}"
 fi
 FORCED_COMMAND_ESCAPED="$(escape_authorized_keys_command "${FORCED_COMMAND}")"

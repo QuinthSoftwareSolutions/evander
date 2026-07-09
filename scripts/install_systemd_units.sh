@@ -435,6 +435,31 @@ render_unit() {
     "${template}" > "${target}"
 }
 
+grant_local_secrets_git_access() {
+  local secrets_file="$1"
+  local git_user="${EVANDER_GIT_USER:-${RUN_USER}}"
+  local secrets_dir git_group
+
+  [[ -f "${secrets_file}" ]] || return 0
+  [[ -n "${git_user}" ]] || return 0
+  if ! id "${git_user}" >/dev/null 2>&1; then
+    echo "Warning: cannot grant Git SSH access to ${secrets_file}; user ${git_user} does not exist." >&2
+    return 0
+  fi
+
+  secrets_dir="$(dirname "${secrets_file}")"
+  if command -v setfacl >/dev/null 2>&1; then
+    setfacl -m "u:${git_user}:--x" "${secrets_dir}"
+    setfacl -m "u:${git_user}:r--" "${secrets_file}"
+    return 0
+  fi
+
+  git_group="$(id -gn "${git_user}")"
+  chgrp "${git_group}" "${secrets_dir}" "${secrets_file}"
+  chmod 0710 "${secrets_dir}"
+  chmod 0640 "${secrets_file}"
+}
+
 migrate_legacy_local_secrets() {
   if [[ -f "${LEGACY_LOCAL_SECRETS_FILE}" && ! -f "${LOCAL_SECRETS_FILE}" ]]; then
     install -d -m 0750 "$(dirname "${LOCAL_SECRETS_FILE}")"
@@ -445,6 +470,8 @@ migrate_legacy_local_secrets() {
   if [[ ! -f "${LOCAL_SECRETS_FILE}" ]]; then
     return
   fi
+
+  grant_local_secrets_git_access "${LOCAL_SECRETS_FILE}"
 
   local unit dropin_dir dropin_path
   for unit in "${EVANDER_UNITS[@]}"; do

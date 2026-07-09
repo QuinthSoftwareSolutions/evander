@@ -6,6 +6,7 @@ import subprocess
 import pytest
 from typer.testing import CliRunner
 
+import evander.setup.engine as setup_engine
 from evander.cli import app
 from evander.setup import tui as setup_tui
 from evander.setup.engine import (
@@ -70,6 +71,34 @@ def test_setup_secret_status_uses_sudo_aware_read_for_default_secret_file(
 
     assert reads == [(Path("/etc/evander/local-secrets.env"), True)]
     assert status["required"]["openai"]["set"] is True
+
+
+def test_setup_root_owned_secret_grants_git_ssh_user_acl(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[list[str]] = []
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(tmp_dir))
+    monkeypatch.setenv("SUDO_USER", "operator")
+    monkeypatch.setenv("EVANDER_GIT_USER", "git-user")
+    monkeypatch.setattr(setup_engine.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(setup_engine.shutil, "which", lambda command: "/usr/bin/setfacl")
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(setup_engine.subprocess, "run", fake_run)
+
+    setup_engine._upsert_env_file(
+        Path("/etc/evander/local-secrets.env"),
+        {"AZURE_DEVOPS_PR_PAT": "token"},
+        root_owned=True,
+    )
+
+    assert ["sudo", "setfacl", "-m", "u:git-user:--x", "/etc/evander"] in calls
+    assert ["sudo", "setfacl", "-m", "u:git-user:r--", "/etc/evander/local-secrets.env"] in calls
 
 
 def test_setup_admin_web_can_use_no_auth_without_password(tmp_path: Path) -> None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import os
 import subprocess
 from pathlib import Path
@@ -161,7 +160,7 @@ def test_bootstrap_git_vm_atomically_replaces_existing_valid_guest_public_key_en
     assert "keep-me" in updated_authorized_keys
 
 
-def test_bootstrap_git_vm_embeds_configured_secrets_env_file(tmp_path: Path) -> None:
+def test_bootstrap_git_vm_does_not_embed_configured_secrets_env_file(tmp_path: Path) -> None:
     _, bootstrap_script = _copy_bootstrap_sandbox(tmp_path)
     home = tmp_path / "home"
     ssh_dir = home / ".ssh"
@@ -188,10 +187,9 @@ def test_bootstrap_git_vm_embeds_configured_secrets_env_file(tmp_path: Path) -> 
         env=env,
     )
 
-    encoded_path = base64.b64encode(str(secrets_env_file).encode("utf-8")).decode("ascii")
     updated_authorized_keys = authorized_keys.read_text(encoding="utf-8")
     assert result.returncode == 0, result.stderr
-    assert f"EVANDER_SECRETS_ENV_FILE_B64={encoded_path}" in updated_authorized_keys
+    assert "EVANDER_SECRETS_ENV_FILE" not in updated_authorized_keys
     assert str(secrets_env_file) not in updated_authorized_keys
 
 

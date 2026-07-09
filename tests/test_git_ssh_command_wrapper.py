@@ -282,7 +282,9 @@ def test_git_ssh_wrapper_enforces_repo_and_session_ref_prefix_for_pushes(
     assert missing_other_ref.returncode != 0
 
 
-def test_git_ssh_wrapper_loads_configured_secrets_env_file_from_b64(tmp_path: Path) -> None:
+def test_git_ssh_wrapper_prefers_repo_configured_secrets_env_file_over_env(
+    tmp_path: Path,
+) -> None:
     sandbox_root = tmp_path / "sandbox"
     git_root = sandbox_root / "git-remotes"
     scripts_dir = sandbox_root / "scripts"
@@ -302,11 +304,17 @@ def test_git_ssh_wrapper_loads_configured_secrets_env_file_from_b64(tmp_path: Pa
         env=env,
     )
 
-    secrets_env_file = tmp_path / "local-secrets.env"
-    secrets_env_file.write_text(
-        'AZURE_DEVOPS_PR_PAT="from-configured-secrets"\n',
+    env_secrets_env_file = tmp_path / "env-secrets.env"
+    env_secrets_env_file.write_text(
+        'AZURE_DEVOPS_PR_PAT="from-env-secrets"\n',
         encoding="utf-8",
     )
+    repo_secrets_env_file = tmp_path / "repo-secrets.env"
+    repo_secrets_env_file.write_text(
+        'AZURE_DEVOPS_PR_PAT="from-repo-configured-secrets"\n',
+        encoding="utf-8",
+    )
+    _git_dir(bare_repo, "config", "evander.secretsEnvFile", str(repo_secrets_env_file))
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     git_shell_log = tmp_path / "git-shell.log"
@@ -329,9 +337,7 @@ def test_git_ssh_wrapper_loads_configured_secrets_env_file_from_b64(tmp_path: Pa
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
             "EVANDER_GIT_AUTH_ACCESS": "read-only",
             "EVANDER_GIT_AUTH_REPO": str(bare_repo),
-            "EVANDER_SECRETS_ENV_FILE_B64": base64.b64encode(
-                str(secrets_env_file).encode("utf-8")
-            ).decode("ascii"),
+            "EVANDER_SECRETS_ENV_FILE": str(env_secrets_env_file),
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
@@ -346,7 +352,7 @@ def test_git_ssh_wrapper_loads_configured_secrets_env_file_from_b64(tmp_path: Pa
 
     assert result.returncode == 0, result.stderr
     assert git_shell_log.read_text(encoding="utf-8") == (
-        "AZURE_DEVOPS_PR_PAT=from-configured-secrets\n"
+        "AZURE_DEVOPS_PR_PAT=from-repo-configured-secrets\n"
     )
 
 
@@ -394,7 +400,6 @@ def test_git_ssh_wrapper_loads_secrets_env_file_from_repo_config(tmp_path: Path)
     wrapper_env = env.copy()
     wrapper_env.pop("AZURE_DEVOPS_PR_PAT", None)
     wrapper_env.pop("EVANDER_SECRETS_ENV_FILE", None)
-    wrapper_env.pop("EVANDER_SECRETS_ENV_FILE_B64", None)
     wrapper_env.update(
         {
             "PATH": f"{fake_bin}:{wrapper_env['PATH']}",

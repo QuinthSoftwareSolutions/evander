@@ -627,10 +627,6 @@ load_repo_configured_secrets_env() {
   local repo_real="$1"
   local secrets_env_file
 
-  if [[ -n "${EVANDER_SECRETS_ENV_FILE_B64:-}" || -n "${EVANDER_SECRETS_ENV_FILE:-}" ]]; then
-    return 0
-  fi
-
   secrets_env_file="$(
     repo_config_value_with_legacy \
       "${repo_real}" evander.secretsEnvFile agent-sandbox.secretsEnvFile

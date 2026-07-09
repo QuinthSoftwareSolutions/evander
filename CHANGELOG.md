@@ -16,8 +16,8 @@
 - Stored configured secrets-file paths on bare mirrors as `evander.secretsEnvFile`
   so Git SSH forced commands can reload mirror-refresh credentials without
   per-agent key repair.
-- Embedded configured secrets-file paths into Git SSH forced commands as
-  `EVANDER_SECRETS_ENV_FILE_B64` for direct bootstrap compatibility.
+- Granted the configured Git SSH user least-privilege access to migrated local
+  secrets files so stamped mirrors can refresh from private canonical remotes.
 
 ## 2026-07-08 - ADO Activity Attribution And Scan Bounds
 

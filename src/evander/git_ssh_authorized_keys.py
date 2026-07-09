@@ -28,7 +28,6 @@ class InstalledGitAuthorizedKey:
     authorized_ref_prefix: str
     authorized_pr_notes_ref: str
     allowed_from: str
-    secrets_env_file: str | None = None
 
 
 def authorized_keys_path_for_user(git_user: str) -> Path:
@@ -51,7 +50,6 @@ def install_git_write_authorized_key(
     allowed_from: str,
     wrapper_path: str | Path,
     authorized_keys_path: str | Path,
-    secrets_env_file: str | Path | None = None,
 ) -> InstalledGitAuthorizedKey:
     public_key_line, public_key_body = _validated_public_key_line(public_key)
     git_root_real = Path(git_root).resolve(strict=False)
@@ -66,14 +64,12 @@ def install_git_write_authorized_key(
     if not wrapper_real.exists():
         raise ValueError(f"Git SSH wrapper does not exist: {wrapper_real}")
     allowed_from_value = _validate_authorized_keys_option_value(allowed_from, "allowed_from")
-    secrets_env_file_value = _normalized_secrets_env_file(secrets_env_file)
     forced_command = _authorized_write_forced_command(
         repo_path=repo_real,
         session_id=session_id,
         ref_prefix=ref_prefix,
         pr_notes_ref=pr_notes_ref,
         wrapper_path=wrapper_real,
-        secrets_env_file=secrets_env_file_value,
     )
     entry = (
         f'from="{allowed_from_value}",no-agent-forwarding,no-port-forwarding,'
@@ -89,7 +85,6 @@ def install_git_write_authorized_key(
         authorized_ref_prefix=ref_prefix,
         authorized_pr_notes_ref=pr_notes_ref,
         allowed_from=allowed_from_value,
-        secrets_env_file=secrets_env_file_value,
     )
 
 
@@ -146,30 +141,15 @@ def _authorized_write_forced_command(
     ref_prefix: str,
     pr_notes_ref: str,
     wrapper_path: Path,
-    secrets_env_file: str | None,
 ) -> str:
-    command = (
+    return (
         "EVANDER_GIT_AUTH_ACCESS=write"
         f" EVANDER_GIT_AUTH_REPO_B64={_one_line_base64(str(repo_path))}"
         f" EVANDER_GIT_AUTH_SESSION_ID_B64={_one_line_base64(session_id)}"
         f" EVANDER_GIT_AUTH_REF_PREFIX_B64={_one_line_base64(ref_prefix)}"
         f" EVANDER_GIT_AUTH_PR_NOTES_REF_B64={_one_line_base64(pr_notes_ref)}"
+        f" {wrapper_path}"
     )
-    if secrets_env_file:
-        command += f" EVANDER_SECRETS_ENV_FILE_B64={_one_line_base64(secrets_env_file)}"
-    command += f" {wrapper_path}"
-    return command
-
-
-def _normalized_secrets_env_file(value: str | Path | None) -> str | None:
-    if value is None:
-        value = os.environ.get("EVANDER_SECRETS_ENV_FILE", "")
-    normalized = str(value or "").strip()
-    if not normalized:
-        return None
-    if "\n" in normalized or "\r" in normalized:
-        raise ValueError("secrets_env_file must be a single line")
-    return normalized
 
 
 def _replace_authorized_key_entry(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import threading
 import time
 
@@ -54,7 +53,7 @@ def test_install_git_write_authorized_key_scopes_repo_and_session(tmp_path) -> N
     assert authorized_keys.read_text(encoding="utf-8") == ""
 
 
-def test_install_git_write_authorized_key_embeds_configured_secrets_env_file(
+def test_install_git_write_authorized_key_does_not_embed_configured_secrets_env_file(
     tmp_path, monkeypatch
 ) -> None:
     git_root = tmp_path / "git-remotes"
@@ -77,10 +76,9 @@ def test_install_git_write_authorized_key_embeds_configured_secrets_env_file(
         authorized_keys_path=authorized_keys,
     )
 
-    encoded_path = base64.b64encode(str(secrets_env_file).encode("utf-8")).decode("ascii")
     text = authorized_keys.read_text(encoding="utf-8")
-    assert record.secrets_env_file == str(secrets_env_file)
-    assert f"EVANDER_SECRETS_ENV_FILE_B64={encoded_path}" in text
+    assert record.public_key_body == "AAAAC3NzaC1lZDI1NTE5AAAAITestAuthorizedKey"
+    assert "EVANDER_SECRETS_ENV_FILE" not in text
     assert str(secrets_env_file) not in text
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import os
 import shlex
 import subprocess
@@ -39,7 +38,6 @@ printf 'AZURE_DEVOPS_PR_PAT=%s\\n' "${{AZURE_DEVOPS_PR_PAT:-}}"
     command_env = os.environ.copy()
     command_env.pop("AZURE_DEVOPS_PR_PAT", None)
     command_env.pop("EVANDER_SECRETS_ENV_FILE", None)
-    command_env.pop("EVANDER_SECRETS_ENV_FILE_B64", None)
     if env:
         command_env.update(env)
     return subprocess.run(
@@ -80,27 +78,6 @@ def test_load_root_secrets_env_uses_configured_file(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "AZURE_DEVOPS_PR_PAT=from-configured-secrets\n"
-
-
-def test_load_root_secrets_env_b64_takes_precedence(tmp_path: Path) -> None:
-    sandbox_root = _copy_runtime_config_sandbox(tmp_path)
-    configured = tmp_path / "configured-secrets.env"
-    configured.write_text('AZURE_DEVOPS_PR_PAT="from-configured-secrets"\n', encoding="utf-8")
-    encoded = tmp_path / "encoded-secrets.env"
-    encoded.write_text('AZURE_DEVOPS_PR_PAT="from-encoded-secrets"\n', encoding="utf-8")
-
-    result = _run_load_root_secrets_env(
-        sandbox_root,
-        env={
-            "EVANDER_SECRETS_ENV_FILE": str(configured),
-            "EVANDER_SECRETS_ENV_FILE_B64": base64.b64encode(
-                str(encoded).encode("utf-8")
-            ).decode("ascii"),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "AZURE_DEVOPS_PR_PAT=from-encoded-secrets\n"
 
 
 def test_load_root_secrets_env_missing_configured_file_is_nonfatal(tmp_path: Path) -> None:
