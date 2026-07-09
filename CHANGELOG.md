@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-09 - Team Add-on Chat Scroll Stability
+
+- Kept the built-in Team chat client anchored to the current thread while
+  sending messages and while same-conversation refreshes arrive, avoiding
+  transient jumps to the beginning of long chats.
+
 ## 2026-07-09 - ADO Activity Add-on
 
 - Added the opt-in `ado-activity-addon`, with host-side MCP tools and workflow
@@ -20,6 +26,8 @@
   secrets files so stamped mirrors can refresh from private canonical remotes.
 - Refused to serve stale Git mirror refs when `mirrorSyncRemote` requires a
   trusted checkout remote fetch and that fetch fails.
+- Fixed PAT-backed Azure DevOps mirror refreshes so remote-name fetches rewrite
+  the existing SSH remote to HTTPS instead of appending an unused second URL.
 
 ## 2026-07-08 - ADO Activity Attribution And Scan Bounds
 

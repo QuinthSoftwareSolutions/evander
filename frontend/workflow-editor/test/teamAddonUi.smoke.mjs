@@ -1186,6 +1186,29 @@ function chatCollectionPayload(state, { selectedConversationId = null, includeSe
   };
 }
 
+function chatConversationSnapshotPayload(state, conversationId) {
+  const conversation = state.conversations?.[conversationId];
+  if (!conversation) {
+    return null;
+  }
+  return {
+    revision: state.revision,
+    conversation: chatConversationPayload(state, conversation, {
+      includeMessages: true,
+      limit: 50,
+    }),
+  };
+}
+
+function writeChatStreamSnapshot(streamRecord, state) {
+  const payload = chatConversationSnapshotPayload(state, streamRecord.conversationId);
+  if (!payload) {
+    return;
+  }
+  streamRecord.response.write("event: snapshot\n");
+  streamRecord.response.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
 function bootstrapPayload(state) {
   return {
     revision: state.revision,
@@ -1266,6 +1289,7 @@ async function createTeamAddonServer(
     conflictOnFirstAgentRegistration = false,
     conflictOnFirstGovernanceGroupUpdate = false,
     conversationsBeforeResponse = null,
+    chatMessageBeforeResponse = null,
     costsBeforeResponse = null,
     costsDelayMs = 0,
     costsPayload = null,
@@ -1528,6 +1552,67 @@ async function createTeamAddonServer(
       const conversationMessagesMatch = pathname.match(
         /^\/api\/addons\/team-addon\/conversations\/([^/]+)\/messages$/,
       );
+      if (request.method === "POST" && conversationMessagesMatch) {
+        const payload = await requestJson(request);
+        requests.push({ method: request.method, pathname, payload });
+        const conversationId = decodeURIComponent(conversationMessagesMatch[1]);
+        const conversation = state.conversations?.[conversationId];
+        if (!conversation) {
+          jsonResponse(response, { error: "conversation not found" }, 404);
+          return;
+        }
+        state.revision += 1;
+        const messageId = `chatmsg-${String(Object.keys(state.conversation_messages || {}).length + 1).padStart(3, "0")}`;
+        const timestamp = new Date(Date.UTC(2026, 5, 9, 3, state.revision, 0)).toISOString();
+        const message = {
+          id: messageId,
+          conversation_id: conversationId,
+          sender: "operator",
+          message_type: "text",
+          body: String(payload.body || ""),
+          status: "queued",
+          dispatch_id: `team-chat:${messageId}`,
+          voice_session_id: null,
+          source_message_id: null,
+          error: null,
+          metadata: {
+            sender_kind: "human_operator",
+            operator_user_id: "admin",
+            operator_display_name: "Admin",
+            created_by: "admin",
+          },
+          created_at: timestamp,
+          updated_at: timestamp,
+        };
+        state.conversation_messages[messageId] = message;
+        conversation.last_message_preview = message.body;
+        conversation.updated_at = timestamp;
+        conversation.last_interaction_at = timestamp;
+        for (const stream of openChatStreams) {
+          if (stream.conversationId === conversationId) {
+            writeChatStreamSnapshot(stream, state);
+          }
+        }
+        if (chatMessageBeforeResponse) {
+          await chatMessageBeforeResponse({ request, url, payload, state, message });
+        }
+        jsonResponse(response, {
+          revision: state.revision,
+          conversation: chatConversationPayload(state, conversation, {
+            includeMessages: true,
+            limit: 50,
+          }),
+          message,
+          dispatch: {
+            success: false,
+            queued: true,
+            dispatch_id: message.dispatch_id,
+            message: "Chat message queued for asynchronous agent dispatch.",
+          },
+          published_event_ids: [`team-chat-message-queued:${messageId}`],
+        }, 202);
+        return;
+      }
       if (request.method === "GET" && conversationMessagesMatch) {
         requests.push({ method: request.method, pathname, search: url.search });
         const conversationId = decodeURIComponent(conversationMessagesMatch[1]);
@@ -1564,21 +1649,12 @@ async function createTeamAddonServer(
           "cache-control": "no-cache",
           connection: "keep-alive",
         });
-        response.write(`event: snapshot\n`);
-        response.write(
-          `data: ${JSON.stringify({
-            revision: state.revision,
-            conversation: chatConversationPayload(state, conversation, {
-              includeMessages: true,
-              limit: 50,
-            }),
-          })}\n\n`,
-        );
         const interval = setInterval(() => {
           response.write(": keepalive\n\n");
         }, 1000);
-        const streamRecord = { response, interval };
+        const streamRecord = { response, interval, conversationId };
         openChatStreams.add(streamRecord);
+        writeChatStreamSnapshot(streamRecord, state);
         request.on("close", () => {
           clearInterval(interval);
           openChatStreams.delete(streamRecord);
@@ -5228,6 +5304,111 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
           request.payload?.agent_id === "scroll-agent-30",
       ),
     "expected selecting a late-list chat agent to create or focus that chat",
+  );
+});
+
+test("team add-on Chat send keeps the selected message list anchored during send refreshes", async (t) => {
+  let releaseMessageResponse = null;
+  let messageRequestStarted = null;
+  const messageStarted = new Promise((resolve) => {
+    messageRequestStarted = resolve;
+  });
+  const messageRelease = new Promise((resolve) => {
+    releaseMessageResponse = resolve;
+  });
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+    chatMessageBeforeResponse: async () => {
+      messageRequestStarted?.();
+      await messageRelease;
+    },
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  const messageList = page.locator(".chat-message-list");
+  await messageList.getByText("Message 119").waitFor({ state: "visible" });
+  await waitForCondition(async () => {
+    const metrics = await messageList.evaluate((element) => ({
+      bottomGap: element.scrollHeight - element.clientHeight - element.scrollTop,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+    }));
+    return metrics.scrollHeight > metrics.clientHeight && metrics.bottomGap <= 4;
+  }, "expected chat to start anchored at the newest message");
+
+  await page.evaluate(() => {
+    const list = document.querySelector(".chat-message-list");
+    const root = document.querySelector("[data-chat-thread-view]");
+    if (!(list instanceof HTMLElement) || !(root instanceof HTMLElement)) {
+      throw new Error("chat message list not found");
+    }
+    list.scrollTop = list.scrollHeight;
+    window.__teamChatListNode = list;
+    window.__teamChatScrollSamples = [];
+    window.__teamChatObserver = new MutationObserver(() => {
+      const current = document.querySelector(".chat-message-list");
+      window.__teamChatScrollSamples.push({
+        sameNode: current === window.__teamChatListNode,
+        scrollTop: current instanceof HTMLElement ? current.scrollTop : null,
+        bottomGap: current instanceof HTMLElement
+          ? current.scrollHeight - current.clientHeight - current.scrollTop
+          : null,
+      });
+    });
+    window.__teamChatObserver.observe(root, { childList: true, subtree: true });
+  });
+
+  await page.locator('.chat-composer textarea[name="body"]').fill("Please continue from the latest context.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await messageStarted;
+
+  let duringSendMetrics = null;
+  await waitForCondition(async () => {
+    duringSendMetrics = await page.evaluate(() => {
+      const current = document.querySelector(".chat-message-list");
+      if (!(current instanceof HTMLElement)) {
+        return null;
+      }
+      return {
+        sameNode: current === window.__teamChatListNode,
+        bottomGap: current.scrollHeight - current.clientHeight - current.scrollTop,
+        scrollTop: current.scrollTop,
+      };
+    });
+    return duringSendMetrics?.sameNode === true && duringSendMetrics.bottomGap <= 4;
+  }, "expected delayed send render to keep the selected chat list anchored");
+
+  releaseMessageResponse?.();
+  await page.locator(".chat-message").getByText("Please continue from the latest context.").waitFor({
+    state: "visible",
+  });
+  let afterSendMetrics = null;
+  await waitForCondition(async () => {
+    afterSendMetrics = await page.evaluate(() => {
+      const current = document.querySelector(".chat-message-list");
+      if (!(current instanceof HTMLElement)) {
+        return null;
+      }
+      return {
+        sameNode: current === window.__teamChatListNode,
+        bottomGap: current.scrollHeight - current.clientHeight - current.scrollTop,
+        scrollTop: current.scrollTop,
+      };
+    });
+    return afterSendMetrics?.sameNode === true && afterSendMetrics.bottomGap <= 4;
+  }, "expected chat send response to keep the selected chat list anchored");
+
+  const samples = await page.evaluate(() => {
+    window.__teamChatObserver?.disconnect();
+    return window.__teamChatScrollSamples || [];
+  });
+  assert.ok(samples.length > 0, "expected chat send to trigger DOM updates");
+  assert.equal(
+    samples.some((sample) => sample.sameNode === false),
+    false,
+    `expected selected chat message list node to be reused: ${JSON.stringify(samples)}`,
   );
 });
 

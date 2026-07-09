@@ -2758,6 +2758,7 @@ async function loadChatView({
   chatState = { ...chatState, loading: true, error: null };
   if (activeTeamView === "chat") {
     const drafts = preserveForms ? captureFormDrafts() : null;
+    scheduleChatScrollForRender(selectedChatConversationId);
     renderChat();
     if (drafts) {
       restoreFormDrafts(drafts);
@@ -3182,6 +3183,7 @@ async function loadConversations({ selectedConversationId = null, preserveSelect
   const requestId = ++chatRequestId;
   const candidateId = selectedConversationId || (preserveSelection ? selectedChatConversationId : null);
   chatState = { ...chatState, loading: true, error: null };
+  scheduleChatScrollForRender(candidateId);
   renderChat();
   try {
     const query = new URLSearchParams({ include_selected_messages: "1" });
@@ -3320,6 +3322,9 @@ async function loadOlderChatMessages(conversationId) {
   }
   const scrollSnapshot = captureChatScroll(normalizedConversationId);
   chatOlderMessageLoads.add(normalizedConversationId);
+  if (scrollSnapshot) {
+    scheduleChatScrollPreserve(normalizedConversationId, scrollSnapshot);
+  }
   renderChat();
   try {
     const query = new URLSearchParams({
@@ -3553,6 +3558,7 @@ async function submitChatMessage(form) {
     return;
   }
   chatSending = true;
+  scheduleChatScrollForRender(conversation.id);
   renderChat();
   setStatus("Sending chat message.", "loading");
   try {
@@ -7211,49 +7217,167 @@ function renderChatThread() {
   const olderLoading = chatOlderMessageLoads.has(text(conversation.id));
   const callStrip = renderChatCallStrip(conversation);
   const readOnly = Boolean(chatState.read_only || conversation.read_only);
+  const listSignature = chatMessageListSignature(conversation, messages, olderLoading);
+  const existingThread = elements.chatThreadView.querySelector(".chat-thread");
+  const canPatchThread =
+    existingThread instanceof HTMLElement &&
+    text(existingThread.dataset.chatThreadConversationId) === text(conversation.id) &&
+    existingThread.dataset.chatThreadCallStrip === (callStrip ? "1" : "0") &&
+    existingThread.dataset.chatThreadReadOnly === (readOnly ? "1" : "0");
+  if (
+    canPatchThread &&
+    patchChatThread(existingThread, {
+      conversation,
+      agent,
+      messages,
+      label,
+      olderLoading,
+      callStrip,
+      readOnly,
+      listSignature,
+    })
+  ) {
+    restoreChatComposerState(conversation.id, composerState);
+    applyPendingChatScroll(conversation.id);
+    return;
+  }
   elements.chatThreadView.innerHTML = `
-    <div class="chat-thread${callStrip ? " has-call-strip" : ""}">
-      <header class="chat-thread-header">
-        <div class="chat-thread-title">
-          ${renderChatAvatar(agent)}
-          <div>
-            <h2>${escapeHtml(label)}</h2>
-            <div class="meta-line">${escapeHtml(agent.session_id || conversation.agent_id || "")}</div>
-          </div>
-        </div>
-        <div class="chat-thread-actions">
-          <button
-            type="button"
-            data-agent-call-agent-id="${escapeAttr(conversation.agent_id)}"
-            data-agent-call-conversation-id="${escapeAttr(conversation.id)}"
-            ${readOnly ? "disabled" : ""}
-          >Call</button>
-          <button type="button" data-chat-refresh>Refresh</button>
-        </div>
-      </header>
-      ${readOnly ? `<div class="chat-readonly-banner">Viewing ${escapeHtml(conversation.operator_display_name || conversation.operator_user_id || "another operator")} read-only.</div>` : ""}
-      ${callStrip}
-      <div class="chat-message-list" role="log" aria-live="polite" data-chat-scroll-conversation-id="${escapeAttr(conversation.id)}">
-        ${
-          conversation.has_older || olderLoading
-            ? `<div class="chat-history-sentinel" data-chat-history-sentinel>${olderLoading ? "Loading older messages." : ""}</div>`
-            : ""
-        }
-        ${
-          messages.length
-            ? messages.map(renderChatMessage).join("")
-            : `<p class="empty-state">No messages.</p>`
-        }
-      </div>
-      <form class="chat-composer" data-chat-message-form>
-        <textarea name="body" rows="3" placeholder="${readOnly ? "Read-only chat history" : `Message ${escapeAttr(label)}`}" ${chatSending || readOnly ? "disabled" : ""}></textarea>
-        <button type="submit" ${chatSending || readOnly ? "disabled" : ""}>Send</button>
-      </form>
-    </div>
+    ${renderChatThreadMarkup({
+      conversation,
+      agent,
+      messages,
+      label,
+      olderLoading,
+      callStrip,
+      readOnly,
+    })}
   `;
+  setChatMessageListSignature(conversation.id, listSignature);
   restoreChatComposerState(conversation.id, composerState);
   bindChatMessageListScroll(conversation.id);
   applyPendingChatScroll(conversation.id);
+}
+
+function renderChatThreadMarkup({
+  conversation,
+  agent,
+  messages,
+  label,
+  olderLoading,
+  callStrip,
+  readOnly,
+}) {
+  return `
+    <div
+      class="chat-thread${callStrip ? " has-call-strip" : ""}"
+      data-chat-thread-conversation-id="${escapeAttr(conversation.id)}"
+      data-chat-thread-call-strip="${callStrip ? "1" : "0"}"
+      data-chat-thread-read-only="${readOnly ? "1" : "0"}"
+    >
+      ${renderChatThreadHeader(conversation, agent, label, readOnly)}
+      ${renderChatReadonlyBanner(conversation, readOnly)}
+      ${callStrip}
+      ${renderChatMessageList(conversation, messages, olderLoading)}
+      ${renderChatComposer(label, readOnly)}
+    </div>
+  `;
+}
+
+function patchChatThread(
+  thread,
+  {
+    conversation,
+    agent,
+    messages,
+    label,
+    olderLoading,
+    callStrip,
+    readOnly,
+    listSignature,
+  },
+) {
+  const header = thread.querySelector(".chat-thread-header");
+  const list = thread.querySelector(".chat-message-list");
+  const composer = thread.querySelector(".chat-composer");
+  if (!header || !list || !composer) {
+    return false;
+  }
+  header.outerHTML = renderChatThreadHeader(conversation, agent, label, readOnly);
+  const banner = thread.querySelector(".chat-readonly-banner");
+  if (readOnly && banner) {
+    banner.outerHTML = renderChatReadonlyBanner(conversation, readOnly);
+  }
+  const callStripElement = thread.querySelector(".chat-call-strip");
+  if (callStrip && callStripElement) {
+    callStripElement.outerHTML = callStrip;
+  }
+  if (list.dataset.chatMessageSignature !== listSignature) {
+    list.innerHTML = renderChatMessageListContents(conversation, messages, olderLoading);
+    list.dataset.chatMessageSignature = listSignature;
+  }
+  composer.outerHTML = renderChatComposer(label, readOnly);
+  return true;
+}
+
+function renderChatThreadHeader(conversation, agent, label, readOnly) {
+  return `
+    <header class="chat-thread-header">
+      <div class="chat-thread-title">
+        ${renderChatAvatar(agent)}
+        <div>
+          <h2>${escapeHtml(label)}</h2>
+          <div class="meta-line">${escapeHtml(agent.session_id || conversation.agent_id || "")}</div>
+        </div>
+      </div>
+      <div class="chat-thread-actions">
+        <button
+          type="button"
+          data-agent-call-agent-id="${escapeAttr(conversation.agent_id)}"
+          data-agent-call-conversation-id="${escapeAttr(conversation.id)}"
+          ${readOnly ? "disabled" : ""}
+        >Call</button>
+        <button type="button" data-chat-refresh>Refresh</button>
+      </div>
+    </header>
+  `;
+}
+
+function renderChatReadonlyBanner(conversation, readOnly) {
+  return readOnly
+    ? `<div class="chat-readonly-banner">Viewing ${escapeHtml(conversation.operator_display_name || conversation.operator_user_id || "another operator")} read-only.</div>`
+    : "";
+}
+
+function renderChatMessageList(conversation, messages, olderLoading) {
+  return `
+    <div class="chat-message-list" role="log" aria-live="polite" data-chat-scroll-conversation-id="${escapeAttr(conversation.id)}">
+      ${renderChatMessageListContents(conversation, messages, olderLoading)}
+    </div>
+  `;
+}
+
+function renderChatMessageListContents(conversation, messages, olderLoading) {
+  return `
+    ${
+      conversation.has_older || olderLoading
+        ? `<div class="chat-history-sentinel" data-chat-history-sentinel>${olderLoading ? "Loading older messages." : ""}</div>`
+        : ""
+    }
+    ${
+      messages.length
+        ? messages.map(renderChatMessage).join("")
+        : `<p class="empty-state">No messages.</p>`
+    }
+  `;
+}
+
+function renderChatComposer(label, readOnly) {
+  return `
+    <form class="chat-composer" data-chat-message-form>
+      <textarea name="body" rows="3" placeholder="${readOnly ? "Read-only chat history" : `Message ${escapeAttr(label)}`}" ${chatSending || readOnly ? "disabled" : ""}></textarea>
+      <button type="submit" ${chatSending || readOnly ? "disabled" : ""}>Send</button>
+    </form>
+  `;
 }
 
 function captureChatComposerState(expectedConversationId) {
@@ -7331,6 +7455,36 @@ function renderChatMessage(message) {
       </div>
     </article>
   `;
+}
+
+function chatMessageListSignature(conversation, messages, olderLoading) {
+  const messageSignature = messages
+    .map((message) =>
+      [
+        message.id,
+        message.sender,
+        message.message_type,
+        message.body,
+        message.status,
+        message.error,
+        JSON.stringify(message.metadata || {}),
+        message.created_at,
+        message.updated_at,
+      ].map(text).join("\x1f"),
+    )
+    .join("\x1e");
+  return [
+    conversation.has_older ? "older" : "no-older",
+    olderLoading ? "loading" : "idle",
+    messageSignature,
+  ].join("\x1d");
+}
+
+function setChatMessageListSignature(conversationId, signature) {
+  const list = chatMessageListElement(conversationId);
+  if (list) {
+    list.dataset.chatMessageSignature = signature;
+  }
 }
 
 function applyChatMessagePage(conversationId, payload) {
@@ -7488,6 +7642,28 @@ function chatIsScrolledNearBottom(conversationId = selectedChatConversationId) {
 
 function scheduleChatScrollToBottom(conversationId) {
   pendingChatScroll = { conversationId: text(conversationId), mode: "bottom" };
+}
+
+function scheduleChatScrollForRender(conversationId = selectedChatConversationId, { preferBottom = false } = {}) {
+  const normalizedConversationId = text(conversationId);
+  if (!normalizedConversationId) {
+    return;
+  }
+  if (
+    pendingChatScroll?.mode === "bottom" &&
+    text(pendingChatScroll.conversationId) === normalizedConversationId
+  ) {
+    return;
+  }
+  const snapshot = captureChatScroll(normalizedConversationId);
+  if (!snapshot) {
+    return;
+  }
+  if (preferBottom || chatIsScrolledNearBottom(normalizedConversationId)) {
+    scheduleChatScrollToBottom(normalizedConversationId);
+    return;
+  }
+  scheduleChatScrollPreserve(normalizedConversationId, snapshot);
 }
 
 function scheduleChatScrollPreserve(conversationId, snapshot) {
