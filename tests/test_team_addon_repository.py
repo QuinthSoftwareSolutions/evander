@@ -8166,6 +8166,64 @@ def test_apply_agent_action_multi_review_holds_back_deliverable(tmp_path: Path) 
     assert state.tasks["task"].state == TeamTaskState.ACCEPTED
 
 
+def test_apply_agent_action_late_review_request_reopens_accepted_work(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-1",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "worker",
+                    "instructions": "First review.",
+                }
+            ],
+        },
+    )
+    state, _ = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [{"review_request_id": "review-1", "state": "accepted"}],
+        },
+    )
+    assert state.deliverables["deliverable"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-2",
+                    "deliverable_id": "deliverable",
+                    "reviewer_agent_id": "lead",
+                    "instructions": "Late release-blocking review.",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["created_review_request_ids"] == ["review-2"]
+    assert state.review_requests["review-2"].state == TeamRecordState.PENDING
+    assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    state, _ = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_decisions": [{"review_request_id": "review-2", "state": "accepted"}],
+        },
+    )
+    assert state.deliverables["deliverable"].state == TeamRecordState.ACCEPTED
+    assert state.tasks["task"].state == TeamTaskState.ACCEPTED
+
+
 def test_apply_agent_action_multi_deliverable_holds_back_task(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")

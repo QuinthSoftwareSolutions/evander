@@ -110,6 +110,7 @@ from .domain.release_packages import _build_release_package
 from .domain.review import (
     _cascade_review_decision,
     _is_review_decision_state,
+    _reopen_accepted_deliverable_for_pending_review,
     _review_profile_for_request,
 )
 from .domain.work_due import _mark_agent_work_due
@@ -2555,6 +2556,7 @@ class TeamAdminService:
                 effective_review_request_id,
                 "review request",
             )
+            now = utc_now()
             review = ReviewRequest(
                 id=effective_review_request_id,
                 deliverable_id=normalized_deliverable_id,
@@ -2563,7 +2565,7 @@ class TeamAdminService:
                 findings=findings or [],
                 review_profile_id=effective_review_profile_id,
                 instructions=instructions,
-                created_at=utc_now(),
+                created_at=now,
                 decision_at=decision_at,
             )
             state_model.review_requests[review.id] = review
@@ -2571,6 +2573,18 @@ class TeamAdminService:
                 deliverable.review_request_ids,
                 review.id,
             )
+            if state in {
+                TeamRecordState.PENDING,
+                TeamRecordState.IN_PROGRESS,
+                TeamRecordState.BLOCKED,
+            }:
+                reopened = _reopen_accepted_deliverable_for_pending_review(
+                    deliverable=deliverable,
+                    task=task,
+                    now=now,
+                )
+                if reopened:
+                    _recalculate_project_status(state_model, task.project_id)
             return state_model
 
         return self._repository.update(_mutate, expected_revision=expected_revision)

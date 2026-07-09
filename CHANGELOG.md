@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-09 - Team Late Review State Guard
+
+- Reopened accepted deliverables and tasks when a new pending review request is
+  added after acceptance, keeping late release-blocking reviews from being
+  ignored by accepted state.
+- Hardened reply-only Team Chat prompts so agents must state that no mutation
+  occurred instead of promising or implying queued state changes.
+
 ## 2026-07-09 - Team Review Profile Wake Fixes
 
 - Auto-selected a single active matching Team review profile when review

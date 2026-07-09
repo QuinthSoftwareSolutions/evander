@@ -2072,6 +2072,8 @@ def test_wake_due_agents_provider_grants_reply_only_chat_tool_when_mutation_disa
     assert session_store.sessions["session-backend"].allowed_tools == [TEAM_REPLY_TO_CHAT_TOOL]
     prompt = str(resumer.calls[0]["prompt"])
     assert "reply-only" in prompt
+    assert "no Team state change was performed in this dispatch" in prompt
+    assert "Do not promise to make the change later" in prompt
     assert "Current dispatch Team state mutation: allowed" not in prompt
     assert "ordinary Team MCP tools granted to this chat wake" not in prompt
 

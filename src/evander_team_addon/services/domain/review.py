@@ -142,6 +142,7 @@ def _apply_review_request(
     actor: PersistentAgent,
     request: dict[str, Any],
     result: dict[str, Any],
+    projects_to_recalc: set[str] | None = None,
 ) -> str | None:
     deliverable_id = _required_text(request.get("deliverable_id"), "deliverable_id")
     deliverable = state.deliverables.get(deliverable_id)
@@ -188,7 +189,14 @@ def _apply_review_request(
         deliverable_id=deliverable_id,
         reviewer_id=reviewer_id,
     )
+    now = utc_now()
     if existing_review is not None:
+        _reopen_accepted_deliverable_for_pending_review(
+            deliverable=deliverable,
+            task=task,
+            now=now,
+            projects_to_recalc=projects_to_recalc,
+        )
         result.setdefault("existing_review_request_ids", []).append(existing_review.id)
         return existing_review.id
     review_id = _optional_text(request.get("id"))
@@ -201,7 +209,6 @@ def _apply_review_request(
     if review_id in state.review_requests:
         result["errors"].append(f"review request {review_id} already exists")
         return None
-    now = utc_now()
     review = ReviewRequest(
         id=review_id,
         deliverable_id=deliverable_id,
@@ -215,6 +222,12 @@ def _apply_review_request(
     deliverable.review_request_ids = _append_unique(
         deliverable.review_request_ids,
         review.id,
+    )
+    _reopen_accepted_deliverable_for_pending_review(
+        deliverable=deliverable,
+        task=task,
+        now=now,
+        projects_to_recalc=projects_to_recalc,
     )
     payload: dict[str, Any] = {
         "kind": "review_request",
@@ -264,6 +277,26 @@ def _apply_review_request(
         now=now,
     )
     return review.id
+
+
+def _reopen_accepted_deliverable_for_pending_review(
+    *,
+    deliverable: Any,
+    task: Any | None,
+    now: datetime,
+    projects_to_recalc: set[str] | None = None,
+) -> bool:
+    reopened = False
+    if deliverable.state == TeamRecordState.ACCEPTED:
+        deliverable.state = TeamRecordState.PENDING
+        reopened = True
+    if task is not None and task.state == TeamTaskState.ACCEPTED:
+        _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
+        task.updated_at = now
+        reopened = True
+    if reopened and task is not None and projects_to_recalc is not None:
+        projects_to_recalc.add(task.project_id)
+    return reopened
 
 def _active_review_request_for_reviewer(
     state: TeamState,
@@ -495,6 +528,7 @@ def _cascade_review_decision(
 __all__ = [
     "_review_profile_for_request",
     "_apply_review_request",
+    "_reopen_accepted_deliverable_for_pending_review",
     "_active_review_request_for_reviewer",
     "_review_request_was_created",
     "_apply_review_decision",

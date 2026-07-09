@@ -4560,7 +4560,12 @@ def _build_team_chat_prompt(
         "acknowledgement, or no-op reply.\n\n"
         if mutation_allowed
         else "This chat wake is reply-only. Do not mutate Team state; use only "
-        f"{TEAM_REPLY_TO_CHAT_TOOL}.\n\n"
+        f"{TEAM_REPLY_TO_CHAT_TOOL}. If the operator asks you to create, assign, "
+        "request review, mark, or otherwise change Team state, state clearly that "
+        "no Team state change was performed in this dispatch and that the request "
+        "must be made from a mutation-enabled chat wake or other mutation-capable "
+        "workflow. Do not promise to make the change later, do not say it is queued, "
+        "and do not present intent as completed work.\n\n"
     )
     return (
         "You have received a message from a human operator in the Team Add-on Chat tab.\n"
