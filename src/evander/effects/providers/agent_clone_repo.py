@@ -7,7 +7,7 @@ from pathlib import Path
 import posixpath
 import shlex
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from evander.events.provider_models import AgentCloneRepoEffectDefinition
@@ -162,6 +162,14 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 target_dir=result.target_dir,
                 repo_source=mirror.canonical_repo_source,
                 remote_url=result.remote_url,
+                push_remote_url=(
+                    _container_git_remote_url_with_ssh_alias(
+                        result.remote_url,
+                        str(write_access_metadata["git_ssh_alias"]),
+                    )
+                    if write_access_metadata is not None
+                    else None
+                ),
                 clone_branch=clone_branch,
                 git_access_mode=git_access_mode,
                 git_author_identity=git_author_identity,
@@ -253,7 +261,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "authorized_ref_prefix": installed.authorized_ref_prefix,
             "authorized_pr_notes_ref": installed.authorized_pr_notes_ref,
             "allowed_from": installed.allowed_from,
-            "git_ssh_alias": mirror_resolver.git_ssh_alias,
+            "git_ssh_alias": str(key_record.git_ssh_alias),
         }
         try:
             _record_session_git_write_access(context, session_id, metadata)
@@ -335,6 +343,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         target_dir: str,
         repo_source: str,
         remote_url: str,
+        push_remote_url: str | None,
         clone_branch: str | None,
         git_access_mode: str,
         git_author_identity: GitIdentity | None,
@@ -347,6 +356,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             target_dir=target_dir,
             repo_source=repo_source,
             remote_url=remote_url,
+            push_remote_url=push_remote_url,
             clone_branch=clone_branch,
             git_access_mode=git_access_mode,
             git_author_identity=git_author_identity,
@@ -416,6 +426,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         target_dir: str,
         repo_source: str,
         remote_url: str,
+        push_remote_url: str | None = None,
         clone_branch: str | None,
         git_access_mode: str = "write",
         git_identity: GitIdentity | None = None,
@@ -426,11 +437,10 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             git_author_identity = git_identity
         canonical_remote_url = repo_source.strip() if _is_remote_git_source(repo_source) else ""
         normalized_git_access_mode = normalize_git_access_mode(git_access_mode)
-        push_remote_url = (
-            _container_reachable_git_remote_url(remote_url)
-            if normalized_git_access_mode == "write"
-            else None
-        )
+        if normalized_git_access_mode != "write":
+            push_remote_url = None
+        elif push_remote_url is None:
+            push_remote_url = _container_reachable_git_remote_url(remote_url)
         pr_notes_ref = agent_pr_notes_ref_for_session(session_id)
         git_user_identity = git_author_identity or _DEFAULT_GIT_IDENTITY
         lines = [
@@ -583,6 +593,20 @@ def _container_reachable_git_remote_url(value: str) -> str | None:
     if not _is_container_mounted_path(path):
         return None
     return path
+
+
+def _container_git_remote_url_with_ssh_alias(remote_url: str, git_ssh_alias: str) -> str:
+    """Route a container SSH Git remote through its dedicated write-key alias."""
+
+    parsed = urlparse(remote_url.strip())
+    if parsed.scheme != "ssh" or not parsed.netloc or not parsed.path:
+        return remote_url
+    netloc = git_ssh_alias
+    if parsed.username:
+        netloc = f"{parsed.username}@{netloc}"
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse(parsed._replace(netloc=netloc))
 
 
 def _container_mounted_git_path(remote_url: str) -> str | None:

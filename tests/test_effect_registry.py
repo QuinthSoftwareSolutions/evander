@@ -197,7 +197,7 @@ class _FakeContainerBackend:
             public_key_body="AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
             key_path="/home/agent/.ssh/evander-git-write",
             config_path="/home/agent/.ssh/config",
-            git_ssh_alias=kwargs["git_ssh_alias"],
+            git_ssh_alias=f"{kwargs['git_ssh_alias']}-write",
         )
 
     def write_files(self, **kwargs):
@@ -4209,7 +4209,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         "authorized_ref_prefix": "refs/heads/agents/session-1/",
         "authorized_pr_notes_ref": "refs/notes/agent-pr/84097828fc31",
         "allowed_from": "worker.test",
-        "git_ssh_alias": "evander-git-host",
+        "git_ssh_alias": "evander-git-host-write",
     }
     assert manifest.metadata["container_git_write_access"] == expected_git_write_access
     assert sync_calls[0]["previous_session"] is None
@@ -4338,6 +4338,9 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "refs/notes/agent-pr/" in clone_config_command
     assert 'git config evander.pushAgentAvailable "true"' in clone_config_command
     assert "CANONICAL_REMOTE_URL=https://example.test/org/repo.git" in clone_config_command
+    assert "PUSH_REMOTE_URL=ssh://evander-git-host-write/git-remotes/repo.git" in (
+        clone_config_command
+    )
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
     assert backend.started_specs[-1].command is not None
     assert "cd /home/agent" in str(backend.started_specs[-1].command)
@@ -5605,6 +5608,23 @@ def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of()
     assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
     assert 'git remote set-url origin "$CANONICAL_REMOTE_URL"' in command
     assert 'git config "url.${PUSH_REMOTE_URL}.insteadOf" "$CANONICAL_REMOTE_URL"' in command
+
+
+def test_agent_clone_container_uses_dedicated_write_alias_for_agent_remote() -> None:
+    command = AgentCloneRepoEffectProvider._container_git_config_command(
+        session_id="session-1",
+        target_dir="/home/agent/repos/repo",
+        repo_source="https://dev.azure.com/org/project/_git/repo",
+        remote_url="ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git",
+        push_remote_url="ssh://evander-git-host-write/opt/evander/git-remotes/repo-abc.git",
+        clone_branch="main",
+    )
+
+    assert (
+        "PUSH_REMOTE_URL=ssh://evander-git-host-write/opt/evander/git-remotes/repo-abc.git"
+        in command
+    )
+    assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
 
 
 def test_agent_clone_container_read_only_command_disables_push_agent_alias() -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .domain import common as _team_common
@@ -297,6 +297,7 @@ class TeamChatService:
         project_id: str | None = None,
         agent_id: str | None = None,
         blocked_team_ids: set[str] | None = None,
+        session_is_busy: Callable[[str], bool] | None = None,
     ) -> tuple[TeamState, list[dict[str, Any]]]:
         effective_now = _ensure_utc(now or utc_now())
         normalized_limit = max(0, int(limit))
@@ -339,6 +340,8 @@ class TeamChatService:
                 ):
                     continue
                 if normalized_agent_id is not None and agent.id != normalized_agent_id:
+                    continue
+                if session_is_busy is not None and session_is_busy(agent.session_id):
                     continue
                 runtime = state.agent_runtimes.setdefault(
                     agent.id,

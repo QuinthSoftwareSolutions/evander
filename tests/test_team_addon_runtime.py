@@ -2097,6 +2097,79 @@ def test_wake_due_agents_provider_grants_reply_only_chat_tool_when_mutation_disa
     assert "ordinary Team MCP tools granted to this chat wake" not in prompt
 
 
+def test_wake_due_agents_leaves_reply_only_chat_queued_while_agent_prompt_is_active(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please just reply when the current work is finished.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+
+    def _disable_mutation(state: TeamState) -> TeamState:
+        state.conversation_messages[message.id].metadata["allow_team_mutations"] = False
+        return state
+
+    repo.update(_disable_mutation)
+    dispatch_id = f"team-chat:{message.id}"
+    _team_chat_service(repo).queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+    )
+
+    def _defer_regular_wake(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"] = AgentRuntime(
+            agent_id="backend",
+            next_wake_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_defer_regular_wake)
+    session_store = FakeSessionStore()
+    ordinary_tools = list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES)
+    session_store.sessions["session-backend"].allowed_tools = ordinary_tools
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            agent_id="backend",
+            limit=1,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            agent_prompt_activity=SimpleNamespace(has_active_enqueue_prompt=lambda **_kwargs: True),
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["chat_dispatches"] == []
+    assert resumer.calls == []
+    assert session_store.sessions["session-backend"].allowed_tools == ordinary_tools
+    reread = TeamStateRepository(tmp_path).read()
+    queued_message = reread.conversation_messages[message.id]
+    assert queued_message.status == "queued"
+    assert queued_message.dispatch_id == dispatch_id
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+
+
 def test_wake_due_agents_provider_limit_zero_dispatches_no_queued_chat(
     tmp_path: Path,
 ) -> None:

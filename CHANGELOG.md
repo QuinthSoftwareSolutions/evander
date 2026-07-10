@@ -1,9 +1,22 @@
 # Changelog
 
+## 2026-07-10 - Team Chat Permission Handoff
+
+- Kept reply-only Team Chat messages queued while their target session has an
+  active agent prompt, preventing a queued chat dispatch from revoking the
+  still-running implementation wake's Team MCP permissions.
+
 ## 2026-07-10 - Team Chat Stale Revision Tolerance
 
 - Let operators open Team chats and queue chat messages after unrelated Team state changes;
   chat still enforces the current agent status, conversation access, and privilege policy.
+
+## 2026-07-10 - Container Git Write Alias Repair
+
+- Configured container-worker Git write keys under a dedicated SSH host alias
+  and routed the `git push-agent` remote through it, leaving the clone/fetch
+  alias bound to its read-only key instead of relying on duplicate OpenSSH
+  host entries.
 
 ## 2026-07-10 - GPT-5.6 Pricing Catalog
 

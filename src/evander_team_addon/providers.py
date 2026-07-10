@@ -1666,6 +1666,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             agent_id=_optional_text(payload.get("agent_id")),
             limit=normalized_limit,
             blocked_team_ids=blocked_team_ids,
+            session_is_busy=lambda session_id: _team_session_has_active_prompt(
+                context,
+                session_id=session_id,
+            ),
         )
         chat_dispatches: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -5710,6 +5714,23 @@ def _team_chat_mutation_allowed(message: object) -> bool:
         if key in metadata:
             return bool(metadata[key])
     return True
+
+
+def _team_session_has_active_prompt(context: Any, *, session_id: str) -> bool:
+    activity = getattr(context, "agent_prompt_activity", None)
+    has_active_prompt = getattr(activity, "has_active_enqueue_prompt", None)
+    if not callable(has_active_prompt):
+        return False
+    try:
+        return bool(
+            has_active_prompt(
+                target=session_id,
+                vm_name=session_id,
+                session_id=session_id,
+            )
+        )
+    except Exception:
+        return False
 
 
 def _set_session_team_mcp_tools(

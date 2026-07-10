@@ -745,9 +745,11 @@ class WorkerDaemon:
         )
 
         config_path = ssh_dir / "config"
+        write_git_ssh_alias = _git_write_ssh_alias(request.git_ssh_alias)
         self._write_git_write_ssh_config(
             config_path=config_path,
-            git_ssh_alias=request.git_ssh_alias,
+            read_git_ssh_alias=request.git_ssh_alias,
+            write_git_ssh_alias=write_git_ssh_alias,
             git_host=request.git_host,
             git_user=request.git_user,
             identity_file=f"~/.ssh/{request.key_name}",
@@ -757,7 +759,7 @@ class WorkerDaemon:
             "public_key_body": public_key_body_from_line(public_key),
             "key_path": str(key_path),
             "config_path": str(config_path),
-            "git_ssh_alias": request.git_ssh_alias,
+            "git_ssh_alias": write_git_ssh_alias,
             "updated_at": now_utc().isoformat(),
         }
         self._write_session_metadata(paths, metadata)
@@ -767,7 +769,7 @@ class WorkerDaemon:
             public_key_body=public_key_body_from_line(public_key),
             key_path=str(key_path),
             config_path=str(config_path),
-            git_ssh_alias=request.git_ssh_alias,
+            git_ssh_alias=write_git_ssh_alias,
         )
 
     def write_files(
@@ -1774,14 +1776,13 @@ class WorkerDaemon:
         cls,
         *,
         config_path: Path,
-        git_ssh_alias: str,
+        read_git_ssh_alias: str,
+        write_git_ssh_alias: str,
         git_host: str,
         git_user: str,
         identity_file: str,
     ) -> None:
         cls._ensure_managed_ssh_dir(config_path.parent)
-        begin = "# BEGIN evander git write host"
-        end = "# END evander git write host"
         text = (
             cls._read_managed_text_file_no_follow(config_path, label="SSH config")
             if cls._managed_regular_file_exists_no_follow(
@@ -1792,7 +1793,7 @@ class WorkerDaemon:
         )
         for marker_begin, marker_end in (
             ("# BEGIN evander git host", "# END evander git host"),
-            (begin, end),
+            ("# BEGIN evander git write host", "# END evander git write host"),
         ):
             while marker_begin in text and marker_end in text:
                 start = text.index(marker_begin)
@@ -1801,21 +1802,27 @@ class WorkerDaemon:
                 text = text[:start].rstrip() + "\n" + text[stop + len(suffix) :].lstrip("\n")
         block = "\n".join(
             [
-                begin,
-                f"Host {git_ssh_alias}",
+                "# BEGIN evander git host",
+                f"Host {read_git_ssh_alias}",
+                f"  HostName {git_host}",
+                f"  User {git_user}",
+                "  IdentityFile ~/.ssh/evander-git",
+                "  IdentitiesOnly yes",
+                "  StrictHostKeyChecking accept-new",
+                "# END evander git host",
+                "",
+                "# BEGIN evander git write host",
+                f"Host {write_git_ssh_alias}",
                 f"  HostName {git_host}",
                 f"  User {git_user}",
                 f"  IdentityFile {identity_file}",
                 "  IdentitiesOnly yes",
                 "  StrictHostKeyChecking accept-new",
-                end,
+                "# END evander git write host",
                 "",
             ]
         )
-        if text.strip():
-            text = text.rstrip() + "\n\n" + block
-        else:
-            text = block
+        text = block if not text.strip() else block + "\n" + text.strip() + "\n"
         cls._write_managed_text_file_no_follow(
             config_path,
             text,
@@ -2031,6 +2038,12 @@ def _repo_source_requires_git_ssh(repo_source: str | None) -> bool:
         return False
     normalized = repo_source.strip()
     return normalized.startswith("ssh://") or bool(re.match(r"^[^/@:\s]+@[^:\s]+:.+", normalized))
+
+
+def _git_write_ssh_alias(read_git_ssh_alias: str) -> str:
+    """Return the dedicated host alias for a session's restricted write key."""
+
+    return f"{read_git_ssh_alias}-write"
 
 
 def _git_subprocess_env(agent_home: Path) -> dict[str, str]:
