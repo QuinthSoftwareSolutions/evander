@@ -31,6 +31,7 @@ from evander_team_addon.models import (
     ProjectGitConfig,
     ProjectGoal,
     ProjectStatus,
+    ReleasePackage,
     ReviewProfileCriterion,
     RolePermission,
     TeamDispatchActivity,
@@ -9022,7 +9023,7 @@ def test_recover_release_command_records_retryable_recovery_outbox(
     assert recovery_outbox[0].aggregate_id == "rel-1"
     assert recovery_outbox[0].idempotency_key == (
         "team-addon:team.git.release_recovery_requested:"
-        "rel-1:agents/lead/release-resolved:"
+        f"rel-1:{release_promotion_id}:agents/lead/release-resolved:"
         "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932"
     )
     duplicate = repo.enqueue_outbox_record(
@@ -9901,7 +9902,7 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
     assert event["correlation_key"] == "rel-1"
     assert event["idempotency_key"] == (
         "team-addon:team.git.release_recovery_requested:"
-        "rel-1:agents/lead/release-resolved:"
+        f"rel-1:{release_promotion_id}:agents/lead/release-resolved:"
         "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932"
     )
     assert event["payload"] == {
@@ -10002,6 +10003,105 @@ def test_apply_agent_action_git_release_recovery_continues_failed_feature_promot
     ]
     assert len(release_promotions) == 1
     assert promotion_result["git_promotion_event_ids"] == [release_promotions[0].id]
+
+
+def test_release_recovery_keys_each_failed_promotion_and_keeps_remaining_error(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    older_at = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+    newer_at = older_at + timedelta(minutes=1)
+
+    def _seed_failures(state):
+        state.release_packages["rel-1"] = ReleasePackage(
+            id="rel-1",
+            project_id="project",
+            release_branch="team/team/releases/rel-1",
+            canonical_branch="releases/project/rel-1",
+            git_promotion_record_ids=["promotion-old", "promotion-new"],
+            state=TeamRecordState.BLOCKED,
+            error="new failure",
+        )
+        state.git_promotions["promotion-old"] = GitPromotionRecord(
+            id="promotion-old",
+            project_id="project",
+            actor_agent_id="lead",
+            source_branch="agents/lead/release-resolved",
+            target_branch="team/team/releases/rel-1",
+            promotion_kind="release",
+            release_package_id="rel-1",
+            state="failed",
+            error="old failure",
+            created_at=older_at,
+            updated_at=older_at,
+        )
+        state.git_promotions["promotion-new"] = GitPromotionRecord(
+            id="promotion-new",
+            project_id="project",
+            actor_agent_id="lead",
+            source_branch="agents/lead/release-resolved",
+            target_branch="team/team/releases/rel-1",
+            promotion_kind="release",
+            release_package_id="rel-1",
+            state="failed",
+            error="new failure",
+            created_at=newer_at,
+            updated_at=newer_at,
+        )
+        return state
+
+    repo.update(_seed_failures)
+    sha = "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932"
+    state, first = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_recoveries": [
+                {
+                    "release_package_id": "rel-1",
+                    "agent_branch": "agents/lead/release-resolved",
+                    "commit_sha": sha,
+                }
+            ],
+        },
+    )
+
+    first_event = first["events"][0]
+    assert first_event["payload"]["promotion_id"] == "promotion-new"
+    assert ":rel-1:promotion-new:agents/lead/release-resolved:" in first_event[
+        "idempotency_key"
+    ]
+
+    state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id="promotion-new",
+        success=True,
+        commit_sha=sha,
+    )
+
+    release = state.release_packages["rel-1"]
+    assert release.state == TeamRecordState.BLOCKED
+    assert release.error == "old failure"
+    assert promotion_result["git_promotion_event_ids"] == []
+
+    _state, second = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_recoveries": [
+                {
+                    "release_package_id": "rel-1",
+                    "agent_branch": "agents/lead/release-resolved",
+                    "commit_sha": sha,
+                }
+            ],
+        },
+    )
+
+    second_event = second["events"][0]
+    assert second_event["payload"]["promotion_id"] == "promotion-old"
+    assert ":rel-1:promotion-old:agents/lead/release-resolved:" in second_event[
+        "idempotency_key"
+    ]
+    assert first_event["idempotency_key"] != second_event["idempotency_key"]
 
 
 def test_apply_agent_action_git_release_recovery_requires_agent_branch(

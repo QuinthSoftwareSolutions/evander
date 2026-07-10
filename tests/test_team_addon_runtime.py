@@ -42,6 +42,7 @@ from evander_team_addon.models import (
     EphemeralAgentPolicy,
     EphemeralAssignment,
     GitWorkContext,
+    GitWorkContextState,
     GitPromotionRecord,
     PersistentAgent,
     Project,
@@ -3821,12 +3822,22 @@ def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_fail
         return state
 
     repo.update(_set_git)
+
+    def _add_second_task(state: TeamState) -> TeamState:
+        state.tasks["task-second"] = state.tasks["task"].model_copy(
+            update={"id": "task-second", "title": "Build second backend slice"}
+        )
+        return state
+
+    repo.update(_add_second_task)
+    original = TeamAdminService.create_git_work_context_with_id
     calls = 0
 
     def _always_conflict(self: TeamAdminService, **kwargs: object):
-        del self
         nonlocal calls
         calls += 1
+        if calls == 1:
+            return original(self, **kwargs)
         expected_revision = int(kwargs["expected_revision"])
         raise TeamStateConflictError(
             expected_revision=expected_revision,
@@ -3861,7 +3872,7 @@ def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_fail
 
     assert result["success"] is True
     assert result["dispatches"] == []
-    assert calls == 3
+    assert calls == 4
     assert result["retry_scheduled_count"] == 1
     assert len(result["retry_event_ids"]) == 1
     assert result["transient_conflicts"][0]["resolved"] is False
@@ -3876,6 +3887,13 @@ def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_fail
     assert runtime.next_wake_at is None
     assert runtime.no_progress_count == 0
     assert reread.action_records == {}
+    assert len(reread.git_work_contexts) == 1
+    assert {
+        context.state for context in reread.git_work_contexts.values()
+    } == {GitWorkContextState.ABANDONED}
+    assert {
+        context.dispatch_id for context in reread.git_work_contexts.values()
+    } == {result["transient_conflicts"][0]["dispatch_id"]}
     scheduled = json.loads(
         scheduled_internal_event_store_path(tmp_path).read_text(encoding="utf-8")
     )
@@ -5632,6 +5650,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert recovery_promote["expected_commit_sha"] == (
         "${{team-git-release-recovery-requested.payload.expected_commit_sha ?? null}}"
     )
+    assert recovery_promote["publish_target_to_bare"] is True
     recovery_record = effects["team-record-release-recovery-promotion"]
     assert recovery_record["type"] == "effect:team:record-git-promotion"
     assert recovery_record["promotion_id"] == (
@@ -5664,12 +5683,18 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert record_canonical["commit_sha"] == (
         "${{team-push-canonical-branch.local_commit ?? null}}"
     )
+    assert record_canonical["result_outputs"]["error_code"] == (
+        "${{team-push-canonical-branch.reason ?? null}}"
+    )
     assert effects["team-mark-release-published"]["type"] == ("effect:team:mark-release-published")
     assert effects["team-mark-release-published"]["release_package_id"] == (
         "${{team-git-promotion-requested.payload.release_package_id}}"
     )
     assert effects["team-mark-release-published"]["published_commit_sha"] == (
         "${{team-push-canonical-branch.local_commit ?? null}}"
+    )
+    assert effects["team-mark-release-published"]["result_outputs"]["error_code"] == (
+        "${{team-push-canonical-branch.reason ?? null}}"
     )
     assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
     assert ("team-push-canonical-branch", "team-record-canonical-promotion") in edges

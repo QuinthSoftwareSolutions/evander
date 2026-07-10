@@ -264,6 +264,85 @@ def test_git_push_branch_provider_pushes_from_bare_repo_without_touching_host_ch
     assert admin_service.calls[1]["host_repo_path"] != str(trusted_repo)
 
 
+def test_git_push_branch_provider_uses_trusted_origin_and_non_head_source_ref(
+    tmp_path: Path,
+) -> None:
+    trusted_repo = tmp_path / "trusted"
+    source_bare = tmp_path / "source.git"
+    canonical_bare = tmp_path / "canonical.git"
+    subprocess.run(
+        ["git", "init", "-b", "main", str(trusted_repo)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(trusted_repo), "config", "user.name", "Test User"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(trusted_repo), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    (trusted_repo / "README.md").write_text("main\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(trusted_repo), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(trusted_repo), "commit", "-m", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    main_commit = subprocess.run(
+        ["git", "-C", str(trusted_repo), "rev-parse", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "clone", "--bare", str(trusted_repo), str(source_bare)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "init", "--bare", str(canonical_bare)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(trusted_repo), "remote", "add", "origin", str(canonical_bare)],
+        check=True,
+    )
+
+    admin_service = _AdminServiceStub(
+        result={"success": True, "local_commit": main_commit}
+    )
+    provider = GitPushBranchEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(
+            id="effect-push-main",
+            display_name="Push main from mirror",
+            type="effect:git:push-branch",
+            host_repo_path=str(trusted_repo),
+            bare_repo_path=str(source_bare),
+            local_branch="main",
+            origin_branch="release/main",
+        ),
+        runtime_context=_build_context(tmp_path, admin_service),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["canonical_origin_url"] == str(canonical_bare)
+    assert result["local_branch"] == "main"
+    assert result["source_local_branch"].startswith("evander-push-")
+    assert admin_service.calls[0]["canonical_origin_url"] == str(canonical_bare)
+    assert admin_service.calls[0]["local_branch"] == result["source_local_branch"]
+    assert admin_service.resolved_local_commits == [main_commit]
+
+
 def test_git_push_branch_provider_reports_missing_bare_repo(tmp_path: Path) -> None:
     admin_service = _AdminServiceStub(result={"success": True})
     provider = GitPushBranchEffectProvider()

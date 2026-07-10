@@ -550,6 +550,8 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "state": {"type": ["string", "null"]},
         "created_inbox_item_ids": {"type": "array"},
         "superseded_release_package_ids": {"type": "array"},
+        "resolved_inbox_item_ids": {"type": "array"},
+        "ignored_terminal_state": {"type": "boolean"},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:consolidate-git-branches": {

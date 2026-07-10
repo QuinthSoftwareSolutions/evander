@@ -469,6 +469,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "expected_commit_sha": (
                     "${{team-git-release-recovery-requested.payload.expected_commit_sha ?? null}}"
                 ),
+                "publish_target_to_bare": True,
             },
             {
                 "id": "team-record-release-recovery-promotion",
@@ -490,6 +491,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                         "${{team-promote-release-recovery-branch.target_branch ?? null}}"
                     ),
                     "message": "${{team-promote-release-recovery-branch.message ?? null}}",
+                    "published_target_to_bare": (
+                        "${{team-promote-release-recovery-branch.published_target_to_bare ?? false}}"
+                    ),
                 },
             },
             {
@@ -524,6 +528,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                         "${{team-push-canonical-branch.origin_branch ?? null}}"
                     ),
                     "message": "${{team-push-canonical-branch.message ?? null}}",
+                    "error_code": "${{team-push-canonical-branch.reason ?? null}}",
                 },
             },
             {
@@ -544,6 +549,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                         "${{team-push-canonical-branch.origin_branch ?? null}}"
                     ),
                     "message": "${{team-push-canonical-branch.message ?? null}}",
+                    "error_code": "${{team-push-canonical-branch.reason ?? null}}",
                 },
             },
         ],

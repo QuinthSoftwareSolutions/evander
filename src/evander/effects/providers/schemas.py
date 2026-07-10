@@ -1086,6 +1086,7 @@ class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
     target_branch: ConfigValue | None = None
     expected_commit_sha: ConfigValue | None = None
     remote_name: ConfigValue | None = None
+    publish_target_to_bare: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_bare_repo_selector(self) -> "GitPromoteAgentBranchEffectDefinition":

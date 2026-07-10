@@ -48,10 +48,11 @@ def _emit_git_release_recovery_event(
     result: dict[str, Any],
     *,
     release_package_id: str,
+    promotion_id: str,
     agent_branch: str,
     payload: dict[str, Any],
 ) -> None:
-    recovery_key = f"{release_package_id}:{agent_branch}"
+    recovery_key = f"{release_package_id}:{promotion_id}:{agent_branch}"
     commit_sha = _optional_text(payload.get("expected_commit_sha"))
     if commit_sha is not None:
         recovery_key = f"{recovery_key}:{commit_sha}"
@@ -220,6 +221,7 @@ def _apply_git_release_recovery(
     _emit_git_release_recovery_event(
         result,
         release_package_id=release.id,
+        promotion_id=failed_promotion.id,
         agent_branch=agent_branch,
         payload=payload,
     )

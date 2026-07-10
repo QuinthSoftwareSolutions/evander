@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -162,6 +163,107 @@ def test_git_promote_agent_branch_provider_fails_expected_commit_mismatch(
 
     assert result["success"] is False
     assert result["error"] == "promoted commit badc0de did not match expected 708b1b89"
+
+
+def test_git_promote_agent_branch_provider_publishes_exact_recovery_target_to_bare(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    bare = tmp_path / "source.git"
+    subprocess.run(
+        ["git", "init", "-b", "main", str(source)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(["git", "-C", str(source), "config", "user.name", "Test"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    (source / "value.txt").write_text("old\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "value.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "-m", "old"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    old_commit = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (source / "value.txt").write_text("recovered\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "value.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "-m", "recovered"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    recovered_commit = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "clone", "--bare", str(source), str(bare)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={bare}",
+            "update-ref",
+            "refs/heads/team/team/releases/release-1",
+            old_commit,
+        ],
+        check=True,
+    )
+
+    admin_service = _AdminServiceStub(
+        result={
+            "success": True,
+            "commit_sha": recovered_commit,
+            "target_branch": "team/team/releases/release-1",
+        }
+    )
+    provider = GitPromoteAgentBranchEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(
+            id="effect-promote-recovery",
+            type="effect:git:promote-agent-branch",
+            host_repo_path=str(source),
+            bare_repo_path=str(bare),
+            agent_branch="agents/session-1/recovered",
+            target_branch="team/team/releases/release-1",
+            expected_commit_sha=recovered_commit,
+            publish_target_to_bare=True,
+        ),
+        runtime_context=_build_context(tmp_path, admin_service),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["published_target_to_bare"] is True
+    assert result["published_bare_repo_path"] == str(bare)
+    assert subprocess.run(
+        [
+            "git",
+            f"--git-dir={bare}",
+            "rev-parse",
+            "refs/heads/team/team/releases/release-1",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == recovered_commit
 
 
 def test_git_promote_agent_branch_provider_requires_admin_service_method(tmp_path: Path) -> None:

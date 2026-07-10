@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from ..repository import TeamStateRepository
 from ..models import (
     AgentInboxItem,
+    ReleasePackage,
+    TeamInboxItemState,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
@@ -214,6 +217,8 @@ class TeamGitReleaseService:
             "state": None,
             "created_inbox_item_ids": [],
             "superseded_release_package_ids": [],
+            "resolved_inbox_item_ids": [],
+            "ignored_terminal_state": False,
             "error": None,
         }
 
@@ -224,6 +229,11 @@ class TeamGitReleaseService:
                 "release package",
             )
             now = utc_now()
+            if release.state == TeamRecordState.REJECTED:
+                result["state"] = release.state.value
+                result["ignored_terminal_state"] = True
+                result["success"] = True
+                return state_model
             if success:
                 release.state = TeamRecordState.ACCEPTED
                 if normalized_canonical is not None:
@@ -240,8 +250,7 @@ class TeamGitReleaseService:
                         if (
                             candidate.id == release.id
                             or candidate.project_id != release.project_id
-                            or candidate.state
-                            in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+                            or candidate.state != TeamRecordState.BLOCKED
                             or (candidate.created_at, candidate.id)
                             >= (release.created_at, release.id)
                             or _normalized_release_deliverable_set(
@@ -254,6 +263,13 @@ class TeamGitReleaseService:
                         candidate.error = None
                         candidate.updated_at = now
                         result["superseded_release_package_ids"].append(candidate.id)
+                        result["resolved_inbox_item_ids"].extend(
+                            _resolve_superseded_release_failure_inbox_items(
+                                state_model,
+                                release=candidate,
+                                now=now,
+                            )
+                        )
             else:
                 release.state = TeamRecordState.BLOCKED
                 release.error = normalized_error or "release publication failed"
@@ -285,3 +301,35 @@ class TeamGitReleaseService:
         state = self._repository.update(_mutate, expected_revision=expected_revision)
         result["revision"] = state.revision
         return state, result
+
+
+def _resolve_superseded_release_failure_inbox_items(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    now: datetime,
+) -> list[str]:
+    promotion_ids = {
+        promotion.id
+        for promotion in state.git_promotions.values()
+        if promotion.id in release.git_promotion_record_ids
+        or promotion.release_package_id == release.id
+    }
+    resolved_ids: list[str] = []
+    for item in state.inbox.values():
+        if item.state != TeamInboxItemState.PENDING:
+            continue
+        kind = _optional_text(item.payload.get("kind"))
+        linked = (
+            kind == "release_publish_failed"
+            and _optional_text(item.payload.get("release_package_id")) == release.id
+        ) or (
+            kind == "git_promotion_failed"
+            and _optional_text(item.payload.get("promotion_id")) in promotion_ids
+        )
+        if not linked:
+            continue
+        item.state = TeamInboxItemState.HANDLED
+        item.updated_at = now
+        resolved_ids.append(item.id)
+    return resolved_ids

@@ -1252,6 +1252,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "review_branch": {"type": "string"},
         "target_branch": {"type": "string"},
         "remote_name": {"type": "string"},
+        "published_target_to_bare": {"type": "boolean"},
+        "published_bare_repo_path": {"type": "string"},
     },
     "effect:git:push-branch": {
         "success": {"type": "boolean"},
@@ -1264,6 +1266,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "source_bare_repo_path": {"type": "string"},
         "trusted_host_repo_path": {"type": "string"},
         "source_ref_repository": {"type": "string"},
+        "source_local_branch": {"type": "string"},
+        "canonical_origin_url": {"type": "string"},
         "local_branch": {"type": "string"},
         "origin_branch": {"type": "string"},
         "base_branch": {"type": "string"},

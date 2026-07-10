@@ -3379,6 +3379,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("target_branch", "Target branch", "string", bindable=True),
             _field("expected_commit_sha", "Expected commit SHA", "string", bindable=True),
             _field("remote_name", "Remote name", "string", bindable=True),
+            _field(
+                "publish_target_to_bare",
+                "Publish target to bare repo",
+                "boolean",
+                bindable=True,
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

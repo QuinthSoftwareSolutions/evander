@@ -15,7 +15,6 @@ from ...models import (
     EphemeralAssignmentState,
     GitPromotionRecord,
     PersistentAgent,
-    Project,
     ReleasePackage,
     TeamInboxItemType,
     TeamInboxPriority,
@@ -528,11 +527,15 @@ def _attach_promotion_success(
         else None
     )
     if release is not None:
+        if release.state == TeamRecordState.REJECTED:
+            return
         _clear_recovered_release_block(state, release=release, promotion=promotion)
         release.git_promotion_record_ids = _append_unique(
             release.git_promotion_record_ids,
             promotion.id,
         )
+        if release.state == TeamRecordState.BLOCKED:
+            return
         if kind == "release":
             release.release_branch = release.release_branch or promotion.target_branch
             _queue_canonical_push_after_release_success(
@@ -561,16 +564,27 @@ def _clear_recovered_release_block(
     if release.state != TeamRecordState.BLOCKED:
         return
     related_promotion_ids = set(release.git_promotion_record_ids)
-    has_other_failed_promotion = any(
-        candidate.id != promotion.id
+    remaining_failed_promotions = [
+        candidate
+        for candidate in state.git_promotions.values()
+        if candidate.id != promotion.id
         and candidate.state == "failed"
         and (
             candidate.id in related_promotion_ids
             or candidate.release_package_id == release.id
         )
-        for candidate in state.git_promotions.values()
-    )
-    if has_other_failed_promotion:
+    ]
+    if remaining_failed_promotions:
+        remaining_failed_promotions.sort(
+            key=lambda candidate: (
+                candidate.updated_at,
+                candidate.created_at,
+                candidate.id,
+            ),
+            reverse=True,
+        )
+        release.error = remaining_failed_promotions[0].error
+        release.updated_at = utc_now()
         return
     release.state = TeamRecordState.PENDING
     release.error = None

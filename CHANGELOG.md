@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-07-10 - Team Release And Wake Review Hardening
+
+- Preserved trusted canonical origins and used detached temporary source refs
+  when publishing bare-backed release branches.
+- Made release recovery promotion-specific, synchronized recovered targets back
+  to the bare mirror after SHA verification, and retained the current remaining
+  failure when several promotions are blocked.
+- Retired only blocked duplicate releases, handled their obsolete failure inbox
+  items, ignored late publication callbacks for rejected releases, and preserved
+  canonical push failure reason codes.
+- Abandoned partial Git work contexts before retrying an exhausted wake-state
+  conflict so a replacement dispatch cannot expose stale active contexts.
+
 ## 2026-07-10 - Team Wake Conflict Recovery
 
 - Refreshed Team state after external repository preparation and retried

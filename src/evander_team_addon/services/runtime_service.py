@@ -20,6 +20,7 @@ from ..models import (
     AgentStandDown,
     AgentStandDownSource,
     AgentStatus,
+    GitWorkContextState,
     GovernanceRuntime,
     TeamDispatchActivityStatus,
     TeamInboxPriority,
@@ -749,6 +750,14 @@ class TeamRuntimeService:
             runtime.wake_reason = None
             runtime.next_wake_at = None
             runtime.updated_at = utc_now()
+            for context in state.git_work_contexts.values():
+                if (
+                    context.agent_id == normalized_agent_id
+                    and context.dispatch_id == normalized_dispatch_id
+                    and context.state == GitWorkContextState.ACTIVE
+                ):
+                    context.state = GitWorkContextState.ABANDONED
+                    context.updated_at = runtime.updated_at
             return state
 
         return self._repository.update(_mutate)

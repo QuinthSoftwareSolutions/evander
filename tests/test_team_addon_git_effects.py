@@ -8,6 +8,7 @@ from evander.effects.providers.base import EffectRuntimeContext
 from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.models import WorkflowNodeEnvelope
 from evander_team_addon.models import (
+    AgentInboxItem,
     Deliverable,
     DeliverableGitRefs,
     EphemeralAgentPolicy,
@@ -16,6 +17,7 @@ from evander_team_addon.models import (
     ProjectGoal,
     ProjectStatus,
     ReleasePackage,
+    TeamInboxItemState,
     TeamInboxItemType,
     TeamRecordState,
 )
@@ -427,11 +429,41 @@ def test_mark_release_published_supersedes_older_blocked_duplicate(
             project_id="project",
             deliverable_ids=list(current.deliverable_ids),
             release_branch="team/team/releases/release-old",
+            git_promotion_record_ids=["promotion-release-old"],
             state=TeamRecordState.BLOCKED,
             error="merge conflict",
             created_at=current.created_at - timedelta(minutes=1),
         )
         state.projects["project"].status = ProjectStatus.BLOCKED
+        state.inbox["inbox-release-old"] = AgentInboxItem(
+            id="inbox-release-old",
+            recipient_agent_id="lead",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            payload={
+                "kind": "release_publish_failed",
+                "release_package_id": "release-old",
+            },
+        )
+        state.git_promotions["promotion-release-old"] = GitPromotionRecord(
+            id="promotion-release-old",
+            project_id="project",
+            actor_agent_id="lead",
+            source_branch="team/team/releases/release-old",
+            target_branch="releases/project/release-old",
+            promotion_kind="canonical_push",
+            release_package_id="release-old",
+            state="failed",
+            error="push rejected",
+        )
+        state.inbox["inbox-promotion-old"] = AgentInboxItem(
+            id="inbox-promotion-old",
+            recipient_agent_id="lead",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            payload={
+                "kind": "git_promotion_failed",
+                "promotion_id": "promotion-release-old",
+            },
+        )
         return state
 
     repo.update(_add_duplicate)
@@ -446,10 +478,78 @@ def test_mark_release_published_supersedes_older_blocked_duplicate(
 
     assert result["success"] is True
     assert result["superseded_release_package_ids"] == ["release-old"]
+    assert set(result["resolved_inbox_item_ids"]) == {
+        "inbox-release-old",
+        "inbox-promotion-old",
+    }
     state = repo.read()
     assert state.release_packages["release-old"].state == TeamRecordState.REJECTED
     assert state.release_packages["release-old"].error is None
+    assert state.inbox["inbox-release-old"].state == TeamInboxItemState.HANDLED
+    assert state.inbox["inbox-promotion-old"].state == TeamInboxItemState.HANDLED
     assert state.projects["project"].status != ProjectStatus.BLOCKED
+
+
+def test_mark_release_published_does_not_supersede_pending_duplicate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _add_pending_duplicate(state):
+        current = state.release_packages["release-1"]
+        state.release_packages["release-pending"] = ReleasePackage(
+            id="release-pending",
+            project_id="project",
+            deliverable_ids=list(current.deliverable_ids),
+            release_branch="team/team/releases/release-pending",
+            state=TeamRecordState.PENDING,
+            created_at=current.created_at - timedelta(minutes=1),
+        )
+        return state
+
+    repo.update(_add_pending_duplicate)
+
+    result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert result["success"] is True
+    assert result["superseded_release_package_ids"] == []
+    assert repo.read().release_packages["release-pending"].state == TeamRecordState.PENDING
+
+
+def test_mark_release_published_ignores_late_success_for_rejected_release(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _reject(state):
+        state.release_packages["release-1"].state = TeamRecordState.REJECTED
+        return state
+
+    repo.update(_reject)
+
+    result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert result["success"] is True
+    assert result["state"] == TeamRecordState.REJECTED.value
+    assert result["ignored_terminal_state"] is True
+    release = repo.read().release_packages["release-1"]
+    assert release.state == TeamRecordState.REJECTED
+    assert release.published_commit_sha is None
+    assert release.published_at is None
 
 
 def test_mark_release_published_failure_notifies_lead(tmp_path: Path) -> None:

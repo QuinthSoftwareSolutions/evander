@@ -1466,11 +1466,13 @@ def test_git_promote_agent_branch_effect_requires_repo_and_branch_fields() -> No
             "host_repo_path": "/repo",
             "bare_repo_path": "/git-remotes/repo.git",
             "agent_branch": "agents/session-1/topic",
+            "publish_target_to_bare": True,
         }
     )
 
     assert effect.host_repo_path == "/repo"
     assert effect.agent_branch == "agents/session-1/topic"
+    assert effect.publish_target_to_bare is True
 
     with pytest.raises(ValueError, match="bare_repo_path or bare_repo_name"):
         GitPromoteAgentBranchEffectDefinition.model_validate(

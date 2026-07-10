@@ -5,7 +5,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 from typing import Any
+from uuid import uuid4
 
+from ...admin.services.git_helpers import resolve_canonical_origin_url_for_repo
 from .base import EffectProviderBase
 
 
@@ -47,6 +49,9 @@ class GitPushBranchEffectProvider(EffectProviderBase):
                 bare_repo_path=source_bare_repo,
                 local_branch=local_branch,
                 origin_branch=origin_branch,
+                canonical_origin_url=self._normalize_optional_string(
+                    payload.get("canonical_origin_url")
+                ),
                 payload=payload,
             )
         return self._push(
@@ -65,6 +70,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         bare_repo_path: Path,
         local_branch: str,
         origin_branch: str,
+        canonical_origin_url: str | None,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
         if not bare_repo_path.exists():
@@ -74,6 +80,16 @@ class GitPushBranchEffectProvider(EffectProviderBase):
                 local_branch=local_branch,
                 origin_branch=origin_branch,
                 message=f"bare repo not found: {bare_repo_path}",
+            )
+        canonical_origin_url = canonical_origin_url or self._normalize_optional_string(
+            resolve_canonical_origin_url_for_repo(trusted_host_repo_path)
+        )
+        if canonical_origin_url is None:
+            return self._canonical_origin_failure(
+                trusted_host_repo_path=trusted_host_repo_path,
+                bare_repo_path=bare_repo_path,
+                local_branch=local_branch,
+                origin_branch=origin_branch,
             )
         branch_name = self._normalize_branch_ref(local_branch)
         with tempfile.TemporaryDirectory(prefix="evander-git-push-") as tmp:
@@ -99,6 +115,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
                     origin_branch=origin_branch,
                     message=self._git_output(clone) or "failed to clone bare repo",
                 )
+            source_local_branch = f"evander-push-{uuid4().hex}"
             fetch = subprocess.run(
                 [
                     "git",
@@ -107,7 +124,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
                     "fetch",
                     "--no-tags",
                     "origin",
-                    f"+refs/heads/{branch_name}:refs/heads/{branch_name}",
+                    f"+refs/heads/{branch_name}:refs/heads/{source_local_branch}",
                 ],
                 capture_output=True,
                 text=True,
@@ -124,7 +141,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
                         "fetch",
                         "--no-tags",
                         trusted_host_repo_path,
-                        f"+refs/heads/{branch_name}:refs/heads/{branch_name}",
+                        f"+refs/heads/{branch_name}:refs/heads/{source_local_branch}",
                     ],
                     capture_output=True,
                     text=True,
@@ -154,13 +171,17 @@ class GitPushBranchEffectProvider(EffectProviderBase):
             output = self._push(
                 push_branch=push_branch,
                 source_repo_path=str(source_repo_path),
-                local_branch=branch_name,
+                local_branch=source_local_branch,
                 origin_branch=origin_branch,
+                canonical_origin_url=canonical_origin_url,
                 payload=payload,
             )
+            output["local_branch"] = branch_name
+            output["source_local_branch"] = source_local_branch
             output["source_bare_repo_path"] = str(bare_repo_path)
             output["trusted_host_repo_path"] = trusted_host_repo_path
             output["source_ref_repository"] = source_ref_repository
+            output["canonical_origin_url"] = canonical_origin_url
             return output
 
     def _push(
@@ -171,14 +192,14 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         local_branch: str,
         origin_branch: str,
         payload: Mapping[str, Any],
+        canonical_origin_url: str | None = None,
     ) -> dict[str, Any]:
         result = push_branch(
             host_repo_path=source_repo_path,
             local_branch=local_branch,
             origin_branch=origin_branch,
-            canonical_origin_url=self._normalize_optional_string(
-                payload.get("canonical_origin_url")
-            ),
+            canonical_origin_url=canonical_origin_url
+            or self._normalize_optional_string(payload.get("canonical_origin_url")),
             provider=self._normalize_optional_string(payload.get("provider")),
             base_branch=self._normalize_optional_string(payload.get("base_branch")),
             session_id=self._normalize_optional_string(payload.get("session_id")),
@@ -245,6 +266,31 @@ class GitPushBranchEffectProvider(EffectProviderBase):
             "action": "git_push_branch",
             "preflight_success": False,
             "reason": "source_ref_missing",
+            "message": message,
+            "error": message,
+            "host_repo_path": trusted_host_repo_path,
+            "source_bare_repo_path": str(bare_repo_path),
+            "local_branch": local_branch,
+            "origin_branch": origin_branch,
+        }
+
+    @staticmethod
+    def _canonical_origin_failure(
+        *,
+        trusted_host_repo_path: str,
+        bare_repo_path: Path,
+        local_branch: str,
+        origin_branch: str,
+    ) -> dict[str, Any]:
+        message = (
+            "canonical origin URL is not configured and could not be resolved "
+            f"from trusted checkout {trusted_host_repo_path}"
+        )
+        return {
+            "success": False,
+            "action": "git_push_branch",
+            "preflight_success": False,
+            "reason": "canonical_origin_missing",
             "message": message,
             "error": message,
             "host_repo_path": trusted_host_repo_path,
