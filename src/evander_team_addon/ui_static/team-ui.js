@@ -3519,7 +3519,6 @@ async function createOrFocusChat(agentId) {
       },
       body: JSON.stringify({
         agent_id: normalizedAgentId,
-        expected_revision: chatState.revision ?? state.revision,
       }),
     });
     if (!response.ok) {
@@ -3577,7 +3576,6 @@ async function submitChatMessage(form) {
       },
       body: JSON.stringify({
         body,
-        expected_revision: chatState.revision ?? state.revision,
       }),
     });
     if (!response.ok) {

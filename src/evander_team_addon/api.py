@@ -960,12 +960,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def create_conversation(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         identity = _operator_identity_from_request(context.auth, request)
+        # A chat is resolved for the current operator and agent, rather than applying
+        # a client-side state snapshot. Do not reject it when unrelated Team data moved.
         state, conversation, created = chat_service.create_or_get_conversation(
             agent_id=_required(payload, "agent_id"),
             operator_user_id=identity["user_id"],
             operator_display_name=identity["display_name"],
             created_by=identity["actor"],
-            expected_revision=_expected_revision(payload),
         )
         scope = _chat_scope_for_operator(context.auth, request, state, identity["user_id"])
         response_payload = _conversation_collection_payload(
@@ -1066,6 +1067,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             write=True,
             identity=identity,
         )
+        # Chat messages are append-only. The service validates the current
+        # conversation and agent state, so a stale global revision must not block a send.
         state, message = chat_service.record_operator_chat_message(
             conversation_id=conversation_id,
             body=_required(payload, "body"),
@@ -1074,7 +1077,6 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 context,
                 request,
             ),
-            expected_revision=_expected_revision(payload),
         )
         conversation = state.conversations[conversation_id]
         dispatch_id = f"team-chat:{message.id}"

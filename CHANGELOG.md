@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-10 - Team Chat Stale Revision Tolerance
+
+- Let operators open Team chats and queue chat messages after unrelated Team state changes;
+  chat still enforces the current agent status, conversation access, and privilege policy.
+
 ## 2026-07-10 - GPT-5.6 Pricing Catalog
 
 - Added standard and batch token pricing for GPT-5.6 Sol, Terra, Luna, and the

@@ -5468,6 +5468,13 @@ test("team add-on Chat remains usable while privileged operations are locked", a
       ),
     "expected locked-mode chat send to post through the built-in chat client",
   );
+  const sendRequest = requests.find(
+    (request) =>
+      request.method === "POST" &&
+      request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead/messages" &&
+      request.payload?.body === body,
+  );
+  assert.equal(sendRequest?.payload?.expected_revision, undefined);
 });
 
 test("team add-on Chat notification sound is gated by focus and sender", async (t) => {

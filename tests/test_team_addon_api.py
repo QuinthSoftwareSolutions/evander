@@ -740,6 +740,33 @@ def test_team_addon_admin_api_allows_locked_chat_as_reply_only(tmp_path: Path) -
     assert stored_message.metadata["allow_team_mutations"] is False
 
 
+def test_team_addon_chat_ignores_stale_global_state_revision(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+
+    stale_open_revision = repo.read().revision
+    repo.update(lambda state: state)
+    created = client.post(
+        "/api/addons/team-addon/conversations",
+        json={"agent_id": "backend", "expected_revision": stale_open_revision},
+    )
+
+    assert created.status_code == 201
+    conversation = created.json()["conversations"][0]
+    stale_send_revision = created.json()["revision"]
+    repo.update(lambda state: state)
+    sent = client.post(
+        f"/api/addons/team-addon/conversations/{conversation['id']}/messages",
+        json={
+            "body": "Please continue with the current task.",
+            "expected_revision": stale_send_revision,
+        },
+    )
+
+    assert sent.status_code == 202
+    assert sent.json()["message"]["body"] == "Please continue with the current task."
+
+
 def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     tmp_path: Path,
     monkeypatch,
