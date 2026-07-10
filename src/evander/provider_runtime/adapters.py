@@ -20,6 +20,7 @@ class AdminRuntimeProviderAdapter:
         "validate_managed_codex_skills": "_managed_codex_skill_validator",
         "resolve_container_codex_skill_files": "_container_codex_skill_file_resolver",
         "list_model_usage_events": "_model_usage_events_lister",
+        "model_pricing_catalog": "_model_pricing_catalog_loader",
         "sync_added_discord_session_cursors": "_sync_added_discord_session_cursors_delegate",
         "delete_admin_agent": "_delete_admin_agent_delegate",
     }
@@ -97,6 +98,13 @@ class AdminRuntimeProviderAdapter:
     def _model_usage_events_lister(self) -> Callable[..., Any] | None:
         return self._delegate_method(
             "list_model_usage_events",
+            getattr(self._admin_runtime, "model_usage_admin", None),
+            self._admin_runtime,
+        )
+
+    def _model_pricing_catalog_loader(self) -> Callable[..., Any] | None:
+        return self._delegate_method(
+            "model_pricing_catalog",
             getattr(self._admin_runtime, "model_usage_admin", None),
             self._admin_runtime,
         )
@@ -271,6 +279,12 @@ class AdminRuntimeProviderAdapter:
         if lister is None:
             raise AttributeError("list_model_usage_events")
         return lister(**kwargs)
+
+    def model_pricing_catalog(self) -> Any:
+        return self._call_required(
+            self._model_pricing_catalog_loader(),
+            "model_pricing_catalog",
+        )
 
     def destroy_vm(self, target: str) -> Any:
         return self._call_required(self._vm_agent_method("destroy_vm"), "destroy_vm", target)

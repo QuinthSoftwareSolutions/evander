@@ -1,0 +1,331 @@
+{
+  "version": "openai-anthropic-2026-07-10",
+  "currency": "usd",
+  "description": "Initial OpenAI and Anthropic text token pricing seed for query-time operational cost estimates. Prices are per 1M tokens.",
+  "sources": [
+    "https://developers.openai.com/api/docs/pricing",
+    "https://developers.openai.com/api/docs/models/gpt-5.5/",
+    "https://developers.openai.com/api/docs/models/gpt-5.4",
+    "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+    "https://developers.openai.com/api/docs/models/gpt-5.4-nano/",
+    "https://developers.openai.com/api/docs/models/gpt-5.3-codex",
+    "https://developers.openai.com/api/docs/models/gpt-5.2-codex",
+    "https://developers.openai.com/api/docs/models/gpt-5.2",
+    "https://developers.openai.com/api/docs/models/gpt-5-codex",
+    "https://developers.openai.com/api/docs/models/gpt-5",
+    "https://developers.openai.com/api/docs/models/gpt-4.1-mini",
+    "https://platform.claude.com/docs/en/about-claude/pricing",
+    "https://platform.claude.com/docs/en/about-claude/models/overview"
+  ],
+  "rules": [
+    {
+      "id": "openai:gpt-5.6-sol:text:2026-07-10",
+      "provider": "openai",
+      "models": [
+        "gpt-5.6",
+        "gpt-5.6-sol"
+      ],
+      "effective_from": "2026-07-10T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "5.00",
+        "cached_input": "0.50",
+        "cache_write_5m": "6.25",
+        "output": "30.00"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5.6-terra:text:2026-07-10",
+      "provider": "openai",
+      "models": [
+        "gpt-5.6-terra"
+      ],
+      "effective_from": "2026-07-10T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "2.50",
+        "cached_input": "0.25",
+        "cache_write_5m": "3.125",
+        "output": "15.00"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5.6-luna:text:2026-07-10",
+      "provider": "openai",
+      "models": [
+        "gpt-5.6-luna"
+      ],
+      "effective_from": "2026-07-10T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "1.00",
+        "cached_input": "0.10",
+        "cache_write_5m": "1.25",
+        "output": "6.00"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5.5:text:2026-04-23",
+      "provider": "openai",
+      "models": [
+        "gpt-5.5",
+        "gpt-5.5-2026-04-23"
+      ],
+      "effective_from": "2026-04-23T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "5.00",
+        "cached_input": "0.50",
+        "output": "30.00"
+      },
+      "long_context": {
+        "input_tokens_over": 272000,
+        "input_multiplier": "2",
+        "output_multiplier": "1.5"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5.4:text:2026-03-17",
+      "provider": "openai",
+      "models": [
+        "gpt-5.4",
+        "gpt-5.4-2026-03-17"
+      ],
+      "effective_from": "2026-03-17T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "2.50",
+        "cached_input": "0.25",
+        "output": "15.00"
+      },
+      "long_context": {
+        "input_tokens_over": 272000,
+        "input_multiplier": "2",
+        "output_multiplier": "1.5"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5.4-mini:text:2026-03-17",
+      "provider": "openai",
+      "models": [
+        "gpt-5.4-mini",
+        "gpt-5.4-mini-2026-03-17"
+      ],
+      "effective_from": "2026-03-17T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "0.75",
+        "cached_input": "0.075",
+        "output": "4.50"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5.4-nano:text:2026-03-17",
+      "provider": "openai",
+      "models": [
+        "gpt-5.4-nano",
+        "gpt-5.4-nano-2026-03-17"
+      ],
+      "effective_from": "2026-03-17T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "0.20",
+        "cached_input": "0.02",
+        "output": "1.25"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5.3-codex:text:2026-02-01",
+      "provider": "openai",
+      "models": [
+        "gpt-5.3-codex"
+      ],
+      "effective_from": "2026-02-01T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "1.75",
+        "cached_input": "0.175",
+        "output": "14.00"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5.3-chat:text:2026-02-01",
+      "provider": "openai",
+      "models": [
+        "gpt-5.3-chat-latest"
+      ],
+      "effective_from": "2026-02-01T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "1.75",
+        "cached_input": "0.175",
+        "output": "14.00"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5.2-codex:text:2025-12-11",
+      "provider": "openai",
+      "models": [
+        "gpt-5.2-codex"
+      ],
+      "effective_from": "2025-12-11T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "1.75",
+        "cached_input": "0.175",
+        "output": "14.00"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5.2:text:2025-12-11",
+      "provider": "openai",
+      "models": [
+        "gpt-5.2",
+        "gpt-5.2-2025-12-11",
+        "gpt-5.2-chat-latest"
+      ],
+      "effective_from": "2025-12-11T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "1.75",
+        "cached_input": "0.175",
+        "output": "14.00"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5-codex:text:2025-08-07",
+      "provider": "openai",
+      "models": [
+        "gpt-5-codex"
+      ],
+      "effective_from": "2025-08-07T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "1.25",
+        "cached_input": "0.125",
+        "output": "10.00"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5:text:2025-08-07",
+      "provider": "openai",
+      "models": [
+        "gpt-5",
+        "gpt-5-2025-08-07"
+      ],
+      "effective_from": "2025-08-07T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "1.25",
+        "cached_input": "0.125",
+        "output": "10.00"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5-mini:text:2025-08-07",
+      "provider": "openai",
+      "models": [
+        "gpt-5-mini",
+        "gpt-5-mini-2025-08-07"
+      ],
+      "effective_from": "2025-08-07T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "0.25",
+        "cached_input": "0.025",
+        "output": "2.00"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-5-nano:text:2025-08-07",
+      "provider": "openai",
+      "models": [
+        "gpt-5-nano",
+        "gpt-5-nano-2025-08-07"
+      ],
+      "effective_from": "2025-08-07T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "0.05",
+        "cached_input": "0.005",
+        "output": "0.40"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "openai:gpt-4.1-mini:text:2025-04-14",
+      "provider": "openai",
+      "models": [
+        "gpt-4.1-mini",
+        "gpt-4.1-mini-2025-04-14"
+      ],
+      "effective_from": "2025-04-14T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "0.40",
+        "cached_input": "0.10",
+        "output": "1.60"
+      },
+      "batch_multiplier": "0.5"
+    },
+    {
+      "id": "anthropic:claude-fable-5:text:2026-06-09",
+      "provider": "anthropic",
+      "models": [
+        "claude-fable-5"
+      ],
+      "effective_from": "2026-06-09T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "10.00",
+        "cached_input": "1.00",
+        "output": "50.00",
+        "cache_write_5m": "12.50",
+        "cache_write_1h": "20.00"
+      }
+    },
+    {
+      "id": "anthropic:claude-opus-4-8:text:2026-06-08",
+      "provider": "anthropic",
+      "models": [
+        "claude-opus-4-8"
+      ],
+      "effective_from": "2026-06-08T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "5.00",
+        "cached_input": "0.50",
+        "output": "25.00",
+        "cache_write_5m": "6.25",
+        "cache_write_1h": "10.00"
+      }
+    },
+    {
+      "id": "anthropic:claude-sonnet-4-6:text:2026-06-08",
+      "provider": "anthropic",
+      "models": [
+        "claude-sonnet-4-6"
+      ],
+      "effective_from": "2026-06-08T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "3.00",
+        "cached_input": "0.30",
+        "output": "15.00",
+        "cache_write_5m": "3.75",
+        "cache_write_1h": "6.00"
+      }
+    },
+    {
+      "id": "anthropic:claude-haiku-4-5:text:2026-06-08",
+      "provider": "anthropic",
+      "models": [
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001"
+      ],
+      "effective_from": "2026-06-08T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "1.00",
+        "cached_input": "0.10",
+        "output": "5.00",
+        "cache_write_5m": "1.25",
+        "cache_write_1h": "2.00"
+      }
+    }
+  ]
+}

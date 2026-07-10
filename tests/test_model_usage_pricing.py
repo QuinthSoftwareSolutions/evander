@@ -10,10 +10,14 @@ from evander.model_usage.models import ModelInferenceUsageEvent
 from evander.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
+    default_model_pricing_catalog_path,
+    default_model_pricing_catalog_seed_path,
     estimate_model_usage_cost,
     extract_cache_write_input_tokens,
     extract_cached_input_tokens,
+    load_model_pricing_catalog,
     load_model_pricing_catalog_payload,
+    seed_default_model_pricing_catalog,
 )
 
 
@@ -69,8 +73,12 @@ def _pricing_catalog_payload(*, version: str, model: str) -> dict:
     }
 
 
+def _seed_catalog():
+    return load_model_pricing_catalog(default_model_pricing_catalog_seed_path())
+
+
 def test_openai_pricing_estimates_cached_input_costs() -> None:
-    catalog = default_model_pricing_catalog()
+    catalog = _seed_catalog()
     event = _event(
         raw_usage_metadata={
             "usage": {
@@ -96,7 +104,7 @@ def test_openai_pricing_estimates_cached_input_costs() -> None:
 
 
 def test_openai_pricing_applies_long_context_and_batch_multipliers() -> None:
-    catalog = default_model_pricing_catalog()
+    catalog = _seed_catalog()
     event = _event(
         model="gpt-5.4",
         input_tokens=300000,
@@ -119,6 +127,70 @@ def test_openai_pricing_applies_long_context_and_batch_multipliers() -> None:
     assert estimate.input_cost == Decimal("0.75")
     assert estimate.output_cost == Decimal("0.01125")
     assert estimate.estimated_total == Decimal("0.76125")
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_rule_id", "expected_total"),
+    [
+        (
+            "gpt-5.6-sol",
+            "openai:gpt-5.6-sol:text:2026-07-10",
+            Decimal("7.475"),
+        ),
+        (
+            "gpt-5.6-terra",
+            "openai:gpt-5.6-terra:text:2026-07-10",
+            Decimal("3.7375"),
+        ),
+        (
+            "gpt-5.6-luna",
+            "openai:gpt-5.6-luna:text:2026-07-10",
+            Decimal("1.495"),
+        ),
+        (
+            "gpt-5.6",
+            "openai:gpt-5.6-sol:text:2026-07-10",
+            Decimal("7.475"),
+        ),
+    ],
+)
+def test_openai_pricing_estimates_gpt_5_6_cache_writes_from_release_day(
+    model: str,
+    expected_rule_id: str,
+    expected_total: Decimal,
+) -> None:
+    event = _event(
+        model=model,
+        input_tokens=1_000_000,
+        output_tokens=100_000,
+        total_tokens=1_100_000,
+        occurred_at=datetime(2026, 7, 10, 7, 13, tzinfo=UTC),
+        raw_usage_metadata={
+            "usage": {
+                "input_tokens": 1_000_000,
+                "input_tokens_details": {
+                    "cached_tokens": 200_000,
+                    "cache_write_tokens": 300_000,
+                },
+                "output_tokens": 100_000,
+                "total_tokens": 1_100_000,
+            },
+            "request_metadata": {"path": "/v1/responses"},
+        },
+    )
+
+    estimate = estimate_model_usage_cost(event, _seed_catalog())
+
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == expected_rule_id
+    assert estimate.input_cost is not None
+    assert estimate.cached_input_cost is not None
+    assert estimate.cache_write_cost is not None
+    assert estimate.output_cost is not None
+    assert estimate.estimated_total == expected_total
+    assert estimate.cached_input_tokens == 200_000
+    assert estimate.cache_write_input_tokens == 300_000
+    assert extract_cache_write_input_tokens(event).total == 300_000
 
 
 def test_openai_pricing_rejects_rule_currency_mismatches() -> None:
@@ -168,6 +240,72 @@ def test_default_model_pricing_catalog_reloads_when_file_changes(
 
     assert default_model_pricing_catalog().version == "cache-updated-with-longer-version"
     clear_model_pricing_catalog_cache()
+
+
+def test_default_model_pricing_catalog_path_uses_runtime_state(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
+
+    assert default_model_pricing_catalog_path(runtime_dir=tmp_path) == (
+        tmp_path / "model-pricing.openai.json"
+    )
+
+
+def test_seed_default_model_pricing_catalog_preserves_operator_edits(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
+    catalog_path = seed_default_model_pricing_catalog(tmp_path)
+    seeded_payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    assert seeded_payload["version"] == "openai-anthropic-2026-07-10"
+
+    operator_payload = _pricing_catalog_payload(
+        version="operator-pricing",
+        model="operator-model",
+    )
+    catalog_path.write_text(json.dumps(operator_payload), encoding="utf-8")
+
+    assert seed_default_model_pricing_catalog(tmp_path) == catalog_path
+    assert json.loads(catalog_path.read_text(encoding="utf-8")) == operator_payload
+
+
+def test_seed_default_model_pricing_catalog_migrates_legacy_operator_edits(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
+    runtime_dir = tmp_path / "runtime"
+    legacy_catalog_path = tmp_path / "config" / "model-pricing.openai.json"
+    legacy_catalog_path.parent.mkdir(parents=True)
+    operator_payload = _pricing_catalog_payload(
+        version="legacy-operator-pricing",
+        model="legacy-operator-model",
+    )
+    legacy_catalog_path.write_text(json.dumps(operator_payload), encoding="utf-8")
+
+    catalog_path = seed_default_model_pricing_catalog(
+        runtime_dir,
+        legacy_catalog_path=legacy_catalog_path,
+    )
+
+    assert json.loads(catalog_path.read_text(encoding="utf-8")) == operator_payload
+
+
+def test_seed_default_model_pricing_catalog_ignores_pristine_legacy_seed(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
+    runtime_dir = tmp_path / "runtime"
+    legacy_catalog_path = tmp_path / "config" / "model-pricing.openai.json"
+    legacy_catalog_path.parent.mkdir(parents=True)
+    repo_legacy_catalog = (
+        default_model_pricing_catalog_seed_path().parent / "model-pricing.openai.json"
+    )
+    legacy_catalog_path.write_bytes(repo_legacy_catalog.read_bytes())
+
+    catalog_path = seed_default_model_pricing_catalog(
+        runtime_dir,
+        legacy_catalog_path=legacy_catalog_path,
+    )
+
+    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    assert payload["version"] == "openai-anthropic-2026-07-10"
 
 
 def test_openai_pricing_prefers_service_tier_specific_rules() -> None:
@@ -242,7 +380,7 @@ def test_openai_pricing_prefers_service_tier_specific_rules() -> None:
 def test_openai_pricing_reports_unavailable_statuses(
     event: ModelInferenceUsageEvent, expected_status: str
 ) -> None:
-    estimate = estimate_model_usage_cost(event, default_model_pricing_catalog())
+    estimate = estimate_model_usage_cost(event, _seed_catalog())
 
     assert estimate.status == expected_status
     assert estimate.estimated_total is None

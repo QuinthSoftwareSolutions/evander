@@ -81,6 +81,10 @@ from evander.models import (
     SessionManifest,
     ToolName,
 )
+from evander.model_usage import (
+    DEFAULT_MODEL_PRICING_FILENAME,
+    seed_default_model_pricing_catalog,
+)
 from evander.policy_config import EffectivePolicyConfig
 from evander.runtime import build_runtime
 from evander.setup import setup_doctor_payload, setup_plan_payload
@@ -1487,6 +1491,12 @@ def _build_issue_session_manifest(
 )
 def init_state(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR) -> None:
     host_cfg = _load_host_config_from_option(config)
+    seed_default_model_pricing_catalog(
+        host_cfg.runtime_dir,
+        legacy_catalog_path=(
+            _project_dir_for_config_option(config) / "config" / DEFAULT_MODEL_PRICING_FILENAME
+        ),
+    )
     runtime = build_runtime(load_runtime_gateway_config(runtime_dir=host_cfg.runtime_dir))
     runtime.directories.ensure_root()
     typer.echo(f"Initialized runtime state under {host_cfg.runtime_dir}")

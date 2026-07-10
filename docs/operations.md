@@ -86,9 +86,10 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
   session and prompt dispatch for legacy relay-delivered steering. Container
   worker steering interrupts the active worker execution and resumes it as a new
   worker job instead of waiting for the next model request.
-- `config/model-pricing.openai.json`: versioned local OpenAI pricing snapshot
-  used by `query:model-usage:list` for query-time cost estimates. Override with
-  `EVANDER_MODEL_PRICING_PATH` when operating from a different rate card.
+- `model-pricing.openai.json`: operator-owned pricing catalog seeded under the
+  configured `runtime_dir` by `evander-cli init-state` and used by
+  `query:model-usage:list` for query-time cost estimates. Override with
+  `EVANDER_MODEL_PRICING_PATH` when operating from a different runtime rate card.
   Admin Web exposes the loaded catalog status and structured editor on the
   Configuration page and saves changes back to the active catalog path.
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
@@ -268,10 +269,17 @@ input/output token split, and cached-input token details when the provider
 reported them. They are operational estimates, not billing-grade truth: OpenAI
 does not expose a model price-rate catalog through the API, and the Admin Usage
 Costs API reports aggregated billed costs rather than the per-model rates used
-here. Keep `config/model-pricing.openai.json` current when OpenAI pricing
-changes. Built-in tool fees, non-text token modalities, regional uplift, and
-account-specific discounts are not inferred unless the needed quantities are
-recorded in the usage metadata.
+here. Keep the active `runtime/model-pricing.openai.json` catalog current through
+Admin Web when provider pricing changes. The tracked
+`config/model-pricing.openai.json.example` file is only the initial seed for new
+runtime directories and is never the active operator catalog. Built-in tool
+fees, non-text token modalities, regional uplift, and account-specific discounts
+are not inferred unless the needed quantities are recorded in the usage metadata.
+The legacy tracked `config/model-pricing.openai.json` file remains only for
+upgrade compatibility and is no longer read or edited by default. On the first
+`init-state` run for a runtime without an active catalog, a customized legacy
+catalog is migrated instead of the example seed; existing runtime catalogs are
+never overwritten.
 
 Admin Web Configuration includes a model pricing catalog panel that shows the
 active path, path source, version, currency, source URLs, rule count, rules, and
@@ -280,8 +288,8 @@ pricing rules in the structured panel after unlocking privileged operations.
 Saves include the catalog revision and fail on stale revisions, so concurrent
 operator edits require a reload before retrying. The backend validates the
 catalog before writing and writes atomically to either
-`EVANDER_MODEL_PRICING_PATH` or the default
-`config/model-pricing.openai.json` path.
+`EVANDER_MODEL_PRICING_PATH` or the configured runtime directory's default
+`model-pricing.openai.json` path.
 
 The store intentionally excludes request and response text, so it is safe to
 inspect for operational attribution without exposing prompt content.

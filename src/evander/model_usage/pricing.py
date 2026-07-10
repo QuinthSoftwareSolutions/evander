@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from fnmatch import fnmatchcase
 from functools import lru_cache
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,6 +15,10 @@ from evander.model_usage.models import ModelInferenceUsageEvent
 
 MODEL_PRICING_PATH_ENV = "EVANDER_MODEL_PRICING_PATH"
 DEFAULT_MODEL_PRICING_FILENAME = "model-pricing.openai.json"
+DEFAULT_MODEL_PRICING_SEED_FILENAME = "model-pricing.openai.json.example"
+LEGACY_DEFAULT_MODEL_PRICING_SHA256 = (
+    "f6933434fe83aa8bafcc9fe92fa2add02f04c25d5a58e2329eae2cc83e0bdb36"
+)
 TOKENS_PER_MILLION = Decimal("1000000")
 
 ModelCostStatus = Literal[
@@ -106,19 +111,56 @@ class ModelCostEstimate:
         }
 
 
-def default_model_pricing_catalog_path() -> Path | None:
+def default_model_pricing_catalog_path(*, runtime_dir: Path | str | None = None) -> Path:
     configured = str(os.environ.get(MODEL_PRICING_PATH_ENV) or "").strip()
     if configured:
         return Path(configured).expanduser()
 
+    runtime_root = (
+        Path(runtime_dir).expanduser() if runtime_dir is not None else Path.cwd() / "runtime"
+    )
+    return runtime_root / DEFAULT_MODEL_PRICING_FILENAME
+
+
+def default_model_pricing_catalog_seed_path() -> Path:
     candidates = [
-        Path.cwd() / "config" / DEFAULT_MODEL_PRICING_FILENAME,
-        Path(__file__).resolve().parents[3] / "config" / DEFAULT_MODEL_PRICING_FILENAME,
+        Path.cwd() / "config" / DEFAULT_MODEL_PRICING_SEED_FILENAME,
+        Path(__file__).resolve().parents[3] / "config" / DEFAULT_MODEL_PRICING_SEED_FILENAME,
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    return candidates[0]
+    return candidates[-1]
+
+
+def seed_default_model_pricing_catalog(
+    runtime_dir: Path | str,
+    *,
+    legacy_catalog_path: Path | str | None = None,
+) -> Path:
+    target = default_model_pricing_catalog_path(runtime_dir=runtime_dir)
+    if target.exists():
+        return target
+
+    payload = default_model_pricing_catalog_seed_path().read_bytes()
+    if legacy_catalog_path is not None:
+        legacy_path = Path(legacy_catalog_path).expanduser()
+        if legacy_path.exists():
+            legacy_payload = legacy_path.read_bytes()
+            if sha256(legacy_payload).hexdigest() != LEGACY_DEFAULT_MODEL_PRICING_SHA256:
+                payload = legacy_payload
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(
+            target,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o664,
+        )
+    except FileExistsError:
+        return target
+    with os.fdopen(descriptor, "wb") as target_file:
+        target_file.write(payload)
+    return target
 
 
 @lru_cache(maxsize=16)
@@ -132,10 +174,8 @@ def _load_model_pricing_catalog_cached(
     return load_model_pricing_catalog(Path(path_key))
 
 
-def default_model_pricing_catalog() -> ModelPricingCatalog:
-    path = default_model_pricing_catalog_path()
-    if path is None:
-        raise FileNotFoundError(DEFAULT_MODEL_PRICING_FILENAME)
+def default_model_pricing_catalog(*, runtime_dir: Path | str | None = None) -> ModelPricingCatalog:
+    path = default_model_pricing_catalog_path(runtime_dir=runtime_dir)
     resolved_path = path.resolve()
     stat = resolved_path.stat()
     return _load_model_pricing_catalog_cached(
@@ -281,7 +321,10 @@ def estimate_model_usage_cost(
     if _uses_separate_prompt_cache_counters(event):
         billable_input_tokens = int(event.input_tokens)
     else:
-        billable_input_tokens = max(int(event.input_tokens) - billable_cached_input_tokens, 0)
+        billable_input_tokens = max(
+            int(event.input_tokens) - billable_cached_input_tokens - cache_write_tokens.total,
+            0,
+        )
     output_tokens = int(event.output_tokens)
 
     input_rate = rule.input_per_1m_tokens
@@ -384,6 +427,16 @@ def extract_cache_write_input_tokens(event: ModelInferenceUsageEvent) -> CacheWr
     usage = event.raw_usage_metadata.get("usage")
     if not isinstance(usage, dict):
         return CacheWriteInputTokens()
+    for path in (
+        ("input_tokens_details", "cache_write_tokens"),
+        ("prompt_tokens_details", "cache_write_tokens"),
+    ):
+        value = _nested_value(usage, path)
+        if value is None:
+            continue
+        number = _optional_non_negative_int(value)
+        if number is not None:
+            return CacheWriteInputTokens(ephemeral_5m=number)
     cache_creation = usage.get("cache_creation")
     cache_creation_payload = cache_creation if isinstance(cache_creation, dict) else {}
     ephemeral_5m = _optional_non_negative_int(
@@ -664,6 +717,8 @@ def _decimal_to_float(value: Decimal | None) -> float | None:
 
 __all__ = [
     "DEFAULT_MODEL_PRICING_FILENAME",
+    "DEFAULT_MODEL_PRICING_SEED_FILENAME",
+    "LEGACY_DEFAULT_MODEL_PRICING_SHA256",
     "MODEL_PRICING_PATH_ENV",
     "ModelCostEstimate",
     "ModelCostStatus",
@@ -672,10 +727,12 @@ __all__ = [
     "clear_model_pricing_catalog_cache",
     "default_model_pricing_catalog",
     "default_model_pricing_catalog_path",
+    "default_model_pricing_catalog_seed_path",
     "estimate_model_usage_cost",
     "extract_cache_write_input_tokens",
     "extract_cached_input_tokens",
     "load_model_pricing_catalog",
     "load_model_pricing_catalog_payload",
     "normalize_model_pricing_catalog_payload",
+    "seed_default_model_pricing_catalog",
 ]

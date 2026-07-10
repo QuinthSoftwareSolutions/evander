@@ -102,6 +102,7 @@ from evander.messaging.targets import (
 from evander.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
+    seed_default_model_pricing_catalog,
 )
 from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.models import (
@@ -11512,6 +11513,7 @@ def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
+    catalog_path = seed_default_model_pricing_catalog(tmp_path / "runtime")
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/configuration/model-pricing")
@@ -11519,6 +11521,7 @@ def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
+    assert payload["path"] == str(catalog_path)
     assert payload["path_source"] == "default"
     assert isinstance(payload["version"], str)
     assert payload["version"]
@@ -11696,8 +11699,7 @@ def test_admin_web_model_pricing_catalog_write_uses_default_catalog_path(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
-    monkeypatch.chdir(tmp_path)
-    catalog_path = tmp_path / "config" / "model-pricing.openai.json"
+    catalog_path = tmp_path / "runtime" / "model-pricing.openai.json"
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     catalog_path.write_text(
         json.dumps(_pricing_catalog_payload(version="initial-pricing", model="initial-model")),

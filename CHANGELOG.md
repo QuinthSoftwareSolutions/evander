@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-10 - GPT-5.6 Pricing Catalog
+
+- Added standard and batch token pricing for GPT-5.6 Sol, Terra, Luna, and the
+  GPT-5.6 alias, effective from the start of the release day so existing usage
+  events can be estimated retroactively.
+- Accounted for GPT-5.6 cache-write tokens at their separate 1.25x input rate
+  without also charging those tokens as ordinary input.
+- Moved the active pricing catalog into operator-owned runtime state, with
+  `init-state` seeding new runtimes from a tracked example without overwriting
+  existing operator edits and migrating customized legacy catalogs.
+
 ## 2026-07-10 - Codex Unsupported Tool Failure Classification
 
 - Added local OpenAI Responses compatibility for Codex MCP namespaces: namespace

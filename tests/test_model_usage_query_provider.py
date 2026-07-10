@@ -10,6 +10,11 @@ import pytest
 
 from evander.events.provider_models import ModelUsageListQueryDefinition
 from evander.model_usage.models import ModelInferenceUsageEvent
+from evander.model_usage.pricing import (
+    ModelPricingCatalog,
+    default_model_pricing_catalog_seed_path,
+    load_model_pricing_catalog,
+)
 from evander.model_usage.store import ModelUsageStore
 from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
 from evander.queries.providers.base import QueryRuntimeContext
@@ -69,10 +74,18 @@ def _event(
 class _ModelUsageAdminServiceStub:
     store: ModelUsageStore
     calls: list[dict[str, Any]] = field(default_factory=list)
+    pricing_catalog: ModelPricingCatalog = field(
+        default_factory=lambda: load_model_pricing_catalog(
+            default_model_pricing_catalog_seed_path()
+        )
+    )
 
     def list_model_usage_events(self, **kwargs: Any) -> list[ModelInferenceUsageEvent]:
         self.calls.append(dict(kwargs))
         return self.store.list_events(**kwargs)
+
+    def model_pricing_catalog(self) -> ModelPricingCatalog:
+        return self.pricing_catalog
 
 
 def test_provider_runtime_adapter_list_model_usage_events_delegates_to_model_usage_admin(
@@ -112,6 +125,7 @@ def test_provider_runtime_adapter_list_model_usage_events_delegates_to_model_usa
             "limit": 1,
         }
     ]
+    assert adapter.model_pricing_catalog() is model_usage_admin.pricing_catalog
 
 
 def test_model_usage_list_query_provider_filters_and_serializes_events(tmp_path: Path) -> None:

@@ -69,7 +69,7 @@ class ModelUsageListQueryProvider(QueryProviderBase):
         if cost_currency.lower() != "usd":
             raise ValueError("query:model-usage:list cost_currency only supports usd")
 
-        catalog = self._pricing_catalog() if include_costs else None
+        catalog = self._pricing_catalog(admin_service) if include_costs else None
         items: list[dict[str, Any]] = []
         total_estimated_cost = Decimal("0")
         total_input_tokens = 0
@@ -208,8 +208,11 @@ class ModelUsageListQueryProvider(QueryProviderBase):
             raise RuntimeError("ModelUsageListQueryProvider has no runtime context")
         return self.runtime_context
 
-    def _pricing_catalog(self) -> ModelPricingCatalog | None:
+    def _pricing_catalog(self, admin_service: Any) -> ModelPricingCatalog | None:
         try:
+            catalog_loader = getattr(admin_service, "model_pricing_catalog", None)
+            if callable(catalog_loader):
+                return catalog_loader()
             return default_model_pricing_catalog()
         except Exception as exc:
             logger.warning(

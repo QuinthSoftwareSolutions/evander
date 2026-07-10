@@ -808,6 +808,10 @@ def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
     assert directories["root"].name == "root"
     assert directories["root"].parent_id is None
     assert directories["root"].metadata == {}
+    pricing_catalog = json.loads(
+        (tmp_path / "runtime" / "model-pricing.openai.json").read_text(encoding="utf-8")
+    )
+    assert pricing_catalog["version"] == "openai-anthropic-2026-07-10"
 
 
 def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Path) -> None:
