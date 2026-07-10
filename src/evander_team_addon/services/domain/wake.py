@@ -40,7 +40,11 @@ from .stand_down import _active_stand_downs_for_agent
 AGENT_WAKE_REQUESTED_EVENT_TYPE = "team.agent.wake_requested"
 
 def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
-    terminal = {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
+    terminal = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+    }
     tasks = [
         task
         for task in state.tasks.values()

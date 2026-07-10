@@ -8,6 +8,14 @@
 - Added a paginated Team inbox-history API so handled correspondence remains available
   beyond the bounded state payload used by the operational views.
 
+## 2026-07-10 - Team Wake Feedback And Terminal Task Repair
+
+- Included concise failed-action feedback in the wake prompt and marked it delivered only
+  after the agent resume succeeds, preventing acknowledged failures from repeatedly waking
+  an otherwise idle agent.
+- Treated rejected tasks as terminal in both Team wake paths, matching task validation,
+  project status, and the Team UI.
+
 ## 2026-07-10 - Team Chat Permission Handoff
 
 - Kept reply-only Team Chat messages queued while their target session has an

@@ -1827,6 +1827,17 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
+                delivered_action_feedback_dispatch_ids = _lease_action_feedback_dispatch_ids(
+                    lease
+                )
+                if delivered_action_feedback_dispatch_ids:
+                    feedback_service = TeamAdminService(repo)
+                    for source_dispatch_id in delivered_action_feedback_dispatch_ids:
+                        state = feedback_service.mark_action_feedback_delivered(
+                            agent_id=agent["id"],
+                            source_dispatch_id=source_dispatch_id,
+                            delivery_dispatch_id=lease["dispatch_id"],
+                        )
                 dispatch_payload = {
                     "agent_id": agent["id"],
                     "session_id": agent["session_id"],
@@ -1835,6 +1846,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     "team_mcp_tools": tool_grant_result,
                     "result": result_payload,
                 }
+                if delivered_action_feedback_dispatch_ids:
+                    dispatch_payload["delivered_action_feedback_dispatch_ids"] = (
+                        delivered_action_feedback_dispatch_ids
+                    )
                 if project_repo is not None:
                     dispatch_payload["project_repo"] = project_repo
                 if lease.get("review_artifact_imports"):
@@ -4449,6 +4464,22 @@ def _team_agent_guidance_inactive_content(*, agent: Mapping[str, Any]) -> str:
         "- If this agent also manages governance groups, follow the separate "
         f"{TEAM_GOVERNANCE_GUIDANCE_SECTION_ID} section and the current "
         "governance wake prompt instead.\n"
+    )
+
+
+def _lease_action_feedback_dispatch_ids(lease: Mapping[str, Any]) -> list[str]:
+    if _optional_text(lease.get("reason")) != "action_feedback":
+        return []
+    feedback = lease.get("recent_action_feedback")
+    if not isinstance(feedback, list):
+        return []
+    return sorted(
+        {
+            dispatch_id
+            for item in feedback
+            if isinstance(item, Mapping)
+            and (dispatch_id := _optional_text(item.get("dispatch_id"))) is not None
+        }
     )
 
 

@@ -64,6 +64,7 @@ from evander_team_addon.models import (
     TeamRole,
     TeamState,
     TeamTaskState,
+    _runtime_agent_payload,
 )
 from evander_team_addon.provider_schemas import (
     TeamCreateCaseEffectDefinition,
@@ -2151,10 +2152,10 @@ def test_wake_due_agents_leaves_reply_only_chat_queued_while_agent_prompt_is_act
 
     assert result["success"] is True
     assert result["chat_dispatches"] == []
-    assert resumer.calls == []
     assert result["leased_count"] == 0
     assert result["leases"] == []
     assert result["dispatches"] == []
+    assert resumer.calls == []
     assert session_store.sessions["session-backend"].allowed_tools == ordinary_tools
     reread = TeamStateRepository(tmp_path).read()
     queued_message = reread.conversation_messages[message.id]
@@ -3034,7 +3035,7 @@ def test_manager_fallback_creates_fresh_review_for_idle_profile_reviewer(
     )
 
 
-def test_review_handoff_duplicate_id_feedback_is_not_prompted(
+def test_review_handoff_duplicate_id_feedback_is_included_in_corrective_wake_prompt(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -3065,9 +3066,14 @@ def test_review_handoff_duplicate_id_feedback_is_not_prompted(
     )
     prompt = _build_prompt(next_lease)
 
-    assert "Most recent Team action feedback" not in prompt
-    assert "Do not repeat these mistakes" not in prompt
-    assert "review request review-manager already exists" not in prompt
+    context = _team_context_from_prompt(prompt)
+    assert context["action_feedback"][0]["error"] == (
+        "review request review-manager already exists"
+    )
+    assert any(
+        "Do not recreate existing ids" in hint
+        for hint in context["action_feedback"][0]["correction_hints"]
+    )
 
 
 def test_manager_fallback_prompt_caps_large_history(
@@ -3213,7 +3219,7 @@ def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
     ]
 
 
-def test_wake_due_agents_provider_does_not_prompt_latest_action_feedback(
+def test_wake_due_agents_provider_delivers_latest_action_feedback(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -3249,14 +3255,74 @@ def test_wake_due_agents_provider_does_not_prompt_latest_action_feedback(
 
     assert result["success"] is True
     prompt = str(resumer.calls[0]["prompt"])
-    assert "Most recent Team action feedback" not in prompt
-    assert "previous Team dispatch had validation errors" not in prompt
-    assert "action-feedback" not in prompt
-    assert "Only the task owner can create deliverables for that task." not in prompt
+    context = _team_context_from_prompt(prompt)
+    assert context["action_feedback"] == [
+        {
+            "action_record_id": "action-feedback",
+            "dispatch_id": failed_dispatch_id,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "error": "agent backend cannot deliver task other-task",
+            "action_fields": ["deliverables"],
+            "correction_hints": [
+                "Only the task owner can create deliverables for that task."
+            ],
+        }
+    ]
+    assert result["dispatches"][0]["delivered_action_feedback_dispatch_ids"] == [
+        failed_dispatch_id
+    ]
     reread = TeamStateRepository(tmp_path).read()
     record = reread.action_records["action-feedback"]
+    assert record.feedback_delivered_at is not None
+    assert record.feedback_delivered_by_dispatch_id == result["dispatches"][0]["dispatch_id"]
+
+
+def test_wake_due_agents_provider_keeps_action_feedback_undelivered_when_resume_fails(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_action_record(
+        repo,
+        action_id="action-feedback",
+        dispatch_id="failed-dispatch",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        success=False,
+        error="agent backend cannot deliver task other-task",
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer({"success": False, "message": "resume failed"}),
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    record = TeamStateRepository(tmp_path).read().action_records["action-feedback"]
     assert record.feedback_delivered_at is None
     assert record.feedback_delivered_by_dispatch_id is None
+
+
+def test_rejected_task_is_terminal_for_wake_leasing_and_runtime_status(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.REJECTED)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    state, leases = _team_runtime_service(repo).lease_due_agents(now=now)
+
+    assert "backend" not in _leased_agent_ids(leases)
+    assert _runtime_agent_payload(state, state.agents["backend"], now)["wake_due"] is False
 
 
 def test_wake_due_agents_provider_rotates_context_when_pending(

@@ -3756,7 +3756,11 @@ def _runtime_agent_wake_due(
 
 
 def _active_tasks_for_runtime_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
-    terminal = {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
+    terminal = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+    }
     return [
         task
         for task in state.tasks.values()
