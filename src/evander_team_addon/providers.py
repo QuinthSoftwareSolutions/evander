@@ -1710,6 +1710,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     default=True,
                 ),
                 blocked_team_ids=blocked_team_ids,
+                session_is_busy=lambda session_id: _team_session_has_active_prompt(
+                    context,
+                    session_id=session_id,
+                ),
             )
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []

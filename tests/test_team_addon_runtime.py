@@ -2124,15 +2124,6 @@ def test_wake_due_agents_leaves_reply_only_chat_queued_while_agent_prompt_is_act
         message_id=message.id,
         dispatch_id=dispatch_id,
     )
-
-    def _defer_regular_wake(state: TeamState) -> TeamState:
-        state.agent_runtimes["backend"] = AgentRuntime(
-            agent_id="backend",
-            next_wake_at=datetime(2099, 1, 1, tzinfo=UTC),
-        )
-        return state
-
-    repo.update(_defer_regular_wake)
     session_store = FakeSessionStore()
     ordinary_tools = list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES)
     session_store.sessions["session-backend"].allowed_tools = ordinary_tools
@@ -2161,6 +2152,9 @@ def test_wake_due_agents_leaves_reply_only_chat_queued_while_agent_prompt_is_act
     assert result["success"] is True
     assert result["chat_dispatches"] == []
     assert resumer.calls == []
+    assert result["leased_count"] == 0
+    assert result["leases"] == []
+    assert result["dispatches"] == []
     assert session_store.sessions["session-backend"].allowed_tools == ordinary_tools
     reread = TeamStateRepository(tmp_path).read()
     queued_message = reread.conversation_messages[message.id]

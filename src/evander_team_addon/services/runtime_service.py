@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .domain import common as _team_common
@@ -260,6 +260,7 @@ class TeamRuntimeService:
         project_id: str | None = None,
         agent_id: str | None = None,
         blocked_team_ids: set[str] | None = None,
+        session_is_busy: Callable[[str], bool] | None = None,
     ) -> tuple[TeamState, list[dict[str, Any]]]:
         effective_now = _ensure_utc(now or utc_now())
         normalized_team_id = _optional_text(team_id)
@@ -313,6 +314,8 @@ class TeamRuntimeService:
                 ):
                     continue
                 if normalized_agent_id is not None and agent.id != normalized_agent_id:
+                    continue
+                if session_is_busy is not None and session_is_busy(agent.session_id):
                     continue
                 runtime = state_model.agent_runtimes.setdefault(
                     agent.id,
@@ -477,6 +480,8 @@ class TeamRuntimeService:
                 ):
                     continue
                 if normalized_agent_id is not None and manager.id != normalized_agent_id:
+                    continue
+                if session_is_busy is not None and session_is_busy(manager.session_id):
                     continue
                 if (
                     manager.id in state_model.agent_runtimes

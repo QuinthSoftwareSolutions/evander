@@ -13,6 +13,8 @@
 - Kept reply-only Team Chat messages queued while their target session has an
   active agent prompt, preventing a queued chat dispatch from revoking the
   still-running implementation wake's Team MCP permissions.
+- Also excluded busy sessions from regular Team wake leasing, preventing a
+  redundant queued wake from delaying the pending chat handoff.
 
 ## 2026-07-10 - Team Chat Stale Revision Tolerance
 
