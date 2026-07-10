@@ -391,6 +391,8 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
             outbox_records = _team_event_outbox_records(intent_result["events"])
             outbox_ids = [record.id for record in outbox_records]
             release_payload = release_package_payload_with_derived(state, release)
+            created = bool(intent_result.get("created", True))
+            progress_made = created or bool(promotion_event_ids or outbox_ids)
             return TeamCommandApplyResult(
                 response_payload={
                     "intent_recorded": True,
@@ -398,6 +400,11 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                     "downstream_effect_completed": False,
                     "release_package_id": release_id,
                     "release_package_ids": [release_id],
+                    "created": created,
+                    "duplicate": bool(intent_result.get("duplicate", False)),
+                    "existing_release_package_id": intent_result.get(
+                        "existing_release_package_id"
+                    ),
                     "promotion_event_ids": promotion_event_ids,
                     "git_promotion_event_ids": promotion_event_ids,
                     "release_branch": release.release_branch,
@@ -406,14 +413,21 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                     "release_package": release_payload,
                     "outbox_record_ids": outbox_ids,
                     "events": list(intent_result["events"]),
-                    "next_action_hints": _release_command_next_action_hints(
+                    "next_action_hints": list(
+                        intent_result.get("next_action_hints") or []
+                    )
+                    or _release_command_next_action_hints(
                         state,
                         release,
                         promotion_event_ids=promotion_event_ids,
                     ),
-                    "progress_made": True,
+                    "progress_made": progress_made,
                 },
-                created_domain_ids=[release_id, *promotion_event_ids, *outbox_ids],
+                created_domain_ids=(
+                    [release_id, *promotion_event_ids, *outbox_ids]
+                    if progress_made
+                    else []
+                ),
                 created_event_ids=promotion_event_ids,
                 outbox_records=outbox_records,
             )

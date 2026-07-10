@@ -8928,6 +8928,36 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     assert feature_payload["bare_repo_name"] == "Truman.git"
     assert feature_payload["source_branches"] == ["team/team/reviews/deliverable"]
 
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-release-command-duplicate",
+    )
+    state, duplicate = _command_service(repo).request_release_command(
+        session_id="session-lead",
+        id="rel-2",
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        request_id="request-release-command-duplicate",
+        summary="Accidental duplicate release request.",
+    )
+
+    assert duplicate["success"] is True
+    assert duplicate["created"] is False
+    assert duplicate["duplicate"] is True
+    assert duplicate["existing_release_package_id"] == "rel-1"
+    assert duplicate["release_package_id"] == "rel-1"
+    assert duplicate["release_package_ids"] == ["rel-1"]
+    assert duplicate["progress_made"] is False
+    assert duplicate["promotion_event_ids"] == []
+    assert duplicate["outbox_record_ids"] == []
+    assert list(state.release_packages) == ["rel-1"]
+    assert len(repo.list_outbox_records()) == len(outbox_records)
+    assert any(
+        "already covers this deliverable set" in hint
+        for hint in duplicate["next_action_hints"]
+    )
+
 
 def test_recover_release_command_records_retryable_recovery_outbox(
     tmp_path: Path,
@@ -9695,6 +9725,7 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     }
     assert payloads["canonical_push"]["source_branch"] == "team/team/releases/rel-1"
     assert payloads["canonical_push"]["target_branch"] == "releases/project/rel-1"
+    assert payloads["canonical_push"]["bare_repo_name"] == "Truman.git"
     assert payloads["canonical_push"]["canonical_origin_url"] == (
         "https://example.invalid/Truman.git"
     )
@@ -9756,6 +9787,62 @@ def test_duplicate_git_release_request_points_to_existing_package(
     assert "state blocked" in error
     assert "release_branch team/team/releases/rel-1" in error
     assert "do not submit git_release_requests for this id again" in error
+
+
+def test_git_release_request_reuses_active_package_for_same_deliverables(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    assert result["release_package_ids"] == ["rel-1"]
+    assert len(state.git_promotions) == 1
+    first_outbox_count = len(repo.list_outbox_records())
+
+    state, duplicate = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-2",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert duplicate["success"] is True
+    assert duplicate["duplicate"] is True
+    assert duplicate["created"] is False
+    assert duplicate["existing_release_package_id"] == "rel-1"
+    assert duplicate["release_package_ids"] == ["rel-1"]
+    assert list(state.release_packages) == ["rel-1"]
+    assert len(state.git_promotions) == 1
+    assert len(repo.list_outbox_records()) == first_outbox_count
+    assert any(
+        "already covers this deliverable set" in hint
+        for hint in duplicate["next_action_hints"]
+    )
 
 
 def test_apply_agent_action_git_release_recovery_emits_recovery_event(
@@ -9820,6 +9907,7 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
     assert event["payload"] == {
         "release_package_id": "rel-1",
         "promotion_id": release_promotion_id,
+        "promotion_kind": "release",
         "project_id": "project",
         "host_repo_path": "/opt/repos/Truman",
         "bare_repo_name": "Truman.git",
@@ -9831,6 +9919,89 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
         "expected_commit_sha": "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
         "summary": "Resolved release merge conflict.",
     }
+
+
+def test_apply_agent_action_git_release_recovery_continues_failed_feature_promotion(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+    )
+
+    def _set_agent_branch(state):
+        state.deliverables["deliverable"].git_refs.agent_branch = (
+            "agents/backend/work"
+        )
+        return state
+
+    repo.update(_set_agent_branch)
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-1",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    feature_promotion_id = result["git_promotion_event_ids"][0]
+    feature_promotion = state.git_promotions[feature_promotion_id]
+    assert feature_promotion.promotion_kind == "feature"
+    state, _failure = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=feature_promotion_id,
+        success=False,
+        error="stale git index lock",
+    )
+    assert state.release_packages["rel-1"].state == TeamRecordState.BLOCKED
+
+    state, recovery = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_recoveries": [
+                {
+                    "release_package_id": "rel-1",
+                    "agent_branch": "refs/heads/agents/backend/work",
+                    "commit_sha": "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
+                }
+            ],
+        },
+    )
+
+    assert recovery["success"] is True
+    assert recovery["release_recovery_event_ids"] == ["rel-1"]
+    event = recovery["events"][0]
+    assert event["payload"]["promotion_kind"] == "feature"
+    assert event["payload"]["promotion_id"] == feature_promotion_id
+    assert event["payload"]["target_branch"] == feature_promotion.target_branch
+    assert event["payload"]["release_branch"] == "team/team/releases/rel-1"
+
+    state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=feature_promotion_id,
+        success=True,
+        commit_sha="708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
+    )
+
+    release = state.release_packages["rel-1"]
+    assert release.state == TeamRecordState.PENDING
+    assert release.error is None
+    assert state.deliverables["deliverable"].git_refs.feature_branch == (
+        feature_promotion.target_branch
+    )
+    release_promotions = [
+        state.git_promotions[promotion_id]
+        for promotion_id in release.git_promotion_record_ids
+        if state.git_promotions[promotion_id].promotion_kind == "release"
+    ]
+    assert len(release_promotions) == 1
+    assert promotion_result["git_promotion_event_ids"] == [release_promotions[0].id]
 
 
 def test_apply_agent_action_git_release_recovery_requires_agent_branch(

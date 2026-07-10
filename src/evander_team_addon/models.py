@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -3336,10 +3337,31 @@ def release_package_payload_with_derived(
     release: ReleasePackage,
 ) -> dict[str, Any]:
     payload = release.model_dump(mode="json")
+    related_promotions = _release_related_promotions(state, release)
+    pending_promotions = [
+        promotion.id for promotion in related_promotions if promotion.state == "pending"
+    ]
+    failed_promotions = [
+        promotion.id for promotion in related_promotions if promotion.state == "failed"
+    ]
+    if pending_promotions:
+        payload["pending_git_promotion_ids"] = pending_promotions
+    if failed_promotions:
+        payload["failed_git_promotion_ids"] = failed_promotions
+    if related_promotions:
+        payload["promotion_attempt_count"] = len(
+            [promotion for promotion in related_promotions if promotion.state != "pending"]
+        )
     next_action_hint = _release_next_action_hint(state, release)
     if next_action_hint is not None:
         payload["next_action"] = "resolve_blocked_release"
         payload["next_action_hint"] = next_action_hint
+    blocked_reason_code = _release_blocked_reason_code(
+        release,
+        _release_blocking_promotion(state, release),
+    )
+    if blocked_reason_code is not None:
+        payload["blocked_reason_code"] = blocked_reason_code
     return payload
 
 
@@ -3357,7 +3379,7 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
             f"{failed_promotion.id}: {failed_promotion.source_branch} -> "
             f"{failed_promotion.target_branch}."
         )
-        if failed_promotion.promotion_kind == "release":
+        if failed_promotion.promotion_kind in {"feature", "release"}:
             parts.append(
                 "Assign semantic conflicts to the owning coder, have the resolved "
                 "commit pushed to an agents/... ref, then submit "
@@ -3370,7 +3392,7 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
         else:
             parts.append(
                 f"This blocker is a failed {failed_promotion.promotion_kind} "
-                "promotion, not a release promotion; do not submit "
+                "promotion, not a recoverable feature or release promotion; do not submit "
                 "git_release_recoveries. Resolve and commit on failed promotion "
                 f"target branch {failed_promotion.target_branch}, or escalate "
                 "for operator/orchestrator retry."
@@ -3378,7 +3400,10 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
     if release.error:
         parts.append(f"Current blocker: {release.error}")
     if release.error and "merge conflict" in release.error.casefold():
-        if failed_promotion is not None and failed_promotion.promotion_kind == "release":
+        if failed_promotion is not None and failed_promotion.promotion_kind in {
+            "feature",
+            "release",
+        }:
             parts.append(
                 "Resolve the merge conflict on the failed promotion target branch, "
                 "push the resolved commit to an agents/... ref, then recover the "
@@ -3387,7 +3412,7 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
         else:
             parts.append(
                 "Resolve the merge conflict on the failed promotion target branch; "
-                "git_release_recoveries only applies to failed release promotions."
+                "git_release_recoveries only applies to failed feature or release promotions."
             )
     if failed_promotion is None:
         parts.append(
@@ -3395,6 +3420,44 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
             "to find the blocked promotion target before retrying or finalizing."
         )
     return " ".join(parts)
+
+
+def _release_related_promotions(
+    state: TeamState,
+    release: ReleasePackage,
+) -> list[GitPromotionRecord]:
+    release_promotion_ids = set(release.git_promotion_record_ids)
+    promotions = [
+        promotion
+        for promotion in state.git_promotions.values()
+        if promotion.id in release_promotion_ids or promotion.release_package_id == release.id
+    ]
+    promotions.sort(key=lambda promotion: (promotion.created_at, promotion.id))
+    return promotions
+
+
+def _release_blocked_reason_code(
+    release: ReleasePackage,
+    failed_promotion: GitPromotionRecord | None,
+) -> str | None:
+    if release.state != TeamRecordState.BLOCKED and not release.error:
+        return None
+    text_parts = [release.error or ""]
+    if failed_promotion is not None:
+        text_parts.append(failed_promotion.error or "")
+        text_parts.append(json.dumps(failed_promotion.outputs, sort_keys=True))
+    text = "\n".join(text_parts).casefold()
+    if "index.lock" in text:
+        return "stale_index_lock"
+    if "dirty worktree" in text:
+        return "checkout_dirty"
+    if "merge conflict" in text or "automatic merge failed" in text:
+        return "merge_conflict"
+    if "not something we can merge" in text or "source_ref_missing" in text:
+        return "source_ref_missing"
+    if "bare repo not found" in text:
+        return "source_ref_missing"
+    return "unexpected_git_failure"
 
 
 def _release_blocking_promotion(
@@ -4058,6 +4121,27 @@ def _failed_promotion_rows(state: TeamState) -> list[dict[str, Any]]:
     ):
         if promotion.state != "failed":
             continue
+        if promotion.release_package_id is not None:
+            release = state.release_packages.get(promotion.release_package_id)
+            if release is not None and release.state in {
+                TeamRecordState.ACCEPTED,
+                TeamRecordState.REJECTED,
+            }:
+                continue
+        if promotion.deliverable_id is not None:
+            deliverable = state.deliverables.get(promotion.deliverable_id)
+            if deliverable is not None and deliverable.state in {
+                TeamRecordState.ACCEPTED,
+                TeamRecordState.REJECTED,
+            }:
+                continue
+        if promotion.task_id is not None:
+            task = state.tasks.get(promotion.task_id)
+            if task is not None and task.state in {
+                TeamTaskState.ACCEPTED,
+                TeamTaskState.REJECTED,
+            }:
+                continue
         rows.append(
             _runtime_row(
                 id=promotion.id,

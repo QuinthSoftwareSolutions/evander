@@ -1110,6 +1110,8 @@ class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
 class GitPushBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:git:push-branch"]
     host_repo_path: ConfigValue
+    bare_repo_path: ConfigValue | None = None
+    bare_repo_name: ConfigValue | None = None
     local_branch: ConfigValue
     origin_branch: ConfigValue
     canonical_origin_url: ConfigValue | None = None
@@ -1117,6 +1119,21 @@ class GitPushBranchEffectDefinition(EffectDefinition):
     base_branch: ConfigValue | None = None
     session_id: ConfigValue | None = None
     work_item_id: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_bare_repo_selector(self) -> "GitPushBranchEffectDefinition":
+        if (
+            self.bare_repo_path is not None
+            and self.bare_repo_name is not None
+            and not (
+                _is_binding_config_value(self.bare_repo_path)
+                or _is_binding_config_value(self.bare_repo_name)
+            )
+        ):
+            raise ValueError(
+                "effect:git:push-branch bare_repo_path and bare_repo_name are mutually exclusive"
+            )
+        return self
 
 
 def _is_binding_config_value(value: ConfigValue | None) -> bool:

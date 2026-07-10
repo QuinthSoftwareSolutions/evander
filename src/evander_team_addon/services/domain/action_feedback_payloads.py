@@ -66,7 +66,7 @@ def _correction_hints(error: str) -> list[str]:
                 "existing or blocked package, inspect release_packages[id], resolve "
                 "its release_branch/error, and follow its next_action_hint. Only "
                 "submit git_release_recoveries when the hint identifies a failed "
-                "release promotion and the resolved commit has been pushed to an "
+                "feature or release promotion and the resolved commit has been pushed to an "
                 "agents/... ref; do not reuse the same id in another "
                 "git_release_requests item."
             )

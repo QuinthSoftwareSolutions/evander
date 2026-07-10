@@ -61,6 +61,7 @@ from .models import (
     TeamRecordState,
     TeamInboxItemState,
     TeamInboxPriority,
+    TeamOutboxStatus,
     TeamTaskState,
     TeamState,
     _agent_payload_with_role,
@@ -80,6 +81,8 @@ from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from .services.domain.wake import _append_agent_wake_requested_event_for_inbox_item
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
 from .services.memory_service import list_memory_records, memory_record_payload
@@ -286,13 +289,15 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     avatar_storage = AvatarStorage(context.runtime_dir)
 
     def _state_payload(request: Request, state: TeamState) -> dict[str, Any]:
-        return _team_state_payload_for_request(
+        payload = _team_state_payload_for_request(
             context.auth,
             request,
             state,
             session_records=_session_records_by_id(_session_repository_from_context(context)),
             agent_execution_records=_agent_execution_records_by_session(context.service),
         )
+        _add_release_outbox_metadata(payload, repository)
+        return payload
 
     def _state_response(
         request: Request,
@@ -1852,11 +1857,22 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             requesting_session_id=_optional(payload, "requesting_session_id"),
             expected_revision=_expected_revision(payload),
         )
+        wake_result: dict[str, Any] = {"events": []}
+        _append_agent_wake_requested_event_for_inbox_item(
+            state,
+            item=item,
+            result=wake_result,
+            now=item.created_at,
+        )
+        published_event_ids = _publish_team_events(context, wake_result["events"])
         return _state_response(
             request,
             state,
             status_code=201,
-            extra={"operator_directive": item.model_dump(mode="json")},
+            extra={
+                "operator_directive": item.model_dump(mode="json"),
+                "published_event_ids": published_event_ids,
+            },
         )
 
     async def dismiss_action_record(request: Request) -> JSONResponse:
@@ -2550,6 +2566,50 @@ def _team_state_payload_for_request(
         history_limit=_query_state_history_limit(request),
     )
     return payload
+
+
+def _add_release_outbox_metadata(
+    payload: dict[str, Any],
+    repository: TeamStateRepository,
+) -> None:
+    release_packages = payload.get("release_packages")
+    if not isinstance(release_packages, dict) or not release_packages:
+        return
+    promotion_to_release: dict[str, dict[str, Any]] = {}
+    for release_payload in release_packages.values():
+        if not isinstance(release_payload, dict):
+            continue
+        for promotion_id in release_payload.get("git_promotion_record_ids") or []:
+            if isinstance(promotion_id, str) and promotion_id:
+                promotion_to_release[promotion_id] = release_payload
+    if not promotion_to_release:
+        return
+    for record in repository.list_outbox_records(intent_type=GIT_PROMOTION_EVENT_TYPE):
+        if record.aggregate_id not in promotion_to_release:
+            continue
+        release_payload = promotion_to_release[record.aggregate_id]
+        release_payload["promotion_attempt_count"] = max(
+            int(release_payload.get("promotion_attempt_count") or 0),
+            record.attempt_count,
+        )
+        row = {
+            "id": record.id,
+            "status": record.status.value,
+            "aggregate_id": record.aggregate_id,
+            "available_at": record.available_at.isoformat(),
+            "attempt_count": record.attempt_count,
+            "claimed_by": record.claimed_by,
+            "completed_at": (
+                record.completed_at.isoformat() if record.completed_at is not None else None
+            ),
+            "last_error_code": record.last_error_code,
+            "last_error_message": record.last_error_message,
+        }
+        release_payload.setdefault("outbox_records", []).append(
+            {key: value for key, value in row.items() if value is not None}
+        )
+        if record.status in {TeamOutboxStatus.PENDING, TeamOutboxStatus.CLAIMED}:
+            release_payload.setdefault("active_outbox_record_ids", []).append(record.id)
 
 
 def _bootstrap_payload_for_request(

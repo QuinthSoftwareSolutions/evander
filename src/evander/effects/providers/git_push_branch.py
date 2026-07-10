@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
+import subprocess
+import tempfile
 from typing import Any
 
 from .base import EffectProviderBase
@@ -21,14 +24,156 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         origin_branch = self._normalize_optional_string(payload.get("origin_branch"))
         if not origin_branch:
             raise ValueError("effect:git:push-branch requires origin_branch")
+        bare_repo_path = self._normalize_optional_string(payload.get("bare_repo_path"))
+        bare_repo_name = self._normalize_optional_string(payload.get("bare_repo_name"))
+        if bare_repo_path and bare_repo_name:
+            raise ValueError(
+                "effect:git:push-branch bare_repo_path and bare_repo_name are mutually exclusive"
+            )
 
         context = self._context()
         push_branch = getattr(context.git_branch_pusher, "push_branch", None)
         if not callable(push_branch):
             raise RuntimeError("Admin runtime push_branch is not available")
 
+        source_bare_repo = self._resolve_bare_repo_path(
+            bare_repo_path=bare_repo_path,
+            bare_repo_name=bare_repo_name,
+        )
+        if source_bare_repo is not None:
+            return self._push_from_bare_repo(
+                push_branch=push_branch,
+                trusted_host_repo_path=host_repo_path,
+                bare_repo_path=source_bare_repo,
+                local_branch=local_branch,
+                origin_branch=origin_branch,
+                payload=payload,
+            )
+        return self._push(
+            push_branch=push_branch,
+            source_repo_path=host_repo_path,
+            local_branch=local_branch,
+            origin_branch=origin_branch,
+            payload=payload,
+        )
+
+    def _push_from_bare_repo(
+        self,
+        *,
+        push_branch: Any,
+        trusted_host_repo_path: str,
+        bare_repo_path: Path,
+        local_branch: str,
+        origin_branch: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if not bare_repo_path.exists():
+            return self._source_failure(
+                trusted_host_repo_path=trusted_host_repo_path,
+                bare_repo_path=bare_repo_path,
+                local_branch=local_branch,
+                origin_branch=origin_branch,
+                message=f"bare repo not found: {bare_repo_path}",
+            )
+        branch_name = self._normalize_branch_ref(local_branch)
+        with tempfile.TemporaryDirectory(prefix="evander-git-push-") as tmp:
+            source_repo_path = Path(tmp) / "source"
+            clone = subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--no-checkout",
+                    "--no-tags",
+                    str(bare_repo_path),
+                    str(source_repo_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if clone.returncode != 0:
+                return self._source_failure(
+                    trusted_host_repo_path=trusted_host_repo_path,
+                    bare_repo_path=bare_repo_path,
+                    local_branch=local_branch,
+                    origin_branch=origin_branch,
+                    message=self._git_output(clone) or "failed to clone bare repo",
+                )
+            fetch = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(source_repo_path),
+                    "fetch",
+                    "--no-tags",
+                    "origin",
+                    f"+refs/heads/{branch_name}:refs/heads/{branch_name}",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            source_ref_repository = "bare_repo"
+            if fetch.returncode != 0:
+                bare_error = self._git_output(fetch)
+                fetch = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(source_repo_path),
+                        "fetch",
+                        "--no-tags",
+                        trusted_host_repo_path,
+                        f"+refs/heads/{branch_name}:refs/heads/{branch_name}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                source_ref_repository = "trusted_host_repo"
+                if fetch.returncode != 0:
+                    host_error = self._git_output(fetch)
+                    message = "\n".join(
+                        part
+                        for part in (
+                            f"bare mirror: {bare_error}" if bare_error else "",
+                            f"trusted host repo: {host_error}" if host_error else "",
+                        )
+                        if part
+                    ) or (
+                        f"failed to resolve {branch_name} from {bare_repo_path} "
+                        f"or {trusted_host_repo_path}"
+                    )
+                    return self._source_failure(
+                        trusted_host_repo_path=trusted_host_repo_path,
+                        bare_repo_path=bare_repo_path,
+                        local_branch=local_branch,
+                        origin_branch=origin_branch,
+                        message=message,
+                    )
+            output = self._push(
+                push_branch=push_branch,
+                source_repo_path=str(source_repo_path),
+                local_branch=branch_name,
+                origin_branch=origin_branch,
+                payload=payload,
+            )
+            output["source_bare_repo_path"] = str(bare_repo_path)
+            output["trusted_host_repo_path"] = trusted_host_repo_path
+            output["source_ref_repository"] = source_ref_repository
+            return output
+
+    def _push(
+        self,
+        *,
+        push_branch: Any,
+        source_repo_path: str,
+        local_branch: str,
+        origin_branch: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
         result = push_branch(
-            host_repo_path=host_repo_path,
+            host_repo_path=source_repo_path,
             local_branch=local_branch,
             origin_branch=origin_branch,
             canonical_origin_url=self._normalize_optional_string(
@@ -41,13 +186,80 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         )
         output = self._coerce_result(result)
         output.setdefault("success", False)
+        if output["success"] is False and not self._normalize_optional_string(
+            output.get("error")
+        ):
+            message = self._normalize_optional_string(output.get("message"))
+            if message is not None:
+                output["error"] = message
         return output
+
+    def _resolve_bare_repo_path(
+        self,
+        *,
+        bare_repo_path: str | None,
+        bare_repo_name: str | None,
+    ) -> Path | None:
+        if bare_repo_path:
+            return Path(bare_repo_path)
+        if not bare_repo_name:
+            return None
+        normalized_name = (
+            bare_repo_name if bare_repo_name.endswith(".git") else f"{bare_repo_name}.git"
+        )
+        context = self._context()
+        root_value = context.env.get("EVANDER_GIT_ROOT") or context.provider_config.get(
+            "git_root"
+        )
+        root = (
+            Path(str(root_value))
+            if root_value
+            else Path(__file__).resolve().parents[4] / "git-remotes"
+        )
+        if not root.is_absolute():
+            root = Path(__file__).resolve().parents[4] / root
+        return root / normalized_name
+
+    @staticmethod
+    def _normalize_branch_ref(value: str) -> str:
+        prefix = "refs/heads/"
+        return value[len(prefix) :] if value.startswith(prefix) else value
+
+    @staticmethod
+    def _git_output(result: subprocess.CompletedProcess[str]) -> str:
+        return "\n".join(
+            part.strip() for part in (result.stderr or "", result.stdout or "") if part.strip()
+        )
+
+    @staticmethod
+    def _source_failure(
+        *,
+        trusted_host_repo_path: str,
+        bare_repo_path: Path,
+        local_branch: str,
+        origin_branch: str,
+        message: str,
+    ) -> dict[str, Any]:
+        return {
+            "success": False,
+            "action": "git_push_branch",
+            "preflight_success": False,
+            "reason": "source_ref_missing",
+            "message": message,
+            "error": message,
+            "host_repo_path": trusted_host_repo_path,
+            "source_bare_repo_path": str(bare_repo_path),
+            "local_branch": local_branch,
+            "origin_branch": origin_branch,
+        }
 
     def _effect_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         effect = self.effect_definition
         for field_name in (
             "host_repo_path",
+            "bare_repo_path",
+            "bare_repo_name",
             "local_branch",
             "origin_branch",
             "canonical_origin_url",

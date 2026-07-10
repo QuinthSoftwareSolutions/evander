@@ -22,6 +22,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-wake-requested-agent",
                 "team-wake-governance-managers",
                 "team-publish-outbox-events",
+                "team-publish-outbox-after-dispatch",
                 "team-ephemeral-requested",
                 "team-create-ephemeral-agent",
                 "team-mark-ephemeral-spawned",
@@ -265,6 +266,15 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "retry_after_seconds": 60,
             },
             {
+                "id": "team-publish-outbox-after-dispatch",
+                "display_name": "Publish Team outbox after dispatch",
+                "type": "effect:team:publish-outbox-events",
+                "limit": 25,
+                "claim_ttl_seconds": 300,
+                "retry_after_seconds": 60,
+                "worker_id": "team-outbox-after-dispatch",
+            },
+            {
                 "id": "team-create-ephemeral-agent",
                 "display_name": "Create ephemeral team agent",
                 "type": "effect:agent:create",
@@ -400,6 +410,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                         "${{team-consolidate-feature-branches.conflict_branch ?? null}}"
                     ),
                     "output": "${{team-consolidate-feature-branches.output ?? null}}",
+                    "error_code": (
+                        "${{team-consolidate-feature-branches.error_code ?? null}}"
+                    ),
                 },
             },
             {
@@ -429,6 +442,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                         "${{team-consolidate-release-branches.conflict_branch ?? null}}"
                     ),
                     "output": "${{team-consolidate-release-branches.output ?? null}}",
+                    "error_code": (
+                        "${{team-consolidate-release-branches.error_code ?? null}}"
+                    ),
                 },
             },
             {
@@ -481,6 +497,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Push release branch to canonical remote",
                 "type": "effect:git:push-branch",
                 "host_repo_path": "${{team-git-promotion-requested.payload.host_repo_path}}",
+                "bare_repo_path": (
+                    "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+                ),
+                "bare_repo_name": (
+                    "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+                ),
                 "local_branch": "${{team-git-promotion-requested.payload.source_branch}}",
                 "origin_branch": "${{team-git-promotion-requested.payload.target_branch}}",
                 "canonical_origin_url": (
@@ -495,7 +517,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "type": "effect:team:record-git-promotion",
                 "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
                 "success": "${{team-push-canonical-branch.success}}",
-                "commit_sha": "${{team-push-canonical-branch.destination_commit ?? null}}",
+                "commit_sha": "${{team-push-canonical-branch.local_commit ?? null}}",
                 "error": "${{team-push-canonical-branch.error ?? null}}",
                 "result_outputs": {
                     "origin_branch": (
@@ -514,7 +536,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "success": "${{team-push-canonical-branch.success}}",
                 "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
                 "published_commit_sha": (
-                    "${{team-push-canonical-branch.destination_commit ?? null}}"
+                    "${{team-push-canonical-branch.local_commit ?? null}}"
                 ),
                 "error": "${{team-push-canonical-branch.error ?? null}}",
                 "result_outputs": {
@@ -544,6 +566,10 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             {"source_id": "team-agent-run-completed", "target_id": "team-route-completed-session"},
             {"source_id": "team-route-completed-session", "target_id": "team-completed-persistent"},
             {"source_id": "team-completed-persistent", "target_id": "team-finalize-persistent-dispatch"},
+            {
+                "source_id": "team-finalize-persistent-dispatch",
+                "target_id": "team-publish-outbox-after-dispatch",
+            },
             {"source_id": "team-route-completed-session", "target_id": "team-completed-ephemeral"},
             {"source_id": "team-completed-ephemeral", "target_id": "team-destroy-ephemeral-agent"},
             {"source_id": "team-destroy-ephemeral-agent", "target_id": "team-mark-ephemeral-cleaned-up"},

@@ -1512,7 +1512,8 @@ def _register_slice8_tools(
         name=TEAM_RECOVER_RELEASE_TOOL,
         description=(
             "Record asynchronous Git release-recovery intent for a blocked "
-            "release package. Requires release_package_id, agent_branch, "
+            "release package's failed feature or release promotion. Requires "
+            "release_package_id, agent_branch, "
             "commit_sha, and request_id."
         ),
     )
@@ -2395,6 +2396,17 @@ def _team_command_mcp_result(
         else:
             if published_event_ids:
                 payload["published_event_ids"] = published_event_ids
+                try:
+                    completed_outbox_ids = _complete_published_wake_outbox_records(
+                        context,
+                        payload=payload,
+                        wake_request_events=wake_request_events,
+                    )
+                except Exception as exc:
+                    payload["outbox_ack_error"] = str(exc)
+                else:
+                    if completed_outbox_ids:
+                        payload["completed_outbox_record_ids"] = completed_outbox_ids
     payload.setdefault("agent_id", caller.agent_id)
     payload.setdefault("governance_group_id", None)
     payload.setdefault("assignment_id", None)
@@ -2413,6 +2425,35 @@ def _wake_request_events(events: object) -> list[Mapping[str, Any]]:
         for event in events
         if isinstance(event, Mapping) and event.get("event_type") == AGENT_WAKE_REQUESTED_EVENT_TYPE
     ]
+
+
+def _complete_published_wake_outbox_records(
+    context: AddonContext,
+    *,
+    payload: Mapping[str, Any],
+    wake_request_events: list[Mapping[str, Any]],
+) -> list[str]:
+    raw_ids = payload.get("outbox_record_ids")
+    if not isinstance(raw_ids, list):
+        return []
+    outbox_ids = {str(record_id) for record_id in raw_ids if str(record_id).strip()}
+    idempotency_keys = {
+        str(event["idempotency_key"])
+        for event in wake_request_events
+        if event.get("idempotency_key") is not None
+    }
+    if not outbox_ids or not idempotency_keys:
+        return []
+
+    repo = TeamStateRepository(context.runtime_dir)
+    completed_ids: list[str] = []
+    for record in repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE):
+        if record.id not in outbox_ids or record.idempotency_key not in idempotency_keys:
+            continue
+        if record.status.value != "completed":
+            repo.complete_outbox_record(record_id=record.id)
+        completed_ids.append(record.id)
+    return completed_ids
 
 
 def _publish_team_events(context: AddonContext, events: object) -> list[str]:

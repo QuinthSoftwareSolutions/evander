@@ -16,6 +16,10 @@ from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.directory_config import DirectoryConfigStore
 from evander.events.internal import InternalEventBus, internal_event_store_path
+from evander.events.scheduled import (
+    ScheduledInternalEventStore,
+    scheduled_internal_event_store_path,
+)
 from evander.model_usage.models import ModelInferenceUsageEvent
 from evander.model_usage.store import ModelUsageStore
 from evander.models import SessionManifest
@@ -40,11 +44,14 @@ from evander_team_addon.models import (
     TeamConversationMessage,
     TeamInboxItemState,
     TeamInboxItemType,
+    TeamOutboxRecord,
+    TeamOutboxStatus,
     TeamRecordState,
     TeamTaskState,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from evander_team_addon.services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
@@ -1102,6 +1109,42 @@ def test_team_addon_state_payload_windows_history_but_keeps_current_records(
     }
     assert set(payload["resource_tokens"]["inbox"]) == {"inbox-1", "escalation-1"}
     assert set(payload["resource_tokens"]["action_records"]) == {"action-1"}
+
+
+def test_team_addon_state_payload_adds_release_outbox_metadata(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    repo.enqueue_outbox_record(
+        TeamOutboxRecord(
+            id="outbox-promotion-1",
+            intent_type=GIT_PROMOTION_EVENT_TYPE,
+            aggregate_type="git_promotion",
+            aggregate_id="promotion-1",
+            status=TeamOutboxStatus.CLAIMED,
+            attempt_count=3,
+            claimed_by="effect-worker",
+            last_error_code="stale_index_lock",
+            last_error_message="index.lock exists",
+        )
+    )
+    payload = team_addon_api.team_state_payload(repo.read())
+
+    team_addon_api._add_release_outbox_metadata(payload, repo)
+
+    release = payload["release_packages"]["release-1"]
+    assert release["promotion_attempt_count"] == 3
+    assert release["active_outbox_record_ids"] == ["outbox-promotion-1"]
+    assert release["outbox_records"] == [
+        {
+            "id": "outbox-promotion-1",
+            "status": "claimed",
+            "aggregate_id": "promotion-1",
+            "available_at": release["outbox_records"][0]["available_at"],
+            "attempt_count": 3,
+            "claimed_by": "effect-worker",
+            "last_error_code": "stale_index_lock",
+            "last_error_message": "index.lock exists",
+        }
+    ]
 
 
 def test_team_addon_filtered_state_treats_git_work_contexts_as_collection() -> None:
@@ -3780,6 +3823,15 @@ def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None
     assert item["payload"]["source_message_id"] == "discord-msg-1"
     assert item["payload"]["created_by"] == "operator:admin"
     assert body["agent_runtimes"]["manager"]["next_wake_at"] is None
+    assert len(body["published_event_ids"]) == 1
+    scheduled = ScheduledInternalEventStore(
+        scheduled_internal_event_store_path(tmp_path / "runtime")
+    ).list_due(datetime.now(UTC) + timedelta(minutes=1))
+    assert len(scheduled) == 1
+    assert scheduled[0].schedule_id == body["published_event_ids"][0]
+    assert scheduled[0].event_type == "team.agent.wake_requested"
+    assert scheduled[0].payload["agent_id"] == "manager"
+    assert scheduled[0].payload["reason"] == "inbox"
 
 
 def test_team_addon_admin_api_reassigns_team_manager(tmp_path: Path) -> None:

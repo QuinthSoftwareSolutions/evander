@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 
 from evander.effects.providers.base import EffectRuntimeContext
@@ -13,6 +14,7 @@ from evander_team_addon.models import (
     GitPromotionRecord,
     ProjectGitConfig,
     ProjectGoal,
+    ProjectStatus,
     ReleasePackage,
     TeamInboxItemType,
     TeamRecordState,
@@ -259,6 +261,7 @@ def test_record_release_promotion_success_publishes_canonical_push(
     assert events[0].payload["promotion_kind"] == "canonical_push"
     assert events[0].payload["source_branch"] == "team/team/releases/release-1"
     assert events[0].payload["target_branch"] == "releases/project/release-1"
+    assert events[0].payload["bare_repo_name"] == "Truman.git"
     assert events[0].payload["canonical_origin_url"] == ("https://example.invalid/Truman.git")
     assert events[0].payload["provider"] == "azure_devops"
 
@@ -402,12 +405,51 @@ def test_mark_release_published_success(tmp_path: Path) -> None:
 
     assert result["success"] is True
     assert result["state"] == "accepted"
+    assert result["superseded_release_package_ids"] == []
     state = repo.read()
     release = state.release_packages["release-1"]
     assert release.state == TeamRecordState.ACCEPTED
     assert release.published_commit_sha == "cafef00d"
     assert release.canonical_branch == "releases/project/release-1"
     assert release.published_at is not None
+
+
+def test_mark_release_published_supersedes_older_blocked_duplicate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _add_duplicate(state):
+        current = state.release_packages["release-1"]
+        state.release_packages["release-old"] = ReleasePackage(
+            id="release-old",
+            project_id="project",
+            deliverable_ids=list(current.deliverable_ids),
+            release_branch="team/team/releases/release-old",
+            state=TeamRecordState.BLOCKED,
+            error="merge conflict",
+            created_at=current.created_at - timedelta(minutes=1),
+        )
+        state.projects["project"].status = ProjectStatus.BLOCKED
+        return state
+
+    repo.update(_add_duplicate)
+
+    result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert result["success"] is True
+    assert result["superseded_release_package_ids"] == ["release-old"]
+    state = repo.read()
+    assert state.release_packages["release-old"].state == TeamRecordState.REJECTED
+    assert state.release_packages["release-old"].error is None
+    assert state.projects["project"].status != ProjectStatus.BLOCKED
 
 
 def test_mark_release_published_failure_notifies_lead(tmp_path: Path) -> None:
@@ -619,7 +661,16 @@ def test_consolidate_git_branches_fetches_missing_source_from_bare_repo(
 
     assert result["success"] is True
     assert result["merged_branches"] == ["agents/session-1/work"]
-    assert _git(trusted, "merge-base", "--is-ancestor", source_commit, "HEAD").returncode == 0
+    assert (
+        _git_dir(
+            bare,
+            "merge-base",
+            "--is-ancestor",
+            source_commit,
+            "refs/heads/team/team/features/task-ui",
+        ).returncode
+        == 0
+    )
     temp_refs = _git(
         trusted,
         "for-each-ref",
@@ -627,9 +678,68 @@ def test_consolidate_git_branches_fetches_missing_source_from_bare_repo(
         "refs/evander/team-consolidations",
     )
     assert temp_refs.stdout.strip() == ""
-    assert _git(trusted, "branch", "--show-current").stdout.strip() == (
-        "team/team/features/task-ui"
+    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
+    assert (trusted / "file.txt").read_text(encoding="utf-8") == "base\n"
+
+
+def test_consolidate_git_branches_falls_back_to_trusted_host_promotion_ref(
+    tmp_path: Path,
+) -> None:
+    bare = tmp_path / "dropbox.git"
+    source = tmp_path / "source"
+    _init_repo(source)
+    subprocess.run(
+        ["git", "clone", "--bare", str(source), str(bare)],
+        check=True,
+        capture_output=True,
     )
+    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
+    trusted = tmp_path / "trusted"
+    subprocess.run(
+        ["git", "clone", str(bare), str(trusted)],
+        check=True,
+        capture_output=True,
+    )
+    _git(trusted, "config", "user.email", "test@example.invalid")
+    _git(trusted, "config", "user.name", "Team Test")
+    promoted_branch = "team/team/features/task-ui"
+    _branch_with(trusted, promoted_branch, "promoted work\n")
+    promoted_commit = _git(trusted, "rev-parse", promoted_branch).stdout.strip()
+    assert (
+        _git_dir(
+            bare,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"refs/heads/{promoted_branch}^{{commit}}",
+            check=False,
+        ).returncode
+        != 0
+    )
+
+    result = _consolidate_provider(
+        tmp_path,
+        host_repo_path=str(trusted),
+        bare_repo_path=str(bare),
+        source_branches=[promoted_branch],
+        target_branch="team/team/releases/release-1",
+        base_branch="main",
+    )
+
+    assert result["success"] is True
+    assert result["merged_branches"] == [promoted_branch]
+    assert (
+        _git_dir(
+            bare,
+            "merge-base",
+            "--is-ancestor",
+            promoted_commit,
+            "refs/heads/team/team/releases/release-1",
+        ).returncode
+        == 0
+    )
+    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
+    assert (trusted / "file.txt").read_text(encoding="utf-8") == "base\n"
 
 
 def test_consolidate_git_branches_refreshes_stale_local_source_from_bare_repo(
@@ -674,11 +784,65 @@ def test_consolidate_git_branches_refreshes_stale_local_source_from_bare_repo(
     )
 
     assert result["success"] is True
-    assert _git(trusted, "merge-base", "--is-ancestor", new_commit, "HEAD").returncode == 0
-    assert (trusted / "file.txt").read_text(encoding="utf-8") == "new agent work\n"
+    assert (
+        _git_dir(
+            bare,
+            "merge-base",
+            "--is-ancestor",
+            new_commit,
+            "refs/heads/team/team/features/task-ui",
+        ).returncode
+        == 0
+    )
+    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
+    assert (trusted / "file.txt").read_text(encoding="utf-8") == "base\n"
     assert (
         _git(trusted, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip() == old_commit
     )
+
+
+def test_consolidate_git_branches_uses_isolated_worktree_when_checkout_dirty(
+    tmp_path: Path,
+) -> None:
+    bare = tmp_path / "dropbox.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+    source = tmp_path / "source"
+    _init_repo(source)
+    _git(source, "remote", "add", "origin", str(bare))
+    _git(source, "push", "-u", "origin", "main")
+    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
+    trusted = tmp_path / "trusted"
+    subprocess.run(["git", "clone", str(bare), str(trusted)], check=True, capture_output=True)
+    _git(trusted, "config", "user.email", "test@example.invalid")
+    _git(trusted, "config", "user.name", "Team Test")
+    _branch_with(source, "agents/session-1/work", "agent work\n")
+    source_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
+    _git(source, "push", "origin", "agents/session-1/work")
+    (trusted / "file.txt").write_text("uncommitted change\n", encoding="utf-8")
+
+    result = _consolidate_provider(
+        tmp_path,
+        host_repo_path=str(trusted),
+        bare_repo_path=str(bare),
+        source_branches=["agents/session-1/work"],
+        target_branch="team/team/features/task-ui",
+        base_branch="main",
+    )
+
+    assert result["success"] is True
+    assert result["error_code"] is None
+    assert (
+        _git_dir(
+            bare,
+            "merge-base",
+            "--is-ancestor",
+            source_commit,
+            "refs/heads/team/team/features/task-ui",
+        ).returncode
+        == 0
+    )
+    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
+    assert (trusted / "file.txt").read_text(encoding="utf-8") == "uncommitted change\n"
 
 
 def test_consolidate_git_branches_allows_local_sources_when_bare_repo_missing(
@@ -716,6 +880,27 @@ def test_consolidate_git_branches_refuses_dirty_worktree(tmp_path: Path) -> None
 
     assert result["success"] is False
     assert "dirty worktree" in str(result["error"])
+    assert result["error_code"] == "checkout_dirty"
+    assert result["merged_branches"] == []
+
+
+def test_consolidate_git_branches_reports_stale_index_lock_without_bare_repo(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / ".git" / "index.lock").write_text("", encoding="utf-8")
+
+    result = _consolidate_provider(
+        tmp_path,
+        host_repo_path=str(repo),
+        source_branches=["main"],
+        target_branch="team/team/releases/release-2",
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "stale_index_lock"
+    assert "index.lock" in str(result["error"])
     assert result["merged_branches"] == []
 
 
@@ -734,6 +919,7 @@ def test_consolidate_git_branches_aborts_on_conflict(tmp_path: Path) -> None:
     )
 
     assert result["success"] is False
+    assert result["error_code"] == "merge_conflict"
     assert result["conflict_branch"] == "feat-b"
     assert result["merged_branches"] == ["feat-a"]
     # The conflicted merge must be aborted, leaving no in-progress merge.

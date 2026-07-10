@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-07-10 - Team Wake Conflict Recovery
+
+- Refreshed Team state after external repository preparation and retried
+  idempotent Git work-context commits when concurrent state writes advance the
+  revision during an immediate agent wake.
+- Rescheduled exhausted transient wake conflicts without counting them as agent
+  no-progress failures, while exposing conflict and retry diagnostics.
+- Completed wake outbox rows after MCP wake events are durably scheduled so the
+  immediate path does not leave orphan pending records for the periodic
+  publisher.
+
+## 2026-07-09 - Team Release Promotion Hardening
+
+- Reused active Team release packages for duplicate release requests over the
+  same deliverable set, returning the existing package instead of queuing
+  another promotion, and retired older blocked duplicates once a replacement
+  release published successfully.
+- Allowed blocked releases to recover failed prerequisite feature promotions,
+  clear the recovered blocker, and continue into release promotion.
+- Ran Team Git consolidation from a temporary checkout when a bare repository is
+  available, leaving the trusted host checkout untouched by release automation.
+- Pushed isolated release refs to the canonical remote from a temporary checkout
+  of the trusted bare mirror instead of requiring the ref in the host checkout,
+  and carried the configured bare-repository selector into canonical promotion
+  events while recording the actual pushed commit for new remote branches.
+- Added release promotion failure reason codes and outbox attempt metadata to
+  release payloads so blocked releases show whether they are waiting on stale
+  locks, dirty checkouts, missing refs, or merge conflicts, while failed
+  promotions whose task, deliverable, or release is already terminal remain
+  historical instead of current runtime attention.
+- Published debounced immediate-wake events for operator-created Team directives
+  so managers do not wait for the periodic wake sweep to receive urgent work.
+- Flushed Team outbox records after persistent agent dispatch finalization so
+  review, recovery, and promotion workflows start without waiting for the cron.
+
 ## 2026-07-09 - Local Container Worker Toolchain Mounts
 
 - Made guided same-host container-worker setup create the local worker

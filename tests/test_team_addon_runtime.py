@@ -100,7 +100,7 @@ from evander_team_addon.providers import (
     _publish_deliverable_artifact_bundle,
     _publish_team_events,
 )
-from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.repository import TeamStateConflictError, TeamStateRepository
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
@@ -271,6 +271,15 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert document.output_schemas["team-wake-due-agents"]["failed_project_repo_preparations"] == {
         "type": "array"
     }
+    assert document.output_schemas["team-wake-due-agents"]["transient_conflicts"] == {
+        "type": "array"
+    }
+    assert document.output_schemas["team-wake-due-agents"]["retry_event_ids"] == {
+        "type": "array"
+    }
+    assert document.output_schemas["team-wake-due-agents"]["retry_scheduled_count"] == {
+        "type": "integer"
+    }
     assert document.output_schemas["team-wake-due-agents"]["git_work_contexts"] == {
         "type": "array"
     }
@@ -415,13 +424,22 @@ class FakeFileCopier:
 
 
 class FakeRepoCloner:
-    def __init__(self, *, success: bool = True, message: str = "repo prepared") -> None:
+    def __init__(
+        self,
+        *,
+        success: bool = True,
+        message: str = "repo prepared",
+        on_clone: object | None = None,
+    ) -> None:
         self.calls: list[dict[str, object]] = []
         self.success = success
         self.message = message
+        self.on_clone = on_clone
 
     def clone_repo_into_vm(self, **kwargs: object) -> SimpleNamespace:
         self.calls.append(dict(kwargs))
+        if callable(self.on_clone):
+            self.on_clone()
         return SimpleNamespace(
             success=self.success,
             vm_name=str(kwargs.get("vm_name") or "vm-backend"),
@@ -1070,7 +1088,7 @@ def test_duplicate_release_package_feedback_points_to_existing_package(
         "existing or blocked package" in hint
         and "release_branch/error" in hint
         and "next_action_hint" in hint
-        and "failed release promotion" in hint
+        and "failed feature or release promotion" in hint
         and "do not reuse the same id" in hint
         for hint in feedback["correction_hints"]
     )
@@ -1169,7 +1187,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "override_routing_gap_reason" in guidance
     assert "Release requests stand alone" in guidance
     assert "git_refs.review_branch or git_refs.agent_branch" in guidance
-    assert "failed release promotion" in guidance
+    assert "failed feature or release promotion" in guidance
     assert "allowed agents/... ref" in guidance
     assert "supersedes_deliverable_id" in guidance
     assert "item_type operator_directive" in guidance
@@ -3677,6 +3695,200 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     )
 
 
+def test_wake_due_agents_refreshes_state_after_repo_clone_revision_change(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+    repo_cloner = FakeRepoCloner(on_clone=lambda: repo.update(lambda state: state))
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=repo_cloner,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(result["dispatches"]) == 1
+    assert len(repo_cloner.calls) == 1
+    assert len(resumer.calls) == 1
+    assert result["transient_conflicts"] == []
+    assert len(repo.read().git_work_contexts) == 1
+
+
+def test_wake_due_agents_retries_git_context_commit_conflict_without_recloning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+    original = TeamAdminService.create_git_work_context_with_id
+    calls = 0
+
+    def _race_once(self: TeamAdminService, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            repo.update(lambda state: state)
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(TeamAdminService, "create_git_work_context_with_id", _race_once)
+    repo_cloner = FakeRepoCloner()
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=repo_cloner,
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(result["dispatches"]) == 1
+    assert calls == 2
+    assert len(repo_cloner.calls) == 1
+    assert len(repo.read().git_work_contexts) == 1
+    assert result["transient_conflicts"] == [
+        {
+            "agent_id": "backend",
+            "session_id": "session-backend",
+            "dispatch_id": result["dispatches"][0]["dispatch_id"],
+            "phase": "git_work_context_commit",
+            "attempt_count": 2,
+            "conflict_count": 1,
+            "resolved": True,
+            "retry_scheduled": False,
+        }
+    ]
+
+
+def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            host_repo_path="/opt/repos/Truman",
+            bare_repo_name="Truman.git",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+    calls = 0
+
+    def _always_conflict(self: TeamAdminService, **kwargs: object):
+        del self
+        nonlocal calls
+        calls += 1
+        expected_revision = int(kwargs["expected_revision"])
+        raise TeamStateConflictError(
+            expected_revision=expected_revision,
+            current_revision=expected_revision + 1,
+        )
+
+    monkeypatch.setattr(
+        TeamAdminService,
+        "create_git_work_context_with_id",
+        _always_conflict,
+    )
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=FakeRepoCloner(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["dispatches"] == []
+    assert calls == 3
+    assert result["retry_scheduled_count"] == 1
+    assert len(result["retry_event_ids"]) == 1
+    assert result["transient_conflicts"][0]["resolved"] is False
+    assert result["transient_conflicts"][0]["retry_scheduled"] is True
+    assert result["transient_conflicts"][0]["retry_event_ids"] == result["retry_event_ids"]
+    assert result["failed_project_repo_preparations"] == []
+    assert resumer.calls == []
+    reread = repo.read()
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+    assert runtime.wake_leased_until is None
+    assert runtime.next_wake_at is None
+    assert runtime.no_progress_count == 0
+    assert reread.action_records == {}
+    scheduled = json.loads(
+        scheduled_internal_event_store_path(tmp_path).read_text(encoding="utf-8")
+    )
+    retries = [
+        record
+        for record in scheduled.values()
+        if record["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and record["payload"]["agent_id"] == "backend"
+        and record["payload"]["reason"] == "state_conflict_retry"
+    ]
+    assert len(retries) == 1
+
+
 def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5249,6 +5461,17 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     assert ("team-destroy-ephemeral-agent", "team-mark-ephemeral-cleaned-up") in edges
 
 
+def test_team_runtime_pack_flushes_outbox_after_persistent_dispatch() -> None:
+    pack = _team_runtime_sections()
+    edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
+
+    assert ("team-cron", "team-publish-outbox-events") in edges
+    assert (
+        "team-finalize-persistent-dispatch",
+        "team-publish-outbox-after-dispatch",
+    ) in edges
+
+
 def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None:
     pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
@@ -5424,6 +5647,12 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     # canonical_push -> push-branch -> record-git-promotion -> mark-release-published
     push = effects["team-push-canonical-branch"]
     assert push["type"] == "effect:git:push-branch"
+    assert push["bare_repo_path"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    )
+    assert push["bare_repo_name"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+    )
     assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
     assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
     record_canonical = effects["team-record-canonical-promotion"]
@@ -5432,9 +5661,15 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
         "${{team-git-promotion-requested.payload.promotion_id}}"
     )
     assert record_canonical["success"] == "${{team-push-canonical-branch.success}}"
+    assert record_canonical["commit_sha"] == (
+        "${{team-push-canonical-branch.local_commit ?? null}}"
+    )
     assert effects["team-mark-release-published"]["type"] == ("effect:team:mark-release-published")
     assert effects["team-mark-release-published"]["release_package_id"] == (
         "${{team-git-promotion-requested.payload.release_package_id}}"
+    )
+    assert effects["team-mark-release-published"]["published_commit_sha"] == (
+        "${{team-push-canonical-branch.local_commit ?? null}}"
     )
     assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
     assert ("team-push-canonical-branch", "team-record-canonical-promotion") in edges
@@ -5444,6 +5679,14 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     ) in edges
 
 
+def test_team_consolidation_schema_advertises_failure_reason_code() -> None:
+    from evander_team_addon.provider_schemas import TEAM_OUTPUT_SCHEMAS
+
+    outputs = TEAM_OUTPUT_SCHEMAS["effect:team:consolidate-git-branches"]
+
+    assert outputs["error_code"] == {"type": ["string", "null"]}
+
+
 def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
     pack = _team_runtime_sections()
     push_nodes = [node for node in pack["effects"] if node["type"] == "effect:git:push-branch"]
@@ -5451,6 +5694,12 @@ def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
     # ephemeral/review/feature branches must never reach effect:git:push-branch.
     assert [node["id"] for node in push_nodes] == ["team-push-canonical-branch"]
     push = push_nodes[0]
+    assert push["bare_repo_path"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    )
+    assert push["bare_repo_name"] == (
+        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+    )
     assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
     assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
 

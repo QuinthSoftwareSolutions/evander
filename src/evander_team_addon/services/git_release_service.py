@@ -26,7 +26,10 @@ from .domain.git_promotion import (
     _is_safe_synthetic_feature_deliverable,
 )
 from .domain.project_status import _recalculate_project_status
-from .domain.release_packages import _release_failure_recipient
+from .domain.release_packages import (
+    _normalized_release_deliverable_set,
+    _release_failure_recipient,
+)
 
 
 class TeamGitReleaseService:
@@ -210,6 +213,7 @@ class TeamGitReleaseService:
             "release_package_id": normalized_id,
             "state": None,
             "created_inbox_item_ids": [],
+            "superseded_release_package_ids": [],
             "error": None,
         }
 
@@ -228,6 +232,28 @@ class TeamGitReleaseService:
                     release.published_commit_sha = normalized_commit
                 release.published_at = now
                 release.error = None
+                deliverable_set = _normalized_release_deliverable_set(
+                    release.deliverable_ids
+                )
+                if deliverable_set:
+                    for candidate in state_model.release_packages.values():
+                        if (
+                            candidate.id == release.id
+                            or candidate.project_id != release.project_id
+                            or candidate.state
+                            in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+                            or (candidate.created_at, candidate.id)
+                            >= (release.created_at, release.id)
+                            or _normalized_release_deliverable_set(
+                                candidate.deliverable_ids
+                            )
+                            != deliverable_set
+                        ):
+                            continue
+                        candidate.state = TeamRecordState.REJECTED
+                        candidate.error = None
+                        candidate.updated_at = now
+                        result["superseded_release_package_ids"].append(candidate.id)
             else:
                 release.state = TeamRecordState.BLOCKED
                 release.error = normalized_error or "release publication failed"

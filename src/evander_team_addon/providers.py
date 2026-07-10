@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -153,7 +154,10 @@ from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from .services.domain.operator_escalation import OPERATOR_ESCALATION_EVENT_TYPE
 from .services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 from .services.domain.review import _apply_review_request, _review_request_was_created
-from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
+from .services.domain.wake import (
+    AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    _append_agent_wake_requested_event,
+)
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
 from .services.memory_service import (
@@ -165,12 +169,14 @@ from .services.memory_service import (
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 14
+TEAM_AGENT_GUIDANCE_VERSION = 15
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
 TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "evander-team-addon-governance"
+TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS = 3
+TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS = 1.0
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
 _ARTIFACT_SPACE_REF_PREFIX = "artifact-space:"
@@ -1207,7 +1213,11 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Host repo path",
                 "string",
                 required=True,
-                description="Trusted host checkout path used for branch consolidation.",
+                description=(
+                    "Trusted host checkout path used for Git identity/config, and as "
+                    "the fallback consolidation checkout when no bare repository is "
+                    "available."
+                ),
             ),
             _catalog_field(
                 "source_branches",
@@ -1235,7 +1245,8 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Bare repo path",
                 "string",
                 description=(
-                    "Optional dropbox bare repository path used to fetch missing source branches."
+                    "Optional dropbox bare repository path used to consolidate branches "
+                    "inside a temporary checkout without moving the trusted host checkout."
                 ),
             ),
             _catalog_field(
@@ -1702,6 +1713,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         git_work_contexts: list[dict[str, Any]] = []
         review_artifact_imports: list[dict[str, Any]] = []
         review_artifact_import_errors: list[dict[str, Any]] = []
+        transient_conflicts: list[dict[str, Any]] = []
+        retry_event_ids: list[str] = []
         for lease in leases:
             agent = lease["agent"]
             try:
@@ -1729,6 +1742,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         dispatch_id=lease["dispatch_id"],
                         tasks=lease.get("tasks"),
                     )
+                except TeamStateConflictError:
+                    raise
                 except Exception as exc:
                     failed_project_repo_preparations.append(
                         _project_repo_prepare_record(
@@ -1740,6 +1755,24 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     raise
                 if project_repo is not None:
                     lease = {**lease, "project_repo": project_repo}
+                    conflict_retry_count = int(
+                        project_repo.get("state_conflict_retry_count") or 0
+                    )
+                    if conflict_retry_count:
+                        transient_conflicts.append(
+                            {
+                                "agent_id": agent["id"],
+                                "session_id": agent["session_id"],
+                                "dispatch_id": lease["dispatch_id"],
+                                "phase": "git_work_context_commit",
+                                "attempt_count": int(
+                                    project_repo.get("state_commit_attempt_count") or 0
+                                ),
+                                "conflict_count": conflict_retry_count,
+                                "resolved": True,
+                                "retry_scheduled": False,
+                            }
+                        )
                     git_work_contexts.extend(
                         _mapping_items(project_repo.get("git_work_contexts"))
                     )
@@ -1823,6 +1856,49 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     agent_id=agent["id"],
                     session_id=agent["session_id"],
                 )
+            except TeamStateConflictError as exc:
+                conflict_record: dict[str, Any] = {
+                    "agent_id": agent["id"],
+                    "session_id": agent["session_id"],
+                    "dispatch_id": lease["dispatch_id"],
+                    "phase": "git_work_context_commit",
+                    "attempt_count": TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS,
+                    "conflict_count": TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS,
+                    "expected_revision": exc.expected_revision,
+                    "current_revision": exc.current_revision,
+                    "resolved": False,
+                    "retry_scheduled": False,
+                    "retry_event_ids": [],
+                }
+                try:
+                    state = TeamRuntimeService(repo).release_agent_wake_lease_for_retry(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                    )
+                    retry_result: dict[str, Any] = {"events": []}
+                    _append_agent_wake_requested_event(
+                        state,
+                        agent_id=agent["id"],
+                        result=retry_result,
+                        reason="state_conflict_retry",
+                        now=datetime.now(UTC),
+                        delay_seconds=TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS,
+                        idempotency_suffix=f"state-conflict:{lease['dispatch_id']}",
+                    )
+                    scheduled_ids = _publish_team_events(
+                        context,
+                        retry_result["events"],
+                    )
+                    if not scheduled_ids:
+                        raise RuntimeError("transient wake retry event was not scheduled")
+                    retry_event_ids.extend(scheduled_ids)
+                    conflict_record["retry_scheduled"] = True
+                    conflict_record["retry_event_ids"] = scheduled_ids
+                except Exception as retry_exc:
+                    errors.append(
+                        f"{agent['id']}: failed to schedule transient wake retry: {retry_exc}"
+                    )
+                transient_conflicts.append(conflict_record)
             except Exception as exc:  # pragma: no cover - exercised by provider tests with fakes
                 error = str(exc)
                 try:
@@ -1842,6 +1918,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "git_work_contexts": git_work_contexts,
             "review_artifact_imports": review_artifact_imports,
             "review_artifact_import_errors": review_artifact_import_errors,
+            "transient_conflicts": transient_conflicts,
+            "retry_event_ids": retry_event_ids,
+            "retry_scheduled_count": len(retry_event_ids),
             "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
             "cost_guard_blocked_teams": cost_guard_blocked_teams,
             "errors": errors,
@@ -4270,7 +4349,7 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- If release_packages shows an existing blocked package, do not submit "
         "another release request with that id; follow the package's "
         f"next_action_hint. Use {TEAM_RECOVER_RELEASE_TOOL} only when that hint "
-        "identifies a failed release promotion and the resolved commit is pushed "
+        "identifies a failed feature or release promotion and the resolved commit is pushed "
         "to an allowed agents/... ref.\n\n"
         "Inbox, chat, delegation, and controls:\n"
         "- Inbox items with item_type operator_directive are durable operator "
@@ -4402,7 +4481,7 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         "- Release requests create new release packages only. When release_packages "
         "already contains a blocked package, follow its next_action_hint. Use "
         f"{TEAM_RECOVER_RELEASE_TOOL} only when that hint identifies a failed "
-        "release promotion, after the resolved commit is available under an "
+        "feature or release promotion, after the resolved commit is available under an "
         "agents/... ref.\n\n"
     )
     manager_fallback_section = (
@@ -4814,7 +4893,7 @@ def _prepare_project_repo(
         clone_result=clone_result,
         base_branch=clone_branch,
     )
-    state, git_work_contexts = _create_project_repo_git_work_contexts(
+    state, git_work_contexts, commit_diagnostics = _create_project_repo_git_work_contexts(
         repo,
         state=state,
         agent_id=agent_id,
@@ -4833,6 +4912,7 @@ def _prepare_project_repo(
         if len(git_work_contexts) == 1:
             project_repo["branch_context_id"] = git_work_contexts[0]["branch_context_id"]
             project_repo["agent_branch"] = git_work_contexts[0]["agent_branch"]
+    project_repo.update(commit_diagnostics)
     _mark_project_repo_prepared(context, session_id=session_id, project_repo=project_repo)
     return state, project_repo
 
@@ -4875,32 +4955,115 @@ def _create_project_repo_git_work_contexts(
     dispatch_id: str,
     tasks: object,
     base_branch: str | None,
-) -> tuple[Any, list[dict[str, Any]]]:
+) -> tuple[Any, list[dict[str, Any]], dict[str, int]]:
     target_dir = _optional_text(project_repo.get("target_dir"))
     if target_dir is None:
-        return state, []
+        return state, [], {
+            "state_commit_attempt_count": 0,
+            "state_conflict_retry_count": 0,
+        }
     rows: list[dict[str, Any]] = []
     agent_branch = _project_repo_agent_branch(session_id)
     admin = TeamAdminService(repo)
+    state_commit_attempt_count = 0
+    state_conflict_retry_count = 0
     for task in _project_repo_context_tasks(
         tasks,
         project_id=project_id,
         agent_id=agent_id,
     ):
         task_id = _required_text(task.get("id"), "task.id")
-        state, context_id = admin.create_git_work_context_with_id(
-            context_id=None,
+        context_id = _project_repo_git_work_context_id(
             agent_id=agent_id,
             task_id=task_id,
-            agent_branch=agent_branch,
-            base_branch=base_branch,
             dispatch_id=dispatch_id,
-            worktree_path=target_dir,
-            expected_revision=getattr(state, "revision", None),
         )
+        last_conflict: TeamStateConflictError | None = None
+        for _attempt in range(TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS):
+            state_commit_attempt_count += 1
+            state = repo.read()
+            runtime = state.agent_runtimes.get(agent_id)
+            if runtime is None or runtime.active_dispatch_id != dispatch_id:
+                raise RuntimeError(
+                    f"dispatch {dispatch_id} no longer owns the wake lease "
+                    f"for agent {agent_id}"
+                )
+            existing = state.git_work_contexts.get(context_id)
+            if existing is not None:
+                _validate_project_repo_git_work_context(
+                    existing,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    dispatch_id=dispatch_id,
+                    agent_branch=agent_branch,
+                    base_branch=base_branch,
+                    worktree_path=target_dir,
+                )
+                break
+            try:
+                state, context_id = admin.create_git_work_context_with_id(
+                    context_id=context_id,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    agent_branch=agent_branch,
+                    base_branch=base_branch,
+                    dispatch_id=dispatch_id,
+                    worktree_path=target_dir,
+                    expected_revision=state.revision,
+                )
+                break
+            except TeamStateConflictError as exc:
+                last_conflict = exc
+                state_conflict_retry_count += 1
+        else:
+            assert last_conflict is not None
+            raise last_conflict
         context_model = state.git_work_contexts[context_id]
         rows.append(_git_work_context_prompt_payload(context_model))
-    return state, rows
+    return state, rows, {
+        "state_commit_attempt_count": state_commit_attempt_count,
+        "state_conflict_retry_count": state_conflict_retry_count,
+    }
+
+
+def _project_repo_git_work_context_id(
+    *,
+    agent_id: str,
+    task_id: str,
+    dispatch_id: str,
+) -> str:
+    material = "\0".join((agent_id, task_id, dispatch_id)).encode("utf-8")
+    return f"gitctx-wake-{hashlib.sha256(material).hexdigest()[:24]}"
+
+
+def _validate_project_repo_git_work_context(
+    context_model: Any,
+    *,
+    agent_id: str,
+    task_id: str,
+    dispatch_id: str,
+    agent_branch: str,
+    base_branch: str | None,
+    worktree_path: str,
+) -> None:
+    expected = {
+        "agent_id": agent_id,
+        "task_id": task_id,
+        "dispatch_id": dispatch_id,
+        "agent_branch": agent_branch,
+        "base_branch": base_branch,
+        "worktree_path": worktree_path,
+    }
+    mismatches = [
+        field_name
+        for field_name, expected_value in expected.items()
+        if getattr(context_model, field_name, None) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            f"Git work context {context_model.id} does not match wake dispatch "
+            f"{dispatch_id}: {', '.join(mismatches)}"
+        )
 
 
 def _project_repo_agent_branch(session_id: str) -> str:
@@ -6864,7 +7027,12 @@ def _string_list(value: object, field_name: str) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _consolidation_failure(target_branch: str | None, error: str) -> dict[str, Any]:
+def _consolidation_failure(
+    target_branch: str | None,
+    error: str,
+    *,
+    error_code: str | None = None,
+) -> dict[str, Any]:
     return {
         "success": False,
         "target_branch": target_branch,
@@ -6873,6 +7041,7 @@ def _consolidation_failure(target_branch: str | None, error: str) -> dict[str, A
         "conflict_branch": None,
         "output": None,
         "error": error,
+        "error_code": error_code,
     }
 
 
@@ -6977,6 +7146,233 @@ def _publish_review_branch(
     }
 
 
+def _git_index_lock_path(git_marker: Path) -> Path | None:
+    if git_marker.is_dir():
+        return git_marker / "index.lock"
+    if not git_marker.is_file():
+        return None
+    try:
+        text = git_marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    prefix = "gitdir:"
+    if not text.casefold().startswith(prefix):
+        return None
+    git_dir = Path(text[len(prefix) :].strip())
+    if not git_dir.is_absolute():
+        git_dir = git_marker.parent / git_dir
+    return git_dir / "index.lock"
+
+
+def _copy_git_identity(
+    source_repo: Path,
+    target_repo: Path,
+) -> None:
+    def _source_git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(source_repo),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def _target_git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=str(target_repo),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    for key, fallback in (
+        ("user.name", "Evander Team Release"),
+        ("user.email", "evander-team-release@example.invalid"),
+    ):
+        value = _source_git("config", "--get", key)
+        _target_git(
+            "config",
+            key,
+            value.stdout.strip() if value.returncode == 0 else fallback,
+        )
+
+
+def _consolidate_git_branches_in_isolated_worktree(
+    *,
+    host_repo_path: str,
+    bare_repo_path: Path,
+    source_branches: list[str],
+    target_branch: str,
+    base_branch: str | None,
+) -> dict[str, Any]:
+    repo_path = Path(host_repo_path)
+    if not bare_repo_path.exists():
+        return _consolidation_failure(
+            target_branch,
+            f"bare repo not found: {bare_repo_path}",
+            error_code="source_ref_missing",
+        )
+    with tempfile.TemporaryDirectory(prefix="evander-team-consolidate-") as tmp:
+        worktree = Path(tmp) / "worktree"
+
+        def _git(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", *args],
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        def _fetch_branch(
+            branch: str,
+            destination_ref: str,
+        ) -> tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str] | None]:
+            bare_fetch = _git(
+                "fetch",
+                "--no-tags",
+                "origin",
+                f"+refs/heads/{branch}:{destination_ref}",
+            )
+            if bare_fetch.returncode == 0:
+                return bare_fetch, None
+            host_fetch = _git(
+                "fetch",
+                "--no-tags",
+                str(repo_path),
+                f"+refs/heads/{branch}:{destination_ref}",
+            )
+            return host_fetch, bare_fetch
+
+        clone = subprocess.run(
+            ["git", "clone", "--no-tags", str(bare_repo_path), str(worktree)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if clone.returncode != 0:
+            return _consolidation_failure(
+                target_branch,
+                _git_text(clone),
+                error_code="unexpected_git_failure",
+            )
+        _copy_git_identity(repo_path, worktree)
+
+        target_remote_ref = f"refs/remotes/origin/{target_branch}"
+        fetch_target, _bare_target_failure = _fetch_branch(
+            target_branch,
+            target_remote_ref,
+        )
+        target_exists = fetch_target.returncode == 0
+        if target_exists:
+            checkout = _git("checkout", "-B", target_branch, target_remote_ref)
+        elif base_branch is not None:
+            base_remote_ref = f"refs/remotes/origin/{base_branch}"
+            fetch_base, bare_base_failure = _fetch_branch(
+                base_branch,
+                base_remote_ref,
+            )
+            if fetch_base.returncode != 0:
+                return _consolidation_failure(
+                    target_branch,
+                    _combined_git_fetch_output(bare_base_failure, fetch_base),
+                    error_code="source_ref_missing",
+                )
+            checkout = _git("checkout", "-B", target_branch, base_remote_ref)
+        else:
+            checkout = _git("checkout", "-B", target_branch)
+        if checkout.returncode != 0:
+            return _consolidation_failure(
+                target_branch,
+                _git_text(checkout),
+                error_code="unexpected_git_failure",
+            )
+
+        merge_sources: list[tuple[str, str]] = []
+        for source in source_branches:
+            ref_hash = hashlib.sha256(
+                f"{target_branch}\0{source}".encode("utf-8")
+            ).hexdigest()[:16]
+            temp_ref = f"refs/evander/team-consolidations/{ref_hash}"
+            fetch, bare_fetch_failure = _fetch_branch(source, temp_ref)
+            if fetch.returncode != 0:
+                failure = _consolidation_failure(
+                    target_branch,
+                    (
+                        f"failed to fetch source branch {source} from "
+                        f"{bare_repo_path} or {repo_path}"
+                    ),
+                    error_code="source_ref_missing",
+                )
+                failure["output"] = _combined_git_fetch_output(
+                    bare_fetch_failure,
+                    fetch,
+                )
+                failure["conflict_branch"] = source
+                return failure
+            merge_sources.append((source, temp_ref))
+
+        merged: list[str] = []
+        for source, merge_ref in merge_sources:
+            merge = _git(
+                "merge",
+                "--no-ff",
+                "-m",
+                f"Merge {source} into {target_branch}",
+                merge_ref,
+            )
+            if merge.returncode != 0:
+                _git("merge", "--abort")
+                failure = _consolidation_failure(
+                    target_branch,
+                    f"merge conflict while merging {source} into {target_branch}",
+                    error_code="merge_conflict",
+                )
+                failure["merged_branches"] = merged
+                failure["conflict_branch"] = source
+                failure["output"] = _git_text(merge)
+                return failure
+            merged.append(source)
+
+        head = _git("rev-parse", "HEAD")
+        commit_sha = head.stdout.strip() if head.returncode == 0 else None
+        push = _git("push", "origin", f"HEAD:refs/heads/{target_branch}")
+        if push.returncode != 0:
+            failure = _consolidation_failure(
+                target_branch,
+                _git_text(push),
+                error_code="unexpected_git_failure",
+            )
+            failure["merged_branches"] = merged
+            return failure
+        return {
+            "success": True,
+            "target_branch": target_branch,
+            "merged_branches": merged,
+            "commit_sha": commit_sha,
+            "conflict_branch": None,
+            "output": None,
+            "error": None,
+            "error_code": None,
+        }
+
+
+def _combined_git_fetch_output(
+    first: subprocess.CompletedProcess[str] | None,
+    second: subprocess.CompletedProcess[str],
+) -> str:
+    parts = []
+    if first is not None:
+        text = _git_text(first).strip()
+        if text:
+            parts.append(f"bare mirror: {text}")
+    text = _git_text(second).strip()
+    if text:
+        parts.append(f"trusted host repo: {text}")
+    return "\n".join(parts)
+
+
 def _consolidate_git_branches(
     *,
     host_repo_path: str,
@@ -6995,7 +7391,19 @@ def _consolidate_git_branches(
     repo_path = Path(host_repo_path)
     git_marker = repo_path / ".git"
     if not git_marker.exists():
-        return _consolidation_failure(target_branch, f"{host_repo_path} is not a git repository")
+        return _consolidation_failure(
+            target_branch,
+            f"{host_repo_path} is not a git repository",
+            error_code="not_git_repository",
+        )
+    if bare_repo_path is not None and bare_repo_path.exists():
+        return _consolidate_git_branches_in_isolated_worktree(
+            host_repo_path=host_repo_path,
+            bare_repo_path=bare_repo_path,
+            source_branches=source_branches,
+            target_branch=target_branch,
+            base_branch=base_branch,
+        )
 
     def _git(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -7006,15 +7414,31 @@ def _consolidate_git_branches(
             check=False,
         )
 
+    lock_path = _git_index_lock_path(git_marker)
+    if lock_path is not None and lock_path.exists():
+        return _consolidation_failure(
+            target_branch,
+            f"stale git index lock blocks release promotion: {lock_path}",
+            error_code="stale_index_lock",
+        )
+
     # A linked worktree (``.git`` is a file pointing at the gitdir) is already an
     # isolated checkout, so a dirty tree there is acceptable; a primary worktree
     # must be clean before we move HEAD around.
     isolated_worktree = git_marker.is_file()
     status = _git("status", "--porcelain")
     if status.returncode != 0:
-        return _consolidation_failure(target_branch, _git_text(status))
+        return _consolidation_failure(
+            target_branch,
+            _git_text(status),
+            error_code="unexpected_git_failure",
+        )
     if status.stdout.strip() and not isolated_worktree:
-        failure = _consolidation_failure(target_branch, "refusing to merge into a dirty worktree")
+        failure = _consolidation_failure(
+            target_branch,
+            "refusing to merge into a dirty worktree",
+            error_code="checkout_dirty",
+        )
         failure["output"] = status.stdout
         return failure
     merge_sources: list[tuple[str, str]] = []
@@ -7037,6 +7461,7 @@ def _consolidate_git_branches(
                 return _consolidation_failure(
                     target_branch,
                     f"bare repo not found: {bare_repo_path}",
+                    error_code="source_ref_missing",
                 )
             ref_hash = hashlib.sha256(f"{target_branch}\0{source}".encode("utf-8")).hexdigest()[:16]
             temp_ref = f"refs/evander/team-consolidations/{ref_hash}"
@@ -7052,6 +7477,7 @@ def _consolidate_git_branches(
                 failure = _consolidation_failure(
                     target_branch,
                     f"failed to fetch source branch {source} from {bare_repo_path}",
+                    error_code="source_ref_missing",
                 )
                 failure["output"] = _git_text(fetch)
                 failure["conflict_branch"] = source
@@ -7073,7 +7499,11 @@ def _consolidate_git_branches(
         else:
             checkout = _git("checkout", "-B", target_branch)
         if checkout.returncode != 0:
-            return _consolidation_failure(target_branch, _git_text(checkout))
+            return _consolidation_failure(
+                target_branch,
+                _git_text(checkout),
+                error_code="unexpected_git_failure",
+            )
 
         merged: list[str] = []
         for source, merge_ref in merge_sources:
@@ -7089,6 +7519,7 @@ def _consolidate_git_branches(
                 failure = _consolidation_failure(
                     target_branch,
                     f"merge conflict while merging {source} into {target_branch}",
+                    error_code="merge_conflict",
                 )
                 failure["merged_branches"] = merged
                 failure["conflict_branch"] = source
@@ -7106,6 +7537,7 @@ def _consolidate_git_branches(
             "conflict_branch": None,
             "output": None,
             "error": None,
+            "error_code": None,
         }
     finally:
         _cleanup_temp_refs()

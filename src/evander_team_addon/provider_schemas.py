@@ -395,6 +395,9 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "git_work_contexts": {"type": "array"},
         "review_artifact_imports": {"type": "array"},
         "review_artifact_import_errors": {"type": "array"},
+        "transient_conflicts": {"type": "array"},
+        "retry_event_ids": {"type": "array"},
+        "retry_scheduled_count": {"type": "integer"},
         "cost_guard_blocked_team_ids": {"type": "array"},
         "cost_guard_blocked_teams": {"type": "array"},
         "errors": {"type": "array"},
@@ -546,6 +549,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "release_package_id": {"type": "string"},
         "state": {"type": ["string", "null"]},
         "created_inbox_item_ids": {"type": "array"},
+        "superseded_release_package_ids": {"type": "array"},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:consolidate-git-branches": {
@@ -556,6 +560,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "conflict_branch": {"type": ["string", "null"]},
         "output": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]},
+        "error_code": {"type": ["string", "null"]},
     },
     "effect:team:index-memory": {
         "success": {"type": "boolean"},

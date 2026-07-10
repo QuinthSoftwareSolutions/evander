@@ -728,6 +728,31 @@ class TeamRuntimeService:
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
 
+    def release_agent_wake_lease_for_retry(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            runtime = state.agent_runtimes.get(normalized_agent_id)
+            if runtime is None or runtime.active_dispatch_id != normalized_dispatch_id:
+                raise ValueError(
+                    f"dispatch {normalized_dispatch_id} no longer owns the wake lease "
+                    f"for agent {normalized_agent_id}"
+                )
+            runtime.active_dispatch_id = None
+            runtime.wake_leased_until = None
+            runtime.wake_reason = None
+            runtime.next_wake_at = None
+            runtime.updated_at = utc_now()
+            return state
+
+        return self._repository.update(_mutate)
+
     def finalize_agent_dispatch_from_activity(
         self,
         *,

@@ -3387,6 +3387,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Push git branch",
         fields=[
             _field("host_repo_path", "Host repo path", "string", required=True, bindable=True),
+            _field("bare_repo_path", "Bare repo path", "string", bindable=True),
+            _field("bare_repo_name", "Bare repo name", "string", bindable=True),
             _field("local_branch", "Local branch", "string", required=True, bindable=True),
             _field("origin_branch", "Origin branch", "string", required=True, bindable=True),
             _field("canonical_origin_url", "Canonical origin URL", "string", bindable=True),

@@ -642,6 +642,17 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     assert created_task["created_task_ids"] == ["task-mcp"]
     assert created_task["published_event_ids"]
     assert created_task["outbox_record_ids"]
+    assert created_task["completed_outbox_record_ids"] == created_task["outbox_record_ids"]
+    wake_outbox_records = TeamStateRepository(
+        context.config.runtime_dir
+    ).list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+    created_wake_outbox = [
+        record
+        for record in wake_outbox_records
+        if record.id in created_task["outbox_record_ids"]
+    ]
+    assert len(created_wake_outbox) == 1
+    assert created_wake_outbox[0].status.value == "completed"
     scheduled = json.loads(
         scheduled_internal_event_store_path(context.config.runtime_dir).read_text(
             encoding="utf-8",

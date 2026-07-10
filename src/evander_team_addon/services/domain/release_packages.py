@@ -41,6 +41,8 @@ from .git_common import (
 
 
 GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
+_TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+
 
 def _emit_git_release_recovery_event(
     result: dict[str, Any],
@@ -125,7 +127,7 @@ def _failed_release_promotion_for_recovery(
     promotions = [
         promotion
         for promotion in state.git_promotions.values()
-        if promotion.promotion_kind == "release"
+        if promotion.promotion_kind in {"feature", "release"}
         and promotion.state == "failed"
         and (promotion.id in promotion_ids or promotion.release_package_id == release.id)
     ]
@@ -183,26 +185,29 @@ def _apply_git_release_recovery(
     failed_promotion = _failed_release_promotion_for_recovery(state, release)
     if failed_promotion is None:
         result["errors"].append(
-            f"release package {release.id} has no failed release promotion to recover"
+            f"release package {release.id} has no failed feature or release promotion to recover"
         )
         return None
-    target_branch = release.release_branch or failed_promotion.target_branch
-    if release.release_branch and release.release_branch != failed_promotion.target_branch:
-        result["errors"].append(
-            f"release package {release.id} release_branch {release.release_branch} "
-            f"does not match failed promotion target {failed_promotion.target_branch}"
-        )
-        return None
+    target_branch = failed_promotion.target_branch
+    if failed_promotion.promotion_kind == "release":
+        target_branch = release.release_branch or failed_promotion.target_branch
+        if release.release_branch and release.release_branch != failed_promotion.target_branch:
+            result["errors"].append(
+                f"release package {release.id} release_branch {release.release_branch} "
+                f"does not match failed promotion target {failed_promotion.target_branch}"
+            )
+            return None
     target_branch = validate_branch_name(target_branch)
     expected_commit_sha = _required_text(request.get("commit_sha"), "commit_sha")
     payload: dict[str, Any] = {
         "release_package_id": release.id,
         "promotion_id": failed_promotion.id,
+        "promotion_kind": failed_promotion.promotion_kind,
         "project_id": project.id,
         "host_repo_path": git.host_repo_path,
         "agent_branch": agent_branch,
         "target_branch": target_branch,
-        "release_branch": target_branch,
+        "release_branch": release.release_branch,
         "canonical_branch": release.canonical_branch
         or canonical_release_branch(project, release.id),
         "base_branch": git.base_branch,
@@ -312,6 +317,20 @@ def _build_release_package(
             _duplicate_release_package_error(state.release_packages[release_id])
         )
         return None
+    duplicate = _active_release_package_for_deliverables(
+        state,
+        project_id=project_id,
+        deliverable_ids=deliverable_ids,
+    )
+    if duplicate is not None:
+        result["duplicate"] = True
+        result["created"] = False
+        result["existing_release_package_id"] = duplicate.id
+        result["release_package_id"] = duplicate.id
+        result.setdefault("next_action_hints", []).append(
+            _same_deliverable_release_package_hint(duplicate)
+        )
+        return duplicate.id
     target_release_branch: str | None = None
     target_canonical_branch: str | None = None
     git = None
@@ -359,6 +378,9 @@ def _build_release_package(
         created_at=now,
         updated_at=now,
     )
+    result["created"] = True
+    result["duplicate"] = False
+    result["release_package_id"] = release_id
     if feature_sources_by_task:
         assert git is not None
         for promotion_id in promotion_ids:
@@ -392,6 +414,50 @@ def _build_release_package(
     projects_to_recalc.add(project_id)
     return release_id
 
+
+def _active_release_package_for_deliverables(
+    state: TeamState,
+    *,
+    project_id: str,
+    deliverable_ids: list[str],
+) -> ReleasePackage | None:
+    normalized = _normalized_release_deliverable_set(deliverable_ids)
+    for release in sorted(
+        state.release_packages.values(),
+        key=lambda item: (item.created_at, item.id),
+        reverse=True,
+    ):
+        if release.project_id != project_id:
+            continue
+        if release.state in _TERMINAL_RELEASE_STATES:
+            continue
+        if _normalized_release_deliverable_set(release.deliverable_ids) == normalized:
+            return release
+    return None
+
+
+def _normalized_release_deliverable_set(deliverable_ids: list[str]) -> tuple[str, ...]:
+    return tuple(sorted({item for item in deliverable_ids if item}))
+
+
+def _same_deliverable_release_package_hint(release: ReleasePackage) -> str:
+    parts = [
+        f"Release package {release.id} already covers this deliverable set",
+        f"state {release.state.value}",
+    ]
+    if release.release_branch:
+        parts.append(f"release_branch {release.release_branch}")
+    if release.canonical_branch:
+        parts.append(f"canonical_branch {release.canonical_branch}")
+    if release.error:
+        parts.append(f"error {release.error}")
+    parts.append(
+        "do not create another release package for the same deliverables; inspect "
+        "the existing package and follow its next_action_hint"
+    )
+    return "; ".join(parts)
+
+
 def _duplicate_release_package_error(release: ReleasePackage) -> str:
     parts = [
         f"release package {release.id} already exists",
@@ -406,7 +472,7 @@ def _duplicate_release_package_error(release: ReleasePackage) -> str:
     parts.append(
         "do not submit git_release_requests for this id again; resolve the existing "
         "release package and follow its next_action_hint. Submit git_release_recoveries "
-        "only when the hint identifies a failed release promotion and the resolved "
+        "only when the hint identifies a failed feature or release promotion and the resolved "
         "commit is pushed to an agents/... ref, or choose a new id only for a "
         "separate release"
     )

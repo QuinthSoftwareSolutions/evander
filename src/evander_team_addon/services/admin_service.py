@@ -2673,11 +2673,15 @@ class TeamAdminService:
         }
         result: dict[str, Any] = {
             "success": False,
+            "created": False,
+            "duplicate": False,
+            "existing_release_package_id": None,
             "release_package_ids": [],
             "errors": [],
             "events": [],
             "git_promotion_event_ids": [],
             "created_deliverable_ids": [],
+            "next_action_hints": [],
         }
 
         def _mutate(state_model: TeamState) -> TeamState:

@@ -1527,6 +1527,35 @@ def test_git_push_branch_effect_requires_branch_fields() -> None:
     assert effect.local_branch == "review/session/work"
     assert effect.origin_branch == "feature/topic"
 
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        GitPushBranchEffectDefinition.model_validate(
+            {
+                "id": "effect-push-static-conflict",
+                "display_name": "Push branch",
+                "type": "effect:git:push-branch",
+                "host_repo_path": "/repo",
+                "bare_repo_path": "/git-remotes/repo.git",
+                "bare_repo_name": "repo.git",
+                "local_branch": "release/release-1",
+                "origin_branch": "release/release-1",
+            }
+        )
+
+    dynamic_selector = GitPushBranchEffectDefinition.model_validate(
+        {
+            "id": "effect-push-dynamic-bare",
+            "display_name": "Push branch",
+            "type": "effect:git:push-branch",
+            "host_repo_path": "/repo",
+            "bare_repo_path": "${{event.payload.bare_repo_path ?? null}}",
+            "bare_repo_name": "${{event.payload.bare_repo_name ?? null}}",
+            "local_branch": "release/release-1",
+            "origin_branch": "release/release-1",
+        }
+    )
+    assert dynamic_selector.bare_repo_path == "${{event.payload.bare_repo_path ?? null}}"
+    assert dynamic_selector.bare_repo_name == "${{event.payload.bare_repo_name ?? null}}"
+
     with pytest.raises(ValueError, match="Field required"):
         GitPushBranchEffectDefinition.model_validate(
             {

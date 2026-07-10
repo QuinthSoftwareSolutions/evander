@@ -528,6 +528,7 @@ def _attach_promotion_success(
         else None
     )
     if release is not None:
+        _clear_recovered_release_block(state, release=release, promotion=promotion)
         release.git_promotion_record_ids = _append_unique(
             release.git_promotion_record_ids,
             promotion.id,
@@ -549,6 +550,31 @@ def _attach_promotion_success(
             )
         elif kind == "canonical_push":
             release.canonical_branch = release.canonical_branch or promotion.target_branch
+
+
+def _clear_recovered_release_block(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    promotion: GitPromotionRecord,
+) -> None:
+    if release.state != TeamRecordState.BLOCKED:
+        return
+    related_promotion_ids = set(release.git_promotion_record_ids)
+    has_other_failed_promotion = any(
+        candidate.id != promotion.id
+        and candidate.state == "failed"
+        and (
+            candidate.id in related_promotion_ids
+            or candidate.release_package_id == release.id
+        )
+        for candidate in state.git_promotions.values()
+    )
+    if has_other_failed_promotion:
+        return
+    release.state = TeamRecordState.PENDING
+    release.error = None
+    release.updated_at = utc_now()
 
 def _queue_canonical_push_after_release_success(
     state: TeamState,
@@ -609,6 +635,7 @@ def _queue_canonical_push_after_release_success(
         "source_branch": existing.source_branch,
         "target_branch": existing.target_branch,
     }
+    payload.update(_bare_repo_fields(git))
     if git.canonical_origin_url is not None:
         payload["canonical_origin_url"] = git.canonical_origin_url
     if git.provider is not None:
