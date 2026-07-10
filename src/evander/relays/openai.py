@@ -139,6 +139,12 @@ class OpenAICompatibleUpstream:
     provider_name: str
 
 
+@dataclass(frozen=True)
+class LocalOpenAIToolCompatibility:
+    request_body: bytes
+    function_namespaces: dict[str, tuple[str, str]]
+
+
 class OpenAIRelay:
     def __init__(
         self,
@@ -363,6 +369,19 @@ class OpenAIRelay:
                 request_body=request_body,
             )
             request_body = steering_injection.request_body
+            local_openai_tool_compatibility = LocalOpenAIToolCompatibility(
+                request_body=request_body,
+                function_namespaces={},
+            )
+            if request_context.config.model_provider_mode == "local_openai":
+                local_openai_tool_compatibility = (
+                    relay._rewrite_local_openai_namespace_tools_request(
+                        method=request.method,
+                        upstream_path=upstream_path,
+                        request_body=request_body,
+                    )
+                )
+                request_body = local_openai_tool_compatibility.request_body
 
             if "text/event-stream" in request.headers.get("accept", ""):
                 return await relay._stream_response(
@@ -375,6 +394,9 @@ class OpenAIRelay:
                     timeout_seconds=request_context.config.openai_relay_timeout_seconds,
                     provider_name=openai_compatible_upstream.provider_name,
                     operator_steering_note=steering_injection.note,
+                    function_namespaces=(
+                        local_openai_tool_compatibility.function_namespaces
+                    ),
                 )
 
             async with httpx.AsyncClient(
@@ -417,8 +439,14 @@ class OpenAIRelay:
                         exc.__class__.__name__,
                         str(exc),
                     )
+                response_content = relay._rewrite_local_openai_function_calls_response(
+                    upstream_response.content,
+                    function_namespaces=(
+                        local_openai_tool_compatibility.function_namespaces
+                    ),
+                )
                 return Response(
-                    content=upstream_response.content,
+                    content=response_content,
                     status_code=upstream_response.status_code,
                     headers=relay._response_headers(upstream_response),
                     media_type=upstream_response.headers.get("content-type"),
@@ -665,6 +693,7 @@ class OpenAIRelay:
         timeout_seconds: float,
         provider_name: str = "openai",
         operator_steering_note: OperatorSteeringNote | None = None,
+        function_namespaces: dict[str, tuple[str, str]] | None = None,
     ) -> StreamingResponse:
         self.stream_started_count += 1
         stream_id = self.stream_started_count
@@ -717,6 +746,7 @@ class OpenAIRelay:
             response_hash = sha256()
             stream_payload: dict[str, Any] = {}
             sse_buffer = ""
+            rewrite_buffer = b""
             try:
                 try:
                     async for chunk in upstream_response.aiter_raw():
@@ -728,7 +758,20 @@ class OpenAIRelay:
                             chunk=chunk,
                             payload=stream_payload,
                         )
-                        yield chunk
+                        rewritten, rewrite_buffer = (
+                            self._rewrite_local_openai_function_call_stream_chunk(
+                                buffer=rewrite_buffer,
+                                chunk=chunk,
+                                function_namespaces=function_namespaces or {},
+                            )
+                        )
+                        if rewritten:
+                            yield rewritten
+                    if rewrite_buffer:
+                        yield self._rewrite_local_openai_function_call_sse_line(
+                            rewrite_buffer,
+                            function_namespaces=function_namespaces or {},
+                        )
                 except (httpx.ReadError, httpx.RemoteProtocolError) as exc:
                     # Some upstream streaming responses terminate with a transport-level
                     # read error after the final bytes have already been delivered.
@@ -786,6 +829,204 @@ class OpenAIRelay:
             headers=self._response_headers(upstream_response),
             media_type=upstream_response.headers.get("content-type"),
         )
+
+    @staticmethod
+    def _rewrite_local_openai_namespace_tools_request(
+        *, method: str, upstream_path: str, request_body: bytes
+    ) -> LocalOpenAIToolCompatibility:
+        unchanged = LocalOpenAIToolCompatibility(
+            request_body=request_body,
+            function_namespaces={},
+        )
+        if method != "POST" or upstream_path != "responses":
+            return unchanged
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return unchanged
+        if not isinstance(payload, dict) or not isinstance(payload.get("tools"), list):
+            return unchanged
+
+        rewritten_tools: list[object] = []
+        function_namespaces: dict[str, tuple[str, str]] = {}
+        changed = False
+        for tool in payload["tools"]:
+            if not isinstance(tool, dict) or tool.get("type") != "namespace":
+                rewritten_tools.append(tool)
+                continue
+            namespace = str(tool.get("name") or "").strip()
+            namespace_tools = tool.get("tools")
+            if not namespace or not isinstance(namespace_tools, list):
+                rewritten_tools.append(tool)
+                continue
+            flattened_namespace_tools: list[dict[str, object]] = []
+            for namespace_tool in namespace_tools:
+                if not isinstance(namespace_tool, dict):
+                    continue
+                function_name = str(namespace_tool.get("name") or "").strip()
+                if not function_name:
+                    continue
+                flattened_name = OpenAIRelay._local_openai_flattened_tool_name(
+                    namespace=namespace,
+                    function_name=function_name,
+                )
+                if flattened_name in function_namespaces:
+                    continue
+                flattened_tool = dict(namespace_tool)
+                flattened_tool["type"] = "function"
+                flattened_tool["name"] = flattened_name
+                flattened_namespace_tools.append(flattened_tool)
+                function_namespaces[flattened_name] = (namespace, function_name)
+            if not flattened_namespace_tools:
+                rewritten_tools.append(tool)
+                continue
+            rewritten_tools.extend(flattened_namespace_tools)
+            changed = True
+
+        if not changed:
+            return unchanged
+        payload["tools"] = rewritten_tools
+        return LocalOpenAIToolCompatibility(
+            request_body=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            function_namespaces=function_namespaces,
+        )
+
+    @staticmethod
+    def _local_openai_flattened_tool_name(*, namespace: str, function_name: str) -> str:
+        separator = "" if namespace.endswith("__") else "__"
+        return f"{namespace}{separator}{function_name}"
+
+    @staticmethod
+    def _rewrite_local_openai_function_calls_response(
+        response_body: bytes,
+        *,
+        function_namespaces: dict[str, tuple[str, str]],
+    ) -> bytes:
+        if not function_namespaces:
+            return response_body
+        try:
+            payload = json.loads(response_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return response_body
+        if not OpenAIRelay._rewrite_local_openai_function_calls_payload(
+            payload,
+            function_namespaces=function_namespaces,
+        ):
+            return response_body
+        return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+    @staticmethod
+    def _rewrite_local_openai_function_calls_payload(
+        payload: object,
+        *,
+        function_namespaces: dict[str, tuple[str, str]],
+    ) -> bool:
+        changed = False
+        if isinstance(payload, list):
+            for item in payload:
+                changed = (
+                    OpenAIRelay._rewrite_local_openai_function_calls_payload(
+                        item,
+                        function_namespaces=function_namespaces,
+                    )
+                    or changed
+                )
+            return changed
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("type") == "function_call" and not payload.get("namespace"):
+            function_name = str(payload.get("name") or "").strip()
+            resolved = OpenAIRelay._resolve_local_openai_function_namespace(
+                function_name,
+                function_namespaces=function_namespaces,
+            )
+            if resolved is not None:
+                namespace, inner_name = resolved
+                payload["namespace"] = namespace
+                payload["name"] = inner_name
+                changed = True
+        for value in payload.values():
+            changed = (
+                OpenAIRelay._rewrite_local_openai_function_calls_payload(
+                    value,
+                    function_namespaces=function_namespaces,
+                )
+                or changed
+            )
+        return changed
+
+    @staticmethod
+    def _resolve_local_openai_function_namespace(
+        function_name: str,
+        *,
+        function_namespaces: dict[str, tuple[str, str]],
+    ) -> tuple[str, str] | None:
+        candidates = [function_name]
+        separator_normalized = function_name
+        for separator in (":", ".", "/"):
+            separator_normalized = separator_normalized.replace(separator, "__")
+        if separator_normalized not in candidates:
+            candidates.append(separator_normalized)
+        for candidate in tuple(candidates):
+            if candidate.startswith("mcp__"):
+                candidates.append(candidate[len("mcp__") :])
+            else:
+                candidates.append(f"mcp__{candidate}")
+        for candidate in candidates:
+            resolved = function_namespaces.get(candidate)
+            if resolved is not None:
+                return resolved
+        return None
+
+    @staticmethod
+    def _rewrite_local_openai_function_call_stream_chunk(
+        *,
+        buffer: bytes,
+        chunk: bytes,
+        function_namespaces: dict[str, tuple[str, str]],
+    ) -> tuple[bytes, bytes]:
+        if not function_namespaces:
+            return buffer + chunk, b""
+        pending = buffer + chunk
+        complete_lines = pending.splitlines(keepends=True)
+        if complete_lines and not complete_lines[-1].endswith((b"\n", b"\r")):
+            remainder = complete_lines.pop()
+        else:
+            remainder = b""
+        rewritten = b"".join(
+            OpenAIRelay._rewrite_local_openai_function_call_sse_line(
+                line,
+                function_namespaces=function_namespaces,
+            )
+            for line in complete_lines
+        )
+        return rewritten, remainder
+
+    @staticmethod
+    def _rewrite_local_openai_function_call_sse_line(
+        line: bytes,
+        *,
+        function_namespaces: dict[str, tuple[str, str]],
+    ) -> bytes:
+        if not function_namespaces or not line.startswith(b"data:"):
+            return line
+        body_and_ending = line[len(b"data:") :]
+        without_ending = body_and_ending.rstrip(b"\r\n")
+        body = without_ending.strip()
+        ending = body_and_ending[len(without_ending) :]
+        if not body or body == b"[DONE]":
+            return line
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return line
+        if not OpenAIRelay._rewrite_local_openai_function_calls_payload(
+            payload,
+            function_namespaces=function_namespaces,
+        ):
+            return line
+        rewritten = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return b"data: " + rewritten + ending
 
     @staticmethod
     def _response_headers(response: httpx.Response) -> dict[str, str]:

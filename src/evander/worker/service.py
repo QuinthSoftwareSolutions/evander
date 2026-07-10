@@ -86,8 +86,13 @@ _CODEX_OUTCOME_STATUS_FAILED = "failed"
 _CODEX_OUTCOME_REASON_CONTEXT_LIMIT_SUSPECTED = "codex_context_limit_suspected"
 _CODEX_OUTCOME_REASON_NO_FINAL_MESSAGE = "codex_no_final_message"
 _CODEX_OUTCOME_REASON_TURN_FAILED = "codex_turn_failed"
+_CODEX_OUTCOME_REASON_UNSUPPORTED_TOOL_CALL = "codex_unsupported_tool_call"
 _CODEX_LOCAL_MODEL_PROVIDER_MODES = {"local_openai"}
 _CODEX_CONTEXT_LIMIT_WARNING_TOTAL_TOKENS = 60_000
+_CODEX_UNSUPPORTED_TOOL_CALL_PATTERN = re.compile(
+    r"codex_core::tools::router:\s+error=unsupported call:\s*(?P<tool>[^\r\n]+)",
+    re.IGNORECASE,
+)
 _SESSION_STORAGE_TELEMETRY_TTL_SECONDS = 60.0
 _SESSION_STORAGE_WARMING_MESSAGE = (
     "worker session storage scan is warming; use refresh=1 to wait for a full scan"
@@ -545,6 +550,7 @@ class WorkerDaemon:
                 started_at=record.started_at,
                 finished_at=record.finished_at,
                 metadata=record.metadata,
+                log_text=text,
             )
             if outcome is None:
                 continue
@@ -607,13 +613,15 @@ class WorkerDaemon:
                     continue
                 seen.add(message)
                 messages.append(message)
-        outcome = _codex_session_outcome(
-            agent_home,
-            thread_id,
-            started_at=started_at,
-            finished_at=finished_at,
-            metadata=metadata,
-        )
+        outcome = _failed_codex_outcome_from_metadata(metadata)
+        if outcome is None:
+            outcome = _codex_session_outcome(
+                agent_home,
+                thread_id,
+                started_at=started_at,
+                finished_at=finished_at,
+                metadata=metadata,
+            )
         if outcome is not None:
             message = _codex_outcome_log_line(outcome)
             if message and message not in seen:
@@ -2072,6 +2080,7 @@ def _codex_session_outcome(
     started_at: datetime | None = None,
     finished_at: datetime | None = None,
     metadata: dict[str, object] | None = None,
+    log_text: str | None = None,
 ) -> dict[str, object] | None:
     task_complete_without_final_message = False
     explicit_failure_message: str | None = None
@@ -2118,6 +2127,7 @@ def _codex_session_outcome(
         return None
 
     provider_kind = _codex_provider_kind(metadata)
+    unsupported_tool_calls = _codex_unsupported_tool_calls(log_text)
     outcome: dict[str, object] | None = None
     if explicit_failure_message:
         outcome = {
@@ -2128,29 +2138,36 @@ def _codex_session_outcome(
     elif (
         task_complete_without_final_message or finished_at is not None
     ) and not assistant_text_seen:
-        context_limit_suspected = _codex_context_limit_suspected(
-            provider_kind=provider_kind,
-            last_token_usage=last_token_usage,
-            model_context_window=model_context_window,
-        )
-        reason = (
-            _CODEX_OUTCOME_REASON_CONTEXT_LIMIT_SUSPECTED
-            if context_limit_suspected
-            else _CODEX_OUTCOME_REASON_NO_FINAL_MESSAGE
-        )
-        message = "Codex ended without a final agent message."
-        if context_limit_suspected:
-            total_tokens = last_token_usage.get("total_tokens") if last_token_usage else None
-            if total_tokens is not None:
-                message = (
-                    "Codex ended without a final agent message after local model token usage "
-                    f"reached {total_tokens} tokens."
-                )
-            else:
-                message = (
-                    "Codex ended without a final agent message after local model token usage "
-                    "reached the configured warning threshold."
-                )
+        if unsupported_tool_calls:
+            reason = _CODEX_OUTCOME_REASON_UNSUPPORTED_TOOL_CALL
+            message = (
+                "Codex ended without a final agent message after emitting unsupported tool "
+                f"calls: {', '.join(unsupported_tool_calls)}."
+            )
+        else:
+            context_limit_suspected = _codex_context_limit_suspected(
+                provider_kind=provider_kind,
+                last_token_usage=last_token_usage,
+                model_context_window=model_context_window,
+            )
+            reason = (
+                _CODEX_OUTCOME_REASON_CONTEXT_LIMIT_SUSPECTED
+                if context_limit_suspected
+                else _CODEX_OUTCOME_REASON_NO_FINAL_MESSAGE
+            )
+            message = "Codex ended without a final agent message."
+            if context_limit_suspected:
+                total_tokens = last_token_usage.get("total_tokens") if last_token_usage else None
+                if total_tokens is not None:
+                    message = (
+                        "Codex ended without a final agent message after local model token usage "
+                        f"reached {total_tokens} tokens."
+                    )
+                else:
+                    message = (
+                        "Codex ended without a final agent message after local model token usage "
+                        "reached the configured warning threshold."
+                    )
         outcome = {
             "status": _CODEX_OUTCOME_STATUS_FAILED,
             "reason": reason,
@@ -2165,7 +2182,36 @@ def _codex_session_outcome(
         outcome["last_token_usage"] = last_token_usage
     if model_context_window is not None:
         outcome["model_context_window"] = model_context_window
+    if unsupported_tool_calls:
+        outcome["unsupported_tool_calls"] = unsupported_tool_calls
     return sanitize_metadata(outcome)
+
+
+def _failed_codex_outcome_from_metadata(
+    metadata: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if not isinstance(metadata, dict):
+        return None
+    outcome = metadata.get(_CODEX_OUTCOME_METADATA_KEY)
+    if not isinstance(outcome, dict):
+        return None
+    if str(outcome.get("status") or "").strip().casefold() != _CODEX_OUTCOME_STATUS_FAILED:
+        return None
+    return outcome
+
+
+def _codex_unsupported_tool_calls(log_text: str | None) -> list[str]:
+    if not isinstance(log_text, str) or not log_text:
+        return []
+    calls: list[str] = []
+    seen: set[str] = set()
+    for match in _CODEX_UNSUPPORTED_TOOL_CALL_PATTERN.finditer(log_text):
+        tool = sanitize_text(match.group("tool")).strip()
+        if not tool or tool in seen:
+            continue
+        seen.add(tool)
+        calls.append(tool)
+    return calls
 
 
 def _iter_codex_session_events(
@@ -2314,6 +2360,8 @@ def _codex_outcome_log_line(outcome: dict[str, object]) -> str:
     message = str(outcome.get("message") or "").strip()
     if reason == _CODEX_OUTCOME_REASON_TURN_FAILED:
         return f"codex failed: {message or 'Codex reported a turn failure.'}"
+    if reason == _CODEX_OUTCOME_REASON_UNSUPPORTED_TOOL_CALL:
+        return f"codex failed: {message or 'Codex emitted an unsupported tool call.'}"
     usage = outcome.get("last_token_usage")
     total_tokens = None
     if isinstance(usage, dict):

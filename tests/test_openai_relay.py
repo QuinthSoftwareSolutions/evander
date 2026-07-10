@@ -536,6 +536,156 @@ def test_relay_routes_local_openai_requests_without_host_api_key_env(
     }
 
 
+def test_relay_expands_local_openai_namespace_tools_and_restores_function_namespace(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_local_tool",
+                "object": "response",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "evander__team_get_task",
+                        "arguments": '{"task_id":"task-1"}',
+                        "call_id": "call-1",
+                    }
+                ],
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-local")
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama-placeholder",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/session/session-local/responses",
+        json={
+            "model": "qwen3.6:27b",
+            "input": "Get the task",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "exec_command",
+                    "description": "Run a command",
+                    "parameters": {"type": "object"},
+                },
+                {
+                    "type": "namespace",
+                    "name": "evander",
+                    "description": "Team tools",
+                    "tools": [
+                        {
+                            "name": "team_get_task",
+                            "description": "Get an assigned task",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"task_id": {"type": "string"}},
+                                "required": ["task_id"],
+                            },
+                            "strict": False,
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    upstream_tools = captured["payload"]["tools"]
+    assert upstream_tools[0]["name"] == "exec_command"
+    assert upstream_tools[1] == {
+        "type": "function",
+        "name": "evander__team_get_task",
+        "description": "Get an assigned task",
+        "parameters": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+        "strict": False,
+    }
+    function_call = response.json()["output"][0]
+    assert function_call["name"] == "team_get_task"
+    assert function_call["namespace"] == "evander"
+
+
+def test_relay_restores_local_openai_function_namespace_in_chunked_stream(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_LocalOpenAIFunctionCallStream(),
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-local")
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama-placeholder",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    client = TestClient(app)
+
+    with client.stream(
+        "POST",
+        "/v1/session/session-local/responses",
+        headers={"accept": "text/event-stream"},
+        json={
+            "model": "qwen3.6:27b",
+            "input": "Get the task",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "evander",
+                    "description": "Team tools",
+                    "tools": [
+                        {
+                            "name": "team_get_task",
+                            "description": "Get an assigned task",
+                            "parameters": {"type": "object"},
+                        }
+                    ],
+                }
+            ],
+        },
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert captured["payload"]["tools"][0]["name"] == "evander__team_get_task"
+    data_lines = [line[len(b"data: ") :] for line in body.splitlines() if line.startswith(b"data: {")]
+    event = json.loads(data_lines[0])
+    assert event["item"]["name"] == "team_get_task"
+    assert event["item"]["namespace"] == "evander"
+    assert b"data: [DONE]" in body
+
+
 def test_relay_routes_azure_openai_responses_requests_through_session_directory_overlays(
     tmp_path: Path,
 ) -> None:
@@ -1152,6 +1302,18 @@ class _CleanStream(httpx.AsyncByteStream):
     async def __aiter__(self):
         yield b"data: first\n\n"
         yield b"data: second\n\n"
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _LocalOpenAIFunctionCallStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\","
+        yield (
+            b'"item":{"type":"function_call","name":"evander:team_get_task",'
+            b'"arguments":"","call_id":"call-1"}}\n\ndata: [DONE]\n\n'
+        )
 
     async def aclose(self) -> None:
         return None

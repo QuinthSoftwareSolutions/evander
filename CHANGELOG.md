@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-07-10 - Codex Unsupported Tool Failure Classification
+
+- Added local OpenAI Responses compatibility for Codex MCP namespaces: namespace
+  tools are exposed to local models as ordinary functions, then returned function
+  calls are restored to Codex's namespace/name shape before routing.
+- Normalized common local-model MCP separators in streamed and non-streamed tool
+  calls while leaving hosted OpenAI and Anthropic requests unchanged.
+- Classified completed Codex runs with unsupported router calls as tool-interface
+  failures before context-limit inference, preventing reduced-context retries from
+  repeating an incompatible MCP/tool invocation loop.
+- Preserved the rejected tool names in sanitized worker outcome metadata and
+  surfaced the specific failure in reconstructed execution logs.
+
 ## 2026-07-10 - Team Release And Wake Review Hardening
 
 - Preserved trusted canonical origins and used detached temporary source refs

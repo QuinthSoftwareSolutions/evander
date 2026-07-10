@@ -2350,6 +2350,98 @@ def test_completed_codex_job_records_session_meta_only_as_failure(tmp_path: Path
     )
 
 
+def test_completed_codex_job_prefers_unsupported_tool_failure_over_context_retry(
+    tmp_path: Path,
+) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    finished_at = started_at + timedelta(minutes=1)
+    raw_log = (
+        f"session id: {thread_id}\n"
+        "2026-05-05T08:19:10Z ERROR codex_core::tools::router: "
+        "error=unsupported call: evander:team_get_task\n"
+        "2026-05-05T08:19:11Z ERROR codex_core::tools::router: "
+        "error=unsupported call: evander:team_get_task\n"
+    )
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = raw_log
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["bash", "-lc", "codex exec --json prompt | evander_codex_json_to_log"],
+        container_name="agent-worker-job-1",
+        status="exited",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+        metadata={"agent_provider": "codex", "model_provider_mode": "local_openai"},
+    )
+    paths.logs.mkdir(parents=True, exist_ok=True)
+    (paths.logs / "job-1.log").write_text(raw_log, encoding="utf-8")
+    session_dir = (
+        paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "05" / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": (started_at + timedelta(seconds=50)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "last_token_usage": {
+                            "input_tokens": 63657,
+                            "output_tokens": 343,
+                            "total_tokens": 64000,
+                        },
+                        "model_context_window": 258400,
+                    },
+                },
+                {
+                    "timestamp": (started_at + timedelta(seconds=55)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "last_agent_message": None},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    outcome = inspected.metadata["codex_outcome"]
+    assert outcome["status"] == "failed"
+    assert outcome["reason"] == "codex_unsupported_tool_call"
+    assert outcome["unsupported_tool_calls"] == ["evander:team_get_task"]
+    assert outcome["last_token_usage"]["total_tokens"] == 64000
+    assert inspected.error == (
+        "Codex ended without a final agent message after emitting unsupported tool calls: "
+        "evander:team_get_task."
+    )
+    execution_log = daemon.get_logs(inspected, mode="execution")
+    assert "codex_unsupported_tool_call" not in execution_log
+    assert "Codex ended without a final agent message after emitting unsupported tool calls" in (
+        execution_log
+    )
+    assert "context limit suspected" not in execution_log
+
+
 def test_completed_codex_job_allows_null_task_complete_after_assistant_text(
     tmp_path: Path,
 ) -> None:
