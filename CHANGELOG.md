@@ -7,6 +7,8 @@
   search, and pagination filters.
 - Added a paginated Team inbox-history API so handled correspondence remains available
   beyond the bounded state payload used by the operational views.
+- Rendered historical `body` and failure `error` fields in the main Mail reader, with a
+  generic formatted-payload fallback for less common system notice shapes.
 
 ## 2026-07-10 - Team Wake Feedback And Terminal Task Repair
 

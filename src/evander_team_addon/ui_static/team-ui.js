@@ -7375,17 +7375,36 @@ function mailBody(item) {
   const subject = mailSubject(item);
   const candidates = [
     payload.message,
+    payload.body,
     payload.question,
     payload.instructions,
+    payload.error,
     payload.finding,
+    payload.reason,
+    payload.details,
+    payload.description,
     payload.summary,
   ];
-  const body = candidates.map(text).find((value) => value && (value !== subject || candidates.length === 1));
+  const bodyValues = candidates.map(mailBodyValue).filter(Boolean);
+  const body = bodyValues.find((value) => value !== subject);
   if (body) {
     return body;
   }
-  const fallback = candidates.map(text).find(Boolean);
-  return fallback || "";
+  const fallbackEntries = Object.entries(payload)
+    .filter(([key]) => !["title", "subject", "summary"].includes(key))
+    .map(([key, value]) => [humanizeToken(key), mailBodyValue(value)])
+    .filter(([, value]) => Boolean(value));
+  if (fallbackEntries.length) {
+    return fallbackEntries.map(([key, value]) => `${key}: ${value}`).join("\n\n");
+  }
+  return bodyValues[0] || "";
+}
+
+function mailBodyValue(value) {
+  if (value && typeof value === "object") {
+    return JSON.stringify(value, null, 2);
+  }
+  return text(value);
 }
 
 function renderMailEnvelope(item) {

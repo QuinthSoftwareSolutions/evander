@@ -6149,6 +6149,76 @@ test("team add-on Mail reads historical agent correspondence", async (t) => {
   );
 });
 
+test("team add-on Mail renders body, error, and generic historical payloads", async (t) => {
+  const initialState = seededGitState();
+  initialState.inbox = {
+    "body-report": {
+      id: "body-report",
+      recipient_agent_id: "alpha-lead",
+      sender_agent_id: "alpha-manager",
+      item_type: "progress_report",
+      response_requested: false,
+      priority: "low",
+      state: "handled",
+      payload: {
+        summary: "Body-only historical report",
+        body: "This report stored its substantive update in payload.body.",
+      },
+      created_at: "2026-06-12T09:00:00Z",
+      updated_at: "2026-06-12T10:00:00Z",
+    },
+    "error-notice": {
+      id: "error-notice",
+      recipient_agent_id: "alpha-lead",
+      sender_agent_id: null,
+      item_type: "deliverable_notice",
+      response_requested: true,
+      priority: "high",
+      state: "handled",
+      payload: {
+        title: "Release promotion failed",
+        error: "fatal: Needed a single revision",
+      },
+      created_at: "2026-06-13T09:00:00Z",
+      updated_at: "2026-06-13T10:00:00Z",
+    },
+    "generic-notice": {
+      id: "generic-notice",
+      recipient_agent_id: "alpha-lead",
+      sender_agent_id: null,
+      item_type: "escalation",
+      response_requested: true,
+      priority: "normal",
+      state: "handled",
+      payload: {
+        title: "Structured diagnostic",
+        diagnostic: { code: "stale_ref", retryable: true },
+      },
+      created_at: "2026-06-11T09:00:00Z",
+      updated_at: "2026-06-11T10:00:00Z",
+    },
+  };
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByRole("tab", { name: "Mail" }).click();
+  const mailPage = page.locator("#team-mail-page");
+  await mailPage.locator('[data-mail-item-id="error-notice"]').waitFor({ state: "visible" });
+  await mailPage.locator(".mail-reader-body").getByText("fatal: Needed a single revision").waitFor({
+    state: "visible",
+  });
+
+  await mailPage.locator('[data-mail-item-id="body-report"]').click();
+  await mailPage.locator(".mail-reader-body").getByText("This report stored its substantive update in payload.body.").waitFor({
+    state: "visible",
+  });
+
+  await mailPage.locator('[data-mail-item-id="generic-notice"]').click();
+  const genericBody = await mailPage.locator(".mail-reader-body").innerText();
+  assert.match(genericBody, /Diagnostic:/);
+  assert.match(genericBody, /"code": "stale_ref"/);
+});
+
 test("team add-on UI exposes focused workspace tabs without duplicate hidden rows", async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
