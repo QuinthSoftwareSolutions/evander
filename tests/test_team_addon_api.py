@@ -767,6 +767,49 @@ def test_team_addon_chat_ignores_stale_global_state_revision(tmp_path: Path) -> 
     assert sent.json()["message"]["body"] == "Please continue with the current task."
 
 
+def test_team_addon_chat_rejects_stale_sends_after_wake_blockers(tmp_path: Path) -> None:
+    for blocker, expected_error in (
+        ("paused", "agent backend is not active"),
+        ("stood_down", "agent backend is stood down"),
+    ):
+        repo = _seed_runtime_operations_state(tmp_path / blocker / "runtime")
+        client = _client(tmp_path / blocker)
+        created = client.post(
+            "/api/addons/team-addon/conversations",
+            json={"agent_id": "backend", "expected_revision": repo.read().revision},
+        )
+        assert created.status_code == 201
+        conversation = created.json()["conversations"][0]
+        stale_send_revision = created.json()["revision"]
+
+        if blocker == "paused":
+
+            def _pause_backend(state):
+                state.agents["backend"].status = AgentStatus.PAUSED
+                return state
+
+            repo.update(_pause_backend)
+        else:
+            _team_runtime_service(repo).stand_down_agent(
+                agent_id="backend",
+                reason="Operator hold.",
+                set_by="operator:test",
+                expected_revision=repo.read().revision,
+            )
+
+        sent = client.post(
+            f"/api/addons/team-addon/conversations/{conversation['id']}/messages",
+            json={
+                "body": "Please continue with the current task.",
+                "expected_revision": stale_send_revision,
+            },
+        )
+
+        assert sent.status_code == 400
+        assert expected_error in sent.json()["error"]
+        assert repo.read().conversation_messages == {}
+
+
 def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     tmp_path: Path,
     monkeypatch,

@@ -12,6 +12,7 @@ from ..repository import (
 from ..models import (
     AgentRuntime,
     AgentStatus,
+    PersistentAgent,
     TeamConversation,
     TeamConversationMessage,
     TeamState,
@@ -29,10 +30,35 @@ from .domain.common import (
     _require_present,
     _required_text,
 )
+from .domain.stand_down import (
+    _active_stand_downs_for_agent,
+    _stand_down_error_detail,
+)
 
 
 def utc_now() -> datetime:
     return _team_common.utc_now()
+
+
+def _agent_is_chat_dispatch_eligible(
+    state: TeamState,
+    agent: PersistentAgent,
+) -> bool:
+    return agent.status == AgentStatus.ACTIVE and not _active_stand_downs_for_agent(state, agent.id)
+
+
+def _require_agent_chat_dispatch_eligibility(
+    state: TeamState,
+    agent: PersistentAgent,
+) -> None:
+    if agent.status == AgentStatus.ARCHIVED:
+        raise ValueError(f"agent {agent.id} is archived")
+    if agent.status != AgentStatus.ACTIVE:
+        raise ValueError(f"agent {agent.id} is not active")
+    if active_stand_downs := _active_stand_downs_for_agent(state, agent.id):
+        raise ValueError(
+            f"agent {agent.id} is stood down: {_stand_down_error_detail(active_stand_downs)}"
+        )
 
 
 class TeamChatService:
@@ -138,8 +164,7 @@ class TeamChatService:
                 "conversation",
             )
             agent = _require_present(state.agents, conversation.agent_id, "agent")
-            if agent.status == AgentStatus.ARCHIVED:
-                raise ValueError(f"agent {agent.id} is archived")
+            _require_agent_chat_dispatch_eligibility(state, agent)
             now = utc_now()
             message_id = f"chatmsg-{uuid4().hex}"
             metadata = {
@@ -201,8 +226,7 @@ class TeamChatService:
                 "conversation",
             )
             agent = _require_present(state.agents, conversation.agent_id, "agent")
-            if agent.status == AgentStatus.ARCHIVED:
-                raise ValueError(f"agent {agent.id} is archived")
+            _require_agent_chat_dispatch_eligibility(state, agent)
             runtime = state.agent_runtimes.setdefault(
                 agent.id,
                 AgentRuntime(agent_id=agent.id),
@@ -260,8 +284,7 @@ class TeamChatService:
                 "conversation",
             )
             agent = _require_present(state.agents, conversation.agent_id, "agent")
-            if agent.status == AgentStatus.ARCHIVED:
-                raise ValueError(f"agent {agent.id} is archived")
+            _require_agent_chat_dispatch_eligibility(state, agent)
             if message.sender != "operator":
                 raise ValueError(f"message {message.id} is not an operator message")
             now = utc_now()
@@ -327,7 +350,7 @@ class TeamChatService:
                 if conversation is None:
                     continue
                 agent = state.agents.get(conversation.agent_id)
-                if agent is None or agent.status == AgentStatus.ARCHIVED:
+                if agent is None or not _agent_is_chat_dispatch_eligible(state, agent):
                     continue
                 if normalized_team_id is not None and agent.team_id != normalized_team_id:
                     continue

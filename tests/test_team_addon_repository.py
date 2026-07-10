@@ -3351,6 +3351,54 @@ def test_repository_queues_chat_dispatch_until_active_dispatch_released(
     assert state.agent_runtimes["backend"].wake_reason == "team_chat"
 
 
+@pytest.mark.parametrize("blocker", ["paused", "stood_down"])
+def test_repository_queued_chat_dispatch_respects_current_wake_blockers(
+    tmp_path: Path,
+    blocker: str,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator:alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please answer when available.",
+        created_by="operator:alice",
+        expected_revision=state.revision,
+    )
+    dispatch_id = f"team-chat:{message.id}"
+    _team_chat_service(repo).queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+    )
+
+    if blocker == "paused":
+
+        def _pause_backend(state):
+            state.agents["backend"].status = AgentStatus.PAUSED
+            return state
+
+        repo.update(_pause_backend)
+    else:
+        _team_runtime_service(repo).stand_down_agent(
+            agent_id="backend",
+            reason="Operator hold.",
+            set_by="operator:test",
+            expected_revision=repo.read().revision,
+        )
+
+    state, claims = _team_chat_service(repo).claim_pending_chat_message_dispatches(
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert claims == []
+    assert state.conversation_messages[message.id].status == "queued"
+    runtime = state.agent_runtimes.get("backend")
+    assert runtime is None or runtime.active_dispatch_id is None
+
+
 def test_repository_reemits_chat_event_when_active_dispatch_releases(
     tmp_path: Path,
 ) -> None:

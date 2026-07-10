@@ -18,6 +18,8 @@
 
 - Let operators open Team chats and queue chat messages after unrelated Team state changes;
   chat still enforces the current agent status, conversation access, and privilege policy.
+- Prevented queued Team chat dispatches from waking paused or stood-down agents, including
+  messages queued before the wake blocker was applied.
 
 ## 2026-07-10 - Container Git Write Alias Repair
 
