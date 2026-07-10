@@ -6,7 +6,8 @@
   tools are exposed to local models as ordinary functions, then returned function
   calls are restored to Codex's namespace/name shape before routing.
 - Normalized common local-model MCP separators in streamed and non-streamed tool
-  calls while leaving hosted OpenAI and Anthropic requests unchanged.
+  calls, and restored a uniquely identifiable MCP namespace when a local model
+  omitted it entirely, while leaving hosted OpenAI and Anthropic requests unchanged.
 - Classified completed Codex runs with unsupported router calls as tool-interface
   failures before context-limit inference, preventing reduced-context retries from
   repeating an incompatible MCP/tool invocation loop.

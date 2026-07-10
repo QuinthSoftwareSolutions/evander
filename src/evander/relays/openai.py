@@ -976,6 +976,17 @@ class OpenAIRelay:
             resolved = function_namespaces.get(candidate)
             if resolved is not None:
                 return resolved
+        inner_name_candidates = {
+            candidate[len("mcp__") :] if candidate.startswith("mcp__") else candidate
+            for candidate in candidates
+        }
+        inner_name_matches = {
+            resolved
+            for resolved in function_namespaces.values()
+            if resolved[1] in inner_name_candidates
+        }
+        if len(inner_name_matches) == 1:
+            return next(iter(inner_name_matches))
         return None
 
     @staticmethod

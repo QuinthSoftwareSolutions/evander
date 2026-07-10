@@ -551,7 +551,7 @@ def test_relay_expands_local_openai_namespace_tools_and_restores_function_namesp
                 "output": [
                     {
                         "type": "function_call",
-                        "name": "evander__team_get_task",
+                        "name": "team_get_task",
                         "arguments": '{"task_id":"task-1"}',
                         "call_id": "call-1",
                     }
@@ -623,6 +623,27 @@ def test_relay_expands_local_openai_namespace_tools_and_restores_function_namesp
     function_call = response.json()["output"][0]
     assert function_call["name"] == "team_get_task"
     assert function_call["namespace"] == "evander"
+
+
+def test_relay_does_not_guess_namespace_for_ambiguous_bare_function_name() -> None:
+    payload = {
+        "type": "function_call",
+        "name": "get_task",
+        "arguments": '{"task_id":"task-1"}',
+        "call_id": "call-1",
+    }
+
+    changed = OpenAIRelay._rewrite_local_openai_function_calls_payload(
+        payload,
+        function_namespaces={
+            "evander__get_task": ("evander", "get_task"),
+            "other__get_task": ("other", "get_task"),
+        },
+    )
+
+    assert changed is False
+    assert payload["name"] == "get_task"
+    assert "namespace" not in payload
 
 
 def test_relay_restores_local_openai_function_namespace_in_chunked_stream(
