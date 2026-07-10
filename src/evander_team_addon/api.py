@@ -58,6 +58,7 @@ from .models import (
     ReviewProfileCriterion,
     RolePermission,
     TeamCaseStatus,
+    TeamInboxItemType,
     TeamRecordState,
     TeamInboxItemState,
     TeamInboxPriority,
@@ -95,6 +96,8 @@ DEFAULT_TIMELINE_LIMIT = 50
 MAX_TIMELINE_LIMIT = 200
 DEFAULT_STATE_HISTORY_LIMIT = 100
 MAX_STATE_HISTORY_LIMIT = 500
+DEFAULT_INBOX_HISTORY_LIMIT = 50
+MAX_INBOX_HISTORY_LIMIT = 200
 TEAM_VIEW_IDS = (
     "workspace",
     "operations",
@@ -104,6 +107,7 @@ TEAM_VIEW_IDS = (
     "cases",
     "people",
     "chat",
+    "mail",
     "governance",
     "planning",
     "timeline",
@@ -238,6 +242,7 @@ TEAM_VIEW_COLLECTIONS["workspace"] = {
     "git_promotions",
 }
 TEAM_VIEW_COLLECTIONS["chat"] = {"agents"}
+TEAM_VIEW_COLLECTIONS["mail"] = {"teams", "roles", "agents"}
 TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "teams",
     "governance_groups",
@@ -356,6 +361,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def get_bootstrap(request: Request) -> JSONResponse:
         state = repository.read()
         return JSONResponse(_bootstrap_payload_for_request(context.auth, request, state))
+
+    async def get_inbox_history(request: Request) -> JSONResponse:
+        return JSONResponse(_inbox_history_payload_for_request(request, repository.read()))
 
     async def get_view(request: Request) -> JSONResponse:
         view = request.path_params["view"]
@@ -2198,6 +2206,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route("/views/{view}", get_view, methods=["GET"]),
         route("/state", get_state, methods=["GET"]),
         route("/state/stream", stream_state, methods=["GET"]),
+        route("/inbox", get_inbox_history, methods=["GET"]),
         route("/templates", list_templates, methods=["GET"]),
         route(
             "/templates/{template_id}",
@@ -2779,6 +2788,168 @@ def _timeline_payload_for_request(request: Request, state: TeamState) -> dict[st
         "description": "Derived timeline from the current TeamState snapshot.",
         "filters": filters,
     }
+
+
+def _inbox_history_payload_for_request(request: Request, state: TeamState) -> dict[str, Any]:
+    team_id = _query_text(request, "team_id")
+    agent_id = _query_text(request, "agent_id")
+    direction = (_query_text(request, "direction") or "all").casefold()
+    item_type = _query_text(request, "item_type")
+    item_state = _query_text(request, "state")
+    search_text = _query_text(request, "q")
+    limit = _query_limited_int(
+        request,
+        "limit",
+        default=DEFAULT_INBOX_HISTORY_LIMIT,
+        max_value=MAX_INBOX_HISTORY_LIMIT,
+    )
+    offset = _query_non_negative_int(request, "offset", default=0)
+
+    if direction not in {"all", "received", "sent"}:
+        raise ValueError("direction must be all, received, or sent")
+    if direction != "all" and not agent_id:
+        raise ValueError("agent_id is required when filtering inbox direction")
+    if item_type and item_type not in {value.value for value in TeamInboxItemType}:
+        raise ValueError(f"unknown inbox item_type: {item_type}")
+    if item_state and item_state not in {value.value for value in TeamInboxItemState}:
+        raise ValueError(f"unknown inbox state: {item_state}")
+
+    rows = list(state.inbox.values())
+    if team_id:
+        team_agent_ids = {
+            agent.id for agent in state.agents.values() if agent.team_id == team_id
+        }
+        rows = [
+            item
+            for item in rows
+            if item.recipient_agent_id in team_agent_ids
+            or item.sender_agent_id in team_agent_ids
+        ]
+    if agent_id:
+        if direction == "received":
+            rows = [item for item in rows if item.recipient_agent_id == agent_id]
+        elif direction == "sent":
+            rows = [item for item in rows if item.sender_agent_id == agent_id]
+        else:
+            rows = [
+                item
+                for item in rows
+                if item.recipient_agent_id == agent_id or item.sender_agent_id == agent_id
+            ]
+    if item_type:
+        rows = [item for item in rows if item.item_type.value == item_type]
+    if search_text:
+        needle = search_text.casefold()
+        rows = [item for item in rows if needle in _inbox_history_search_text(state, item)]
+
+    state_counts = {
+        value.value: sum(1 for item in rows if item.state == value)
+        for value in TeamInboxItemState
+    }
+    if item_state:
+        rows = [item for item in rows if item.state.value == item_state]
+
+    rows.sort(key=_inbox_history_sort_key, reverse=True)
+    total_count = len(rows)
+    page = rows[offset : offset + limit]
+    filters = {
+        key: value
+        for key, value in {
+            "team_id": team_id,
+            "agent_id": agent_id,
+            "direction": direction if direction != "all" else None,
+            "item_type": item_type,
+            "state": item_state,
+            "q": search_text,
+        }.items()
+        if value is not None
+    }
+    return {
+        "revision": state.revision,
+        "generated_at": state.updated_at.isoformat(),
+        "filters": filters,
+        "state_counts": state_counts,
+        "total_count": total_count,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(page) < total_count,
+        "items": [
+            _inbox_history_item_payload(state, item, focus_agent_id=agent_id)
+            for item in page
+        ],
+    }
+
+
+def _inbox_history_item_payload(
+    state: TeamState,
+    item: Any,
+    *,
+    focus_agent_id: str | None,
+) -> dict[str, Any]:
+    payload = item.model_dump(mode="json")
+    payload["sender"] = _inbox_history_agent_payload(state, item.sender_agent_id)
+    payload["recipient"] = _inbox_history_agent_payload(state, item.recipient_agent_id)
+    task = state.tasks.get(item.task_id) if item.task_id else None
+    payload["task"] = (
+        {
+            "id": task.id,
+            "title": task.title,
+            "project_id": task.project_id,
+            "state": task.state.value,
+        }
+        if task is not None
+        else None
+    )
+    if focus_agent_id and item.sender_agent_id == focus_agent_id:
+        payload["direction"] = "sent"
+    elif focus_agent_id and item.recipient_agent_id == focus_agent_id:
+        payload["direction"] = "received"
+    else:
+        payload["direction"] = "internal" if item.sender_agent_id else "system"
+    return payload
+
+
+def _inbox_history_agent_payload(state: TeamState, agent_id: str | None) -> dict[str, Any] | None:
+    if not agent_id:
+        return None
+    agent = state.agents.get(agent_id)
+    if agent is None:
+        return {"id": agent_id, "display_name": agent_id}
+    role = state.roles.get(agent.role_id) if agent.role_id else None
+    team = state.teams.get(agent.team_id) if agent.team_id else None
+    return {
+        "id": agent.id,
+        "display_name": agent.display_name or agent.id,
+        "team_id": agent.team_id,
+        "team_name": team.name if team is not None else None,
+        "role_name": role.name if role is not None else None,
+        "avatar": agent.avatar.model_dump(mode="json") if agent.avatar is not None else None,
+    }
+
+
+def _inbox_history_search_text(state: TeamState, item: Any) -> str:
+    sender = state.agents.get(item.sender_agent_id) if item.sender_agent_id else None
+    recipient = state.agents.get(item.recipient_agent_id)
+    values = [
+        item.id,
+        item.item_type.value,
+        item.state.value,
+        item.priority.value,
+        item.sender_agent_id or "",
+        sender.display_name if sender is not None else "",
+        item.recipient_agent_id,
+        recipient.display_name if recipient is not None else "",
+        item.task_id or "",
+        json.dumps(item.payload, sort_keys=True, ensure_ascii=False),
+    ]
+    return "\n".join(str(value or "") for value in values).casefold()
+
+
+def _inbox_history_sort_key(item: Any) -> tuple[float, str]:
+    timestamp = item.created_at
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return (timestamp.timestamp(), item.id)
 
 
 def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:

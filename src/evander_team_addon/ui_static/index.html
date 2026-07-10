@@ -161,6 +161,17 @@
           Chat
         </button>
         <button
+          id="team-view-mail-tab"
+          class="team-view-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="team-mail-page"
+          data-team-view="mail"
+        >
+          Mail
+        </button>
+        <button
           id="team-view-governance-tab"
           class="team-view-tab"
           type="button"
@@ -476,6 +487,94 @@
         </aside>
         <section class="content-panel chat-main" aria-label="Selected conversation">
           <div id="chat-thread-view" class="chat-thread-view" data-chat-thread-view></div>
+        </section>
+      </main>
+
+      <main
+        id="team-mail-page"
+        class="focused-team-page mail-page"
+        role="tabpanel"
+        aria-labelledby="team-view-mail-tab"
+        data-team-view-panel="mail"
+        hidden
+      >
+        <section class="content-panel mail-shell" aria-labelledby="team-mail-heading">
+          <header class="mail-header">
+            <div>
+              <p class="section-label">Internal correspondence</p>
+              <h2 id="team-mail-heading">Agent Mail</h2>
+              <p>Read the messages your agents send each other, including filed historical mail.</p>
+            </div>
+            <button type="button" class="record-action" data-mail-refresh>Refresh</button>
+          </header>
+
+          <div class="mail-toolbar" aria-label="Mail filters">
+            <label>
+              Team
+              <select id="mail-team-filter" data-mail-filter="team_id">
+                <option value="">All teams</option>
+              </select>
+            </label>
+            <label>
+              Agent
+              <select id="mail-agent-filter" data-mail-filter="agent_id">
+                <option value="">Everyone</option>
+              </select>
+            </label>
+            <label>
+              Direction
+              <select id="mail-direction-filter" data-mail-filter="direction" disabled>
+                <option value="">Received and sent</option>
+                <option value="received">Received</option>
+                <option value="sent">Sent</option>
+              </select>
+            </label>
+            <label>
+              Kind
+              <select id="mail-type-filter" data-mail-filter="item_type">
+                <option value="">All mail</option>
+                <option value="operator_directive">Operator directive</option>
+                <option value="question">Question</option>
+                <option value="status_request">Status request</option>
+                <option value="progress_report">Progress report</option>
+                <option value="deliverable_notice">Deliverable notice</option>
+                <option value="escalation">Escalation</option>
+              </select>
+            </label>
+            <form class="mail-search" data-mail-search-form role="search">
+              <label>
+                Search messages
+                <span class="mail-search-controls">
+                  <input id="mail-search-input" name="q" type="search" placeholder="Words, agent, task, id..." />
+                  <button type="submit">Search</button>
+                </span>
+              </label>
+            </form>
+          </div>
+
+          <div class="mail-layout">
+            <aside class="mail-folders" aria-label="Mail folders">
+              <button type="button" data-mail-state="" aria-pressed="true">
+                <span>All mail</span><strong data-mail-folder-count="all">0</strong>
+              </button>
+              <button type="button" data-mail-state="pending" aria-pressed="false">
+                <span>Awaiting action</span><strong data-mail-folder-count="pending">0</strong>
+              </button>
+              <button type="button" data-mail-state="handled" aria-pressed="false">
+                <span>Filed</span><strong data-mail-folder-count="handled">0</strong>
+              </button>
+            </aside>
+
+            <section class="mail-list-panel" aria-label="Messages">
+              <div id="mail-status" class="mail-status" role="status" aria-live="polite"></div>
+              <div id="mail-list" class="mail-list" data-mail-list></div>
+              <div id="mail-pagination" class="mail-pagination" data-mail-pagination></div>
+            </section>
+
+            <article id="mail-reader" class="mail-reader" data-mail-reader aria-live="polite">
+              <p class="empty-state">Select a message to read it.</p>
+            </article>
+          </div>
         </section>
       </main>
 

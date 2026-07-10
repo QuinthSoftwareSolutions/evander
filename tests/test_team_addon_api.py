@@ -1006,6 +1006,78 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
     assert set(operations_state["resource_tokens"]["action_records"]) == {"action-1"}
 
 
+def test_team_addon_inbox_history_is_searchable_filterable_and_paginated(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    created_at = datetime(2026, 1, 2, tzinfo=UTC)
+    handled_at = created_at + timedelta(hours=2)
+
+    def _mutate(state):
+        state.inbox["handled-progress"] = AgentInboxItem(
+            id="handled-progress",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            task_id="waiting-task",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            state=TeamInboxItemState.HANDLED,
+            response_requested=False,
+            payload={
+                "summary": "Quiet deployment update",
+                "message": "The deployment is ready for the private follow-up.",
+            },
+            created_at=created_at,
+            updated_at=handled_at,
+        )
+
+    repo.update(_mutate)
+    client = _client(tmp_path)
+
+    mail_view = client.get("/api/addons/team-addon/views/mail")
+    assert mail_view.status_code == 200
+    assert set(mail_view.json()["data"]["state"]) >= {"teams", "roles", "agents"}
+    assert "inbox" not in mail_view.json()["data"]["state"]
+
+    page = client.get("/api/addons/team-addon/inbox?agent_id=backend&limit=1")
+    assert page.status_code == 200
+    payload = page.json()
+    assert payload["total_count"] == 3
+    assert payload["state_counts"] == {"pending": 2, "handled": 1}
+    assert payload["has_more"] is True
+    assert [item["id"] for item in payload["items"]] == ["handled-progress"]
+    item = payload["items"][0]
+    assert item["direction"] == "received"
+    assert item["sender"]["id"] == "lead"
+    assert item["recipient"]["id"] == "backend"
+    assert item["task"] == {
+        "id": "waiting-task",
+        "title": "Waiting task",
+        "project_id": "project",
+        "state": "pending",
+    }
+    assert item["payload"]["message"] == "The deployment is ready for the private follow-up."
+
+    searched = client.get(
+        "/api/addons/team-addon/inbox",
+        params={"state": "handled", "q": "private follow-up"},
+    )
+    assert searched.status_code == 200
+    assert searched.json()["total_count"] == 1
+    assert searched.json()["items"][0]["id"] == "handled-progress"
+
+    sent = client.get(
+        "/api/addons/team-addon/inbox",
+        params={"agent_id": "lead", "direction": "sent", "item_type": "progress_report"},
+    )
+    assert sent.status_code == 200
+    assert sent.json()["total_count"] == 1
+    assert sent.json()["items"][0]["direction"] == "sent"
+
+    invalid = client.get("/api/addons/team-addon/inbox?direction=sent")
+    assert invalid.status_code == 400
+    assert invalid.json() == {"error": "agent_id is required when filtering inbox direction"}
+
+
 def test_team_addon_chat_defaults_to_current_operator_and_inspects_others_read_only(
     tmp_path: Path,
 ) -> None:

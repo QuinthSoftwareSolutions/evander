@@ -20,6 +20,7 @@ const teamViewIds = [
   "cases",
   "people",
   "chat",
+  "mail",
   "governance",
   "planning",
   "timeline",
@@ -52,6 +53,11 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.doesNotMatch(script, /data-summary-grid/);
   assert.match(script, /data-review-delivery-view/);
   assert.match(script, /data-timeline-filter/);
+  assert.match(markup, /data-team-view="mail"/);
+  assert.match(markup, /id="team-mail-page"/);
+  assert.match(script, /\/inbox\?/);
+  assert.match(script, /renderMailReader/);
+  assert.match(stylesheet, /\.mail-layout/);
   assert.match(script, /data-planning-task-status/);
   assert.match(script, /data-task-board-team/);
   assert.match(script, /renderTaskBoard/);
@@ -581,6 +587,113 @@ function buildTimelinePayload(state, url) {
     offset,
     has_more: offset + windowedEntries.length < totalCount,
     entries: windowedEntries,
+  };
+}
+
+function buildMailPayload(state, url) {
+  const filters = {
+    team_id: queryText(url.searchParams, "team_id"),
+    agent_id: queryText(url.searchParams, "agent_id"),
+    direction: queryText(url.searchParams, "direction"),
+    item_type: queryText(url.searchParams, "item_type"),
+    state: queryText(url.searchParams, "state"),
+    q: queryText(url.searchParams, "q"),
+  };
+  let items = Object.values(state.inbox || {});
+  if (filters.team_id) {
+    const teamAgentIds = new Set(
+      Object.values(state.agents || {})
+        .filter((agent) => agent.team_id === filters.team_id)
+        .map((agent) => agent.id),
+    );
+    items = items.filter(
+      (item) => teamAgentIds.has(item.sender_agent_id) || teamAgentIds.has(item.recipient_agent_id),
+    );
+  }
+  if (filters.agent_id) {
+    if (filters.direction === "received") {
+      items = items.filter((item) => item.recipient_agent_id === filters.agent_id);
+    } else if (filters.direction === "sent") {
+      items = items.filter((item) => item.sender_agent_id === filters.agent_id);
+    } else {
+      items = items.filter(
+        (item) => item.sender_agent_id === filters.agent_id || item.recipient_agent_id === filters.agent_id,
+      );
+    }
+  }
+  if (filters.item_type) {
+    items = items.filter((item) => item.item_type === filters.item_type);
+  }
+  if (filters.q) {
+    const needle = filters.q.toLowerCase();
+    items = items.filter((item) => JSON.stringify(item).toLowerCase().includes(needle));
+  }
+  const stateCounts = {
+    pending: items.filter((item) => (item.state || "pending") === "pending").length,
+    handled: items.filter((item) => item.state === "handled").length,
+  };
+  if (filters.state) {
+    items = items.filter((item) => (item.state || "pending") === filters.state);
+  }
+  items.sort((left, right) => {
+    return (
+      (Date.parse(right.created_at || "") || 0) - (Date.parse(left.created_at || "") || 0) ||
+      String(right.id || "").localeCompare(String(left.id || ""))
+    );
+  });
+  const totalCount = items.length;
+  const limit = Math.max(1, queryInt(url.searchParams, "limit", 50));
+  const offset = Math.max(0, queryInt(url.searchParams, "offset", 0));
+  const page = items.slice(offset, offset + limit).map((item) => {
+    const sender = mailAgentPayload(state, item.sender_agent_id);
+    const recipient = mailAgentPayload(state, item.recipient_agent_id);
+    const task = item.task_id ? state.tasks?.[item.task_id] : null;
+    return {
+      response_requested: true,
+      priority: "normal",
+      state: "pending",
+      ...item,
+      sender,
+      recipient,
+      task: task
+        ? { id: task.id, title: task.title, project_id: task.project_id, state: task.state }
+        : null,
+      direction:
+        filters.agent_id && item.sender_agent_id === filters.agent_id
+          ? "sent"
+          : filters.agent_id && item.recipient_agent_id === filters.agent_id
+            ? "received"
+            : item.sender_agent_id
+              ? "internal"
+              : "system",
+    };
+  });
+  return {
+    revision: state.revision,
+    generated_at: "2026-06-09T00:00:00Z",
+    filters: compactFilters(filters),
+    state_counts: stateCounts,
+    total_count: totalCount,
+    limit,
+    offset,
+    has_more: offset + page.length < totalCount,
+    items: page,
+  };
+}
+
+function mailAgentPayload(state, agentId) {
+  if (!agentId) return null;
+  const agent = state.agents?.[agentId];
+  if (!agent) return { id: agentId, display_name: agentId };
+  const role = agent.role_id ? state.roles?.[agent.role_id] : null;
+  const team = agent.team_id ? state.teams?.[agent.team_id] : null;
+  return {
+    id: agent.id,
+    display_name: agent.display_name || agent.id,
+    team_id: agent.team_id,
+    team_name: team?.name || null,
+    role_name: role?.name || null,
+    avatar: agent.avatar || null,
   };
 }
 
@@ -1400,6 +1513,11 @@ async function createTeamAddonServer(
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/bootstrap") {
         jsonResponse(response, bootstrapPayload(state));
+        return;
+      }
+      if (request.method === "GET" && pathname === "/api/addons/team-addon/inbox") {
+        requests.push({ method: request.method, pathname, search: url.search });
+        jsonResponse(response, buildMailPayload(state, url));
         return;
       }
       const viewMatch = pathname.match(/^\/api\/addons\/team-addon\/views\/([^/]+)$/);
@@ -5965,6 +6083,72 @@ function seededMalformedHierarchyState() {
   };
 }
 
+test("team add-on Mail reads historical agent correspondence", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-manager"].display_name = "Ada Manager";
+  initialState.agents["alpha-lead"].display_name = "Grace Lead";
+  initialState.inbox["inbox-history"] = {
+    id: "inbox-history",
+    recipient_agent_id: "alpha-lead",
+    sender_agent_id: "alpha-manager",
+    task_id: "task-waiting",
+    item_type: "progress_report",
+    response_requested: false,
+    priority: "low",
+    state: "handled",
+    payload: {
+      summary: "Quiet deployment update",
+      message: "The deployment is ready for a private follow-up.",
+    },
+    created_at: "2026-06-10T09:00:00Z",
+    updated_at: "2026-06-10T10:00:00Z",
+  };
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByRole("tab", { name: "Mail" }).click();
+  const mailPage = page.locator("#team-mail-page");
+  await mailPage.waitFor({ state: "visible" });
+  await mailPage.locator('[data-mail-item-id="inbox-history"]').waitFor({ state: "visible" });
+  await mailPage.getByRole("heading", { name: "Quiet deployment update" }).waitFor({
+    state: "visible",
+  });
+  await mailPage.locator(".mail-reader-body").getByText("The deployment is ready for a private follow-up.").waitFor({
+    state: "visible",
+  });
+  await mailPage.locator(".mail-reader-addresses strong").getByText("Ada Manager · Manager").waitFor({ state: "visible" });
+  await mailPage.locator(".mail-reader-addresses span").getByText("to Grace Lead · Project Lead").waitFor({ state: "visible" });
+
+  await mailPage.locator('[data-mail-state="pending"]').click();
+  await mailPage.locator('[data-mail-item-id="inbox-1"]').waitFor({ state: "visible" });
+  await mailPage.locator('[data-mail-item-id="inbox-history"]').waitFor({ state: "detached" });
+  await mailPage.getByRole("heading", { name: "What is the status?" }).waitFor({ state: "visible" });
+
+  await mailPage.locator('[data-mail-state="handled"]').click();
+  await mailPage.locator('[data-mail-item-id="inbox-history"]').waitFor({ state: "visible" });
+  await mailPage.locator("#mail-agent-filter").selectOption("alpha-manager");
+  await mailPage.locator("#mail-direction-filter").selectOption("sent");
+  await mailPage.getByText("To: Grace Lead").waitFor({ state: "visible" });
+  await mailPage.locator("#mail-search-input").fill("private follow-up");
+  await mailPage.getByRole("button", { name: "Search" }).click();
+  await mailPage.locator('[data-mail-item-id="inbox-history"]').waitFor({ state: "visible" });
+  await mailPage.locator(".mail-reader-envelope summary").click();
+  await mailPage.locator(".mail-envelope-grid").getByText("inbox-history").waitFor({
+    state: "visible",
+  });
+
+  assert.ok(
+    requests.some(
+      (request) =>
+        request.method === "GET" &&
+        request.pathname === "/api/addons/team-addon/inbox" &&
+        request.search.includes("direction=sent") &&
+        request.search.includes("q=private+follow-up"),
+    ),
+    "expected Mail filters to be sent to the history endpoint",
+  );
+});
+
 test("team add-on UI exposes focused workspace tabs without duplicate hidden rows", async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
@@ -5986,6 +6170,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     "Delivery",
     "Task board",
     "Teams",
+    "Mail",
     "Governance",
     "Planning",
     "Timeline",

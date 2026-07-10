@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-10 - Team Agent Mail Archive
+
+- Added a read-only Agent Mail view for browsing current and historical Team inbox
+  correspondence with sender, recipient, direction, state, type, full message payload,
+  search, and pagination filters.
+- Added a paginated Team inbox-history API so handled correspondence remains available
+  beyond the bounded state payload used by the operational views.
+
 ## 2026-07-10 - Team Chat Permission Handoff
 
 - Kept reply-only Team Chat messages queued while their target session has an

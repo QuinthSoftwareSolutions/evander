@@ -93,6 +93,7 @@ const teamViewIds = new Set([
   "cases",
   "people",
   "chat",
+  "mail",
   "governance",
   "planning",
   "timeline",
@@ -131,6 +132,10 @@ let runtimeFilterTouched = false;
 let templates = [];
 let timelineState = emptyTimelineState();
 let chatState = emptyChatState();
+let mailState = emptyMailState();
+let mailRequestId = 0;
+let selectedMailItemId = null;
+let selectedMailState = "";
 let chatRequestId = 0;
 let chatNewPickerOpen = false;
 let selectedChatConversationId = null;
@@ -211,6 +216,7 @@ const ephemeralWorkKinds = new Set([
 ]);
 const runtimeFilterLabels = Object.fromEntries(runtimeFilterChoices);
 const timelinePageSize = 10;
+const mailPageSize = 50;
 const projectRecordPageSize = 10;
 const chatMessagePageSize = 50;
 const chatTopLoadThresholdPx = 48;
@@ -260,6 +266,15 @@ const elements = {
   chatThreadView: document.querySelector("#chat-thread-view"),
   chatNewPicker: document.querySelector("#chat-new-picker"),
   chatOperatorView: document.querySelector("#chat-operator-view"),
+  mailTeamFilter: document.querySelector("#mail-team-filter"),
+  mailAgentFilter: document.querySelector("#mail-agent-filter"),
+  mailDirectionFilter: document.querySelector("#mail-direction-filter"),
+  mailTypeFilter: document.querySelector("#mail-type-filter"),
+  mailSearchInput: document.querySelector("#mail-search-input"),
+  mailStatus: document.querySelector("#mail-status"),
+  mailList: document.querySelector("#mail-list"),
+  mailPagination: document.querySelector("#mail-pagination"),
+  mailReader: document.querySelector("#mail-reader"),
   teamsCreateTeamPanel: document.querySelector("#teams-create-team-panel"),
   teamsCreateTeamForm: document.querySelector("#create-team-from-teams-form"),
   governanceCreateGroupPanel: document.querySelector("#governance-create-panel"),
@@ -491,6 +506,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindArchivedVisibilityToggle();
   bindGovernanceAgendaVisibilityToggle();
   bindInboxPopoverPositioning();
+  bindMailControls();
   elements.templateSelect?.addEventListener("change", () => {
     renderTemplateSetupFields();
   });
@@ -586,8 +602,24 @@ function emptyChatState() {
   };
 }
 
+function emptyMailState() {
+  return {
+    revision: 0,
+    filters: {},
+    state_counts: { pending: 0, handled: 0 },
+    total_count: 0,
+    limit: 50,
+    offset: 0,
+    has_more: false,
+    items: [],
+    loading: false,
+    error: null,
+  };
+}
+
 const decisionStates = ["accepted", "rejected", "blocked"];
 const inboxItemLabels = {
+  operator_directive: "Operator directive",
   question: "Question",
   status_request: "Status request",
   progress_report: "Progress report",
@@ -2864,6 +2896,9 @@ function mergeResourceTokens(existing, incoming) {
 }
 
 function scheduleAuxiliaryLoadsForView(view) {
+  if (view === "mail") {
+    void loadMail();
+  }
   if (view !== "chat") {
     void loadCosts();
   }
@@ -3676,6 +3711,10 @@ function renderActiveView(view = activeTeamView) {
       renderChat();
       decorateActiveViewTooltips();
       break;
+    case "mail":
+      renderMail();
+      decorateActiveViewTooltips();
+      break;
     case "governance":
       renderGovernance();
       refreshActiveViewSelects();
@@ -3705,6 +3744,7 @@ function renderActiveViewLoading(view = activeTeamView) {
   const panel = document.querySelector(`[data-team-view-panel="${normalizedTeamView(view)}"]`);
   const target =
     panel?.querySelector("[data-chat-thread-view]") ||
+    panel?.querySelector("[data-mail-list]") ||
     panel?.querySelector("[data-agent-detail-view]") ||
     panel?.querySelector("[data-projects-focus-detail]") ||
     panel?.querySelector("[data-workspace-attention-column]") ||
@@ -4273,6 +4313,7 @@ function renderWorkspaceNavigationPanel() {
     ["task-board", "Task board", "Project work by lane"],
     ["cases", "Cases", "Intake and ticket context"],
     ["governance", "Governance", "Groups, agenda, and oversight"],
+    ["mail", "Agent Mail", "Internal messages and historical correspondence"],
     ["timeline", "Timeline", "Derived audit view"],
     ["org", "Org chart", "Team graph"],
   ];
@@ -6968,6 +7009,437 @@ function agentsForRole(roleId) {
   return values(state.agents)
     .filter((agent) => text(agent.role_id) === normalizedRoleId && isVisibleAgent(agent))
     .sort(comparePeopleAgents);
+}
+
+function bindMailControls() {
+  document.addEventListener("change", (event) => {
+    const filter = event.target?.closest?.("[data-mail-filter]");
+    if (!filter) {
+      return;
+    }
+    if (filter.dataset.mailFilter === "team_id") {
+      const selectedTeamId = text(filter.value);
+      const selectedAgent = state.agents[text(elements.mailAgentFilter?.value)];
+      if (selectedAgent && text(selectedAgent.team_id) !== selectedTeamId) {
+        elements.mailAgentFilter.value = "";
+      }
+    }
+    if (filter.dataset.mailFilter === "agent_id" && !text(filter.value)) {
+      elements.mailDirectionFilter.value = "";
+    }
+    selectedMailItemId = null;
+    void loadMail({ offset: 0 });
+  });
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("[data-mail-search-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    selectedMailItemId = null;
+    void loadMail({ offset: 0 });
+  });
+
+  document.addEventListener("click", (event) => {
+    const refresh = event.target?.closest?.("[data-mail-refresh]");
+    if (refresh) {
+      event.preventDefault();
+      void loadMail({ offset: mailState.offset || 0 });
+      return;
+    }
+    const folder = event.target?.closest?.("[data-mail-state]");
+    if (folder) {
+      event.preventDefault();
+      selectedMailState = text(folder.dataset.mailState);
+      selectedMailItemId = null;
+      void loadMail({ offset: 0 });
+      return;
+    }
+    const message = event.target?.closest?.("[data-mail-item-id]");
+    if (message) {
+      event.preventDefault();
+      selectedMailItemId = text(message.dataset.mailItemId);
+      renderMail();
+      return;
+    }
+    const pageButton = event.target?.closest?.("[data-mail-page]");
+    if (pageButton) {
+      event.preventDefault();
+      const direction = text(pageButton.dataset.mailPage);
+      const delta = direction === "next" ? mailState.limit : -mailState.limit;
+      selectedMailItemId = null;
+      void loadMail({ offset: Math.max(0, Number(mailState.offset || 0) + delta) });
+    }
+  });
+}
+
+async function loadMail({ offset = 0 } = {}) {
+  const requestId = ++mailRequestId;
+  const query = mailSearchParams(offset);
+  mailState = { ...mailState, loading: true, error: null };
+  if (activeTeamView === "mail") {
+    renderMail();
+  }
+  try {
+    const response = await teamFetch(`${API_BASE}/inbox?${query.toString()}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== mailRequestId) {
+      return payload;
+    }
+    mailState = {
+      ...emptyMailState(),
+      ...payload,
+      state_counts: { ...emptyMailState().state_counts, ...(payload.state_counts || {}) },
+      items: Array.isArray(payload.items) ? payload.items : [],
+      loading: false,
+      error: null,
+    };
+    const selectedStillVisible = mailState.items.some((item) => item.id === selectedMailItemId);
+    if (!selectedStillVisible) {
+      selectedMailItemId = mailState.items[0]?.id || null;
+    }
+    if (activeTeamView === "mail") {
+      renderMail();
+    }
+    return payload;
+  } catch (error) {
+    if (requestId !== mailRequestId) {
+      return null;
+    }
+    mailState = {
+      ...mailState,
+      loading: false,
+      error: error instanceof Error ? error.message : "Agent mail failed to load.",
+    };
+    if (activeTeamView === "mail") {
+      renderMail();
+    }
+    return null;
+  }
+}
+
+function mailSearchParams(offset = 0) {
+  const params = new URLSearchParams({
+    limit: String(mailPageSize),
+    offset: String(Math.max(0, Number(offset) || 0)),
+  });
+  const agentId = text(elements.mailAgentFilter?.value);
+  const values = {
+    team_id: elements.mailTeamFilter?.value,
+    agent_id: agentId,
+    direction: agentId ? elements.mailDirectionFilter?.value : "",
+    item_type: elements.mailTypeFilter?.value,
+    state: selectedMailState,
+    q: elements.mailSearchInput?.value,
+  };
+  Object.entries(values).forEach(([key, value]) => {
+    const normalized = text(value);
+    if (normalized) {
+      params.set(key, normalized);
+    }
+  });
+  return params;
+}
+
+function renderMail() {
+  renderMailFilterOptions();
+  renderMailFolders();
+  renderMailStatus();
+  renderMailList();
+  renderMailPagination();
+  renderMailReader();
+}
+
+function renderMailFilterOptions() {
+  const selectedTeamId = text(elements.mailTeamFilter?.value);
+  const teamOptions = values(state.teams)
+    .sort((left, right) => agentLabel(left).localeCompare(agentLabel(right)) || byId(left, right))
+    .map((team) => [team.id, `${team.name || team.id} (${team.id})`]);
+  if (elements.mailTeamFilter) {
+    elements.mailTeamFilter.innerHTML = renderSelectOptions(teamOptions, {
+      selectedValue: selectedTeamId,
+      placeholder: "All teams",
+    });
+  }
+
+  const selectedAgentId = text(elements.mailAgentFilter?.value);
+  const agentOptions = values(state.agents)
+    .filter((agent) => !selectedTeamId || text(agent.team_id) === selectedTeamId)
+    .sort((left, right) => agentLabel(left).localeCompare(agentLabel(right)) || byId(left, right))
+    .map((agent) => [agent.id, `${agentLabel(agent)} (${agent.id})`]);
+  if (elements.mailAgentFilter) {
+    elements.mailAgentFilter.innerHTML = renderSelectOptions(agentOptions, {
+      selectedValue: selectedAgentId,
+      placeholder: "Everyone",
+    });
+  }
+  const hasAgent = Boolean(text(elements.mailAgentFilter?.value));
+  if (elements.mailDirectionFilter) {
+    elements.mailDirectionFilter.disabled = !hasAgent;
+    if (!hasAgent) {
+      elements.mailDirectionFilter.value = "";
+    }
+  }
+}
+
+function renderMailFolders() {
+  const pending = Number(mailState.state_counts?.pending || 0);
+  const handled = Number(mailState.state_counts?.handled || 0);
+  document.querySelectorAll("[data-mail-state]").forEach((button) => {
+    button.setAttribute(
+      "aria-pressed",
+      text(button.dataset.mailState) === selectedMailState ? "true" : "false",
+    );
+  });
+  const counts = { all: pending + handled, pending, handled };
+  document.querySelectorAll("[data-mail-folder-count]").forEach((element) => {
+    element.textContent = String(counts[element.dataset.mailFolderCount] || 0);
+  });
+}
+
+function renderMailStatus() {
+  if (!elements.mailStatus) {
+    return;
+  }
+  elements.mailStatus.className = `mail-status${mailState.error ? " error" : ""}`;
+  if (mailState.loading) {
+    elements.mailStatus.textContent = "Opening the mail archive...";
+    return;
+  }
+  if (mailState.error) {
+    elements.mailStatus.textContent = mailState.error;
+    return;
+  }
+  const noun = mailState.total_count === 1 ? "message" : "messages";
+  elements.mailStatus.textContent = `${mailState.total_count} ${noun} matched.`;
+}
+
+function renderMailList() {
+  if (!elements.mailList) {
+    return;
+  }
+  if (!mailState.items.length) {
+    elements.mailList.innerHTML = `<p class="empty-state">No correspondence matched these filters.</p>`;
+    return;
+  }
+  elements.mailList.innerHTML = mailState.items.map((item) => renderMailRow(item)).join("");
+}
+
+function renderMailRow(item) {
+  const selected = item.id === selectedMailItemId;
+  const correspondent = mailCorrespondent(item);
+  const party = mailRowParty(item);
+  const subject = mailSubject(item);
+  const preview = mailBody(item).replace(/\s+/g, " ").trim();
+  const priority = text(item.priority);
+  return `
+    <button
+      type="button"
+      class="mail-message-row${selected ? " is-selected" : ""}${item.state === "pending" ? " is-pending" : ""}"
+      data-mail-item-id="${escapeAttr(item.id)}"
+      aria-pressed="${selected ? "true" : "false"}"
+    >
+      ${renderAgentAvatar(correspondent, "mail-row-avatar")}
+      <span class="mail-row-main">
+        <span class="mail-row-line">
+          <span class="mail-row-party">${escapeHtml(party)}</span>
+          <time class="mail-row-time">${escapeHtml(formatMailRowTimestamp(item.created_at))}</time>
+        </span>
+        <span class="mail-row-subject">${escapeHtml(subject)}</span>
+        <span class="mail-row-preview">${escapeHtml(preview || humanizeToken(item.item_type))}</span>
+        <span class="mail-row-meta">${escapeHtml(humanizeToken(item.item_type))} · ${escapeHtml(item.state === "pending" ? "Awaiting action" : "Filed")}</span>
+      </span>
+      ${priority === "high" ? `<span class="mail-priority-mark" title="High priority">!</span>` : ""}
+    </button>
+  `;
+}
+
+function renderMailPagination() {
+  if (!elements.mailPagination) {
+    return;
+  }
+  const total = Number(mailState.total_count || 0);
+  const offset = Number(mailState.offset || 0);
+  const start = total ? offset + 1 : 0;
+  const end = Math.min(total, offset + mailState.items.length);
+  elements.mailPagination.innerHTML = `
+    <span>${escapeHtml(`${start}-${end} of ${total}`)}</span>
+    <span class="mail-pagination-actions">
+      <button type="button" data-mail-page="previous" ${offset <= 0 ? "disabled" : ""}>Previous</button>
+      <button type="button" data-mail-page="next" ${mailState.has_more ? "" : "disabled"}>Next</button>
+    </span>
+  `;
+}
+
+function renderMailReader() {
+  if (!elements.mailReader) {
+    return;
+  }
+  const item = mailState.items.find((candidate) => candidate.id === selectedMailItemId);
+  if (!item) {
+    elements.mailReader.innerHTML = `<p class="empty-state">Select a message to read it.</p>`;
+    return;
+  }
+  const sender = mailSender(item);
+  const recipient = item.recipient || { id: item.recipient_agent_id, display_name: item.recipient_agent_id };
+  const task = item.task;
+  const updated = text(item.updated_at) && text(item.updated_at) !== text(item.created_at)
+    ? `<span>Filed ${escapeHtml(formatMailTimestamp(item.updated_at))}</span>`
+    : "";
+  elements.mailReader.innerHTML = `
+    <header class="mail-reader-header">
+      <h3>${escapeHtml(mailSubject(item))}</h3>
+      <div class="mail-reader-identity">
+        ${renderAgentAvatar(sender, "mail-reader-avatar")}
+        <div class="mail-reader-addresses">
+          <strong>${escapeHtml(agentLabel(sender))}${sender.role_name ? ` · ${escapeHtml(sender.role_name)}` : ""}</strong>
+          <span>to ${escapeHtml(agentLabel(recipient))}${recipient.role_name ? ` · ${escapeHtml(recipient.role_name)}` : ""}</span>
+        </div>
+        <time class="mail-reader-date">${escapeHtml(formatMailTimestamp(item.created_at))}</time>
+      </div>
+      <div class="mail-reader-pills">
+        <span class="state-pill ${escapeAttr(item.state || "pending")}">${escapeHtml(item.state === "pending" ? "Awaiting action" : "Filed")}</span>
+        <span class="state-pill">${escapeHtml(inboxItemLabels[item.item_type] || humanizeToken(item.item_type))}</span>
+        <span class="state-pill">${escapeHtml(humanizeToken(item.priority || "normal"))} priority</span>
+        ${item.response_requested ? `<span class="state-pill warning">Reply requested</span>` : ""}
+      </div>
+    </header>
+    <div class="mail-reader-body">${escapeHtml(mailBody(item) || "No message body was recorded.")}</div>
+    <div class="mail-reader-context">
+      ${task ? `<span>Task: ${escapeHtml(task.title)} (${escapeHtml(task.id)}) · ${escapeHtml(humanizeToken(task.state))}</span>` : ""}
+      <span>Message ID: ${escapeHtml(item.id)}</span>
+      ${updated}
+    </div>
+    <details class="mail-reader-envelope">
+      <summary>Full message envelope</summary>
+      <dl class="mail-envelope-grid">${renderMailEnvelope(item)}</dl>
+    </details>
+  `;
+}
+
+function mailSender(item) {
+  if (item.sender) {
+    return item.sender;
+  }
+  const createdBy = text(item.payload?.created_by);
+  return {
+    id: createdBy || "operator-system",
+    display_name: createdBy || "Operator / system",
+    role_name: createdBy ? "External sender" : "System",
+  };
+}
+
+function mailCorrespondent(item) {
+  const focusAgentId = text(elements.mailAgentFilter?.value);
+  if (focusAgentId && text(item.sender_agent_id) === focusAgentId) {
+    return item.recipient || { id: item.recipient_agent_id, display_name: item.recipient_agent_id };
+  }
+  return mailSender(item);
+}
+
+function mailRowParty(item) {
+  const sender = mailSender(item);
+  const recipient = item.recipient || { id: item.recipient_agent_id, display_name: item.recipient_agent_id };
+  const focusAgentId = text(elements.mailAgentFilter?.value);
+  if (focusAgentId && text(item.sender_agent_id) === focusAgentId) {
+    return `To: ${agentLabel(recipient)}`;
+  }
+  if (focusAgentId) {
+    return `From: ${agentLabel(sender)}`;
+  }
+  return `${agentLabel(sender)} → ${agentLabel(recipient)}`;
+}
+
+function mailSubject(item) {
+  const payload = item.payload || {};
+  const candidates = [
+    payload.title,
+    payload.subject,
+    payload.summary,
+    payload.question,
+    payload.message,
+    payload.instructions,
+  ];
+  const subject = candidates.map(text).find(Boolean);
+  return subject || `${inboxItemLabels[item.item_type] || humanizeToken(item.item_type)} ${item.id}`;
+}
+
+function mailBody(item) {
+  const payload = item.payload || {};
+  const subject = mailSubject(item);
+  const candidates = [
+    payload.message,
+    payload.question,
+    payload.instructions,
+    payload.finding,
+    payload.summary,
+  ];
+  const body = candidates.map(text).find((value) => value && (value !== subject || candidates.length === 1));
+  if (body) {
+    return body;
+  }
+  const fallback = candidates.map(text).find(Boolean);
+  return fallback || "";
+}
+
+function renderMailEnvelope(item) {
+  const entries = [
+    ["Message ID", item.id],
+    ["From", `${agentLabel(mailSender(item))} (${item.sender_agent_id || "external"})`],
+    ["To", `${agentLabel(item.recipient)} (${item.recipient_agent_id})`],
+    ["Created", formatMailTimestamp(item.created_at)],
+    ["Updated", formatMailTimestamp(item.updated_at)],
+    ["Type", item.item_type],
+    ["State", item.state],
+    ["Priority", item.priority],
+    ["Response requested", item.response_requested ? "Yes" : "No"],
+    ["Task", item.task_id || "None"],
+    ...Object.entries(item.payload || {}).map(([key, value]) => [humanizeToken(key), mailEnvelopeValue(value)]),
+  ];
+  return entries
+    .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`)
+    .join("");
+}
+
+function mailEnvelopeValue(value) {
+  if (value && typeof value === "object") {
+    return JSON.stringify(value, null, 2);
+  }
+  return text(value);
+}
+
+function formatMailTimestamp(value) {
+  const raw = text(value);
+  const parsed = new Date(raw);
+  if (!raw || Number.isNaN(parsed.getTime())) {
+    return raw || "Unknown time";
+  }
+  return parsed.toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatMailRowTimestamp(value) {
+  const raw = text(value);
+  const parsed = new Date(raw);
+  if (!raw || Number.isNaN(parsed.getTime())) {
+    return raw;
+  }
+  const now = new Date();
+  const sameYear = parsed.getFullYear() === now.getFullYear();
+  return parsed.toLocaleString([], sameYear
+    ? { month: "short", day: "numeric" }
+    : { year: "numeric", month: "short", day: "numeric" });
 }
 
 function renderChat() {
