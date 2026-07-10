@@ -24,6 +24,10 @@
   repeating an incompatible MCP/tool invocation loop.
 - Preserved the rejected tool names in sanitized worker outcome metadata and
   surfaced the specific failure in reconstructed execution logs.
+- Refreshed and persisted terminal container logs before classifying Codex outcomes
+  so unsupported router calls cannot be mistaken for context-limit failures.
+- Flushed buffered local-model SSE data when a tolerated upstream transport error
+  ends the stream without a trailing newline.
 
 ## 2026-07-10 - Team Release And Wake Review Hardening
 

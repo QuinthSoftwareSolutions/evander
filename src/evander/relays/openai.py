@@ -776,6 +776,12 @@ class OpenAIRelay:
                     # Some upstream streaming responses terminate with a transport-level
                     # read error after the final bytes have already been delivered.
                     # Treat that as end-of-stream instead of crashing the relay.
+                    if rewrite_buffer:
+                        yield self._rewrite_local_openai_function_call_sse_line(
+                            rewrite_buffer,
+                            function_namespaces=function_namespaces or {},
+                        )
+                        rewrite_buffer = b""
                     self.stream_transport_terminated_count += 1
                     logger.warning(
                         "relay_stream_transport_terminated stream_id=%s exception_class=%s exception_message=%s chunks=%s bytes=%s stream_started=%s clean_end=%s transport_terminated_end=%s",

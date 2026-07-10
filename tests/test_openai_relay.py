@@ -1319,6 +1319,19 @@ class _ErrorAfterChunkStream(httpx.AsyncByteStream):
         return None
 
 
+class _LocalOpenAIFunctionCallErrorStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield (
+            b'data: {"type":"response.output_item.added","item":'
+            b'{"type":"function_call","name":"evander:team_get_task",'
+            b'"arguments":"","call_id":"call-1"}}'
+        )
+        raise httpx.ReadError("peer closed stream")
+
+    async def aclose(self) -> None:
+        return None
+
+
 class _CleanStream(httpx.AsyncByteStream):
     async def __aiter__(self):
         yield b"data: first\n\n"
@@ -1398,6 +1411,64 @@ def test_relay_stream_transport_errors_are_suppressed_with_warning(tmp_path: Pat
     assert relay.stream_transport_terminated_count == 1
     assert "relay_stream_transport_terminated" in caplog.text
     assert "exception_class=ReadError" in caplog.text
+
+
+def test_relay_flushes_local_function_call_when_stream_transport_terminates(
+    tmp_path: Path,
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_LocalOpenAIFunctionCallErrorStream(),
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-local")
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_api_key": "ollama-placeholder",
+            "local_openai_provider_name": "local_openai",
+        },
+    )
+    relay = OpenAIRelay(config, transport=httpx.MockTransport(handler))
+    client = TestClient(relay.create_app())
+
+    with client.stream(
+        "POST",
+        "/v1/session/session-local/responses",
+        headers={"accept": "text/event-stream"},
+        json={
+            "model": "qwen3.6:27b",
+            "input": "Get the task",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "evander",
+                    "description": "Team tools",
+                    "tools": [
+                        {
+                            "name": "team_get_task",
+                            "description": "Get an assigned task",
+                            "parameters": {"type": "object"},
+                        }
+                    ],
+                }
+            ],
+        },
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert body.startswith(b"data: ")
+    event = json.loads(body[len(b"data: ") :])
+    assert event["item"]["name"] == "team_get_task"
+    assert event["item"]["namespace"] == "evander"
+    assert relay.stream_clean_end_count == 0
+    assert relay.stream_transport_terminated_count == 1
 
 
 def test_relay_stream_clean_end_logs_completion(tmp_path: Path, caplog) -> None:

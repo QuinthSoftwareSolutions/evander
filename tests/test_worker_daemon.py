@@ -2387,8 +2387,8 @@ def test_completed_codex_job_prefers_unsupported_tool_failure_over_context_retry
         logs_path=str(paths.logs),
         metadata={"agent_provider": "codex", "model_provider_mode": "local_openai"},
     )
-    paths.logs.mkdir(parents=True, exist_ok=True)
-    (paths.logs / "job-1.log").write_text(raw_log, encoding="utf-8")
+    log_path = paths.logs / "job-1.log"
+    assert not log_path.exists()
     session_dir = (
         paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "05" / "05"
     )
@@ -2425,6 +2425,7 @@ def test_completed_codex_job_prefers_unsupported_tool_failure_over_context_retry
 
     inspected = daemon.inspect_job(record)
 
+    assert log_path.read_text(encoding="utf-8") == raw_log
     outcome = inspected.metadata["codex_outcome"]
     assert outcome["status"] == "failed"
     assert outcome["reason"] == "codex_unsupported_tool_call"

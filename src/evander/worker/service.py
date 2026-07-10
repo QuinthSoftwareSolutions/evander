@@ -241,7 +241,18 @@ class WorkerDaemon:
         if status in {"exited", "stopped", "failed", "removed"} and record.finished_at is None:
             record.finished_at = now_utc()
         if status in {"exited", "stopped", "failed", "removed"}:
-            self._refresh_codex_job_outcome(record)
+            log_text: str | None = None
+            if _worker_job_uses_codex(record):
+                try:
+                    log_text = self._raw_logs(record)
+                except OSError as exc:
+                    logger.warning(
+                        "worker_job_terminal_log_refresh_failed job_id=%s exception_class=%s exception_message=%s",
+                        record.job_id,
+                        exc.__class__.__name__,
+                        str(exc),
+                    )
+            self._refresh_codex_job_outcome(record, log_text=log_text)
         self.store.put(record)
         return record
 
@@ -526,18 +537,25 @@ class WorkerDaemon:
             return None
         return "\n".join(lines) + "\n"
 
-    def _refresh_codex_job_outcome(self, record: WorkerJobRecord) -> None:
+    def _refresh_codex_job_outcome(
+        self,
+        record: WorkerJobRecord,
+        *,
+        log_text: str | None = None,
+    ) -> None:
         if not _worker_job_uses_codex(record):
             return
         if record.started_at is None and record.finished_at is None:
             return
-        text = ""
-        log_path = self._log_path(record)
-        if log_path.exists():
-            try:
-                text = log_path.read_text(encoding="utf-8")
-            except OSError:
-                text = ""
+        text = log_text
+        if text is None:
+            text = ""
+            log_path = self._log_path(record)
+            if log_path.exists():
+                try:
+                    text = log_path.read_text(encoding="utf-8")
+                except OSError:
+                    text = ""
         thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
         if not thread_ids:
             thread_ids = _recent_codex_session_ids(Path(record.agent_home_path), limit=1)
