@@ -241,9 +241,27 @@ class WorkerDaemon:
             return record
         status = str(info.get("status") or record.status)
         record.status = status
-        if status in {"exited", "stopped", "failed", "removed"} and record.finished_at is None:
+        metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
+        raw_exit_code = info.get("exit_code")
+        runtime_error = str(info.get("runtime_error") or "").strip()
+        oom_killed = bool(info.get("oom_killed"))
+        terminal = status in {"exited", "stopped", "failed", "removed"}
+        if terminal and (oom_killed or runtime_error):
+            metadata["worker_terminal_kind"] = "infrastructure"
+            record.error = (
+                runtime_error
+                or "container was terminated after exceeding its memory limit"
+            )
+        elif terminal and raw_exit_code is not None:
+            try:
+                metadata["exit_code"] = int(raw_exit_code)
+                metadata["worker_terminal_kind"] = "command_exit"
+            except (TypeError, ValueError):
+                metadata["worker_terminal_kind"] = "infrastructure"
+        record.metadata = sanitize_metadata(metadata)
+        if terminal and record.finished_at is None:
             record.finished_at = now_utc()
-        if status in {"exited", "stopped", "failed", "removed"}:
+        if terminal:
             log_text: str | None = None
             if _worker_job_uses_codex(record):
                 try:

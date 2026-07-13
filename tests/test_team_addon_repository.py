@@ -3778,6 +3778,12 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
         deliverable_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(team_deliverables)")
         }
+        review_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_review_requests)")
+        }
+        release_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_release_packages)")
+        }
         tables = {
             str(row[0])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -3798,6 +3804,11 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "supersedes_deliverable_id" in deliverable_columns
     assert "superseded_by_deliverable_id" in deliverable_columns
     assert "verification_json" in deliverable_columns
+    assert "supersedes_review_request_id" in review_columns
+    assert "superseded_by_review_request_id" in review_columns
+    assert "retry_reason" in review_columns
+    assert "retry_requested_by" in review_columns
+    assert "gate_failure_json" in release_columns
     assert "team_dispatch_activity" in tables
     assert "team_idempotency_records" in tables
     assert "team_outbox" in tables
@@ -10310,6 +10321,431 @@ def test_release_candidate_runs_ci_before_configured_release_reviews_and_push(
         if event["payload"]["promotion_kind"] == "canonical_push"
     )
     assert canonical_event["payload"]["expected_commit_sha"] == "candidate-sha"
+
+
+def test_candidate_verification_failure_rejects_unchanged_release_content(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _configure_policy(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            verification_commands=[
+                ReleaseVerificationCommand(
+                    name="operator-client",
+                    cwd="Src/Clients/OperatorClient",
+                    argv=["npm", "test"],
+                )
+            ],
+            allow_ungated=True,
+        )
+        return state
+
+    repo.update(_configure_policy)
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-broken",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    promotion_id = requested["git_promotion_event_ids"][0]
+    state, _ = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=promotion_id,
+        success=True,
+        commit_sha="candidate-broken",
+        outputs={"base_commit_sha": "base-main", "tree_hash": "unchanged-tree"},
+    )
+
+    release = state.release_packages["release-broken"]
+    run_id = release.verification_run_ids[0]
+    assert release.manifest is not None
+    assert release.manifest.candidate_commit_sha == "candidate-broken"
+    assert release.manifest.candidate_tree_hash == "unchanged-tree"
+    assert release.manifest.verification_commands[0].name == "operator-client"
+    evidence = release.manifest.deliverables[0]
+    assert evidence.verification is not None
+    assert evidence.verification.status == "passed"
+    assert evidence.review_manifest is not None
+    assert evidence.review_manifest.reviewed_commit_sha == "reviewed-commit"
+    assert evidence.accepted_reviews[0].reviewed_commit_sha == "reviewed-commit"
+
+    state, _ = _team_release_gate_service(repo).record_verification_result(
+        release_package_id=release.id,
+        verification_run_id=run_id,
+        candidate_commit_sha="candidate-broken",
+        verification_state="failed",
+        failure_kind="candidate",
+        command_results=[
+            {
+                "name": "operator-client",
+                "state": "failed",
+                "exit_code": 1,
+                "log_excerpt": "TS2339: property does not exist",
+            }
+        ],
+        error="operator-client tests failed",
+    )
+    failed = state.release_packages["release-broken"]
+    assert failed.state == TeamRecordState.REJECTED
+    assert failed.gate_failure is not None
+    assert failed.gate_failure.kind == "candidate"
+
+    state, replacement = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-unchanged",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    replacement_promotion_id = replacement["git_promotion_event_ids"][0]
+    state, _ = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=replacement_promotion_id,
+        success=True,
+        commit_sha="candidate-new-commit",
+        outputs={"base_commit_sha": "base-main", "tree_hash": "unchanged-tree"},
+    )
+    unchanged = state.release_packages["release-unchanged"]
+    assert unchanged.state == TeamRecordState.REJECTED
+    assert unchanged.verification_run_ids == []
+    assert unchanged.gate_failure is not None
+    assert unchanged.gate_failure.kind == "candidate"
+    assert "unchanged from failed release release-broken" in (unchanged.error or "")
+
+
+def test_transient_verification_retry_creates_linked_attempt_for_same_candidate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _configure_policy(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            verification_commands=[
+                ReleaseVerificationCommand(
+                    name="solution-tests",
+                    cwd=".",
+                    argv=["dotnet", "test"],
+                )
+            ],
+            allow_ungated=True,
+        )
+        return state
+
+    repo.update(_configure_policy)
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-transient",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    state, _ = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=requested["git_promotion_event_ids"][0],
+        success=True,
+        commit_sha="candidate-sha",
+        outputs={"tree_hash": "candidate-tree"},
+    )
+    first_run_id = state.release_packages["release-transient"].verification_run_ids[0]
+    state, _ = _team_release_gate_service(repo).record_verification_result(
+        release_package_id="release-transient",
+        verification_run_id=first_run_id,
+        candidate_commit_sha="candidate-sha",
+        verification_state="failed",
+        failure_kind="infrastructure",
+        command_results=[
+            {"name": "solution-tests", "state": "failed", "log_excerpt": "worker lost"}
+        ],
+        error="verification worker disconnected",
+    )
+    blocked = state.release_packages["release-transient"]
+    assert blocked.state == TeamRecordState.BLOCKED
+    assert blocked.gate_failure is not None
+    assert blocked.gate_failure.kind == "infrastructure"
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-release-retry")
+    state, retried = _command_service(repo).retry_release_gate_command(
+        session_id="session-lead",
+        release_package_id="release-transient",
+        gate_kind="verification",
+        gate_id=first_run_id,
+        reason="Worker was replaced after a host failure.",
+        request_id="request-release-retry",
+    )
+    release = state.release_packages["release-transient"]
+    second_run_id = retried["replacement_gate_id"]
+    first_run = state.release_verification_runs[first_run_id]
+    second_run = state.release_verification_runs[second_run_id]
+    assert release.state == TeamRecordState.PENDING
+    assert release.candidate_commit_sha == "candidate-sha"
+    assert release.gate_failure is None
+    assert first_run.superseded_by_verification_run_id == second_run_id
+    assert second_run.supersedes_verification_run_id == first_run_id
+    assert second_run.attempt_number == 2
+    assert second_run.candidate_commit_sha == "candidate-sha"
+    assert second_run.retry_reason == "Worker was replaced after a host failure."
+    assert second_run.retry_requested_by == "agent:lead"
+    assert retried["retry_reason"] == "Worker was replaced after a host failure."
+    assert retried["retry_requested_by"] == "agent:lead"
+    assert retried["events"][0]["payload"]["verification_run_id"] == second_run_id
+    persisted_second_run = repo.read().release_verification_runs[second_run_id]
+    assert persisted_second_run.retry_reason == second_run.retry_reason
+    assert persisted_second_run.retry_requested_by == second_run.retry_requested_by
+
+    with pytest.raises(ValueError, match="not blocked"):
+        _team_admin_service(repo).retry_release_gate_with_result(
+            release_package_id="release-transient",
+            gate_kind="verification",
+            gate_id=first_run_id,
+            reason="Try the old attempt again.",
+            operator_actor_id="operator:release-admin",
+        )
+
+
+def test_blocked_release_review_retry_creates_linked_review_for_same_candidate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_review_profile(repo, applicable_role_ids=["project__worker"])
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _configure_policy(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            review_requirements=[
+                ReleaseReviewRequirement(
+                    reviewer_agent_id="worker",
+                    review_profile_id="profile",
+                )
+            ]
+        )
+        return state
+
+    repo.update(_configure_policy)
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-review-retry",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    state, _ = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=requested["git_promotion_event_ids"][0],
+        success=True,
+        commit_sha="candidate-sha",
+        outputs={"tree_hash": "candidate-tree"},
+    )
+    first_review_id = state.release_packages["release-review-retry"].review_request_ids[0]
+    state, decision = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": first_review_id,
+                    "state": "blocked",
+                    "findings": ["Review environment could not load the candidate."],
+                }
+            ],
+        },
+    )
+    assert decision["success"] is True
+    release = state.release_packages["release-review-retry"]
+    assert release.state == TeamRecordState.BLOCKED
+    assert release.gate_failure is not None
+    assert release.gate_failure.kind == "blocked"
+
+    state, overwritten = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": first_review_id,
+                    "state": "accepted",
+                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                }
+            ],
+        },
+    )
+    assert overwritten["success"] is False
+    assert "immutable blocked decision" in overwritten["errors"][0]
+    assert state.release_packages["release-review-retry"].state == TeamRecordState.BLOCKED
+
+    state, retried = _team_admin_service(repo).retry_release_gate_with_result(
+        release_package_id=release.id,
+        gate_kind="review",
+        gate_id=first_review_id,
+        reason="Reviewer environment has been repaired.",
+        operator_actor_id="operator:release-admin",
+        expected_revision=state.revision,
+    )
+    second_review_id = retried["replacement_gate_id"]
+    first_review = state.review_requests[first_review_id]
+    second_review = state.review_requests[second_review_id]
+    release = state.release_packages["release-review-retry"]
+    assert release.state == TeamRecordState.PENDING
+    assert release.candidate_commit_sha == "candidate-sha"
+    assert first_review.superseded_by_review_request_id == second_review_id
+    assert second_review.supersedes_review_request_id == first_review_id
+    assert second_review.candidate_commit_sha == "candidate-sha"
+    assert second_review.state == TeamRecordState.PENDING
+    assert second_review.retry_reason == "Reviewer environment has been repaired."
+    assert second_review.retry_requested_by == "operator:release-admin"
+    inbox = state.inbox[retried["created_inbox_item_ids"][0]]
+    assert inbox.payload["supersedes_review_request_id"] == first_review_id
+    assert inbox.payload["release_manifest"]["candidate_commit_sha"] == "candidate-sha"
+    persisted_second_review = repo.read().review_requests[second_review_id]
+    assert persisted_second_review.retry_reason == second_review.retry_reason
+    assert persisted_second_review.retry_requested_by == second_review.retry_requested_by
+
+
+def test_rejected_release_review_requires_changed_candidate_content(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_review_profile(repo, applicable_role_ids=["project__worker"])
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _configure_policy(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            review_requirements=[
+                ReleaseReviewRequirement(
+                    reviewer_agent_id="worker",
+                    review_profile_id="profile",
+                )
+            ]
+        )
+        return state
+
+    repo.update(_configure_policy)
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-rejected-review",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    state, _ = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=requested["git_promotion_event_ids"][0],
+        success=True,
+        commit_sha="candidate-rejected",
+        outputs={"tree_hash": "review-rejected-tree"},
+    )
+    review_id = state.release_packages["release-rejected-review"].review_request_ids[0]
+    state, decision = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": review_id,
+                    "state": "rejected",
+                    "findings": ["The station-tool test does not compile."],
+                }
+            ],
+        },
+    )
+    assert decision["success"] is True
+    rejected = state.release_packages["release-rejected-review"]
+    assert rejected.state == TeamRecordState.REJECTED
+    assert rejected.gate_failure is not None
+    assert rejected.gate_failure.kind == "rejected"
+
+    state, overwritten = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": review_id,
+                    "state": "accepted",
+                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                }
+            ],
+        },
+    )
+    assert overwritten["success"] is False
+    assert "immutable rejected decision" in overwritten["errors"][0]
+    rejected = state.release_packages["release-rejected-review"]
+
+    with pytest.raises(ValueError, match="not blocked"):
+        _team_admin_service(repo).retry_release_gate_with_result(
+            release_package_id=rejected.id,
+            gate_kind="review",
+            gate_id=review_id,
+            reason="Try the rejected review again.",
+            operator_actor_id="operator:release-admin",
+        )
+
+    state, replacement = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-same-rejected-content",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    state, _ = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=replacement["git_promotion_event_ids"][0],
+        success=True,
+        commit_sha="different-commit-same-tree",
+        outputs={"tree_hash": "review-rejected-tree"},
+    )
+    unchanged = state.release_packages["release-same-rejected-content"]
+    assert unchanged.state == TeamRecordState.REJECTED
+    assert "unchanged from failed release release-rejected-review" in (
+        unchanged.error or ""
+    )
 
 
 def test_git_release_request_fails_closed_without_project_release_policy(

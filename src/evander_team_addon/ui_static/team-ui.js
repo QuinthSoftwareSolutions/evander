@@ -1429,6 +1429,25 @@ function bindForms() {
     void importGitRepoForForm(form, button);
   });
 
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-release-gate-retry]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    if (!guardTeamMutation("retry release gates")) {
+      return;
+    }
+    const reason = window.prompt(
+      "Why is this unchanged-candidate gate retry safe?",
+      "Transient infrastructure or evidence blocker resolved.",
+    );
+    if (!text(reason)) {
+      setStatus("A retry reason is required.", "error");
+      return;
+    }
+    void retryReleaseGate(button, text(reason));
+  });
 
   document.addEventListener("click", (event) => {
     const addButton = event.target?.closest?.("[data-review-profile-criterion-add]");
@@ -10754,7 +10773,7 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
 }
 
 function renderReviewDecisionForm(review, profile, carriedFindings = []) {
-  if (terminalRecordStates.has(review.state)) {
+  if (terminalRecordStates.has(review.state) || review.decision_at) {
     return "";
   }
   const selectedState = decisionStates.includes(review.state) ? review.state : "";
@@ -11176,6 +11195,7 @@ function renderReleases() {
               ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
               ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
               ${renderReleasePolicyDetails(release)}
+              ${renderReleaseGateAction(release)}
             </li>
           `;
         })
@@ -11206,6 +11226,7 @@ function renderCompactRelease(release) {
           ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
           ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
           ${renderReleasePolicyDetails(release)}
+          ${renderReleaseGateAction(release)}
         </div>
       </details>
     </li>
@@ -11226,6 +11247,75 @@ function renderReleasePolicyDetails(release) {
   return `${waiverMarkup}${scopeMarkup}`;
 }
 
+function renderReleaseGateAction(release) {
+  const failure = release.gate_failure || null;
+  const gateId = text(failure?.source_id);
+  const retryableVerification =
+    release.state === "blocked" &&
+    failure?.stage === "verification" &&
+    ["infrastructure", "timeout"].includes(failure?.kind);
+  const retryableReview =
+    release.state === "blocked" &&
+    failure?.stage === "review" &&
+    failure?.kind === "blocked";
+  if (!gateId || (!retryableVerification && !retryableReview)) {
+    return "";
+  }
+  const gateKind = retryableVerification ? "verification" : "review";
+  return `
+    <div class="record-actions">
+      <button
+        class="record-action"
+        type="button"
+        data-release-gate-retry
+        data-release-id="${escapeAttr(release.id)}"
+        data-gate-kind="${escapeAttr(gateKind)}"
+        data-gate-id="${escapeAttr(gateId)}"
+      >Retry ${escapeHtml(gateKind)} gate</button>
+    </div>
+  `;
+}
+
+async function retryReleaseGate(button, reason) {
+  const releaseId = text(button?.dataset?.releaseId);
+  const gateKind = text(button?.dataset?.gateKind);
+  const gateId = text(button?.dataset?.gateId);
+  if (!releaseId || !gateKind || !gateId) {
+    setStatus("Release gate retry context is incomplete.", "error");
+    return;
+  }
+  button.disabled = true;
+  setStatus(`Retrying ${gateKind} gate.`, "loading");
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/release-packages/${encodeURIComponent(releaseId)}/retry-gate`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Team-Addon-Response-Scope": "view",
+        },
+        body: JSON.stringify({
+          gate_kind: gateKind,
+          gate_id: gateId,
+          reason,
+          expected_revision: state.revision,
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const result = await response.json();
+    await applyMutationResultPayload(result);
+    setStatus(`Release ${releaseId} ${gateKind} retry recorded.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Release gate retry failed.", "error");
+  } finally {
+    button.disabled = false;
+  }
+}
 
 function renderTemplateSetup() {
   fillTemplateSelect();

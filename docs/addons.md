@@ -755,6 +755,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_update_feature_branch`
 - `team_request_release`
 - `team_recover_release`
+- `team_retry_release_gate`
 - `team_request_ephemeral_agent`
 - `team_request_ephemeral_agents`
 - `team_accept_ephemeral_result`
@@ -999,7 +1000,7 @@ wrong-dispatch, inactive, or mismatched branch contexts.
 
 New Git release packages use the current release policy; historical terminal
 records remain readable without being retroactively reopened, while legacy
-nonterminal packages are blocked with `legacy_unpinned_release` and must be
+nonterminal packages are rejected with `legacy_unpinned_release` and must be
 recreated. Consolidation merges the pinned reviewed/feature commit rather than
 the current branch tip; it rejects a source only when that pinned commit is no
 longer contained by the source ref. The feature promotion records a reviewed manifest (base, tree, commits,
@@ -1014,10 +1015,29 @@ requirements (`reviewer_agent_id` plus `review_profile_id`). The consolidated
 release commit is pinned as the candidate, verification runs against that exact
 commit, and configured reviewers decide that same candidate. Canonical push is
 created only after verification, all release reviews, and scope validation pass.
+The candidate also receives a frozen typed manifest containing its deliverable
+verification, waiver audit records, accepted immutable reviews, reviewed change
+manifests, scope result, verification commands, and review requirements.
+
+A nonzero verification-command exit is a candidate failure: the release is
+terminally rejected and requires changed, reviewed content in a new release.
+Creating another release with the same deliverables and failed tree is refused.
+Only timeouts and infrastructure failures leave verification retryable, and only
+a review recorded as process-blocked may be replaced. Release-review decisions
+are immutable: use `rejected` for a candidate defect and reserve `blocked` for a
+non-candidate process or evidence-access blocker with a concrete finding.
+`team_retry_release_gate`
+and the Admin API/UI create a linked immutable successor attempt against the same
+pinned SHA and persist the audited reason and requesting agent/operator identity;
+they never rewrite the failed attempt.
+`team_recover_release` remains limited to failed Git feature/release promotions
+and is not a release-gate retry mechanism.
+
 Set `allow_ungated: true` only for an intentionally ungated project; a missing
 policy blocks a new Git release rather than silently publishing it. Admin Web
 project create/edit forms expose the policy as JSON and release rows show the
-pinned candidate, verification state, release-review state, and approved SHA.
+pinned candidate, verification state, release-review state, approved SHA, and a
+retry action only for an eligible typed gate failure.
 
 Five add-on-owned effect providers complete these flows:
 `effect:team:publish-review-branch` (publish a source branch or commit from the

@@ -2030,6 +2030,35 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             }
         )
 
+    async def retry_release_gate(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        release_id = request.path_params["release_package_id"]
+        state, result = admin_service.retry_release_gate_with_result(
+            release_package_id=release_id,
+            gate_kind=_required(payload, "gate_kind"),
+            gate_id=_required(payload, "gate_id"),
+            reason=_required(payload, "reason"),
+            operator_actor_id=_operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        published_event_ids = _publish_team_events(context, result.get("events"))
+        if _request_wants_view_scoped_response(request):
+            return _state_response(
+                request,
+                state,
+                extra={
+                    "release_package": result["release_package"],
+                    "replacement_gate_id": result.get("replacement_gate_id"),
+                    "published_event_ids": published_event_ids,
+                },
+            )
+        return JSONResponse(
+            {
+                **result,
+                "published_event_ids": published_event_ids,
+            }
+        )
+
     async def get_release_package(request: Request) -> JSONResponse:
         state = repository.read()
         release = state.release_packages.get(request.path_params["release_package_id"])
@@ -2408,6 +2437,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ),
         route("/release-packages", create_release_package, methods=["POST"]),
         route("/release-packages", list_release_packages, methods=["GET"]),
+        route(
+            "/release-packages/{release_package_id}/retry-gate",
+            retry_release_gate,
+            methods=["POST"],
+        ),
         route(
             "/release-packages/{release_package_id}",
             get_release_package,

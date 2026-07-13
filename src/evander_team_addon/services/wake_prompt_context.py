@@ -361,7 +361,10 @@ def _compact_release_package(release: Mapping[str, Any]) -> dict[str, Any]:
             "release_branch",
             "canonical_branch",
             "published_commit_sha",
+            "candidate_commit_sha",
+            "approved_commit_sha",
             "next_action",
+            "blocked_reason_code",
             "created_at",
             "updated_at",
             "published_at",
@@ -384,6 +387,13 @@ def _compact_release_package(release: Mapping[str, Any]) -> dict[str, Any]:
     next_action_hint = _optional_text(release.get("next_action_hint"))
     if next_action_hint is not None:
         row["next_action_hint"] = _trim_text(next_action_hint, 640)
+    gate_failure = release.get("gate_failure")
+    if isinstance(gate_failure, Mapping):
+        row["gate_failure"] = {
+            key: gate_failure.get(key)
+            for key in ("stage", "kind", "source_id", "message", "occurred_at")
+            if gate_failure.get(key) is not None
+        }
     return row
 
 

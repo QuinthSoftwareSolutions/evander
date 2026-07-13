@@ -79,6 +79,7 @@ TEAM_PUBLISH_REVIEW_BRANCH_TOOL = "team_publish_review_branch"
 TEAM_UPDATE_FEATURE_BRANCH_TOOL = "team_update_feature_branch"
 TEAM_REQUEST_RELEASE_TOOL = "team_request_release"
 TEAM_RECOVER_RELEASE_TOOL = "team_recover_release"
+TEAM_RETRY_RELEASE_GATE_TOOL = "team_retry_release_gate"
 TEAM_REQUEST_EPHEMERAL_AGENT_TOOL = "team_request_ephemeral_agent"
 TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL = "team_request_ephemeral_agents"
 TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL = "team_accept_ephemeral_result"
@@ -132,6 +133,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
@@ -190,6 +192,7 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
@@ -225,6 +228,7 @@ MCP_TOOL_NAMES = (
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
@@ -1342,7 +1346,10 @@ def _register_slice7_tools(
         name=TEAM_DECIDE_REVIEW_TOOL,
         description=(
             "Record the assigned reviewer's accepted, rejected, or blocked "
-            "decision. Requires review_request_id, state, and request_id."
+            "decision. Decisions are immutable. For release reviews, rejected means "
+            "the candidate failed review; blocked is reserved for a non-candidate "
+            "process or evidence-access blocker and requires a finding. Requires "
+            "review_request_id, state, and request_id."
         ),
     )
 
@@ -1519,6 +1526,47 @@ def _register_slice8_tools(
             "release package's failed feature or release promotion. Requires "
             "release_package_id, agent_branch, "
             "commit_sha, and request_id."
+        ),
+    )
+
+    def team_retry_release_gate(
+        release_package_id: str,
+        gate_kind: str,
+        gate_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_RETRY_RELEASE_GATE_TOOL,
+        )
+        try:
+            _state, result = command_service.retry_release_gate_command(
+                session_id=caller.session_id,
+                release_package_id=release_package_id,
+                gate_kind=gate_kind,
+                gate_id=gate_id,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_retry_release_gate,
+        name=TEAM_RETRY_RELEASE_GATE_TOOL,
+        description=(
+            "Retry the current gate for a blocked release against its unchanged pinned "
+            "candidate. Only infrastructure-failed or timed-out verification and "
+            "process-blocked reviews are eligible. Requires an audited reason."
         ),
     )
 

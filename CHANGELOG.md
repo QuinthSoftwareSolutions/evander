@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-07-13 - Team Release Gate Retry Semantics
+
+- Classified release verification outcomes as candidate, infrastructure, or
+  timeout failures using container exit metadata, making nonzero build/test
+  exits terminal while leaving only transient execution failures retryable.
+- Added immutable verification and release-review attempt lineage, typed gate
+  failures, frozen candidate evidence manifests, and rejection of unchanged
+  content after a candidate or release-review failure.
+- Added an audited `team_retry_release_gate` MCP command plus Admin API and UI
+  actions for eligible retries against the unchanged pinned candidate SHA,
+  persisting the reason and requesting agent/operator identity on the successor.
+- Migrated legacy unpinned nonterminal releases to rejected state and persisted
+  review lineage and gate-failure details in the Team SQLite store.
+
 ## 2026-07-13 - Managed Bare Repositories And Ephemeral Worktrees
 
 - Replaced issue-specific mirror/persistent-checkout routing with one directory-scoped managed

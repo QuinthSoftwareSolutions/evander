@@ -476,6 +476,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:artifact-space:publish-version",
         "effect:agent:prompt",
         "effect:agent:enqueue-prompt",
+        "effect:agent:code-consultation",
         "effect:chat-assistant:ensure-session",
         "effect:agent:exec",
         "effect:semantic:ensure-collection",
@@ -6560,7 +6561,7 @@ def test_agent_exec_provider_returns_container_failure_when_check_disabled(
     backend.status = SimpleNamespace(
         status=ExecutionStatusKind.FAILED,
         message="command failed",
-        metadata={"exit_code": 22},
+        metadata={"exit_code": 22, "worker_terminal_kind": "command_exit"},
     )
     backend.logs = "failure log\n"
     monkeypatch.setattr(
@@ -6586,6 +6587,7 @@ def test_agent_exec_provider_returns_container_failure_when_check_disabled(
     assert output["success"] is False
     assert output["status"] == "failed"
     assert output["exit_code"] == 22
+    assert output["failure_kind"] == "command"
     assert output["stdout"] == "failure log\n"
     assert output["stderr"] == "command failed"
     assert "cd /home/agent" in str(backend.started_specs[0].command)

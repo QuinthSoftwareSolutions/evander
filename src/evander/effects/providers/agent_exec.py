@@ -113,6 +113,16 @@ class AgentExecEffectProvider(VmExecEffectProvider):
         success = status.status == ExecutionStatusKind.STOPPED
         stdout, stderr = self._stdout_stderr_from_status(status=status, logs=logs, success=success)
         exit_code = self._exit_code_from_status(status=status, success=success)
+        status_metadata = getattr(status, "metadata", {})
+        failure_kind = None
+        if not success:
+            failure_kind = (
+                "command"
+                if isinstance(status_metadata, Mapping)
+                and status_metadata.get("worker_terminal_kind") == "command_exit"
+                and status_metadata.get("exit_code") is not None
+                else "infrastructure"
+            )
         message = (
             normalize_optional_string(getattr(status, "message", None))
             or normalize_optional_string(stderr)
@@ -128,6 +138,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
             "action": "agent_exec",
             "message": message,
             "exit_code": exit_code,
+            "failure_kind": failure_kind,
             "stdout": stdout,
             "stderr": stderr,
             "vm_name": None,

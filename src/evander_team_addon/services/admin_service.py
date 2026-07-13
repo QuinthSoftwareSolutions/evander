@@ -58,6 +58,7 @@ from ..models import (
     _ensure_unique,
     _unique_text_list,
     agent_project_ids,
+    release_package_payload_with_derived,
 )
 from ..templates import get_template
 from .domain.agent_access import (
@@ -111,6 +112,7 @@ from .domain.governance import (
 )
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import _build_release_package
+from .domain.release_gates import retry_release_gate
 from .domain.review import (
     _apply_finding_resolutions,
     _cascade_review_decision,
@@ -2959,4 +2961,56 @@ class TeamAdminService:
 
         state = self._repository.update(_mutate, expected_revision=expected_revision)
         result["revision"] = state.revision
+        return state, result
+
+    def retry_release_gate_with_result(
+        self,
+        *,
+        release_package_id: str,
+        gate_kind: str,
+        gate_id: str,
+        reason: str,
+        operator_actor_id: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_release_id = _required_text(
+            release_package_id,
+            "release_package_id",
+        )
+        normalized_actor_id = _required_text(operator_actor_id, "operator_actor_id")
+        result: dict[str, Any] = {
+            "success": False,
+            "release_package_id": normalized_release_id,
+            "events": [],
+            "created_inbox_item_ids": [],
+            "created_review_request_ids": [],
+            "release_verification_run_ids": [],
+            "operator_actor_id": normalized_actor_id,
+        }
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            release = _require_present(
+                state_model.release_packages,
+                normalized_release_id,
+                "release package",
+            )
+            retry_release_gate(
+                state_model,
+                release=release,
+                gate_kind=gate_kind,
+                gate_id=gate_id,
+                reason=reason,
+                requested_by=normalized_actor_id,
+                result=result,
+            )
+            _recalculate_project_status(state_model, release.project_id)
+            result["success"] = True
+            return state_model
+
+        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
+        result["release_package"] = release_package_payload_with_derived(
+            state,
+            state.release_packages[normalized_release_id],
+        )
         return state, result

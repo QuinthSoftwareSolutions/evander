@@ -545,6 +545,14 @@ class ProjectReleasePolicy(TeamModel):
                 "release policy requires verification_commands or review_requirements "
                 "unless allow_ungated is true"
             )
+        review_keys = [
+            (requirement.reviewer_agent_id, requirement.review_profile_id)
+            for requirement in self.review_requirements
+        ]
+        if len(review_keys) != len(set(review_keys)):
+            raise ValueError(
+                "release policy review_requirements must use unique reviewer/profile pairs"
+            )
         return self
 
 
@@ -1105,6 +1113,10 @@ class ReviewRequest(TeamModel):
     instructions: str | None = None
     criteria: list[ReviewCriterionResult] = Field(default_factory=list)
     reviewed_commit_sha: str | None = None
+    supersedes_review_request_id: str | None = None
+    superseded_by_review_request_id: str | None = None
+    retry_reason: str | None = None
+    retry_requested_by: str | None = None
     created_at: datetime | None = None
     decision_at: datetime | None = None
 
@@ -1125,6 +1137,10 @@ class ReviewRequest(TeamModel):
         "deliverable_id",
         "release_package_id",
         "candidate_commit_sha",
+        "supersedes_review_request_id",
+        "superseded_by_review_request_id",
+        "retry_reason",
+        "retry_requested_by",
         mode="before",
     )
     @classmethod
@@ -1142,6 +1158,12 @@ class ReviewRequest(TeamModel):
             )
         if self.release_package_id is not None and self.candidate_commit_sha is None:
             raise ValueError("release review request requires candidate_commit_sha")
+        if self.supersedes_review_request_id is not None and (
+            self.retry_reason is None or self.retry_requested_by is None
+        ):
+            raise ValueError(
+                "superseding release review requires retry_reason and retry_requested_by"
+            )
         return self
 
 
@@ -1600,6 +1622,12 @@ class ReleaseVerificationRun(TeamModel):
     candidate_commit_sha: str
     session_id: str
     state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
+    attempt_number: int = Field(default=1, ge=1)
+    failure_kind: Literal["candidate", "infrastructure", "timeout"] | None = None
+    supersedes_verification_run_id: str | None = None
+    superseded_by_verification_run_id: str | None = None
+    retry_reason: str | None = None
+    retry_requested_by: str | None = None
     command_results: list[ReleaseVerificationCommandResult] = Field(default_factory=list)
     current_command_index: int = Field(default=0, ge=0)
     error: str | None = None
@@ -1614,7 +1642,128 @@ class ReleaseVerificationRun(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("error", mode="before")
+    @field_validator(
+        "error",
+        "supersedes_verification_run_id",
+        "superseded_by_verification_run_id",
+        "retry_reason",
+        "retry_requested_by",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _validate_retry_audit(self) -> "ReleaseVerificationRun":
+        if self.supersedes_verification_run_id is not None and (
+            self.retry_reason is None or self.retry_requested_by is None
+        ):
+            raise ValueError(
+                "superseding release verification requires retry_reason and "
+                "retry_requested_by"
+            )
+        return self
+
+
+class ReleaseGateFailure(TeamModel):
+    stage: Literal["verification", "review", "configuration"]
+    kind: Literal[
+        "candidate",
+        "infrastructure",
+        "timeout",
+        "blocked",
+        "rejected",
+        "configuration",
+    ]
+    source_id: str | None = None
+    message: str
+    occurred_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def _required_message(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("source_id", mode="before")
+    @classmethod
+    def _optional_source_id(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class ReleaseCandidateReviewEvidence(TeamModel):
+    review_request_id: str
+    reviewer_agent_id: str
+    review_profile_id: str | None = None
+    reviewed_commit_sha: str
+    criteria: list[ReviewCriterionResult] = Field(default_factory=list)
+
+    @field_validator(
+        "review_request_id", "reviewer_agent_id", "reviewed_commit_sha", mode="before"
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("review_profile_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class ReleaseCandidateDeliverableEvidence(TeamModel):
+    deliverable_id: str
+    artifact_refs: list[str] = Field(default_factory=list)
+    verification: DeliverableVerification | None = None
+    verification_waiver: ReleaseVerificationWaiver | None = None
+    accepted_reviews: list[ReleaseCandidateReviewEvidence] = Field(default_factory=list)
+    review_manifest: DeliverableReviewManifest | None = None
+    feature_branch: str | None = None
+    feature_commit_sha: str | None = None
+
+    @field_validator("deliverable_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("artifact_refs", mode="before")
+    @classmethod
+    def _artifact_refs(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "artifact_refs")
+
+    @field_validator("feature_branch", "feature_commit_sha", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class ReleaseCandidateManifest(TeamModel):
+    schema_version: Literal[1] = 1
+    evidence_status: Literal["complete", "legacy_partial"] = "complete"
+    project_id: str
+    release_package_id: str
+    base_commit_sha: str | None = None
+    candidate_commit_sha: str
+    candidate_tree_hash: str | None = None
+    release_branch: str
+    deliverables: list[ReleaseCandidateDeliverableEvidence] = Field(default_factory=list)
+    scope_validation: ReleaseScopeValidation | None = None
+    verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
+    review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "project_id",
+        "release_package_id",
+        "candidate_commit_sha",
+        "release_branch",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("base_commit_sha", "candidate_tree_hash", mode="before")
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -1635,7 +1784,8 @@ class ReleasePackage(TeamModel):
     approved_commit_sha: str | None = None
     verification_run_ids: list[str] = Field(default_factory=list)
     review_request_ids: list[str] = Field(default_factory=list)
-    manifest: dict[str, Any] = Field(default_factory=dict)
+    manifest: ReleaseCandidateManifest | None = None
+    gate_failure: ReleaseGateFailure | None = None
     git_promotion_record_ids: list[str] = Field(default_factory=list)
     policy_version: int = Field(default=1, ge=1)
     verification_waivers: list[ReleaseVerificationWaiver] = Field(default_factory=list)
@@ -1678,6 +1828,45 @@ class ReleasePackage(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("manifest", mode="before")
+    @classmethod
+    def _empty_manifest_is_legacy(cls, value: object) -> object | None:
+        if value in ({}, None):
+            return None
+        if isinstance(value, Mapping) and "schema_version" not in value:
+            deliverable_ids = _unique_text_list(
+                value.get("deliverable_ids"),
+                "manifest.deliverable_ids",
+            )
+            feature_branches = _unique_text_list(
+                value.get("feature_branches"),
+                "manifest.feature_branches",
+            )
+            paired_branches = (
+                feature_branches if len(feature_branches) == len(deliverable_ids) else []
+            )
+            return {
+                "schema_version": 1,
+                "evidence_status": "legacy_partial",
+                "project_id": value.get("project_id"),
+                "release_package_id": value.get("release_package_id"),
+                "candidate_commit_sha": value.get("candidate_commit_sha"),
+                "candidate_tree_hash": value.get("candidate_tree_hash"),
+                "release_branch": value.get("release_branch"),
+                "deliverables": [
+                    {
+                        "deliverable_id": deliverable_id,
+                        "feature_branch": (
+                            paired_branches[index] if paired_branches else None
+                        ),
+                    }
+                    for index, deliverable_id in enumerate(deliverable_ids)
+                ],
+                "verification_commands": value.get("verification_commands") or [],
+                "review_requirements": value.get("review_requirements") or [],
+            }
+        return value
 
 
 class EphemeralAssignment(TeamModel):
@@ -2875,6 +3064,40 @@ class TeamState(TeamModel):
                         f"release {release.id} references verification run {run_id} "
                         f"owned by {run.release_package_id}"
                     )
+                    continue
+                if (
+                    release.candidate_commit_sha is not None
+                    and run.candidate_commit_sha != release.candidate_commit_sha
+                ):
+                    errors.append(
+                        f"release {release.id} verification run {run_id} targets "
+                        f"{run.candidate_commit_sha}, not candidate "
+                        f"{release.candidate_commit_sha}"
+                    )
+                if run.supersedes_verification_run_id is not None:
+                    previous = self.release_verification_runs.get(
+                        run.supersedes_verification_run_id
+                    )
+                    if previous is None or previous.release_package_id != release.id:
+                        errors.append(
+                            f"release verification run {run.id} supersedes an invalid run"
+                        )
+                    elif previous.superseded_by_verification_run_id != run.id:
+                        errors.append(
+                            f"release verification run {run.id} has non-reciprocal lineage"
+                        )
+                if run.superseded_by_verification_run_id is not None:
+                    successor = self.release_verification_runs.get(
+                        run.superseded_by_verification_run_id
+                    )
+                    if successor is None or successor.release_package_id != release.id:
+                        errors.append(
+                            f"release verification run {run.id} has an invalid successor"
+                        )
+                    elif successor.supersedes_verification_run_id != run.id:
+                        errors.append(
+                            f"release verification run {run.id} has non-reciprocal lineage"
+                        )
             for review_id in release.review_request_ids:
                 review = self.review_requests.get(review_id)
                 if review is None:
@@ -2886,7 +3109,36 @@ class TeamState(TeamModel):
                         f"release {release.id} references review {review_id} owned by "
                         f"{review.release_package_id}"
                     )
-                elif (
+                    continue
+                if review.supersedes_review_request_id is not None:
+                    previous_review = self.review_requests.get(
+                        review.supersedes_review_request_id
+                    )
+                    if (
+                        previous_review is None
+                        or previous_review.release_package_id != release.id
+                    ):
+                        errors.append(
+                            f"release review {review.id} supersedes an invalid review"
+                        )
+                    elif previous_review.superseded_by_review_request_id != review.id:
+                        errors.append(
+                            f"release review {review.id} has non-reciprocal lineage"
+                        )
+                if review.superseded_by_review_request_id is not None:
+                    successor_review = self.review_requests.get(
+                        review.superseded_by_review_request_id
+                    )
+                    if (
+                        successor_review is None
+                        or successor_review.release_package_id != release.id
+                    ):
+                        errors.append(f"release review {review.id} has an invalid successor")
+                    elif successor_review.supersedes_review_request_id != review.id:
+                        errors.append(
+                            f"release review {review.id} has non-reciprocal lineage"
+                        )
+                if (
                     release.candidate_commit_sha is not None
                     and review.candidate_commit_sha != release.candidate_commit_sha
                 ):
@@ -2895,6 +3147,56 @@ class TeamState(TeamModel):
                         f"{review.candidate_commit_sha}, not candidate "
                         f"{release.candidate_commit_sha}"
                     )
+            current_runs = [
+                self.release_verification_runs[run_id]
+                for run_id in release.verification_run_ids
+                if run_id in self.release_verification_runs
+                and self.release_verification_runs[
+                    run_id
+                ].superseded_by_verification_run_id
+                is None
+            ]
+            if len(current_runs) > 1:
+                errors.append(f"release {release.id} has multiple current verification runs")
+            if release.manifest is not None:
+                if release.manifest.project_id != release.project_id:
+                    errors.append(
+                        f"release {release.id} manifest belongs to project "
+                        f"{release.manifest.project_id}"
+                    )
+                if release.manifest.release_package_id != release.id:
+                    errors.append(
+                        f"release {release.id} manifest belongs to "
+                        f"{release.manifest.release_package_id}"
+                    )
+                if release.manifest.candidate_commit_sha != release.candidate_commit_sha:
+                    errors.append(
+                        f"release {release.id} manifest candidate does not match the release"
+                    )
+                manifest_deliverable_ids = [
+                    evidence.deliverable_id for evidence in release.manifest.deliverables
+                ]
+                if len(manifest_deliverable_ids) != len(set(manifest_deliverable_ids)):
+                    errors.append(f"release {release.id} manifest has duplicate deliverables")
+                if set(manifest_deliverable_ids) != set(release.deliverable_ids):
+                    errors.append(
+                        f"release {release.id} manifest deliverables do not match the package"
+                    )
+                for evidence in release.manifest.deliverables:
+                    if evidence.review_manifest is None:
+                        continue
+                    accepted_shas = {
+                        review.reviewed_commit_sha for review in evidence.accepted_reviews
+                    }
+                    if (
+                        accepted_shas
+                        and evidence.review_manifest.reviewed_commit_sha
+                        not in accepted_shas
+                    ):
+                        errors.append(
+                            f"release {release.id} deliverable {evidence.deliverable_id} "
+                            "manifest does not match accepted review evidence"
+                        )
 
     def _validate_ephemeral_assignments(self, errors: list[str]) -> None:
         for assignment in self.ephemeral_assignments.values():
@@ -3690,7 +3992,7 @@ def release_package_payload_with_derived(
         )
     next_action_hint = _release_next_action_hint(state, release)
     if next_action_hint is not None:
-        payload["next_action"] = "resolve_blocked_release"
+        payload["next_action"] = _release_next_action(release)
         payload["next_action_hint"] = next_action_hint
     blocked_reason_code = _release_blocked_reason_code(
         release,
@@ -3704,6 +4006,38 @@ def release_package_payload_with_derived(
 def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str | None:
     if release.state != TeamRecordState.BLOCKED and not release.error:
         return None
+    gate_failure = release.gate_failure
+    if gate_failure is not None:
+        if (
+            release.state == TeamRecordState.BLOCKED
+            and gate_failure.stage == "verification"
+            and gate_failure.kind in {"infrastructure", "timeout"}
+        ):
+            return (
+                "Use team_retry_release_gate with gate_kind verification and gate_id "
+                f"{gate_failure.source_id or 'from the current verification gate'} against "
+                f"the unchanged candidate for release {release.id}; supply an audited reason. "
+                f"Current blocker: {gate_failure.message}"
+            )
+        if (
+            release.state == TeamRecordState.BLOCKED
+            and gate_failure.stage == "review"
+            and gate_failure.kind == "blocked"
+        ):
+            return (
+                "Use team_retry_release_gate with gate_kind review and gate_id "
+                f"{gate_failure.source_id or 'from the current release review'} to replace the "
+                f"blocked review for release {release.id} against the unchanged candidate after "
+                "resolving its process or evidence blocker. "
+                f"Current blocker: {gate_failure.message}"
+            )
+        if release.state == TeamRecordState.REJECTED:
+            return (
+                f"Release {release.id} is terminal because its candidate failed or was "
+                "rejected. Submit changed reviewed content as a new release; unchanged "
+                "candidate content will be refused. "
+                f"Current outcome: {gate_failure.message}"
+            )
     failed_promotion = _release_blocking_promotion(state, release)
     parts = [
         f"Resolve existing release package {release.id}; do not create another "
@@ -3758,6 +4092,26 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
     return " ".join(parts)
 
 
+def _release_next_action(release: ReleasePackage) -> str:
+    failure = release.gate_failure
+    if failure is not None:
+        if (
+            release.state == TeamRecordState.BLOCKED
+            and failure.stage == "verification"
+            and failure.kind in {"infrastructure", "timeout"}
+        ):
+            return "retry_release_verification"
+        if (
+            release.state == TeamRecordState.BLOCKED
+            and failure.stage == "review"
+            and failure.kind == "blocked"
+        ):
+            return "retry_release_review"
+        if release.state == TeamRecordState.REJECTED:
+            return "create_replacement_release"
+    return "resolve_blocked_release"
+
+
 def _release_related_promotions(
     state: TeamState,
     release: ReleasePackage,
@@ -3778,6 +4132,8 @@ def _release_blocked_reason_code(
 ) -> str | None:
     if release.state != TeamRecordState.BLOCKED and not release.error:
         return None
+    if release.gate_failure is not None:
+        return f"release_{release.gate_failure.stage}_{release.gate_failure.kind}"
     text_parts = [release.error or ""]
     if failed_promotion is not None:
         text_parts.append(failed_promotion.error or "")

@@ -19,6 +19,7 @@ class TeamReleaseGateService:
         candidate_commit_sha: str,
         verification_state: str,
         command_results: list[dict[str, Any]],
+        failure_kind: str | None = None,
         error: str | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_results = [
@@ -43,6 +44,7 @@ class TeamReleaseGateService:
                 verification_run_id=verification_run_id,
                 candidate_commit_sha=candidate_commit_sha,
                 verification_state=verification_state,
+                failure_kind=failure_kind,
                 command_results=normalized_results,
                 error=error,
                 result=result,

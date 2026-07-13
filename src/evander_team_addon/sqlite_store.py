@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 22
+SQLITE_SCHEMA_VERSION = 24
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -981,6 +981,18 @@ class TeamStateSqliteStore:
                     column_name="candidate_commit_sha",
                     definition="TEXT",
                 )
+                for column_name in (
+                    "supersedes_review_request_id",
+                    "superseded_by_review_request_id",
+                    "retry_reason",
+                    "retry_requested_by",
+                ):
+                    _ensure_column(
+                        connection,
+                        table_name="team_review_requests",
+                        column_name=column_name,
+                        definition="TEXT",
+                    )
                 _ensure_column(
                     connection,
                     table_name="team_projects",
@@ -1037,6 +1049,12 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_release_packages",
+                    column_name="gate_failure_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_git_promotions",
                     column_name="sources_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
@@ -1051,7 +1069,7 @@ class TeamStateSqliteStore:
                 connection.execute(
                     """
                     UPDATE team_release_packages
-                    SET state = 'blocked',
+                    SET state = 'rejected',
                         error = 'legacy_unpinned_release: recreate this nonterminal release under the current immutable candidate policy',
                         updated_at = COALESCE(updated_at, created_at)
                     WHERE policy_version < 2
@@ -2215,6 +2233,14 @@ class TeamStateSqliteStore:
                 "instructions": row["instructions"],
                 "criteria": criteria.get(row["id"], []),
                 "reviewed_commit_sha": row["reviewed_commit_sha"],
+                "supersedes_review_request_id": row[
+                    "supersedes_review_request_id"
+                ],
+                "superseded_by_review_request_id": row[
+                    "superseded_by_review_request_id"
+                ],
+                "retry_reason": row["retry_reason"],
+                "retry_requested_by": row["retry_requested_by"],
                 "created_at": row["created_at"],
                 "decision_at": row["decision_at"],
             }
@@ -2229,9 +2255,11 @@ class TeamStateSqliteStore:
                 INSERT INTO team_review_requests(
                     id, deliverable_id, release_package_id, candidate_commit_sha,
                     reviewer_agent_id, state, review_profile_id, instructions,
-                    reviewed_commit_sha, created_at, decision_at
+                    reviewed_commit_sha, supersedes_review_request_id,
+                    superseded_by_review_request_id, retry_reason,
+                    retry_requested_by, created_at, decision_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["id"],
@@ -2243,6 +2271,10 @@ class TeamStateSqliteStore:
                     request.get("review_profile_id"),
                     request.get("instructions"),
                     request.get("reviewed_commit_sha"),
+                    request.get("supersedes_review_request_id"),
+                    request.get("superseded_by_review_request_id"),
+                    request.get("retry_reason"),
+                    request.get("retry_requested_by"),
                     request.get("created_at"),
                     request.get("decision_at"),
                 ),
@@ -2604,6 +2636,11 @@ class TeamStateSqliteStore:
                 "verification_run_ids": _json_loads(row["verification_run_ids_json"]),
                 "review_request_ids": _json_loads(row["review_request_ids_json"]),
                 "manifest": _json_loads(row["manifest_json"]),
+                "gate_failure": (
+                    _json_loads(row["gate_failure_json"])
+                    if row["gate_failure_json"] is not None
+                    else None
+                ),
                 "git_promotion_record_ids": promotions.get(row["id"], []),
                 "state": row["state"],
                 "published_at": row["published_at"],
@@ -2630,11 +2667,11 @@ class TeamStateSqliteStore:
                     id, project_id, release_branch, canonical_branch, published_commit_sha,
                     base_commit_sha, candidate_commit_sha, candidate_tree_hash,
                     approved_commit_sha, verification_run_ids_json, review_request_ids_json,
-                    manifest_json,
+                    manifest_json, gate_failure_json,
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
@@ -2648,7 +2685,12 @@ class TeamStateSqliteStore:
                     package.get("approved_commit_sha"),
                     _json_dumps(package.get("verification_run_ids", [])),
                     _json_dumps(package.get("review_request_ids", [])),
-                    _json_dumps(package.get("manifest", {})),
+                    _json_dumps(package.get("manifest") or {}),
+                    (
+                        _json_dumps(package.get("gate_failure"))
+                        if package.get("gate_failure") is not None
+                        else None
+                    ),
                     package.get("state", "pending"),
                     package.get("published_at"),
                     package.get("error"),
@@ -3809,6 +3851,10 @@ CREATE TABLE IF NOT EXISTS team_review_requests (
     review_profile_id TEXT,
     instructions TEXT,
     reviewed_commit_sha TEXT,
+    supersedes_review_request_id TEXT,
+    superseded_by_review_request_id TEXT,
+    retry_reason TEXT,
+    retry_requested_by TEXT,
     created_at TEXT,
     decision_at TEXT
 );
@@ -3969,6 +4015,7 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     verification_run_ids_json TEXT NOT NULL DEFAULT '[]',
     review_request_ids_json TEXT NOT NULL DEFAULT '[]',
     manifest_json TEXT NOT NULL DEFAULT '{}',
+    gate_failure_json TEXT,
     state TEXT NOT NULL,
     published_at TEXT,
     error TEXT,

@@ -48,6 +48,7 @@ class FakeContainerRuntime:
         self.stopped: list[str] = []
         self.removed: list[str] = []
         self.logs: dict[str, str] = {}
+        self.inspect_results: dict[str, dict[str, Any]] = {}
 
     def start_job(
         self,
@@ -59,7 +60,7 @@ class FakeContainerRuntime:
         return f"container-{record.job_id}"
 
     def inspect_job(self, record: WorkerJobRecord) -> dict[str, Any]:
-        return {"status": record.status}
+        return self.inspect_results.get(record.job_id, {"status": record.status})
 
     def stop_job(self, record: WorkerJobRecord) -> None:
         self.stopped.append(record.job_id)
@@ -2067,6 +2068,13 @@ def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
     assert inspected.status_code == 200
     assert inspected.json()["status"] == "running"
 
+    runtime.inspect_results["job-1"] = {"status": "failed", "exit_code": 7}
+    failed = client.get("/v1/jobs/job-1", headers=_auth())
+    assert failed.status_code == 200
+    assert failed.json()["status"] == "failed"
+    assert failed.json()["metadata"]["exit_code"] == 7
+    assert failed.json()["metadata"]["worker_terminal_kind"] == "command_exit"
+
     stopped = client.post("/v1/jobs/job-1/stop", headers=_auth())
     assert stopped.status_code == 200
     assert stopped.json()["status"] == "stopped"
@@ -2081,6 +2089,66 @@ def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
     assert deleted_again.json() == {"deleted": True, "job_id": "job-1"}
     assert runtime.removed == ["job-1"]
 
+
+def test_worker_inspection_records_objective_command_exit_metadata(tmp_path: Path) -> None:
+    runtime = FakeContainerRuntime()
+    runtime.inspect_results["job-1"] = {"status": "failed", "exit_code": 9}
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="runner:latest",
+        command=["dotnet", "test"],
+        container_name="agent-worker-job-1",
+        status="running",
+        agent_home_path="/worker/session-1/agent_home",
+        repo_root_path="/worker/session-1/agent_home/repos",
+        artifacts_path="/worker/session-1/artifacts",
+        logs_path="/worker/session-1/logs",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    assert inspected.status == "failed"
+    assert inspected.metadata["exit_code"] == 9
+    assert inspected.metadata["worker_terminal_kind"] == "command_exit"
+
+
+def test_worker_inspection_classifies_oom_exit_as_infrastructure(tmp_path: Path) -> None:
+    runtime = FakeContainerRuntime()
+    runtime.inspect_results["job-1"] = {
+        "status": "failed",
+        "exit_code": 137,
+        "oom_killed": True,
+    }
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="runner:latest",
+        command=["dotnet", "test"],
+        container_name="agent-worker-job-1",
+        status="running",
+        agent_home_path="/worker/session-1/agent_home",
+        repo_root_path="/worker/session-1/agent_home/repos",
+        artifacts_path="/worker/session-1/artifacts",
+        logs_path="/worker/session-1/logs",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    assert inspected.metadata["worker_terminal_kind"] == "infrastructure"
+    assert "memory limit" in (inspected.error or "")
 
 
 def test_logs_are_written_and_read_from_session_logs(tmp_path: Path) -> None:

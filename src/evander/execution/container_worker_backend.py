@@ -536,9 +536,18 @@ class ContainerWorkerVmExecutionBackend:
         worker_metadata = (
             dict(record.metadata) if isinstance(getattr(record, "metadata", None), dict) else {}
         )
-        for key in ("codex_outcome", "agent_provider", "model_provider_mode", "model"):
+        for key in (
+            "codex_outcome",
+            "agent_provider",
+            "model_provider_mode",
+            "model",
+            "exit_code",
+            "worker_terminal_kind",
+        ):
             if key in worker_metadata:
                 metadata[key] = worker_metadata[key]
+        if getattr(record, "error", None):
+            metadata["worker_error"] = str(record.error)
         metadata["worker_status"] = record.status
         return sanitize_metadata(metadata)
 

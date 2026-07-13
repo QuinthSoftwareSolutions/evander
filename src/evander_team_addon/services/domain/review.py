@@ -10,6 +10,7 @@ from uuid import uuid4
 from ...models import (
     AgentInboxItem,
     PersistentAgent,
+    ReleaseGateFailure,
     ReviewCriterionResult,
     ReviewFindingRecord,
     ReviewProfile,
@@ -356,6 +357,18 @@ def _apply_review_decision(
             f"agent {actor.id} is not the assigned reviewer for {review_request_id}"
         )
         return None
+    if review.decision_at is not None:
+        retry_guidance = (
+            " Use team_retry_release_gate for an eligible process-blocked release review."
+            if review.release_package_id is not None
+            and review.state == TeamRecordState.BLOCKED
+            else ""
+        )
+        result["errors"].append(
+            f"review {review_request_id} already has an immutable "
+            f"{review.state.value} decision.{retry_guidance}"
+        )
+        return None
     if (
         enforce_manager_fallback_routing_guard
         and review.release_package_id is None
@@ -392,12 +405,14 @@ def _apply_review_decision(
         decision.get("finding_resolutions"),
         "finding_resolutions",
     )
+    findings = _string_list(decision.get("findings"), "findings")
     decision_error = _review_decision_policy_error(
         state,
         review=review,
         decision_state=decision_state,
         criterion_results=criterion_results or [],
         finding_resolutions=finding_resolutions,
+        findings=findings,
     )
     if decision_error is not None:
         result["errors"].append(decision_error)
@@ -414,14 +429,14 @@ def _apply_review_decision(
         state,
         review=review,
         decision_state=decision_state,
-        findings=_string_list(decision.get("findings"), "findings"),
+        findings=findings,
         criterion_results=criterion_results or [],
     )
     _cascade_review_decision(
         state,
         review=review,
         decision_state=decision_state,
-        findings=_string_list(decision.get("findings"), "findings"),
+        findings=findings,
         projects_to_recalc=projects_to_recalc,
         result=result,
     )
@@ -486,6 +501,7 @@ def _review_decision_policy_error(
     decision_state: TeamRecordState,
     criterion_results: list[ReviewCriterionResult],
     finding_resolutions: list[dict[str, Any]],
+    findings: list[str] | None = None,
 ) -> str | None:
     profile = (
         state.review_profiles.get(review.review_profile_id)
@@ -530,6 +546,8 @@ def _review_decision_policy_error(
             )
         if finding_resolutions:
             return "release review decisions do not accept carried finding resolutions"
+        if decision_state == TeamRecordState.BLOCKED and not findings:
+            return "blocked release review requires a non-empty blocker finding"
         return None
 
     deliverable = _require_present(state.deliverables, review.deliverable_id, "deliverable")
@@ -777,10 +795,16 @@ def _cascade_release_review_decision(
     )
     candidate = release.candidate_commit_sha
     if review.candidate_commit_sha != candidate or review.reviewed_commit_sha != candidate:
-        release.state = TeamRecordState.BLOCKED
+        release.state = TeamRecordState.REJECTED
         release.error = (
             f"release review {review.id} is pinned to {review.candidate_commit_sha}, "
             f"but release {release.id} is pinned to {candidate}"
+        )
+        release.gate_failure = ReleaseGateFailure(
+            stage="configuration",
+            kind="configuration",
+            source_id=review.id,
+            message=release.error,
         )
         release.updated_at = utc_now()
         projects_to_recalc.add(release.project_id)
@@ -790,31 +814,45 @@ def _cascade_release_review_decision(
     if decision_state == TeamRecordState.REJECTED:
         release.state = TeamRecordState.REJECTED
         release.error = "; ".join(findings) or f"release review {review.id} rejected"
+        release.gate_failure = ReleaseGateFailure(
+            stage="review",
+            kind="rejected",
+            source_id=review.id,
+            message=release.error,
+        )
         release.updated_at = utc_now()
         projects_to_recalc.add(release.project_id)
         return
     if decision_state == TeamRecordState.BLOCKED:
         release.state = TeamRecordState.BLOCKED
         release.error = "; ".join(findings) or f"release review {review.id} blocked"
+        release.gate_failure = ReleaseGateFailure(
+            stage="review",
+            kind="blocked",
+            source_id=review.id,
+            message=release.error,
+        )
         release.updated_at = utc_now()
         projects_to_recalc.add(release.project_id)
         return
 
-    all_accepted = all(
-        state.review_requests[review_id].state == TeamRecordState.ACCEPTED
-        for review_id in release.review_request_ids
+    from .release_gates import (
+        _release_promotion,
+        approve_release_candidate,
+        current_release_gates_passed,
     )
-    verification_passed = all(
-        state.release_verification_runs[run_id].state == "passed"
-        for run_id in release.verification_run_ids
-    )
-    if all_accepted and verification_passed:
-        from .release_gates import _release_promotion, approve_release_candidate
 
+    if current_release_gates_passed(state, release):
         promotion = _release_promotion(state, release)
         if promotion is None:
-            release.state = TeamRecordState.BLOCKED
+            release.state = TeamRecordState.REJECTED
             release.error = "release promotion record is missing"
+            release.gate_failure = ReleaseGateFailure(
+                stage="configuration",
+                kind="configuration",
+                source_id=review.id,
+                message=release.error,
+            )
         else:
             approve_release_candidate(
                 state,

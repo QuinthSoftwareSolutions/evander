@@ -3084,6 +3084,7 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
 
         command_results: list[dict[str, Any]] = []
         terminal_state = "passed"
+        failure_kind: str | None = None
         terminal_error: str | None = None
         created = False
         try:
@@ -3199,15 +3200,22 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
                 )
                 if not success:
                     terminal_state = "failed"
+                    failure_kind = (
+                        "candidate"
+                        if command_output.get("failure_kind") == "command"
+                        else "infrastructure"
+                    )
                     terminal_error = (
                         f"release verification command {command.name!r} failed"
                     )
                     break
         except TimeoutError as exc:
             terminal_state = "timed_out"
+            failure_kind = "timeout"
             terminal_error = str(exc) or "release verification timed out"
         except Exception as exc:
             terminal_state = "failed"
+            failure_kind = "infrastructure"
             terminal_error = str(exc) or type(exc).__name__
         finally:
             if created:
@@ -3227,6 +3235,7 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
                 except Exception as exc:
                     if terminal_state == "passed":
                         terminal_state = "failed"
+                        failure_kind = "infrastructure"
                         terminal_error = f"failed to destroy release verifier: {exc}"
 
         _state, result = TeamReleaseGateService(repo).record_verification_result(
@@ -3235,6 +3244,7 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
             candidate_commit_sha=candidate_sha,
             verification_state=terminal_state,
             command_results=command_results,
+            failure_kind=failure_kind,
             error=terminal_error,
         )
         published_event_ids = _publish_team_events(

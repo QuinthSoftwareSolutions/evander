@@ -48,6 +48,7 @@ from evander_team_addon.models import (
     Project,
     ProjectGitConfig,
     ProjectGoal,
+    ReleaseGateFailure,
     ReleasePackage,
     ReviewRequest,
     Team,
@@ -427,7 +428,11 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
 
 
 def _node_ids(nodes: object) -> list[str]:
-    return [str(getattr(node, "id")) for node in nodes]
+    return [
+        str(getattr(node, "id"))
+        for node in nodes
+        if not str(getattr(node, "id")).startswith("system.code_consultation.")
+    ]
 
 
 class FakeResumer:
@@ -2605,6 +2610,40 @@ def test_build_prompt_includes_release_package_recovery_context(tmp_path: Path) 
         for row in context["runtime_attention"]
     )
 
+
+def test_build_prompt_includes_typed_release_gate_retry_context(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _add_blocked_release(state: TeamState) -> TeamState:
+        state.release_packages["rel-retry"] = ReleasePackage(
+            id="rel-retry",
+            project_id="project",
+            candidate_commit_sha="candidate-sha",
+            state=TeamRecordState.BLOCKED,
+            error="verification worker disconnected",
+            gate_failure=ReleaseGateFailure(
+                stage="verification",
+                kind="infrastructure",
+                source_id="verification-attempt-1",
+                message="verification worker disconnected",
+            ),
+        )
+        return state
+
+    repo.update(_add_blocked_release)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+
+    context = _team_context_from_prompt(_build_prompt(lease))
+
+    release = context["release_packages"]["rel-retry"]
+    assert release["candidate_commit_sha"] == "candidate-sha"
+    assert release["next_action"] == "retry_release_verification"
+    assert release["blocked_reason_code"] == "release_verification_infrastructure"
+    assert release["gate_failure"]["source_id"] == "verification-attempt-1"
+    assert "audited reason" in release["next_action_hint"]
 
 
 def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(

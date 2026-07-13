@@ -104,6 +104,15 @@ def _reviewed_commit_for_release(
         )
     if any(finding.state == "open" for finding in deliverable.carried_findings):
         return "", f"deliverable {deliverable.id} still has open carried review findings"
+    if (
+        deliverable.review_manifest is not None
+        and deliverable.review_manifest.reviewed_commit_sha != commits[0]
+    ):
+        return "", (
+            f"deliverable {deliverable.id} review manifest targets "
+            f"{deliverable.review_manifest.reviewed_commit_sha}, not accepted reviewed "
+            f"commit {commits[0]}"
+        )
     return commits[0], None
 
 

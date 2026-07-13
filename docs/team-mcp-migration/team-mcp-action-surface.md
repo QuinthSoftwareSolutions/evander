@@ -820,6 +820,41 @@ Semantics:
 - Emits the existing release recovery event.
 - Returns `release_package_id`.
 
+### `team_retry_release_gate`
+
+Create a new immutable attempt for an eligible blocked release gate while
+keeping the pinned release candidate unchanged.
+
+Arguments:
+
+| Name | Type | Required | Semantics |
+| --- | --- | --- | --- |
+| `release_package_id` | string | yes | Existing blocked release package. |
+| `gate_kind` | `verification` or `review` | yes | Gate family to retry. |
+| `gate_id` | string | yes | Current verification run or release review id. |
+| `reason` | string | yes | Audited explanation of the resolved process or infrastructure blocker. |
+| `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
+| `request_id` | string | yes | Idempotency key. |
+
+Semantics:
+
+- Caller must have release-request permission for the project and an active
+  Team dispatch.
+- Release package must be `blocked` and have a pinned candidate SHA.
+- Verification retries are limited to the current timed-out or
+  infrastructure-failed attempt. Nonzero test/build exits are candidate
+  failures and cannot be retried.
+- Review retries are limited to the current process-blocked release review.
+  Release-review decisions are immutable: rejected reviews require changed,
+  reviewed content, while blocked is reserved for a non-candidate process or
+  evidence-access blocker with a concrete finding.
+- The old attempt remains immutable and links to a successor that targets the
+  same candidate SHA. The successor links back to the old attempt and stores the
+  retry reason and requesting agent identity.
+- Verification retries emit a new durable verification-request event; review
+  retries create a new reviewer inbox item and wake request.
+- Returns the retried and replacement gate ids, release payload, and events.
+
 ### `team_request_ephemeral_agent`
 
 Request one disposable worker assignment.

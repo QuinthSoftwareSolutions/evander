@@ -13,6 +13,7 @@ from PIL import Image
 import pytest
 from starlette.testclient import TestClient
 
+from evander.addons import AddonContext
 from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.events.internal import InternalEventBus, internal_event_store_path
@@ -78,6 +79,23 @@ def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionServ
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> None:
+    routes = team_addon_api.admin_api_routes(
+        AddonContext(
+            addon_id="team-addon",
+            runtime_dir=tmp_path,
+            addon_runtime_dir=tmp_path / "addons" / "team-addon",
+        )
+    )
+
+    retry_route = next(
+        route
+        for route in routes
+        if route.path == "/release-packages/{release_package_id}/retry-gate"
+    )
+    assert retry_route.methods == {"POST"}
 
 
 @pytest.fixture(autouse=True)

@@ -32,7 +32,9 @@ from evander_team_addon.models import (
     Project,
     ProjectGitConfig,
     ProjectGoal,
+    ProjectReleasePolicy,
     ReleasePackage,
+    ReleaseReviewRequirement,
     ReviewCriterionResult,
     ReviewProfile,
     ReviewProfileCriterion,
@@ -209,6 +211,45 @@ def _valid_state() -> TeamState:
         },
     )
 
+
+def test_release_package_upgrades_legacy_candidate_manifest_shape() -> None:
+    release = ReleasePackage(
+        id="release",
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        candidate_commit_sha="candidate-sha",
+        release_branch="team/team/releases/release",
+        manifest={
+            "project_id": "project",
+            "release_package_id": "release",
+            "candidate_commit_sha": "candidate-sha",
+            "candidate_tree_hash": "candidate-tree",
+            "deliverable_ids": ["deliverable"],
+            "feature_branches": ["team/team/features/task-worker"],
+            "release_branch": "team/team/releases/release",
+            "verification_commands": [],
+            "review_requirements": [],
+        },
+    )
+
+    assert release.manifest is not None
+    assert release.manifest.evidence_status == "legacy_partial"
+    assert release.manifest.candidate_commit_sha == "candidate-sha"
+    assert release.manifest.deliverables[0].deliverable_id == "deliverable"
+    assert (
+        release.manifest.deliverables[0].feature_branch
+        == "team/team/features/task-worker"
+    )
+
+
+def test_release_policy_rejects_duplicate_reviewer_profile_pairs() -> None:
+    requirement = ReleaseReviewRequirement(
+        reviewer_agent_id="reviewer",
+        review_profile_id="release-profile",
+    )
+
+    with pytest.raises(ValidationError, match="unique reviewer/profile pairs"):
+        ProjectReleasePolicy(review_requirements=[requirement, requirement])
 
 
 def _state_with_runtime_operations() -> TeamState:

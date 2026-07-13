@@ -85,6 +85,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /reviewProfileCriteriaFromForm/);
   assert.match(script, /rolePermissionTooltips/);
   assert.match(script, /Allows a same-project role holder to request Team release packages/);
+  assert.match(script, /data-release-gate-retry/);
+  assert.match(script, /\/retry-gate/);
   assert.match(script, /renderRolePermissionToken/);
   assert.match(script, /projectLeadAgentOptionsForTeam/);
   assert.match(stylesheet, /\.projects-workbench/);
@@ -2222,6 +2224,20 @@ function applyTemplateMaterialization(state, payload, template) {
 
 function applyMutation(state, pathname, payload) {
   state.revision += 1;
+  const releaseGateRetryMatch = pathname.match(
+    /^\/api\/addons\/team-addon\/release-packages\/(.+)\/retry-gate$/,
+  );
+  if (releaseGateRetryMatch) {
+    const releaseId = decodeURIComponent(releaseGateRetryMatch[1]);
+    const release = state.release_packages[releaseId];
+    if (release) {
+      release.state = "pending";
+      release.error = null;
+      release.gate_failure = null;
+      release.updated_at = "2026-06-09T16:10:00Z";
+    }
+    return;
+  }
   const decisionMatch = pathname.match(
     /^\/api\/addons\/team-addon\/review-requests\/(.+)\/decision$/,
   );
@@ -2968,6 +2984,77 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
   );
 });
 
+test("team add-on UI retries only a typed retryable release gate with an audited reason", async (t) => {
+  const initialState = seededGitState();
+  initialState.release_packages["release-transient"] = {
+    id: "release-transient",
+    project_id: "alpha-project",
+    deliverable_ids: ["deliverable-accepted"],
+    artifact_refs: [],
+    feature_branches: ["team/alpha/features/accepted"],
+    release_branch: "team/alpha/releases/transient",
+    canonical_branch: "releases/alpha/transient",
+    candidate_commit_sha: "candidate-sha",
+    state: "blocked",
+    error: "verification worker disconnected",
+    gate_failure: {
+      stage: "verification",
+      kind: "infrastructure",
+      source_id: "verification-attempt-1",
+      message: "verification worker disconnected",
+    },
+    created_at: "2026-06-09T16:00:00Z",
+    updated_at: "2026-06-09T16:05:00Z",
+  };
+  initialState.release_packages["release-code-failure"] = {
+    ...initialState.release_packages["release-transient"],
+    id: "release-code-failure",
+    state: "rejected",
+    error: "operator-client tests failed",
+    gate_failure: {
+      stage: "verification",
+      kind: "candidate",
+      source_id: "candidate-attempt-1",
+      message: "operator-client tests failed",
+    },
+    created_at: "2026-06-09T15:50:00Z",
+    updated_at: "2026-06-09T15:55:00Z",
+  };
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await openProjects(page);
+  const releases = page.locator(
+    '#team-projects-page details.project-record-section[data-project-section="releases"]',
+  ).first();
+  await releases.locator("summary.project-record-section-summary").click();
+  const transient = releases.locator(".record-item", { hasText: "release-transient" });
+  await transient.locator("summary.compact-record-summary").click();
+  const retry = transient.getByRole("button", { name: "Retry verification gate" });
+  await retry.waitFor({ state: "visible" });
+  assert.equal(
+    await releases.locator(".record-item", { hasText: "release-code-failure" })
+      .getByRole("button", { name: /Retry .* gate/ }).count(),
+    0,
+  );
+
+  page.once("dialog", (dialog) => dialog.accept("Worker host was repaired by release-admin."));
+  await retry.click();
+  await waitForRevision(page, 5);
+
+  const request = requests.find(
+    (item) => item.method === "POST" &&
+      item.pathname === "/api/addons/team-addon/release-packages/release-transient/retry-gate",
+  );
+  assert.ok(request, "expected a release gate retry request");
+  assert.deepEqual(request.payload, {
+    gate_kind: "verification",
+    gate_id: "verification-attempt-1",
+    reason: "Worker host was repaired by release-admin.",
+    expected_revision: 4,
+  });
+});
 
 test("team add-on focused tabs submit retained create forms with revisions", async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
@@ -6704,6 +6791,12 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await blockedRow.getByText("Promotions: promo-blocked review:failed").waitFor({
     state: "visible",
   });
+  assert.equal(
+    await blockedRow.locator(
+      'form[data-review-decision-form][data-review-request-id="review-blocked"]',
+    ).count(),
+    0,
+  );
 
   const deliveryFilter = (filter) => deliveryPage.locator(`.delivery-filter[data-filter="${filter}"]`);
 

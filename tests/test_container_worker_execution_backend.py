@@ -279,10 +279,16 @@ def test_inspect_maps_worker_status(tmp_path: Path) -> None:
         )
     )
     client.status_by_job["exec-1"] = "failed"
+    client.metadata_by_job["exec-1"] = {
+        "exit_code": 2,
+        "worker_terminal_kind": "command_exit",
+    }
 
     status = backend.inspect(handle)
 
     assert status.status == ExecutionStatusKind.FAILED
+    assert status.metadata["exit_code"] == 2
+    assert status.metadata["worker_terminal_kind"] == "command_exit"
     assert client.got == ["exec-1"]
 
 

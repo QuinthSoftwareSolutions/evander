@@ -8,6 +8,7 @@ from .git_release_helpers import (
     _release_command_next_action_hints,
     _team_publish_review_branch_normalized_payload,
     _team_recover_release_normalized_payload,
+    _team_retry_release_gate_normalized_payload,
     _team_request_release_normalized_payload,
     _team_update_feature_branch_normalized_payload,
 )
@@ -39,7 +40,9 @@ from ..domain.release_packages import (
     _apply_git_release_recovery,
     _apply_git_release_request,
     _failed_release_promotion_for_recovery,
+    _release_request_permitted,
 )
+from ..domain.release_gates import retry_release_gate
 
 from .outbox import _team_event_outbox_records
 from .executor import TeamCommandExecutor
@@ -546,6 +549,126 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                 },
                 created_domain_ids=[release_id, *outbox_ids],
                 created_event_ids=recovery_event_ids,
+                outbox_records=outbox_records,
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+        )
+
+    def retry_release_gate_command(
+        self,
+        *,
+        session_id: str,
+        release_package_id: str,
+        gate_kind: str,
+        gate_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_request_id = _required_text(request_id, "request_id")
+        normalized_handled_ids = _unique_text_list(
+            handled_inbox_item_ids or [],
+            "handled_inbox_item_ids",
+        )
+        normalized_payload = _team_retry_release_gate_normalized_payload(
+            release_package_id=release_package_id,
+            gate_kind=gate_kind,
+            gate_id=gate_id,
+            reason=reason,
+            handled_inbox_item_ids=normalized_handled_ids,
+            correlation_id=_optional_text(correlation_id),
+            causation_id=_optional_text(causation_id),
+        )
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_retry_release_gate",
+            request_id=normalized_request_id,
+            correlation_id=normalized_payload["correlation_id"],
+            causation_id=normalized_payload["causation_id"],
+            progress_classification="release_gate_retry",
+        )
+
+        def _apply(
+            state: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            agent = _require_command_agent(resolved, "team_retry_release_gate")
+            release = state.release_packages.get(normalized_payload["release_package_id"])
+            if release is None:
+                raise TeamCommandValidationError(
+                    code="missing_release_package",
+                    message=(
+                        f"release package {normalized_payload['release_package_id']} does not exist"
+                    ),
+                )
+            project = state.projects.get(release.project_id)
+            if project is None or not _release_request_permitted(
+                state,
+                actor=agent,
+                project=project,
+            ):
+                raise TeamCommandValidationError(
+                    code="release_gate_retry_forbidden",
+                    message=(
+                        f"agent {agent.id} is not permitted to retry release gates on "
+                        f"project {release.project_id}"
+                    ),
+                )
+            intent_result: dict[str, Any] = {
+                "events": [],
+                "created_inbox_item_ids": [],
+                "created_review_request_ids": [],
+                "release_verification_run_ids": [],
+            }
+            try:
+                retry_release_gate(
+                    state,
+                    release=release,
+                    gate_kind=normalized_payload["gate_kind"],
+                    gate_id=normalized_payload["gate_id"],
+                    reason=normalized_payload["reason"],
+                    requested_by=f"agent:{agent.id}",
+                    result=intent_result,
+                )
+            except ValueError as exc:
+                raise TeamCommandValidationError(
+                    code="release_gate_retry_invalid",
+                    message=str(exc),
+                ) from exc
+            _recalculate_project_status(state, release.project_id)
+            outbox_records = _team_event_outbox_records(intent_result["events"])
+            outbox_ids = [record.id for record in outbox_records]
+            replacement_id = str(intent_result["replacement_gate_id"])
+            return TeamCommandApplyResult(
+                response_payload={
+                    "intent_recorded": True,
+                    "async_effect_pending": normalized_payload["gate_kind"] == "verification",
+                    "downstream_effect_completed": False,
+                    "release_package_id": release.id,
+                    "gate_kind": normalized_payload["gate_kind"],
+                    "retried_gate_id": intent_result["retried_gate_id"],
+                    "replacement_gate_id": replacement_id,
+                    "retry_reason": normalized_payload["reason"],
+                    "retry_requested_by": intent_result["retry_requested_by"],
+                    "release_package": release_package_payload_with_derived(state, release),
+                    "outbox_record_ids": outbox_ids,
+                    "events": list(intent_result["events"]),
+                    "progress_made": True,
+                },
+                created_domain_ids=[replacement_id, *outbox_ids],
+                created_event_ids=[
+                    str(event.get("idempotency_key") or replacement_id)
+                    for event in intent_result["events"]
+                ],
                 outbox_records=outbox_records,
             )
 
