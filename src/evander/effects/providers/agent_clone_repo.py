@@ -87,10 +87,11 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             effect_type="effect:agent:clone-repo",
             config=config,
         )
+        session_directory_path = str(getattr(session, "directory_path", None) or directory_path)
         config = effective_config_for_session(
             context,
             session_id,
-            fallback_directory_path=getattr(session, "directory_path", directory_path),
+            fallback_directory_path=session_directory_path,
         )
         managed_repo_id = required_string(
             payload.get("managed_repo_id"),
@@ -102,7 +103,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             raise RuntimeError("managed Git clone resolver is not available")
         clone_info = clone_resolver(
             managed_repo_id=managed_repo_id,
-            directory_path=directory_path,
+            directory_path=session_directory_path,
             session_id=session_id,
         )
         if hasattr(clone_info, "model_dump"):
@@ -122,11 +123,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             session_id=session_id,
             metadata={
                 "execution_backend": "container_worker_vm",
-                "directory_path": session.directory_path if session is not None else directory_path,
+                "directory_path": session_directory_path,
             },
-        )
-        session_directory_path = (
-            session.directory_path if session is not None else directory_path
         )
         container_job_timeout_seconds = float(config.container_worker_job_timeout_seconds)
         git_access_mode = normalize_git_access_mode(payload.get("git_access_mode"))
@@ -139,14 +137,17 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 raise RuntimeError("managed Git internal repository resolver is unavailable")
             bare_repo_path, managed_git_root = resolve_internal(
                 managed_repo_id,
-                directory_path,
+                session_directory_path,
             )
             access_metadata = self._provision_container_git_access(
                 backend=backend,
                 config=config,
                 context=context,
                 session_id=session_id,
-                issue_setup=_container_git_connection_config(context, directory_path),
+                issue_setup=_container_git_connection_config(
+                    context,
+                    session_directory_path,
+                ),
                 managed_repo_id=managed_repo_id,
                 bare_repo_path=bare_repo_path,
                 managed_git_root=managed_git_root,

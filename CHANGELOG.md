@@ -9,6 +9,17 @@
 - Added automated local-link, anchor, source-inventory, navigation, workflow-gate, and manual
   synchronization checks to prevent future documentation drift.
 
+## 2026-07-13 - Scoped Git And Release Gate Hardening
+
+- Reauthorized managed-repository overrides against the repository owner and preserved the owning
+  directory through Team project Git operations, including child-scoped worker clones.
+- Executed release verification and review gates from the frozen candidate manifest, supported
+  verification-only policies, and kept retries blocked while another current review still blocks.
+- Resolved consultation credentials from the worker directory and made incomplete failed cleanup
+  retryable so leaked workers cannot permanently consume consultation capacity.
+- Treated verifier deletion results that report failure as infrastructure failures instead of
+  advancing a release while disposable resources remain allocated.
+
 ## 2026-07-13 - Team Release Gate Retry Semantics
 
 - Classified release verification outcomes as candidate, infrastructure, or

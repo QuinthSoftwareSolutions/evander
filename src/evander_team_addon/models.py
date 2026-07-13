@@ -17,7 +17,7 @@ from pydantic import (
     model_validator,
 )
 
-from evander.models import utc_now
+from evander.models import DirectoryPath, utc_now
 from evander_team_addon.git_naming import (
     DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
     normalize_canonical_release_branch_prefix,
@@ -473,6 +473,7 @@ class Team(TeamModel):
 
 class ProjectGitConfig(TeamModel):
     managed_repo_id: str
+    directory_path: str = "root"
     base_branch: str | None = None
     canonical_release_branch_prefix: str = DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
 
@@ -483,6 +484,11 @@ class ProjectGitConfig(TeamModel):
         if re.fullmatch(r"mr_[0-9a-f]{20}", normalized) is None:
             raise ValueError("managed_repo_id must match mr_<20-hex>")
         return normalized
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def _directory_path(cls, value: object) -> str:
+        return DirectoryPath(segments=str(value or "root").strip() or "root").as_posix()
 
     @field_validator("base_branch", mode="before")
     @classmethod

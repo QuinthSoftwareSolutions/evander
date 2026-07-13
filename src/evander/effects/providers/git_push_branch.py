@@ -24,6 +24,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         destination_branch = self._normalize_required_string(
             payload.get("destination_branch"), field_name="destination_branch"
         )
+        directory_path = self._normalize_optional_string(payload.get("directory_path"))
 
         context = self._context()
         push_branch = getattr(context.git_branch_pusher, "push_branch", None)
@@ -35,7 +36,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
             source_ref=source_ref,
             expected_commit_sha=expected_commit_sha,
             destination_branch=destination_branch,
-            directory_path=str(context.metadata.get("directory_path") or "root"),
+            directory_path=directory_path or str(context.metadata.get("directory_path") or "root"),
         )
         output = self._coerce_result(result)
         output.setdefault("success", False)
@@ -54,6 +55,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         effect = self.effect_definition
         for field_name in (
             "managed_repo_id",
+            "directory_path",
             "source_ref",
             "expected_commit_sha",
             "destination_branch",

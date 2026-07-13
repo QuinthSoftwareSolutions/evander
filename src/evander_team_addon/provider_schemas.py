@@ -266,6 +266,7 @@ class TeamVerifyReleaseCandidateEffectDefinition(EffectDefinition):
 class TeamPublishReviewBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:team:publish-review-branch"]
     managed_repo_id: ConfigValue
+    directory_path: ConfigValue | None = None
     target_branch: ConfigValue
     source_branch: ConfigValue
     expected_commit_sha: ConfigValue
@@ -292,6 +293,7 @@ class TeamMarkReleasePublishedEffectDefinition(EffectDefinition):
 class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
     type: Literal["effect:team:consolidate-git-branches"]
     managed_repo_id: ConfigValue
+    directory_path: ConfigValue | None = None
     source_branches: ConfigValue
     target_branch: ConfigValue
     base_branch: ConfigValue | None = None

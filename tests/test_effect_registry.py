@@ -4958,6 +4958,89 @@ def test_agent_clone_container_passes_managed_repo_to_clone_resolver(
     assert backend.cloned_repos[0]["reconcile_existing_remote"] is True
 
 
+def test_agent_clone_container_resolves_managed_repo_in_target_session_directory(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    clone_resolver_calls, _ = _attach_managed_git_clone(admin_service)
+    internal_resolver_calls: list[tuple[str, str]] = []
+    issue_setup_calls: list[str] = []
+
+    def resolve_internal_repository(managed_repo_id: str, directory_path: str):
+        internal_resolver_calls.append((managed_repo_id, directory_path))
+        return (
+            Path("/runtime/managed-git/mr_0123456789abcdefabcd.git"),
+            Path("/runtime/managed-git"),
+        )
+
+    def resolve_issue_setup(directory_path: str, *, root_dir: Path):
+        del root_dir
+        issue_setup_calls.append(directory_path)
+        return SimpleNamespace(
+            git_host="10.2.0.4",
+            git_user="agent",
+            git_ssh_alias="evander-git-host",
+        )
+
+    admin_service.managed_git_admin = SimpleNamespace(
+        resolve_internal_repository=resolve_internal_repository,
+    )
+    admin_service._resolve_issue_setup = resolve_issue_setup
+    backend = _FakeContainerBackend()
+    _stub_container_git_authorization(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    factory.build(
+        AgentCloneRepoEffectDefinition(
+            id="agent-clone",
+            display_name="Clone",
+            type="effect:agent:clone-repo",
+            session_id="session-1",
+            managed_repo_id=_MANAGED_REPO_ID,
+        ),
+        directory_path="root",
+    ).execute()
+
+    assert clone_resolver_calls == [
+        {
+            "managed_repo_id": _MANAGED_REPO_ID,
+            "directory_path": "root/team-a",
+            "session_id": "session-1",
+        }
+    ]
+    assert internal_resolver_calls == [(_MANAGED_REPO_ID, "root/team-a")]
+    assert issue_setup_calls == ["root/team-a"]
+    assert backend.prepared_sessions[0]["metadata"]["directory_path"] == "root/team-a"
+
+
 def test_agent_clone_container_read_only_mode_skips_write_key_and_push_alias(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

@@ -6340,6 +6340,7 @@ function renderTeamInlineProjectForm(teamId) {
           <label>Repository source <input name="repo_source" placeholder="Git URL or local checkout" /></label>
           ${gitImportControls()}
           <label>Managed repository ID <input name="managed_repo_id" placeholder="mr_..." /></label>
+          <input type="hidden" name="managed_repo_directory_path" />
           <label>Base branch <input name="base_branch" placeholder="main" /></label>
           <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
         </div>
@@ -12792,6 +12793,7 @@ async function importGitRepoForForm(form, button) {
 function applyImportedGitConfig(form, git) {
   const fields = {
     managed_repo_id: git.managed_repo_id,
+    managed_repo_directory_path: git.directory_path,
     base_branch: git.base_branch,
     canonical_release_branch_prefix: git.canonical_release_branch_prefix,
   };
@@ -14446,6 +14448,10 @@ function gitConfigForForm(data) {
     return null;
   }
   const git = { managed_repo_id: managedRepoId };
+  const directoryPath = text(data.managed_repo_directory_path);
+  if (directoryPath) {
+    git.directory_path = directoryPath;
+  }
   const optionalFields = [
     "base_branch",
     "canonical_release_branch_prefix",
@@ -14666,6 +14672,7 @@ function renderEditFields(type, record) {
       ${textField("Managed repository ID", "managed_repo_id", record.git?.managed_repo_id || "", {
         placeholder: "mr_...",
       })}
+      <input type="hidden" name="managed_repo_directory_path" value="${escapeAttr(record.git?.directory_path || "root")}" />
       ${textField("Base branch", "base_branch", record.git?.base_branch || "main")}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
       <p class="subheading">Release gates</p>

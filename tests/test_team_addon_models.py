@@ -598,8 +598,12 @@ def test_session_manifest_has_no_team_addon_fields() -> None:
 
 
 def test_project_git_config_requires_managed_repo_id() -> None:
-    config = ProjectGitConfig(managed_repo_id="mr_0123456789abcdefabcd")
+    config = ProjectGitConfig(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        directory_path=" root/team-a ",
+    )
     assert config.managed_repo_id == "mr_0123456789abcdefabcd"
+    assert config.directory_path == "root/team-a"
     assert config.base_branch is None
     assert config.canonical_release_branch_prefix == "releases/<project-id>/"
 
@@ -608,6 +612,12 @@ def test_project_git_config_requires_managed_repo_id() -> None:
 
     with pytest.raises(ValidationError, match="must match mr_<20-hex>"):
         ProjectGitConfig(managed_repo_id="legacy-repo")
+
+    with pytest.raises(ValidationError, match="must begin with 'root'"):
+        ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="team-a",
+        )
 
     with pytest.raises(ValidationError, match="repo_source"):
         ProjectGitConfig.model_validate(

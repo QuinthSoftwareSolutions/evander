@@ -120,19 +120,56 @@ def test_managed_git_routes_scope_list_and_registration() -> None:
     assert listed.json()["repositories"][0]["managed_repo_id"].startswith("mr_")
     assert registered.status_code == 200
     assert registered.json()["repository"]["directory_path"] == "root/team-a"
-    assert managed_git.calls == [
-        (
-            "list",
-            (),
-            {"directory_path": "root/team-a", "include_descendants": False},
-        ),
-        (
-            "register",
-            ("root/team-a", "https://github.com/example/project.git"),
-            {"default_branch": "trunk", "refresh": False},
-        ),
-    ]
+    assert managed_git.calls[0] == (
+        "list",
+        (),
+        {"directory_path": "root/team-a", "include_descendants": False},
+    )
+    operation, args, kwargs = managed_git.calls[1]
+    assert operation == "register"
+    assert args == ("root/team-a", "https://github.com/example/project.git")
+    authorize_existing_owner = kwargs.pop("authorize_existing_owner")
+    assert callable(authorize_existing_owner)
+    assert kwargs == {"default_branch": "trunk", "refresh": False}
     assert auth.permission_paths == ["root/team-a", "root/team-a", "root/team-a"]
+
+
+def test_managed_git_registration_reauthorizes_reused_ancestor_owner() -> None:
+    class AncestorReuseManagedGitAdmin(FakeManagedGitAdmin):
+        def register_repository(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            authorize_existing_owner = kwargs["authorize_existing_owner"]
+            authorize_existing_owner("root")
+            return super().register_repository(*args, **kwargs)
+
+    class ChildOnlyAuth(FakeAuth):
+        def require_permission(
+            self,
+            request: Request,
+            permission: object,
+            directory_path: object | None = None,
+        ) -> None:
+            super().require_permission(request, permission, directory_path)
+            if str(directory_path) == "root":
+                raise PermissionError("Permission required: admin.owner")
+
+    managed_git = AncestorReuseManagedGitAdmin()
+    auth = ChildOnlyAuth()
+    service = SimpleNamespace(managed_git_admin=managed_git)
+    client = TestClient(Starlette(routes=git_repository_routes(service, auth)))
+
+    response = client.post(
+        "/api/admin/git-repositories",
+        json={
+            "directory_path": "root/team-a",
+            "repo_source": "https://github.com/example/project.git",
+            "default_branch": "trunk",
+            "refresh": False,
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "Permission required: admin.owner"}
+    assert auth.permission_paths == ["root/team-a", "root/team-a", "root"]
 
 
 def test_managed_git_routes_require_privilege_unlock_for_mutations() -> None:

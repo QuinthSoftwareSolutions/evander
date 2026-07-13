@@ -49,8 +49,13 @@ def test_git_push_branch_provider_calls_admin_service_with_pinned_contract() -> 
             source_ref=" refs/evander/operations/op-1/source ",
             expected_commit_sha=f" {'a' * 40} ",
             destination_branch=" feature/topic ",
+            directory_path=" root/team-a ",
         ),
-        EffectRuntimeContext(admin_service=admin_service, env={}),
+        EffectRuntimeContext(
+            admin_service=admin_service,
+            env={},
+            metadata={"directory_path": "root"},
+        ),
     )
 
     result = provider.execute()
@@ -61,7 +66,7 @@ def test_git_push_branch_provider_calls_admin_service_with_pinned_contract() -> 
             "source_ref": "refs/evander/operations/op-1/source",
             "expected_commit_sha": "a" * 40,
             "destination_branch": "feature/topic",
-            "directory_path": "root",
+            "directory_path": "root/team-a",
         }
     ]
     assert result["success"] is True

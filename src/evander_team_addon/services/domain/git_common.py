@@ -19,8 +19,13 @@ def _project_git_or_error(
         return None
     return project.git
 
+
 def _managed_repo_fields(git: Any) -> dict[str, str]:
-    return {"managed_repo_id": git.managed_repo_id}
+    return {
+        "managed_repo_id": git.managed_repo_id,
+        "directory_path": git.directory_path,
+    }
+
 
 def _emit_git_promotion_event(
     result: dict[str, Any],

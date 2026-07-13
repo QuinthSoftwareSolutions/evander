@@ -115,6 +115,34 @@ def test_registration_deduplicates_ancestor_and_isolates_siblings(tmp_path: Path
         service.get_repository(owner["managed_repo_id"], "root/team-b")
 
 
+def test_descendant_cannot_override_ancestor_default_branch_without_owner_authorization(
+    tmp_path: Path,
+) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    _run("git", "branch", "trunk", cwd=source)
+    service = _service(tmp_path)
+    owner = service.register_repository("root/team-a", str(source), refresh=False)
+    bare = _bare_path(service, owner["managed_repo_id"])
+    authorization_paths: list[str] = []
+
+    def deny_ancestor(directory_path: str) -> None:
+        authorization_paths.append(directory_path)
+        raise PermissionError("Permission required: admin.owner")
+
+    with pytest.raises(PermissionError, match="admin.owner"):
+        service.register_repository(
+            "root/team-a/project",
+            str(source),
+            default_branch="trunk",
+            refresh=False,
+            authorize_existing_owner=deny_ancestor,
+        )
+
+    assert authorization_paths == ["root/team-a"]
+    assert service.get_repository(owner["managed_repo_id"])["default_branch"] == "main"
+    assert _run("git", f"--git-dir={bare}", "config", "--get", "evander.baseBranch") == "main"
+
+
 def test_registration_accepts_local_checkout_with_file_origin(tmp_path: Path) -> None:
     source, upstream, _ = _source_repository(tmp_path)
     _run("git", "remote", "set-url", "origin", upstream.as_uri(), cwd=source)

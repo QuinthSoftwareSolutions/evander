@@ -10961,6 +10961,7 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
         "promotion_kind": "release",
         "project_id": "project",
         "managed_repo_id": MANAGED_REPO_ID,
+        "directory_path": "root",
         "agent_branch": "agents/lead/release-resolved",
         "target_branch": "team/team/releases/rel-1",
         "release_branch": "team/team/releases/rel-1",

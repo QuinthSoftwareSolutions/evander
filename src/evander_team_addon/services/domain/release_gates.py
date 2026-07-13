@@ -250,9 +250,9 @@ def create_release_reviews_or_approve(
     result: dict[str, Any],
 ) -> None:
     project = state.projects.get(release.project_id)
-    policy = project.release_policy if project is not None else None
+    manifest = release.manifest
     candidate = release.candidate_commit_sha
-    if project is None or policy is None or candidate is None:
+    if project is None or manifest is None or candidate is None:
         _reject_release(
             release,
             stage="configuration",
@@ -262,7 +262,7 @@ def create_release_reviews_or_approve(
         )
         return
 
-    for requirement in policy.review_requirements:
+    for requirement in manifest.review_requirements:
         existing = next(
             (
                 state.review_requests[review_id]
@@ -375,15 +375,6 @@ def create_release_reviews_or_approve(
     if _current_release_reviews(state, release):
         release.updated_at = utc_now()
         return
-    if not policy.allow_ungated:
-        _reject_release(
-            release,
-            stage="configuration",
-            kind="configuration",
-            error="release policy produced no approval gate",
-            result=result,
-        )
-        return
     approve_release_candidate(
         state,
         release=release,
@@ -494,7 +485,7 @@ def retry_release_gate(
         current.superseded_by_verification_run_id = run.id
         state.release_verification_runs[run.id] = run
         release.verification_run_ids = _append_unique(release.verification_run_ids, run.id)
-        _clear_gate_failure_for_retry(release)
+        _recompute_release_state_after_gate_retry(state, release)
         _append_verification_requested_event(result, release=release, run=run)
         result.setdefault("release_verification_run_ids", []).append(run.id)
         result["retried_gate_id"] = current.id
@@ -538,7 +529,7 @@ def retry_release_gate(
     current.superseded_by_review_request_id = review.id
     state.review_requests[review.id] = review
     release.review_request_ids = _append_unique(release.review_request_ids, review.id)
-    _clear_gate_failure_for_retry(release)
+    _recompute_release_state_after_gate_retry(state, release)
     item = AgentInboxItem(
         id=f"inbox-{uuid4().hex}",
         recipient_agent_id=reviewer.id,
@@ -748,7 +739,35 @@ def _append_verification_requested_event(
     )
 
 
-def _clear_gate_failure_for_retry(release: ReleasePackage) -> None:
+def _recompute_release_state_after_gate_retry(
+    state: TeamState,
+    release: ReleasePackage,
+) -> None:
+    blocked_reviews = [
+        review
+        for review in _current_release_reviews(state, release)
+        if review.state == TeamRecordState.BLOCKED
+    ]
+    if blocked_reviews:
+        existing_source_id = (
+            release.gate_failure.source_id if release.gate_failure is not None else None
+        )
+        blocker = next(
+            (review for review in blocked_reviews if review.id == existing_source_id),
+            blocked_reviews[0],
+        )
+        message = "; ".join(blocker.findings) or f"release review {blocker.id} blocked"
+        release.state = TeamRecordState.BLOCKED
+        release.gate_failure = ReleaseGateFailure(
+            stage="review",
+            kind="blocked",
+            source_id=blocker.id,
+            message=message,
+        )
+        release.error = message
+        release.updated_at = utc_now()
+        return
+
     release.state = TeamRecordState.PENDING
     release.gate_failure = None
     release.error = None

@@ -97,6 +97,9 @@ class AdminWebAddonServiceAdapter:
             payload = dict(vars(record))
         payload["git"] = {
             "managed_repo_id": payload.get("managed_repo_id"),
+            "directory_path": (
+                payload.get("directory_path") or kwargs.get("directory_path") or "root"
+            ),
             "base_branch": payload.get("default_branch"),
         }
         return payload

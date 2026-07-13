@@ -131,7 +131,9 @@ def _directory_path_for_repository(repository: Any) -> str:
 def _service_error_response(exc: Exception, *, default_status_code: int = 500) -> JSONResponse:
     status_code = getattr(exc, "status_code", None)
     if not isinstance(status_code, int):
-        if isinstance(exc, LookupError):
+        if isinstance(exc, PermissionError):
+            status_code = 403
+        elif isinstance(exc, LookupError):
             status_code = 404
         elif isinstance(exc, ValueError):
             status_code = 400
@@ -240,6 +242,11 @@ def git_repository_routes(
                 payload.repo_source,
                 default_branch=payload.default_branch,
                 refresh=payload.refresh,
+                authorize_existing_owner=lambda directory_path: auth.require_permission(
+                    request,
+                    ADMIN_OWNER_PERMISSION,
+                    directory_path=directory_path,
+                ),
             )
         except Exception as exc:
             return _service_error_response(exc)

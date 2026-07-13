@@ -3,6 +3,10 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 
+from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
+from evander.effects.providers.agent_create import AgentCreateEffectProvider
+from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
+from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.models import WorkflowNodeEnvelope
@@ -16,8 +20,13 @@ from evander_team_addon.models import (
     ProjectGoal,
     ProjectReleasePolicy,
     ProjectStatus,
+    ReleaseCandidateDeliverableEvidence,
+    ReleaseCandidateManifest,
     ReleasePackage,
     ReleaseScopeValidation,
+    ReleaseVerificationCommand,
+    ReleaseVerificationCommandResult,
+    ReleaseVerificationRun,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamRecordState,
@@ -27,15 +36,18 @@ from evander_team_addon.provider_schemas import (
     TeamMarkReleasePublishedEffectDefinition,
     TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
+    TeamVerifyReleaseCandidateEffectDefinition,
 )
 from evander_team_addon.providers import (
     TeamConsolidateGitBranchesEffectProvider,
     TeamMarkReleasePublishedEffectProvider,
     TeamPublishReviewBranchEffectProvider,
     TeamRecordGitPromotionEffectProvider,
+    TeamVerifyReleaseCandidateEffectProvider,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
@@ -225,6 +237,7 @@ def test_record_release_promotion_success_publishes_canonical_push(
         state.projects["project"].release_policy = ProjectReleasePolicy(
             allow_ungated=True
         )
+        state.projects["project"].git.directory_path = "root/team-a"
         state.git_promotions["release-promotion"] = GitPromotionRecord(
             id="release-promotion",
             project_id="project",
@@ -266,6 +279,7 @@ def test_record_release_promotion_success_publishes_canonical_push(
     assert events[0].payload["source_branch"] == "team/team/releases/release-1"
     assert events[0].payload["target_branch"] == "releases/project/release-1"
     assert events[0].payload["managed_repo_id"] == "mr_0123456789abcdefabcd"
+    assert events[0].payload["directory_path"] == "root/team-a"
     assert events[0].payload["expected_commit_sha"] == "feedface"
     assert "bare_repo_name" not in events[0].payload
     assert "canonical_origin_url" not in events[0].payload
@@ -381,6 +395,174 @@ def _seed_release(repo: TeamStateRepository) -> None:
         return state
 
     repo.update(_mutate)
+
+
+def _seed_release_verification(repo: TeamStateRepository) -> None:
+    _seed_release(repo)
+    frozen_command = ReleaseVerificationCommand(
+        name="frozen-check",
+        cwd="frozen",
+        argv=["python", "-m", "frozen_check"],
+    )
+
+    def _mutate(state):
+        release = state.release_packages["release-1"]
+        state.projects["project"].git.directory_path = "root/team-a"
+        release.candidate_commit_sha = "candidate-sha"
+        release.verification_run_ids = ["verification-1"]
+        release.manifest = ReleaseCandidateManifest(
+            project_id="project",
+            release_package_id=release.id,
+            candidate_commit_sha="candidate-sha",
+            release_branch=release.release_branch,
+            deliverables=[ReleaseCandidateDeliverableEvidence(deliverable_id="deliverable-1")],
+            verification_commands=[frozen_command],
+        )
+        state.release_verification_runs["verification-1"] = ReleaseVerificationRun(
+            id="verification-1",
+            release_package_id=release.id,
+            candidate_commit_sha="candidate-sha",
+            session_id="verification-session",
+            command_results=[ReleaseVerificationCommandResult(name="frozen-check")],
+        )
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            verification_commands=[
+                ReleaseVerificationCommand(
+                    name="live-policy-check",
+                    cwd="live",
+                    argv=["python", "-m", "live_policy_check"],
+                )
+            ]
+        )
+        return state
+
+    repo.update(_mutate)
+
+
+def _verify_release_provider(tmp_path: Path) -> dict[str, object]:
+    provider = TeamVerifyReleaseCandidateEffectProvider()
+    provider.initialize(
+        TeamVerifyReleaseCandidateEffectDefinition(
+            id="verify-release",
+            display_name="Verify release",
+            type="effect:team:verify-release-candidate",
+            release_package_id="release-1",
+            verification_run_id="verification-1",
+            candidate_commit_sha="candidate-sha",
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+    return provider.execute()
+
+
+def _stub_release_verifier_setup(
+    monkeypatch,
+    *,
+    destroy_result: dict[str, object],
+) -> tuple[list[list[str]], list[str]]:
+    executed_commands: list[list[str]] = []
+    create_directories: list[str] = []
+
+    def _create(self, **kwargs):
+        del kwargs
+        create_directories.append(self.effect_definition.directory_path)
+        return {"success": True}
+
+    monkeypatch.setattr(AgentCreateEffectProvider, "execute", _create)
+    monkeypatch.setattr(
+        AgentCloneRepoEffectProvider,
+        "execute",
+        lambda self, **kwargs: {"success": True, "target_dir": "/workspace/repo"},
+    )
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        executed_commands.append(command)
+        return {
+            "success": True,
+            "execution_id": f"execution-{len(executed_commands)}",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+    monkeypatch.setattr(
+        AgentDestroyEffectProvider,
+        "execute",
+        lambda self, **kwargs: destroy_result,
+    )
+    return executed_commands, create_directories
+
+
+def test_release_verifier_executes_commands_from_frozen_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    executed_commands, create_directories = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    recorded: dict[str, object] = {}
+
+    def _record_result(self, **kwargs):
+        del self
+        recorded.update(kwargs)
+        return repo.read(), {"success": True}
+
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_result",
+        _record_result,
+    )
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert create_directories == ["root/team-a"]
+    assert ["python", "-m", "frozen_check"] in executed_commands
+    assert ["python", "-m", "live_policy_check"] not in executed_commands
+    assert recorded["verification_state"] == "passed"
+    assert recorded["command_results"][0]["name"] == "frozen-check"
+
+
+def test_release_verifier_treats_reported_cleanup_failure_as_infrastructure_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+
+    def _remove_live_policy(state):
+        state.projects["project"].release_policy = None
+        return state
+
+    repo.update(_remove_live_policy)
+    _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": False, "message": "worker deletion failed"},
+    )
+    recorded: dict[str, object] = {}
+
+    def _record_result(self, **kwargs):
+        del self
+        recorded.update(kwargs)
+        return repo.read(), {"success": True}
+
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_result",
+        _record_result,
+    )
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert recorded["verification_state"] == "failed"
+    assert recorded["failure_kind"] == "infrastructure"
+    assert recorded["error"] == ("failed to destroy release verifier: worker deletion failed")
 
 
 def _mark_release_provider(tmp_path: Path, **config: object) -> dict[str, object]:
@@ -620,11 +802,12 @@ def test_publish_review_branch_delegates_pinned_promotion() -> None:
             display_name="Publish Review",
             type="effect:team:publish-review-branch",
             managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team-a",
             source_branch="agents/session-1/work",
             expected_commit_sha="a" * 40,
             target_branch="team/team/reviews/deliverable",
         ),
-        EffectRuntimeContext(admin_service=admin),
+        EffectRuntimeContext(admin_service=admin, metadata={"directory_path": "root"}),
     )
 
     result = provider.execute()
@@ -638,7 +821,7 @@ def test_publish_review_branch_delegates_pinned_promotion() -> None:
             "agent_branch": "agents/session-1/work",
             "target_branch": "team/team/reviews/deliverable",
             "expected_commit_sha": "a" * 40,
-            "directory_path": "root",
+            "directory_path": "root/team-a",
         }
     ]
 
@@ -686,23 +869,24 @@ def test_consolidate_git_branches_delegates_exact_source_commits() -> None:
             display_name="Consolidate",
             type="effect:team:consolidate-git-branches",
             managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team-a",
             source_branches=["team/team/features/task-backend"],
             target_branch="team/team/releases/release-1",
             base_branch="main",
             expected_source_commits={"team/team/features/task-backend": "b" * 40},
             allowed_changed_paths=["src/backend.py"],
         ),
-        EffectRuntimeContext(admin_service=admin),
+        EffectRuntimeContext(admin_service=admin, metadata={"directory_path": "root"}),
     )
 
     result = provider.execute()
 
     assert result == expected_result
     assert admin.managed_git_admin.calls == [
-            {
-                "managed_repo_id": "mr_0123456789abcdefabcd",
-                "directory_path": "root",
-                "source_branches": ["team/team/features/task-backend"],
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root/team-a",
+            "source_branches": ["team/team/features/task-backend"],
             "target_branch": "team/team/releases/release-1",
             "base_branch": "main",
             "expected_source_commits": {"team/team/features/task-backend": "b" * 40},

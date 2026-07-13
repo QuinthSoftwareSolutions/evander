@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -543,6 +543,7 @@ class ManagedGitAdminService:
         refresh: bool = True,
         *,
         _canonical_source: str | None = None,
+        authorize_existing_owner: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         self._require_migration_preflight()
         directory = self._normalize_directory_path(directory_path)
@@ -575,6 +576,9 @@ class ManagedGitAdminService:
             existing = self._find_accessible_identity(directory, source.canonical_identity)
             if existing is not None:
                 if requested_default and existing.get("default_branch") != requested_default:
+                    existing_owner = str(existing["directory_path"])
+                    if authorize_existing_owner is not None and existing_owner != directory:
+                        authorize_existing_owner(existing_owner)
                     self._update_record_fields(
                         existing["managed_repo_id"],
                         default_branch=requested_default,

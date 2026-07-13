@@ -110,7 +110,12 @@ def _png_avatar_bytes(color: tuple[int, int, int] = (23, 111, 122)) -> bytes:
     return buffer.getvalue()
 
 
-def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
+def _write_config(
+    tmp_path: Path,
+    *,
+    enable_team_addon: bool,
+    enable_directory_scoped_config: bool = False,
+) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -164,6 +169,8 @@ def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
         f'email_store_path: "{runtime_dir / "emails.json"}"',
         f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
     ]
+    if enable_directory_scoped_config:
+        lines.append("enable_directory_scoped_config: true")
     if enable_team_addon:
         lines.extend(
             [
@@ -2013,6 +2020,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-chat-conversations-view" in ui.text
     assert 'name="repo_source"' in ui.text
     assert 'name="managed_repo_id"' in ui.text
+    assert 'name="managed_repo_directory_path"' in ui.text
     assert 'name="bare_repo"' not in ui.text
     assert "data-agent-source-picker" in ui.text
     assert "data-id-field=" not in ui.text
@@ -2077,6 +2085,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "elements.editForm?.contains(select)" in script.text
     assert "gitToBareRepo" not in script.text
     assert "managed_repo_id" in script.text
+    assert "managed_repo_directory_path: git.directory_path" in script.text
+    assert "git.directory_path = directoryPath" in script.text
     assert "created_by_agent_id: text(data.created_by_agent_id)" in script.text
     assert "fieldTooltips" in script.text
     assert "create-task-form:created_by_agent_id" in script.text
@@ -3846,8 +3856,13 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
     _git(source_repo, "commit", "-q", "-m", "initial")
     source_commit = _git(source_repo, "rev-parse", "refs/heads/main").stdout.strip()
 
-    config_path = _write_config(tmp_path, enable_team_addon=True)
+    config_path = _write_config(
+        tmp_path,
+        enable_team_addon=True,
+        enable_directory_scoped_config=True,
+    )
     service = build_admin_runtime(config_path)
+    service.directory_admin.create_child(parent="root", name="team-a")
     service.project_dir = PROJECT_ROOT
     service.vm_agent_support.project_dir = PROJECT_ROOT
     client = TestClient(create_app(service))
@@ -3857,6 +3872,7 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         "/api/addons/team-addon/projects/git/import",
         json={
             "repo_source": str(source_repo),
+            "directory_path": "root/team-a",
         },
     )
 
@@ -3866,13 +3882,14 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
     managed_repo_id = imported["managed_repo_id"]
     bare_repo, _managed_root = service.managed_git_admin.resolve_internal_repository(
         managed_repo_id,
-        "root",
+        "root/team-a",
     )
     assert managed_repo_id.startswith("mr_")
     assert imported["canonical_repository_url"] == str(source_repo.resolve())
     assert imported["default_branch"] == "main"
     assert body["git"] == {
         "managed_repo_id": managed_repo_id,
+        "directory_path": "root/team-a",
         "base_branch": "main",
     }
     created_team = client.post(
@@ -3899,6 +3916,9 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         },
     )
     assert created_project.status_code == 201
+    assert created_project.json()["projects"]["project"]["git"]["directory_path"] == (
+        "root/team-a"
+    )
     assert service.managed_git_admin.get_repository(managed_repo_id)["bindings_by_kind"] == {
         "team_projects": ["project"]
     }
@@ -3915,6 +3935,7 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         "/api/addons/team-addon/projects/git/import",
         json={
             "repo_source": str(source_repo),
+            "directory_path": "root/team-a",
         },
     )
 
@@ -3928,6 +3949,7 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         "/api/addons/team-addon/projects/git/import",
         json={
             "repo_source": str(source_repo),
+            "directory_path": "root/team-a",
         },
     )
 
@@ -3957,6 +3979,7 @@ def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
         }
         return {
             "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": directory_path,
             "default_branch": "main",
         }
 
@@ -3987,6 +4010,7 @@ def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
         "repo_source": "/srv/repos/project",
         "directory_path": "root",
     }
+    assert response.json()["git"]["directory_path"] == "root"
 
 
 def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None:

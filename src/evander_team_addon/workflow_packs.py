@@ -365,6 +365,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "managed_repo_id": (
                     "${{team-git-promotion-requested.payload.managed_repo_id}}"
                 ),
+                "directory_path": (
+                    "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+                ),
                 "source_branch": "${{team-git-promotion-requested.payload.source_branch}}",
                 "expected_commit_sha": (
                     "${{team-git-promotion-requested.payload.expected_commit_sha}}"
@@ -394,6 +397,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Consolidate review branches into feature branch",
                 "type": "effect:team:consolidate-git-branches",
                 "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                "directory_path": (
+                    "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+                ),
                 "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
                 "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
                 "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
@@ -445,6 +451,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Consolidate feature branches into release branch",
                 "type": "effect:team:consolidate-git-branches",
                 "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                "directory_path": (
+                    "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+                ),
                 "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
                 "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
                 "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
@@ -512,6 +521,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "managed_repo_id": (
                     "${{team-git-release-recovery-requested.payload.managed_repo_id}}"
                 ),
+                "directory_path": (
+                    "${{team-git-release-recovery-requested.payload.directory_path ?? null}}"
+                ),
                 "source_branches": (
                     "${{team-git-release-recovery-requested.payload.source_branches}}"
                 ),
@@ -572,6 +584,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Push release branch to canonical remote",
                 "type": "effect:git:push-branch",
                 "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                "directory_path": (
+                    "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+                ),
                 "source_ref": "${{team-git-promotion-requested.payload.source_branch}}",
                 "expected_commit_sha": (
                     "${{team-git-promotion-requested.payload.expected_commit_sha}}"

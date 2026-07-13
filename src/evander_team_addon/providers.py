@@ -1140,6 +1140,12 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Evander-managed repository containing the pinned source commit.",
             ),
             _catalog_field(
+                "directory_path",
+                "Directory path",
+                "string",
+                description="Owning directory scope for the managed repository.",
+            ),
+            _catalog_field(
                 "target_branch",
                 "Target branch",
                 "string",
@@ -1216,6 +1222,12 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 required=True,
                 description="Evander-managed repository used for consolidation.",
+            ),
+            _catalog_field(
+                "directory_path",
+                "Directory path",
+                "string",
+                description="Owning directory scope for the managed repository.",
             ),
             _catalog_field(
                 "source_branches",
@@ -3077,10 +3089,14 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
         project = state.projects.get(release.project_id)
         policy = project.release_policy if project is not None else None
         git = project.git if project is not None else None
-        if project is None or policy is None or git is None:
-            raise ValueError("release project, Git configuration, or release policy is missing")
-        if not policy.verification_commands:
-            raise ValueError("release verification run has no configured commands")
+        manifest = release.manifest
+        if project is None or git is None or manifest is None:
+            raise ValueError(
+                "release project, Git configuration, or frozen candidate manifest is missing"
+            )
+        verification_commands = manifest.verification_commands
+        if not verification_commands:
+            raise ValueError("release verification run has no frozen commands")
 
         command_results: list[dict[str, Any]] = []
         terminal_state = "passed"
@@ -3097,7 +3113,8 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
                     execution_backend="container_worker_vm",
                     session_id=run.session_id,
                     existing_agent_behavior="upsert",
-                    container_image=policy.container_image,
+                    container_image=(policy.container_image if policy is not None else None),
+                    directory_path=git.directory_path,
                     dotnet=True,
                     nuget=True,
                     ttl_hours=4,
@@ -3158,7 +3175,7 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
             )
             pin.execute()
 
-            for command in policy.verification_commands:
+            for command in verification_commands:
                 started = time.monotonic()
                 executor = AgentExecEffectProvider()
                 executor.initialize(
@@ -3231,7 +3248,12 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
                         ),
                         self.runtime_context,
                     )
-                    destroy.execute()
+                    destroy_result = destroy.execute()
+                    if not bool(destroy_result.get("success")):
+                        raise RuntimeError(
+                            _optional_text(destroy_result.get("message"))
+                            or "release verifier deletion reported failure"
+                        )
                 except Exception as exc:
                     if terminal_state == "passed":
                         terminal_state = "failed"
@@ -3267,6 +3289,7 @@ class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
         payload = _definition_payload(
             self.effect_definition,
             "managed_repo_id",
+            "directory_path",
             "source_branch",
             "expected_commit_sha",
             "target_branch",
@@ -3286,6 +3309,9 @@ class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
             expected_commit_sha = _required_text(
                 payload.get("expected_commit_sha"), "expected_commit_sha"
             )
+            directory_path = _optional_text(payload.get("directory_path")) or str(
+                getattr(self.runtime_context, "metadata", {}).get("directory_path") or "root"
+            )
         except ValueError as exc:
             return _review_publish_failure(None, None, str(exc))
         admin_service = getattr(self.runtime_context, "admin_service", None)
@@ -3300,10 +3326,7 @@ class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
                 agent_branch=source_branch,
                 target_branch=target_branch,
                 expected_commit_sha=expected_commit_sha,
-                directory_path=str(
-                    getattr(self.runtime_context, "metadata", {}).get("directory_path")
-                    or "root"
-                ),
+                directory_path=directory_path,
             )
         except Exception as exc:
             return _review_publish_failure(target_branch, None, str(exc))
@@ -3371,6 +3394,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
         payload = _definition_payload(
             self.effect_definition,
             "managed_repo_id",
+            "directory_path",
             "source_branches",
             "target_branch",
             "base_branch",
@@ -3417,6 +3441,9 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
                 if payload.get("allowed_changed_paths") is not None
                 else None
             )
+            directory_path = _optional_text(payload.get("directory_path")) or str(
+                getattr(self.runtime_context, "metadata", {}).get("directory_path") or "root"
+            )
         except ValueError as exc:
             return _consolidation_failure(None, str(exc))
         if not source_branches:
@@ -3431,10 +3458,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
         try:
             return consolidate(
                 managed_repo_id=managed_repo_id,
-                directory_path=str(
-                    getattr(self.runtime_context, "metadata", {}).get("directory_path")
-                    or "root"
-                ),
+                directory_path=directory_path,
                 source_branches=source_branches,
                 target_branch=target_branch,
                 base_branch=base_branch,

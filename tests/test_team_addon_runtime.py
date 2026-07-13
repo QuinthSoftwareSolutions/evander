@@ -5868,6 +5868,9 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert promote["managed_repo_id"] == (
         "${{team-git-promotion-requested.payload.managed_repo_id}}"
     )
+    assert promote["directory_path"] == (
+        "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+    )
     assert promote["expected_commit_sha"] == (
         "${{team-git-promotion-requested.payload.expected_commit_sha}}"
     )
@@ -5892,6 +5895,9 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-consolidate-feature-branches"]["managed_repo_id"] == (
         "${{team-git-promotion-requested.payload.managed_repo_id}}"
     )
+    assert effects["team-consolidate-feature-branches"]["directory_path"] == (
+        "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+    )
     assert effects["team-consolidate-feature-branches"]["expected_source_commits"] == (
         "${{team-git-promotion-requested.payload.expected_source_commits}}"
     )
@@ -5905,6 +5911,9 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     )
     assert effects["team-consolidate-release-branches"]["managed_repo_id"] == (
         "${{team-git-promotion-requested.payload.managed_repo_id}}"
+    )
+    assert effects["team-consolidate-release-branches"]["directory_path"] == (
+        "${{team-git-promotion-requested.payload.directory_path ?? null}}"
     )
     assert effects["team-consolidate-release-branches"]["expected_source_commits"] == (
         "${{team-git-promotion-requested.payload.expected_source_commits}}"
@@ -5928,6 +5937,9 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert recovery_promote["allowed_changed_paths"] == (
         "${{team-git-release-recovery-requested.payload.allowed_changed_paths}}"
     )
+    assert recovery_promote["directory_path"] == (
+        "${{team-git-release-recovery-requested.payload.directory_path ?? null}}"
+    )
     recovery_record = effects["team-record-release-recovery-promotion"]
     assert recovery_record["type"] == "effect:team:record-git-promotion"
     assert recovery_record["promotion_id"] == (
@@ -5945,6 +5957,9 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert push["type"] == "effect:git:push-branch"
     assert push["managed_repo_id"] == (
         "${{team-git-promotion-requested.payload.managed_repo_id}}"
+    )
+    assert push["directory_path"] == (
+        "${{team-git-promotion-requested.payload.directory_path ?? null}}"
     )
     assert push["source_ref"] == "${{team-git-promotion-requested.payload.source_branch}}"
     assert push["expected_commit_sha"] == (

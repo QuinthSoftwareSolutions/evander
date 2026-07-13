@@ -76,6 +76,9 @@ class CodeConsultationEffectProvider(EffectProviderBase):
         store = self._store()
         record = self._require_record(store, consultation_id)
         if record.status in TERMINAL_CONSULTATION_STATUSES:
+            if record.cleanup_status != "completed":
+                record = self._cleanup(store, record)
+                self._release_capacity(store, record)
             raise RuntimeError(
                 f"consultation {consultation_id} is already terminal ({record.status})"
             )
@@ -303,9 +306,13 @@ class CodeConsultationEffectProvider(EffectProviderBase):
         }
 
     def _write_result_token(self, record: CodeConsultationRecord) -> None:
-        config = self._context().resolved_config
+        session_config = effective_config_for_session(
+            self._context(),
+            record.session_id,
+            fallback_directory_path=record.directory_path,
+        )
         env_name = str(
-            getattr(config, "agent_consultation_token_secret_env", "")
+            getattr(session_config, "agent_consultation_token_secret_env", "")
             or "AGENT_PROMPT_TOKEN_SECRET"
         ).strip()
         secret = str(self._context().env.get(env_name) or "").strip()
@@ -318,11 +325,6 @@ class CodeConsultationEffectProvider(EffectProviderBase):
             consultation_id=record.consultation_id,
             session_id=record.session_id,
             expires_at=record.expires_at,
-        )
-        session_config = effective_config_for_session(
-            self._context(),
-            record.session_id,
-            fallback_directory_path=record.directory_path,
         )
         container_backend(self._context(), session_config).write_files(
             session_id=record.session_id,
