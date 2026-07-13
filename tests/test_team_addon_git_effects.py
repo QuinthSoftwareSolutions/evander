@@ -17,6 +17,7 @@ from evander_team_addon.models import (
     ProjectReleasePolicy,
     ProjectStatus,
     ReleasePackage,
+    ReleaseScopeValidation,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamRecordState,
@@ -373,6 +374,8 @@ def _seed_release(repo: TeamStateRepository) -> None:
             feature_branches=["team/team/features/task-backend"],
             release_branch="team/team/releases/release-1",
             canonical_branch="releases/project/release-1",
+            policy_version=2,
+            scope_validation=ReleaseScopeValidation(state="pending"),
             state=TeamRecordState.PENDING,
         )
         return state
@@ -431,6 +434,8 @@ def test_mark_release_published_supersedes_older_blocked_duplicate(
             deliverable_ids=list(current.deliverable_ids),
             release_branch="team/team/releases/release-old",
             git_promotion_record_ids=["promotion-release-old"],
+            policy_version=2,
+            scope_validation=ReleaseScopeValidation(state="pending"),
             state=TeamRecordState.BLOCKED,
             error="merge conflict",
             created_at=current.created_at - timedelta(minutes=1),
@@ -491,7 +496,7 @@ def test_mark_release_published_supersedes_older_blocked_duplicate(
     assert state.projects["project"].status != ProjectStatus.BLOCKED
 
 
-def test_mark_release_published_supersedes_legacy_duplicate_blocked_by_migration(
+def test_mark_release_published_leaves_legacy_duplicate_rejected_by_migration(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -520,8 +525,11 @@ def test_mark_release_published_supersedes_legacy_duplicate_blocked_by_migration
     )
 
     assert result["success"] is True
-    assert result["superseded_release_package_ids"] == ["release-pending"]
-    assert repo.read().release_packages["release-pending"].state == TeamRecordState.REJECTED
+    assert result["superseded_release_package_ids"] == []
+    legacy_release = repo.read().release_packages["release-pending"]
+    assert legacy_release.state == TeamRecordState.REJECTED
+    assert legacy_release.error is not None
+    assert legacy_release.error.startswith("legacy_unpinned_release:")
 
 
 def test_mark_release_published_ignores_late_success_for_rejected_release(
