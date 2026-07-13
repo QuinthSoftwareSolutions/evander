@@ -65,6 +65,7 @@ class EffectProviderConfig(BaseModel):
     agent_context_retry_enabled: bool = True
     agent_context_retry_max_attempts: int = Field(default=1, ge=0)
     agent_context_retry_target_chars: int = Field(default=16_000, ge=4_000)
+    agent_consultation_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
     execution_backend: str = "libvirt_vm"
     container_worker_base_url: str | None = None
     container_worker_token_env: str = "EVANDER_WORKER_TOKEN"

@@ -22,7 +22,20 @@ def _config_path(project_dir: Path) -> Path:
 
 
 def _node_ids(nodes: object) -> list[str]:
-    return [str(getattr(node, "id")) for node in nodes]
+    return [
+        str(getattr(node, "id"))
+        for node in nodes
+        if not str(getattr(node, "id")).startswith("system.code_consultation.")
+    ]
+
+
+def _editable_edge_pairs(edges: object) -> list[tuple[str, str]]:
+    return [
+        (str(edge.source_id), str(edge.target_id))
+        for edge in edges
+        if not str(edge.source_id).startswith("system.code_consultation.")
+        and not str(edge.target_id).startswith("system.code_consultation.")
+    ]
 
 
 def _write_communication_targets(
@@ -503,7 +516,7 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
         "system.chat_assistant.ensure_session",
         "system.chat_assistant.enqueue_prompt",
     ]
-    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+    assert _editable_edge_pairs(config.edges) == [
         ("trigger-cron-synthetic", "effect-log-synthetic"),
         ("system.chat_assistant", "system.chat_assistant.ensure_session"),
         (
@@ -533,7 +546,7 @@ def test_load_config_composes_hidden_system_pack_without_operator_packs(
         "system.chat_assistant.ensure_session",
         "system.chat_assistant.enqueue_prompt",
     ]
-    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+    assert _editable_edge_pairs(config.edges) == [
         ("system.chat_assistant", "system.chat_assistant.ensure_session"),
         (
             "system.chat_assistant.ensure_session",
@@ -689,7 +702,7 @@ def test_load_config_composes_configured_pack_with_hidden_system_pack(
         "system.chat_assistant.ensure_session",
         "system.chat_assistant.enqueue_prompt",
     ]
-    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+    assert _editable_edge_pairs(config.edges) == [
         ("trigger-cron-synthetic", "effect-log-synthetic"),
         ("system.chat_assistant", "system.chat_assistant.ensure_session"),
         (
@@ -1072,7 +1085,7 @@ def test_load_config_strips_legacy_system_nodes_from_configured_pack(
     ]
     assert trigger.display_name == "System Chat Assistant"
     assert enqueue.display_name == "Enqueue chat assistant prompt"
-    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+    assert _editable_edge_pairs(config.edges) == [
         ("trigger-cron-synthetic", "effect-log-synthetic"),
         ("system.chat_assistant", "system.chat_assistant.ensure_session"),
         (
@@ -1134,7 +1147,7 @@ def test_load_config_strips_legacy_system_nodes_from_inline_workflow_ir(
         "system.chat_assistant",
     ]
     assert trigger.display_name == "System Chat Assistant"
-    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+    assert _editable_edge_pairs(config.edges) == [
         ("trigger-cron-inline", "effect-log-inline"),
         ("system.chat_assistant", "system.chat_assistant.ensure_session"),
         (

@@ -297,7 +297,7 @@ def test_compose_workflow_ir_preserves_disabled_trigger_flag(tmp_path: Path) -> 
     ]
 
 
-def test_hidden_system_workflow_pack_contains_chat_assistant_graph() -> None:
+def test_hidden_system_workflow_pack_contains_control_plane_graphs() -> None:
     project_dir = Path(__file__).resolve().parents[1]
 
     composed = compose_workflow_ir(
@@ -306,10 +306,19 @@ def test_hidden_system_workflow_pack_contains_chat_assistant_graph() -> None:
         built_in_workflow_packs=BUILTIN_HIDDEN_WORKFLOW_PACKS,
     )
 
-    assert [trigger["id"] for trigger in composed.triggers] == ["system.chat_assistant"]
+    assert [trigger["id"] for trigger in composed.triggers] == [
+        "system.chat_assistant",
+        "system.code_consultation.requested",
+        "system.code_consultation.terminate_requested",
+    ]
     assert [effect["id"] for effect in composed.effects] == [
         "system.chat_assistant.ensure_session",
         "system.chat_assistant.enqueue_prompt",
+        "system.code_consultation.prepare",
+        "system.code_consultation.prompt",
+        "system.code_consultation.finalize_completed",
+        "system.code_consultation.finalize_error",
+        "system.code_consultation.terminate",
     ]
     assert composed.edges == [
         {
@@ -321,6 +330,36 @@ def test_hidden_system_workflow_pack_contains_chat_assistant_graph() -> None:
         {
             "source_id": "system.chat_assistant.ensure_session",
             "target_id": "system.chat_assistant.enqueue_prompt",
+            "source_port": None,
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.code_consultation.requested",
+            "target_id": "system.code_consultation.prepare",
+            "source_port": None,
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.code_consultation.prepare",
+            "target_id": "system.code_consultation.prompt",
+            "source_port": None,
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.code_consultation.prompt",
+            "target_id": "system.code_consultation.finalize_completed",
+            "source_port": "completed",
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.code_consultation.prompt",
+            "target_id": "system.code_consultation.finalize_error",
+            "source_port": "error",
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.code_consultation.terminate_requested",
+            "target_id": "system.code_consultation.terminate",
             "source_port": None,
             "allow_cycle": False,
         },
@@ -340,10 +379,19 @@ def test_hidden_system_workflow_pack_loads_from_package_data_when_project_config
         built_in_workflow_packs=workflow_packs.BUILTIN_HIDDEN_WORKFLOW_PACKS,
     )
 
-    assert [trigger["id"] for trigger in composed.triggers] == ["system.chat_assistant"]
+    assert [trigger["id"] for trigger in composed.triggers] == [
+        "system.chat_assistant",
+        "system.code_consultation.requested",
+        "system.code_consultation.terminate_requested",
+    ]
     assert [effect["id"] for effect in composed.effects] == [
         "system.chat_assistant.ensure_session",
         "system.chat_assistant.enqueue_prompt",
+        "system.code_consultation.prepare",
+        "system.code_consultation.prompt",
+        "system.code_consultation.finalize_completed",
+        "system.code_consultation.finalize_error",
+        "system.code_consultation.terminate",
     ]
 
 

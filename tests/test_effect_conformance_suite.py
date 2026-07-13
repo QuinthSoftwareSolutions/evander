@@ -190,6 +190,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "prompt": "Continue ${{effect_1.session_id}}",
         }
     )
+    code_consultation = adapter.validate_python(
+        {
+            "id": "effect-code-consultation",
+            "display_name": "Prepare code consultation",
+            "type": "effect:agent:code-consultation",
+            "consultation_id": "${{consultation-requested.payload.consultation_id}}",
+            "operation": "prepare",
+        }
+    )
     agent_exec = adapter.validate_python(
         {
             "id": "effect-agent-exec",
@@ -394,6 +403,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert agent_copy.type == "effect:agent:copy-files"
     assert prompt.type == "effect:agent:prompt"
     assert enqueue_prompt.type == "effect:agent:enqueue-prompt"
+    assert code_consultation.type == "effect:agent:code-consultation"
     assert agent_exec.type == "effect:agent:exec"
     assert http_request.type == "effect:http:request"
     assert http_request.allowed_url_patterns == ["https://example.test/*"]

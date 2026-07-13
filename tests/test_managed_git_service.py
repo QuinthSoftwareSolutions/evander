@@ -168,8 +168,107 @@ def test_git_subprocess_timeout_is_bounded_and_path_free(
     assert "/secret/worktree" not in str(exc.value)
 
 
+def test_resolve_snapshot_and_evidence_are_pinned_and_directory_scoped(tmp_path: Path) -> None:
+    source, _, commit_sha = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team-a", str(source))
+
+    snapshot = service.resolve_snapshot(
+        record["managed_repo_id"],
+        "root/team-a/project",
+        source_ref="main",
+        commit_sha=commit_sha,
+    )
+    assert snapshot == {
+        "managed_repo_id": record["managed_repo_id"],
+        "directory_path": "root/team-a/project",
+        "source_ref": "refs/heads/main",
+        "commit_sha": commit_sha,
+    }
+    assert (
+        service.validate_snapshot_evidence(
+            record["managed_repo_id"],
+            "root/team-a/project",
+            commit_sha=commit_sha,
+            evidence=[
+                {
+                    "path": "README.md",
+                    "line_start": 1,
+                    "line_end": 1,
+                    "explanation": "The initial content is here.",
+                }
+            ],
+        )[0]["path"]
+        == "README.md"
+    )
+
+    with pytest.raises(LookupError):
+        service.resolve_snapshot(record["managed_repo_id"], "root/team-b", source_ref="main")
+    with pytest.raises(ValueError, match="outside"):
+        service.validate_snapshot_evidence(
+            record["managed_repo_id"],
+            "root/team-a",
+            commit_sha=commit_sha,
+            evidence=[
+                {
+                    "path": "README.md",
+                    "line_start": 1,
+                    "line_end": 2,
+                    "explanation": "Invalid range.",
+                }
+            ],
+        )
 
 
+def test_consultation_snapshot_pin_survives_source_ref_movement_until_release(
+    tmp_path: Path,
+) -> None:
+    source, _, first_commit = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team-a", str(source))
+    repo_id = record["managed_repo_id"]
+
+    pinned = service.pin_snapshot(
+        repo_id,
+        "root/team-a",
+        consultation_id="consult-pin-one",
+        source_ref="main",
+    )
+    second_commit = _commit(source, "README.md", "second\n", "second")
+    _run("git", "push", "origin", "main", cwd=source)
+    service.refresh_repository(repo_id)
+    bare_path = _bare_path(service, repo_id)
+
+    assert pinned["commit_sha"] == first_commit
+    assert _run("git", f"--git-dir={bare_path}", "rev-parse", "refs/heads/main") == (second_commit)
+    assert _run("git", f"--git-dir={bare_path}", "rev-parse", pinned["pin_ref"]) == (first_commit)
+    assert any(
+        binding.get("kind") == "consultations" and binding.get("binding_id") == "consult-pin-one"
+        for binding in service.get_repository(repo_id)["bindings"]
+    )
+    with pytest.raises(ManagedGitConflictError, match="active bindings"):
+        service.delete_repository(repo_id)
+
+    released = service.release_snapshot_pin(
+        repo_id,
+        "root/team-a",
+        consultation_id="consult-pin-one",
+        expected_commit_sha=first_commit,
+    )
+    assert released["released"] is True
+    assert not any(
+        binding.get("kind") == "consultations"
+        for binding in service.get_repository(repo_id)["bindings"]
+    )
+    assert (
+        subprocess.run(
+            ["git", f"--git-dir={bare_path}", "rev-parse", "--verify", pinned["pin_ref"]],
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode
+        != 0
+    )
 
 
 def test_registration_rehomes_unused_descendant_when_ancestor_is_registered_later(

@@ -1087,6 +1087,38 @@ Example MCP call:
   - Grant `respond_to_agent` only to responder sessions.
   - Keep `directory_path` boundaries narrow so prompt routing cannot cross unrelated teams.
 
+## Codebase Consultation Workers
+
+Use `consult_codebase` when an agent needs a fast, bounded repository answer instead of assigning
+a durable task to another existing agent. The caller must provide a `managed_repo_id` plus either
+`source_ref`, `commit_sha`, or a repository with a configured default branch. Evander resolves the
+ref once and records the exact commit before dispatch.
+
+- Required services: gateway, trigger orchestrator, effect orchestrator, OpenAI relay, and the
+  configured container worker.
+- Caller permissions: `consult_codebase` and `get_codebase_consultation`; add
+  `cancel_codebase_consultation` when cancellation is needed.
+- Configure at least one `agent_consultation_profiles` entry and either pass its name or set
+  `agent_consultation_default_profile`.
+- For Ollama, use `model_provider_mode: local_openai` and ensure the host relay's
+  `local_openai_api_base_url` reaches the Ollama OpenAI-compatible endpoint. The worker still talks
+  only to the host relay.
+- The initial call waits for at most the smaller of `wait_seconds` and
+  `agent_consultation_max_wait_seconds`; a nonterminal response is expected and can be polled.
+- Requests exceeding `max_concurrency` remain queued. `timeout_seconds` includes queue time and
+  execution time.
+- Timeout and cancellation flow through durable internal events. Cleanup destroys the worker
+  session, revokes its managed-Git binding/key, releases the temporary consultation snapshot ref,
+  and only then releases profile capacity.
+- Runtime records are stored in `runtime/agent-consultations.db` and fully cleaned terminal records
+  older than `agent_consultation_retention_days` are compacted on new requests. Records with
+  incomplete cleanup are retained for diagnosis and retry.
+- The result token defaults to the host secret named by `AGENT_PROMPT_TOKEN_SECRET`; override the
+  env-var name with `agent_consultation_token_secret_env` when isolation is preferred. Never put
+  the secret value in directory configuration.
+
+The hidden `system.v1` graph owns preparation, prompting, finalization, timeout, and cleanup. Do
+not duplicate those nodes in an operator workflow pack.
 
 ## Host-Side Phone Calls
 

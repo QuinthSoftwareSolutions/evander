@@ -33,25 +33,13 @@ from evander.workflow.validation import (
     WorkflowValidationDiagnostic,
     validate_workflow_binding_diagnostics,
 )
+from evander.workflow.system_nodes import is_system_managed_workflow_node_id
 
 _TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
 _GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
 _EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
 _QUERY_DEFINITION_ADAPTER = TypeAdapter(QueryDefinitionDiscriminated)
 _EDGE_DEFINITION_ADAPTER = TypeAdapter(EdgeDefinition)
-_SYSTEM_CHAT_ASSISTANT_TRIGGER_ID = "system.chat_assistant"
-_SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID = "system.chat_assistant.ensure_session"
-_SYSTEM_CHAT_ASSISTANT_ENQUEUE_PROMPT_ID = "system.chat_assistant.enqueue_prompt"
-_SYSTEM_MANAGED_WORKFLOW_NODE_IDS = frozenset(
-    {
-        _SYSTEM_CHAT_ASSISTANT_TRIGGER_ID,
-        _SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID,
-        _SYSTEM_CHAT_ASSISTANT_ENQUEUE_PROMPT_ID,
-    }
-)
-
-
-
 def _strip_default_edge_fields(payload: dict[str, object]) -> dict[str, object]:
     edges = payload.get("edges")
     if not isinstance(edges, list):
@@ -204,7 +192,7 @@ def _looks_like_declared_output_schema(value: object) -> bool:
 
 
 def _is_system_managed_workflow_node_id(node_id: str) -> bool:
-    return str(node_id or "").strip() in _SYSTEM_MANAGED_WORKFLOW_NODE_IDS
+    return is_system_managed_workflow_node_id(node_id)
 
 
 def _field_option(

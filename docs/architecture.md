@@ -370,6 +370,17 @@ examples use `config/trigger-orchestrator/config-example.json` and
 This keeps domain workflow evolution in configuration artifacts while the orchestrator engine
 remains generic.
 
+### Request-scoped agent consultations
+
+Codebase consultation is a generic control-plane primitive rather than a Team agent type. The MCP
+gateway authenticates the caller, resolves an exact directory-scoped managed-Git commit, persists
+the request, and publishes a durable internal event. The hidden system workflow then materializes
+a container session and repository workspace, invokes the configured model through the existing
+relay, and always tears the session down after a structured result, failure, cancellation, or
+deadline. The caller may wait briefly but does not hold a workflow worker or gateway transaction
+for the full model run. Per-profile queues provide admission control, and capacity is released only
+after cleanup. This keeps persistent agent identity, inboxes, and Team governance out of a
+short-lived read-only query path.
 
 ## Planned Next Integrations
 

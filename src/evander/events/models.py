@@ -534,6 +534,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:chat-assistant:ensure-session": (
             provider_models.ChatAssistantEnsureSessionEffectDefinition
         ),
+        "effect:agent:code-consultation": (
+            provider_models.CodeConsultationEffectDefinition
+        ),
         "effect:agent:exec": provider_models.AgentExecEffectDefinition,
         "effect:semantic:ensure-collection": (
             provider_models.SemanticEnsureCollectionEffectDefinition

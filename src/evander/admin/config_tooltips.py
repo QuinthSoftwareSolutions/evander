@@ -212,6 +212,21 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "managed_git_worktree_stale_seconds": (
         "Minimum age in seconds before an unlocked leftover managed worktree can be reconciled after an interrupted operation."
     ),
+    "agent_consultation_profiles": (
+        "Named request-scoped container worker profiles for consult_codebase, including model, provider mode, image, timeout, and concurrency."
+    ),
+    "agent_consultation_default_profile": (
+        "Profile used by consult_codebase when the caller does not select one explicitly."
+    ),
+    "agent_consultation_max_wait_seconds": (
+        "Maximum time a gateway consultation call may wait before returning a pollable nonterminal result."
+    ),
+    "agent_consultation_retention_days": (
+        "Days to retain terminal codebase consultation records before request-time compaction."
+    ),
+    "agent_consultation_token_secret_env": (
+        "Host environment variable containing the signing secret for one-time consultation result tokens."
+    ),
     "container_worker_guest_openai_base_url": (
         "Container-visible OpenAI relay base URL used inside runner sessions."
     ),

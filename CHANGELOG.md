@@ -14,6 +14,19 @@
 - Migrated legacy unpinned nonterminal releases to rejected state and persisted
   review lineage and gate-failure details in the Team SQLite store.
 
+## 2026-07-13 - Request-Scoped Codebase Consultations
+
+- Added generic MCP tools for bounded codebase consultation, polling, cancellation, and structured
+  result submission without requiring a persistent junior agent or Team Add-on identity.
+- Added named container-only model profiles, per-directory/profile admission control, bounded
+  synchronous waits, durable SQLite state, one-time worker-bound result tokens, and retention.
+- Pinned every request to an exact directory-scoped managed-Git commit under a temporary bound ref,
+  cloned and fetched it with read-only Git access, detached the workspace at that commit, and
+  validated cited paths and line ranges before accepting results.
+- Added a hidden durable workflow for request-time agent/workspace materialization and guaranteed
+  cleanup after completion, failure, timeout, or cancellation, releasing queue capacity only after
+  cleanup.
+
 ## 2026-07-13 - Managed Bare Repositories And Ephemeral Worktrees
 
 - Replaced issue-specific mirror/persistent-checkout routing with one directory-scoped managed

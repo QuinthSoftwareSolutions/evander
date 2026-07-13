@@ -956,6 +956,40 @@ Response:
   - grant `respond_to_agent` only to sessions that need to answer prompts;
   - avoid broad cross-team sharing by keeping sessions in narrow `directory_path` scopes.
 
+## Request-Scoped Codebase Consultations
+
+`consult_codebase` is the low-latency delegation path for repository questions. It does not
+require a pre-created "junior" agent. Each request resolves an exact commit from a
+directory-visible managed repository, creates a fresh container-worker session, clones the
+repository with read-only Git credentials, checks out the pinned commit, prompts the selected
+model, accepts one structured response, and destroys the session.
+
+Configure named profiles in the root or directory `providers.json`:
+
+```yaml
+agent_consultation_profiles:
+  local-qwen-search:
+    execution_backend: container_worker_vm
+    agent_provider: codex
+    model: qwen3.6:27b
+    model_provider_mode: local_openai
+    container_image: default
+    timeout_seconds: 180
+    max_concurrency: 1
+agent_consultation_default_profile: local-qwen-search
+agent_consultation_max_wait_seconds: 60
+agent_consultation_retention_days: 30
+```
+
+Grant dispatching sessions `consult_codebase`, `get_codebase_consultation`, and optionally
+`cancel_codebase_consultation`. The disposable worker receives only
+`submit_codebase_consultation_result`; callers do not grant that tool themselves. A consultation
+can wait briefly in the initial call or return `queued`, `provisioning`, or `running` and be polled
+by ID. Results contain an answer, confidence, limitations, exact commit provenance, and evidence
+whose paths and line ranges are verified against the pinned commit. Per-profile concurrency,
+deadlines, cancellation, one-time result tokens, and the hidden system workflow bound resource
+use and guarantee cleanup. The feature is generic MCP/workflow infrastructure and has no Team
+Add-on dependency.
 
 ## Retell Phone Call Tools
 

@@ -363,6 +363,38 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     agent_context_retry_target_chars: ConfigValue | None = None
 
 
+class CodeConsultationEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:code-consultation"]
+    consultation_id: ConfigValue
+    operation: ConfigValue
+    outcome: ConfigValue | None = None
+    status: ConfigValue | None = None
+    reason: ConfigValue | None = None
+
+    @field_validator("operation")
+    @classmethod
+    def validate_operation(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip().casefold()
+            if normalized not in {"prepare", "finalize", "terminate"}:
+                raise ValueError(
+                    "effect:agent:code-consultation operation must be prepare, finalize, or terminate"
+                )
+            return normalized
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip().casefold()
+            if normalized not in {"timed_out", "cancelled"}:
+                raise ValueError(
+                    "effect:agent:code-consultation status must be timed_out or cancelled"
+                )
+            return normalized
+        return value
+
 
 class ChatAssistantEnsureSessionEffectDefinition(EffectDefinition):
     type: Literal["effect:chat-assistant:ensure-session"]

@@ -35,6 +35,7 @@ from evander.effects.providers.event_schedule import EventScheduleEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.effects.providers.chat_assistant import ChatAssistantEnsureSessionEffectProvider
+from evander.effects.providers.code_consultation import CodeConsultationEffectProvider
 from evander.effects.providers.communication_send_message import (
     CommunicationSendMessageEffectProvider,
 )
@@ -240,6 +241,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:agent:prompt": AgentPromptEffectProvider,
             "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectProvider,
             "effect:chat-assistant:ensure-session": ChatAssistantEnsureSessionEffectProvider,
+            "effect:agent:code-consultation": CodeConsultationEffectProvider,
             "effect:agent:exec": AgentExecEffectProvider,
             "effect:http:request": HttpRequestEffectProvider,
             "effect:runtime:diagnostics-snapshot": RuntimeDiagnosticsSnapshotEffectProvider,

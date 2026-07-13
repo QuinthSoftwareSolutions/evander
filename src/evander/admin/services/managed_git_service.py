@@ -28,6 +28,7 @@ from uuid import uuid4
 
 from evander.admin.payloads import AdminRevisionConflict
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
+from evander.consultations import consultation_snapshot_ref
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
 from evander.models import DirectoryPath
 from evander.storage import JsonObjectStore
@@ -66,6 +67,7 @@ _B64_ASSIGNMENT_PATTERN = re.compile(
     r"(?P<name>EVANDER_GIT_(?:ROOT|AUTH_REPO|AUTH_REPO_PREFIX|AUTH_SESSION_ID)_B64)="
     r"(?P<value>[A-Za-z0-9+/=]+)"
 )
+_MAX_CONSULTATION_EVIDENCE_BLOB_BYTES = 5 * 1024 * 1024
 
 
 class ManagedGitNotFoundError(LookupError):
@@ -858,6 +860,287 @@ class ManagedGitAdminService:
         bare_path = self._bare_path(record)
         return bare_path, self._managed_root
 
+    def resolve_snapshot(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        source_ref: str | None = None,
+        commit_sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve and verify the immutable commit used by a read-only consumer."""
+
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        bare_path = self._bare_path(record)
+        requested_ref = str(source_ref or "").strip()
+        if not requested_ref and not commit_sha:
+            requested_ref = str(record.get("default_branch") or "").strip()
+            if not requested_ref:
+                raise ValueError(
+                    "source_ref or commit_sha is required because the managed repository "
+                    "has no default branch"
+                )
+        normalized_ref = (
+            _normalize_ref(requested_ref, field_name="source_ref") if requested_ref else None
+        )
+        expected = _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            resolved = self._resolve_ref(bare_path, normalized_ref) if normalized_ref else expected
+            if resolved is None:
+                raise ManagedGitNotFoundError(
+                    f"Unknown source ref {normalized_ref} in {managed_repo_id}"
+                )
+            if expected is not None and resolved != expected:
+                raise ManagedGitConflictError(
+                    f"Source ref {normalized_ref} resolves to {resolved}, not {expected}",
+                    details={
+                        "managed_repo_id": managed_repo_id,
+                        "source_ref": normalized_ref,
+                        "expected_commit_sha": expected,
+                        "current_commit_sha": resolved,
+                    },
+                )
+            self._require_commit(bare_path, resolved)
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory,
+            "source_ref": normalized_ref,
+            "commit_sha": resolved,
+        }
+
+    def pin_snapshot(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        consultation_id: str,
+        source_ref: str | None = None,
+        commit_sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a snapshot and retain its commit under a consultation-scoped ref."""
+
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        binding_preexisting = any(
+            isinstance(item, dict)
+            and item.get("kind") == "consultations"
+            and item.get("binding_id") == consultation_id
+            for item in record.get("bindings") or []
+        )
+        bare_path = self._bare_path(record)
+        pin_ref = consultation_snapshot_ref(consultation_id)
+        requested_ref = str(source_ref or "").strip()
+        if not requested_ref and not commit_sha:
+            requested_ref = str(record.get("default_branch") or "").strip()
+            if not requested_ref:
+                raise ValueError(
+                    "source_ref or commit_sha is required because the managed repository "
+                    "has no default branch"
+                )
+        normalized_ref = (
+            _normalize_ref(requested_ref, field_name="source_ref") if requested_ref else None
+        )
+        expected = _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None
+        self.bind(managed_repo_id, "consultations", consultation_id)
+        try:
+            with (
+                self._repo_lock(managed_repo_id, exclusive=False),
+                self._target_lock(managed_repo_id, pin_ref),
+            ):
+                existing_pin = self._resolve_ref(bare_path, pin_ref)
+                if existing_pin is not None:
+                    if expected is not None and existing_pin != expected:
+                        raise ManagedGitConflictError(
+                            f"Consultation snapshot {pin_ref} is already pinned to {existing_pin}, "
+                            f"not {expected}"
+                        )
+                    self._require_commit(bare_path, existing_pin)
+                    resolved = existing_pin
+                else:
+                    resolved = (
+                        self._resolve_ref(bare_path, normalized_ref) if normalized_ref else expected
+                    )
+                    if resolved is None:
+                        raise ManagedGitNotFoundError(
+                            f"Unknown source ref {normalized_ref} in {managed_repo_id}"
+                        )
+                    if expected is not None and resolved != expected:
+                        raise ManagedGitConflictError(
+                            f"Source ref {normalized_ref} resolves to {resolved}, not {expected}",
+                            details={
+                                "managed_repo_id": managed_repo_id,
+                                "source_ref": normalized_ref,
+                                "expected_commit_sha": expected,
+                                "current_commit_sha": resolved,
+                            },
+                        )
+                    self._require_commit(bare_path, resolved)
+                    commands = [f"create {pin_ref} {resolved}"]
+                    if normalized_ref is not None:
+                        commands.insert(0, f"verify {normalized_ref} {resolved}")
+                    try:
+                        self._run_update_ref_transaction(bare_path, commands)
+                    except RuntimeError as exc:
+                        current_source = (
+                            self._resolve_ref(bare_path, normalized_ref)
+                            if normalized_ref is not None
+                            else None
+                        )
+                        if normalized_ref is not None and current_source != resolved:
+                            raise ManagedGitConflictError(
+                                f"Source ref {normalized_ref} moved while pinning the consultation",
+                                details={
+                                    "managed_repo_id": managed_repo_id,
+                                    "source_ref": normalized_ref,
+                                    "expected_commit_sha": resolved,
+                                    "current_commit_sha": current_source,
+                                },
+                            ) from exc
+                        raise
+        except Exception as exc:
+            if not binding_preexisting:
+                try:
+                    self.unbind(managed_repo_id, "consultations", consultation_id)
+                except Exception as rollback_exc:
+                    exc.add_note(f"consultation binding rollback failed: {rollback_exc}")
+            raise
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory,
+            "source_ref": normalized_ref,
+            "commit_sha": resolved,
+            "pin_ref": pin_ref,
+        }
+
+    def release_snapshot_pin(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        consultation_id: str,
+        expected_commit_sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Idempotently release a consultation snapshot ref after worker cleanup."""
+
+        directory = self._normalize_directory_path(directory_path)
+        record = self._require_scoped_record(managed_repo_id, directory)
+        bare_path = self._bare_path(record)
+        pin_ref = consultation_snapshot_ref(consultation_id)
+        expected = (
+            _normalize_object_id(expected_commit_sha, field_name="expected_commit_sha")
+            if expected_commit_sha
+            else None
+        )
+        released = False
+        with (
+            self._repo_lock(managed_repo_id, exclusive=False),
+            self._target_lock(managed_repo_id, pin_ref),
+        ):
+            current = self._resolve_ref(bare_path, pin_ref)
+            if current is not None:
+                if expected is not None and current != expected:
+                    raise ManagedGitConflictError(
+                        f"Consultation snapshot {pin_ref} points to {current}, not {expected}"
+                    )
+                self._delete_ref_cas(bare_path, pin_ref, current)
+                remaining = self._resolve_ref(bare_path, pin_ref)
+                if remaining is not None:
+                    raise ManagedGitConflictError(
+                        f"Consultation snapshot {pin_ref} could not be released"
+                    )
+                released = True
+        self.unbind(managed_repo_id, "consultations", consultation_id)
+        return {
+            "managed_repo_id": managed_repo_id,
+            "consultation_id": consultation_id,
+            "pin_ref": pin_ref,
+            "released": released,
+        }
+
+    def validate_snapshot_evidence(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        commit_sha: str,
+        evidence: list[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Validate cited paths and one-based line ranges against a pinned commit."""
+
+        snapshot = self.resolve_snapshot(
+            managed_repo_id,
+            directory_path,
+            commit_sha=commit_sha,
+        )
+        record = self._require_scoped_record(managed_repo_id, snapshot["directory_path"])
+        bare_path = self._bare_path(record)
+        validated: list[dict[str, Any]] = []
+        for item in evidence:
+            raw_path = str(item.get("path") or "").strip().replace("\\", "/")
+            relative = PurePosixPath(raw_path)
+            if (
+                not raw_path
+                or relative.is_absolute()
+                or raw_path.startswith("./")
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise ValueError(f"evidence path must be repository-relative: {raw_path!r}")
+            line_start = int(item.get("line_start") or 0)
+            line_end = int(item.get("line_end") or 0)
+            object_spec = f"{snapshot['commit_sha']}:{relative.as_posix()}"
+            object_type = self._run_git(
+                ["git", f"--git-dir={bare_path}", "cat-file", "-t", object_spec],
+                check=False,
+            )
+            if object_type.returncode != 0 or object_type.stdout.strip() != "blob":
+                raise ValueError(
+                    f"evidence path is not a file at {snapshot['commit_sha']}: "
+                    f"{relative.as_posix()}"
+                )
+            object_size = self._run_git(
+                ["git", f"--git-dir={bare_path}", "cat-file", "-s", object_spec],
+                check=False,
+            )
+            try:
+                blob_size = int(object_size.stdout.strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"could not determine evidence file size: {relative.as_posix()}"
+                ) from exc
+            if blob_size > _MAX_CONSULTATION_EVIDENCE_BLOB_BYTES:
+                raise ValueError(
+                    f"evidence file exceeds the 5 MiB validation limit: {relative.as_posix()}"
+                )
+            blob = self._run_git(
+                [
+                    "git",
+                    f"--git-dir={bare_path}",
+                    "show",
+                    object_spec,
+                ],
+                check=False,
+            )
+            if blob.returncode != 0:
+                raise ValueError(
+                    f"evidence path does not exist at {snapshot['commit_sha']}: "
+                    f"{relative.as_posix()}"
+                )
+            line_count = len(blob.stdout.splitlines())
+            if line_start < 1 or line_end < line_start or line_end > line_count:
+                raise ValueError(
+                    f"evidence range {line_start}-{line_end} is outside "
+                    f"{relative.as_posix()} (1-{line_count})"
+                )
+            validated.append(
+                {
+                    "path": relative.as_posix(),
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "explanation": str(item.get("explanation") or "").strip(),
+                }
+            )
+        return validated
 
     def bind(self, managed_repo_id: str, kind: str, binding_id: str) -> dict[str, Any]:
         self._require_migration_preflight()

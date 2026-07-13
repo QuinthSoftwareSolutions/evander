@@ -38,6 +38,12 @@ dispatch does not pull or build images, so approved refs must already be present
 For Anthropic-backed Claude sessions, set `model_provider_mode: "anthropic"` in the effective
 provider config and select the `claude` image alias when creating the container-backed session.
 
+The same image catalog is used by request-scoped codebase consultations. A named
+`agent_consultation_profiles` entry selects the model, provider mode, image alias, deadline, and
+concurrency. Every request receives a new session and workspace; there is no persistent junior
+agent to keep synchronized. Managed Git grants clone/fetch-only credentials, the checkout is
+detached at the recorded commit, and submitted evidence is validated against that immutable
+snapshot before the source agent can read it.
 
 Directory-scoped `providers.json` overlays can inherit the root catalog and override just the
 fallback, or replace both together when a subtree needs a different default:

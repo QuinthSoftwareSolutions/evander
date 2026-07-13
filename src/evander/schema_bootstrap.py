@@ -830,6 +830,18 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "error_class": {"type": "string"},
         "failed_phase": {"type": "string"},
     },
+    "effect:agent:code-consultation": {
+        "success": {"type": "boolean"},
+        "consultation_id": {"type": "string"},
+        "status": {"type": "string"},
+        "session_id": {"type": "string"},
+        "workspace_path": {"type": ["string", "null"]},
+        "commit_sha": {"type": "string"},
+        "cleanup_status": {"type": "string"},
+        "skipped": {"type": "boolean"},
+        "prompt": {"type": "string"},
+        "model": {"type": ["string", "null"]},
+    },
     "effect:chat-assistant:ensure-session": {
         "success": {"type": "boolean"},
         "session_id": {"type": "string"},

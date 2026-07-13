@@ -16,6 +16,7 @@ from evander.daemons.effect_orchestrator import (
 )
 from evander.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
 from evander.events.models import TriggerEvent
+from evander.workflow.system_nodes import is_system_managed_workflow_node_id
 
 
 class _QueuedTriggerProvider:
@@ -251,6 +252,14 @@ def _workflow_config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "trigger-orchestrator" / "config.json"
 
 
+def _operator_trigger_ids(worker) -> list[str]:
+    return [
+        trigger.id
+        for trigger in worker.worker_config.triggers
+        if not is_system_managed_workflow_node_id(trigger.id)
+    ]
+
+
 def _save_workflow(
     service: AdminRuntimeComponents,
     *,
@@ -324,7 +333,7 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
     first_trigger_cycle = trigger_worker.run_once()
     first_effect_cycle = effect_worker.run_once()
 
-    assert first_trigger_cycle.configured_triggers == 1
+    assert _operator_trigger_ids(trigger_worker) == ["trigger-old"]
     assert first_effect_cycle.effect_executions == 1
     assert executed_effect_ids == ["effect-old"]
 
@@ -353,7 +362,7 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
     second_trigger_cycle = trigger_worker.run_once()
     second_effect_cycle = effect_worker.run_once()
 
-    assert second_trigger_cycle.configured_triggers == 1
+    assert _operator_trigger_ids(trigger_worker) == ["trigger-new"]
     assert second_effect_cycle.effect_executions >= 1
     assert executed_effect_ids == ["effect-old", "effect-new"]
     assert trigger_worker.worker_config.triggers[0].id == "trigger-new"
@@ -380,7 +389,7 @@ def test_trigger_worker_reloads_custom_provider_module(tmp_path: Path, monkeypat
     initial_provider_factory = trigger_worker.provider_factory
 
     first_cycle = trigger_worker.run_once()
-    assert first_cycle.configured_triggers == 0
+    assert _operator_trigger_ids(trigger_worker) == []
 
     updated_config = _reload_worker_config(
         runtime_dir,
@@ -408,7 +417,7 @@ def test_trigger_worker_reloads_custom_provider_module(tmp_path: Path, monkeypat
 
     second_cycle = trigger_worker.run_once()
 
-    assert second_cycle.configured_triggers == 1
+    assert _operator_trigger_ids(trigger_worker) == ["reload-trigger"]
     assert second_cycle.events_published == 1
     assert trigger_worker.provider_factory is not initial_provider_factory
     assert trigger_worker.worker_config.provider_modules == [module_name]
