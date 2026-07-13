@@ -22,11 +22,18 @@ Think of configuration as grouped into domains that each control a different ope
 10. Model pricing controls local usage estimate rates and labels used in usage reporting.
 11. Admin Web branding controls browser title, header text, and logo presentation.
 
-Add-on loader settings are not edited in the selected directory's Configuration page. Optional tabs
-and add-on workflow provider blocks come from host `addon_loader` configuration and worker
-configuration loaded when Admin Web, the trigger orchestrator, and the effect orchestrator start or
-reload. If an add-on tab is missing, check host add-on configuration and restart or reload the
-affected services after correcting it.
+Add-on loader settings are not edited in the selected directory's Configuration page. Use the
+host-global **Add-ons** page at `/#addons`. Its revision-checked save updates host and worker add-on
+configuration together and materializes registered runtime workflow packs. Use **Refresh runtime
+pack** there rather than writing live workflow-pack files. Restart every service listed by the page;
+add-ons with MCP tools also require `evander-gateway.service` in addition to Admin Web and the
+trigger/effect orchestrators.
+
+Bundled add-ons do not all create the same UI shape. Team, Bokio, Skatteverket, and MSSQL Seeds
+register operator pages when enabled. Azure DevOps Activity is intentionally headless: verify its
+loaded MCP/workflow capabilities on Add-ons instead of expecting a navigation tab. MSSQL Seeds also
+depends on its separately configured worker-side restore sidecar; see `docs/addons.md` and
+`docs/operations.md`.
 
 The system uses inherited values:
 
@@ -119,7 +126,9 @@ Operator guidance:
 3. Confirm the active catalog path before editing.
 4. Keep currency and rule format consistent.
 
-For report workflow and history after edits, use the usage and report sections for follow-up checks.
+There is no standalone usage/cost report in Reports. After a pricing change, use an actual
+model-usage query or a Team cost surface that consumes the catalog, and treat the result as an
+estimate rather than invoice data.
 
 ## 16.6 Branding And Admin Web Settings
 

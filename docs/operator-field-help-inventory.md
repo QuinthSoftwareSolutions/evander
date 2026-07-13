@@ -1,4 +1,9 @@
-# Operator Field Help Inventory
+# Operator Field Help Inventory (Historical Snapshot)
+
+> **Status:** Historical planning snapshot. Field names, source paths, and line references below
+> describe the UI at the time of the audit and are not a current operator reference. Use the
+> Admin Web field help and [`configuration-reference.md`](configuration-reference.md) for current
+> behavior.
 
 This document is a working inventory of operator-facing fields and controls that need clearer help, validation copy, or stronger interaction patterns. It is intentionally descriptive rather than prescriptive about implementation details in code.
 

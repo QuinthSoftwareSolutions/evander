@@ -1,6 +1,8 @@
 # Evander
 
-`evander` is a host-side control plane for running autonomous AI agents inside disposable libvirt VMs while exposing only narrow, audited capabilities through MCP.
+`evander` is a host-side control plane for running autonomous AI agents inside disposable libvirt
+VMs while exposing only narrow, audited host-owned surfaces: MCP plus explicitly allowlisted model,
+package, Git, and HTTP relays.
 
 ## What This Scaffold Includes
 
@@ -29,7 +31,8 @@
 ## Core Security Model
 
 - Guests have no direct access to host secrets.
-- Guests reach only the MCP gateway over a private libvirt network.
+- Guests use a private libvirt network and can reach only the host ports explicitly allowed by the
+  firewall policy; those ports expose MCP and the configured host-owned relay surfaces.
 - Every tool call is checked against a session manifest.
 - Irreversible actions require a separate approval record and exact payload match.
 - State is append-only where possible and intentionally simple in v1.
@@ -109,7 +112,7 @@ Directory-scoped config is rooted at `root`:
    sudo ./scripts/apply_firewall.sh
    ```
 
-  The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, `8081`, and `3142` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, the NuGet relay on `11666`, the session-scoped HTTP target relay on `11777` for approved external web endpoints such as APP demo environments, the Nexus package cache on `8081` for PyPI/npm package restores, and the apt-cacher-ng relay on `3142` for worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is not exposed to guests.
+  The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, `11881`, `8081`, and `3142` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, the NuGet relay on `11666`, the session-scoped HTTP target relay on `11777` for approved external web endpoints such as APP demo environments, the npm audit facade on `11881`, the Nexus package cache on `8081` for PyPI/npm package restores, and the apt-cacher-ng relay on `3142` for worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is not exposed to guests.
 
 6. Start the host-side services:
 
@@ -682,9 +685,11 @@ migration contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live
     `channel_id` values are permitted; operator user allowlists do not bypass destination checks.
   - Message reads do not apply automatic read reactions. Agents must call `add_message_reaction`
     when a reaction is intended.
-- There is currently no built-in Discord retry/backoff loop in the `bot_api` adapter. HTTP
-  failures (timeouts, 4xx/5xx, transport errors) surface back to the MCP caller. Policy denials
-  are written to `audit_log_path` (default runtime path `runtime/audit.jsonl`).
+- The `bot_api` adapter retries transient transport, rate-limit, and server failures according to
+  `discord_retry_count`, `discord_retry_base_backoff_seconds`, and
+  `discord_retry_max_backoff_seconds` (defaults: 3 retries, 0.5-second base, 5-second cap).
+  Terminal failures surface to the caller; policy denials are written to `audit_log_path`
+  (default runtime path `runtime/audit.jsonl`).
 - Operator least-privilege checklist:
   1. Keep the Discord bot token only on the host (environment or host env files), never in guest
      cloud-init, manifests, or guest shell profiles.
@@ -751,13 +756,13 @@ migration contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live
   - `{"target":"team-id/channel-id"}`
   - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Truman Bot"}}}`
   - optional `case_sensitive: true|false` (default `false`)
-- `trigger:communication:new-message` provides the provider-neutral inbound chat path for
+- `trigger:communication:new-message` provides the provider-neutral inbound message path for
   directory-scoped communication targets. It requires explicit `communication_target_ids`, defaults
   `directory_path` to `root`, supports optional `author_ids`, `content_contains`, and
-  `case_sensitive`, and listens only to read-capable Teams channel/chat or Discord channel targets.
-  The host-side Teams and Discord ingest workers observe those declared targets and feed the
-  host-owned inbox stores consumed by the trigger; trigger outputs do not expose communication
-  target auth profile references.
+  `case_sensitive`, and listens only to read-capable Teams channel/chat, Discord channel, or email
+  targets. The host-side Teams and Discord ingest workers feed their host-owned inbox stores; email
+  targets are read through the configured mailbox provider during trigger polling. Trigger outputs
+  do not expose communication target auth profile references.
 - Direct-message triggers use a separate sender allowlist:
   - `{"type":"trigger:teams:direct-message","sender_user_ids":["<graph-user-id-or-email>"]}`
   - optional `message_filter` with the same content or mention filter shape
@@ -1020,7 +1025,10 @@ Add-on dependency.
 
 ## Relay Environment Configuration
 
-- `OPENAI_API_KEY` is required on the host for `evander-openai-relay`.
+- In `openai_public` mode, the relay reads the env var named by `openai_api_key_env` (default
+  `OPENAI_API_KEY`). `azure_openai` uses `azure_openai_api_key_env` with the OpenAI env name as a
+  fallback, `anthropic` uses `anthropic_api_key_env`, and `local_openai` uses the configured
+  `local_openai_api_key`. Only the credential selected by the effective provider mode is required.
 - `AZURE_ARTIFACTS_PAT` is required on the host only when the NuGet relay must reach private
   Azure Artifacts feeds.
 - `config/npm-audit-facade.env` is optional and may remain empty; the npm audit facade reads its
@@ -1359,4 +1367,4 @@ future outbound-send enablement.
 - The gateway is ready for integration adapters, not production credentials by default.
 - Network/firewall scripts assume Ubuntu 24.04 and nftables-backed libvirt hosts.
 - VM disk and seed artifacts default to `/var/lib/libvirt/images/evander`, so VM lifecycle scripts should be run with `sudo` unless you deliberately provision an alternate libvirt-accessible storage path.
-- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint, `11666` for the host-side NuGet relay, `11777` for the HTTP target relay, `8081` for the host-side Nexus package cache, and `3142` for the host-side apt-cacher-ng relay.
+- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint, `11666` for the host-side NuGet relay, `11777` for the HTTP target relay, `11881` for the npm audit facade, `8081` for the host-side Nexus package cache, and `3142` for the host-side apt-cacher-ng relay.

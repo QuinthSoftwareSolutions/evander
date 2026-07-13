@@ -12,6 +12,7 @@ teams_meeting_media_bridge_url: "https://your-bridge.example"
 teams_meeting_media_bridge_token_env: "TEAMS_MEETING_MEDIA_BRIDGE_TOKEN"
 teams_meeting_default_voice: "en-US-JennyNeural"
 teams_meeting_poll_interval_seconds: 5
+teams_meeting_request_timeout_seconds: 15
 teams_meeting_max_active_meetings: 1
 ```
 
@@ -42,6 +43,11 @@ The command creates a dedicated session with:
 - `teams_meeting_stop`
 
 The meeting ingest worker polls the bridge and stores finalized transcript and speech-status events in `runtime/teams-meetings.json`. When the meeting is linked to an originating session, transcript events are also mirrored into `runtime/voice-sessions-store.json`. The `trigger:teams-meeting:new-transcript` trigger emits one workflow event per finalized transcript event.
+
+The bridge client applies `teams_meeting_request_timeout_seconds` to join, event polling, speech,
+and leave requests; the default is 15 seconds. A `trigger:teams-meeting:new-transcript` definition
+may set `session_ids` to emit only meetings projected from those sessions. An empty list accepts
+transcripts from every stored meeting visible to that trigger.
 
 ## Media Bridge Contract
 

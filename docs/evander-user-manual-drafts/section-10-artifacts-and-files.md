@@ -49,7 +49,7 @@ If two processes use the same key, the result can become confusing to audit late
 Use the Artifacts tab when you need to get a previously published package.
 
 1. Open **Artifacts** from the left navigation.
-2. Confirm the active directory is the one that owns the work.
+2. Remember that the published archive list is not filtered by the directory in the shared header.
 3. If you know the key, enter it and choose **Resolve key**.
 4. If you do not know the exact key, filter by time range and result limit instead.
 5. Select a row and open its metadata panel to check:
@@ -68,10 +68,10 @@ Expected result:
 
 If nothing resolves:
 
-1. Check for active directory mismatches and page scope.
-2. Re-check the key for typos and case mismatch.
-3. Use a wider published-time window in the filter.
-4. If still missing, trace the run or deliverable where the key should have been written and verify it was published.
+1. Re-check the key for typos and case mismatch.
+2. Use a wider published-time window in the filter.
+3. Trace the run or deliverable where the key should have been written and verify it was published.
+4. If the reference is an artifact-space reference rather than a published archive key, verify its subject and grants. Artifact-space access is not determined by the selected directory alone.
 
 ## 10.4 Manual Uploads
 
@@ -130,8 +130,8 @@ Use this when you already have a reference and need the exact package locally.
 
 Prerequisites:
 
-1. Correct directory selected.
-2. Correct artifact key, or ability to narrow by time range.
+1. Correct artifact key, or ability to narrow by time range.
+2. Enough source context to distinguish similarly named artifacts.
 
 Steps:
 
@@ -204,6 +204,7 @@ Expected result:
 
 If links are incomplete:
 
-1. Re-check the correct directory and time range in section 7 records.
+1. Re-check the source record's directory and time range in section 7 records; the published artifact list itself is not directory-filtered.
 2. Confirm the artifact key did not come from another active run.
-3. Review Team or delivery context in section 13 for alternative attribution.
+3. For artifact-space references, verify the subject and grants.
+4. Review Team or delivery context in section 13 for alternative attribution.

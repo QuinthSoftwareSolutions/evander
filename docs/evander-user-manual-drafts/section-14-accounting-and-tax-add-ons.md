@@ -29,11 +29,11 @@ What to expect:
 
 If a tab is missing:
 
-1. Open **Configuration** and confirm the add-on is enabled for the active directory.
-2. Confirm the workflow workers have been restarted after add-on configuration changes.
-3. Refresh and re-open Admin Web.
-4. If still missing, review host settings in section 16 and service restart guidance in
-   `operations.md`.
+1. Open the host-global **Add-ons** page at `/#addons`; add-on enablement is not scoped to the active directory.
+2. Confirm the add-on is enabled and inspect loaded, error, configuration-mismatch, and pending-restart state.
+3. Restart every service listed by the page. The complete set can include Admin Web, trigger orchestrator, effect orchestrator, and gateway when MCP tools are registered.
+4. Refresh and re-open Admin Web.
+5. If still missing, review section 16 and service restart guidance in `docs/operations.md`.
 
 ## 14.2 Bokio Assisted Bookkeeping
 

@@ -82,6 +82,9 @@ For a reproducible worker VM deployment, use the dedicated Ansible playbook:
 ```bash
 ./scripts/build_evander_runner_image.sh
 ./scripts/build_evander_claude_runner_image.sh
+# `prod.yml` is operator-local; create it once from the checked-in template.
+test -f ansible/inventory/prod.yml || cp ansible/inventory/hosts.example.yml ansible/inventory/prod.yml
+${EDITOR:-vi} ansible/inventory/prod.yml
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 ```
 
@@ -216,6 +219,7 @@ The default allowlist is intentionally small and private:
 - control-plane OpenAI relay on `11434`
 - control-plane NuGet relay on `11666`
 - control-plane HTTP target relay on `11777`
+- control-plane npm audit facade on `11881` when npm audit support is enabled
 - control-plane Nexus package cache on `8081`
 - control-plane apt-cacher-ng on `3142`
 
@@ -249,10 +253,10 @@ mapping is stored. Raw `env`, `environment`, and `environment_variables` fields 
 the worker request model.
 
 The worker and its containers should not have direct GitHub/Azure DevOps egress in this mode.
-Required private egress is limited to the control-plane SSH endpoint for Git mirrors, the
-configured control-plane gateway, OpenAI relay, HTTP target relay, NuGet relay, Nexus package
-cache, and apt-cacher-ng. Worker-host SQL Server access, when enabled, remains separate and is
-handled by the worker-host SQL rules rather than by the container-forwarded egress policy.
+Required private egress is limited to the explicitly allowlisted control-plane SSH endpoint for Git
+mirrors, gateway, OpenAI relay, HTTP target relay, NuGet relay, npm audit facade on `11881`, Nexus
+package cache, and apt-cacher-ng. Worker-host SQL Server access, when enabled, remains separate and
+is handled by the worker-host SQL rules rather than by the container-forwarded egress policy.
 
 The container sandbox profile reduces accidental and straightforward container privilege exposure.
 It does not turn containers into a VM-equivalent trust boundary.
@@ -553,6 +557,7 @@ Authorization: Bearer <EVANDER_WORKER_TOKEN>
 
 Routes:
 
+- `GET /v1/telemetry`
 - `POST /v1/jobs`
 - `GET /v1/jobs/{id}`
 - `POST /v1/jobs/{id}/stop`
@@ -562,13 +567,18 @@ Routes:
 - `POST /v1/sessions`
 - `POST /v1/sessions/{session_id}/repo`
 - `POST /v1/sessions/{session_id}/files`
-- `GET /v1/sessions/{session_id}/artifacts/{relative_path}`
+- `POST /v1/sessions/{session_id}/worktrees`
+- `POST /v1/sessions/{session_id}/git/write-key`
+- `DELETE /v1/sessions/{session_id}`
+- `GET /v1/sessions/{session_id}/artifacts/{artifact_path:path}`
 - `POST /v1/sessions/{session_id}/mssql/databases`
 - `GET /v1/sessions/{session_id}/mssql/databases`
 - `DELETE /v1/sessions/{session_id}/mssql/databases/{logical_name}`
 - `GET /healthz`
 
-`POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `repo_source`, optional `clone_branch`, `resource_limits`, and sanitized `metadata`. Raw `env`, `environment`, and `environment_variables` request fields are rejected. If `repo_source` is present, it must start with a configured allowed Git source prefix.
+`POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `repo_source`, optional `clone_branch`, optional `working_directory`, `resource_limits`, and sanitized `metadata`. Raw `env`, `environment`, and `environment_variables` request fields are rejected. If `repo_source` is present, it must start with a configured allowed Git source prefix.
+
+This route list is an operational inventory, not a frozen wire schema. The authoritative request and response models are [`src/evander/worker/models.py`](../src/evander/worker/models.py), and route registration is authoritative in [`src/evander/worker/api.py`](../src/evander/worker/api.py). Client implementations should use those sources so route-specific models and newly added fields are not silently omitted.
 
 ## Docker Constraints
 

@@ -1932,3 +1932,23 @@ The following environment variables are consumed directly by scripts as runtime 
 - Section 2 captures all `GatewayConfig`/`MailboxConfig` YAML keys.
 - Section 3 captures all cloud-init template placeholders currently substituted by VM launch.
 - Section 5 captures script-level env overrides used directly in shell scripts.
+
+## Workflow Completion Gate
+
+`gate:await-agent` pauses a workflow until the selected agent run completes. Configure at least one
+of `session_id` or `vm_name`; `completion_trigger_id` may select the completion trigger explicitly.
+Connect an agent prompt's `started` output to this gate when downstream work must wait for completion.
+
+## Communication Trigger Provider Coverage
+
+`trigger:communication:new-message` accepts declared, read-capable Teams channel/chat, Discord
+channel, and email communication targets. Teams and Discord use the host-owned ingest stores. Email
+targets resolve their mailbox from `auth_profile_ref` and are polled through the configured mailbox
+provider; unknown mailboxes and unsupported target providers fail validation.
+
+## Model Relay Credential Resolution
+
+Credential selection follows `model_provider_mode`: `openai_public` reads `openai_api_key_env`,
+`azure_openai` reads `azure_openai_api_key_env` with the OpenAI env name as fallback, `anthropic`
+reads `anthropic_api_key_env`, and `local_openai` uses `local_openai_api_key`. Guests retain only a
+placeholder API key and never receive these host credentials.

@@ -2,8 +2,10 @@
 
 ## Components
 
+
+Guest and worker-container networking is default-deny. Reachability is limited to host ports explicitly allowlisted for the deployment, such as SSH/Git (`22`), MCP (`8000`), enabled model/package/HTTP relays and caches (`11434`, `11666`, `11777`, `11881`, `8081`, and `3142`), plus any deliberately configured provider-specific endpoint. MCP is the tool-capability boundary, not the sole host service on that allowlist.
 - Host orchestrator: creates session manifests, launches VMs, and destroys them at the end of a run.
-- MCP gateway: the only host service reachable from guests.
+- MCP gateway: the MCP capability boundary reachable from guests; it is not the only guest-reachable host service.
 - OpenAI relay: a separate host service that exposes an OpenAI-compatible `/v1` endpoint to guests while keeping the real API key on the host.
 - NuGet relay: a separate host service that exposes guest-reachable feed endpoints for nuget.org and private Azure Artifacts while keeping private feed credentials on the host.
 - Managed Git service: directory-scoped bare repositories, capability-limited guest intake, pinned ref transactions, publication, and ephemeral worktree ownership.
@@ -162,9 +164,10 @@ boundaries.
 
 ### Poll cadence and latency target
 
-- Recommended steady-state cadence: every **2-5 minutes** per active session.
+- Azure DevOps PR feedback is polled by `evander-ado-worker`; there is no current host-heartbeat service.
+- `config/ado-worker/config.json` controls cadence with `poll_interval_seconds`. The checked-in example uses `5` seconds, while the daemon fallback is `30` seconds.
+- Feedback visibility latency is configuration and workload dependent: approximately one polling interval plus provider and request processing time. A 2-5 minute interval is an optional scaling choice, not the runtime default.
 - Expected operator-to-guest feedback visibility: typically within one poll interval
-  (**~2-5 minutes**), plus MCP round-trip time (normally seconds).
 - Faster cadences are possible but increase gateway/provider load; slower cadences reduce load but
   increase human feedback latency.
 
@@ -285,6 +288,8 @@ Execution model:
 9. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
    independently as it arrives, while the gate records the latest payload seen from every upstream
    source for debugging and conflict inspection.
+
+The complete built-in gate catalog is `gate:filter`, `gate:map`, `gate:deserialize`, `gate:serialize`, `gate:dedupe`, `gate:switch`, `gate:merge`, `gate:debounce`, `gate:buffer`, `gate:aggregate`, `gate:await-agent`, `gate:for`, and `gate:while`.
 10. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
     upstream event payload.
 11. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
@@ -295,8 +300,10 @@ Safety/idempotency guarantees:
 - Each event/node pair uses a stable idempotency key (`<event_id>::<node_id>`), so retries do not
   re-run completed work.
 - Gate and effect execution records persist state plus resolved config and output snapshots.
-- Immediate cycles are rejected or skipped as `cycle_detected`, and deep chains are bounded by a
+- Unmarked cycles are rejected or skipped as `cycle_detected`, and deep chains are bounded by a
   max graph depth guard.
+- `gate:for` and `gate:while` implement bounded loops. Their loop-back paths must use edges
+  explicitly marked `allow_cycle`; that flag is not a general exemption for arbitrary graph cycles.
 - Filtered or failed nodes do not emit completion events, so downstream edges only activate after
   successful upstream execution.
 

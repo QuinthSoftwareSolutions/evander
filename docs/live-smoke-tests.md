@@ -177,8 +177,9 @@ sudo ./scripts/launch_agent_vm.sh vm-smoke-live smoke-live
 Find the VM IP and connect:
 
 ```bash
-virsh domifaddr vm-smoke-live
-ssh agent@<vm-ip>
+VM_IP="$(virsh domifaddr vm-smoke-live | awk '$3 == "ipv4" {sub("/.*", "", $4); print $4; exit}')"
+test -n "${VM_IP}" || { echo "No IPv4 address found for vm-smoke-live" >&2; exit 1; }
+ssh "agent@${VM_IP}"
 ```
 
 Inside the VM, use the real guest-to-host path:
@@ -298,11 +299,26 @@ evander-cli git-repos migrate --finalize <migration-id>
 Confirm finalization deletes only the Evander-owned rollback artifacts named in that manifest and
 does not touch any operator checkout.
 
+## Cleanup
+
+Always remove the live fixture, including after a failed smoke:
+
+```bash
+evander-cli revoke-session smoke-live --runtime-dir runtime
+sudo ./scripts/destroy_agent_vm.sh vm-smoke-live
+evander-cli delete-session smoke-live --runtime-dir runtime
+```
+
+Remove the dedicated Discord messages and email fixtures according to the test accounts' retention
+policy. Do not reuse their IDs as evidence for a later run.
+
 ## Pass Criteria
 
 The smoke test passes only if all of these are true:
 
 - host gateway can talk to live Discord and both live email providers
+- each email provider returns the dedicated unread fixture, and `email_get_message` returns the
+  expected fixture message ID, sender, subject, and body metadata
 - VM can complete the same live read-only flows through the host gateway
 - only allowlisted Discord/email operations succeed
 - blocked Discord/email operations are denied and audited

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-13 - Documentation Accuracy And Drift Checks
+
+- Refreshed operator, architecture, backend, add-on, Admin Web, and user-manual documentation
+  against the current implementation.
+- Classified historical design material and managed upstream documentation so readers can
+  distinguish current references from retained planning records.
+- Added automated local-link, anchor, source-inventory, navigation, workflow-gate, and manual
+  synchronization checks to prevent future documentation drift.
+
 ## 2026-07-13 - Team Release Gate Retry Semantics
 
 - Classified release verification outcomes as candidate, infrastructure, or

@@ -1,7 +1,7 @@
-# Truman Add-ons
+# Evander Add-ons
 
-Add-ons are optional, opinionated layers that run on top of Truman's low-level
-orchestration primitives. Truman core remains responsible for sessions,
+Add-ons are optional, opinionated layers that run on top of Evander's low-level
+orchestration primitives. Evander core remains responsible for sessions,
 execution backends, workflow events, effects, artifacts, communication policy,
 and audit. Add-ons may consume those primitives, but must not make their domain
 concepts required by core.
@@ -72,6 +72,16 @@ entry-point discovery in advanced configuration. Saving add-on enablement does
 not hot-load or hot-unload add-on routes, workflow providers, or MCP tools;
 restart the listed services for changes to take effect.
 
+Open the page at `/#addons`. It shows discovered packages, enabled and loaded
+state, pending restart state, load errors, configuration mismatches, registered
+capabilities, runtime workflow-pack state, and the services affected by a
+change. Enablement is host-global, not scoped to the directory selected in the
+Admin Web header. When an enabled add-on registers a runtime workflow pack,
+the Add-ons save path materializes it through the revision-checked workflow
+configuration service. Use the page's **Refresh runtime pack** action (or the
+equivalent Admin API action) to refresh that materialized pack. Never write a
+live workflow-pack file directly.
+
 Disabling an add-on means it will not load after restart. It does not delete
 private state under `runtime/addons/<addon_id>/`.
 
@@ -123,7 +133,23 @@ store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 ```
 
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
-Removing `runtime/addons/<addon_id>/` must not corrupt Truman core state.
+Removing `runtime/addons/<addon_id>/` must not corrupt Evander core state.
+
+## Azure DevOps Activity Add-on Guidance
+
+The bundled `evander_ado_activity_addon` is a headless add-on: it intentionally
+does not register an Admin Web navigation tab. It provides host-side MCP tools
+and workflow providers for durable Azure DevOps activity indexing and queries.
+Its presence is therefore verified on the core **Add-ons** page by its loaded
+state and registered capabilities, not by looking for a separate navigation
+item.
+
+Enable `ado-activity-addon` through `/#addons` or the equivalent Admin API and
+restart the services listed there. Because the add-on registers MCP tools, that
+restart set includes `evander-gateway.service` as well as Admin Web and the
+trigger/effect orchestrators. This add-on complements, but does not replace,
+`evander-ado-worker`; PR feedback polling and completion pickup remain owned by
+that worker.
 
 ## MSSQL Seed Add-on Guidance
 
@@ -289,10 +315,10 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
 
 ## Team Module Guidance
 
-A hierarchical agent-team module should live as an add-on outside Truman core.
+A hierarchical agent-team module should live as an add-on outside Evander core.
 Team, manager, project lead, task, deliverable, review, and release-package
 schemas belong in that package. Only generic hooks that are useful to other
-add-ons should be proposed for Truman core.
+add-ons should be proposed for Evander core.
 
 The bundled `evander_team_addon` package provides the initial state-model layer
 for this pattern. It ships an `addon.json` manifest beside its `__init__.py`, so
@@ -303,16 +329,19 @@ or set `addon_loader.enabled_addon_ids: ["team-addon"]`. Explicit
 loading remain supported compatibility paths. Its canonical state lives in
 relational SQLite under `runtime/addons/team-addon/state.db`; a legacy
 `runtime/addons/team-addon/state.json` file is imported once when the database
-is first initialized. Truman session metadata remains a non-canonical
+is first initialized. Evander session metadata remains a non-canonical
 integration index.
 
 When the Team Add-on is enabled, Admin Web shows an optional `Teams` tab. The
 tab is served from the add-on's own `/addons/team-addon/` UI route and uses the
 add-on API under `/api/addons/team-addon/`; it does not add team-specific views
-or models to Truman core Admin Web pages. The bundled UI now includes a
-dedicated Review & Delivery workspace that groups deliverables, review
-requests, review profiles, release packages, and Git promotion state while
-keeping the existing setup forms available in the side panel.
+or models to Evander core Admin Web pages. The current UI has fourteen top-level
+views: **Workspace**, **Operations**, **Delivery**, **Memory**, **Projects**,
+**Task board**, **Cases**, **Teams**, **Chat**, **Mail**, **Governance**,
+**Planning**, **Timeline**, and **Org chart**. Review requests, review profiles,
+deliverables, release packages, and Git promotion state are grouped inside
+**Delivery**. Team setup, persistent agents, roles, and stand-down controls are
+grouped inside **Teams** rather than separate People or Roles tabs.
 
 The `Teams` tab includes an org-chart hierarchy view for each team. It renders
 the manager, subordinate agents, nested reporting lines, and unreachable or
@@ -331,12 +360,12 @@ wake, and ephemeral-capacity information when those records are available.
 Persistent agents may also have an optional Team Add-on avatar. Avatars are
 operator-facing UI metadata only: they are stored in Team Add-on state and
 add-on-private image files under `runtime/addons/team-addon/avatars/`, and are
-not mirrored into session metadata, prompts, wake context, or core Truman agent
+not mirrored into session metadata, prompts, wake context, or core Evander agent
 identity. Operators can upload PNG/JPEG/WebP images, which the add-on normalizes
 to square WebP assets, or generate an OpenAI-backed preview and explicitly
 accept it before it becomes the saved avatar.
 
-The People tab can start a direct browser voice call to the selected persistent
+The Teams view can start a direct browser voice call to the selected persistent
 agent. The add-on prepares an OpenAI Realtime browser session with the selected
 agent's current team, role, task, inbox, review, deliverable, runtime, and
 visible tool context; it does not use DIDWW, Asterisk, or SIP. Calls are
@@ -353,6 +382,13 @@ inspection; the UI labels that mode separately from "My chats" and blocks
 sending while inspecting. Team chat messages recorded by the Admin API carry
 human-operator metadata, and chat wake prompts tell the agent that the source is
 a human operator rather than another Team agent.
+
+The Mail view is the Agent Mail surface for agent-to-agent messages. It is
+separate from operator Chat: use Chat for a signed-in human's conversation with
+one persistent agent, and use Mail to inspect durable inter-agent inbox and
+outbox records, delivery state, and message context. `team_chats.read_all`
+applies only to other operators' Chat histories; it does not grant broader
+Agent Mail access.
 
 ### Team Memory
 
@@ -546,7 +582,7 @@ materialized from the same template without colliding.
 Setup is atomic. The request must include `expected_revision`; stale revisions
 fail without changing state, and duplicate ids are rejected before any write.
 The resulting records live only in Team Add-on state. They do not create real
-Truman sessions, VMs, Git repositories, Bokio entries, payments, or tax filings.
+Evander sessions, VMs, Git repositories, Bokio entries, payments, or tax filings.
 
 Example Auto-Dev compatibility request shape:
 
@@ -634,7 +670,7 @@ When enabled, the Team Add-on also registers an optional runtime-loop provider
 set:
 
 - `effect:team:wake-due-agents` leases due persistent agents, prompts their
-  Truman sessions, and mirrors a compact `metadata.team_addon` index into the
+  Evander sessions, and mirrors a compact `metadata.team_addon` index into the
   session manifest. When the agent's project has `project.git` configured, the
   wake also prepares the project repo through `effect:agent:clone-repo` before
   the resume prompt and includes the prepared guest checkout path in the Team
@@ -689,7 +725,7 @@ set:
   This clears any delayed governance wake for that group so the manager receives
   a fresh governance prompt with the new member-team summaries on the next Team
   runtime evaluation.
-- `query:team:session-routing` classifies a completed Truman session as a
+- `query:team:session-routing` classifies a completed Evander session as a
   persistent team agent, ephemeral assignment, ignored non-Team dispatch, or
   unknown session before completion finalization. Persistent agents are finalized
   only when the completed dispatch id matches the active Team runtime lease, so
@@ -701,17 +737,18 @@ set:
 - `effect:team:mark-ephemeral-spawned`,
   `effect:team:accept-ephemeral-deliverable`, and
   `effect:team:mark-ephemeral-cleaned-up` track the ephemeral worker lifecycle
-  around normal Truman `effect:agent:create`, `effect:agent:prompt`, and
+  around normal Evander `effect:agent:create`, `effect:agent:prompt`, and
   `effect:agent:destroy` nodes.
 - `query:team:state` returns filtered add-on state for workflows or UI.
 
 These node types are add-on-owned. They are not present unless the add-on is
 loaded, and their workflow-editor catalog entries are registered by the add-on's
-provider registration rather than hard-coded into Truman core. The packaged
+provider registration rather than hard-coded into Evander core. The packaged
 `evander_team_addon.workflow_packs.TEAM_RUNTIME_V1` definition is a current-schema
-workflow pack for the intended cron plus agent-completion loop. Operators can
-write that definition into an operator-owned pack file when they want this
-opinionated runtime.
+workflow pack for the intended cron plus agent-completion loop. Enablement from
+the Add-ons page materializes this registered definition through the
+revision-checked workflow configuration service. Refresh it through the same
+page or its Admin API action; never replace a live pack file directly.
 
 ### Team MCP Action Surface
 
@@ -1086,29 +1123,17 @@ Use this checklist when enabling the bundled Team Add-on on a deployment:
 
 1. Confirm the installed package includes `evander_team_addon`, its
    `addon.json` manifest, and its `ui_static` files.
-2. Enable Admin Web routes/navigation in the host config or legacy gateway
-   config:
-
-   ```json
-   {
-     "addon_loader": {
-       "package_dirs": ["addons", "src"],
-       "enabled_entry_points": false,
-       "enabled_addon_ids": ["team-addon"]
-     }
-   }
-   ```
-
-3. Enable workflow providers in `config/trigger-orchestrator/config.json` with
-   the same `addon_loader` block. Trigger and effect workers both read this
-   worker config.
-4. If autonomous team wakeups are desired, write the current-schema payload from
-   `evander_team_addon.workflow_packs.team_runtime_v1()` into an operator-owned
-   workflow pack file under `config/workflow-packs/` and list that file in
-   `workflow_packs`. Do not edit checked-in example packs for live operator
-   state.
-5. Restart Admin Web and the trigger/effect orchestrator services.
-6. Verify `/api/admin/state` lists `team-addon`, `/api/addons/team-addon/templates`
+2. Open `/#addons`, select **Team Add-on**, and enable it. The revision-checked
+   save updates host and worker add-on configuration and materializes the
+   registered Team runtime workflow pack automatically.
+3. If the registered pack definition changes later, use **Refresh runtime
+   pack** on the Add-ons page or the equivalent Admin API action. Never write a
+   live pack file directly or replace it from a stale checkout.
+4. Restart every service listed by the page. For Team this includes
+   `evander-admin-web.service`, `evander-trigger-orchestrator.service`,
+   `evander-effect-orchestrator.service`, and `evander-gateway.service`; the
+   gateway restart is required for Team MCP registration.
+5. Verify `/api/admin/state` lists `team-addon`, `/api/addons/team-addon/templates`
    returns the built-in catalog, `/addons/team-addon/` serves the add-on UI,
    and `/api/workflow-editor/catalog` plus workflow validation recognize the
    `effect:team:*` and `query:team:*` node types only after the add-on is enabled.

@@ -88,9 +88,11 @@ Libvirt VM defaults also carry a directory-scoped `vm.json` template catalog wit
 `libvirt_vm_default_template` and `libvirt_vm_templates`. `effect:agent:create.vm_image` can select
 an approved alias from that catalog, and the resolved image/template selection is stored with the
 session. Existing-session upserts preserve that recorded selection when `vm_image` is omitted and
-replace it only when `vm_image` is supplied explicitly. Those entries are validated as approved
-libvirt template image refs for cloud-init-compatible qcow2 images, not Docker images, and the
-catalog map deep-merges across directory overlays. Use `container_image` for `container_worker_vm`.
+replace it only when `vm_image` is supplied explicitly. Catalog parsing validates only the map shape, alias syntax, and non-empty image refs; it does not
+inspect the referenced files. Operators must separately verify that each file exists, is readable by
+libvirt, is a qcow2 image, and is cloud-init compatible. These are libvirt templates, not Docker
+images, and the catalog map deep-merges across directory overlays.
+ Use `container_image` for `container_worker_vm`.
 The selected image is passed through to `scripts/launch_agent_vm.sh` via `LIBVIRT_BASE_IMAGE`,
 which uses it as the base overlay image while still falling back to the default Ubuntu image when
 no selection is present.
@@ -165,9 +167,9 @@ Next steps should move behavior only when the contract is stable:
 
 - move standalone VM creation behind `prepare` and `start`
 - have issue VM orchestration build an `ExecutionSpec`
-- migrate issue-worker and prompt-effect orchestration to build container worker jobs without changing business logic callers
-- add explicit worker-network and firewall controls before treating non-`none` Docker networking as
-  a metadata-protection boundary
+- migrate issue-worker orchestration to build container worker jobs without changing business-logic callers
+- extend the supported single-worker network/firewall enforcement to multi-worker or scheduler
+  deployments before treating those deployment models as security boundaries
 
 
 ## Backend-specific Observability and Recovery

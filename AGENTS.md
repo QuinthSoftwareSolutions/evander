@@ -97,6 +97,7 @@ The security model is:
   - `11434` for OpenAI relay
   - `11666` for NuGet relay
   - `11777` for HTTP target relay
+  - `11881` for the npm audit relay
   - `8081` for Nexus PyPI/npm package cache when enabled
   - `3142` for apt-cacher-ng worker provisioning when enabled
   - Source of truth: `config/firewall.env.example`
@@ -137,7 +138,9 @@ The current install script renders and enables:
 - `evander-gateway.service`
 - `evander-admin-web.service`
 - `evander-openai-relay.service`
+- `evander-didww-sip-bridge.service`
 - `evander-nuget-relay.service`
+- `evander-npm-audit-facade.service`
 - `evander-http-target-relay.service`
 - `evander-ado-worker.service`
 - `evander-proxy-issue-sync.service`
@@ -156,7 +159,13 @@ Before install/start, populate the required local config and secret files for th
 - optional `config/gateway.env`
 - optional `config/openai-relay.env`
 - optional `config/nuget-relay.env`
+- optional `config/npm-audit-facade.env`
+- optional `config/didww-sip-bridge.env`
 - `config/ado-worker/config.json`
+- optional `config/proxy-issue-sync/config.json`
+- optional `config/discord-ingest/config.json`
+- optional `config/discord-wake/config.json`
+- optional `config/scheduled-wake/config.json`
 - `config/trigger-orchestrator/config.json`
 - optional `config/teams-ingest/config.json`
 - optional `config/teams-meeting-ingest/config.json`
@@ -360,12 +369,11 @@ Do not leave stalled test processes running while continuing work.
 
 ## Guidance For Future Changes
 
-- Treat `src/evander/admin/composition.py::build_admin_runtime` as the supported admin
-  runtime assembly point for CLI, gateway, and Admin Web integration. Keep the compatibility
-  facades in `src/evander/admin/facades.py` thin and domain-scoped; place new admin domain
-  logic in narrower services under `src/evander/admin/services/` with clear ownership
-  boundaries for operations, issue/git, VM/agent, workflow config, skills, reporting, and PR
-  preflight.
+- Treat `src/evander/admin/composition.py::build_admin_runtime` and
+  `AdminRuntimeComponents` as the supported admin runtime assembly surface for CLI, gateway,
+  and Admin Web integration. Place domain logic in the narrow services under
+  `src/evander/admin/services/`; keep route handlers and compatibility adapters thin and
+  domain-scoped.
 - Keep base VMs minimal; prefer post-launch bootstraps for optional toolchains.
 - Prefer host-seeded artifacts over guest internet installs.
 - If adding a new guest capability, update the bootstrap script, `README.md`,

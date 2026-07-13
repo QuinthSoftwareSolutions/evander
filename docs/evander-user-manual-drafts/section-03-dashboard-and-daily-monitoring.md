@@ -85,7 +85,7 @@ The following conditions usually require immediate follow-up, even when the inte
 
 1. Missing data or unavailable panels
    - Meaning: data path could not be read, API path was denied, or scoped data is empty by policy.
-   - First action: verify directory and lock state, then open the corresponding detail page.
+   - First action: verify directory, sign-in state, and read permission, then open the corresponding detail page. The privilege lock gates mutations, not reads.
 
 2. Unhealthy or stopped workers
    - Meaning: background automation may stop moving.

@@ -28,8 +28,9 @@ How these apply:
 2. Legacy role values are kept for compatibility, but day-to-day access control is usually managed through
    groups and direct grants.
 3. You can assign a directory-scoped contact so messages and reports can be routed to the right person.
-4. Removing a user from the directory clears their record from that scope; a removed user loses
-   authenticated access on the next Admin Web request.
+4. Deleting a user removes the global Admin Web user record and invalidates authenticated access on
+   the next request. It is not a selected-directory-only deletion. To remove access only from one
+   directory, edit that user's directory group assignments and direct grants instead.
 
 ## 17.2 Groups
 
@@ -203,8 +204,8 @@ Use this when a user leaves the team or no longer needs Admin Web access.
 
 Prerequisites:
 
-1. Privileges unlocked.
-2. Correct directory selected.
+1. `users.manage` permission and privileges unlocked.
+2. You understand that deletion is global, regardless of the selected directory.
 3. You have a replacement for any active responsibility.
 
 Steps:
@@ -215,13 +216,13 @@ Steps:
    2. confirm no active handoff depends on the user,
    3. close pending work in section 6 if needed.
 3. Reassign direct tasks, workflow ownership, and group-based responsibility before deletion.
-4. Remove direct workflow grants if this user may be restored later as inactive.
+4. If only one directory's access should be removed, stop here and remove the matching assignments and direct grants instead of deleting the user.
 5. Delete the user record.
 6. Confirm with a colleague sign-in test that the user no longer has valid Admin Web access.
 7. Check section 7 for a final audit record of the removal.
 
 Expected result:
 
-1. The user can no longer authenticate in that scope.
-2. Directory access is reduced without deleting unrelated users or groups.
+1. The user can no longer authenticate to Admin Web.
+2. The global user record is gone; unrelated users and groups remain.
 3. Remaining workflow and team ownership is explicit and assigned.

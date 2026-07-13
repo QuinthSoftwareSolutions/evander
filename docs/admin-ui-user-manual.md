@@ -79,8 +79,8 @@ Every Admin UI section uses the same shell:
 - The selected directory is shared by directory-scoped views. It defaults to `root`.
 - Privileged operations are locked by default in the UI. Unlock before creating, deleting,
   starting, stopping, approving, denying, saving policy, or editing workflow state.
-- Deep links use hash routes, for example `/#workflow`, `/#sessions`, `/#tool-calls`, and
-  `/#configuration`.
+- Deep links use hash routes, for example `/#workflow`, `/#sessions`, `/#tool-calls`,
+  `/#configuration`, and the host-global `/#addons` page.
 - A deployment banner appears when the host reports an active or stale deployment/update status.
 - The assistant launcher appears in the lower corner when the assistant integration is configured.
 
@@ -256,6 +256,45 @@ Common tasks:
 
 Artifact keys are durable identifiers. Prefer resolving by key when a workflow, tool call, or run
 detail links to an artifact directly.
+
+The published archive list is not filtered by the directory selected in the shared header. Use
+the archive's session, metadata, key, and publish time to establish provenance. Artifact-space
+visibility is controlled by the artifact subject and its grants, which is a separate boundary from
+the selected directory.
+
+## Add-ons
+
+The Add-ons page at `/#addons` is the host-global control surface for optional packages. Directory
+selection does not create separate enablement state for an add-on.
+
+Common tasks:
+
+1. Open **Add-ons** and inspect discovered, enabled, loaded, pending-restart, and load-error state.
+2. Select an add-on to review its manifest, registered Admin routes, workflow providers, MCP tools,
+   runtime workflow pack, configuration mismatch, and required service restarts.
+3. Unlock privileges and enable or disable the selected add-on. The save path updates the host and
+   worker add-on settings together.
+4. When an add-on registers a runtime workflow pack, let the save path materialize it through the
+   revision-checked workflow service. Use **Refresh runtime pack** when the registered definition
+   changes; do not edit the live pack file directly.
+5. Restart every service listed by the page. Add-ons with MCP tools require
+   `evander-gateway.service`; the normal complete set is Admin Web, trigger orchestrator, effect
+   orchestrator, and gateway.
+6. Refresh the page and confirm the add-on is loaded and no configuration mismatch remains.
+
+Disabling an add-on prevents it from loading after restart but does not delete its private state.
+Treat state removal as a separate, explicit host operation.
+
+Bundled examples:
+
+- **Team Add-on** registers the Teams UI, Team workflow providers, MCP tools, and a runtime workflow
+  pack.
+- **MSSQL Seeds** registers an Admin page for approved seed aliases and sidecar configuration. Its
+  restore sidecar must also be enabled and reachable near the worker SQL Server; see
+  `docs/addons.md` and `docs/operations.md`.
+- **Bokio** and **Skatteverket** register their own operator pages and approval-gated domain tools.
+- **Azure DevOps Activity** is headless. It appears on Add-ons with MCP/workflow capabilities but
+  deliberately has no navigation tab; it complements rather than replaces `evander-ado-worker`.
 
 ## Skills
 
@@ -494,6 +533,10 @@ Conformance:
 
 The conformance report artifacts are also documented in `conformance-reports.md`.
 
+Reports does not currently expose a standalone usage or cost report. Model usage queries and
+add-on-specific cost surfaces, such as the Team cost guard, use the local model-pricing catalog;
+those estimates are operational context rather than invoice data.
+
 ## Users & Groups
 
 The Users & Groups tab manages Admin Web user records, local-password credentials, reusable
@@ -505,7 +548,7 @@ to Groups mode.
 
 Common user tasks:
 
-1. Sign in as a user with the `admin` role.
+1. Sign in as a user with `users.manage`.
 2. Open **Users & Groups**.
 3. Select **Users**.
 4. Click **New user**.
@@ -517,12 +560,12 @@ Common user tasks:
 10. Add directory-scoped group assignments or direct workflow read/write grants.
 11. Click **Save**.
 12. Select an existing user to edit display name, role, password, contact, assignments, or grants.
-13. Use **Delete** to remove a user record and invalidate their local Admin Web access on the next
-    authenticated request.
+13. Use **Delete** to remove the global user record and invalidate local Admin Web access on the
+    next authenticated request. Deletion is not limited to the selected directory.
 
 Common group tasks:
 
-1. Sign in as a user with the `admin` role.
+1. Sign in as a user with `groups.manage`.
 2. Open **Users & Groups**.
 3. Select **Groups**, or open `/#users/groups` directly.
 4. Click **New group**.
@@ -717,7 +760,11 @@ view or changing directory while there are unsaved workflow changes prompts for 
 
 ## Troubleshooting
 
+- If Admin Web does not load, request `http://127.0.0.1:8100/healthz`. If it is unavailable, inspect
+  `evander-admin-web.service`, its journal, and `config/admin-web.env` before changing UI state.
 - If a page appears empty, confirm the selected directory. Many lists are scoped.
+- If an add-on is missing, open `/#addons`, check enabled/loaded/error/restart state, and restart
+  every service listed there. Do not look for a tab when the add-on is intentionally headless.
 - If mutation buttons are disabled, unlock privileged operations.
 - If VMs are absent from navigation, the current execution backend is not `libvirt_vm`.
 - If a save reports stale configuration, reload before retrying.
@@ -726,3 +773,9 @@ view or changing directory while there are unsaved workflow changes prompts for 
 - If the dashboard feels stale, use **Refresh**. Detail tabs always use their normal live reads.
 - If screenshots or labels differ from this manual, prefer the running UI and current codebase as
   authoritative; this manual should be updated with the UI change.
+
+## Tool Visibility
+
+Use **Tool Visibility** to inspect the effective per-directory visibility of built-in, MCP, and
+add-on tools. Confirm this view before changing allow/deny or approval policy so you can separate
+a hidden tool from a visible tool whose invocation is denied.

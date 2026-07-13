@@ -1,7 +1,7 @@
 ---
 title: Evander User Manual
 subtitle: Operator Guide
-date: 2026-06-26
+date: 2026-07-13
 ---
 
 # Evander User Manual
@@ -32,6 +32,7 @@ Operator guide for day-to-day use of Evander. This manual focuses on practical h
 - [20. Common End-To-End Tasks](#20-common-end-to-end-tasks)
 - [21. Troubleshooting](#21-troubleshooting)
 - [22. Reference](#22-reference)
+
 
 ## 1. Welcome To Evander
 
@@ -190,9 +191,9 @@ How to handle common sign-in outcomes:
 Once signed in, the shared shell is the same across pages so you can move between sections quickly.
 
 1. Header: shows active section, directory, current user, theme, privilege lock, directory chooser, and sign-out.
-2. Navigation: opens all major operator pages such as Dashboard, Agents, Sessions, Approvals, Tool Calls, Workflow, Configuration, Users, Reports, and Workers.
+2. Navigation: opens all major operator pages such as Dashboard, Agents, Sessions, Approvals, Tool Calls, Workflow, Configuration, Users, Reports, Add-ons, and Workers. Add-ons is host-global; most other operational pages use the selected directory.
 3. Directory scope: shown in the header and applied to many lists and actions.
-4. Privilege lock icon/state: `locked` means local read-only UI mode. Mutation controls are disabled until you unlock.
+4. Privilege lock icon/state: `locked` means read-only mode. Mutations are blocked until you unlock.
 5. Deployment banner: if present, gives platform-level health or update context.
 6. Assistant launcher: optional lower-corner tool when enabled by your deployment.
 7. Page content: the page you selected in navigation.
@@ -227,11 +228,9 @@ If you are uncertain, pause and recheck in section 2.4 before creating agents, c
 
 ### 2.5 Unlock Privileged Operations
 
-Evander uses a deliberate UI safety gate before changes.
+Evander uses a deliberate safety gate before changes.
 
-When the lock is closed, the interface is in read-only mode. This is a local UI guard against
-accidental edits; backend writes are still governed by authentication, permissions, and revision
-checks.
+When the lock is closed, the interface is in read-only mode.
 
 - Safe for review, triage, filtering, and inspection.
 - Not safe to run changes through.
@@ -407,7 +406,7 @@ The following conditions usually require immediate follow-up, even when the inte
 
 1. Missing data or unavailable panels
    - Meaning: data path could not be read, API path was denied, or scoped data is empty by policy.
-   - First action: verify directory and lock state, then open the corresponding detail page.
+   - First action: verify directory, sign-in state, and read permission, then open the corresponding detail page. The privilege lock gates mutations, not reads.
 
 2. Unhealthy or stopped workers
    - Meaning: background automation may stop moving.
@@ -830,7 +829,7 @@ What to read in the detail card:
 If a row is missing, check these first:
 
 1. Directory context.
-2. Lock state is irrelevant for reading but controls whether edit controls are enabled.
+2. Lock state is irrelevant for reading but required for editing.
 3. Manual filters or stale search text.
 4. Active list vs Expired list.
 
@@ -2030,7 +2029,7 @@ If two processes use the same key, the result can become confusing to audit late
 Use the Artifacts tab when you need to get a previously published package.
 
 1. Open **Artifacts** from the left navigation.
-2. Confirm the active directory is the one that owns the work.
+2. Remember that the published archive list is not filtered by the directory in the shared header.
 3. If you know the key, enter it and choose **Resolve key**.
 4. If you do not know the exact key, filter by time range and result limit instead.
 5. Select a row and open its metadata panel to check:
@@ -2049,10 +2048,10 @@ Expected result:
 
 If nothing resolves:
 
-1. Check for active directory mismatches and page scope.
-2. Re-check the key for typos and case mismatch.
-3. Use a wider published-time window in the filter.
-4. If still missing, trace the run or deliverable where the key should have been written and verify it was published.
+1. Re-check the key for typos and case mismatch.
+2. Use a wider published-time window in the filter.
+3. Trace the run or deliverable where the key should have been written and verify it was published.
+4. If the reference is an artifact-space reference rather than a published archive key, verify its subject and grants. Artifact-space access is not determined by the selected directory alone.
 
 ### 10.4 Manual Uploads
 
@@ -2111,8 +2110,8 @@ Use this when you already have a reference and need the exact package locally.
 
 Prerequisites:
 
-1. Correct directory selected.
-2. Correct artifact key, or ability to narrow by time range.
+1. Correct artifact key, or ability to narrow by time range.
+2. Enough source context to distinguish similarly named artifacts.
 
 Steps:
 
@@ -2185,9 +2184,10 @@ Expected result:
 
 If links are incomplete:
 
-1. Re-check the correct directory and time range in section 7 records.
+1. Re-check the source record's directory and time range in section 7 records; the published artifact list itself is not directory-filtered.
 2. Confirm the artifact key did not come from another active run.
-3. Review Team or delivery context in section 13 for alternative attribution.
+3. For artifact-space references, verify the subject and grants.
+4. Review Team or delivery context in section 13 for alternative attribution.
 
 ## 11. Workflows
 
@@ -2492,7 +2492,7 @@ If the draft is not acceptable:
 
 Reports are where operators check "is this working well?" versus "do we have an outage or drift signal now?"
 
-Use this section to read workflow health patterns, repeated failures, PR integration safety checks, conformance guarantees, and cost signals before you make release or retry decisions.
+Use this section to read workflow health patterns, repeated failures, PR integration safety checks, and conformance guarantees before you make release or retry decisions.
 
 For detailed step-level workflow diagnosis, see section 11. For evidence trail rebuilds, see section 7. For incident handoff and safe action decisions across multiple pages, see section 20.
 
@@ -2567,24 +2567,20 @@ Each record includes status fields such as:
 
 Treat this as an operational health signal. Use it with your CI or change-control flow, and investigate failing items before changing workflow packs.
 
-### 12.5 Usage And Cost Awareness
+### 12.5 Usage And Cost Context
 
-This report section helps operators understand inference volume and expected spend before a work burst becomes costly.
+Reports does not currently provide a standalone usage or cost report. Do not expect a usage tab,
+session token chart, or directory spend report on this page.
 
-Use it to:
+When cost context is needed:
 
-1. Compare usage over selected time windows.
-2. Spot unusual token spikes per session, model, or directory.
-3. Estimate cost trends with catalog-driven model rates.
+1. Use the available model-usage query surfaces for recorded inference usage.
+2. Use the Team Add-on cost surface when a Team has a cost guard or Team usage summary.
+3. Check the local model-pricing catalog in Configuration before interpreting estimates.
 
-Cost values here are operational estimates:
-
-1. They are based on local pricing rules and available token metadata.
-2. They are not a billing invoice.
-3. They may not include all provider-specific surcharge patterns.
-4. OpenAI billing totals can differ from per-model estimate totals.
-
-Before using these numbers for approval or budget messaging, confirm current catalog and pricing context in the pricing controls referenced by operations.
+These values are operational estimates based on recorded usage and local pricing rules, not billing
+invoices. Coverage can be partial, and provider billing can include adjustments that Evander does
+not infer.
 
 ### How-to: Run A Workflow Activity Report
 
@@ -2731,660 +2727,280 @@ If report regeneration fails:
 
 ## 13. Team Add-On
 
-The Team Add-on is an optional operator surface for running durable team-based work with persistent
-agents. Use it when you need shared ownership, review workflows, and delivery tracking beyond one-off
-sessions.
+The Team Add-on is an optional operator surface for durable team-based work with persistent agents.
+Use it for shared ownership, project planning, agent-to-agent coordination, review, governance, and
+controlled delivery beyond one-off sessions.
 
-You will see this surface only after the Team Add-on is enabled in host config and the add-on routes are
-available under **Teams** in the Admin UI.
+The add-on is enabled host-wide from `/#addons`, not per directory. Its data and actions can still be
+directory-, team-, project-, role-, and permission-scoped. If the Teams navigation item is missing,
+check the core Add-ons page before troubleshooting Team data.
 
-At a high level:
-
-1. Teams define people structure, reporting lines, and operational scope.
-2. Persistent Team agents do repeated work and can receive structured work through wake-ups.
-3. Cases and tasks keep delivery work in a visible chain.
-4. Deliverables and reviews let operators control what is safe to ship.
-5. Optional release tooling publishes accepted delivery state to Git in a controlled sequence.
-
-For worker health, use section 18. For reports and repeated-failure trends, use section 12. For session
-level controls and approvals, use sections 5 and 6. For files and published bundles, use section 10. For
-workflow references behind Team automation, use section 11.
+For worker health, use section 18. For workflow runtime, use section 11. For artifacts, use section
+10. For permissions, use section 17.
 
 ### 13.1 Team Concepts
 
-Use this subsection to build a shared operational model before touching setup forms.
-
-Core concepts:
-
-1. Team: the owning unit of work and policy context.
-2. Manager: the top-level team lead for escalations and routine direction.
-3. Project lead: the person or agent accountable for a project end-to-end.
-4. Persistent team agent: a reusable agent record that can be assigned tasks repeatedly and can wake on
-   new work signals.
-5. Role: a named permission bundle used by agents for delivery and approval decisions.
-6. Case: an intake envelope for a stream of work with one source reference, status, priority, and tags.
-7. Task: the unit of execution that can be attached to a case, ordered by dependencies.
-8. Inbox item: a request or update item in Team flow.
-9. Deliverable: concrete output tied to work, often linked to artifacts and review requests.
-10. Review request: a formal review checkpoint with a reviewer, rubric, and decision outcome.
-11. Review profile: the rubric template that standardizes what a reviewer evaluates.
-12. Release package: the final package state when a project is ready to publish.
-13. Governance group: a higher-level coordination layer for cross-team escalation.
-
-Important operator boundaries:
-
-1. Team Add-on state is tracked separately from core Evander session records.
-2. Team actions are surfaced as Team-specific admin tabs and APIs.
-3. Team-specific records are still constrained by directory scope and your normal unlock/policy rules.
-
-### 13.2 Teams Tab Overview
-
-When the Team Add-on is enabled, the **Teams** tab opens a dedicated workspace with several areas.
+1. **Team**: the owning unit for persistent agents, roles, work, and policy context.
+2. **Persistent agent**: a reusable Team agent linked to an Evander session and eligible for Team wakes.
+3. **Project**: a delivery scope with a lead, goals, tasks, optional managed Git repository, and release policy.
+4. **Task**: an execution unit with owners, dependencies, child tasks, status, and optional case linkage.
+5. **Case**: an optional intake envelope that groups related tasks and an external source reference.
+6. **Inbox item**: structured work or coordination sent to an agent through Team runtime.
+7. **Agent Mail**: durable agent-to-agent messages, separate from operator Chat.
+8. **Memory**: durable team-owned decisions, facts, runbooks, handoffs, and other reusable context.
+9. **Deliverable**: concrete output linked to task work, artifacts, and review requests.
+10. **Review profile**: the criteria an eligible reviewer must evaluate.
+11. **Release package**: reviewed output prepared for controlled artifact or Git publication.
+12. **Governance group**: cross-team coordination with membership, agenda, summaries, and wake state.
+13. **Stand-down**: a durable operator hold on an agent and its subordinate reporting subtree.
+
+Team state is canonical in the Team Add-on, not in core session metadata. Core session records remain
+the execution link and a compact integration index.
+
+### 13.2 Navigation And Daily Sequence
+
+The current Team UI has fourteen top-level views:
+
+1. **Workspace**: high-level status, attention, and shortcuts.
+2. **Operations**: runtime attention, leases, actions, failures, and operator controls.
+3. **Delivery**: deliverables, review requests, review profiles, release packages, and Git promotion.
+4. **Memory**: team memory search, record detail, scope, tags, refs, and archive state.
+5. **Projects**: project ownership, goals, Git settings, and release policy.
+6. **Task board**: task ownership and status movement.
+7. **Cases**: optional intake records and linked task context.
+8. **Teams**: teams, persistent agents, roles, setup, direct calls, and stand-down controls.
+9. **Chat**: signed-in operator conversations with persistent agents.
+10. **Mail**: Agent Mail inbox/outbox records and delivery state.
+11. **Governance**: governance groups, membership, agenda, summaries, and coordination state.
+12. **Planning**: task dependency, decomposition, and readiness context.
+13. **Timeline**: derived read-only recent activity and attention signals.
+14. **Org chart**: manager and reporting hierarchy.
+
+A practical daily sequence is:
+
+1. Open **Workspace** for the broad state.
+2. Use **Operations** for urgent runtime attention and failed actions.
+3. Review **Mail**, **Chat**, and **Governance** for coordination that needs a response.
+4. Use **Projects**, **Task board**, **Cases**, and **Planning** to assign or unblock work.
+5. Use **Delivery** for review and publication.
+6. Use **Timeline** and section 7 Tool Calls for evidence and handoff.
+
+The header privilege lock gates mutations, not Team reads. Unlock only when you are ready to save or
+run an operator action.
+
+### 13.3 Enable Or Repair The Team Surface
+
+1. Open the core **Add-ons** page at `/#addons`.
+2. Select **Team Add-on** and inspect discovered, enabled, loaded, error, configuration-mismatch,
+   runtime-pack, and pending-restart state.
+3. If enabling it, unlock and save. The save updates host and worker add-on configuration and
+   materializes the registered Team runtime pack through the revision-checked workflow service.
+4. Use **Refresh runtime pack** when the registered definition changes. Never write the live pack
+   file directly.
+5. Restart every service listed by the page. Team requires Admin Web, trigger orchestrator, effect
+   orchestrator, and gateway because it registers UI routes, workflow providers, and MCP tools.
+6. Reload Teams and confirm all fourteen views are present.
+
+Disabling the add-on prevents it from loading after restart but does not delete Team private state.
+
+### 13.4 Create A Team And Persistent Agents
+
+Template setup is the fastest route:
+
+1. Open **Teams** and choose template setup.
+2. Select `auto-dev-squad` or `accounting-department`.
+3. Provide stable team, manager, project, project-lead, role-owner, and session identifiers.
+4. Add optional project Git inputs only through the managed repository flow.
+5. Preview the hierarchy, roles, project, and starter tasks.
+6. Materialize once. The operation is revision-checked and atomic.
+7. Confirm the result in **Teams**, **Projects**, **Task board**, and **Org chart**. Cases appear only
+   when the template or later intake creates them.
+
+For manual setup:
+
+1. Create the team and manager in **Teams**.
+2. Create narrow roles and assign only required permissions.
+3. Register persistent agents with stable agent IDs, sessions, roles, and reporting lines.
+4. Create a project and choose an existing registered Team agent as project lead.
+5. Verify the hierarchy in **Org chart**.
+
+Roles are managed within the Teams surface; there is no separate top-level Roles view. Display names
+and avatars are operator UI metadata. Avatars are not injected into prompts or session identity.
+
+### 13.5 Projects, Task Board, Cases, And Planning
+
+Use **Projects** to define the delivery boundary, lead, goals, optional managed repository, base branch,
+and release policy. Import a repository through the managed repository action; do not store host
+checkout or bare-repository paths in Team project state.
+
+Use **Task board** for execution state:
+
+1. Create one task per meaningful output.
+2. Assign an eligible persistent agent or approved ephemeral path.
+3. Add dependencies and child tasks only when sequencing or decomposition is real.
+4. Use **Planning** to confirm dependency readiness, blockers, and child-task state.
+5. Move task state only when its work and dependent records support the transition.
+
+Use **Cases** when work needs an intake envelope:
 
-1. Setup area: create a team from a template or manual input.
-2. Workspace panels: overview of active cases, open tasks, live notifications, and pending work.
-3. Org chart: visual hierarchy of manager and subordinate lines.
-4. People view: persistent agent inventory, role context, and edit actions.
-5. Chat view: operator-to-agent chat and team chat queue inspection.
-6. Roles view: role catalog and permissions.
-7. Cases view: create/edit case records and assign task links.
-8. Review and Delivery workspace: submit deliverables, open review requests, and inspect publication status.
-9. Timeline/Audit view: read-only sequence of recent Team activity and attention signals.
-
-Use this layout sequence during daily operations:
+1. Create a case with source reference, owner, priority, tags, and status.
+2. Create or link tasks from **Task board**.
+3. Keep case status aligned with the linked work.
 
-1. Open Teams.
-2. Confirm directory and unlock state.
-3. Check Timeline/Audit for newly surfaced attention items.
-4. Open People or Cases depending on whether people or intake is the current bottleneck.
-5. Finish in Review and Delivery when any task state is near completion.
+Cases are optional. A project and task do not require a case, and wake investigation should start
+from the actual assigned task rather than assuming a case exists.
 
-If the tab is missing:
+### 13.6 Chat, Agent Mail, And Direct Calls
 
-1. Confirm Team Add-on configuration.
-2. Confirm the workflow workers have been restarted after any add-on configuration change.
-3. Refresh and re-open after service config updates.
+**Chat** is one signed-in human operator conversing with one persistent agent. Each operator sees
+only their own conversations by default. `team_chats.read_all` permits read-only inspection of other
+operators' Chat histories and disables sending in that inspection mode.
 
-### 13.3 Set Up A Team
+**Mail** is Agent Mail for durable agent-to-agent coordination. Use it to inspect sender, recipient,
+thread/message context, inbox/outbox state, and delivery status. Do not treat Mail as another view of
+operator Chat, and do not assume `team_chats.read_all` expands Mail access.
 
-You can create a team either from a proven template or from manual setup.
+To review Agent Mail:
 
-Template setup is fastest:
+1. Open **Mail**.
+2. Narrow to the relevant team, agent, or message state.
+3. Open the message and record sender, recipient, time, delivery state, and linked work context.
+4. Follow up in **Task board**, **Governance**, or **Operations** when the message identifies blocked
+   work or a runtime problem.
+5. Use **Timeline** and Tool Calls when stronger evidence is required.
 
-1. **auto-dev-squad** creates a manager, implementer, reviewer, and release-operator pattern for reviewed
-   development work.
-2. **accounting-department** creates bookkeeping-oriented roles for accounting flows and review control.
+To chat with an agent:
 
-Manual setup gives more flexibility:
+1. Open **Chat** and select the persistent agent.
+2. Confirm whether the view is your conversation or read-only inspection.
+3. Send a concise request with the expected output when sending is allowed.
+4. If no response arrives, use the wake checks in 13.11 rather than sending duplicates.
 
-1. Use when team shape does not match existing templates.
-2. Use when you must align with strict naming and role rules.
+The **Teams** view can also start a browser voice call for a selected persistent agent when the voice
+bridge is configured. The projected call context includes current Team work and runtime state. After
+ending the call, confirm the reconciliation wake or follow-up record before assuming action was saved.
 
-Template setup flow (operator view):
+### 13.7 Team Memory
 
-1. Open **Setup from template**.
-2. Select the template.
-3. Fill required inputs:
-   1. team id and name
-   2. team manager agent and session
-   3. project id and name
-   4. project lead id/session
-   5. implementer, reviewer, and release operator role owners
-4. (Optional) add project git inputs if deliveries use project Git.
-5. Click preview.
-6. Validate hierarchy, role mapping, starter tasks, and required references.
-7. Confirm any optional fields such as operator communication target and communication allowlist.
-8. Submit and wait for materialization.
+Memory records preserve durable decisions, preferences, facts, runbooks, handoffs, research notes,
+and postmortems. Canonical records live in Team state; any semantic index is derived and is not the
+source of truth.
 
-Expected result:
+Use **Memory** to:
 
-1. Team, project, roles, and starter records appear immediately in People, Cases, and Org chart.
-2. Case/task/review scaffolding appears where included by the template.
+1. Search by text, team, project, agent, scope, tags, or references.
+2. Open record detail before relying on a summary.
+3. Confirm whether a record is team-global, project-scoped, agent-private, or governance-scoped.
+4. Follow linked artifact or artifact-space references for bulky evidence.
+5. Treat archived or superseded records as history, not current instruction.
 
-Manual setup:
+Agents record and maintain memory through Team tools. Normal wakes do not automatically inject all
+memory; agents or workflows must explicitly search when recall is useful. Keep large evidence in
+artifacts and link it from a concise memory record.
 
-1. Open setup form.
-2. Add team name, manager, and initial project.
-3. Add initial roles, then at least one team agent and project lead.
-4. Set sessions and operator communication target after creation.
-5. Save with a quick verification pass.
+### 13.8 Delivery, Reviews, And Publication
 
-Notes:
+Use **Delivery** for the complete review-to-release path.
 
-1. Template materialization should be treated as one atomic action.
-2. If required inputs are missing, the system will block save and show exactly what needs completion.
-3. For non-trivial project/git mapping, the form can import existing repo data, but you still need to review and
-   submit manually.
+1. Submit a deliverable with task link, content summary, and stable artifact references.
+2. Attach the appropriate review profile.
+3. Create a review request for an eligible reviewer.
+4. Record criterion findings before deciding.
+5. Choose `accepted`, `rejected`, or `blocked` with a concrete reason.
+6. Confirm the review, deliverable, task, and project status cascade.
 
-### 13.4 Manage People And Roles
+An accepted deliverable can advance only after all required reviews are accepted. Rejected work
+requires corrected output; blocked is reserved for a process or evidence-access blocker.
 
-People and roles in Team are your first control surface for quality and continuity.
+Artifact-only delivery remains valid without Git. For Git-backed delivery, the controlled ladder is
+agent output, review branch, feature branch, release branch, then canonical push. Internal branches
+remain in the managed bare repository. Only the pinned, approved release SHA is pushed outward under
+an explicit lease.
 
-1. Register an agent record:
-   1. create or edit the persistent agent entry
-   2. bind an agent id and session
-   3. assign role
-   4. assign manager/supervisor
-2. Check hierarchy:
-   1. manager should be above direct reports
-   2. project lead visibility in dashboard and task assignment
-3. Use display names for readable operational views.
-4. Use avatar upload or generated preview to distinguish people in UI quickly.
+Before requesting release:
 
-Roles:
+1. Confirm tasks and required deliverables are complete.
+2. Confirm every required review is accepted.
+3. Resolve dependency and scope blockers.
+4. Confirm the project release policy and authorized requester.
+5. Request the release once and watch its immutable attempt state in **Delivery**.
+6. Use the typed retry action only for an eligible retryable gate failure.
 
-1. Roles are not decorative labels; they carry permissions.
-2. Review role permission scope before assigning any review or release-capable agent.
-3. Keep role boundaries narrow if operators rely on this team for high-risk actions.
+### 13.9 Operations And Timeline
 
-How to verify role setup:
+Use **Operations** for actionable runtime state: attention, leases, wake decisions, failed actions,
+cost guards, and operator controls. A later successful action can supersede a failed attention item;
+dismissal changes the attention presentation, not the underlying evidence.
 
-1. Open Roles.
-2. Confirm role assignment appears for each active person.
-3. Confirm permission summary for review/release/research scope.
-4. Confirm no one is in a role that grants unintended release capability.
+Use **Timeline** for a derived, read-only sequence of recent Team state. Filter by team, project,
+agent, type, status, or attention. It is useful for sequencing and handoff but is not an append-only
+audit log and cannot reconstruct every overwritten intermediate state. Use Tool Calls and workflow
+run inspection when audit strength matters.
 
-If a role mismatch is found:
+### 13.10 Governance
 
-1. Edit the role record.
-2. Re-assign the affected agent.
-3. Save.
-4. Recheck the target task owner, because pending decisions are already scoped to actor.
+Governance coordinates work across teams without turning every issue into direct operator chat.
 
-### 13.5 Cases, Goals, And Tasks
+1. Open **Governance** and choose the governance group.
+2. Confirm membership and active group state.
+3. Review agenda items, member-team summaries, blocked/cost-warning context, and pending coordination.
+4. Resolve the owning Team record first when an agenda item points to a task, delivery, or runtime
+   blocker.
+5. Record or route the decision through the governance workflow so the next manager wake receives
+   current summaries.
+6. Confirm resulting state in **Governance**, **Operations**, and **Timeline**.
 
-Cases keep related work coherent when many tasks arrive quickly.
+Governance memory is a distinct scope. Do not copy sensitive agent-private memory into a governance
+record merely to make it broadly visible.
 
-Case model:
+### 13.11 Wake Behavior And Stand-Down
 
-1. You can link one external reference, such as issue id or ticket number.
-2. You can set status (`open`, `triage`, `in_progress`, `waiting`, `resolved`, `closed`).
-3. You can set priority (`low`, `normal`, `high`).
-4. You can assign tasks to cases and keep the task list visible in one place.
+An agent can wake for ready task work, response-requested inbox items, review/rework, operator
+directives, cadence checks, manager fallback, Agent Mail coordination, or governance work.
 
-Task model:
+An agent may not wake because:
 
-1. Tasks are the execution unit that agents work on.
-2. Tasks can be linked to cases.
-3. Tasks can depend on other tasks (`blocked` until upstream work is complete).
-4. Tasks can have child tasks for decomposition.
+1. no eligible reason is due,
+2. a lease is already active,
+3. task dependencies are waiting or blocked,
+4. low-priority work is waiting for batching,
+5. a Team cost guard is active,
+6. the agent is inactive,
+7. the agent or an ancestor has an active stand-down.
 
-Operating pattern:
+A stand-down is a durable operator hold on the selected agent and its subordinate subtree. It blocks
+future Team leases and rejects later Team mutations from already-running affected dispatches. Revoke
+it explicitly after the issue is corrected; ordinary Team tools cannot override it.
 
-1. Start from a case with clear scope.
-2. Add one task per meaningful output.
-3. Assign owners and links.
-4. Add blockers and priorities if sequencing is required.
-5. Assign outcomes as tasks progress.
+To investigate a silent Team agent:
 
-For deeper task graph diagnostics or repeated failures, continue in section 11.
+1. Open **Operations** and filter by the agent.
+2. Confirm the assigned task in **Task board** is active and dependency-ready in **Planning**.
+3. Check response-requested inbox and Agent Mail state.
+4. Check active leases, cost guard, agent active state, and stand-downs on the reporting chain.
+5. Confirm an actual wake reason exists.
+6. Use **Timeline** for recent Team transitions.
+7. Check trigger/effect workers and the Team runtime workflow in sections 18 and 11.
+8. Avoid duplicate prompts while lease or dispatch state is unknown.
 
-### 13.6 Team Chat And Direct Calls
+### How-to: Stand Down And Restore An Agent
 
-Team chat is separate from general notification settings, so operators can keep agent state and conversation
-history in one place.
+1. Open **Teams** and select the persistent agent.
+2. Unlock and choose the stand-down action.
+3. Enter a concrete reason and confirm.
+4. Review subordinate impact in **Org chart**.
+5. Confirm the hold in **Operations** and watch any already-running dispatch finish or be rejected.
+6. After corrective work, revoke the stand-down with a reason.
+7. Confirm the agent and subordinate subtree regain normal wake eligibility.
 
-Chat basics:
+### How-to: Handle A Delivery Blocker
 
-1. Chat is one-to-one operator-to-agent.
-2. Agents can send and receive messages from their inbox context.
-3. Each operator normally sees only their own conversations by default.
-4. `team_chats.read_all` is a read-only inspection permission; when used, the UI labels this state clearly
-   and disables sending.
-
-Direct calls:
-
-1. People view includes a direct browser call option for selected persistent agents.
-2. Calls use projected voice context, including current Team task and runtime status.
-3. Calls are recorded in voice-session state and can be reconciled back into normal Team wake workflows.
-
-What to expect after a call:
-
-1. The reconciliation wake usually brings back summary and follow-up intent.
-2. If action is required, check the related case/task and decide whether to post operator directions.
-3. For broader communication target setup, see section 15.
-
-### 13.7 Deliverables And Reviews
-
-Deliverables are how work is handed to review and, eventually, release.
-
-Submit and request flow:
-
-1. Submit deliverable text, artifact references, and relevant metadata.
-2. Attach a review profile with clear criteria.
-3. Create a review request and route to an eligible reviewer.
-
-Decision behavior:
-
-1. Accepted: deliverable may proceed only when all required review requests for that deliverable are accepted.
-2. Rejected: review is rejected and task is moved to blocked until corrected.
-3. Blocked: task, review, and deliverable are all blocked for that request path.
-
-Decision cascade summary:
-
-1. A rejected or blocked review can hold dependent work.
-2. All required task outputs and review decisions are checked together before project-level transitions.
-3. Use the Review and Delivery workspace to confirm cascade status.
-
-Operational tips:
-
-1. Attach all relevant artifacts up front.
-2. Keep reviewer profiles explicit and stable between related deliverables.
-3. For artifact-only work with no Git flow, publish as artifact references and still keep review gating.
-
-### 13.8 Git Promotion And Releases
-
-When your team uses Git-backed delivery, promotion follows a controlled ladder:
-
-1. Agent output branch or committed source.
-2. Review branch.
-3. Feature branch.
-4. Release branch.
-5. Canonical branch push.
-
-Project Git setup stores a managed repository ID, optional base-branch override, and canonical
-release-prefix policy. Use the project's **Import Git repo** action to submit a local checkout or
-canonical URL transiently; Evander registers/refreshes it inside the directory trust boundary and
-keeps provider identity in the central registry. Do not put a host checkout or bare-repository path
-in Team project state.
-
-Use this flow for traceability and consistent operator control:
-
-1. Ensure deliverable status is ready for publish.
-2. Publish/prepare review branch if required.
-3. Consolidate review output into a task feature branch.
-4. Request project-level release package only with valid approved tasks.
-5. Request release.
-6. Watch promotion and publication state until canonical result is final.
-
-Who can request release:
-
-1. Project lead.
-2. Team manager.
-3. A role with explicit release permission.
-
-What publication output means:
-
-1. Internal branches are maintained inside the project's managed bare repository.
-2. Only the canonical route pushes the pinned, approved SHA outward under an explicit lease.
-3. Non-Git artifact deliveries remain valid as artifact-based package flows.
-
-If release is blocked, review missing prerequisites and error state before retrying.
-
-### 13.9 Timeline And Attention
-
-The Timeline view is the first place to answer "what changed recently and what needs action now?"
-
-Use filters for:
-
-1. team id or project id
-2. agent id
-3. entry type
-4. status
-5. attention needed true/false
-
-Interpretation:
-
-1. Timeline entries are read-only.
-2. Entries are ordered by timestamp when available; missing timestamps are marked clearly as unavailable.
-3. Attention items usually point to open tasks, pending inbox handling, failed review outcomes, and release states.
-
-For review fatigue reduction:
-
-1. Dismiss failed-action attention cards you intentionally de-prioritize.
-2. Keep notes in handoff to avoid silent policy drift.
-
-Do not confuse timeline with full audit log:
-
-1. It is practical for operator sequencing.
-2. For stronger evidence trails, use section 7 and Tool Calls references.
-
-### 13.10 Wake Behavior And Stand-Down
-
-Understanding wake behavior prevents false alarms and missed work.
-
-Why a team agent wakes:
-
-1. New high-signal inbox item with response requested.
-2. New task work that is now ready.
-3. Pending review or rework request.
-4. Explicit operator directive in the Team context.
-5. Periodic normal wake checks from the Team cadence.
-6. Manager fallback when a team has open work and no active normal wakeable manager is already running.
-7. Governance wake requests for active groups and blocked/cost-warning states.
-
-Why a team agent may not wake:
-
-1. The agent is stand-down and marked inactive.
-2. Agent is not active in current scope.
-3. Team is under cost guard and is being paused.
-4. Another lease is already active and not expired.
-5. Task dependencies block execution path.
-6. Low-priority inbox has not reached the low-priority wake threshold.
-7. A stand-down exists on a higher node in reporting line.
-8. No eligible wake reason is due in the current tick.
-
-Operational rule:
-
-1. High and normal inbox causes can wake promptly.
-2. Low-priority items are visible immediately but may wait for batching cycles before dispatch.
-3. Stand-down state skips future wake eligibility until revoked.
-
-### How-to: Create A Team From A Template
-
-Use this when you want standardized structure quickly.
-
-Prerequisites:
-
-1. Team Add-on is enabled and visible in Teams.
-2. Correct directory selected.
-3. Privileges unlocked.
-
-Steps:
-
-1. Open **Teams** in the left navigation.
-2. Open **Setup from template**.
-3. Click **Create from template**.
-4. Select `auto-dev-squad` or `accounting-department`.
-5. Review required inputs and complete them:
-   1. team id and name
-   2. manager agent and session
-   3. project id and name
-   4. project lead id and session
-   5. implementer, reviewer, and release operator identity/session fields
-6. If applicable, import/register the project repository and enter its managed ID, base-branch
-   override, and canonical release-prefix policy.
-7. Open the preview and review role hierarchy and initial tasks.
-8. Click **Materialize**.
-9. Confirm team, people, and case scaffolding appears in the workspace.
-
-Expected result:
-
-1. Team hierarchy and initial people records are visible in People and Org chart.
-2. Cases, tasks, and review profile scaffolds appear where defined by the template.
-
-If materialization is blocked:
-
-1. Re-check required fields.
-2. Clear stale directory lock or stale session scope.
-3. Retry after one refresh.
-
-### How-to: Register Or Edit A Team Agent
-
-Use this when an agent should be added, re-bound, or corrected.
-
-Prerequisites:
-
-1. Teams tab open and correct directory selected.
-2. Privileges unlocked for edit.
-3. Target session exists and is intended for persistent role use.
-
-Steps:
-
-1. Open **People**.
-2. Select the relevant agent node or click **Create agent**.
-3. Enter a stable agent id and display name.
-4. Choose role and manager/reports-to relationship.
-5. Link the correct session id.
-6. Add optional avatar image or request generated avatar.
-7. Save changes.
-8. Return to Org chart and confirm the reporting line.
-
-Expected result:
-
-1. Agent appears in People with the selected role and reports-to.
-2. Org chart hierarchy updates to show inheritance.
-
-If save is blocked:
-
-1. Confirm session belongs to the active directory.
-2. Confirm role fields are valid.
-3. Confirm any stand-down or active role constraints are resolved.
-
-### How-to: Create A Case And Assign Work
-
-Use this to create structured intake when recurring work is landing.
-
-Prerequisites:
-
-1. Teams tab open.
-2. Active directory set.
-3. Privileges unlocked.
-
-Steps:
-
-1. Open **Cases**.
-2. Click **Create case**.
-3. Enter title, owner, and source reference.
-4. Set priority and initial status.
-5. Save the case.
-6. Open the case and add the first task.
-7. Set task owner and team assignment.
-8. Link the task to this case.
-9. Add dependency or subtask links if needed.
-10. Save task state.
-11. Open People and verify the assigned agent is aware of new or updated task context.
-
-Expected result:
-
-1. Case is visible in case list and timeline.
-2. The case shows as open work in Team context and can trigger wake behavior.
-
-If the case does not enter wake context:
-
-1. Confirm task assignment to an active agent.
-2. Verify case/task status is not terminal.
-3. Confirm no stand-down exists on that agent or reporting chain.
-
-### How-to: Chat With A Team Agent
-
-Use this to get direct status, clarification, or handoff notes from one persistent agent.
-
-Prerequisites:
-
-1. Team agent is active and not stood down.
-2. Chat feature available in the agent record.
-3. You have permissions in the current directory.
-
-Steps:
-
-1. Open **People** or **Chat** view.
-2. Select the target agent.
-3. Open the chat thread.
-4. Send a concise question with expected output format.
-5. Save/send the message.
-6. Wait for reply and response status update.
-7. If read-only inspection mode is enabled, confirm it is visible and note limited actions.
-8. If reply arrives with no decision, create an operator directive or task note with context.
-
-Expected result:
-
-1. New messages appear in the thread.
-2. Agent reply comes back with current task context.
-3. Thread is linkable to case/task context from People or Timeline.
-
-If no reply appears:
-
-1. Recheck message sent state.
-2. Verify wake conditions in section 13.10.
-3. Escalate only if communication target configuration is missing (see section 15).
-
-### How-to: Start A Browser Call With A Team Agent
-
-Use this to resolve complex or urgent context-sensitive coordination.
-
-Prerequisites:
-
-1. Team Add-on People view available.
-2. Target agent has active task context.
-3. Browser call permissions and runtime voice bridge are configured.
-
-Steps:
-
-1. Open **People**.
-2. Select the target persistent agent.
-3. Open the direct call control.
-4. Start the browser call.
-5. Confirm call connection and speaking prompt.
-6. State the objective and expected decision at start of the call.
-7. End call only after action items are summarized.
-8. Open call history and confirm reconciliation state.
-
-Expected result:
-
-1. Call starts and the agent receives projected context.
-2. Reconciled wake or follow-up note appears in Team context after call end.
-
-If the call does not connect:
-
-1. Confirm call bridge health in host runtime checks.
-2. Retry once.
-3. Fall back to chat and create a task follow-up.
-
-### How-to: Request And Decide A Review
-
-Use this whenever you need explicit quality signoff.
-
-Prerequisites:
-
-1. Deliverable is staged and linked to task.
-2. Review profile is available for the project/reviewer role.
-3. Review decision surface is accessible.
-
-Steps:
-
-1. Open **Review & Delivery** workspace.
-2. Choose the target deliverable.
-3. Create a review request.
-4. Attach one review profile.
-5. Add reviewer and expected outcome criteria.
-6. Attach required deliverable artifacts.
-7. Send for review.
-8. Open the review request and read importer status.
-9. Record findings against criteria.
-10. Choose decision:
-    1. accepted
-    2. rejected
-    3. blocked
-11. Save decision.
-12. Confirm task and review status changes.
-
-Expected result:
-
-1. Review decision is recorded.
-2. Deliverable/task status reflects the decision path.
-3. Any blocking reasons are visible for follow-up.
-
-If review stays pending:
-
-1. Confirm the assigned reviewer is still active.
-2. Confirm review profile and artifacts are loaded.
-3. Check timeline entry for attention state.
-
-### How-to: Publish A Reviewed Delivery
-
-Use this only after reviews and task dependencies are clear.
-
-Prerequisites:
-
-1. Required review decisions are accepted (or approved for your policy model).
-2. The task is in a promotable state.
-3. You have project lead or release-authorized role.
-
-Steps:
-
-1. Open the Deliverables list in the Review & Delivery workspace.
-2. Locate an accepted deliverable.
-3. For artifact-only delivery, confirm artifact references are stable.
-4. For Git deliveries, request review branch publish if needed.
-5. Request feature branch update or consolidation when policy requires.
-6. Request release package when task/project milestone allows.
-7. Confirm project lead/release authorizer action is complete.
-8. Confirm promotion state transitions from requested to succeeded.
-9. If blocked, inspect block reason and stop.
-
-Expected result:
-
-1. Delivery enters published state or clearly shows blocked reason.
-2. Canonical publication appears in timeline and can be referenced in handoff notes.
-
-If publication is blocked:
-
-1. Check missing prerequisites and unresolved dependencies.
-2. Correct source branch or artifact state.
-3. Retry only after prerequisites are confirmed.
-
-### How-to: Stand Down A Problematic Agent
-
-Use this when an agent is repeatedly unsafe, misrouted, or producing incorrect actions.
-
-Prerequisites:
-
-1. Correct directory and unlocked privileges.
-2. Team operator access to the People view.
-
-Steps:
-
-1. Open **People**.
-2. Select the problematic agent.
-3. Open the stand-down action.
-4. Enter a clear reason.
-5. Confirm action.
-6. Verify the agent row shows stood-down state.
-7. Check for subordinate impact if the agent has reports.
-8. Watch wake behavior for that branch and affected task paths.
-9. After corrective action, open stand-down and revoke it with a reason.
-10. Confirm subordinates regain normal wake eligibility.
-
-Expected result:
-
-1. Problematic agent stops receiving Team wake actions immediately.
-2. Subordinate or managed impact is explicit and can be addressed separately.
-
-If tasks still appear to proceed:
-
-1. Confirm active dispatch lease completion states.
-2. Check Timeline for any running actions started before stand-down.
-3. Use section 7 for full evidence.
-
-### How-to: Investigate Why A Team Agent Did Not Wake
-
-Use this when a team member appears silent without obvious reason.
-
-Prerequisites:
-
-1. You can view timeline and case/task context.
-2. Correct directory and unlocked privileges.
-
-Steps:
-
-1. Open **Timeline/Audit** and filter by the target agent.
-2. Confirm the case/task is open and not blocked.
-3. Check inbox state:
-   1. if high/normal and response requested, expect prompt wake behavior
-   2. if low only, check batching threshold expectations
-4. Open the target task and inspect dependency chain and child-task blockers.
-5. Open People and confirm the agent is not stood down.
-6. Confirm the reporting chain does not include an active stand-down on ancestors.
-7. Check for active leases that may already cover this dispatch.
-8. Confirm cost guard is not preventing wake for the team.
-9. Confirm wake reason exists (task ready, review request, manager fallback, governance queue).
-10. Reopen the case and task in Review & Delivery for any pending status request.
-11. If no answer remains after checks, verify relevant worker health in section 18 before retrying.
-
-Expected result:
-
-1. You identify one of:
-   1. no wake reason yet
-   2. blocked by low-priority batching
-   3. blocked by stand-down/lease/dependencies/cost guard
-2. You can choose either wait condition or explicit recovery action.
-
-If wake delay remains:
-
-1. Keep a short evidence note with the checks you ran.
-2. Escalate only after cost/stand-down and dependency checks are ruled out.
-3. Open a wake investigation incident path with Timeline evidence and task references.
+1. Open **Delivery** and select the immutable review or release attempt.
+2. Read the criterion findings, gate result, candidate SHA, artifact refs, and blocker type.
+3. Open the owning task in **Task board** and its dependencies in **Planning**.
+4. Correct the source work or process/evidence blocker without mutating the old decision.
+5. Submit a new deliverable or use the allowed typed retry path.
+6. Confirm the new attempt and final publication state in **Delivery** and **Timeline**.
 
 ## 14. Accounting And Tax Add-Ons
 
@@ -3417,11 +3033,11 @@ What to expect:
 
 If a tab is missing:
 
-1. Open **Configuration** and confirm the add-on is enabled for the active directory.
-2. Confirm the workflow workers have been restarted after add-on configuration changes.
-3. Refresh and re-open Admin Web.
-4. If still missing, review host settings in section 16 and service restart guidance in
-   `operations.md`.
+1. Open the host-global **Add-ons** page at `/#addons`; add-on enablement is not scoped to the active directory.
+2. Confirm the add-on is enabled and inspect loaded, error, configuration-mismatch, and pending-restart state.
+3. Restart every service listed by the page. The complete set can include Admin Web, trigger orchestrator, effect orchestrator, and gateway when MCP tools are registered.
+4. Refresh and re-open Admin Web.
+5. If still missing, review section 16 and service restart guidance in `docs/operations.md`.
 
 ### 14.2 Bokio Assisted Bookkeeping
 
@@ -3787,7 +3403,7 @@ Use this when you need to add a new destination or correct an existing one.
 Prerequisites:
 
 1. Correct directory selected.
-2. **People & Communications > Communication targets** section opened in `Configuration`.
+2. Communication targets section opened in `Configuration > People & Communications`.
 3. Privileges unlocked for configuration saves.
 
 Steps:
@@ -3809,7 +3425,7 @@ Steps:
 
 Expected result:
 
-1. The target appears in `Communication` targets for the directory.
+1. The target appears in communication targets for the directory.
 2. The target only works for the selected capabilities.
 3. Sessions with matching allowlists can now read/write using that target.
 
@@ -3826,12 +3442,12 @@ Use this when approval events need to land in a team channel instead of generic 
 Prerequisites:
 
 1. At least one notify-capable communication target is defined.
-2. Access to `approval_notification_target_ids` in **Configuration > People & Communications**.
+2. Access to approval notification targets in Configuration > People & Communications.
 3. Privileges unlocked for policy edits.
 
 Steps:
 
-1. Open `Configuration` and go to **People & Communications > Approval notification targets**.
+1. Open `Configuration > People & Communications > Approval notification targets`.
 2. Confirm the selected directory is correct.
 3. Open the approval notification target chooser.
 4. Add one or more notify-capable targets (for example an operator channel).
@@ -3968,32 +3584,32 @@ For who can edit configuration, see section 17. For worker-level service impact,
 
 ### 16.1 Configuration Domains
 
-Think of configuration as grouped into operator-facing areas that each control a recognizable
-workflow surface.
+Think of configuration as grouped into domains that each control a different operational surface.
 
-1. **People & Communications** controls contacts, targets, approval notifications, Discord,
-   Teams, email, phone calls, and communication files.
-2. **Models, Assistant & Knowledge** controls model routing, Assistant behavior, model pricing,
-   semantic store, and embedding settings.
-3. **Agent Runtime & Launch** controls execution backend, container worker settings, prompt
-   delivery, launch defaults, and guest heartbeat behavior.
-4. **Code, Issues & Pull Requests** controls Git transport, Azure DevOps, GitHub, ADO worker
-   filters, PR feedback approval, and PR templates.
-5. **Access, Approvals & Audit** controls approval-required tools, approval timing, MCP tool
-   policy, tool argument guardrails, and audit redaction.
-6. **Network, Relays & Package Access** controls VM provider defaults, libvirt templates, VM
-   network, gateway, relay endpoints, NuGet, and npm audit facade settings.
-7. **Automation & Assignment** controls issue intake capacity and assignment roles.
-8. **Advanced & Raw** contains provider-specific JSON state and support diagnostics.
+1. Policy controls common safety defaults such as session expiry and approval behavior.
+2. Providers control integrations like OpenAI routing, NuGet, GitHub, Azure DevOps, Teams, and container worker settings.
+3. Contacts and communication targets define who appears in provider actions and who is reachable.
+4. Email covers mailbox definitions and mailbox runtime behavior.
+5. Wake covers wake prompts used by scheduled and PR-based resume paths.
+6. ADO worker settings control repository and feedback poll behavior for Azure DevOps completion and feedback streams.
+7. Issue setup controls issue workflow defaults such as git host, git user, and model fallback behavior.
+8. VM controls relay and network defaults and the VM template selection catalog.
+9. PR template defines the standard markdown that can be prepended when automation writes pull requests.
+10. Model pricing controls local usage estimate rates and labels used in usage reporting.
+11. Admin Web branding controls browser title, header text, and logo presentation.
 
-The page may still show underlying domains in diagnostics and raw override views. Those labels are
-storage details; use the operator-facing areas above when deciding where to change a setting.
+Add-on loader settings are not edited in the selected directory's Configuration page. Use the
+host-global **Add-ons** page at `/#addons`. Its revision-checked save updates host and worker add-on
+configuration together and materializes registered runtime workflow packs. Use **Refresh runtime
+pack** there rather than writing live workflow-pack files. Restart every service listed by the page;
+add-ons with MCP tools also require `evander-gateway.service` in addition to Admin Web and the
+trigger/effect orchestrators.
 
-Add-on loader settings are not edited in the selected directory's Configuration page. Optional tabs
-and add-on workflow provider blocks come from host `addon_loader` configuration and worker
-configuration loaded when Admin Web, the trigger orchestrator, and the effect orchestrator start or
-reload. If an add-on tab is missing, check host add-on configuration and restart or reload the
-affected services after correcting it.
+Bundled add-ons do not all create the same UI shape. Team, Bokio, Skatteverket, and MSSQL Seeds
+register operator pages when enabled. Azure DevOps Activity is intentionally headless: verify its
+loaded MCP/workflow capabilities on Add-ons instead of expecting a navigation tab. MSSQL Seeds also
+depends on its separately configured worker-side restore sidecar; see `docs/addons.md` and
+`docs/operations.md`.
 
 The system uses inherited values:
 
@@ -4036,7 +3652,7 @@ Evander uses revision checks to avoid silent overwrite.
 1. A save can fail if another operator changed the same configuration in between your edit and save.
 2. In that case, the UI asks you to reload and reapply your intended edits.
 3. Communication or high-risk edits should be done one domain at a time.
-4. Unlock in the UI before editing so the intended controls are enabled.
+4. Locking, unlocking, and privilege mode are still required for writes.
 5. Keep local edits short and re-open read-only if a page feels stale.
 
 Safe save habits:
@@ -4086,7 +3702,9 @@ Operator guidance:
 3. Confirm the active catalog path before editing.
 4. Keep currency and rule format consistent.
 
-For report workflow and history after edits, use the usage and report sections for follow-up checks.
+There is no standalone usage/cost report in Reports. After a pricing change, use an actual
+model-usage query or a Team cost surface that consumes the catalog, and treat the result as an
+estimate rather than invoice data.
 
 ### 16.6 Branding And Admin Web Settings
 
@@ -4249,8 +3867,9 @@ How these apply:
 2. Legacy role values are kept for compatibility, but day-to-day access control is usually managed through
    groups and direct grants.
 3. You can assign a directory-scoped contact so messages and reports can be routed to the right person.
-4. Removing a user from the directory clears their record from that scope; a removed user loses
-   authenticated access on the next Admin Web request.
+4. Deleting a user removes the global Admin Web user record and invalidates authenticated access on
+   the next request. It is not a selected-directory-only deletion. To remove access only from one
+   directory, edit that user's directory group assignments and direct grants instead.
 
 ### 17.2 Groups
 
@@ -4424,8 +4043,8 @@ Use this when a user leaves the team or no longer needs Admin Web access.
 
 Prerequisites:
 
-1. Privileges unlocked.
-2. Correct directory selected.
+1. `users.manage` permission and privileges unlocked.
+2. You understand that deletion is global, regardless of the selected directory.
 3. You have a replacement for any active responsibility.
 
 Steps:
@@ -4436,15 +4055,15 @@ Steps:
    2. confirm no active handoff depends on the user,
    3. close pending work in section 6 if needed.
 3. Reassign direct tasks, workflow ownership, and group-based responsibility before deletion.
-4. Remove direct workflow grants if this user may be restored later as inactive.
+4. If only one directory's access should be removed, stop here and remove the matching assignments and direct grants instead of deleting the user.
 5. Delete the user record.
 6. Confirm with a colleague sign-in test that the user no longer has valid Admin Web access.
 7. Check section 7 for a final audit record of the removal.
 
 Expected result:
 
-1. The user can no longer authenticate in that scope.
-2. Directory access is reduced without deleting unrelated users or groups.
+1. The user can no longer authenticate to Admin Web.
+2. The global user record is gone; unrelated users and groups remain.
 3. Remaining workflow and team ownership is explicit and assigned.
 
 ## 18. Workers And Background Services
@@ -5045,7 +4664,7 @@ If the UI does not match the behavior described here, treat the live UI and host
 This usually means one of these is true:
 
 1. The page is scoped to a different directory than the one you selected.
-2. The UI is in read-only mode or the account lacks permission for that surface.
+2. Your account lacks read permission or your sign-in session is stale.
 3. A service used by that page is not running or not reachable.
 4. A feature is not available for your deployment (for example add-on-specific pages).
 
@@ -5060,7 +4679,7 @@ Quick check:
 Cross-check:
 
 1. If Dashboard panels are missing, open section 3 procedures and then open the related tab.
-2. If an Add-on page is missing, use section 13 (Team Add-On).
+2. If an add-on page is missing, open `/#addons` and inspect enabled, loaded, error, and restart state. Remember that a headless add-on has no tab.
 
 Expected result:
 
@@ -5117,7 +4736,7 @@ If the trigger was disabled or queued:
 
 This section is for agents that look idle while action was recently expected.
 
-1. Confirm session is not expired, paused, or revoked.
+1. Confirm the session is not expired or revoked and that the target is active.
 2. Confirm the selected directory and agent are correct.
 3. Verify that the target (VM or container worker) is in expected state.
 4. Check wake behavior if this is a scheduled resume case.
@@ -5186,7 +4805,7 @@ Typical symptoms:
 3. Agents do not wake from team messages.
 4. Review or promotion steps do not complete.
 5. Team Chat is not visible where expected.
-6. Deliverables are in stand-down state.
+6. An agent or reporting subtree is stood down.
 
 Action sequence:
 
@@ -5227,6 +4846,19 @@ Send a support packet with:
 
 If the incident touches multiple systems or production workloads, include a single-line impact statement and preferred recovery window.
 
+### 21.9 Admin Web Does Not Load
+
+Use the service health path before changing directories, permissions, or browser lock state.
+
+1. Open `http://127.0.0.1:8100/healthz` (or the equivalent deployed base URL).
+2. If it is unavailable, inspect `sudo systemctl status evander-admin-web.service`.
+3. Read recent logs with `sudo journalctl -u evander-admin-web.service -n 200`.
+4. Confirm `config/admin-web.env` exists and that the configured frontend assets are available.
+5. After repairing the service, reload `/healthz` before retrying the UI.
+
+The privilege lock is a mutation guard inside a working UI. It cannot make an unavailable Admin Web
+service healthy and does not control read access.
+
 ### How-to: Recover From An Empty Page
 
 Use this when one or more pages are blank or show no rows after navigation.
@@ -5245,7 +4877,7 @@ Steps:
 4. Open the same page via deep link hash route.
 5. Compare with a known working directory.
 6. Check for feature scope (for example Add-on only pages).
-7. Re-check section availability after unlock/lock state change.
+7. Confirm the sign-in session and read permission for the page. Do not unlock merely to make a read appear.
 
 Expected result:
 
@@ -5398,7 +5030,7 @@ Use it when you want to move fast without re-reading the full manual.
 
 | Term | What it means for operators | Related section |
 |---|---|---|
-| Directory | Your current operational scope (tenant, team, project, or environment branch) used for all list filtering and edits. | Section 2, Section 16 |
+| Directory | Your current operational scope for many filtered lists and edits. Host-global Add-ons and Workers, plus the published Artifacts list, are important exceptions. | Section 2, Section 16 |
 | Session | The active contract that lets an agent continue work in a target. | Section 5 |
 | Agent | The running control-surface object for a workload (for example target status, tools, logs, wake state). | Section 4 |
 | Worker | Background host service that runs orchestration, triggers, wakes, or integrations. | Section 18 |
@@ -5426,25 +5058,29 @@ Use it when you want to move fast without re-reading the full manual.
 | Workflow | Graph editor and run inspection. | Edit graph nodes/edges, inspect failed runs, verify effect behavior. |
 | Reports | Trend and summary reporting for automation health. | Check failure clusters, PR preflight, conformance snapshots. |
 | Configuration | Directory settings and effective policy. | Edit execution/model/provider/user-facing settings safely. |
-| Artifacts | Output bundles and upload references used for evidence. | Resolve artifact keys, download published outputs. |
-| Users & Groups | Operator access and workflow grant control. | Add users, create groups, review permissions. |
+| Artifacts | Host-visible published archives plus artifact-space references governed by subject/grants. | Resolve artifact keys, verify provenance, download published outputs. |
+| Add-ons (`/#addons`) | Host-global discovery, enablement, capability, runtime-pack, error, and restart state. | Enable/disable packages, refresh registered runtime packs, inspect headless add-ons. |
+| Users & Groups | Global operator records plus directory assignments and workflow grants. | Add/delete users, create groups, review permissions. |
 | MCP Tools | Directory tool deny/allow and default approval behavior. | Configure MCP tool limits and approval defaults. |
+| Tool Visibility | Effective per-directory visibility for built-in, MCP, and add-on tools. | Confirm which tools agents can discover before changing policy. |
 For optional add-on mode, this map also includes:
 
 | Add-on Page | Purpose | Common tasks |
 |---|---|---|
-| Teams (`/addons/team-addon/`) | Team planning, reviews, and review-to-release workflow. | Open People/Cases/Review & Delivery, check stand-downs and wake causes. |
+| Teams (`/addons/team-addon/`) | Team work across Workspace, Operations, Delivery, Memory, Projects, Task board, Cases, Teams, Chat, Mail, Governance, Planning, Timeline, and Org chart. | Assign work, review Agent Mail and memory, handle governance, review and publish delivery. |
 | Bokio / Skatteverket pages | Dedicated accounting or bookkeeping workflows when enabled. | Run domain actions that are available only in the add-on scope. |
+| MSSQL Seeds (`/addons/mssql-seed-addon/`) | Approved database seed aliases and worker-side restore-sidecar configuration. | Configure sidecars and seeds; provision/reset approved session databases. |
+| Azure DevOps Activity | Headless MCP/workflow capability with no navigation tab. | Verify loaded capabilities on Add-ons; query durable ADO activity through its tools/workflows. |
 
 ### 22.3 Permission Summary
 
 Permission is easiest to think of in layers.
 
-- **Read mode (default safe mode):** local view-only mode for almost all pages. Good for investigation.
+- **Read mode (default safe mode):** view-only for almost all pages. Good for investigation.
 - **Unlocked mode:** allows create, edit, and lifecycle actions on the current surface if your user has permission.
 - **Workflow write access:** required for graph edits, and includes read access.
 - **Approval/decision rights:** required for queue action and direct review decisions.
-- **Team read-all chat access:** only for explicit operators and only for read-only team-chat review.
+- **Team read-all chat access:** `team_chats.read_all` permits read-only review of other operators' Chat histories only; it does not expand Agent Mail access.
 
 Common operator permissions:
 
@@ -5455,7 +5091,9 @@ Common operator permissions:
 | Workflow grants (read/write) | Access to workflow views and workflow editing. | Write grants should be limited to required graph ownership. |
 | Workflow/section privileges + unlock | Mutations in Sessions, Agents, Workers, Configuration, VMs, and reviews. | Keep unlocked only while taking action. |
 
-For the add-on sections, treat permissions as scoped by directory and add-on visibility.
+Add-on enablement is host-global and should be limited to designated platform administrators. Data
+inside an add-on can still apply directory, subject, grant, role, and add-on-specific permission
+rules.
 
 ### 22.4 Status Meanings
 
@@ -5537,8 +5175,10 @@ Primary direct routes:
 | Reports | `/#reports` |
 | Configuration | `/#configuration` |
 | Artifacts | `/#artifacts` |
+| Add-ons | `/#addons` |
 | Skills | `/#skills` |
 | MCP Tools | `/#mcp-tools` |
+| Tool Visibility | `/#tool-visibility` |
 | Users | `/#users` |
 | User Groups | `/#users/groups` |
 | Workers | `/#workers` |
@@ -5548,6 +5188,9 @@ Optional add-on routes (enabled only where add-on modules are loaded):
 - Teams: `/addons/team-addon/`
 - Bokio: `/addons/bokio-addon/`
 - Skatteverket: `/addons/skatteverket-addon/`
+- MSSQL Seeds: `/addons/mssql-seed-addon/`
+
+Azure DevOps Activity is headless and therefore has no optional UI route; inspect it at `/#addons`.
 
 ### 22.6 Operator Checklists
 
@@ -5624,7 +5267,7 @@ For deeper setup and safety details, use:
 - `docs/operations.md` for host setup, bootstrap flow, and service installation.
 - `docs/admin-ui-user-manual.md` for detailed page behavior.
 - `docs/configuration-reference.md` for parameter and domain behavior.
-- `docs/addons.md` for Team, Bokio, and Skatteverket enablement.
+- `docs/addons.md` for Team, Bokio, Skatteverket, MSSQL Seeds, and headless Azure DevOps Activity enablement.
 - `docs/live-smoke-tests.md` for post-change safety checks.
 - `docs/container-worker-backend.md` when container worker execution is in scope.
 - `docs/execution-backends.md` for backend selection and target behavior.

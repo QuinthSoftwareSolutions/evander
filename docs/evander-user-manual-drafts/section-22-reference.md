@@ -9,7 +9,7 @@ Use it when you want to move fast without re-reading the full manual.
 
 | Term | What it means for operators | Related section |
 |---|---|---|
-| Directory | Your current operational scope (tenant, team, project, or environment branch) used for all list filtering and edits. | Section 2, Section 16 |
+| Directory | Your current operational scope for many filtered lists and edits. Host-global Add-ons and Workers, plus the published Artifacts list, are important exceptions. | Section 2, Section 16 |
 | Session | The active contract that lets an agent continue work in a target. | Section 5 |
 | Agent | The running control-surface object for a workload (for example target status, tools, logs, wake state). | Section 4 |
 | Worker | Background host service that runs orchestration, triggers, wakes, or integrations. | Section 18 |
@@ -37,15 +37,19 @@ Use it when you want to move fast without re-reading the full manual.
 | Workflow | Graph editor and run inspection. | Edit graph nodes/edges, inspect failed runs, verify effect behavior. |
 | Reports | Trend and summary reporting for automation health. | Check failure clusters, PR preflight, conformance snapshots. |
 | Configuration | Directory settings and effective policy. | Edit execution/model/provider/user-facing settings safely. |
-| Artifacts | Output bundles and upload references used for evidence. | Resolve artifact keys, download published outputs. |
-| Users & Groups | Operator access and workflow grant control. | Add users, create groups, review permissions. |
+| Artifacts | Host-visible published archives plus artifact-space references governed by subject/grants. | Resolve artifact keys, verify provenance, download published outputs. |
+| Add-ons (`/#addons`) | Host-global discovery, enablement, capability, runtime-pack, error, and restart state. | Enable/disable packages, refresh registered runtime packs, inspect headless add-ons. |
+| Users & Groups | Global operator records plus directory assignments and workflow grants. | Add/delete users, create groups, review permissions. |
 | MCP Tools | Directory tool deny/allow and default approval behavior. | Configure MCP tool limits and approval defaults. |
+| Tool Visibility | Effective per-directory visibility for built-in, MCP, and add-on tools. | Confirm which tools agents can discover before changing policy. |
 For optional add-on mode, this map also includes:
 
 | Add-on Page | Purpose | Common tasks |
 |---|---|---|
-| Teams (`/addons/team-addon/`) | Team planning, reviews, and review-to-release workflow. | Open People/Cases/Review & Delivery, check stand-downs and wake causes. |
+| Teams (`/addons/team-addon/`) | Team work across Workspace, Operations, Delivery, Memory, Projects, Task board, Cases, Teams, Chat, Mail, Governance, Planning, Timeline, and Org chart. | Assign work, review Agent Mail and memory, handle governance, review and publish delivery. |
 | Bokio / Skatteverket pages | Dedicated accounting or bookkeeping workflows when enabled. | Run domain actions that are available only in the add-on scope. |
+| MSSQL Seeds (`/addons/mssql-seed-addon/`) | Approved database seed aliases and worker-side restore-sidecar configuration. | Configure sidecars and seeds; provision/reset approved session databases. |
+| Azure DevOps Activity | Headless MCP/workflow capability with no navigation tab. | Verify loaded capabilities on Add-ons; query durable ADO activity through its tools/workflows. |
 
 ## 22.3 Permission Summary
 
@@ -55,7 +59,7 @@ Permission is easiest to think of in layers.
 - **Unlocked mode:** allows create, edit, and lifecycle actions on the current surface if your user has permission.
 - **Workflow write access:** required for graph edits, and includes read access.
 - **Approval/decision rights:** required for queue action and direct review decisions.
-- **Team read-all chat access:** only for explicit operators and only for read-only team-chat review.
+- **Team read-all chat access:** `team_chats.read_all` permits read-only review of other operators' Chat histories only; it does not expand Agent Mail access.
 
 Common operator permissions:
 
@@ -66,7 +70,9 @@ Common operator permissions:
 | Workflow grants (read/write) | Access to workflow views and workflow editing. | Write grants should be limited to required graph ownership. |
 | Workflow/section privileges + unlock | Mutations in Sessions, Agents, Workers, Configuration, VMs, and reviews. | Keep unlocked only while taking action. |
 
-For the add-on sections, treat permissions as scoped by directory and add-on visibility.
+Add-on enablement is host-global and should be limited to designated platform administrators. Data
+inside an add-on can still apply directory, subject, grant, role, and add-on-specific permission
+rules.
 
 ## 22.4 Status Meanings
 
@@ -148,8 +154,10 @@ Primary direct routes:
 | Reports | `/#reports` |
 | Configuration | `/#configuration` |
 | Artifacts | `/#artifacts` |
+| Add-ons | `/#addons` |
 | Skills | `/#skills` |
 | MCP Tools | `/#mcp-tools` |
+| Tool Visibility | `/#tool-visibility` |
 | Users | `/#users` |
 | User Groups | `/#users/groups` |
 | Workers | `/#workers` |
@@ -159,6 +167,9 @@ Optional add-on routes (enabled only where add-on modules are loaded):
 - Teams: `/addons/team-addon/`
 - Bokio: `/addons/bokio-addon/`
 - Skatteverket: `/addons/skatteverket-addon/`
+- MSSQL Seeds: `/addons/mssql-seed-addon/`
+
+Azure DevOps Activity is headless and therefore has no optional UI route; inspect it at `/#addons`.
 
 ## 22.6 Operator Checklists
 
@@ -235,7 +246,7 @@ For deeper setup and safety details, use:
 - `docs/operations.md` for host setup, bootstrap flow, and service installation.
 - `docs/admin-ui-user-manual.md` for detailed page behavior.
 - `docs/configuration-reference.md` for parameter and domain behavior.
-- `docs/addons.md` for Team, Bokio, and Skatteverket enablement.
+- `docs/addons.md` for Team, Bokio, Skatteverket, MSSQL Seeds, and headless Azure DevOps Activity enablement.
 - `docs/live-smoke-tests.md` for post-change safety checks.
 - `docs/container-worker-backend.md` when container worker execution is in scope.
 - `docs/execution-backends.md` for backend selection and target behavior.

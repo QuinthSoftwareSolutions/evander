@@ -11,7 +11,7 @@ If the UI does not match the behavior described here, treat the live UI and host
 This usually means one of these is true:
 
 1. The page is scoped to a different directory than the one you selected.
-2. Your account currently has read-only mode or locked privileges.
+2. Your account lacks read permission or your sign-in session is stale.
 3. A service used by that page is not running or not reachable.
 4. A feature is not available for your deployment (for example add-on-specific pages).
 
@@ -26,7 +26,7 @@ Quick check:
 Cross-check:
 
 1. If Dashboard panels are missing, open section 3 procedures and then open the related tab.
-2. If an Add-on page is missing, use section 13 (Team Add-On).
+2. If an add-on page is missing, open `/#addons` and inspect enabled, loaded, error, and restart state. Remember that a headless add-on has no tab.
 
 Expected result:
 
@@ -83,7 +83,7 @@ If the trigger was disabled or queued:
 
 This section is for agents that look idle while action was recently expected.
 
-1. Confirm session is not expired, paused, or revoked.
+1. Confirm the session is not expired or revoked and that the target is active.
 2. Confirm the selected directory and agent are correct.
 3. Verify that the target (VM or container worker) is in expected state.
 4. Check wake behavior if this is a scheduled resume case.
@@ -152,7 +152,7 @@ Typical symptoms:
 3. Agents do not wake from team messages.
 4. Review or promotion steps do not complete.
 5. Team Chat is not visible where expected.
-6. Deliverables are in stand-down state.
+6. An agent or reporting subtree is stood down.
 
 Action sequence:
 
@@ -193,6 +193,19 @@ Send a support packet with:
 
 If the incident touches multiple systems or production workloads, include a single-line impact statement and preferred recovery window.
 
+## 21.9 Admin Web Does Not Load
+
+Use the service health path before changing directories, permissions, or browser lock state.
+
+1. Open `http://127.0.0.1:8100/healthz` (or the equivalent deployed base URL).
+2. If it is unavailable, inspect `sudo systemctl status evander-admin-web.service`.
+3. Read recent logs with `sudo journalctl -u evander-admin-web.service -n 200`.
+4. Confirm `config/admin-web.env` exists and that the configured frontend assets are available.
+5. After repairing the service, reload `/healthz` before retrying the UI.
+
+The privilege lock is a mutation guard inside a working UI. It cannot make an unavailable Admin Web
+service healthy and does not control read access.
+
 ## How-to: Recover From An Empty Page
 
 Use this when one or more pages are blank or show no rows after navigation.
@@ -211,7 +224,7 @@ Steps:
 4. Open the same page via deep link hash route.
 5. Compare with a known working directory.
 6. Check for feature scope (for example Add-on only pages).
-7. Re-check section availability after unlock/lock state change.
+7. Confirm the sign-in session and read permission for the page. Do not unlock merely to make a read appear.
 
 Expected result:
 

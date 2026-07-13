@@ -59,7 +59,7 @@ How to handle common sign-in outcomes:
 Once signed in, the shared shell is the same across pages so you can move between sections quickly.
 
 1. Header: shows active section, directory, current user, theme, privilege lock, directory chooser, and sign-out.
-2. Navigation: opens all major operator pages such as Dashboard, Agents, Sessions, Approvals, Tool Calls, Workflow, Configuration, Users, Reports, and Workers.
+2. Navigation: opens all major operator pages such as Dashboard, Agents, Sessions, Approvals, Tool Calls, Workflow, Configuration, Users, Reports, Add-ons, and Workers. Add-ons is host-global; most other operational pages use the selected directory.
 3. Directory scope: shown in the header and applied to many lists and actions.
 4. Privilege lock icon/state: `locked` means read-only mode. Mutations are blocked until you unlock.
 5. Deployment banner: if present, gives platform-level health or update context.

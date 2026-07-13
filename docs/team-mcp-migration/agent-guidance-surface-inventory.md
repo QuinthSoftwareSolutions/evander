@@ -1,5 +1,8 @@
 # Team Agent Guidance Surface Inventory
 
+> **Status:** Historical migration inventory. The Team MCP action surface described here has been
+> implemented; use [`../addons.md`](../addons.md) for the current operator and action reference.
+
 This inventory lists every Team-specific instruction surface agents receive
 today and where its MCP-era replacement is designed. It is design-only and does
 not change prompts, seeded files, or runtime behavior.

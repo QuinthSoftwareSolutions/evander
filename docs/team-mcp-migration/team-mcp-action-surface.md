@@ -1,8 +1,11 @@
 # Team MCP Action Surface Design
 
+> **Status:** Historical design for an implemented API. Use [`../addons.md`](../addons.md) for the
+> current Team add-on action and operator reference.
+
 This document designs an MCP tool surface that can replace the persistent
 agent-authored `/artifacts/team-action.json` contract without changing Team
-semantics. It is a design document only; it does not define an implemented API.
+semantics. It was a design document; the resulting API is now implemented.
 
 The goal is not to expose one generic action blob through MCP. The goal is to
 give agents small, intent-specific tools with synchronous validation, immediate

@@ -2,7 +2,7 @@
 
 Reports are where operators check "is this working well?" versus "do we have an outage or drift signal now?"
 
-Use this section to read workflow health patterns, repeated failures, PR integration safety checks, conformance guarantees, and cost signals before you make release or retry decisions.
+Use this section to read workflow health patterns, repeated failures, PR integration safety checks, and conformance guarantees before you make release or retry decisions.
 
 For detailed step-level workflow diagnosis, see section 11. For evidence trail rebuilds, see section 7. For incident handoff and safe action decisions across multiple pages, see section 20.
 
@@ -77,24 +77,20 @@ Each record includes status fields such as:
 
 Treat this as an operational health signal. Use it with your CI or change-control flow, and investigate failing items before changing workflow packs.
 
-## 12.5 Usage And Cost Awareness
+## 12.5 Usage And Cost Context
 
-This report section helps operators understand inference volume and expected spend before a work burst becomes costly.
+Reports does not currently provide a standalone usage or cost report. Do not expect a usage tab,
+session token chart, or directory spend report on this page.
 
-Use it to:
+When cost context is needed:
 
-1. Compare usage over selected time windows.
-2. Spot unusual token spikes per session, model, or directory.
-3. Estimate cost trends with catalog-driven model rates.
+1. Use the available model-usage query surfaces for recorded inference usage.
+2. Use the Team Add-on cost surface when a Team has a cost guard or Team usage summary.
+3. Check the local model-pricing catalog in Configuration before interpreting estimates.
 
-Cost values here are operational estimates:
-
-1. They are based on local pricing rules and available token metadata.
-2. They are not a billing invoice.
-3. They may not include all provider-specific surcharge patterns.
-4. OpenAI billing totals can differ from per-model estimate totals.
-
-Before using these numbers for approval or budget messaging, confirm current catalog and pricing context in the pricing controls referenced by operations.
+These values are operational estimates based on recorded usage and local pricing rules, not billing
+invoices. Coverage can be partial, and provider billing can include adjustments that Evander does
+not infer.
 
 ## How-to: Run A Workflow Activity Report
 
