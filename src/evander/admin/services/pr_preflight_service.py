@@ -23,8 +23,7 @@ from evander.services import normalize_pr_automation_provider
 @dataclass(frozen=True)
 class PrIntegrationPreflightAdminDependencies:
     runtime: Any
-    compute_directory_effective_config: Any
-    resolve_repo_source: Any
+    managed_git_admin: Any
 
 
 class PrIntegrationPreflightAdminService:
@@ -42,9 +41,9 @@ class PrIntegrationPreflightAdminService:
         pr_ids: Sequence[str],
         mode: MergePreflightMode,
         directory_path: str,
+        managed_repo_id: str,
         organization_url: str | None = None,
         project: str | None = None,
-        repo_source: str | None = None,
     ) -> MergePreflightReport:
         provider_name = normalize_pr_automation_provider(provider)
         if provider_name != "azure_devops":
@@ -52,21 +51,28 @@ class PrIntegrationPreflightAdminService:
 
         normalized_repo = self._normalize_required_text(repo, field_name="repo")
         normalized_directory_path = self._normalize_directory_path(directory_path)
+        normalized_managed_repo_id = self._normalize_required_text(
+            managed_repo_id,
+            field_name="managed_repo_id",
+        )
         normalized_pr_ids = self._normalize_pr_ids(pr_ids)
         self._validate_pr_count(mode=mode, pr_ids=normalized_pr_ids)
 
-        resolved_repo_source = self._resolve_repo_source(
-            repo_source=repo_source,
-            directory_path=normalized_directory_path,
-        )
-
         try:
-            repo_path, _repo_name = self._deps.resolve_repo_source(resolved_repo_source)
+            managed_record = self._deps.managed_git_admin.get_repository(
+                normalized_managed_repo_id,
+                normalized_directory_path,
+            )
+            self._deps.managed_git_admin.resolve_internal_repository(
+                normalized_managed_repo_id,
+                normalized_directory_path,
+            )
+            self._deps.managed_git_admin.refresh_repository(normalized_managed_repo_id)
         except Exception as exc:
             return self._error_report(
                 status="repo_error",
                 mode=mode,
-                repo_path=resolved_repo_source,
+                repo_path=normalized_managed_repo_id,
                 pr_ids=normalized_pr_ids,
                 explanation=self._error_text(exc),
             )
@@ -82,7 +88,7 @@ class PrIntegrationPreflightAdminService:
             return self._error_report(
                 status="provider_error",
                 mode=mode,
-                repo_path=repo_path,
+                repo_path=normalized_managed_repo_id,
                 pr_ids=normalized_pr_ids,
                 explanation=self._error_text(exc),
             )
@@ -108,7 +114,7 @@ class PrIntegrationPreflightAdminService:
                 return self._error_report(
                     status="provider_error",
                     mode=mode,
-                    repo_path=repo_path,
+                    repo_path=normalized_managed_repo_id,
                     pr_ids=normalized_pr_ids,
                     explanation=explanation,
                     participants=participants,
@@ -138,16 +144,67 @@ class PrIntegrationPreflightAdminService:
                 )
             )
 
+        target_commit = next((pr.target_commit for pr in pull_requests if pr.target_commit), None)
+        target_branch = next((pr.target_branch for pr in pull_requests if pr.target_branch), None)
+        source_ref = self._managed_branch_ref(
+            target_branch
+            or str(managed_record.get("default_branch") or "main")
+        )
         try:
-            report = self._engine.run(
-                repo_path,
-                mode=mode,
-                pull_requests=pull_requests,
-            )
+            worktree_args: dict[str, Any] = {
+                "operation_id": f"pr-preflight-{os.urandom(12).hex()}",
+                "purpose": "pr-integration-preflight",
+            }
+            if target_commit:
+                worktree_args["commit_sha"] = target_commit
+            else:
+                worktree_args["source_ref"] = source_ref
+            with self._deps.managed_git_admin.temporary_worktree(
+                normalized_managed_repo_id,
+                **worktree_args,
+            ) as repo_path:
+                report = self._engine.run(
+                    repo_path,
+                    mode=mode,
+                    pull_requests=pull_requests,
+                )
+                report = self._sanitize_managed_worktree_report(report, repo_path)
         except ValidationError as exc:
             raise ValueError(self._validation_error_text(exc)) from exc
+        except Exception as exc:
+            return self._error_report(
+                status="repo_error",
+                mode=mode,
+                repo_path=normalized_managed_repo_id,
+                pr_ids=normalized_pr_ids,
+                explanation=self._error_text(exc),
+                participants=participants,
+            )
 
-        return report
+        return report.model_copy(update={"repo_path": normalized_managed_repo_id})
+
+    @staticmethod
+    def _sanitize_managed_worktree_report(
+        report: MergePreflightReport,
+        repo_path: Any,
+    ) -> MergePreflightReport:
+        checkout_path = str(repo_path)
+        operation_path = str(repo_path.parent)
+
+        def scrub(value: Any) -> Any:
+            if isinstance(value, str):
+                return value.replace(checkout_path, "<managed-worktree>").replace(
+                    operation_path, "<managed-worktree>"
+                )
+            if isinstance(value, list):
+                return [scrub(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(scrub(item) for item in value)
+            if isinstance(value, dict):
+                return {key: scrub(item) for key, item in value.items()}
+            return value
+
+        return MergePreflightReport.model_validate(scrub(report.model_dump(mode="python")))
 
     def _build_provider(
         self,
@@ -171,31 +228,12 @@ class PrIntegrationPreflightAdminService:
         )
         return provider_client
 
-    def _resolve_repo_source(self, *, repo_source: str | None, directory_path: str) -> str:
-        normalized_repo_source = self._normalize_optional_text(repo_source)
-        if normalized_repo_source:
-            return normalized_repo_source
-
-        result = self._deps.compute_directory_effective_config(directory_path, "ado_worker")
-        if not getattr(result, "ok", False) or getattr(result, "data", None) is None:
-            message = self._directory_config_error_text(result)
-            raise ValueError(
-                message
-                or (
-                    f"{self.NODE_TYPE} requires repo_source or ado_worker.ado_repo_source "
-                    f"for directory {directory_path!r}"
-                )
-            )
-
-        resolution = getattr(result.data, "resolution", None)
-        effective_config = getattr(resolution, "effective_config", None) or {}
-        resolved_repo_source = self._normalize_optional_text(effective_config.get("ado_repo_source"))
-        if not resolved_repo_source:
-            raise ValueError(
-                f"{self.NODE_TYPE} requires repo_source or ado_worker.ado_repo_source "
-                f"for directory {directory_path!r}"
-            )
-        return resolved_repo_source
+    @staticmethod
+    def _managed_branch_ref(value: str) -> str:
+        branch = str(value or "").strip()
+        if branch.startswith("refs/heads/"):
+            return branch
+        return f"refs/heads/{branch}"
 
     def _error_report(
         self,

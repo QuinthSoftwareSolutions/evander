@@ -55,7 +55,7 @@ def test_template_catalog_exposes_validated_auto_dev_squad() -> None:
     required_fields = {field["path"]: field for field in payload["required_fields"]}
     assert required_fields["team.id"]["required"] is True
     assert required_fields["team.operator_communication_target_id"]["required"] is False
-    assert required_fields["project.git.host_repo_path"]["required"] is False
+    assert required_fields["project.git.managed_repo_id"]["required"] is False
     assert required_fields["release_operator.session_id"]["required"] is True
 
     assert [goal["id"] for goal in payload["project_goals"]] == [

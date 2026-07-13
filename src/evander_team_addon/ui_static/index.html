@@ -445,15 +445,13 @@
               <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
               <details>
                 <summary>Git config</summary>
-                <label>Host repo path <input name="host_repo_path" /></label>
-                <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
+                <label>Repository source <input name="repo_source" placeholder="Git URL or local checkout" /></label>
                 <div class="git-import-actions">
                   <button type="button" data-git-import-button>Import Git repo</button>
                   <span class="meta-line" data-git-import-status></span>
                 </div>
+                <label>Managed repository ID <input name="managed_repo_id" placeholder="mr_..." /></label>
                 <label>Base branch <input name="base_branch" placeholder="main" /></label>
-                <label>Canonical origin URL <input name="canonical_origin_url" /></label>
-                <label>Provider <select name="provider" data-options="git-providers" data-placeholder="Default"></select></label>
                 <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
               </details>
               <button type="submit">Create project</button>

@@ -2673,9 +2673,10 @@ Steps:
    1. provider (`azure_devops`),
    2. repo,
    3. directory path,
-   4. mode (`single`, `pairwise`, or `ordered`),
-   5. PR ID list.
-4. Keep `repo_source` blank unless the directory override must be replaced.
+   4. managed repository ID,
+   5. mode (`single`, `pairwise`, or `ordered`),
+   6. PR ID list.
+4. Confirm the managed repository is visible inside the selected directory boundary.
 5. Click **Run report**.
 6. Read the overall status and `summary_text`.
 7. Review participants and checks to see where the conflicts or branch drift appear.
@@ -2981,6 +2982,12 @@ When your team uses Git-backed delivery, promotion follows a controlled ladder:
 4. Release branch.
 5. Canonical branch push.
 
+Project Git setup stores a managed repository ID, optional base-branch override, and canonical
+release-prefix policy. Use the project's **Import Git repo** action to submit a local checkout or
+canonical URL transiently; Evander registers/refreshes it inside the directory trust boundary and
+keeps provider identity in the central registry. Do not put a host checkout or bare-repository path
+in Team project state.
+
 Use this flow for traceability and consistent operator control:
 
 1. Ensure deliverable status is ready for publish.
@@ -2998,8 +3005,8 @@ Who can request release:
 
 What publication output means:
 
-1. Internal branches are maintained inside the project Git repository context.
-2. Only the canonical route pushes outward to the canonical branch.
+1. Internal branches are maintained inside the project's managed bare repository.
+2. Only the canonical route pushes the pinned, approved SHA outward under an explicit lease.
 3. Non-Git artifact deliveries remain valid as artifact-based package flows.
 
 If release is blocked, review missing prerequisites and error state before retrying.
@@ -3085,7 +3092,8 @@ Steps:
    3. project id and name
    4. project lead id and session
    5. implementer, reviewer, and release operator identity/session fields
-6. If applicable, enter project git fields (host repo path, base branch, provider details).
+6. If applicable, import/register the project repository and enter its managed ID, base-branch
+   override, and canonical release-prefix policy.
 7. Open the preview and review role hierarchy and initial tasks.
 8. Click **Materialize**.
 9. Confirm team, people, and case scaffolding appears in the workspace.

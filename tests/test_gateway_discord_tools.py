@@ -466,6 +466,7 @@ def test_create_local_issue_uses_session_directory_path(
             *,
             title: str,
             body: str,
+            managed_repo_id: str | None,
             repo_source: str | None,
             directory_path: str,
             metadata: dict[str, object] | None = None,
@@ -473,6 +474,7 @@ def test_create_local_issue_uses_session_directory_path(
             captured["payload"] = {
                 "title": title,
                 "body": body,
+                "managed_repo_id": managed_repo_id,
                 "repo_source": repo_source,
                 "directory_path": directory_path,
                 "metadata": metadata,
@@ -510,6 +512,7 @@ def test_create_local_issue_uses_session_directory_path(
     assert captured["payload"] == {
         "title": "Add local issue MCP tool",
         "body": "Needs to scope to session directory.",
+        "managed_repo_id": None,
         "repo_source": "/tmp/repo",
         "directory_path": "root/team-a",
         "metadata": {
@@ -704,7 +707,7 @@ def test_list_issues_exposes_rejection_reason_from_metadata(
             "rejection_reason": "Out of scope",
             "yaml_path": "runtime/issues/issue-42.yaml",
             "directory_path": "root/team-a",
-            "repo_source": None,
+            "managed_repo_id": None,
             "source_type": "local_manual",
             "remote_reference": None,
             "tags": [],

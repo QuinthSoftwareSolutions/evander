@@ -282,6 +282,7 @@ class WorkerRepoCloneRequest(BaseModel):
     repo_source: str
     clone_branch: str | None = None
     repo_name: str | None = None
+    reconcile_existing_remote: bool = False
 
     @field_validator("repo_source", mode="before")
     @classmethod

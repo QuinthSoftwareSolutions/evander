@@ -30,6 +30,7 @@ from evander_team_addon.mcp import (
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
@@ -271,10 +272,7 @@ def _seed_slice8_state(runtime_dir: Path) -> TeamStateRepository:
     def _set_git_and_refs(state):
         project = state.projects["project"]
         project.git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
-            canonical_origin_url="https://example.invalid/Truman.git",
-            provider="azure_devops",
+            managed_repo_id="mr_0123456789abcdefabcd",
         )
         project.release_policy = ProjectReleasePolicy(allow_ungated=True)
         deliverable = state.deliverables["deliverable"]
@@ -344,11 +342,14 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
     submit_description = tools[TEAM_SUBMIT_DELIVERABLE_TOOL].description or ""
     publish_description = tools[TEAM_PUBLISH_REVIEW_BRANCH_TOOL].description or ""
+    retry_release_description = tools[TEAM_RETRY_RELEASE_GATE_TOOL].description or ""
     assert "verification records status" in submit_description
     assert "git_refs are provenance only" in submit_description
     assert "not required merely because team_submit_deliverable included git_refs" in (
         publish_description
     )
+    assert "infrastructure-failed or timed-out verification" in retry_release_description
+    assert "process-blocked reviews" in retry_release_description
 
 
 def test_team_addon_mcp_registers_operator_directive_tool(tmp_path: Path) -> None:

@@ -10,11 +10,11 @@ from types import MethodType, SimpleNamespace
 
 import httpx
 from PIL import Image
+import pytest
 from starlette.testclient import TestClient
 
 from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
-from evander.directory_config import DirectoryConfigStore
 from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.scheduled import (
     ScheduledInternalEventStore,
@@ -80,6 +80,11 @@ def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionServ
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_managed_git_authorized_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EVANDER_GIT_USER", "evander-team-tests-no-such-user")
+
+
 def _png_avatar_bytes(color: tuple[int, int, int] = (23, 111, 122)) -> bytes:
     buffer = BytesIO()
     Image.new("RGB", (32, 24), color).save(buffer, format="PNG")
@@ -89,6 +94,47 @@ def _png_avatar_bytes(color: tuple[int, int, int] = (23, 111, 122)) -> bytes:
 def _write_config(tmp_path: Path, *, enable_team_addon: bool) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "managed-git-repositories.json").write_text(
+        json.dumps(
+            {
+                "schema": "evander.managed-git-repositories/v1",
+                "schema_version": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "repositories": {
+                    "mr_0123456789abcdefabcd": {
+                        "managed_repo_id": "mr_0123456789abcdefabcd",
+                        "directory_path": "root",
+                        "canonical_repository_identity": "test://team-project",
+                        "canonical_repository_url": "test://team-project",
+                        "provider": "generic",
+                        "display_name": "Team project test repository",
+                        "default_branch": "main",
+                        "default_branch_source": "upstream",
+                        "refresh_source": "test://team-project",
+                        "refresh_source_kind": "remote",
+                        "internal_bare_path": str(
+                            runtime_dir
+                            / "managed-git"
+                            / "mr_0123456789abcdefabcd.git"
+                        ),
+                        "host_commit_identity": {
+                            "name": "Evander Control Plane",
+                            "email": "evander@localhost",
+                        },
+                        "bindings": [],
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z",
+                        "refreshed_at": None,
+                        "maintenance_at": None,
+                    }
+                },
+                "migrations": {"test-fixture": {"status": "applied"}},
+            }
+        ),
+        encoding="utf-8",
+    )
     config_path = tmp_path / "gateway.yaml"
     lines = [
         f'runtime_dir: "{runtime_dir}"',
@@ -1790,11 +1836,10 @@ def _auto_dev_squad_materialization_payload(
     expected_revision: int = 0,
 ) -> dict[str, object]:
     git_payload: dict[str, object] = {
-        "host_repo_path": "/srv/repos/auto-dev-squad",
-        "bare_repo_name": "auto-dev-squad.git",
+        "managed_repo_id": "mr_0123456789abcdefabcd",
     }
     if bad_git:
-        git_payload["bare_repo_path"] = "/srv/git/auto-dev-squad.git"
+        git_payload["managed_repo_id"] = "not-a-managed-repository"
 
     return {
         "expected_revision": expected_revision,
@@ -1945,8 +1990,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'data-team-view="chat"' in ui.text
     assert 'id="team-chat-page"' in ui.text
     assert "data-chat-conversations-view" in ui.text
-    assert 'name="bare_repo"' in ui.text
-    assert 'data-options="git-providers"' in ui.text
+    assert 'name="repo_source"' in ui.text
+    assert 'name="managed_repo_id"' in ui.text
+    assert 'name="bare_repo"' not in ui.text
     assert "data-agent-source-picker" in ui.text
     assert "data-id-field=" not in ui.text
     assert "Team ID <input" not in ui.text
@@ -2008,7 +2054,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "firstEditableField?.focus()" in script.text
     assert "refreshSelects({ includeEditForm = false } = {})" in script.text
     assert "elements.editForm?.contains(select)" in script.text
-    assert "gitToBareRepo" in script.text
+    assert "gitToBareRepo" not in script.text
+    assert "managed_repo_id" in script.text
     assert "created_by_agent_id: text(data.created_by_agent_id)" in script.text
     assert "fieldTooltips" in script.text
     assert "create-task-form:created_by_agent_id" in script.text
@@ -3209,9 +3256,7 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
             "status": "blocked",
             "goals": [{"id": "goal", "description": "Updated goal"}],
             "git": {
-                "host_repo_path": "/srv/repo",
-                "bare_repo": "/srv/git/repo.git",
-                "provider": "github",
+                "managed_repo_id": "mr_0123456789abcdefabcd",
             },
             "expected_revision": 5,
         },
@@ -3223,8 +3268,7 @@ def test_team_addon_admin_api_edits_core_records(tmp_path: Path) -> None:
     assert project["name"] == "Renamed Project"
     assert project["status"] == "blocked"
     assert project["goals"][0]["id"] == "goal"
-    assert project["git"]["bare_repo_path"] == "/srv/git/repo.git"
-    assert project["git"]["provider"] == "github"
+    assert project["git"]["managed_repo_id"] == "mr_0123456789abcdefabcd"
 
     response = client.post(
         "/api/addons/team-addon/roles",
@@ -3728,19 +3772,20 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "name": "Project",
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
-            "git": {"host_repo_path": "/srv/repo", "bare_repo_name": "repo.git"},
+            "git": {"managed_repo_id": "mr_0123456789abcdefabcd"},
             "expected_revision": 3,
         },
     )
     assert response.status_code == 201
-    assert response.json()["projects"]["project"]["git"]["bare_repo_name"] == "repo.git"
+    assert response.json()["projects"]["project"]["git"]["managed_repo_id"] == (
+        "mr_0123456789abcdefabcd"
+    )
 
     response = client.patch(
         "/api/addons/team-addon/projects/project",
         json={
             "git": {
-                "host_repo_path": "/srv/repo",
-                "bare_repo_path": "/srv/bare/repo.git",
+                "managed_repo_id": "mr_0123456789abcdefabcd",
                 "base_branch": "develop",
             },
             "expected_revision": 4,
@@ -3748,9 +3793,8 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     )
     assert response.status_code == 200
     git = response.json()["projects"]["project"]["git"]
-    assert git["bare_repo_path"] == "/srv/bare/repo.git"
+    assert git["managed_repo_id"] == "mr_0123456789abcdefabcd"
     assert git["base_branch"] == "develop"
-    assert git["bare_repo_name"] is None
 
     response = client.post(
         "/api/addons/team-addon/projects",
@@ -3761,15 +3805,13 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "lead_agent_id": "lead-2",
             "lead_session_id": "session-lead-2",
             "git": {
-                "host_repo_path": "/srv/repo",
-                "bare_repo_name": "a.git",
-                "bare_repo_path": "/srv/b.git",
+                "managed_repo_id": "legacy-repo",
             },
             "expected_revision": 5,
         },
     )
     assert response.status_code == 400
-    assert "exactly one" in response.json()["error"]
+    assert "managed_repo_id must match mr_<20-hex>" in response.json()["error"]
 
 
 def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
@@ -3787,20 +3829,6 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
     service = build_admin_runtime(config_path)
     service.project_dir = PROJECT_ROOT
     service.vm_agent_support.project_dir = PROJECT_ROOT
-    git_root = tmp_path / "git-remotes"
-    DirectoryConfigStore(
-        service.runtime.directories,
-        runtime_dir=service.config.runtime_dir,
-    ).write(
-        "root",
-        domain="issue_setup",
-        payload={
-            "git_root": str(git_root),
-            "git_host": "192.168.250.1",
-            "git_user": "agent",
-            "git_ssh_alias": "evander-git-host",
-        },
-    )
     client = TestClient(create_app(service))
     _unlock_privileged_operations(client)
 
@@ -3808,29 +3836,54 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         "/api/addons/team-addon/projects/git/import",
         json={
             "repo_source": str(source_repo),
-            "bare_repo_name": "team-project.git",
         },
     )
 
     assert response.status_code == 201
     body = response.json()
     imported = body["imported"]
-    bare_repo = git_root / "team-project.git"
-    assert imported["host_repo_path"] == str(source_repo.resolve())
-    assert imported["bare_repo_name"] == "team-project.git"
-    assert imported["bare_repo_path"] == str(bare_repo)
-    assert imported["base_branch"] == "main"
+    managed_repo_id = imported["managed_repo_id"]
+    bare_repo, _managed_root = service.managed_git_admin.resolve_internal_repository(
+        managed_repo_id,
+        "root",
+    )
+    assert managed_repo_id.startswith("mr_")
+    assert imported["canonical_repository_url"] == str(source_repo.resolve())
+    assert imported["default_branch"] == "main"
     assert body["git"] == {
-        "host_repo_path": str(source_repo.resolve()),
-        "bare_repo_name": "team-project.git",
+        "managed_repo_id": managed_repo_id,
         "base_branch": "main",
     }
-    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == source_commit
-    assert _git_dir(bare_repo, "config", "--get", "evander.trustedRepoPath").stdout.strip() == str(
-        source_repo.resolve()
+    created_team = client.post(
+        "/api/addons/team-addon/teams",
+        json={
+            "id": "team",
+            "name": "Team",
+            "manager_agent_id": "manager",
+            "manager_session_id": "session-manager",
+            "expected_revision": 0,
+        },
     )
-    assert _git_dir(bare_repo, "config", "--get", "evander.mirrorSource").stdout.strip() == str(
-        source_repo
+    assert created_team.status_code == 201
+    created_project = client.post(
+        "/api/addons/team-addon/projects",
+        json={
+            "id": "project",
+            "team_id": "team",
+            "name": "Project",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "git": body["git"],
+            "expected_revision": 1,
+        },
+    )
+    assert created_project.status_code == 201
+    assert service.managed_git_admin.get_repository(managed_repo_id)["bindings_by_kind"] == {
+        "team_projects": ["project"]
+    }
+    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == source_commit
+    assert _git_dir(bare_repo, "config", "--get", "evander.managedRepoId").stdout.strip() == (
+        managed_repo_id
     )
     (source_repo / "README.md").write_text("# Source\n\nRefresh\n", encoding="utf-8")
     _git(source_repo, "add", "README.md")
@@ -3841,25 +3894,23 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         "/api/addons/team-addon/projects/git/import",
         json={
             "repo_source": str(source_repo),
-            "bare_repo_name": "team-project.git",
         },
     )
 
     assert refresh_response.status_code == 201
+    assert refresh_response.json()["imported"]["managed_repo_id"] == managed_repo_id
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == refreshed_commit
 
     _git_dir(bare_repo, "update-ref", "refs/heads/agents/session-1/work", refreshed_commit)
 
-    blocked_response = client.post(
+    preserved_response = client.post(
         "/api/addons/team-addon/projects/git/import",
         json={
             "repo_source": str(source_repo),
-            "bare_repo_name": "team-project.git",
         },
     )
 
-    assert blocked_response.status_code == 409
-    assert "already has agent branches" in blocked_response.json()["error"]
+    assert preserved_response.status_code == 201
     assert (
         _git_dir(bare_repo, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip()
         == refreshed_commit
@@ -3874,30 +3925,29 @@ def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
     service = build_admin_runtime(config_path)
     calls: dict[str, object] = {}
 
-    def fake_import_git_repo(
+    def fake_register_repository(
         *,
         repo_source: str,
-        bare_repo_name: str | None = None,
         directory_path: str = "root",
     ) -> dict[str, object]:
         calls["import"] = {
             "repo_source": repo_source,
-            "bare_repo_name": bare_repo_name,
             "directory_path": directory_path,
         }
         return {
-            "success": True,
-            "git": {
-                "host_repo_path": repo_source,
-                "bare_repo_name": bare_repo_name,
-            },
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "default_branch": "main",
         }
 
     async def fake_run_in_threadpool(func, *args, **kwargs):
         calls["threadpool"] = True
         return func(*args, **kwargs)
 
-    monkeypatch.setattr(service.issue_git_admin, "import_git_repo", fake_import_git_repo)
+    monkeypatch.setattr(
+        service.managed_git_admin,
+        "register_repository",
+        fake_register_repository,
+    )
     monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
     client = TestClient(create_app(service))
     _unlock_privileged_operations(client)
@@ -3906,7 +3956,6 @@ def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
         "/api/addons/team-addon/projects/git/import",
         json={
             "repo_source": "/srv/repos/project",
-            "bare_repo_name": "project.git",
             "directory_path": "root",
         },
     )
@@ -3915,7 +3964,6 @@ def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
     assert calls["threadpool"] is True
     assert calls["import"] == {
         "repo_source": "/srv/repos/project",
-        "bare_repo_name": "project.git",
         "directory_path": "root",
     }
 
@@ -4230,7 +4278,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "lead_agent_id": "lead",
             "lead_session_id": "session-lead",
             "goals": [{"id": "goal", "description": "Ship reviewed work"}],
-            "git": {"host_repo_path": "/srv/repo", "bare_repo_name": "repo.git"},
+            "git": {"managed_repo_id": "mr_0123456789abcdefabcd"},
             "expected_revision": 1,
         },
     )

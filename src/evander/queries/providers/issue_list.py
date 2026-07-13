@@ -174,7 +174,7 @@ class IssueListQueryProvider(QueryProviderBase):
         rejection_reason = self._record_value(issue, "rejection_reason")
         yaml_path = self._record_value(issue, "yaml_path")
         directory_path = self._record_value(issue, "directory_path")
-        repo_source = self._record_value(issue, "repo_source")
+        managed_repo_id = self._record_value(issue, "managed_repo_id")
         source_type = self._record_value(issue, "source_type")
         state = self._record_value(issue, "state")
         url = self._record_value(issue, "url")
@@ -196,7 +196,7 @@ class IssueListQueryProvider(QueryProviderBase):
             "rejection_reason": rejection_reason,
             "yaml_path": yaml_path,
             "directory_path": directory_path,
-            "repo_source": repo_source,
+            "managed_repo_id": managed_repo_id,
             "source_type": source_type,
             "state": state,
             "url": url,

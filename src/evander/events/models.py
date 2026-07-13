@@ -573,6 +573,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         ),
         "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
         "effect:session:renew-if-expired": (provider_models.SessionRenewIfExpiredEffectDefinition),
+        "effect:git:ensure-managed-repo": provider_models.GitEnsureManagedRepoEffectDefinition,
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,
         "effect:git:push-branch": provider_models.GitPushBranchEffectDefinition,
         "effect:pr:create": provider_models.PrCreateEffectDefinition,

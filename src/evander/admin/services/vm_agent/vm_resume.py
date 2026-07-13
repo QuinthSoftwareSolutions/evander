@@ -41,6 +41,22 @@ class VmAgentResumeMixin:
                     raise
                 container_session = None
         if container_session is not None and self._is_container_session(container_session):
+            try:
+                container_session = self._reconcile_managed_git_remote_before_dispatch(
+                    session_id=container_session.session_id,
+                    session=container_session,
+                    backend="container_worker_vm",
+                    vm_name=None,
+                    vm_user=vm_user,
+                )
+            except RuntimeError as exc:
+                return VmActionResult(
+                    success=False,
+                    vm_name=self._container_session_target_name(container_session),
+                    action="resume_issue_agent",
+                    message=str(exc),
+                    provider="container_worker_vm",
+                )
             response = self._agent_prompt_dispatch_port().prompt_admin_agent(
                 container_session.session_id,
                 backend="container_worker_vm",
@@ -86,7 +102,21 @@ class VmAgentResumeMixin:
             if _is_synthetic_chat_assistant_thread_id(effective_resume_thread_id):
                 effective_resume_thread_id = None
             agent_provider = _agent_provider_from_session(manifest)
+            manifest = self._reconcile_managed_git_remote_before_dispatch(
+                session_id=session_id,
+                session=manifest,
+                backend="libvirt_vm",
+                vm_name=vm_name,
+                vm_user=vm_user,
+            )
         except ValueError as exc:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="resume_issue_agent",
+                message=str(exc),
+            )
+        except RuntimeError as exc:
             return VmActionResult(
                 success=False,
                 vm_name=vm_name,

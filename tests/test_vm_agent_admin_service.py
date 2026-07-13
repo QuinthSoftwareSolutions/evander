@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import base64
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import subprocess
 from types import SimpleNamespace
 from typing import Any
 
@@ -349,7 +349,6 @@ class FakeAdmin:
     def _resolve_issue_setup(self, directory_path: str, *, root_dir: Path) -> SimpleNamespace:
         return SimpleNamespace(
             git_ssh_alias="evander-git-host",
-            git_root="/srv/git",
             git_host="127.0.0.1",
             git_user="git",
             post_exec_verification_prompt=None,
@@ -363,12 +362,6 @@ class FakeAdmin:
 
     def _resolve_local_issue_key(self, identifier: str) -> str | None:
         return identifier
-
-    def _resolve_repo_source(self, repo_source: str) -> tuple[str, str]:
-        return ("/tmp/repo", "repo")
-
-    def _sync_repo_into_bare_remote(self, *args: Any, **kwargs: Any) -> None:
-        self.synced_repo = (args, kwargs)
 
     def _clone_repo_into_vm(self, **kwargs: Any) -> str:
         self.last_clone_kwargs = kwargs
@@ -408,70 +401,9 @@ def _vm_agent_dependencies(admin: FakeAdmin, **overrides: Any) -> VmAgentAdminDe
             issue_identifier
         ),
         resolve_local_issue_key=lambda identifier: admin._resolve_local_issue_key(identifier),
-        resolve_repo_source=lambda repo_source: admin._resolve_repo_source(repo_source),
-        sync_repo_into_bare_remote=lambda *args, **kwargs: admin._sync_repo_into_bare_remote(
-            *args, **kwargs
-        ),
         clone_repo_into_vm=lambda **kwargs: admin._clone_repo_into_vm(**kwargs),
         **overrides,
     )
-
-
-def test_clone_repo_into_vm_guest_passes_repo_session_metadata_to_git_bootstrap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    admin = FakeAdmin()
-    service = VmAgentAdminService(_vm_agent_dependencies(admin))
-    captured_runs: list[tuple[list[str], dict[str, Any]]] = []
-
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        captured_runs.append((cmd, dict(kwargs)))
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("evander.admin.services.vm_agent.vm_repo._run_subprocess", fake_run)
-    monkeypatch.setattr(
-        "evander.admin.services.vm_agent.vm_repo._resolve_private_key_path",
-        lambda: Path("/tmp/test-key"),
-    )
-    monkeypatch.setattr(
-        "evander.admin.services.vm_agent.vm_repo._ssh_options",
-        lambda _vm_name, _vm_ip, private_key_path: ["-i", str(private_key_path)],
-    )
-    monkeypatch.setattr(
-        "evander.admin.services.vm_agent.vm_repo._guest_agent_pr_note_helper_b64",
-        lambda _project_dir: "agent-pr-note-helper",
-    )
-    monkeypatch.setattr(
-        "evander.admin.services.vm_agent.vm_repo._guest_push_agent_helper_b64",
-        lambda _project_dir: "agent-push-helper",
-    )
-    monkeypatch.setattr(
-        "evander.admin.services.vm_agent.vm_repo._guest_sync_base_helper_b64",
-        lambda _project_dir: "sync-base-helper",
-    )
-
-    result = service.clone_repo_into_vm_guest(
-        vm_name="vm-1",
-        vm_user="agent",
-        session_id="session-1",
-        repo_name="repo",
-        issue_setup=SimpleNamespace(
-            git_root="/srv/git",
-            git_host="127.0.0.1",
-            git_user="git",
-            git_ssh_alias="issue-git",
-        ),
-        vm_ip="192.0.2.10",
-    )
-
-    assert result == "/home/agent/repo"
-    bootstrap_env = next(
-        kwargs["env"]
-        for cmd, kwargs in captured_runs
-        if cmd[0].endswith("bootstrap_git_vm.sh")
-    )
-    assert bootstrap_env["EVANDER_GIT_REPO"] == "repo"
-    assert bootstrap_env["EVANDER_GIT_SESSION_ID"] == "session-1"
 
 
 def test_vm_agent_admin_service_uses_explicit_ports_for_boundary_operations(
@@ -1552,6 +1484,253 @@ def test_vm_agent_admin_service_resume_agent_rejects_expired_session(
         "session expired: session_id=session-1 expires_at="
         + (expired_session.expires_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"))
     )
+
+
+def test_resume_agent_reconciles_migrated_vm_git_access_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authorized_keys = tmp_path / "authorized_keys"
+    session_marker = base64.b64encode(b"session-1").decode("ascii")
+    authorized_keys.write_text(
+        f'command="EVANDER_GIT_AUTH_SESSION_ID_B64={session_marker} wrapper" '
+        "ssh-ed25519 AAAAC3Legacy legacy\n",
+        encoding="utf-8",
+    )
+    manifest = FakeManifest(
+        directory_path="root/team",
+        metadata={
+            "managed_git_remote_reconciliation_required": True,
+            "managed_git_access": {
+                "managed_repo_id": "mr_1234567890abcdef1234",
+                "access_mode": "write",
+                "public_key_body": "AAAAC3Legacy",
+                "authorized_keys_path": str(authorized_keys),
+            },
+        },
+    )
+    sessions = FakeSessionsStore({"session-1": manifest})
+
+    class ManagedGit:
+        unbound: list[tuple[str, str]] = []
+
+        def unbind_all(self, kind: str, binding_id: str) -> list[str]:
+            self.unbound.append((kind, binding_id))
+            return []
+
+    managed_git = ManagedGit()
+    admin = FakeAdmin(sessions=sessions)
+    admin.config.runtime_dir = tmp_path / "runtime"
+    service = VmAgentAdminService(
+        _vm_agent_dependencies(admin, managed_git_admin=managed_git)
+    )
+    clone_calls: list[dict[str, Any]] = []
+
+    def reconcile_clone(**kwargs: Any) -> VmActionResult:
+        clone_calls.append(dict(kwargs))
+        current = sessions.get_session("session-1")
+        assert current is not None
+        updated_metadata = dict(current.metadata)
+        updated_metadata["managed_git_access"] = {
+            "managed_repo_id": "mr_1234567890abcdef1234",
+            "access_mode": "write",
+            "public_key_body": "AAAAC3Replacement",
+            "authorized_keys_path": str(authorized_keys),
+        }
+        sessions.put(
+            "session-1",
+            current.model_copy(update={"metadata": updated_metadata}),
+        )
+        return VmActionResult(
+            success=True,
+            vm_name="vm-1",
+            action="clone_repo_into_vm",
+            message="reconciled",
+        )
+
+    service.clone_repo_into_vm = reconcile_clone  # type: ignore[method-assign]
+    service._resolve_session_target = (  # type: ignore[method-assign]
+        lambda target: ("session-1", sessions.get_session("session-1"))
+    )
+    monkeypatch.setattr(
+        session_helpers, "resolve_vm_name_from_target", lambda target, sessions: "vm-1"
+    )
+
+    class Completed:
+        returncode = 0
+        stdout = "thread_id=thread-new\nresume ok\n"
+        stderr = ""
+
+    def run_resume(*args: Any, **kwargs: Any) -> Completed:
+        persisted = sessions.get_session("session-1")
+        assert persisted is not None
+        assert "managed_git_remote_reconciliation_required" not in persisted.metadata
+        return Completed()
+
+    monkeypatch.setattr(process_helpers, "run_subprocess", run_resume)
+
+    result = service.resume_agent("session-1", "Resume now")
+
+    assert result.success is True
+    assert clone_calls == [
+        {
+            "vm_name": "vm-1",
+            "session_id": "session-1",
+            "managed_repo_id": "mr_1234567890abcdef1234",
+            "vm_user": "agent",
+            "directory_path": "root/team",
+        }
+    ]
+    assert managed_git.unbound == [("authorized_sessions", "session-1")]
+    assert session_marker not in authorized_keys.read_text(encoding="utf-8")
+
+
+def test_resume_agent_reconciles_migrated_container_git_access_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    authorized_keys = tmp_path / "authorized_keys"
+    session_marker = base64.b64encode(b"container-session").decode("ascii")
+    authorized_keys.write_text(
+        f'command="EVANDER_GIT_AUTH_SESSION_ID_B64={session_marker} wrapper" '
+        "ssh-ed25519 AAAAC3Legacy legacy\n",
+        encoding="utf-8",
+    )
+    manifest = SessionManifest(
+        session_id="container-session",
+        directory_path="root/team",
+        vm_provider="container_worker_vm",
+        vm_provider_id="container-target",
+        allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        metadata={
+            "execution_backend": "container_worker_vm",
+            "target_name": "container-target",
+            "managed_git_remote_reconciliation_required": True,
+            "container_git_write_access": {
+                "managed_repo_id": "mr_abcdef1234567890abcd",
+                "access_mode": "write",
+                "public_key_body": "AAAAC3Legacy",
+                "authorized_keys_path": str(authorized_keys),
+            },
+        },
+    )
+    sessions = FakeSessionsStore({"container-session": manifest})
+
+    class ManagedGit:
+        def unbind_all(self, kind: str, binding_id: str) -> list[str]:
+            assert (kind, binding_id) == ("authorized_sessions", "container-session")
+            return []
+
+    prompt_calls: list[dict[str, Any]] = []
+
+    class PromptPort:
+        def prompt_admin_agent(
+            self,
+            agent_id: str,
+            *,
+            backend: str,
+            payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            persisted = sessions.get_session("container-session")
+            assert persisted is not None
+            assert "managed_git_remote_reconciliation_required" not in persisted.metadata
+            prompt_calls.append(
+                {"agent_id": agent_id, "backend": backend, "payload": dict(payload)}
+            )
+            return {"success": True, "message": "dispatched", "thread_id": "thread-1"}
+
+    admin = FakeAdmin(sessions=sessions)
+    admin.config.runtime_dir = tmp_path / "runtime"
+    service = VmAgentAdminService(
+        _vm_agent_dependencies(
+            admin,
+            managed_git_admin=ManagedGit(),
+            agent_prompt_dispatch=PromptPort(),
+        )
+    )
+    reconciliation_calls: list[dict[str, Any]] = []
+
+    def reconcile_container(**kwargs: Any) -> dict[str, Any]:
+        reconciliation_calls.append(dict(kwargs))
+        current = sessions.get_session("container-session")
+        assert current is not None
+        updated_metadata = dict(current.metadata)
+        updated_metadata["container_git_write_access"] = {
+            "managed_repo_id": "mr_abcdef1234567890abcd",
+            "access_mode": "write",
+            "public_key_body": "AAAAC3Replacement",
+            "authorized_keys_path": str(authorized_keys),
+        }
+        sessions.upsert_session(current.model_copy(update={"metadata": updated_metadata}))
+        return {"success": True}
+
+    service._perform_managed_git_remote_reconciliation = (  # type: ignore[method-assign]
+        reconcile_container
+    )
+
+    result = service.resume_agent(
+        "container-session",
+        "Resume now",
+        dispatch_id="dispatch-1",
+    )
+
+    assert result.success is True
+    assert reconciliation_calls[0]["backend"] == "container_worker_vm"
+    assert reconciliation_calls[0]["managed_repo_id"] == "mr_abcdef1234567890abcd"
+    assert len(prompt_calls) == 1
+    assert session_marker not in authorized_keys.read_text(encoding="utf-8")
+
+
+def test_container_git_reconciliation_failure_retains_marker_and_blocks_prompt(
+    tmp_path: Path,
+) -> None:
+    manifest = SessionManifest(
+        session_id="container-session",
+        directory_path="root/team",
+        vm_provider="container_worker_vm",
+        vm_provider_id="container-target",
+        allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        metadata={
+            "execution_backend": "container_worker_vm",
+            "target_name": "container-target",
+            "managed_git_remote_reconciliation_required": True,
+            "container_git_write_access": {
+                "managed_repo_id": "mr_abcdef1234567890abcd",
+                "access_mode": "write",
+            },
+        },
+    )
+    sessions = FakeSessionsStore({"container-session": manifest})
+
+    class ManagedGit:
+        def unbind_all(self, kind: str, binding_id: str) -> list[str]:
+            return []
+
+    class PromptPort:
+        def prompt_admin_agent(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            pytest.fail("prompt must not be dispatched when Git reconciliation fails")
+
+    admin = FakeAdmin(sessions=sessions)
+    admin.config.runtime_dir = tmp_path / "runtime"
+    service = VmAgentAdminService(
+        _vm_agent_dependencies(
+            admin,
+            managed_git_admin=ManagedGit(),
+            agent_prompt_dispatch=PromptPort(),
+        )
+    )
+    service._perform_managed_git_remote_reconciliation = (  # type: ignore[method-assign]
+        lambda **kwargs: {"success": False}
+    )
+
+    result = service.resume_agent("container-session", "Resume now")
+
+    assert result.success is False
+    assert "agent dispatch was not started" in result.message
+    persisted = sessions.get_session("container-session")
+    assert persisted is not None
+    assert persisted.metadata["managed_git_remote_reconciliation_required"] is True
 
 
 def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(

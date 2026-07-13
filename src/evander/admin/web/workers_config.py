@@ -254,7 +254,6 @@ _ISSUE_SETUP_AGENT_DEFAULT_FIELDS: tuple[tuple[str, str], ...] = (
 )
 _ISSUE_SETUP_GIT_FIELDS: tuple[tuple[str, str], ...] = (
     ("issue_setup", "git_host"),
-    ("issue_setup", "git_root"),
     ("issue_setup", "git_ssh_alias"),
     ("issue_setup", "git_user"),
 )
@@ -271,10 +270,6 @@ _ADO_WORKER_FILTER_FIELDS: tuple[tuple[str, str], ...] = (
 )
 _ADO_WORKER_REPO_FIELDS: tuple[tuple[str, str], ...] = (
     ("ado_worker", "ado_repo_source"),
-)
-_ADO_WORKER_AUTOMATION_FIELDS: tuple[tuple[str, str], ...] = (
-    ("ado_worker", "create_prs_as_draft"),
-    ("ado_worker", "create_prs_automatically"),
 )
 _AUTOMATION_CAPACITY_FIELDS: tuple[tuple[str, str], ...] = (
     ("automation", "approved_issue_cap"),
@@ -403,7 +398,6 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
         *_GITHUB_PROVIDER_FIELDS,
         *_ADO_WORKER_FILTER_FIELDS,
         *_ADO_WORKER_REPO_FIELDS,
-        *_ADO_WORKER_AUTOMATION_FIELDS,
         *_ISSUE_SETUP_GIT_FIELDS,
         *_ISSUE_SETUP_AZURE_DEVOPS_FIELDS,
         *_PR_REPLY_POLICY_FIELDS,
@@ -503,7 +497,6 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
         ("GitHub", _GITHUB_PROVIDER_FIELDS, ("github_",)),
         ("ADO worker filters", _ADO_WORKER_FILTER_FIELDS, ("ado_",)),
         ("ADO worker repo metadata", _ADO_WORKER_REPO_FIELDS, ("ado_",)),
-        ("ADO PR automation", _ADO_WORKER_AUTOMATION_FIELDS, ("ado_",)),
         ("Git transport", _ISSUE_SETUP_GIT_FIELDS, ("git_",)),
         (
             "Issue setup Azure DevOps",

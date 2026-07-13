@@ -517,20 +517,16 @@ the team, project, and role labels.
 Optional inputs are:
 
 - `team.operator_communication_target_id`
-- `project.git.host_repo_path`
-- one of `project.git.bare_repo_name` or `project.git.bare_repo_path`
-- `project.git.base_branch`, `project.git.canonical_origin_url`,
-  `project.git.provider`, and `project.git.canonical_release_branch_prefix`
+- `project.git.managed_repo_id`
+- `project.git.base_branch` and `project.git.canonical_release_branch_prefix`
 
 The Team Add-on setup, project-create, and project-edit forms include an
-`Import Git repo` action beside the Git fields. It accepts the current host repo
-path or canonical origin URL as the repo source, creates or refreshes a
-control-plane bare mirror under the configured root `issue_setup.git_root`, and
-fills the form with the resolved `host_repo_path`, `bare_repo_name`, base
-branch, canonical origin URL, and provider when they can be inferred. The import
-does not refresh an existing mirror once it contains `refs/heads/agents/**`
-work; create a new bare repo name instead. It does not save Team state by
-itself; review the populated fields and submit the form normally.
+`Import Git repo` action beside the Git fields. It accepts a local checkout or
+canonical origin URL as transient `repo_source`, registers or refreshes the
+directory-scoped managed bare repository, and fills the form with its
+`managed_repo_id` and detected default branch. URL/provider identity remains in
+the central registry rather than Team state. Import does not save the project
+by itself; review the managed ID and branch policy, then submit normally.
 
 The template uses a fixed hierarchy:
 
@@ -1025,23 +1021,25 @@ pinned candidate, verification state, release-review state, and approved SHA.
 
 Five add-on-owned effect providers complete these flows:
 `effect:team:publish-review-branch` (publish a source branch or commit from the
-project's bare repo into a durable `team/<team-id>/reviews/...` branch inside
-the project's `host_repo_path`),
+project's managed bare repository into a durable
+`team/<team-id>/reviews/...` ref),
 `effect:team:record-git-promotion` (mark a promotion succeeded/failed and attach
 branches to `git_refs`), `effect:team:verify-release-candidate` (create a
-disposable container-worker session, check out the pinned candidate, run the
+disposable container-worker session, clone by `managed_repo_id`, check out the pinned candidate, run the
 ordered commands, and destroy the session),
 `effect:team:mark-release-published` (publish or block a release package), and
 `effect:team:consolidate-git-branches` (deterministic merge
-of multiple source branches strictly inside the project's `host_repo_path`,
-aborting and failing on conflict — never auto-resolving). The core
-`effect:git:push-branch` effect performs an expected-commit preflight for
-canonical publication and refuses to push if the local release ref moved away
-from the approved candidate.
+of explicitly pinned source SHAs in an operation-scoped detached worktree,
+aborting and failing on conflict — never auto-resolving). The central managed
+Git service applies the configured host commit identity, compare-and-swap
+updates the Team target ref, and removes the temporary worktree and operation
+ref on every exit. The core `effect:git:push-branch` effect performs an
+expected-commit and destination-lease preflight for canonical publication and
+refuses to publish anything except the approved candidate.
 
 **Publication boundary.** Internal branches (agent, review, feature, and release)
-never leave the project's `host_repo_path`. The **only** branch pushed to the
-canonical remote is the release branch, and only on the `canonical_push` route via
+remain only in the project's managed bare repository. The **only** branch pushed
+to the canonical remote is the release branch, and only on the `canonical_push` route via
 `effect:git:push-branch`. Deliverables that ship non-Git artifacts remain fully
 supported through `artifact_refs`, require no push at all, and can be packaged
 even when the project has no Git configuration. For Team-authored deliverables,

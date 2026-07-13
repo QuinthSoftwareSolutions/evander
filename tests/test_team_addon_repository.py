@@ -106,6 +106,9 @@ from evander_team_addon.services.memory_service import (
 )
 
 
+MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
+
+
 class _TeamCommandTestHarness(
     TeamNoteCommandService,
     TeamAgentMessageCommandService,
@@ -349,11 +352,10 @@ def _auto_dev_squad_inputs(
 ) -> dict[str, object]:
     reviewer_agent_id = duplicate_reviewer_id or f"reviewer-{suffix}"
     project_git: dict[str, object] = {
-        "host_repo_path": f"/srv/repos/{suffix}",
-        "bare_repo_name": f"{suffix}.git",
+        "managed_repo_id": MANAGED_REPO_ID,
     }
     if bad_git:
-        project_git["bare_repo_path"] = f"/srv/git/{suffix}.git"
+        project_git["managed_repo_id"] = "not-a-managed-repository"
     return {
         "team": {
             "id": f"team-{suffix}",
@@ -4771,7 +4773,7 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         project_id="project",
         name="Renamed Project",
         status=ProjectStatus.BLOCKED,
-        git=ProjectGitConfig(host_repo_path="/srv/repo", bare_repo_name="repo.git"),
+        git=ProjectGitConfig(managed_repo_id=MANAGED_REPO_ID),
         set_git=True,
         goals=[ProjectGoal(id="goal-2", description="Updated goal")],
         expected_revision=repo.read().revision,
@@ -4782,7 +4784,7 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
     assert project.name == "Renamed Project"
     assert project.status is ProjectStatus.BLOCKED
     assert project.git is not None
-    assert project.git.bare_repo_name == "repo.git"
+    assert project.git.managed_repo_id == MANAGED_REPO_ID
     assert [goal.id for goal in project.goals] == ["goal-2"]
 
     _team_admin_service(repo).create_role(
@@ -4891,8 +4893,7 @@ def test_repository_materializes_auto_dev_squad_atomically(tmp_path: Path) -> No
     assert project.team_id == "team-auto-dev-squad"
     assert project.lead_agent_id == "project-lead-auto-dev-squad"
     assert project.git is not None
-    assert project.git.host_repo_path == "/srv/repos/auto-dev-squad"
-    assert project.git.bare_repo_name == "auto-dev-squad.git"
+    assert project.git.managed_repo_id == MANAGED_REPO_ID
     assert [goal.id for goal in project.goals] == [
         "project-auto-dev-squad-auto-dev-reviewed-delivery"
     ]
@@ -5088,8 +5089,7 @@ def test_repository_materializes_auto_dev_squad_with_team_project_and_agents_sha
                 "lead_agent_id": "project-lead-auto-dev-squad",
                 "lead_session_id": "session-project-lead-auto-dev-squad",
                 "git": {
-                    "host_repo_path": "/srv/repos/auto-dev-squad",
-                    "bare_repo_name": "auto-dev-squad.git",
+                    "managed_repo_id": MANAGED_REPO_ID,
                 },
             },
             "agents": {
@@ -5204,9 +5204,7 @@ def test_repository_materialize_template_rejects_malformed_git_config(
 ) -> None:
     repo = TeamStateRepository(tmp_path)
 
-    with pytest.raises(
-        ValidationError, match="exactly one of bare_repo_name or bare_repo_path must be set"
-    ):
+    with pytest.raises(ValidationError, match="managed_repo_id must match mr_<20-hex>"):
         _team_admin_service(repo).materialize_template(
             "auto-dev-squad",
             inputs=_auto_dev_squad_inputs(bad_git=True),
@@ -8785,17 +8783,11 @@ def test_apply_agent_action_goal_update_resets_no_progress_count(tmp_path: Path)
 
 def _set_project_git(
     repo: TeamStateRepository,
-    *,
-    bare_repo_name: str | None = "Truman.git",
-    canonical_origin_url: str | None = "https://example.invalid/Truman.git",
-    provider: str | None = "azure_devops",
 ) -> None:
     def _mutate(state):
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name=bare_repo_name,
-            canonical_origin_url=canonical_origin_url,
-            provider=provider,
+            managed_repo_id=MANAGED_REPO_ID,
+            base_branch="main",
         )
         state.projects["project"].release_policy = ProjectReleasePolicy(
             allow_ungated=True
@@ -9001,7 +8993,7 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     outbox_records = repo.list_outbox_records()
     assert [record.aggregate_id for record in outbox_records] == [feature_promotion_id]
     feature_payload = result["events"][0]["payload"]
-    assert feature_payload["bare_repo_name"] == "Truman.git"
+    assert feature_payload["managed_repo_id"] == MANAGED_REPO_ID
     assert feature_payload["source_branches"] == ["team/team/reviews/deliverable"]
 
     _lease_agent_dispatch(
@@ -9226,8 +9218,7 @@ def test_apply_agent_action_git_review_promotion_parent_only(tmp_path: Path) -> 
     event = result["events"][0]
     assert event["event_type"] == "team.git.promotion_requested"
     assert event["payload"]["promotion_kind"] == "review"
-    assert event["payload"]["host_repo_path"] == "/opt/repos/Truman"
-    assert event["payload"]["bare_repo_name"] == "Truman.git"
+    assert event["payload"]["managed_repo_id"] == MANAGED_REPO_ID
     assert event["payload"]["source_branch"] == "agents/eph-1/ephemeral-1"
     assert event["payload"]["target_branch"] == "team/team/reviews/ephemeral-1"
 
@@ -9380,7 +9371,7 @@ def test_apply_agent_action_persistent_git_review_promotion_rejects_missing_sour
     )
 
     assert result["success"] is False
-    assert any("requires source_branch or commit_sha" in error for error in result["errors"])
+    assert any("requires source_branch" in error for error in result["errors"])
     assert state.git_promotions == {}
 
 
@@ -9870,11 +9861,9 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     }
     assert payloads["canonical_push"]["source_branch"] == "team/team/releases/rel-1"
     assert payloads["canonical_push"]["target_branch"] == "releases/project/rel-1"
-    assert payloads["canonical_push"]["bare_repo_name"] == "Truman.git"
-    assert payloads["canonical_push"]["canonical_origin_url"] == (
-        "https://example.invalid/Truman.git"
-    )
-    assert payloads["canonical_push"]["provider"] == "azure_devops"
+    assert payloads["canonical_push"]["managed_repo_id"] == MANAGED_REPO_ID
+    assert "canonical_origin_url" not in payloads["canonical_push"]
+    assert "provider" not in payloads["canonical_push"]
     assert state.projects["project"].status == ProjectStatus.ACTIVE
 
 
@@ -10535,8 +10524,7 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
         "promotion_id": release_promotion_id,
         "promotion_kind": "release",
         "project_id": "project",
-        "host_repo_path": "/opt/repos/Truman",
-        "bare_repo_name": "Truman.git",
+        "managed_repo_id": MANAGED_REPO_ID,
         "agent_branch": "agents/lead/release-resolved",
         "target_branch": "team/team/releases/rel-1",
         "release_branch": "team/team/releases/rel-1",
@@ -10857,7 +10845,7 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     assert payload["promotion_kind"] == "feature"
     assert payload["release_package_id"] == "rel-1"
     assert payload["source_branches"] == ["team/team/reviews/deliverable"]
-    assert payload["bare_repo_name"] == "Truman.git"
+    assert payload["managed_repo_id"] == MANAGED_REPO_ID
 
     state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=feature_promotion_id,
@@ -10898,7 +10886,7 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     }
     assert payloads["release"]["source_branches"] == ["team/team/features/task-lead"]
     assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
-    assert payloads["release"]["bare_repo_name"] == "Truman.git"
+    assert payloads["release"]["managed_repo_id"] == MANAGED_REPO_ID
 
 
 def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) -> None:

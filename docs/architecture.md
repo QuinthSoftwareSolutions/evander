@@ -6,7 +6,7 @@
 - MCP gateway: the only host service reachable from guests.
 - OpenAI relay: a separate host service that exposes an OpenAI-compatible `/v1` endpoint to guests while keeping the real API key on the host.
 - NuGet relay: a separate host service that exposes guest-reachable feed endpoints for nuget.org and private Azure Artifacts while keeping private feed credentials on the host.
-- Local bare Git remote: a host-side code transfer path that lets guests push commits back over the private network.
+- Managed Git service: directory-scoped bare repositories, capability-limited guest intake, pinned ref transactions, publication, and ephemeral worktree ownership.
 - Disposable guests: run agent code and call the MCP gateway over the isolated libvirt network.
 - Audit store: append-only JSONL log for every privileged tool attempt.
 
@@ -19,6 +19,34 @@
 - Git handles code transport; MCP remains the control and policy path.
 - Session manifests are the smallest useful policy primitive for v1.
 - Approval records let you keep autonomy for drafts and read operations while gating sends.
+
+## Managed Git Boundary
+
+`build_admin_runtime` assembles one managed-Git domain service for CLI, Admin API, VM/container
+clone, workflow, and Team consumers. Its registry at
+`runtime/managed-git-repositories.json` maps stable `managed_repo_id` values to host-owned bare
+repositories. An owning directory shares a repository with descendants, while sibling directories
+are separate trust boundaries.
+
+Canonical refresh, guests, and host workflows own disjoint ref namespaces. Refresh stages ordinary
+branches and tags under `refs/evander/refresh/<operation-id>/**` and commits changes in one ref
+transaction without pruning agent, review, Team, notes, or operation refs. Guest SSH capabilities
+permit writes only to the exact session's `refs/heads/agents/**` namespace and notes ref.
+
+Host workflows operate on pinned commits. Promotion verifies the source ref and creates a host-only
+operation ref atomically; review/Team targets use compare-and-swap, and upstream pushes use explicit
+leases for the exact approved SHA. A newer agent push cannot change the object being reviewed or
+published.
+
+Most managed Git work is bare-ref manipulation. Operations that need files receive a unique,
+detached worktree beneath `runtime/git-worktrees/<managed_repo_id>/<operation-id>`, which is removed
+on completion and reconciled after abnormal termination. The worktree is operational scratch
+space, never the isolation boundary for running agent-authored code.
+
+Upstream credentials stay in the process environment and fixed host credential integration; they
+do not appear in URLs, repository config, workflow payloads, logs, manifests, or the registry.
+Issue/session deletion removes bindings and SSH authorization but deliberately retains shared
+repositories and unpublished refs until explicit operator deletion.
 
 ## Unified Issue Abstraction
 
@@ -341,6 +369,7 @@ examples use `config/trigger-orchestrator/config-example.json` and
 
 This keeps domain workflow evolution in configuration artifacts while the orchestrator engine
 remains generic.
+
 
 ## Planned Next Integrations
 

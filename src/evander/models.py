@@ -1030,7 +1030,7 @@ class LocalIssueRecord(BaseModel):
     rejection_reason: str | None = None
     yaml_path: str
     directory_path: str = "root"
-    repo_source: str | None = None
+    managed_repo_id: str | None = None
     source_type: str = "local_manual"
     remote_reference: "RemoteIssueReference | None" = None
     tags: list[str] = Field(default_factory=list)
@@ -1047,6 +1047,16 @@ class LocalIssueRecord(BaseModel):
     @classmethod
     def validate_directory_path(cls, value: str) -> str:
         return DirectoryPath(segments=value).as_posix()
+
+    @field_validator("managed_repo_id")
+    @classmethod
+    def validate_managed_repo_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"mr_[0-9a-f]{20}", normalized):
+            raise ValueError("managed_repo_id must match mr_<20-hex>")
+        return normalized
 
     def model_post_init(self, __context: Any) -> None:
         if not self.issue_id.strip():

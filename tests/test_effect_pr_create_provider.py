@@ -8,6 +8,7 @@ import pytest
 from evander.config import GatewayConfig
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.pr_create import PrCreateEffectProvider
+from evander.effects.providers.schemas import PrCreateEffectDefinition
 
 
 class _AdminServiceStub:
@@ -46,11 +47,10 @@ def test_pr_create_provider_calls_admin_service_with_normalized_arguments(tmp_pa
             id="effect-pr",
             display_name="Create PR",
             type="effect:pr:create",
-            host_repo_path="  /default/repo  ",
-            local_branch="feature/default",
-            canonical_origin_url="  git@ssh.dev.azure.com:v3/example/project/repo  ",
-            provider="github",
-            project="  Example Industry APP  ",
+            managed_repo_id="  mr_11111111111111111111  ",
+            source_ref="refs/heads/review/default",
+            expected_commit_sha="1111111111111111111111111111111111111111",
+            destination_branch="review/default",
             base_branch="main",
             session_id="session-default",
             work_item_id="WI-1",
@@ -64,8 +64,10 @@ def test_pr_create_provider_calls_admin_service_with_normalized_arguments(tmp_pa
 
     result = provider.execute(
         resolved_config={
-            "repo_path": "  /override/repo  ",
-            "origin_branch": "  review/session-1  ",
+            "managed_repo_id": "  mr_22222222222222222222  ",
+            "source_ref": "  refs/heads/review/session-1  ",
+            "expected_commit_sha": "2222222222222222222222222222222222222222",
+            "destination_branch": "  feature/issue-1  ",
             "title": "  Override title  ",
             "body": "  Override body  ",
             "draft": "false",
@@ -75,19 +77,16 @@ def test_pr_create_provider_calls_admin_service_with_normalized_arguments(tmp_pa
 
     assert admin_service.calls == [
         {
-            "host_repo_path": "/override/repo",
-            "local_branch": "feature/default",
-            "origin_branch": "review/session-1",
-            "canonical_origin_url": "git@ssh.dev.azure.com:v3/example/project/repo",
-            "provider": "github",
-            "project": "Example Industry APP",
+            "managed_repo_id": "mr_22222222222222222222",
+            "source_ref": "refs/heads/review/session-1",
+            "expected_commit_sha": "2222222222222222222222222222222222222222",
+            "destination_branch": "feature/issue-1",
+            "directory_path": "root",
             "base_branch": "main",
             "session_id": "session-default",
             "work_item_id": "WI-1",
             "title": "Override title",
             "body": "Override body",
-            "body_file": None,
-            "body_artifact_ids": None,
             "draft": False,
             "fill": False,
         }
@@ -99,6 +98,16 @@ def test_pr_create_provider_calls_admin_service_with_normalized_arguments(tmp_pa
     assert result["pr_url"] == "https://example.test/pr/123"
 
 
+def test_pr_create_schema_exposes_no_provider_or_file_path_overrides() -> None:
+    assert {
+        "project",
+        "body_file",
+        "body_artifact_ids",
+        "host_repo_path",
+        "trusted_repo_path",
+    }.isdisjoint(PrCreateEffectDefinition.model_fields)
+
+
 def test_pr_create_provider_passes_structured_preflight_failure(tmp_path: Path) -> None:
     admin_service = _AdminServiceStub(
         pr_create_result={
@@ -107,8 +116,8 @@ def test_pr_create_provider_passes_structured_preflight_failure(tmp_path: Path) 
             "preflight_success": False,
             "reason": "destination_branch_ahead",
             "message": "Destination branch is ahead",
-            "origin_branch": "feature/issue-1",
-            "local_branch": "review/issue-1/work",
+            "destination_branch": "feature/issue-1",
+            "source_ref": "refs/heads/review/issue-1/work",
         }
     )
     provider = PrCreateEffectProvider()
@@ -117,9 +126,10 @@ def test_pr_create_provider_passes_structured_preflight_failure(tmp_path: Path) 
             id="effect-pr",
             display_name="Create PR",
             type="effect:pr:create",
-            host_repo_path="/repo",
-            local_branch="review/issue-1/work",
-            origin_branch="feature/issue-1",
+            managed_repo_id="mr_11111111111111111111",
+            source_ref="refs/heads/review/issue-1/work",
+            expected_commit_sha="1111111111111111111111111111111111111111",
+            destination_branch="feature/issue-1",
         ),
         runtime_context=_build_context(tmp_path, admin_service),
     )
@@ -129,31 +139,7 @@ def test_pr_create_provider_passes_structured_preflight_failure(tmp_path: Path) 
     assert result["success"] is False
     assert result["preflight_success"] is False
     assert result["reason"] == "destination_branch_ahead"
-    assert result["origin_branch"] == "feature/issue-1"
-
-
-def test_pr_create_provider_normalizes_body_artifact_ids(tmp_path: Path) -> None:
-    admin_service = _AdminServiceStub(pr_create_result={"success": True})
-    provider = PrCreateEffectProvider()
-    provider.initialize(
-        effect_definition=SimpleNamespace(
-            id="effect-pr",
-            display_name="Create PR",
-            type="effect:pr:create",
-            host_repo_path="/repo",
-            body_artifact_ids=" comm_aaa, comm_bbb ; comm_ccc ",
-        ),
-        runtime_context=_build_context(tmp_path, admin_service),
-    )
-
-    result = provider.execute()
-
-    assert result["success"] is True
-    assert admin_service.calls[0]["body_artifact_ids"] == [
-        "comm_aaa",
-        "comm_bbb",
-        "comm_ccc",
-    ]
+    assert result["destination_branch"] == "feature/issue-1"
 
 
 def test_pr_create_provider_uses_fallback_title_when_title_is_blank(tmp_path: Path) -> None:
@@ -164,7 +150,10 @@ def test_pr_create_provider_uses_fallback_title_when_title_is_blank(tmp_path: Pa
             id="effect-pr",
             display_name="Create PR",
             type="effect:pr:create",
-            host_repo_path="/repo",
+            managed_repo_id="mr_11111111111111111111",
+            source_ref="refs/heads/review/topic",
+            expected_commit_sha="1111111111111111111111111111111111111111",
+            destination_branch="feature/topic",
             title="",
             fallback_title="Fallback title",
         ),
@@ -190,4 +179,11 @@ def test_pr_create_provider_requires_admin_service_method(tmp_path: Path) -> Non
     )
 
     with pytest.raises(RuntimeError, match="Admin runtime pr_create is not available"):
-        provider.execute(resolved_config={"repo_path": "/repo"})
+        provider.execute(
+            resolved_config={
+                "managed_repo_id": "mr_11111111111111111111",
+                "source_ref": "refs/heads/review/topic",
+                "expected_commit_sha": "1111111111111111111111111111111111111111",
+                "destination_branch": "feature/topic",
+            }
+        )

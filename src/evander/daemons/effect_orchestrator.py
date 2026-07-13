@@ -7,13 +7,14 @@ import logging
 import math
 import os
 import random
+import signal
 import time
 from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import RLock
+from threading import RLock, current_thread, main_thread
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -128,6 +129,7 @@ __all__ = [
 _DEFAULT_MAX_GRAPH_DEPTH = 16
 _DEFAULT_MAX_EVENTS_PER_CYCLE = 200
 _PHASE_LOG_THRESHOLD_SECONDS = 0.25
+_MANAGED_GIT_RECONCILE_INTERVAL_SECONDS = 300.0
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = FOR_EXECUTION_IDS_CONTEXT_KEY
 COMPLETION_PENDING_STATUS = "completion_pending"
@@ -525,6 +527,10 @@ class EffectOrchestratorWorker:
         self._wal_checkpoint_maintenance = OrchestrationWalCheckpointMaintenance()
         self._scheduled_internal_event_store_cache: _ScheduledInternalEventStoreCache = None
         self.provider_factory = resolved_wiring.provider_factory
+        self._managed_git_reconciler: Any | None = None
+        self._managed_git_cleanups: list[Callable[[], Any]] = []
+        self._configure_managed_git_runtime(self.provider_factory)
+        self._last_managed_git_reconcile_at = 0.0
         self.query_provider_factory = resolved_wiring.query_provider_factory
         self.gate_provider_factory = resolved_wiring.gate_provider_factory
         self._agent_prompt_activity = _WorkerAgentPromptActivity(self)
@@ -544,6 +550,7 @@ class EffectOrchestratorWorker:
         self._lifecycle_reconciliation_hooks = resolved_wiring.lifecycle_reconciliation_hooks
         self._completion_dispatch_hooks = resolved_wiring.completion_dispatch_hooks
         self.event_queue.reset_inflight()
+        self._reconcile_managed_git_worktrees(force=True, strict=True)
         self._wake_sleeper = HostWakeSleeper(wake_socket_path_for_lock(self.lock_path))
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
@@ -568,8 +575,82 @@ class EffectOrchestratorWorker:
         except Exception:
             return
 
+    def _configure_managed_git_runtime(self, provider_factory: Any) -> None:
+        admin_service = getattr(provider_factory, "admin_service", None)
+        managed_git = getattr(admin_service, "managed_git_admin", None)
+        preflight = getattr(managed_git, "preflight", None)
+        if callable(preflight):
+            preflight()
+        cleanup = getattr(managed_git, "cleanup_active_worktrees", None)
+        if callable(cleanup) and all(existing != cleanup for existing in self._managed_git_cleanups):
+            self._managed_git_cleanups.append(cleanup)
+        self._managed_git_reconciler = getattr(
+            admin_service,
+            "reconcile_managed_git_worktrees",
+            None,
+        )
+
+    def _reconcile_managed_git_worktrees(
+        self, *, force: bool = False, strict: bool = False
+    ) -> None:
+        if not callable(self._managed_git_reconciler):
+            return
+        now = time.monotonic()
+        if (
+            not force
+            and now - self._last_managed_git_reconcile_at
+            < _MANAGED_GIT_RECONCILE_INTERVAL_SECONDS
+        ):
+            return
+        self._last_managed_git_reconcile_at = now
+        try:
+            self._managed_git_reconciler()
+        except Exception:
+            if strict:
+                raise
+            logger.exception("Managed Git worktree reconciliation failed")
+
     def run_forever(self) -> None:
-        self._kernel.run_forever()
+        old_handlers = self._install_managed_git_cleanup_signal_handlers()
+        try:
+            self._kernel.run_forever()
+        finally:
+            self._cleanup_active_managed_git_worktrees()
+            self._restore_signal_handlers(old_handlers)
+
+    def _cleanup_active_managed_git_worktrees(self) -> None:
+        for cleanup in list(self._managed_git_cleanups):
+            try:
+                cleanup()
+            except Exception:
+                logger.exception("Managed Git active worktree cleanup failed during shutdown")
+
+    def _install_managed_git_cleanup_signal_handlers(self) -> dict[int, Any]:
+        if current_thread() is not main_thread() or not self._managed_git_cleanups:
+            return {}
+        old_handlers: dict[int, Any] = {}
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous = signal.getsignal(signum)
+
+            def handler(received: int, frame: Any, *, previous_handler: Any = previous) -> None:
+                self._cleanup_active_managed_git_worktrees()
+                if callable(previous_handler):
+                    previous_handler(received, frame)
+                    return
+                if received == signal.SIGINT:
+                    raise KeyboardInterrupt
+                raise SystemExit(128 + received)
+
+            signal.signal(signum, handler)
+            old_handlers[signum] = previous
+        return old_handlers
+
+    @staticmethod
+    def _restore_signal_handlers(old_handlers: Mapping[int, Any]) -> None:
+        if current_thread() is not main_thread():
+            return
+        for signum, previous in old_handlers.items():
+            signal.signal(signum, previous)
 
     def run_once_with_lock(self) -> EffectOrchestratorCycleResult:
         return self._kernel.run_once_with_lock()
@@ -578,6 +659,7 @@ class EffectOrchestratorWorker:
         return self._run_force_complete_hooks(dispatch_id=dispatch_id)
 
     def run_once(self) -> EffectOrchestratorCycleResult:
+        self._reconcile_managed_git_worktrees()
         latest_config, _changed = self._config_reloader.get_latest()
         previous_config = self.worker_config
         active_config = previous_config
@@ -684,6 +766,7 @@ class EffectOrchestratorWorker:
                     )
                     self.event_queue.reset_inflight()
                 if runtime_wiring is not None:
+                    self._configure_managed_git_runtime(runtime_wiring.provider_factory)
                     self.provider_config_resolver = runtime_wiring.provider_config_resolver
                     self.provider_factory = runtime_wiring.provider_factory
                     self._bind_provider_factory_runtime_ports()

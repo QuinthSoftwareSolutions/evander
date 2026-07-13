@@ -106,7 +106,12 @@ Nexus while sending audit requests to public npm.
 
 This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services.
 
-For `container_worker_vm`, execution-defining inputs are first-class `ExecutionSpec` fields: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. `metadata` is reserved for sanitized caller context and is not used to smuggle the container command or clone settings.
+For `container_worker_vm`, execution-defining inputs are first-class `ExecutionSpec` fields:
+`command`, `image`, the internally resolved clone source/branch, `resource_limits`,
+`persistence_mode`, and `workspace_mode`. Public agent clone effects provide `managed_repo_id`; the
+control plane resolves the directory-scoped restricted-SSH source before creating the lower-level
+execution request. `metadata` remains sanitized caller context and is not used to smuggle commands,
+clone settings, credentials, or repository paths.
 
 The execution CLI never mutates the configured backend. `start-container-job` and
 `smoke-container-worker` explicitly construct the container backend from the loaded config.

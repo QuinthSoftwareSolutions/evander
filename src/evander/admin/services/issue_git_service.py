@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import base64
 import copy
 import fcntl
 import json
 import os
 import re
-import shutil
-import tempfile
-import urllib.parse
 import yaml
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -16,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
-from evander.admin.services import issue_helpers, process_helpers, session_helpers, vm_helpers
+from evander.admin.services import issue_helpers, session_helpers, vm_helpers
 from evander.admin.services.ports import DirectoryPathPort, DirectoryOwnershipPort
 
 from evander.models import (
@@ -26,10 +22,6 @@ from evander.models import (
 )
 from evander.repositories.session_manifests import as_session_manifest_repository
 from evander.admin.services.local_issue_identity import LocalIssueIdentityResolver
-
-
-class GitImportConflictError(RuntimeError):
-    status_code = 409
 
 
 def _extract_local_issue_id_candidate(value: str) -> str | None:
@@ -48,60 +40,6 @@ def _extract_local_issue_id_candidate(value: str) -> str | None:
     session_match = re.match(r"^issue-([0-9]+)(?:-|$)", normalized)
     if session_match:
         return session_match.group(1)
-    return None
-
-
-def _normalize_import_bare_repo_name(value: str) -> str:
-    normalized = str(value or "").strip()
-    if normalized.endswith(".git"):
-        normalized = normalized[: -len(".git")]
-    if not normalized:
-        raise ValueError("bare_repo_name is required")
-    if "/" in normalized or "\\" in normalized or normalized in {".", ".."}:
-        raise ValueError("bare_repo_name must be a single repository name, not a path")
-    return normalized
-
-
-def _git_config_value(git_dir: Path, key: str) -> str | None:
-    result = process_helpers.run_subprocess(
-        ["git", f"--git-dir={git_dir}", "config", "--get", key],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    value = (result.stdout or "").strip()
-    return value or None
-
-
-def _bare_repo_agent_refs(git_dir: Path) -> list[str]:
-    if not git_dir.exists():
-        return []
-    result = process_helpers.run_subprocess(
-        [
-            "git",
-            f"--git-dir={git_dir}",
-            "for-each-ref",
-            "--format=%(refname)",
-            "refs/heads/agents",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        message = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(message or f"Failed to inspect agent branches in {git_dir}")
-    return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
-
-
-def _infer_git_provider_from_url(url: str | None) -> str | None:
-    normalized = str(url or "").strip().lower()
-    if not normalized:
-        return None
-    if "github.com" in normalized:
-        return "github"
-    if "dev.azure.com" in normalized or "visualstudio.com" in normalized:
-        return "azure_devops"
     return None
 
 
@@ -290,9 +228,7 @@ class IssueGitAdminDependencies:
     refresh_proxy_cache_from_remote: Any
     write_local_issue_yaml: Any
     directory_ownership: DirectoryOwnershipPort
-    resolve_issue_setup: Any | None = None
-    resolve_repo_source: Any | None = None
-    sync_repo_into_bare_remote: Any | None = None
+    managed_git_admin: Any | None = None
 
 
 @dataclass
@@ -466,7 +402,7 @@ class IssueGitAdminSupport:
 
 
 class IssueGitAdminService:
-    """Issue, approval, git, and PR operations owned by the admin service."""
+    """Issue records and session metadata owned by the admin service."""
 
     def __init__(self, dependencies: IssueGitAdminDependencies) -> None:
         self._deps = dependencies
@@ -485,902 +421,52 @@ class IssueGitAdminService:
             return str(getattr(session, "session_id", "") or "").strip(), session
         raise ValueError(f"Unknown session target: {target}")
 
-    @staticmethod
-    def _derive_review_branch(agent_branch: str) -> str:
-        normalized = str(agent_branch).strip()
-        if normalized.startswith("agents/") and normalized.count("/") >= 2:
-            return f"review/{normalized.removeprefix('agents/')}"
-        return f"review/{normalized.removeprefix('refs/heads/')}"
-
-    @staticmethod
-    def _promoted_commit_from_output(*outputs: str) -> str | None:
-        for output in outputs:
-            match = re.search(r"^Commit:\s*([0-9a-fA-F]{7,40})\s*$", output, re.MULTILINE)
-            if match:
-                return match.group(1)
-        return None
-
-    @staticmethod
-    def _derive_local_pr_notes_ref(remote_url: str) -> str:
-        repo_name = Path(remote_url.strip()).name
-        if repo_name.endswith(".git"):
-            repo_name = repo_name[:-4]
-        repo_name = re.sub(r"[^a-z0-9._-]+", "-", repo_name.lower()).strip("-") or "bare-repo"
-        return f"refs/notes/agent-pr-cache/{repo_name}"
-
-    @staticmethod
-    def _normalize_branch_ref(value: str | None) -> str:
-        text = str(value or "").strip()
-        for prefix in ("refs/heads/", "refs/head/", "refs/remotes/origin/", "origin/"):
-            if text.startswith(prefix):
-                return text.removeprefix(prefix)
-        return text
-
-    @staticmethod
-    def _is_safe_branch_name(value: str) -> bool:
-        if not value or value in {"@", ".", ".."}:
-            return False
-        if value.startswith(("-", "/", "refs/")) or value.endswith(("/", ".")):
-            return False
-        if ".." in value or "//" in value or "@{" in value:
-            return False
-        if any(ord(char) < 32 or ord(char) == 127 for char in value):
-            return False
-        if any(char in value for char in " ~^:?*[\\"):
-            return False
-        return all(
-            part and not part.startswith(".") and not part.endswith(".lock")
-            for part in value.split("/")
-        )
-
-    @staticmethod
-    def _infer_git_provider(origin_url: str) -> str:
-        if origin_url.startswith(("git@github.com:", "https://github.com/")):
-            return "github"
-        if origin_url.startswith(("git@ssh.dev.azure.com:", "https://dev.azure.com/")):
-            return "azure_devops"
-        if re.match(r"^https://[^.]+\.visualstudio\.com/", origin_url):
-            return "azure_devops"
-        return ""
-
-    @staticmethod
-    def _azure_https_origin_url(origin_url: str) -> str:
-        match = (
-            re.match(
-                r"^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)$",
-                origin_url,
-            )
-            or re.match(
-                r"^https://(?:[^@/]+@)?dev\.azure\.com/([^/]+)/([^/]+)/_git/([^/]+)$",
-                origin_url,
-            )
-            or re.match(
-                r"^https://(?:[^@/]+@)?([^.]+)\.visualstudio\.com/([^/]+)/_git/([^/]+)$",
-                origin_url,
-            )
-        )
-        if not match:
-            return ""
-        organization, project, repo = (urllib.parse.unquote(part) for part in match.groups())
-        return (
-            "https://dev.azure.com/"
-            f"{urllib.parse.quote(organization, safe='')}/"
-            f"{urllib.parse.quote(project, safe='')}/_git/"
-            f"{urllib.parse.quote(repo, safe='')}"
-        )
-
-    @staticmethod
-    def _github_https_origin_url(origin_url: str) -> str:
-        match = re.match(r"^git@github\.com:([^/]+/[^/]+?)(?:\.git)?$", origin_url) or re.match(
-            r"^https://github\.com/([^/]+/[^/]+?)(?:\.git)?$",
-            origin_url,
-        )
-        if not match:
-            return ""
-        return f"https://github.com/{match.group(1)}.git"
-
-    @staticmethod
-    def _combined_output(stdout: str, stderr: str) -> str:
-        return "\n".join(part.strip() for part in (stderr, stdout) if part.strip())
-
-    def import_git_repo(
+    def _resolve_managed_repo_id(
         self,
         *,
-        repo_source: str,
-        bare_repo_name: str | None = None,
-        directory_path: str = "root",
-    ) -> dict[str, Any]:
-        admin = self._deps
-        normalized_source = str(repo_source or "").strip()
-        if not normalized_source:
-            raise ValueError("repo_source is required")
-        if (
-            admin.resolve_issue_setup is None
-            or admin.resolve_repo_source is None
-            or admin.sync_repo_into_bare_remote is None
-        ):
-            raise RuntimeError("import_git_repo dependencies are not configured")
-        normalized_directory = admin.directory_path.normalize_directory_path(directory_path)
-        issue_setup = admin.resolve_issue_setup(
-            normalized_directory,
-            root_dir=admin.project_dir,
-        )
-        resolved_repo_path, resolved_repo_name = admin.resolve_repo_source(normalized_source)
-        import_repo_name = _normalize_import_bare_repo_name(bare_repo_name or resolved_repo_name)
-        bare_repo_path = Path(issue_setup.git_root) / f"{import_repo_name}.git"
-        agent_refs = _bare_repo_agent_refs(bare_repo_path)
-        if agent_refs:
-            sample = agent_refs[0]
-            extra = len(agent_refs) - 1
-            suffix = f" and {extra} more" if extra else ""
-            raise GitImportConflictError(
-                f"Cannot import into existing mirror {bare_repo_path}: "
-                f"it already has agent branches ({sample}{suffix}). "
-                "Create a new bare repo name or use a dedicated source-ref refresh."
+        directory_path: str,
+        managed_repo_id: str | None,
+        repo_source: str | None,
+    ) -> str | None:
+        normalized_id = str(managed_repo_id or "").strip().lower() or None
+        normalized_source = str(repo_source or "").strip() or None
+        if normalized_id is None and normalized_source is None:
+            return None
+        managed_git = self._deps.managed_git_admin
+        if managed_git is None:
+            raise RuntimeError("managed Git service is not configured")
+        if normalized_source is not None:
+            record = managed_git.register_repository(
+                directory_path=directory_path,
+                repo_source=normalized_source,
             )
-        bare_repo_path = admin.sync_repo_into_bare_remote(
-            import_repo_name,
-            resolved_repo_path,
-            issue_setup=issue_setup,
-            repo_source=normalized_source,
-        )
-        bare_repo_name_with_suffix = f"{import_repo_name}.git"
-        canonical_origin_url = _git_config_value(
-            bare_repo_path,
-            "evander.canonicalOriginUrl",
-        )
-        base_branch = _git_config_value(bare_repo_path, "evander.baseBranch")
-        provider = _infer_git_provider_from_url(canonical_origin_url)
-        git_config: dict[str, Any] = {
-            "host_repo_path": resolved_repo_path,
-            "bare_repo_name": bare_repo_name_with_suffix,
-        }
-        if base_branch:
-            git_config["base_branch"] = base_branch
-        if canonical_origin_url:
-            git_config["canonical_origin_url"] = canonical_origin_url
-        if provider:
-            git_config["provider"] = provider
-        return {
-            "success": True,
-            "repo_source": normalized_source,
-            "host_repo_path": resolved_repo_path,
-            "repo_name": import_repo_name,
-            "bare_repo_name": bare_repo_name_with_suffix,
-            "bare_repo_path": str(bare_repo_path),
-            "git_root": issue_setup.git_root,
-            "git_ssh_alias": issue_setup.git_ssh_alias,
-            "remote_url": f"ssh://{issue_setup.git_ssh_alias}{bare_repo_path}",
-            "base_branch": base_branch,
-            "canonical_origin_url": canonical_origin_url,
-            "provider": provider,
-            "directory_path": normalized_directory,
-            "git": git_config,
-            "message": f"Imported {resolved_repo_path} into {bare_repo_path}",
-        }
-
-    def _git_push_auth_prefix(
-        self,
-        *,
-        provider: str,
-        origin_url: str,
-    ) -> tuple[list[str], str, bool]:
-        push_remote_url = origin_url
-        git_config_args: list[str] = []
-        used_credential_helper = False
-
-        if provider == "azure_devops":
-            pat_env = (
-                os.environ.get("EVANDER_AZURE_DEVOPS_PR_PAT_ENV")
-                or getattr(self._deps.config, "azure_devops_pr_pat_env", "")
-                or "AZURE_DEVOPS_PR_PAT"
-            )
-            pat_value = os.environ.get(pat_env, "").strip()
-            https_origin_url = self._azure_https_origin_url(origin_url)
-            if pat_value and https_origin_url:
-                push_remote_url = https_origin_url
-                auth_value = base64.b64encode(f":{pat_value}".encode("utf-8")).decode("ascii")
-                git_config_args.extend(
-                    ["-c", f"http.extraHeader=Authorization: Basic {auth_value}"]
+            registered_id = str(record.get("managed_repo_id") or "").strip()
+            if not registered_id:
+                raise RuntimeError("managed Git registration did not return managed_repo_id")
+            if normalized_id is not None and normalized_id != registered_id:
+                raise ValueError(
+                    "managed_repo_id and repo_source resolve to different managed repositories"
                 )
-        elif provider == "github":
-            https_origin_url = self._github_https_origin_url(origin_url)
-            gh_status = None
-            if shutil.which("gh"):
-                gh_status = process_helpers.run_subprocess(
-                    ["gh", "auth", "status"],
-                    capture_output=True,
-                    text=True,
-                )
-            if gh_status is not None and gh_status.returncode == 0 and https_origin_url:
-                push_remote_url = https_origin_url
-                git_config_args.extend(
-                    [
-                        "-c",
-                        "credential.https://github.com.helper=!/usr/bin/gh auth git-credential",
-                    ]
-                )
-                used_credential_helper = True
+            return registered_id
+        record = managed_git.get_repository(normalized_id, directory_path=directory_path)
+        resolved_id = str(record.get("managed_repo_id") or "").strip()
+        if not resolved_id:
+            raise RuntimeError("managed Git lookup did not return managed_repo_id")
+        return resolved_id
 
-        return git_config_args, push_remote_url, used_credential_helper
+    def _bind_issue_repository(self, issue: LocalIssueRecord) -> None:
+        if issue.managed_repo_id is None:
+            return
+        managed_git = self._deps.managed_git_admin
+        if managed_git is None:
+            raise RuntimeError("managed Git service is not configured")
+        managed_git.bind(issue.managed_repo_id, kind="issues", binding_id=issue.issue_id)
 
-    def _run_git(
-        self,
-        host_repo_path: str,
-        git_config_args: list[str],
-        args: list[str],
-    ):
-        return process_helpers.run_subprocess(
-            ["git", "-C", host_repo_path, *git_config_args, *args],
-            capture_output=True,
-            text=True,
-        )
-
-    def _push_branch_failure_payload(
-        self,
-        *,
-        reason: str,
-        message: str,
-        host_repo_path: str,
-        local_branch: str,
-        origin_branch: str,
-        base_branch: str,
-        session_id: str,
-        work_item_id: str,
-        remote_name: str,
-        destination_commit: str = "",
-        local_commit: str = "",
-        destination_ahead_count: int = 0,
-        local_ahead_count: int = 0,
-        stdout: str = "",
-        stderr: str = "",
-    ) -> dict[str, Any]:
-        return {
-            "success": False,
-            "action": "git_push_branch",
-            "preflight_success": False,
-            "reason": reason,
-            "message": message,
-            "host_repo_path": host_repo_path,
-            "local_branch": local_branch,
-            "origin_branch": origin_branch,
-            "base_branch": base_branch,
-            "session_id": session_id,
-            "work_item_id": work_item_id,
-            "remote_name": remote_name,
-            "destination_ref": f"refs/heads/{origin_branch}",
-            "destination_tracking_ref": f"refs/remotes/{remote_name}/{origin_branch}",
-            "destination_commit": destination_commit,
-            "local_commit": local_commit,
-            "destination_ahead_count": destination_ahead_count,
-            "local_ahead_count": local_ahead_count,
-            "stdout": stdout,
-            "stderr": stderr,
-        }
-
-    def push_branch(
-        self,
-        *,
-        host_repo_path: str,
-        local_branch: str,
-        origin_branch: str,
-        canonical_origin_url: str | None = None,
-        provider: str | None = None,
-        base_branch: str | None = None,
-        session_id: str | None = None,
-        work_item_id: str | None = None,
-    ) -> dict[str, Any]:
-        normalized_local_branch = self._normalize_branch_ref(local_branch)
-        normalized_origin_branch = self._normalize_branch_ref(origin_branch)
-        normalized_base_branch = self._normalize_branch_ref(base_branch)
-        normalized_session_id = str(session_id or "").strip()
-        normalized_work_item_id = str(work_item_id or "").strip()
-        if not normalized_local_branch:
-            raise ValueError("push_branch requires local_branch")
-        if not normalized_origin_branch:
-            raise ValueError("push_branch requires origin_branch")
-        for branch_field, branch_name in (
-            ("local_branch", normalized_local_branch),
-            ("origin_branch", normalized_origin_branch),
-            ("base_branch", normalized_base_branch),
-        ):
-            if branch_name and not self._is_safe_branch_name(branch_name):
-                raise ValueError(f"push_branch requires a valid {branch_field}: {branch_name}")
-
-        repo_path = Path(host_repo_path)
-        if not (repo_path / ".git").exists():
-            raise ValueError(f"Host repo path is not a Git working tree: {host_repo_path}")
-
-        origin_url = str(canonical_origin_url or "").strip()
-        remote_name = "evander-pr-origin" if origin_url else "origin"
-        if not origin_url:
-            origin_result = process_helpers.run_subprocess(
-                ["git", "-C", host_repo_path, "remote", "get-url", "origin"],
-                capture_output=True,
-                text=True,
-            )
-            if origin_result.returncode != 0:
-                raise RuntimeError(
-                    self._combined_output(origin_result.stdout or "", origin_result.stderr or "")
-                    or "Failed to resolve origin remote URL"
-                )
-            origin_url = (origin_result.stdout or "").strip()
-
-        push_provider = str(provider or "auto").strip() or "auto"
-        if push_provider == "auto":
-            push_provider = self._infer_git_provider(origin_url)
-
-        git_config_args, push_remote_url, used_credential_helper = self._git_push_auth_prefix(
-            provider=push_provider,
-            origin_url=origin_url,
-        )
-        if remote_name == "origin" and push_remote_url != origin_url:
-            remote_name = "evander-pr-origin"
-
-        if remote_name != "origin":
-            current_result = process_helpers.run_subprocess(
-                ["git", "-C", host_repo_path, "remote", "get-url", remote_name],
-                capture_output=True,
-                text=True,
-            )
-            if current_result.returncode == 0:
-                if (current_result.stdout or "").strip() != push_remote_url:
-                    set_result = process_helpers.run_subprocess(
-                        [
-                            "git",
-                            "-C",
-                            host_repo_path,
-                            "remote",
-                            "set-url",
-                            remote_name,
-                            push_remote_url,
-                        ],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if set_result.returncode != 0:
-                        raise RuntimeError(
-                            self._combined_output(
-                                set_result.stdout or "",
-                                set_result.stderr or "",
-                            )
-                            or f"Failed to update remote {remote_name}"
-                        )
-            else:
-                add_result = process_helpers.run_subprocess(
-                    ["git", "-C", host_repo_path, "remote", "add", remote_name, push_remote_url],
-                    capture_output=True,
-                    text=True,
-                )
-                if add_result.returncode != 0:
-                    raise RuntimeError(
-                        self._combined_output(add_result.stdout or "", add_result.stderr or "")
-                        or f"Failed to add remote {remote_name}"
-                    )
-
-        local_rev_result = process_helpers.run_subprocess(
-            [
-                "git",
-                "-C",
-                host_repo_path,
-                "rev-parse",
-                "--verify",
-                f"{normalized_local_branch}^{{commit}}",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        local_commit = (local_rev_result.stdout or "").strip()
-        if local_rev_result.returncode != 0:
-            message = (
-                self._combined_output(local_rev_result.stdout or "", local_rev_result.stderr or "")
-                or f"Failed to resolve local branch {normalized_local_branch}"
-            )
-            return self._push_branch_failure_payload(
-                reason="local_branch_missing",
-                message=message,
-                host_repo_path=host_repo_path,
-                local_branch=normalized_local_branch,
-                origin_branch=normalized_origin_branch,
-                base_branch=normalized_base_branch,
-                session_id=normalized_session_id,
-                work_item_id=normalized_work_item_id,
-                remote_name=remote_name,
-                local_commit=local_commit,
-                stdout=local_rev_result.stdout or "",
-                stderr=local_rev_result.stderr or "",
-            )
-
-        ls_result = self._run_git(
-            host_repo_path,
-            git_config_args,
-            ["ls-remote", "--exit-code", remote_name, f"refs/heads/{normalized_origin_branch}"],
-        )
-        destination_tracking_ref = f"refs/remotes/{remote_name}/{normalized_origin_branch}"
-        destination_commit = ""
-        destination_exists = ls_result.returncode == 0
-        if ls_result.returncode not in {0, 2}:
-            message = (
-                self._combined_output(ls_result.stdout or "", ls_result.stderr or "")
-                or f"Could not verify destination branch {remote_name}/{normalized_origin_branch}"
-            )
-            return self._push_branch_failure_payload(
-                reason="preflight_failed",
-                message=message,
-                host_repo_path=host_repo_path,
-                local_branch=normalized_local_branch,
-                origin_branch=normalized_origin_branch,
-                base_branch=normalized_base_branch,
-                session_id=normalized_session_id,
-                work_item_id=normalized_work_item_id,
-                remote_name=remote_name,
-                local_commit=local_commit,
-                stdout=ls_result.stdout or "",
-                stderr=ls_result.stderr or "",
-            )
-
-        if destination_exists:
-            fetch_result = self._run_git(
-                host_repo_path,
-                git_config_args,
-                [
-                    "fetch",
-                    remote_name,
-                    f"+refs/heads/{normalized_origin_branch}:{destination_tracking_ref}",
-                ],
-            )
-            if fetch_result.returncode != 0:
-                message = (
-                    self._combined_output(fetch_result.stdout or "", fetch_result.stderr or "")
-                    or f"Could not refresh destination branch {remote_name}/{normalized_origin_branch}"
-                )
-                return self._push_branch_failure_payload(
-                    reason="preflight_failed",
-                    message=message,
-                    host_repo_path=host_repo_path,
-                    local_branch=normalized_local_branch,
-                    origin_branch=normalized_origin_branch,
-                    base_branch=normalized_base_branch,
-                    session_id=normalized_session_id,
-                    work_item_id=normalized_work_item_id,
-                    remote_name=remote_name,
-                    local_commit=local_commit,
-                    stdout=fetch_result.stdout or "",
-                    stderr=fetch_result.stderr or "",
-                )
-
-            destination_rev_result = process_helpers.run_subprocess(
-                [
-                    "git",
-                    "-C",
-                    host_repo_path,
-                    "rev-parse",
-                    "--verify",
-                    f"{destination_tracking_ref}^{{commit}}",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            destination_commit = (destination_rev_result.stdout or "").strip()
-            merge_base_result = process_helpers.run_subprocess(
-                [
-                    "git",
-                    "-C",
-                    host_repo_path,
-                    "merge-base",
-                    "--is-ancestor",
-                    destination_tracking_ref,
-                    normalized_local_branch,
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if merge_base_result.returncode not in {0, 1}:
-                message = self._combined_output(
-                    merge_base_result.stdout or "",
-                    merge_base_result.stderr or "",
-                ) or (
-                    f"Could not compare {normalized_local_branch} with "
-                    f"{remote_name}/{normalized_origin_branch}."
-                )
-                return self._push_branch_failure_payload(
-                    reason="preflight_failed",
-                    message=message,
-                    host_repo_path=host_repo_path,
-                    local_branch=normalized_local_branch,
-                    origin_branch=normalized_origin_branch,
-                    base_branch=normalized_base_branch,
-                    session_id=normalized_session_id,
-                    work_item_id=normalized_work_item_id,
-                    remote_name=remote_name,
-                    destination_commit=destination_commit,
-                    local_commit=local_commit,
-                    stdout=merge_base_result.stdout or "",
-                    stderr=merge_base_result.stderr or "",
-                )
-            if merge_base_result.returncode == 1:
-                counts_result = process_helpers.run_subprocess(
-                    [
-                        "git",
-                        "-C",
-                        host_repo_path,
-                        "rev-list",
-                        "--left-right",
-                        "--count",
-                        f"{destination_tracking_ref}...{normalized_local_branch}",
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                destination_ahead_count = 0
-                local_ahead_count = 0
-                if counts_result.returncode == 0:
-                    parts = (counts_result.stdout or "").strip().split()
-                    if len(parts) >= 2:
-                        try:
-                            destination_ahead_count = int(parts[0])
-                            local_ahead_count = int(parts[1])
-                        except ValueError:
-                            destination_ahead_count = 0
-                            local_ahead_count = 0
-                return self._push_branch_failure_payload(
-                    reason="destination_branch_ahead",
-                    message=(
-                        f"Destination branch {remote_name}/{normalized_origin_branch} has "
-                        f"commits that are not contained in {normalized_local_branch}; merge "
-                        "the destination branch before pushing."
-                    ),
-                    host_repo_path=host_repo_path,
-                    local_branch=normalized_local_branch,
-                    origin_branch=normalized_origin_branch,
-                    base_branch=normalized_base_branch,
-                    session_id=normalized_session_id,
-                    work_item_id=normalized_work_item_id,
-                    remote_name=remote_name,
-                    destination_commit=destination_commit,
-                    local_commit=local_commit,
-                    destination_ahead_count=destination_ahead_count,
-                    local_ahead_count=local_ahead_count,
-                    stdout=counts_result.stdout or "",
-                    stderr=counts_result.stderr or "",
-                )
-
-        push_args = ["push"]
-        if normalized_origin_branch.startswith("review/"):
-            push_args.append("--force-with-lease")
-        push_args.extend(
-            [
-                remote_name,
-                f"{normalized_local_branch}:refs/heads/{normalized_origin_branch}",
-            ]
-        )
-        push_result = self._run_git(host_repo_path, git_config_args, push_args)
-        push_stdout = push_result.stdout or ""
-        push_stderr = push_result.stderr or ""
-        if push_result.returncode != 0:
-            message = (
-                self._combined_output(push_stdout, push_stderr)
-                or f"git push exited with code {push_result.returncode}"
-            )
-            return self._push_branch_failure_payload(
-                reason="push_failed",
-                message=message,
-                host_repo_path=host_repo_path,
-                local_branch=normalized_local_branch,
-                origin_branch=normalized_origin_branch,
-                base_branch=normalized_base_branch,
-                session_id=normalized_session_id,
-                work_item_id=normalized_work_item_id,
-                remote_name=remote_name,
-                destination_commit=destination_commit,
-                local_commit=local_commit,
-                stdout=push_stdout,
-                stderr=push_stderr,
-            )
-
-        message = (
-            self._combined_output(push_stdout, push_stderr)
-            or f"Pushed {normalized_local_branch} to {remote_name}/{normalized_origin_branch}"
-        )
-        return {
-            "success": True,
-            "action": "git_push_branch",
-            "preflight_success": True,
-            "reason": "",
-            "message": message,
-            "host_repo_path": host_repo_path,
-            "local_branch": normalized_local_branch,
-            "origin_branch": normalized_origin_branch,
-            "base_branch": normalized_base_branch,
-            "session_id": normalized_session_id,
-            "work_item_id": normalized_work_item_id,
-            "remote_name": remote_name,
-            "destination_ref": f"refs/heads/{normalized_origin_branch}",
-            "destination_tracking_ref": destination_tracking_ref,
-            "destination_commit": destination_commit,
-            "local_commit": local_commit,
-            "destination_ahead_count": 0,
-            "local_ahead_count": 0,
-            "provider": push_provider,
-            "push_remote_url": push_remote_url,
-            "used_credential_helper": used_credential_helper,
-            "stdout": push_stdout,
-            "stderr": push_stderr,
-        }
-
-    def pr_create(
-        self,
-        *,
-        host_repo_path: str,
-        local_branch: str | None = None,
-        origin_branch: str | None = None,
-        canonical_origin_url: str | None = None,
-        provider: str | None = None,
-        project: str | None = None,
-        base_branch: str | None = None,
-        session_id: str | None = None,
-        work_item_id: str | None = None,
-        title: str | None = None,
-        body: str | None = None,
-        body_file: str | None = None,
-        body_artifact_ids: list[str] | None = None,
-        draft: bool | None = None,
-        fill: bool = True,
-    ) -> dict[str, Any]:
-        if body and body_file:
-            raise ValueError("Provide either body or body_file, not both")
-
-        admin = self._deps
-        script_path = admin.project_dir / "scripts" / "open_agent_pr.sh"
-        cmd = [str(script_path), "--create-pr"]
-        if draft is True:
-            cmd.append("--draft")
-        elif draft is False:
-            cmd.append("--no-draft")
-        if provider:
-            cmd.extend(["--provider", provider])
-        if project:
-            cmd.extend(["--project", project])
-        if base_branch:
-            cmd.extend(["--base", base_branch])
-        if session_id:
-            cmd.extend(["--session-id", session_id])
-        if work_item_id:
-            cmd.extend(["--work-item-id", work_item_id])
-        if title:
-            cmd.extend(["--title", title])
-        for artifact_id in body_artifact_ids or []:
-            normalized_artifact_id = str(artifact_id or "").strip()
-            if normalized_artifact_id:
-                cmd.extend(["--body-artifact-id", normalized_artifact_id])
-        if not fill:
-            cmd.append("--no-fill")
-
-        body_file_path: Path | None = None
-        try:
-            if body is not None:
-                tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False)
-                with tmp:
-                    tmp.write(body)
-                body_file_path = Path(tmp.name)
-                cmd.extend(["--body-file", str(body_file_path)])
-            elif body_file:
-                cmd.extend(["--body-file", body_file])
-
-            cmd.append(host_repo_path)
-            if local_branch:
-                cmd.append(local_branch)
-            if origin_branch:
-                cmd.append(origin_branch)
-
-            env = os.environ.copy()
-            if canonical_origin_url:
-                env["EVANDER_CANONICAL_ORIGIN_URL"] = canonical_origin_url
-
-            completed = process_helpers.run_subprocess(cmd, capture_output=True, text=True, env=env)
-            stdout = completed.stdout or ""
-            stderr = completed.stderr or ""
-            if completed.returncode != 0:
-                raise RuntimeError(
-                    (stderr or stdout).strip()
-                    or f"open_agent_pr.sh exited with code {completed.returncode}"
-                )
-
-            result_payload: dict[str, Any] = {}
-            for line in stdout.splitlines():
-                if not line.startswith("AGENT_PR_RESULT "):
-                    continue
-                raw_json = line.removeprefix("AGENT_PR_RESULT ").strip()
-                parsed = json.loads(raw_json)
-                if isinstance(parsed, dict):
-                    result_payload = parsed
-                    break
-
-            message = (stderr or stdout).strip() or "PR prepared"
-            return {
-                "success": True,
-                "action": "pr_create",
-                "message": message,
-                "stdout": stdout,
-                "stderr": stderr,
-                **result_payload,
-            }
-        finally:
-            if body_file_path is not None:
-                body_file_path.unlink(missing_ok=True)
-
-    def promote_agent_branch(
-        self,
-        *,
-        host_repo_path: str,
-        bare_repo_path: str | None = None,
-        bare_repo_name: str | None = None,
-        agent_branch: str,
-        review_branch: str | None = None,
-        target_branch: str | None = None,
-        expected_commit_sha: str | None = None,
-        remote_name: str | None = None,
-    ) -> dict[str, Any]:
-        if not bare_repo_path and not bare_repo_name:
-            raise ValueError("Provide either bare_repo_path or bare_repo_name")
-        if bare_repo_path and bare_repo_name:
-            raise ValueError("Provide either bare_repo_path or bare_repo_name, not both")
-
-        admin = self._deps
-        script_path = admin.project_dir / "scripts" / "promote_agent_branch.sh"
-        cmd = [str(script_path)]
-        if remote_name:
-            cmd.extend(["--remote-name", remote_name])
-        if expected_commit_sha:
-            cmd.extend(["--expected-commit-sha", expected_commit_sha])
-        cmd.append(host_repo_path)
-        cmd.append(bare_repo_path or bare_repo_name or "")
-        cmd.append(agent_branch)
-        explicit_target_branch = target_branch or review_branch
-        if explicit_target_branch:
-            cmd.append(explicit_target_branch)
-
-        completed = process_helpers.run_subprocess(cmd, capture_output=True, text=True)
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-        if completed.returncode != 0:
-            raise RuntimeError(
-                (stderr or stdout).strip()
-                or f"promote_agent_branch.sh exited with code {completed.returncode}"
-            )
-
-        resolved_target_branch = explicit_target_branch or self._derive_review_branch(agent_branch)
-        commit_sha = self._promoted_commit_from_output(stdout, stderr)
-        message = (stderr or stdout).strip() or "Agent branch promoted"
-        return {
-            "success": True,
-            "action": "git_promote_agent_branch",
-            "message": message,
-            "stdout": stdout,
-            "stderr": stderr,
-            "host_repo_path": host_repo_path,
-            "bare_repo_path": bare_repo_path or bare_repo_name,
-            "agent_branch": agent_branch,
-            "review_branch": resolved_target_branch,
-            "target_branch": resolved_target_branch,
-            "commit_sha": commit_sha,
-            "remote_name": remote_name or "agent-dropbox-auto",
-        }
-
-    def git_pr_note_query(
-        self,
-        *,
-        host_repo_path: str,
-        local_branch: str,
-        remote_name: str | None = None,
-        notes_ref: str | None = None,
-    ) -> dict[str, Any]:
-        resolved_remote_name = (remote_name or "").strip() or "agent-dropbox-auto"
-        resolved_notes_ref = (notes_ref or "").strip() or "refs/notes/agent-pr"
-
-        remote_url_result = process_helpers.run_subprocess(
-            ["git", "-C", host_repo_path, "remote", "get-url", resolved_remote_name],
-            capture_output=True,
-            text=True,
-        )
-        if remote_url_result.returncode != 0:
-            raise RuntimeError(
-                (remote_url_result.stderr or remote_url_result.stdout or "").strip()
-                or f"Failed to resolve remote URL for {resolved_remote_name}"
-            )
-        remote_url = (remote_url_result.stdout or "").strip()
-        local_notes_ref = self._derive_local_pr_notes_ref(remote_url)
-
-        fetch_result = process_helpers.run_subprocess(
-            [
-                "git",
-                "-C",
-                host_repo_path,
-                "fetch",
-                resolved_remote_name,
-                f"+{resolved_notes_ref}:{local_notes_ref}",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if fetch_result.returncode != 0:
-            return {
-                "body": None,
-                "has_note": False,
-                "local_branch": local_branch,
-                "host_repo_path": host_repo_path,
-                "notes_ref": resolved_notes_ref,
-                "local_notes_ref": local_notes_ref,
-                "remote_name": resolved_remote_name,
-                "commit_sha": None,
-            }
-
-        rev_parse_result = process_helpers.run_subprocess(
-            ["git", "-C", host_repo_path, "rev-parse", local_branch],
-            capture_output=True,
-            text=True,
-        )
-        if rev_parse_result.returncode != 0:
-            raise RuntimeError(
-                (rev_parse_result.stderr or rev_parse_result.stdout or "").strip()
-                or f"Failed to resolve branch {local_branch}"
-            )
-        commit_sha = (rev_parse_result.stdout or "").strip()
-
-        def read_note(target_sha: str) -> str | None:
-            note_result = process_helpers.run_subprocess(
-                [
-                    "git",
-                    "-C",
-                    host_repo_path,
-                    "notes",
-                    f"--ref={local_notes_ref}",
-                    "show",
-                    target_sha,
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if note_result.returncode != 0:
-                return None
-            return (note_result.stdout or "").strip() or None
-
-        body = read_note(commit_sha)
-        if body is None:
-            rev_list_result = process_helpers.run_subprocess(
-                [
-                    "git",
-                    "-C",
-                    host_repo_path,
-                    "rev-list",
-                    "--first-parent",
-                    "--max-count=25",
-                    local_branch,
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if rev_list_result.returncode == 0:
-                for candidate_sha in (
-                    line.strip() for line in (rev_list_result.stdout or "").splitlines()
-                ):
-                    if not candidate_sha or candidate_sha == commit_sha:
-                        continue
-                    body = read_note(candidate_sha)
-                    if body is not None:
-                        break
-
-        has_note = body is not None
-        return {
-            "body": body,
-            "has_note": has_note,
-            "local_branch": local_branch,
-            "host_repo_path": host_repo_path,
-            "notes_ref": resolved_notes_ref,
-            "local_notes_ref": local_notes_ref,
-            "remote_name": resolved_remote_name,
-            "commit_sha": commit_sha,
-        }
+    def _unbind_issue_repositories(self, issue_id: str) -> None:
+        managed_git = self._deps.managed_git_admin
+        if managed_git is None:
+            return
+        managed_git.unbind_all(kind="issues", binding_id=issue_id)
 
     def session_update_metadata(
         self, *, target: str, metadata: Mapping[str, Any]
@@ -1489,6 +575,7 @@ class IssueGitAdminService:
         *,
         title: str = "",
         body: str = "",
+        managed_repo_id: str | None = None,
         repo_source: str | None = None,
         yaml_path: str | None = None,
         directory_path: str = "root",
@@ -1497,6 +584,7 @@ class IssueGitAdminService:
         return self.create_issue(
             title=title,
             body=body,
+            managed_repo_id=managed_repo_id,
             repo_source=repo_source,
             yaml_path=yaml_path,
             directory_path=directory_path,
@@ -1510,6 +598,7 @@ class IssueGitAdminService:
         title: str,
         body: str,
         state: str,
+        managed_repo_id: str | None = None,
         repo_source: str | None = None,
     ) -> LocalIssueRecord:
         admin = self._deps
@@ -1521,12 +610,35 @@ class IssueGitAdminService:
             raise ValueError("title is required")
         normalized_state = issue_helpers.normalize_local_issue_state(state, allow_empty=False)
         now = session_helpers.utc_now()
+        previous_managed_repo_id = issue.managed_repo_id
+        resolved_managed_repo_id = self._resolve_managed_repo_id(
+            directory_path=issue.directory_path,
+            managed_repo_id=managed_repo_id,
+            repo_source=repo_source,
+        )
         issue.title = normalized_title
         issue.body = body.strip()
         issue.state = normalized_state
-        issue.repo_source = repo_source.strip() if repo_source else None
+        issue.managed_repo_id = resolved_managed_repo_id
         issue.updated_at = now
-        admin.local_issue_store.put(issue.issue_id, issue)
+        self._bind_issue_repository(issue)
+        try:
+            admin.local_issue_store.put(issue.issue_id, issue)
+        except BaseException:
+            if resolved_managed_repo_id != previous_managed_repo_id:
+                self._unbind_issue_repositories(issue.issue_id)
+                if previous_managed_repo_id is not None:
+                    issue.managed_repo_id = previous_managed_repo_id
+                    self._bind_issue_repository(issue)
+            raise
+        if previous_managed_repo_id != resolved_managed_repo_id:
+            managed_git = admin.managed_git_admin
+            if managed_git is not None and previous_managed_repo_id is not None:
+                managed_git.unbind(
+                    previous_managed_repo_id,
+                    kind="issues",
+                    binding_id=issue.issue_id,
+                )
         admin.write_local_issue_yaml(issue, updated_at=now)
         return issue
 
@@ -1535,6 +647,7 @@ class IssueGitAdminService:
         *,
         title: str = "",
         body: str = "",
+        managed_repo_id: str | None = None,
         repo_source: str | None = None,
         yaml_path: str | None = None,
         directory_path: str = "root",
@@ -1680,6 +793,17 @@ class IssueGitAdminService:
             else:
                 issue_id = admin.canonical_local_issue_id(issue_number, normalized_directory_path)
             existing_record = admin.local_issue_store.get(issue_id)
+            resolved_managed_repo_id = (
+                existing_record.managed_repo_id
+                if existing_record is not None
+                and managed_repo_id is None
+                and repo_source is None
+                else self._resolve_managed_repo_id(
+                    directory_path=normalized_directory_path,
+                    managed_repo_id=managed_repo_id,
+                    repo_source=repo_source,
+                )
+            )
             record = LocalIssueRecord(
                 issue_id=issue_id,
                 issue_number=issue_number,
@@ -1687,7 +811,7 @@ class IssueGitAdminService:
                 body=body.strip(),
                 yaml_path=str(target_yaml_path),
                 directory_path=normalized_directory_path,
-                repo_source=repo_source.strip() if repo_source else None,
+                managed_repo_id=resolved_managed_repo_id,
                 source_type=source_type,
                 remote_reference=remote_reference,
                 state=(
@@ -1702,7 +826,31 @@ class IssueGitAdminService:
                 created_at=existing_record.created_at if existing_record is not None else now,
                 updated_at=now,
             )
-            admin.local_issue_store.put(record.issue_id, record)
+            previous_managed_repo_id = (
+                existing_record.managed_repo_id if existing_record is not None else None
+            )
+            self._bind_issue_repository(record)
+            try:
+                admin.local_issue_store.put(record.issue_id, record)
+            except BaseException:
+                if resolved_managed_repo_id != previous_managed_repo_id:
+                    self._unbind_issue_repositories(record.issue_id)
+                    if previous_managed_repo_id is not None:
+                        previous = record.model_copy(
+                            update={"managed_repo_id": previous_managed_repo_id}
+                        )
+                        self._bind_issue_repository(previous)
+                raise
+            if (
+                previous_managed_repo_id is not None
+                and previous_managed_repo_id != resolved_managed_repo_id
+                and admin.managed_git_admin is not None
+            ):
+                admin.managed_git_admin.unbind(
+                    previous_managed_repo_id,
+                    kind="issues",
+                    binding_id=record.issue_id,
+                )
             return record
 
     def get_issue(
@@ -2092,6 +1240,7 @@ class IssueGitAdminService:
             )
 
         admin.local_issue_store.delete(issue.issue_id)
+        self._unbind_issue_repositories(issue.issue_id)
         yaml_path = Path(issue.yaml_path)
         if yaml_path.exists():
             yaml_path.unlink()

@@ -261,6 +261,43 @@ Expected optional attachment behavior:
 - any intentionally enabled outbound send includes approval request/decision fields and stays in
   the dedicated test destination
 
+## Stage C: Managed Git Migration Acceptance
+
+Run this stage after `git-repos migrate --apply` and before finalizing its migration manifest.
+Use a disposable upstream branch and PR project.
+
+1. Confirm `evander-cli git-repos list` reports the migrated repository and `show` contains the
+   expected directory owner, canonical URL, default branch, and bindings without credentials or
+   temporary worktree paths.
+2. Clone that `managed_repo_id` through one libvirt VM and one `container_worker_vm` session.
+3. In each isolated checkout, create a distinct commit, attach a PR note to that exact commit, and
+   push with `git push-agent`. Confirm a different session key cannot update the ref.
+4. Confirm `trigger:git:push` enqueues the managed ID, exact old/new SHAs, session, notes ref,
+   default branch, and derived review branch. The post-receive path must not publish upstream.
+5. Let the workflow promote the pinned SHA. Push a newer commit while one run is in flight and
+   confirm it either publishes the already pinned SHA or returns `source_ref_moved`; it must not
+   substitute the newer tip.
+6. Confirm `query:git:pr-note` returns only the note attached to the pinned commit.
+7. Publish a disposable destination branch and create/reuse its PR. Verify the upstream branch is
+   exactly the approved SHA and a stale lease cannot regress it.
+8. Run one Team feature/release consolidation from explicit source SHAs, then run its release
+   verification in `container_worker_vm`. Confirm host-authored merge identity is recorded and no
+   persistent host checkout appears in Team state.
+9. Run `evander-cli git-repos maintenance --managed-repo-id <id>` and confirm no completed
+   operation worktree or operation ref remains. Check logs, process arguments, repository config,
+   registry, and manifests for credentials.
+10. Destroy both sessions. Confirm their bindings and SSH keys are gone while the managed
+    repository and unpublished refs remain.
+
+Only after these checks and operator acceptance should you run:
+
+```bash
+evander-cli git-repos migrate --finalize <migration-id>
+```
+
+Confirm finalization deletes only the Evander-owned rollback artifacts named in that manifest and
+does not touch any operator checkout.
+
 ## Pass Criteria
 
 The smoke test passes only if all of these are true:
@@ -274,6 +311,8 @@ The smoke test passes only if all of these are true:
 - all visible artifacts stay within dedicated test channels and test mailboxes
 - optional attachment tests use dedicated Discord, Teams, Gmail, and Graph destinations only, and
   outbound attachment sends occur only with matching approval when send policy is intentionally enabled
+- when migration acceptance is in scope, both execution backends use the same managed repository,
+  publication matches the pinned SHA, operation worktrees clean up, and finalization remains explicit
 
 ## Failure Triage
 

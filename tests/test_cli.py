@@ -39,8 +39,27 @@ from evander.messaging.teams_auth import InvalidClientConfigurationError
 UTC = timezone.utc
 
 
+@pytest.fixture(autouse=True)
+def _isolate_managed_git_authorized_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EVANDER_GIT_USER", "evander-cli-tests-no-such-user")
+
+
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "managed-git-repositories.json").write_text(
+        json.dumps(
+            {
+                "schema": "evander.managed-git-repositories/v1",
+                "schema_version": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "repositories": {},
+                "migrations": {"test-fixture": {"status": "applied"}},
+            }
+        ),
+        encoding="utf-8",
+    )
     config_path = tmp_path / "gateway.yaml"
     config_path.write_text(
         "\n".join(
@@ -1241,14 +1260,16 @@ def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: 
         "ado_area_filters": [],
         "ado_repo_source": "/tmp/repo",
         "ado_team_filters": [],
-        "create_prs_automatically": True,
-        "create_prs_as_draft": False,
     }
     directories = DirectoryStore(runtime_dir / "directories.json").read_all()
     assert "ado_worker" in directories["root"].metadata["directory_config"]["domains"]
 
 
-def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(tmp_path: Path) -> None:
+def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EVANDER_GIT_USER")
     config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     runner = CliRunner()
 
@@ -1293,7 +1314,6 @@ def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(tmp_path:
         "default_model": "gpt-5.3-codex",
         "enable_guest_heartbeat": True,
         "git_host": "10.1.2.3",
-        "git_root": "/tmp/git-remotes",
         "git_ssh_alias": "issue-git",
         "git_user": "gitbot",
         "guest_heartbeat_prompt": "continue working",
@@ -1378,8 +1398,9 @@ def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None
 
 
 def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("EVANDER_GIT_USER")
     config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     env_file = tmp_path / "config" / "issue-setup.env"
     env_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1419,7 +1440,7 @@ def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(
     payload = json.loads(
         (tmp_path / "runtime" / "directory-config" / "root" / "issue-setup.json").read_text("utf-8")
     )
-    assert payload["git_root"] == "/tmp/from-file"
+    assert "git_root" not in payload
     assert payload["git_host"] == "10.55.0.1"
     assert payload["git_user"] == "env-file-user"
     assert payload["git_ssh_alias"] == "env-file-alias"
@@ -2277,8 +2298,8 @@ def test_clone_repo_into_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> N
             "root/team",
             "--session-id",
             "lab-session",
-            "--repo-source",
-            "/src/repo",
+            "--managed-repo-id",
+            "mr_0123456789abcdefabcd",
             "--clone-branch",
             "release/1.2",
             "lab-vm",
@@ -2289,7 +2310,7 @@ def test_clone_repo_into_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> N
     assert captured_kwargs["kwargs"] == {
         "vm_name": "lab-vm",
         "session_id": "lab-session",
-        "repo_source": "/src/repo",
+        "managed_repo_id": "mr_0123456789abcdefabcd",
         "clone_branch": "release/1.2",
         "vm_user": "agent",
         "directory_path": "root/team",
@@ -3476,14 +3497,13 @@ def test_renew_session_rejects_invalid_duration(tmp_path: Path) -> None:
     assert "Extension must use the format <number><h|d>" in result.output
 
 
-def test_destroy_issue_vm_cleans_issue_state_and_bare_repo(tmp_path: Path, monkeypatch) -> None:
+def test_destroy_issue_vm_cleans_issue_state_but_retains_managed_repo(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     runtime_dir = tmp_path / "runtime"
-    git_root = tmp_path / "git-remotes"
-    bare_repo = git_root / "1234_repo.git"
-    trusted_repo = tmp_path / "trusted-repo"
-    hook_log = runtime_dir / "hook-logs" / "1234_repo.git.post-receive.log"
+    managed_repo = runtime_dir / "managed-git" / "mr_0123456789abcdefabcd.git"
     captured_cmds: list[list[str]] = []
 
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
@@ -3628,22 +3648,17 @@ def test_destroy_issue_vm_cleans_issue_state_and_bare_repo(tmp_path: Path, monke
         encoding="utf-8",
     )
 
-    bare_repo.mkdir(parents=True)
-    trusted_repo.mkdir(parents=True)
-    hook_log.parent.mkdir(parents=True, exist_ok=True)
-    hook_log.write_text("hook log", encoding="utf-8")
-
-    monkeypatch.setenv("EVANDER_GIT_ROOT", str(git_root))
+    managed_repo.mkdir(parents=True)
 
     def fake_run(
         cmd: list[str],
         check: bool,
         capture_output: bool | None = None,
         text: bool | None = None,
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
+        del check, capture_output, text, kwargs
         captured_cmds.append(cmd)
-        if len(cmd) >= 4 and cmd[0] == "git" and cmd[2] == "config":
-            return subprocess.CompletedProcess(cmd, 0, stdout=str(trusted_repo), stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
@@ -3652,8 +3667,7 @@ def test_destroy_issue_vm_cleans_issue_state_and_bare_repo(tmp_path: Path, monke
 
     assert result.exit_code == 0
     assert "Destroyed issue VM vm-1234" in result.stdout
-    assert not bare_repo.exists()
-    assert not hook_log.exists()
+    assert managed_repo.exists()
 
     sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
     assert set(sessions) == {"keep-me"}
@@ -3671,19 +3685,17 @@ def test_destroy_issue_vm_cleans_issue_state_and_bare_repo(tmp_path: Path, monke
     assert set(feedback_store["feedback"]) == {"github:issue_comment:2"}
 
     assert any(
-        cmd[0].endswith("/scripts/destroy_agent_vm.sh") and cmd[1] == "vm-1234"
+        any(part.endswith("/scripts/destroy_agent_vm.sh") for part in cmd)
+        and cmd[-1] == "vm-1234"
         for cmd in captured_cmds
     )
-    assert any(
-        cmd[:5] == ["git", "-C", str(trusted_repo), "remote", "remove"] and cmd[5] == "1234-mirror"
-        for cmd in captured_cmds
-    )
+    assert not any("remote" in cmd and "remove" in cmd for cmd in captured_cmds)
 
 
 def test_destroy_issue_vm_accepts_vm_name_target(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
-    captured_cmd: list[str] = []
+    captured_cmds: list[list[str]] = []
 
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
@@ -3693,9 +3705,10 @@ def test_destroy_issue_vm_accepts_vm_name_target(tmp_path: Path, monkeypatch) ->
         check: bool,
         capture_output: bool | None = None,
         text: bool | None = None,
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
-        nonlocal captured_cmd
-        captured_cmd = cmd
+        del check, capture_output, text, kwargs
+        captured_cmds.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
@@ -3703,8 +3716,11 @@ def test_destroy_issue_vm_accepts_vm_name_target(tmp_path: Path, monkeypatch) ->
     result = runner.invoke(app, ["destroy-issue-vm", "--config", str(config_path), "vm-1234"])
 
     assert result.exit_code == 0
-    assert captured_cmd[0].endswith("/scripts/destroy_agent_vm.sh")
-    assert captured_cmd[1:] == ["vm-1234"]
+    assert any(
+        any(part.endswith("/scripts/destroy_agent_vm.sh") for part in cmd)
+        and cmd[-1] == "vm-1234"
+        for cmd in captured_cmds
+    )
 
 
 def test_destroy_vm_delegates_to_admin_service(tmp_path: Path, monkeypatch) -> None:
@@ -3737,8 +3753,7 @@ def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(
     config_path = write_config(tmp_path)
     runner = CliRunner()
     runtime_dir = tmp_path / "runtime"
-    git_root = tmp_path / "git-remotes"
-    trusted_repo = tmp_path / "trusted-repo"
+    managed_root = runtime_dir / "managed-git"
     captured_cmds: list[list[str]] = []
 
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
@@ -3896,24 +3911,22 @@ def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(
         encoding="utf-8",
     )
 
-    stale_bare_repo = git_root / "12305_repo.git"
-    stale_bare_repo.mkdir(parents=True)
-    (git_root / "13301_repo.git").mkdir(parents=True)
-    (git_root / "14084_repo.git").mkdir(parents=True)
-    trusted_repo.mkdir(parents=True)
-    monkeypatch.setenv("EVANDER_GIT_ROOT", str(git_root))
+    stale_managed_repo = managed_root / "mr_11111111111111111111.git"
+    stale_managed_repo.mkdir(parents=True)
+    (managed_root / "mr_22222222222222222222.git").mkdir(parents=True)
+    (managed_root / "mr_33333333333333333333.git").mkdir(parents=True)
 
     def fake_run(
         cmd: list[str],
         check: bool,
         capture_output: bool | None = None,
         text: bool | None = None,
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
+        del check, capture_output, text, kwargs
         captured_cmds.append(cmd)
         if cmd[:4] == ["virsh", "list", "--all", "--name"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="vm-14084\nvm-13928\n", stderr="")
-        if len(cmd) >= 4 and cmd[0] == "git" and cmd[2] == "config":
-            return subprocess.CompletedProcess(cmd, 0, stdout=str(trusted_repo), stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("evander.cli.subprocess.run", fake_run)
@@ -3923,7 +3936,7 @@ def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(
     assert result.exit_code == 0
     assert "removed_sessions=1" in result.stdout
     assert "removed_pr_map_entries=2" in result.stdout
-    assert "removed_bare_repos=2" in result.stdout
+    assert "removed_bare_repos" not in result.stdout
 
     sessions = json.loads((runtime_dir / "sessions.json").read_text(encoding="utf-8"))
     assert set(sessions) == {"issue-14084-a"}
@@ -3940,13 +3953,10 @@ def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(
     assert set(feedback_store["cursors"]) == {"github:org/live:2"}
     assert set(feedback_store["feedback"]) == {"github:issue_comment:2"}
 
-    assert not (git_root / "12305_repo.git").exists()
-    assert not (git_root / "13301_repo.git").exists()
-    assert (git_root / "14084_repo.git").exists()
-    assert any(
-        cmd[:5] == ["git", "-C", str(trusted_repo), "remote", "remove"] and cmd[5] == "12305-mirror"
-        for cmd in captured_cmds
-    )
+    assert stale_managed_repo.exists()
+    assert (managed_root / "mr_22222222222222222222.git").exists()
+    assert (managed_root / "mr_33333333333333333333.git").exists()
+    assert not any("remote" in cmd and "remove" in cmd for cmd in captured_cmds)
 
 
 def test_list_vms_invokes_script_with_selected_vm_user(tmp_path: Path, monkeypatch) -> None:
@@ -4109,19 +4119,28 @@ def test_create_local_issue_uses_admin_service(tmp_path: Path, monkeypatch) -> N
             self.config = config
 
         def create_local_issue(
-            self, *, title: str, body: str, repo_source: str | None, yaml_path: str | None
+            self,
+            *,
+            title: str,
+            body: str,
+            managed_repo_id: str | None,
+            repo_source: str | None,
+            yaml_path: str | None,
+            directory_path: str,
         ):
             assert title == "Build GUI"
             assert body == "Need a desktop console"
             assert repo_source == "/src/repo"
+            assert managed_repo_id is None
             assert yaml_path is None
+            assert directory_path == "root"
             return LocalIssueRecord(
                 issue_id="local-77",
                 issue_number="77",
                 title=title,
                 body=body,
                 yaml_path="/tmp/runtime/issues/77.yaml",
-                repo_source=repo_source,
+                managed_repo_id="mr_11111111111111111111",
             )
 
     patch_cli_admin_runtime(monkeypatch, issue_git_admin=FakeAdminService)
@@ -4567,7 +4586,7 @@ def test_seed_discord_channel_creates_seed_entry_and_reports_cursor(tmp_path: Pa
 def test_rebuild_audit_index_cli_imports_tool_call_jsonl(tmp_path: Path) -> None:
     config_path = write_config(tmp_path)
     runtime_dir = tmp_path / "runtime"
-    runtime_dir.mkdir()
+    runtime_dir.mkdir(exist_ok=True)
     audit_log_path = runtime_dir / "audit.jsonl"
     audit_log_path.write_text(
         "\n".join(

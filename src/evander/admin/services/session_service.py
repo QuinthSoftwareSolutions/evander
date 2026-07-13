@@ -6,6 +6,7 @@ from typing import Any
 from evander.admin.services import session_helpers
 from evander.admin.services.ports import DirectoryOwnershipPort
 from evander.admin.services.vm_agent.common_helpers import (
+    _revoke_managed_git_access_for_session,
     _resolve_session_approval_notification_target_ids,
 )
 from evander.models import (
@@ -23,6 +24,7 @@ class SessionAdminDependencies:
     runtime: Any
     config: Any
     directory_ownership: DirectoryOwnershipPort
+    managed_git_admin: Any | None = None
 
 
 class SessionAdminService:
@@ -111,6 +113,11 @@ class SessionAdminService:
             target, self._sessions_by_id()
         )
         previous_expires_at = manifest.expires_at
+        git_access_revoked = _revoke_managed_git_access_for_session(manifest)
+        managed_git = self._deps.managed_git_admin
+        if managed_git is not None:
+            managed_git.unbind_all("authorized_sessions", session_id)
+            managed_git.unbind_all("sessions", session_id)
         manifest.expires_at = session_helpers.utc_now()
         self._session_repository().upsert_session(manifest)
         return SessionActionResult(
@@ -120,18 +127,29 @@ class SessionAdminService:
             message=(
                 f"Revoked session {session_id} "
                 f"(previous_expires_at={previous_expires_at.isoformat()} "
-                f"new_expires_at={manifest.expires_at.isoformat()})"
+                f"new_expires_at={manifest.expires_at.isoformat()} "
+                f"git_access_revoked={int(git_access_revoked)})"
             ),
         )
 
     def delete_session(self, target: str) -> SessionActionResult:
-        session_id, _ = session_helpers.resolve_session_target(target, self._sessions_by_id())
+        session_id, manifest = session_helpers.resolve_session_target(
+            target, self._sessions_by_id()
+        )
+        git_access_revoked = _revoke_managed_git_access_for_session(manifest)
+        managed_git = self._deps.managed_git_admin
+        if managed_git is not None:
+            managed_git.unbind_all("authorized_sessions", session_id)
+            managed_git.unbind_all("sessions", session_id)
         self._session_repository().delete_session(session_id)
         return SessionActionResult(
             success=True,
             session_id=session_id,
             action="delete_session",
-            message=f"Deleted session {session_id}",
+            message=(
+                f"Deleted session {session_id} "
+                f"git_access_revoked={int(git_access_revoked)}"
+            ),
         )
 
     def set_session_allowed_tools(

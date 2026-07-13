@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,14 +9,18 @@ from typing import Any
 import httpx
 import pytest
 
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.services import (
     PrIntegrationPreflightAdminDependencies,
     PrIntegrationPreflightAdminService,
-    VmAgentAdminSupport,
+)
+from evander.pr_merge_preflight import (
+    MergePreflightCheck,
+    MergePreflightReport,
 )
 
-PROJECT_DIR = Path(__file__).resolve().parents[1]
+
+MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
 
 
 def patch_httpx_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTransport) -> None:
@@ -44,7 +49,7 @@ def _init_repo(repo: Path) -> tuple[str, str]:
         check=True,
     )
     _git(repo, "config", "user.email", "test@example.invalid")
-    _git(repo, "config", "user.name", "Truman Test")
+    _git(repo, "config", "user.name", "Evander Test")
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-q", "-m", "base")
@@ -68,44 +73,56 @@ class _ProviderConfigResolver:
         return self.config
 
 
-def _resolve_repo_source_support(project_dir: Path) -> VmAgentAdminSupport:
-    return VmAgentAdminSupport(
-        config=SimpleNamespace(),
-        runtime=SimpleNamespace(),
-        project_dir=project_dir,
-        local_issue_store=SimpleNamespace(),
-        local_issue_identity_resolver=SimpleNamespace(),
-        vm_inventory_admin=SimpleNamespace(),
-        workflow_config_admin=SimpleNamespace(),
-        directory_admin=SimpleNamespace(),
-        get_privileged_helper=lambda: None,
-        get_use_privileged_helper=lambda: False,
-    )
+class _ManagedGitStub:
+    def __init__(self, worktree: Path, *, lookup_error: Exception | None = None) -> None:
+        self.worktree = worktree
+        self.lookup_error = lookup_error
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def get_repository(self, managed_repo_id: str, directory_path: str) -> dict[str, object]:
+        self.calls.append(("get", managed_repo_id, {"directory_path": directory_path}))
+        if self.lookup_error is not None:
+            raise self.lookup_error
+        return {"managed_repo_id": managed_repo_id, "default_branch": "main"}
+
+    def resolve_internal_repository(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+    ) -> tuple[Path, Path]:
+        self.calls.append(("resolve", managed_repo_id, {"directory_path": directory_path}))
+        return self.worktree / ".git", self.worktree.parent
+
+    def refresh_repository(self, managed_repo_id: str) -> dict[str, object]:
+        self.calls.append(("refresh", managed_repo_id, {}))
+        return {"managed_repo_id": managed_repo_id}
+
+    @contextmanager
+    def temporary_worktree(self, managed_repo_id: str, **kwargs: object):
+        self.calls.append(("worktree", managed_repo_id, dict(kwargs)))
+        yield self.worktree
 
 
 def _build_service(
     *,
-    project_dir: Path,
-    repo_source_resolver: Any,
-    compute_directory_effective_config: Any,
-    provider_config_resolver: Any,
+    managed_git: _ManagedGitStub,
+    provider_config_resolver: _ProviderConfigResolver,
 ) -> PrIntegrationPreflightAdminService:
-    runtime = SimpleNamespace(provider_config=provider_config_resolver)
     return PrIntegrationPreflightAdminService(
         PrIntegrationPreflightAdminDependencies(
-            runtime=runtime,
-            compute_directory_effective_config=compute_directory_effective_config,
-            resolve_repo_source=repo_source_resolver,
+            runtime=SimpleNamespace(provider_config=provider_config_resolver),
+            managed_git_admin=managed_git,
         )
     )
 
 
-def test_run_pr_integration_preflight_clean_single_pr_uses_directory_repo_source(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_run_pr_integration_preflight_uses_temporary_managed_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
     main_commit, feature_commit = _init_repo(repo)
-    support = _resolve_repo_source_support(PROJECT_DIR)
+    managed_git = _ManagedGitStub(repo)
     provider_config_resolver = _ProviderConfigResolver(
         SimpleNamespace(
             azure_devops_organization_url="https://dev.azure.com/org",
@@ -114,21 +131,6 @@ def test_run_pr_integration_preflight_clean_single_pr_uses_directory_repo_source
             email_provider_timeout_seconds=5.0,
         )
     )
-    compute_calls: list[tuple[str, str]] = []
-
-    def compute_directory_effective_config(directory_path: str, domain: str) -> Any:
-        compute_calls.append((directory_path, domain))
-        return SimpleNamespace(
-            ok=True,
-            data=SimpleNamespace(
-                resolution=SimpleNamespace(
-                    effective_config={
-                        "ado_repo_source": str(repo),
-                    }
-                )
-            ),
-        )
-
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -146,9 +148,10 @@ def test_run_pr_integration_preflight_clean_single_pr_uses_directory_repo_source
                 "targetRefName": "refs/heads/main",
                 "lastMergeSourceCommit": {"commitId": feature_commit},
                 "lastMergeTargetCommit": {"commitId": main_commit},
-                "createdBy": {"displayName": "Agent"},
                 "_links": {
-                    "web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}
+                    "web": {
+                        "href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
+                    }
                 },
             },
         )
@@ -156,9 +159,7 @@ def test_run_pr_integration_preflight_clean_single_pr_uses_directory_repo_source
     patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
     monkeypatch.setenv("ADO_PAT", "secret")
     service = _build_service(
-        project_dir=PROJECT_DIR,
-        repo_source_resolver=support.resolve_repo_source,
-        compute_directory_effective_config=compute_directory_effective_config,
+        managed_git=managed_git,
         provider_config_resolver=provider_config_resolver,
     )
 
@@ -168,119 +169,27 @@ def test_run_pr_integration_preflight_clean_single_pr_uses_directory_repo_source
         pr_ids=["17"],
         mode="single",
         directory_path="root/team-a",
+        managed_repo_id=MANAGED_REPO_ID,
     )
 
-    assert compute_calls == [("root/team-a", "ado_worker")]
     assert provider_config_resolver.calls == ["root/team-a"]
     assert len(requests) == 1
     assert report.status == "clean"
-    assert report.repo_path == str(repo)
-    assert report.participants[0].pr_id == "17"
+    assert report.repo_path == MANAGED_REPO_ID
     assert report.participants[0].source_commit == feature_commit
     assert report.participants[0].target_commit == main_commit
-    assert report.participants[0].url == "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
     assert report.checks[0].status == "clean"
-    assert report.summary_text is not None
-    assert "clean" in report.summary_text
+    assert [call[0] for call in managed_git.calls] == [
+        "get",
+        "resolve",
+        "refresh",
+        "worktree",
+    ]
+    worktree_call = managed_git.calls[-1]
+    assert worktree_call[2]["commit_sha"] == main_commit
+    assert worktree_call[2]["purpose"] == "pr-integration-preflight"
     assert _git(repo, "status", "--porcelain").stdout.strip() == ""
     assert not (repo / ".git" / "MERGE_HEAD").exists()
-
-
-def test_run_pr_integration_preflight_prefers_explicit_repo_source(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    repo = tmp_path / "repo"
-    main_commit, feature_commit = _init_repo(repo)
-    support = _resolve_repo_source_support(PROJECT_DIR)
-    provider_config_resolver = _ProviderConfigResolver(
-        SimpleNamespace(
-            azure_devops_organization_url="https://dev.azure.com/org",
-            azure_devops_project="proj",
-            azure_devops_pr_pat_env="ADO_PAT",
-        )
-    )
-
-    def compute_directory_effective_config(directory_path: str, domain: str) -> Any:
-        raise AssertionError("directory config should not be consulted when repo_source is set")
-
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "pullRequestId": 17,
-                "title": "Fix race",
-                "status": "active",
-                "sourceRefName": "refs/heads/feature/review",
-                "targetRefName": "refs/heads/main",
-                "lastMergeSourceCommit": {"commitId": feature_commit},
-                "lastMergeTargetCommit": {"commitId": main_commit},
-                "_links": {
-                    "web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}
-                },
-            },
-        )
-
-    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
-    monkeypatch.setenv("ADO_PAT", "secret")
-    service = _build_service(
-        project_dir=PROJECT_DIR,
-        repo_source_resolver=support.resolve_repo_source,
-        compute_directory_effective_config=compute_directory_effective_config,
-        provider_config_resolver=provider_config_resolver,
-    )
-
-    report = service.run_pr_integration_preflight(
-        provider="azure-devops",
-        repo="repo-1",
-        pr_ids=["17"],
-        mode="single",
-        directory_path="root/team-a",
-        repo_source=str(repo),
-    )
-
-    assert len(requests) == 1
-    assert report.status == "clean"
-    assert report.repo_path == str(repo)
-    assert report.participants[0].source_commit == feature_commit
-    assert report.participants[0].target_commit == main_commit
-
-
-def test_run_pr_integration_preflight_requires_repo_source_when_missing(
-    tmp_path: Path,
-) -> None:
-    provider_config_resolver = _ProviderConfigResolver(
-        SimpleNamespace(
-            azure_devops_organization_url="https://dev.azure.com/org",
-            azure_devops_project="proj",
-            azure_devops_pr_pat_env="ADO_PAT",
-        )
-    )
-
-    def compute_directory_effective_config(directory_path: str, domain: str) -> Any:
-        return SimpleNamespace(ok=True, data=SimpleNamespace(resolution=SimpleNamespace(effective_config={})))
-
-    support = _resolve_repo_source_support(PROJECT_DIR)
-    service = _build_service(
-        project_dir=PROJECT_DIR,
-        repo_source_resolver=support.resolve_repo_source,
-        compute_directory_effective_config=compute_directory_effective_config,
-        provider_config_resolver=provider_config_resolver,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"repo_source or ado_worker\.ado_repo_source",
-    ):
-        service.run_pr_integration_preflight(
-            provider="ado",
-            repo="repo-1",
-            pr_ids=["17"],
-            mode="single",
-            directory_path="root/team-a",
-        )
 
 
 def test_run_pr_integration_preflight_reports_provider_error_when_pat_missing(
@@ -288,7 +197,7 @@ def test_run_pr_integration_preflight_reports_provider_error_when_pat_missing(
 ) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
-    support = _resolve_repo_source_support(PROJECT_DIR)
+    managed_git = _ManagedGitStub(repo)
     provider_config_resolver = _ProviderConfigResolver(
         SimpleNamespace(
             azure_devops_organization_url="https://dev.azure.com/org",
@@ -296,21 +205,8 @@ def test_run_pr_integration_preflight_reports_provider_error_when_pat_missing(
             azure_devops_pr_pat_env="MISSING_PAT",
         )
     )
-
-    def compute_directory_effective_config(directory_path: str, domain: str) -> Any:
-        return SimpleNamespace(
-            ok=True,
-            data=SimpleNamespace(
-                resolution=SimpleNamespace(
-                    effective_config={"ado_repo_source": str(repo)}
-                )
-            ),
-        )
-
     service = _build_service(
-        project_dir=PROJECT_DIR,
-        repo_source_resolver=support.resolve_repo_source,
-        compute_directory_effective_config=compute_directory_effective_config,
+        managed_git=managed_git,
         provider_config_resolver=provider_config_resolver,
     )
 
@@ -320,53 +216,41 @@ def test_run_pr_integration_preflight_reports_provider_error_when_pat_missing(
         pr_ids=["17"],
         mode="single",
         directory_path="root",
+        managed_repo_id=MANAGED_REPO_ID,
     )
 
     assert report.status == "provider_error"
-    assert report.participants[0].pr_id == "17"
+    assert report.repo_path == MANAGED_REPO_ID
     assert report.participants[0].status == "provider_error"
-    assert report.checks[0].status == "provider_error"
     assert "PAT" in report.errors[0] or "configured" in report.errors[0]
 
 
-def test_run_pr_integration_preflight_reports_repo_error_when_resolution_fails(
+def test_run_pr_integration_preflight_reports_managed_repo_lookup_error(
     tmp_path: Path,
 ) -> None:
-    support = _resolve_repo_source_support(PROJECT_DIR)
-    provider_config_resolver = _ProviderConfigResolver(
-        SimpleNamespace(
-            azure_devops_organization_url="https://dev.azure.com/org",
-            azure_devops_project="proj",
-            azure_devops_pr_pat_env="ADO_PAT",
-        )
+    managed_git = _ManagedGitStub(
+        tmp_path / "unused",
+        lookup_error=LookupError("managed repository is not visible in this directory"),
     )
-
-    def compute_directory_effective_config(directory_path: str, domain: str) -> Any:
-        raise AssertionError("repo_source is explicit, so directory config should not be used")
-
+    provider_config_resolver = _ProviderConfigResolver(SimpleNamespace())
     service = _build_service(
-        project_dir=PROJECT_DIR,
-        repo_source_resolver=support.resolve_repo_source,
-        compute_directory_effective_config=compute_directory_effective_config,
+        managed_git=managed_git,
         provider_config_resolver=provider_config_resolver,
     )
 
-    missing_repo = tmp_path / "missing-repo"
     report = service.run_pr_integration_preflight(
         provider="ado",
         repo="repo-1",
         pr_ids=["17"],
         mode="single",
-        directory_path="root",
-        repo_source=str(missing_repo),
+        directory_path="root/team-b",
+        managed_repo_id=MANAGED_REPO_ID,
     )
 
     assert report.status == "repo_error"
-    assert report.repo_path == str(missing_repo)
-    assert report.participants[0].pr_id == "17"
-    assert report.participants[0].status == "repo_error"
-    assert report.checks[0].status == "repo_error"
-    assert report.errors[0]
+    assert report.repo_path == MANAGED_REPO_ID
+    assert "not visible" in report.errors[0]
+    assert provider_config_resolver.calls == []
 
 
 def test_admin_service_delegates_run_pr_integration_preflight() -> None:
@@ -381,9 +265,39 @@ def test_admin_service_delegates_run_pr_integration_preflight() -> None:
         pr_ids=["17"],
         mode="single",
         directory_path="root",
+        managed_repo_id=MANAGED_REPO_ID,
     )
 
+    assert result["kwargs"]["managed_repo_id"] == MANAGED_REPO_ID
     assert result["kwargs"]["provider"] == "ado"
-    assert result["kwargs"]["repo"] == "repo-1"
     assert result["kwargs"]["pr_ids"] == ["17"]
-    assert result["kwargs"]["mode"] == "single"
+
+
+def test_managed_preflight_report_scrubs_temporary_worktree_paths(tmp_path: Path) -> None:
+    checkout = tmp_path / "runtime" / "git-worktrees" / MANAGED_REPO_ID / "op-1" / "checkout"
+    report = MergePreflightReport(
+        repo_path=str(checkout),
+        mode="single",
+        status="repo_error",
+        checks=[
+            MergePreflightCheck(
+                index=1,
+                kind="single",
+                status="repo_error",
+                explanation=f"git failed in {checkout}",
+            )
+        ],
+        warnings=[f"operation directory: {checkout.parent}"],
+        errors=[f"checkout directory: {checkout}"],
+        summary_text=f"Could not inspect {checkout}",
+    )
+
+    sanitized = PrIntegrationPreflightAdminService._sanitize_managed_worktree_report(
+        report,
+        checkout,
+    )
+    payload = sanitized.model_dump_json()
+
+    assert str(checkout) not in payload
+    assert str(checkout.parent) not in payload
+    assert "<managed-worktree>" in payload

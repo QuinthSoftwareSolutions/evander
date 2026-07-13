@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import build_admin_runtime
 from evander.config import GatewayConfig
 from evander.directory_config import DirectoryConfigStore
 from evander.gateway import create_server

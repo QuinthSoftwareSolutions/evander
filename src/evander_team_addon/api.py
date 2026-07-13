@@ -289,7 +289,10 @@ def _team_costs_payload(
 
 def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     repository = TeamStateRepository(context.runtime_dir)
-    admin_service = TeamAdminService(repository)
+    admin_service = TeamAdminService(
+        repository,
+        managed_git_admin=getattr(context.service, "managed_git_admin", None),
+    )
     chat_service = TeamChatService(repository)
     runtime_service = TeamRuntimeService(repository)
     avatar_storage = AvatarStorage(context.runtime_dir)
@@ -669,21 +672,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         import_git_repo = getattr(service, "import_git_repo", None)
         if not callable(import_git_repo):
             return JSONResponse({"error": "Git repo import is unavailable"}, status_code=503)
-        bare_repo_name = _optional(payload, "bare_repo_name") or _optional(payload, "repo_name")
-        bare_repo = _optional(payload, "bare_repo")
-        if bare_repo:
-            if bare_repo.startswith("/"):
-                raise ValueError("bare_repo must be a bare repo name for import, not a path")
-            if bare_repo_name and bare_repo_name != bare_repo:
-                raise ValueError("bare_repo cannot differ from bare_repo_name")
-            bare_repo_name = bare_repo
         try:
-            repo_source = _required(payload, "repo_source", "host_repo_path")
+            repo_source = _required(payload, "repo_source")
             directory_path = _optional(payload, "directory_path") or "root"
             imported = await run_in_threadpool(
                 lambda: import_git_repo(
                     repo_source=repo_source,
-                    bare_repo_name=bare_repo_name,
                     directory_path=directory_path,
                 )
             )
@@ -4539,17 +4533,7 @@ def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:
         return None
     if not isinstance(git_payload, Mapping):
         raise ValueError("git must be a JSON object")
-    normalized = dict(git_payload)
-    bare_repo = _optional(normalized, "bare_repo")
-    normalized.pop("bare_repo", None)
-    if bare_repo:
-        if normalized.get("bare_repo_name") or normalized.get("bare_repo_path"):
-            raise ValueError("bare_repo cannot be combined with bare_repo_name or bare_repo_path")
-        if bare_repo.startswith("/"):
-            normalized["bare_repo_path"] = bare_repo
-        else:
-            normalized["bare_repo_name"] = bare_repo
-    return ProjectGitConfig.model_validate(normalized)
+    return ProjectGitConfig.model_validate(dict(git_payload))
 
 
 def _optional_release_policy(

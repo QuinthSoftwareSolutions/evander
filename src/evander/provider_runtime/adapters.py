@@ -34,6 +34,7 @@ class AdminRuntimeProviderAdapter:
             self.project_dir = project_dir
         self.vm_agent_admin = getattr(admin_runtime, "vm_agent_admin", None)
         self.issue_git_admin = getattr(admin_runtime, "issue_git_admin", None)
+        self.managed_git_admin = getattr(admin_runtime, "managed_git_admin", None)
 
     def __getattribute__(self, name: str) -> Any:
         conditional_methods = object.__getattribute__(self, "_CONDITIONALLY_BACKED_METHODS")
@@ -67,6 +68,9 @@ class AdminRuntimeProviderAdapter:
 
     def _issue_git_method(self, attr_name: str) -> Callable[..., Any] | None:
         return self._delegate_method(attr_name, self.issue_git_admin, self._admin_runtime)
+
+    def _managed_git_method(self, attr_name: str) -> Callable[..., Any] | None:
+        return self._delegate_method(attr_name, self.managed_git_admin, self._admin_runtime)
 
     def _call_required(
         self,
@@ -129,6 +133,48 @@ class AdminRuntimeProviderAdapter:
         return self._call_required(
             self._vm_agent_method("clone_repo_into_vm"),
             "clone_repo_into_vm",
+            **kwargs,
+        )
+
+    def ensure_managed_git_repository(self, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._managed_git_method("register_repository"),
+            "ensure_managed_git_repository",
+            **kwargs,
+        )
+
+    def resolve_managed_git_clone(self, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._managed_git_method("clone_info"),
+            "resolve_managed_git_clone",
+            **kwargs,
+        )
+
+    def bind_managed_git_repository(self, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._managed_git_method("bind"),
+            "bind_managed_git_repository",
+            **kwargs,
+        )
+
+    def unbind_all_managed_git_repositories(self, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._managed_git_method("unbind_all"),
+            "unbind_all_managed_git_repositories",
+            **kwargs,
+        )
+
+    def unbind_managed_git_repositories(self, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._managed_git_method("unbind_all"),
+            "unbind_managed_git_repositories",
+            **kwargs,
+        )
+
+    def reconcile_managed_git_worktrees(self, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._managed_git_method("reconcile_stale_worktrees"),
+            "reconcile_managed_git_worktrees",
             **kwargs,
         )
 
@@ -212,20 +258,24 @@ class AdminRuntimeProviderAdapter:
 
     def promote_agent_branch(self, **kwargs: Any) -> Any:
         return self._call_required(
-            self._issue_git_method("promote_agent_branch"),
+            self._managed_git_method("promote_agent_branch"),
             "promote_agent_branch",
             **kwargs,
         )
 
     def push_branch(self, **kwargs: Any) -> Any:
-        return self._call_required(self._issue_git_method("push_branch"), "push_branch", **kwargs)
+        return self._call_required(
+            self._managed_git_method("push_branch"), "push_branch", **kwargs
+        )
 
     def pr_create(self, **kwargs: Any) -> Any:
-        return self._call_required(self._issue_git_method("pr_create"), "pr_create", **kwargs)
+        return self._call_required(
+            self._managed_git_method("pr_create"), "pr_create", **kwargs
+        )
 
     def git_pr_note_query(self, **kwargs: Any) -> Any:
         return self._call_required(
-            self._issue_git_method("git_pr_note_query"),
+            self._managed_git_method("read_pr_note"),
             "git_pr_note_query",
             **kwargs,
         )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from datetime import timedelta
 from pathlib import Path
 
@@ -93,8 +92,7 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
 def _seed_review_promotion(repo: TeamStateRepository) -> None:
     def _mutate(state):
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
         )
         state.deliverables["deliverable-1"] = Deliverable(
             id="deliverable-1",
@@ -223,8 +221,6 @@ def test_record_release_promotion_success_publishes_canonical_push(
     _seed_release(repo)
 
     def _mutate(state):
-        state.projects["project"].git.canonical_origin_url = "https://example.invalid/Truman.git"
-        state.projects["project"].git.provider = "azure_devops"
         state.projects["project"].release_policy = ProjectReleasePolicy(
             allow_ungated=True
         )
@@ -268,9 +264,10 @@ def test_record_release_promotion_success_publishes_canonical_push(
     assert events[0].payload["promotion_kind"] == "canonical_push"
     assert events[0].payload["source_branch"] == "team/team/releases/release-1"
     assert events[0].payload["target_branch"] == "releases/project/release-1"
-    assert events[0].payload["bare_repo_name"] == "Truman.git"
-    assert events[0].payload["canonical_origin_url"] == ("https://example.invalid/Truman.git")
-    assert events[0].payload["provider"] == "azure_devops"
+    assert events[0].payload["managed_repo_id"] == "mr_0123456789abcdefabcd"
+    assert events[0].payload["expected_commit_sha"] == "feedface"
+    assert "bare_repo_name" not in events[0].payload
+    assert "canonical_origin_url" not in events[0].payload
 
 
 def test_record_canonical_promotion_success_updates_record(
@@ -358,8 +355,7 @@ def test_record_canonical_promotion_failure_blocks_release(
 def _seed_release(repo: TeamStateRepository) -> None:
     def _mutate(state):
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
         )
         state.deliverables["deliverable-1"] = Deliverable(
             id="deliverable-1",
@@ -580,505 +576,154 @@ def test_mark_release_published_failure_notifies_lead(tmp_path: Path) -> None:
     assert notice.payload["kind"] == "release_publish_failed"
 
 
-# --- consolidation effect -------------------------------------------------
+# --- managed Git delegation effects -----------------------------------------
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
-        check=False,
+class _ManagedGitAdminStub:
+    def __init__(self, result: dict[str, object]) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
+
+    def consolidate_branches(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(dict(kwargs))
+        return dict(self.result)
+
+
+class _AdminRuntimeStub:
+    def __init__(self, *, promotion_result: dict[str, object], consolidation_result: dict[str, object]) -> None:
+        self.promotion_result = promotion_result
+        self.promotion_calls: list[dict[str, object]] = []
+        self.managed_git_admin = _ManagedGitAdminStub(consolidation_result)
+
+    def promote_agent_branch(self, **kwargs: object) -> dict[str, object]:
+        self.promotion_calls.append(dict(kwargs))
+        return dict(self.promotion_result)
+
+
+def test_publish_review_branch_delegates_pinned_promotion() -> None:
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": True, "commit_sha": "a" * 40},
+        consolidation_result={"success": True},
     )
-    if check and result.returncode != 0:
-        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr}")
-    return result
-
-
-def _init_repo(repo: Path) -> None:
-    repo.mkdir(parents=True, exist_ok=True)
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "test@example.invalid")
-    _git(repo, "config", "user.name", "Team Test")
-    (repo / "file.txt").write_text("base\n")
-    _git(repo, "add", "file.txt")
-    _git(repo, "commit", "-q", "-m", "base")
-
-
-def _branch_with(repo: Path, branch: str, content: str) -> None:
-    _git(repo, "checkout", "-q", "-b", branch, "main")
-    (repo / "file.txt").write_text(content)
-    _git(repo, "commit", "-q", "-am", branch)
-    _git(repo, "checkout", "-q", "main")
-
-
-def _consolidate_provider(tmp_path: Path, **config: object) -> dict[str, object]:
-    provider = TeamConsolidateGitBranchesEffectProvider()
-    provider.initialize(
-        TeamConsolidateGitBranchesEffectDefinition(
-            id="consolidate",
-            display_name="Consolidate",
-            type="effect:team:consolidate-git-branches",
-            **config,
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
-    )
-    return provider.execute()
-
-
-def _publish_review_provider(tmp_path: Path, **config: object) -> dict[str, object]:
     provider = TeamPublishReviewBranchEffectProvider()
     provider.initialize(
         TeamPublishReviewBranchEffectDefinition(
             id="publish-review",
             display_name="Publish Review",
             type="effect:team:publish-review-branch",
-            **config,
+            managed_repo_id="mr_0123456789abcdefabcd",
+            source_branch="agents/session-1/work",
+            expected_commit_sha="a" * 40,
+            target_branch="team/team/reviews/deliverable",
         ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+        EffectRuntimeContext(admin_service=admin),
     )
-    return provider.execute()
 
-
-def _git_dir(git_dir: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        ["git", f"--git-dir={git_dir}", *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if check and result.returncode != 0:
-        raise AssertionError(f"git --git-dir={git_dir} {' '.join(args)} failed: {result.stderr}")
-    return result
-
-
-def test_publish_review_branch_imports_unreachable_bare_commit(tmp_path: Path) -> None:
-    bare = tmp_path / "dropbox.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-    source = tmp_path / "source"
-    _init_repo(source)
-    _git(source, "remote", "add", "origin", str(bare))
-    _git(source, "push", "-u", "origin", "main")
-    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
-    _branch_with(source, "agents/session-1/work", "agent work\n")
-    commit_sha = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
-    _git(source, "push", "origin", "agents/session-1/work")
-    _git_dir(bare, "update-ref", "-d", "refs/heads/agents/session-1/work")
-    trusted = tmp_path / "trusted"
-    subprocess.run(["git", "clone", str(bare), str(trusted)], check=True, capture_output=True)
-    (trusted / "file.txt").write_text("local dirty state\n")
-
-    result = _publish_review_provider(
-        tmp_path,
-        host_repo_path=str(trusted),
-        bare_repo_path=str(bare),
-        commit_sha=commit_sha,
-        target_branch="team/team/reviews/deliverable",
-    )
+    result = provider.execute()
 
     assert result["success"] is True
+    assert result["managed_repo_id"] == "mr_0123456789abcdefabcd"
     assert result["review_branch"] == "team/team/reviews/deliverable"
-    assert result["commit_sha"] == commit_sha
-    ref = _git(trusted, "rev-parse", "refs/heads/team/team/reviews/deliverable")
-    assert ref.stdout.strip() == commit_sha
-    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
-    assert (trusted / "file.txt").read_text(encoding="utf-8") == "local dirty state\n"
+    assert admin.promotion_calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "agent_branch": "agents/session-1/work",
+            "target_branch": "team/team/reviews/deliverable",
+            "expected_commit_sha": "a" * 40,
+            "directory_path": "root",
+        }
+    ]
 
 
-def test_publish_review_branch_reports_missing_source(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    bare = tmp_path / "dropbox.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-
-    result = _publish_review_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        bare_repo_path=str(bare),
-        target_branch="team/team/reviews/missing",
+def test_publish_review_branch_preserves_source_ref_moved_failure() -> None:
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": False, "reason": "source_ref_moved"},
+        consolidation_result={"success": True},
     )
+    provider = TeamPublishReviewBranchEffectProvider()
+    provider.initialize(
+        TeamPublishReviewBranchEffectDefinition(
+            id="publish-review",
+            display_name="Publish Review",
+            type="effect:team:publish-review-branch",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            source_branch="agents/session-1/work",
+            expected_commit_sha="a" * 40,
+            target_branch="team/team/reviews/deliverable",
+        ),
+        EffectRuntimeContext(admin_service=admin),
+    )
+
+    result = provider.execute()
 
     assert result["success"] is False
-    assert "source_branch or commit_sha is required" in str(result["error"])
+    assert result["reason"] == "source_ref_moved"
 
 
-def test_consolidate_git_branches_merges_in_order(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    _branch_with(repo, "feat-a", "a\n")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        source_branches=["feat-a"],
-        target_branch="team/team/releases/release-1",
-        base_branch="main",
+def test_consolidate_git_branches_delegates_exact_source_commits() -> None:
+    expected_result = {
+        "success": True,
+        "commit_sha": "c" * 40,
+        "target_branch": "team/team/releases/release-1",
+        "merged_branches": ["team/team/features/task-backend"],
+    }
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": True},
+        consolidation_result=expected_result,
+    )
+    provider = TeamConsolidateGitBranchesEffectProvider()
+    provider.initialize(
+        TeamConsolidateGitBranchesEffectDefinition(
+            id="consolidate",
+            display_name="Consolidate",
+            type="effect:team:consolidate-git-branches",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            source_branches=["team/team/features/task-backend"],
+            target_branch="team/team/releases/release-1",
+            base_branch="main",
+            expected_source_commits={"team/team/features/task-backend": "b" * 40},
+            allowed_changed_paths=["src/backend.py"],
+        ),
+        EffectRuntimeContext(admin_service=admin),
     )
 
-    assert result["success"] is True
-    assert result["merged_branches"] == ["feat-a"]
-    assert result["commit_sha"]
-    assert result["conflict_branch"] is None
+    result = provider.execute()
+
+    assert result == expected_result
+    assert admin.managed_git_admin.calls == [
+            {
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "directory_path": "root",
+                "source_branches": ["team/team/features/task-backend"],
+            "target_branch": "team/team/releases/release-1",
+            "base_branch": "main",
+            "expected_source_commits": {"team/team/features/task-backend": "b" * 40},
+            "allowed_changed_paths": ["src/backend.py"],
+        }
+    ]
 
 
-def test_consolidate_git_branches_blocks_source_tip_moved_after_review(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    _branch_with(repo, "feat-a", "reviewed\n")
-    reviewed_commit = _git(repo, "rev-parse", "feat-a").stdout.strip()
-    _git(repo, "checkout", "-q", "feat-a")
-    (repo / "extra.txt").write_text("stale release baggage\n", encoding="utf-8")
-    _git(repo, "add", "extra.txt")
-    _git(repo, "commit", "-q", "-m", "unreviewed baggage")
-    moved_commit = _git(repo, "rev-parse", "feat-a").stdout.strip()
-    _git(repo, "checkout", "-q", "main")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        source_branches=["feat-a"],
-        expected_source_commits={"feat-a": reviewed_commit},
-        target_branch="team/team/releases/release-1",
-        base_branch="main",
+def test_consolidate_git_branches_rejects_incomplete_commit_map() -> None:
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": True},
+        consolidation_result={"success": True},
     )
+    provider = TeamConsolidateGitBranchesEffectProvider()
+    provider.initialize(
+        TeamConsolidateGitBranchesEffectDefinition(
+            id="consolidate",
+            display_name="Consolidate",
+            type="effect:team:consolidate-git-branches",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            source_branches=["team/team/features/task-backend"],
+            target_branch="team/team/releases/release-1",
+            expected_source_commits={},
+        ),
+        EffectRuntimeContext(admin_service=admin),
+    )
+
+    result = provider.execute()
 
     assert result["success"] is False
-    assert result["error_code"] == "scope_mismatch"
-    assert result["unexpected_commit_shas"] == [moved_commit]
-    assert "moved after review" in str(result["error"])
-
-
-def test_consolidate_git_branches_blocks_paths_outside_reviewed_manifest(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    _branch_with(repo, "feat-a", "reviewed\n")
-    reviewed_commit = _git(repo, "rev-parse", "feat-a").stdout.strip()
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        source_branches=["feat-a"],
-        expected_source_commits={"feat-a": reviewed_commit},
-        allowed_changed_paths=["M\tallowed-only.txt"],
-        target_branch="team/team/releases/release-1",
-        base_branch="main",
-    )
-
-    assert result["success"] is False
-    assert result["error_code"] == "scope_mismatch"
-    assert result["unexpected_paths"] == ["file.txt"]
-
-
-def test_consolidate_git_branches_fetches_missing_source_from_bare_repo(
-    tmp_path: Path,
-) -> None:
-    bare = tmp_path / "dropbox.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-    source = tmp_path / "source"
-    _init_repo(source)
-    _git(source, "remote", "add", "origin", str(bare))
-    _git(source, "push", "-u", "origin", "main")
-    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
-    trusted = tmp_path / "trusted"
-    subprocess.run(
-        ["git", "clone", str(bare), str(trusted)],
-        check=True,
-        capture_output=True,
-    )
-    _git(trusted, "config", "user.email", "test@example.invalid")
-    _git(trusted, "config", "user.name", "Team Test")
-    _branch_with(source, "agents/session-1/work", "agent work\n")
-    source_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
-    _git(source, "push", "origin", "agents/session-1/work")
-    assert (
-        _git(
-            trusted,
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "agents/session-1/work^{commit}",
-            check=False,
-        ).returncode
-        != 0
-    )
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(trusted),
-        bare_repo_path=str(bare),
-        source_branches=["agents/session-1/work"],
-        target_branch="team/team/features/task-ui",
-        base_branch="main",
-    )
-
-    assert result["success"] is True
-    assert result["merged_branches"] == ["agents/session-1/work"]
-    assert (
-        _git_dir(
-            bare,
-            "merge-base",
-            "--is-ancestor",
-            source_commit,
-            "refs/heads/team/team/features/task-ui",
-        ).returncode
-        == 0
-    )
-    temp_refs = _git(
-        trusted,
-        "for-each-ref",
-        "--format=%(refname)",
-        "refs/evander/team-consolidations",
-    )
-    assert temp_refs.stdout.strip() == ""
-    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
-    assert (trusted / "file.txt").read_text(encoding="utf-8") == "base\n"
-
-
-def test_consolidate_git_branches_falls_back_to_trusted_host_promotion_ref(
-    tmp_path: Path,
-) -> None:
-    bare = tmp_path / "dropbox.git"
-    source = tmp_path / "source"
-    _init_repo(source)
-    subprocess.run(
-        ["git", "clone", "--bare", str(source), str(bare)],
-        check=True,
-        capture_output=True,
-    )
-    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
-    trusted = tmp_path / "trusted"
-    subprocess.run(
-        ["git", "clone", str(bare), str(trusted)],
-        check=True,
-        capture_output=True,
-    )
-    _git(trusted, "config", "user.email", "test@example.invalid")
-    _git(trusted, "config", "user.name", "Team Test")
-    promoted_branch = "team/team/features/task-ui"
-    _branch_with(trusted, promoted_branch, "promoted work\n")
-    promoted_commit = _git(trusted, "rev-parse", promoted_branch).stdout.strip()
-    assert (
-        _git_dir(
-            bare,
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            f"refs/heads/{promoted_branch}^{{commit}}",
-            check=False,
-        ).returncode
-        != 0
-    )
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(trusted),
-        bare_repo_path=str(bare),
-        source_branches=[promoted_branch],
-        target_branch="team/team/releases/release-1",
-        base_branch="main",
-    )
-
-    assert result["success"] is True
-    assert result["merged_branches"] == [promoted_branch]
-    assert (
-        _git_dir(
-            bare,
-            "merge-base",
-            "--is-ancestor",
-            promoted_commit,
-            "refs/heads/team/team/releases/release-1",
-        ).returncode
-        == 0
-    )
-    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
-    assert (trusted / "file.txt").read_text(encoding="utf-8") == "base\n"
-
-
-def test_consolidate_git_branches_refreshes_stale_local_source_from_bare_repo(
-    tmp_path: Path,
-) -> None:
-    bare = tmp_path / "dropbox.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-    source = tmp_path / "source"
-    _init_repo(source)
-    _git(source, "remote", "add", "origin", str(bare))
-    _git(source, "push", "-u", "origin", "main")
-    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
-    trusted = tmp_path / "trusted"
-    subprocess.run(["git", "clone", str(bare), str(trusted)], check=True, capture_output=True)
-    _git(trusted, "config", "user.email", "test@example.invalid")
-    _git(trusted, "config", "user.name", "Team Test")
-    _branch_with(source, "agents/session-1/work", "old agent work\n")
-    old_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
-    _git(source, "push", "origin", "agents/session-1/work")
-    _git(
-        trusted,
-        "fetch",
-        str(bare),
-        "+refs/heads/agents/session-1/work:refs/heads/agents/session-1/work",
-    )
-    _git(source, "checkout", "-q", "agents/session-1/work")
-    (source / "file.txt").write_text("new agent work\n")
-    _git(source, "commit", "-q", "-am", "new agent work")
-    new_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
-    _git(source, "push", "origin", "agents/session-1/work")
-    assert (
-        _git(trusted, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip() == old_commit
-    )
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(trusted),
-        bare_repo_path=str(bare),
-        source_branches=["agents/session-1/work"],
-        target_branch="team/team/features/task-ui",
-        base_branch="main",
-    )
-
-    assert result["success"] is True
-    assert (
-        _git_dir(
-            bare,
-            "merge-base",
-            "--is-ancestor",
-            new_commit,
-            "refs/heads/team/team/features/task-ui",
-        ).returncode
-        == 0
-    )
-    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
-    assert (trusted / "file.txt").read_text(encoding="utf-8") == "base\n"
-    assert (
-        _git(trusted, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip() == old_commit
-    )
-
-
-def test_consolidate_git_branches_uses_isolated_worktree_when_checkout_dirty(
-    tmp_path: Path,
-) -> None:
-    bare = tmp_path / "dropbox.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-    source = tmp_path / "source"
-    _init_repo(source)
-    _git(source, "remote", "add", "origin", str(bare))
-    _git(source, "push", "-u", "origin", "main")
-    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
-    trusted = tmp_path / "trusted"
-    subprocess.run(["git", "clone", str(bare), str(trusted)], check=True, capture_output=True)
-    _git(trusted, "config", "user.email", "test@example.invalid")
-    _git(trusted, "config", "user.name", "Team Test")
-    _branch_with(source, "agents/session-1/work", "agent work\n")
-    source_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
-    _git(source, "push", "origin", "agents/session-1/work")
-    (trusted / "file.txt").write_text("uncommitted change\n", encoding="utf-8")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(trusted),
-        bare_repo_path=str(bare),
-        source_branches=["agents/session-1/work"],
-        target_branch="team/team/features/task-ui",
-        base_branch="main",
-    )
-
-    assert result["success"] is True
-    assert result["error_code"] is None
-    assert (
-        _git_dir(
-            bare,
-            "merge-base",
-            "--is-ancestor",
-            source_commit,
-            "refs/heads/team/team/features/task-ui",
-        ).returncode
-        == 0
-    )
-    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
-    assert (trusted / "file.txt").read_text(encoding="utf-8") == "uncommitted change\n"
-
-
-def test_consolidate_git_branches_allows_local_sources_when_bare_repo_missing(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    _branch_with(repo, "feat-a", "a\n")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        bare_repo_path=str(tmp_path / "missing.git"),
-        source_branches=["feat-a"],
-        target_branch="team/team/releases/release-1",
-        base_branch="main",
-    )
-
-    assert result["success"] is True
-    assert result["merged_branches"] == ["feat-a"]
-    assert (repo / "file.txt").read_text(encoding="utf-8") == "a\n"
-
-
-def test_consolidate_git_branches_refuses_dirty_worktree(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    (repo / "file.txt").write_text("uncommitted change\n")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        source_branches=["main"],
-        target_branch="team/team/releases/release-2",
-    )
-
-    assert result["success"] is False
-    assert "dirty worktree" in str(result["error"])
-    assert result["error_code"] == "checkout_dirty"
-    assert result["merged_branches"] == []
-
-
-def test_consolidate_git_branches_reports_stale_index_lock_without_bare_repo(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    (repo / ".git" / "index.lock").write_text("", encoding="utf-8")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        source_branches=["main"],
-        target_branch="team/team/releases/release-2",
-    )
-
-    assert result["success"] is False
-    assert result["error_code"] == "stale_index_lock"
-    assert "index.lock" in str(result["error"])
-    assert result["merged_branches"] == []
-
-
-def test_consolidate_git_branches_aborts_on_conflict(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    _branch_with(repo, "feat-a", "a\n")
-    _branch_with(repo, "feat-b", "b\n")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        source_branches=["feat-a", "feat-b"],
-        target_branch="team/team/releases/release-3",
-        base_branch="main",
-    )
-
-    assert result["success"] is False
-    assert result["error_code"] == "merge_conflict"
-    assert result["conflict_branch"] == "feat-b"
-    assert result["merged_branches"] == ["feat-a"]
-    # The conflicted merge must be aborted, leaving no in-progress merge.
-    status = _git(repo, "status", "--porcelain")
-    assert "UU" not in status.stdout
+    assert "expected_source_commits must contain every source branch" in str(result["error"])
+    assert admin.managed_git_admin.calls == []

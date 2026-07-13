@@ -706,6 +706,7 @@ class WorkerDaemon:
             repo_source=request.repo_source,
             clone_branch=request.clone_branch,
             repo_name=repo_name,
+            reconcile_existing_remote=request.reconcile_existing_remote,
         )
         return WorkerRepoCloneRecord(
             session_id=session_id,
@@ -1559,6 +1560,7 @@ class WorkerDaemon:
             repo_source=request.repo_source,
             clone_branch=request.clone_branch,
             repo_name=self._repo_name(request.repo_source),
+            reconcile_existing_remote=False,
         )
 
     def _clone_repo_into_repo_root(
@@ -1568,6 +1570,7 @@ class WorkerDaemon:
         repo_source: str,
         clone_branch: str | None,
         repo_name: str,
+        reconcile_existing_remote: bool = False,
     ) -> tuple[Path, bool]:
         self._ensure_allowed_git_source(repo_source)
         repo_name = str(validate_worker_component_id(repo_name, field_name="repo_name"))
@@ -1591,6 +1594,32 @@ class WorkerDaemon:
                 repo_source,
                 agent_home=paths.agent_home,
             ):
+                return target_dir, False
+            if reconcile_existing_remote and (target_dir / ".git").exists():
+                git_env = _git_subprocess_env(paths.agent_home)
+                has_origin = subprocess.run(
+                    ["git", "-C", str(target_dir), "remote", "get-url", "origin"],
+                    env=git_env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                remote_action = "set-url" if has_origin.returncode == 0 else "add"
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(target_dir),
+                        "remote",
+                        remote_action,
+                        "origin",
+                        repo_source,
+                    ],
+                    env=git_env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
                 return target_dir, False
             raise ValueError(
                 f"repo target already exists and is not a checkout for requested source: "
@@ -1661,6 +1690,15 @@ class WorkerDaemon:
         *,
         required: bool,
     ) -> None:
+        target_dir = paths.agent_home / ".ssh"
+        if required and self._managed_regular_file_exists_no_follow(
+            target_dir / "config",
+            label="SSH config",
+        ) and any(
+            self._managed_regular_file_exists_no_follow(target_dir / key_name, label="Git key")
+            for key_name in ("evander-git-write", "evander-git")
+        ):
+            return
         if self.git_ssh_source_dir is None:
             if required:
                 raise ValueError("worker Git SSH source directory is not configured")
@@ -1675,7 +1713,6 @@ class WorkerDaemon:
                     + ", ".join(missing)
                 )
             return
-        target_dir = paths.agent_home / ".ssh"
         self._ensure_managed_ssh_dir(target_dir)
         for name in ("evander-git", "evander-git.pub", "config", "known_hosts"):
             if name == "config" and self._managed_regular_file_exists_no_follow(
@@ -2177,9 +2214,7 @@ def _git_write_ssh_alias(read_git_ssh_alias: str) -> str:
 def _git_subprocess_env(agent_home: Path) -> dict[str, str]:
     return os.environ | {
         "HOME": str(agent_home),
-        "GIT_SSH_COMMAND": (
-            f"ssh -F {agent_home / '.ssh' / 'config'} -i {agent_home / '.ssh' / 'evander-git'}"
-        ),
+        "GIT_SSH_COMMAND": f"ssh -F {agent_home / '.ssh' / 'config'}",
     }
 
 

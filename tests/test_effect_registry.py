@@ -230,30 +230,52 @@ class _FakeContainerBackend:
         return self.logs
 
 
-class _FakeContainerGitMirrorResolver:
-    def __init__(
-        self,
-        *,
-        worker_repo_source: str = "ssh://evander-git-host/git-remotes/repo.git",
-        canonical_repo_source: str = "https://example.test/org/repo.git",
-    ) -> None:
-        self.worker_repo_source = worker_repo_source
-        self.canonical_repo_source = canonical_repo_source
-        self.git_root_path = Path("/git-remotes")
-        self.git_host = "10.2.0.4"
-        self.git_user = "agent"
-        self.git_ssh_alias = "evander-git-host"
-        self.resolved: list[dict[str, object]] = []
+_MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
 
-    def resolve(self, **kwargs):
-        self.resolved.append(kwargs)
-        return SimpleNamespace(
-            worker_repo_source=self.worker_repo_source,
-            canonical_repo_source=self.canonical_repo_source,
-            repo_name="repo",
-            mirror_name="repo-abcdef123456",
-            mirror_path="/git-remotes/repo-abcdef123456.git",
-        )
+
+def _attach_managed_git_clone(
+    admin_service: object,
+    *,
+    clone_url: str = "ssh://evander-git-host/runtime/managed-git/mr_0123456789abcdefabcd.git",
+    display_name: str = "repo",
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    clone_calls: list[dict[str, object]] = []
+    bind_calls: list[dict[str, object]] = []
+
+    def resolve_managed_git_clone(**kwargs: object) -> dict[str, object]:
+        clone_calls.append(dict(kwargs))
+        return {
+            "managed_repo_id": _MANAGED_REPO_ID,
+            "clone_url": clone_url,
+            "display_name": display_name,
+            "default_branch": "main",
+        }
+
+    def bind_managed_git_repository(**kwargs: object) -> None:
+        bind_calls.append(dict(kwargs))
+
+    setattr(admin_service, "resolve_managed_git_clone", resolve_managed_git_clone)
+    setattr(admin_service, "bind_managed_git_repository", bind_managed_git_repository)
+    setattr(
+        admin_service,
+        "_resolve_issue_setup",
+        lambda directory_path, root_dir: SimpleNamespace(
+            git_host="10.2.0.4",
+            git_user="agent",
+            git_ssh_alias="evander-git-host",
+        ),
+    )
+    setattr(
+        admin_service,
+        "managed_git_admin",
+        SimpleNamespace(
+            resolve_internal_repository=lambda managed_repo_id, directory_path: (
+                Path("/runtime/managed-git/mr_0123456789abcdefabcd.git"),
+                Path("/runtime/managed-git"),
+            )
+        ),
+    )
+    return clone_calls, bind_calls
 
 
 def _stub_container_git_authorization(
@@ -276,6 +298,15 @@ def _stub_container_git_authorization(
             allowed_from=str(kwargs["allowed_from"]),
         )
 
+    def fake_install_git_read_authorized_key(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            authorized_keys_path=Path(kwargs["authorized_keys_path"]),
+            public_key_body="AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
+            authorized_repo_path=Path(kwargs["authorized_repo_path"]),
+            allowed_from=str(kwargs["allowed_from"]),
+        )
+
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.authorized_keys_path_for_user",
         fake_authorized_keys_path_for_user,
@@ -283,6 +314,10 @@ def _stub_container_git_authorization(
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.install_git_write_authorized_key",
         fake_install_git_write_authorized_key,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.install_git_read_authorized_key",
+        fake_install_git_read_authorized_key,
     )
     return calls
 
@@ -468,6 +503,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:session:approve-mcp-tools-for-run",
         "effect:session:revoke-mcp-tool-approval-lease",
         "effect:session:renew-if-expired",
+        "effect:git:ensure-managed-repo",
         "effect:git:promote-agent-branch",
         "effect:git:push-branch",
         "effect:pr:create",
@@ -1745,7 +1781,7 @@ def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
         display_name="Clone repo",
         type="effect:vm:clone-repo",
         session_id="session-42",
-        repo_source="/tmp/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -1782,13 +1818,13 @@ def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
         "vm_name": "vm-42",
         "target_dir": "/home/agent/RepoName",
         "guest_repo_name": "RepoName",
-        "remote_url": "ssh://evander-git-host/home/git/remotes/RepoName.git",
+        "managed_repo_id": _MANAGED_REPO_ID,
         "pr_notes_ref": "refs/notes/agent-pr/92e76c732d82",
     }
     assert admin_service.clone_repo_into_vm_calls[0] == {
         "vm_name": "vm-42",
         "session_id": "session-42",
-        "repo_source": "/tmp/repo",
+        "managed_repo_id": _MANAGED_REPO_ID,
         "clone_branch": None,
         "vm_user": "agent",
         "directory_path": "root/team-a",
@@ -1801,7 +1837,7 @@ def test_agent_clone_repo_libvirt_uses_explicit_git_author_identity() -> None:
         display_name="Clone repo",
         type="effect:agent:clone-repo",
         session_id="session-42",
-        repo_source="/tmp/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
         git_author_name="Ada Lovelace",
         git_author_email="ada@example.com",
     )
@@ -1830,7 +1866,7 @@ def test_agent_clone_repo_libvirt_uses_explicit_git_committer_identity() -> None
         display_name="Clone repo",
         type="effect:agent:clone-repo",
         session_id="session-42",
-        repo_source="/tmp/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
         git_author_name="Ada Lovelace",
         git_author_email="ada@example.com",
         git_committer_name="Truman Bot",
@@ -1861,7 +1897,7 @@ def test_agent_clone_repo_requires_complete_git_author_identity() -> None:
         display_name="Clone repo",
         type="effect:agent:clone-repo",
         session_id="session-42",
-        repo_source="/tmp/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
         git_author_name="Ada Lovelace",
     )
     admin_service = _AdminServiceStub(
@@ -1890,7 +1926,7 @@ def test_agent_clone_repo_requires_complete_git_committer_identity() -> None:
         display_name="Clone repo",
         type="effect:agent:clone-repo",
         session_id="session-42",
-        repo_source="/tmp/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
         git_committer_name="Truman Bot",
     )
     admin_service = _AdminServiceStub(
@@ -1919,7 +1955,7 @@ def test_agent_clone_repo_libvirt_does_not_use_session_issue_owner_metadata() ->
         display_name="Clone repo",
         type="effect:agent:clone-repo",
         session_id="session-42",
-        repo_source="/tmp/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -4093,6 +4129,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         ),
         sync_added_discord_session_cursors=lambda **kwargs: sync_calls.append(kwargs),
     )
+    clone_resolver_calls, bind_calls = _attach_managed_git_clone(admin_service)
     backend = _FakeContainerBackend()
     git_auth_calls = _stub_container_git_authorization(monkeypatch, tmp_path)
     monkeypatch.setattr(
@@ -4102,11 +4139,6 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
-    )
-    mirror_resolver = _FakeContainerGitMirrorResolver()
-    monkeypatch.setattr(
-        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
-        lambda context, directory_path: mirror_resolver,
     )
     monkeypatch.setattr(
         "evander.effects.providers.agent_copy_files.container_backend",
@@ -4158,7 +4190,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             display_name="Clone",
             type="effect:agent:clone-repo",
             session_id="session-1",
-            repo_source="/tmp/repo",
+            managed_repo_id=_MANAGED_REPO_ID,
         )
     ).execute()
     copied = factory.build(
@@ -4204,8 +4236,10 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.metadata["labels"] == {"agent_role": "reviewer"}
     expected_git_write_access = {
         "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
+        "managed_repo_id": _MANAGED_REPO_ID,
+        "git_user": "agent",
         "authorized_keys_path": str(tmp_path / "agent-authorized-keys"),
-        "authorized_repo_path": "/git-remotes/repo-abcdef123456.git",
+        "access_mode": "write",
         "authorized_ref_prefix": "refs/heads/agents/session-1/",
         "authorized_pr_notes_ref": "refs/notes/agent-pr/84097828fc31",
         "allowed_from": "worker.test",
@@ -4218,16 +4252,26 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert create["agent_home"] == "/home/agent"
     assert create["repo_root"] == "/home/agent/repos"
     assert clone["target_dir"] == "/home/agent/repos/repo"
-    assert clone["remote_url"] == "ssh://evander-git-host/git-remotes/repo.git"
-    assert clone["canonical_repo_source"] == "https://example.test/org/repo.git"
+    assert clone["managed_repo_id"] == _MANAGED_REPO_ID
     assert clone["pr_notes_ref"] == "refs/notes/agent-pr/84097828fc31"
     assert clone["git_access_mode"] == "write"
-    assert clone["git_write_access"] == expected_git_write_access
+    assert clone["git_write_access"] == {
+        key: value
+        for key, value in expected_git_write_access.items()
+        if key not in {"public_key_body", "git_user", "authorized_keys_path", "access_mode"}
+    }
     assert copied["copied_paths"] == ["/home/agent/repos/repo/AGENT_TASK.yaml"]
     assert prompted["execution_backend"] == "container_worker_vm"
     assert "output_mode" not in prompted
     assert backend.prepared_sessions[0]["session_id"] == "session-1"
-    assert mirror_resolver.resolved[0]["repo_source"] == "/tmp/repo"
+    assert clone_resolver_calls == [
+        {
+            "managed_repo_id": _MANAGED_REPO_ID,
+            "directory_path": "root",
+            "session_id": "session-1",
+        }
+    ]
+    assert bind_calls
     assert backend.git_write_keys == [
         {
             "session_id": "session-1",
@@ -4237,8 +4281,12 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         }
     ]
     assert git_auth_calls[0]["allowed_from"] == "worker.test"
-    assert git_auth_calls[0]["authorized_repo_path"] == "/git-remotes/repo-abcdef123456.git"
-    assert backend.cloned_repos[0]["repo_source"] == "ssh://evander-git-host/git-remotes/repo.git"
+    assert git_auth_calls[0]["authorized_repo_path"] == Path(
+        "/runtime/managed-git/mr_0123456789abcdefabcd.git"
+    )
+    assert backend.cloned_repos[0]["repo_source"] == (
+        "ssh://evander-git-host-write/runtime/managed-git/mr_0123456789abcdefabcd.git"
+    )
     assert backend.cloned_repos[0]["repo_name"] == "repo"
     bootstrap_files = backend.written_files[0]["files"]
     bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
@@ -4337,8 +4385,16 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "git switch -c" in clone_config_command
     assert "refs/notes/agent-pr/" in clone_config_command
     assert 'git config evander.pushAgentAvailable "true"' in clone_config_command
-    assert "CANONICAL_REMOTE_URL=https://example.test/org/repo.git" in clone_config_command
-    assert "PUSH_REMOTE_URL=ssh://evander-git-host-write/git-remotes/repo.git" in (
+    assert (
+        "CANONICAL_REMOTE_URL=ssh://evander-git-host-write/runtime/managed-git/"
+        "mr_0123456789abcdefabcd.git"
+    ) in (
+        clone_config_command
+    )
+    assert (
+        "PUSH_REMOTE_URL=ssh://evander-git-host-write/runtime/managed-git/"
+        "mr_0123456789abcdefabcd.git"
+    ) in (
         clone_config_command
     )
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
@@ -4791,6 +4847,7 @@ def test_agent_clone_container_skips_config_job_when_repo_already_prepared(
             vm_provider="container_worker_vm",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"managed_git_remote_reconciliation_required": True},
         )
     )
     admin_service = SimpleNamespace(
@@ -4799,16 +4856,13 @@ def test_agent_clone_container_skips_config_job_when_repo_already_prepared(
             provider_config=_ContainerResolverStub(config),
         )
     )
+    _attach_managed_git_clone(admin_service)
     backend = _FakeContainerBackend()
     backend.clone_result_cloned = False
     _stub_container_git_authorization(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
-    )
-    monkeypatch.setattr(
-        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
-        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
     )
     factory = EffectProviderFactory(
         provider_config_resolver=_ContainerResolverStub(config),
@@ -4821,7 +4875,7 @@ def test_agent_clone_container_skips_config_job_when_repo_already_prepared(
             display_name="Clone",
             type="effect:agent:clone-repo",
             session_id="session-1",
-            repo_source="/tmp/repo",
+            managed_repo_id=_MANAGED_REPO_ID,
         )
     ).execute()
 
@@ -4835,7 +4889,7 @@ def test_agent_clone_container_skips_config_job_when_repo_already_prepared(
     assert backend.destroyed == [backend.started_specs[0].target_name]
 
 
-def test_agent_clone_container_passes_explicit_bare_repo_to_mirror_resolver(
+def test_agent_clone_container_passes_managed_repo_to_clone_resolver(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4851,6 +4905,7 @@ def test_agent_clone_container_passes_explicit_bare_repo_to_mirror_resolver(
             vm_provider="container_worker_vm",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"managed_git_remote_reconciliation_required": True},
         )
     )
     admin_service = SimpleNamespace(
@@ -4859,16 +4914,19 @@ def test_agent_clone_container_passes_explicit_bare_repo_to_mirror_resolver(
             provider_config=_ContainerResolverStub(config),
         )
     )
+    clone_resolver_calls, _ = _attach_managed_git_clone(
+        admin_service,
+        clone_url=(
+            "ssh://evander-git-host/runtime/managed-git/"
+            "mr_0123456789abcdefabcd.git"
+        ),
+        display_name="evander",
+    )
     backend = _FakeContainerBackend()
     _stub_container_git_authorization(monkeypatch, tmp_path)
-    mirror_resolver = _FakeContainerGitMirrorResolver()
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
-    )
-    monkeypatch.setattr(
-        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
-        lambda context, directory_path: mirror_resolver,
     )
     factory = EffectProviderFactory(
         provider_config_resolver=_ContainerResolverStub(config),
@@ -4881,19 +4939,22 @@ def test_agent_clone_container_passes_explicit_bare_repo_to_mirror_resolver(
             display_name="Clone",
             type="effect:agent:clone-repo",
             session_id="session-1",
-            repo_source="/tmp/evander",
-            canonical_origin_url="https://example.test/org/evander.git",
-            bare_repo_name="evander.git",
+            managed_repo_id=_MANAGED_REPO_ID,
         )
     ).execute()
 
-    assert mirror_resolver.resolved[0]["repo_source"] == "/tmp/evander"
-    assert (
-        mirror_resolver.resolved[0]["canonical_repo_source"]
-        == "https://example.test/org/evander.git"
+    assert clone_resolver_calls == [
+        {
+            "managed_repo_id": _MANAGED_REPO_ID,
+            "directory_path": "root",
+            "session_id": "session-1",
+        }
+    ]
+    assert backend.cloned_repos[0]["repo_source"] == (
+        "ssh://evander-git-host-write/runtime/managed-git/"
+        "mr_0123456789abcdefabcd.git"
     )
-    assert mirror_resolver.resolved[0]["bare_repo_name"] == "evander.git"
-    assert mirror_resolver.resolved[0]["bare_repo_path"] is None
+    assert backend.cloned_repos[0]["reconcile_existing_remote"] is True
 
 
 def test_agent_clone_container_read_only_mode_skips_write_key_and_push_alias(
@@ -4920,14 +4981,12 @@ def test_agent_clone_container_read_only_mode_skips_write_key_and_push_alias(
             provider_config=_ContainerResolverStub(config),
         )
     )
+    _attach_managed_git_clone(admin_service)
     backend = _FakeContainerBackend()
+    _stub_container_git_authorization(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
-    )
-    monkeypatch.setattr(
-        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
-        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
     )
     factory = EffectProviderFactory(
         provider_config_resolver=_ContainerResolverStub(config),
@@ -4940,20 +4999,20 @@ def test_agent_clone_container_read_only_mode_skips_write_key_and_push_alias(
             display_name="Clone",
             type="effect:agent:clone-repo",
             session_id="session-1",
-            repo_source="/tmp/repo",
+            managed_repo_id=_MANAGED_REPO_ID,
             git_access_mode="read-only",
         )
     ).execute()
 
-    cleanup_command = str(backend.started_specs[0].command)
     command = str(backend.started_specs[-1].command)
+    manifest = session_repository.get_session("session-1")
+    assert manifest is not None
     assert output["git_access_mode"] == "read-only"
     assert output["git_write_access"] is None
-    assert backend.git_write_keys == []
-    assert backend.started_specs[0].metadata["effect_type"] == (
-        "effect:agent:clone-repo:git-write-cleanup"
-    )
-    assert 'rm -f "$HOME/.ssh/evander-git-write"' in cleanup_command
+    assert len(backend.git_write_keys) == 1
+    assert manifest.metadata["container_git_write_access"]["access_mode"] == "read-only"
+    assert "authorized_ref_prefix" not in manifest.metadata["container_git_write_access"]
+    assert len(backend.started_specs) == 1
     assert "config alias.push-agent" not in command
     assert 'git config evander.pushAgentAvailable "false"' in command
     assert 'git config evander.gitAccessMode "$GIT_ACCESS_MODE"' in command
@@ -4990,8 +5049,8 @@ def test_agent_clone_container_write_rerun_removes_previous_write_access(
             metadata={
                 "container_git_write_access": {
                     "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
-                    "authorized_keys_path": str(authorized_keys),
-                    "authorized_repo_path": "/git-remotes/repo-abcdef123456.git",
+                    "managed_repo_id": _MANAGED_REPO_ID,
+                    "git_user": "agent",
                     "authorized_ref_prefix": "refs/heads/agents/session-1/",
                     "authorized_pr_notes_ref": "refs/notes/agent-pr/84097828fc31",
                 },
@@ -5006,14 +5065,11 @@ def test_agent_clone_container_write_rerun_removes_previous_write_access(
         ),
         project_dir=Path.cwd(),
     )
+    _attach_managed_git_clone(admin_service)
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
-    )
-    monkeypatch.setattr(
-        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
-        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
     )
     git_auth_calls = _stub_container_git_authorization(monkeypatch, tmp_path)
     factory = EffectProviderFactory(
@@ -5027,7 +5083,7 @@ def test_agent_clone_container_write_rerun_removes_previous_write_access(
             display_name="Clone",
             type="effect:agent:clone-repo",
             session_id="session-1",
-            repo_source="/tmp/repo",
+            managed_repo_id=_MANAGED_REPO_ID,
         )
     ).execute()
 
@@ -5036,7 +5092,8 @@ def test_agent_clone_container_write_rerun_removes_previous_write_access(
     authorized_keys_text = authorized_keys.read_text(encoding="utf-8")
     assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys_text
     assert "AAAAC3NzaC1lZDI1NTE5AAAAIKeepMe" in authorized_keys_text
-    assert output["git_write_access"]["public_key_body"] == "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey"
+    assert output["git_write_access"]["managed_repo_id"] == _MANAGED_REPO_ID
+    assert "public_key_body" not in output["git_write_access"]
     assert (
         manifest.metadata["container_git_write_access"]["public_key_body"]
         == "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey"
@@ -5071,14 +5128,11 @@ def test_agent_clone_container_rolls_back_write_key_when_metadata_persist_fails(
         ),
         project_dir=Path.cwd(),
     )
+    _attach_managed_git_clone(admin_service)
     backend = _FakeContainerBackend()
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
-    )
-    monkeypatch.setattr(
-        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
-        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
     )
     _stub_container_git_authorization(monkeypatch, tmp_path)
     rollback_calls: list[dict[str, object]] = []
@@ -5103,7 +5157,7 @@ def test_agent_clone_container_rolls_back_write_key_when_metadata_persist_fails(
                 display_name="Clone",
                 type="effect:agent:clone-repo",
                 session_id="session-1",
-                repo_source="/tmp/repo",
+                managed_repo_id=_MANAGED_REPO_ID,
             )
         ).execute()
 
@@ -5115,6 +5169,200 @@ def test_agent_clone_container_rolls_back_write_key_when_metadata_persist_fails(
     ]
 
 
+@pytest.mark.parametrize("failure_stage", ["clone", "helpers", "configure"])
+def test_agent_clone_container_rolls_back_access_after_post_provision_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"keep": "metadata"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        project_dir=Path.cwd(),
+    )
+    _, bind_calls = _attach_managed_git_clone(admin_service)
+    unbind_calls: list[dict[str, object]] = []
+    setattr(
+        admin_service,
+        "unbind_managed_git_repositories",
+        lambda **kwargs: unbind_calls.append(dict(kwargs)),
+    )
+    backend = _FakeContainerBackend()
+    _stub_container_git_authorization(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    host_revocation_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.remove_git_authorized_key_by_public_key_body",
+        lambda **kwargs: host_revocation_calls.append(dict(kwargs)) or True,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+    provider = factory.build(
+        AgentCloneRepoEffectDefinition(
+            id="agent-clone",
+            display_name="Clone",
+            type="effect:agent:clone-repo",
+            session_id="session-1",
+            managed_repo_id=_MANAGED_REPO_ID,
+        )
+    )
+
+    if failure_stage == "clone":
+        def fail_clone(**kwargs):
+            backend.cloned_repos.append(dict(kwargs))
+            raise RuntimeError("clone failed")
+
+        backend.clone_repo = fail_clone
+    elif failure_stage == "helpers":
+        backend.write_files_error = RuntimeError("helpers failed")
+    else:
+        def fail_configure(**kwargs):
+            del kwargs
+            raise RuntimeError("configure failed")
+
+        monkeypatch.setattr(provider, "_configure_container_git", fail_configure)
+
+    with pytest.raises(RuntimeError, match=f"{failure_stage} failed"):
+        provider.execute()
+
+    manifest = session_repository.get_session("session-1")
+    assert manifest is not None
+    assert manifest.metadata == {"keep": "metadata"}
+    assert host_revocation_calls == [
+        {
+            "authorized_keys_path": str(tmp_path / "agent-authorized-keys"),
+            "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
+        }
+    ]
+    assert unbind_calls == [
+        {"kind": "authorized_sessions", "binding_id": "session-1"}
+    ]
+    assert bind_calls == [
+        {
+            "managed_repo_id": _MANAGED_REPO_ID,
+            "kind": "authorized_sessions",
+            "binding_id": "session-1",
+        }
+    ]
+    assert len(backend.started_specs) == 1
+    cleanup_spec = backend.started_specs[0]
+    assert cleanup_spec.metadata["effect_type"] == (
+        "effect:agent:clone-repo:git-write-cleanup"
+    )
+    assert 'rm -f "$HOME/.ssh/evander-git-write"' in str(cleanup_spec.command)
+    assert backend.destroyed == [cleanup_spec.target_name]
+
+
+def test_agent_clone_container_preserves_access_binding_when_host_revocation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"keep": "metadata"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        project_dir=Path.cwd(),
+    )
+    _, bind_calls = _attach_managed_git_clone(admin_service)
+    unbind_calls: list[dict[str, object]] = []
+    setattr(
+        admin_service,
+        "unbind_managed_git_repositories",
+        lambda **kwargs: unbind_calls.append(dict(kwargs)),
+    )
+    backend = _FakeContainerBackend()
+    _stub_container_git_authorization(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    host_revocation_calls: list[dict[str, object]] = []
+
+    def fail_host_revocation(**kwargs):
+        host_revocation_calls.append(dict(kwargs))
+        raise OSError("authorized_keys unavailable")
+
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.remove_git_authorized_key_by_public_key_body",
+        fail_host_revocation,
+    )
+    backend.clone_repo = lambda **kwargs: (_ for _ in ()).throw(
+        RuntimeError("clone failed")
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(RuntimeError, match="clone failed") as exc_info:
+        factory.build(
+            AgentCloneRepoEffectDefinition(
+                id="agent-clone",
+                display_name="Clone",
+                type="effect:agent:clone-repo",
+                session_id="session-1",
+                managed_repo_id=_MANAGED_REPO_ID,
+            )
+        ).execute()
+
+    manifest = session_repository.get_session("session-1")
+    assert manifest is not None
+    assert manifest.metadata["keep"] == "metadata"
+    assert (
+        manifest.metadata["container_git_write_access"]["public_key_body"]
+        == "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey"
+    )
+    assert host_revocation_calls
+    assert unbind_calls == []
+    assert bind_calls == [
+        {
+            "managed_repo_id": _MANAGED_REPO_ID,
+            "kind": "authorized_sessions",
+            "binding_id": "session-1",
+        }
+    ]
+    assert len(backend.started_specs) == 1
+    assert "host key revocation failed" in " ".join(exc_info.value.__notes__)
+
+
 def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5124,7 +5372,7 @@ def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
     )
-    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys = tmp_path / "agent-authorized-keys"
     authorized_keys.write_text(
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey old\n",
         encoding="utf-8",
@@ -5139,8 +5387,8 @@ def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
             metadata={
                 "container_git_write_access": {
                     "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey",
-                    "authorized_keys_path": str(authorized_keys),
-                    "authorized_repo_path": "/git-remotes/repo-abcdef123456.git",
+                    "managed_repo_id": _MANAGED_REPO_ID,
+                    "git_user": "agent",
                     "authorized_ref_prefix": "refs/heads/agents/session-1/",
                     "authorized_pr_notes_ref": "refs/notes/agent-pr/84097828fc31",
                 },
@@ -5154,31 +5402,26 @@ def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
             provider_config=_ContainerResolverStub(config),
         )
     )
+    _attach_managed_git_clone(admin_service)
+    _stub_container_git_authorization(monkeypatch, tmp_path)
     backend = _FakeContainerBackend()
     backend.clone_result_cloned = False
     original_clone_repo = backend.clone_repo
 
     def clone_repo_after_cleanup(**kwargs):
-        assert len(backend.started_specs) == 1
-        assert backend.started_specs[0].metadata["effect_type"] == (
-            "effect:agent:clone-repo:git-write-cleanup"
-        )
+        assert backend.started_specs == []
         assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys.read_text(
             encoding="utf-8"
         )
         manifest = session_repository.get_session("session-1")
         assert manifest is not None
-        assert "container_git_write_access" not in manifest.metadata
+        assert manifest.metadata["container_git_write_access"]["access_mode"] == "read-only"
         return original_clone_repo(**kwargs)
 
     backend.clone_repo = clone_repo_after_cleanup
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
-    )
-    monkeypatch.setattr(
-        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
-        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
     )
     factory = EffectProviderFactory(
         provider_config_resolver=_ContainerResolverStub(config),
@@ -5191,28 +5434,25 @@ def test_agent_clone_container_read_only_rerun_removes_existing_write_access(
             display_name="Clone",
             type="effect:agent:clone-repo",
             session_id="session-1",
-            repo_source="/tmp/repo",
+            managed_repo_id=_MANAGED_REPO_ID,
             git_access_mode="read-only",
         )
     ).execute()
 
-    cleanup_command = str(backend.started_specs[0].command)
     command = str(backend.started_specs[-1].command)
     manifest = session_repository.get_session("session-1")
     assert manifest is not None
     assert output["git_access_mode"] == "read-only"
     assert output["git_write_access"] is None
     assert "AAAAC3NzaC1lZDI1NTE5AAAAIOldWriteKey" not in authorized_keys.read_text(encoding="utf-8")
-    assert "container_git_write_access" not in manifest.metadata
+    assert manifest.metadata["container_git_write_access"]["access_mode"] == "read-only"
     assert manifest.metadata["keep"] == "metadata"
-    assert backend.git_write_keys == []
-    assert len(backend.started_specs) == 2
-    assert 'rm -f "$HOME/.ssh/evander-git-write"' in cleanup_command
+    assert len(backend.git_write_keys) == 1
+    assert len(backend.started_specs) == 1
     assert "config alias.push-agent" not in command
     assert 'rm -f "$HOME/.ssh/evander-git-write"' in command
     assert backend.destroyed == [
         backend.started_specs[0].target_name,
-        backend.started_specs[1].target_name,
     ]
 
 
@@ -5600,11 +5840,14 @@ def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of()
         session_id="session-1",
         target_dir="/home/agent/repos/repo",
         repo_source="https://dev.azure.com/org/project/_git/repo",
-        remote_url="ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git",
+        remote_url="ssh://evander-git-host/opt/evander/runtime/managed-git/mr_0123456789abcdefabcd.git",
         clone_branch="main",
     )
 
-    assert "PUSH_REMOTE_URL=ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git" in command
+    assert (
+        "PUSH_REMOTE_URL=ssh://evander-git-host/opt/evander/runtime/managed-git/"
+        "mr_0123456789abcdefabcd.git"
+    ) in command
     assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
     assert 'git remote set-url origin "$CANONICAL_REMOTE_URL"' in command
     assert 'git config "url.${PUSH_REMOTE_URL}.insteadOf" "$CANONICAL_REMOTE_URL"' in command
@@ -5615,13 +5858,14 @@ def test_agent_clone_container_uses_dedicated_write_alias_for_agent_remote() -> 
         session_id="session-1",
         target_dir="/home/agent/repos/repo",
         repo_source="https://dev.azure.com/org/project/_git/repo",
-        remote_url="ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git",
-        push_remote_url="ssh://evander-git-host-write/opt/evander/git-remotes/repo-abc.git",
+        remote_url="ssh://evander-git-host/opt/evander/runtime/managed-git/mr_0123456789abcdefabcd.git",
+        push_remote_url="ssh://evander-git-host-write/opt/evander/runtime/managed-git/mr_0123456789abcdefabcd.git",
         clone_branch="main",
     )
 
     assert (
-        "PUSH_REMOTE_URL=ssh://evander-git-host-write/opt/evander/git-remotes/repo-abc.git"
+        "PUSH_REMOTE_URL=ssh://evander-git-host-write/opt/evander/runtime/managed-git/"
+        "mr_0123456789abcdefabcd.git"
         in command
     )
     assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
@@ -5632,7 +5876,7 @@ def test_agent_clone_container_read_only_command_disables_push_agent_alias() -> 
         session_id="session-1",
         target_dir="/home/agent/repos/repo",
         repo_source="https://dev.azure.com/org/project/_git/repo",
-        remote_url="ssh://evander-git-host/opt/evander/git-remotes/repo-abc.git",
+        remote_url="ssh://evander-git-host/opt/evander/runtime/managed-git/mr_0123456789abcdefabcd.git",
         clone_branch="main",
         git_access_mode="read-only",
     )
@@ -5649,7 +5893,7 @@ def test_agent_clone_container_configures_git_author_identity() -> None:
         session_id="session-1",
         target_dir="/home/agent/repos/repo",
         repo_source="https://dev.azure.com/org/project/_git/repo",
-        remote_url="ssh://evander-git-host/opt/evander/git-remotes/repo.git",
+        remote_url="ssh://evander-git-host/opt/evander/runtime/managed-git/mr_0123456789abcdefabcd.git",
         clone_branch="main",
         git_identity=GitAuthorIdentity(
             name="Ada Lovelace",
@@ -5676,7 +5920,7 @@ def test_agent_clone_container_configures_separate_git_committer_identity() -> N
         session_id="session-1",
         target_dir="/home/agent/repos/repo",
         repo_source="https://dev.azure.com/org/project/_git/repo",
-        remote_url="ssh://evander-git-host/opt/evander/git-remotes/repo.git",
+        remote_url="ssh://evander-git-host/opt/evander/runtime/managed-git/mr_0123456789abcdefabcd.git",
         clone_branch="main",
         git_author_identity=GitAuthorIdentity(
             name="Ada Lovelace",
@@ -5698,7 +5942,7 @@ def test_agent_clone_container_configures_separate_git_committer_identity() -> N
     assert "git config evander.gitCommitterName 'Truman Bot'" in command
 
 
-def test_agent_clone_container_fails_before_worker_when_mirror_resolution_fails(
+def test_agent_clone_container_fails_before_worker_when_managed_clone_resolution_fails(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5724,31 +5968,29 @@ def test_agent_clone_container_fails_before_worker_when_mirror_resolution_fails(
     )
     backend = _FakeContainerBackend()
 
-    class FailingResolver:
-        def resolve(self, **kwargs):
-            raise RuntimeError("upstream fetch failed")
+    def fail_clone_resolution(**kwargs: object) -> dict[str, object]:
+        del kwargs
+        raise RuntimeError("managed repository lookup failed")
+
+    admin_service.resolve_managed_git_clone = fail_clone_resolution
 
     monkeypatch.setattr(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
-    )
-    monkeypatch.setattr(
-        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
-        lambda context, directory_path: FailingResolver(),
     )
     factory = EffectProviderFactory(
         provider_config_resolver=_ContainerResolverStub(config),
         admin_service=admin_service,
     )
 
-    with pytest.raises(RuntimeError, match="upstream fetch failed"):
+    with pytest.raises(RuntimeError, match="managed repository lookup failed"):
         factory.build(
             AgentCloneRepoEffectDefinition(
                 id="agent-clone",
                 display_name="Clone",
                 type="effect:agent:clone-repo",
                 session_id="session-1",
-                repo_source="https://example.test/org/repo.git",
+                managed_repo_id=_MANAGED_REPO_ID,
             )
         ).execute()
 
@@ -5787,9 +6029,11 @@ def test_container_reachable_git_remote_url_is_limited_to_mounted_paths() -> Non
     assert _container_reachable_git_remote_url("git@example.test/org/repo.git") is None
     assert (
         _container_reachable_git_remote_url(
-            "ssh://evander-git-host/opt/evander/git-remotes/repo.git"
+            "ssh://evander-git-host/opt/evander/runtime/managed-git/"
+            "mr_0123456789abcdefabcd.git"
         )
-        == "ssh://evander-git-host/opt/evander/git-remotes/repo.git"
+        == "ssh://evander-git-host/opt/evander/runtime/managed-git/"
+        "mr_0123456789abcdefabcd.git"
     )
 
 

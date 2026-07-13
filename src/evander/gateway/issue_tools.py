@@ -200,6 +200,7 @@ def register_issue_tools(
     def create_local_issue(
         title: str,
         body: str = "",
+        managed_repo_id: str | None = None,
         repo_source: str | None = None,
         *,
         session_id: str | None = None,
@@ -212,7 +213,8 @@ def register_issue_tools(
             "session_id": session_id,
             "title": title,
             "body": body,
-            "repo_source": repo_source,
+            "managed_repo_id": managed_repo_id,
+            "has_repo_source": bool(str(repo_source or "").strip()),
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.CREATE_LOCAL_ISSUE)
@@ -221,6 +223,7 @@ def register_issue_tools(
             issue_kwargs: dict[str, Any] = {
                 "title": title,
                 "body": body,
+                "managed_repo_id": managed_repo_id,
                 "repo_source": repo_source,
                 "directory_path": session.directory_path,
             }

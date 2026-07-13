@@ -7,7 +7,7 @@ import pytest
 
 import evander.git_ssh_authorized_keys as git_keys
 from evander.git_ssh_authorized_keys import (
-    install_git_read_prefix_authorized_key,
+    install_git_read_authorized_key,
     install_git_write_authorized_key,
     remove_git_authorized_key_by_public_key_body,
 )
@@ -16,17 +16,19 @@ from evander.git_ssh_authorized_keys import (
 PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestAuthorizedKey test-key"
 
 
-def test_install_git_read_prefix_authorized_key_scopes_git_root(tmp_path) -> None:
+def test_install_git_read_authorized_key_scopes_exact_repository(tmp_path) -> None:
     git_root = tmp_path / "git-remotes"
-    git_root.mkdir()
+    repo = git_root / "repo.git"
+    repo.mkdir(parents=True)
     wrapper = tmp_path / "scripts" / "git_ssh_command_wrapper.sh"
     wrapper.parent.mkdir()
     wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     authorized_keys = tmp_path / "authorized_keys"
 
-    record = install_git_read_prefix_authorized_key(
+    record = install_git_read_authorized_key(
         public_key=PUBLIC_KEY,
         git_root=git_root,
+        authorized_repo_path=repo,
         allowed_from="127.0.0.1",
         wrapper_path=wrapper,
         authorized_keys_path=authorized_keys,
@@ -34,12 +36,12 @@ def test_install_git_read_prefix_authorized_key_scopes_git_root(tmp_path) -> Non
 
     text = authorized_keys.read_text(encoding="utf-8")
     assert record.public_key_body == "AAAAC3NzaC1lZDI1NTE5AAAAITestAuthorizedKey"
-    assert record.authorized_repo_prefix == git_root
+    assert record.authorized_repo_path == repo
     assert 'from="127.0.0.1"' in text
     assert "EVANDER_GIT_ROOT_B64=" in text
     assert "EVANDER_GIT_AUTH_ACCESS=read-only" in text
-    assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64=" in text
-    assert "EVANDER_GIT_AUTH_REPO_B64=" not in text
+    assert "EVANDER_GIT_AUTH_REPO_B64=" in text
+    assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64=" not in text
     assert str(wrapper) in text
 
 

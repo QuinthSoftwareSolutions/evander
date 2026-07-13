@@ -19,10 +19,8 @@ def _project_git_or_error(
         return None
     return project.git
 
-def _bare_repo_fields(git: Any) -> dict[str, str]:
-    if git.bare_repo_name:
-        return {"bare_repo_name": git.bare_repo_name}
-    return {"bare_repo_path": git.bare_repo_path}
+def _managed_repo_fields(git: Any) -> dict[str, str]:
+    return {"managed_repo_id": git.managed_repo_id}
 
 def _emit_git_promotion_event(
     result: dict[str, Any],
@@ -52,7 +50,7 @@ def _normalize_agent_branch_ref(value: object) -> str:
 __all__ = [
     "GIT_PROMOTION_EVENT_TYPE",
     "_project_git_or_error",
-    "_bare_repo_fields",
+    "_managed_repo_fields",
     "_emit_git_promotion_event",
     "_normalize_agent_branch_ref",
 ]

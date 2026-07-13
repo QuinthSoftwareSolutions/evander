@@ -159,7 +159,6 @@ class VmAgentIssueCreateMixin:
                 run_env["HOST_REPO_CODEX_SKILLS_DIR"] = str(managed_skills_root)
             run_env.update(
                 {
-                    "EVANDER_GIT_ROOT": issue_setup.git_root,
                     "EVANDER_GIT_HOST": issue_setup.git_host,
                     "EVANDER_GIT_USER": issue_setup.git_user,
                     "EVANDER_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
@@ -228,7 +227,6 @@ class VmAgentIssueCreateMixin:
                     "VM_WAIT_IP_TIMEOUT_SECONDS",
                     "VM_WAIT_SSH_TIMEOUT_SECONDS",
                     "MSSQL_SA_PASSWORD",
-                    "EVANDER_GIT_ROOT",
                     "EVANDER_GIT_HOST",
                     "EVANDER_GIT_USER",
                     "EVANDER_GIT_SSH_ALIAS",

@@ -5,8 +5,8 @@ show_help() {
   cat <<'EOF'
 Usage: bootstrap_git_vm.sh <vm-name> [vm-user]
 
-Configure a guest VM for passwordless Git pushes back to host bare remotes
-using a dedicated guest SSH key and a host-side forced-command entry.
+Internal guest provisioner for managed-repository SSH access. The control plane
+invokes this after resolving a managed_repo_id to one exact bare repository.
 
 Arguments:
   vm-name   libvirt domain name.
@@ -26,7 +26,8 @@ Environment:
   EVANDER_GIT_REQUIRE_WRITE_METADATA
                             Set to 1 to fail instead of installing read-only access
                             when EVANDER_GIT_REPO/session metadata is unavailable.
-  Values can also come from root directory-scoped issue setup config.
+  This script is an internal implementation surface; operator clone commands use
+  managed_repo_id and do not pass repository paths.
 EOF
 }
 
@@ -60,12 +61,17 @@ load_issue_setup_config
 
 GIT_HOST="${EVANDER_GIT_HOST:-192.168.250.1}"
 GIT_USER="${EVANDER_GIT_USER:-${CALLER_USER}}"
-GIT_ROOT="${EVANDER_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
+GIT_USER_HOME="$(getent passwd "${GIT_USER}" | cut -d: -f6)"
+if [[ -z "${GIT_USER_HOME}" ]]; then
+  echo "Cannot resolve home directory for Git user: ${GIT_USER}" >&2
+  exit 1
+fi
+GIT_ROOT="${EVANDER_GIT_ROOT:-${ROOT_DIR}/runtime/managed-git}"
 GIT_ROOT_REAL="$(realpath -m -- "${GIT_ROOT}")"
 GIT_SSH_ALIAS="${EVANDER_GIT_SSH_ALIAS:-evander-git-host}"
 GIT_ALLOWED_FROM="${EVANDER_GIT_ALLOWED_FROM:-192.168.250.0/24}"
 WRAPPER_PATH="${ROOT_DIR}/scripts/git_ssh_command_wrapper.sh"
-AUTHORIZED_KEYS_PATH="${CALLER_HOME}/.ssh/authorized_keys"
+AUTHORIZED_KEYS_PATH="${GIT_USER_HOME}/.ssh/authorized_keys"
 GIT_AUTH_REPO_INPUT="${EVANDER_GIT_REPO:-${EVANDER_GIT_AUTH_REPO:-}}"
 GIT_SESSION_ID="${EVANDER_GIT_SESSION_ID:-${EVANDER_SESSION_ID:-}}"
 SSH_OPTS=(
@@ -348,25 +354,36 @@ else
 fi
 
 if [[ "${AUTH_ACCESS}" == "write" ]]; then
-  FORCED_COMMAND="EVANDER_GIT_AUTH_ACCESS=write"
+  FORCED_COMMAND="EVANDER_GIT_ROOT_B64=$(one_line_base64 "${GIT_ROOT_REAL}")"
+  FORCED_COMMAND+=" EVANDER_GIT_AUTH_ACCESS=write"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_REPO_B64=$(one_line_base64 "${AUTH_REPO_REAL}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_SESSION_ID_B64=$(one_line_base64 "${GIT_SESSION_ID}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_REF_PREFIX_B64=$(one_line_base64 "${AUTH_REF_PREFIX}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_PR_NOTES_REF_B64=$(one_line_base64 "${AUTH_PR_NOTES_REF}")"
   FORCED_COMMAND+=" ${WRAPPER_PATH}"
 else
-  FORCED_COMMAND="EVANDER_GIT_AUTH_ACCESS=read-only"
+  FORCED_COMMAND="EVANDER_GIT_ROOT_B64=$(one_line_base64 "${GIT_ROOT_REAL}")"
+  FORCED_COMMAND+=" EVANDER_GIT_AUTH_ACCESS=read-only"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_REPO_B64=$(one_line_base64 "${AUTH_REPO_REAL}")"
   FORCED_COMMAND+=" ${WRAPPER_PATH}"
 fi
 FORCED_COMMAND_ESCAPED="$(escape_authorized_keys_command "${FORCED_COMMAND}")"
 AUTHORIZED_KEYS_ENTRY="from=\"${GIT_ALLOWED_FROM}\",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command=\"${FORCED_COMMAND_ESCAPED}\" ${PUBLIC_KEY}"
 
-mkdir -p "${CALLER_HOME}/.ssh"
-chmod 700 "${CALLER_HOME}/.ssh"
+mkdir -p "${GIT_USER_HOME}/.ssh"
+chmod 700 "${GIT_USER_HOME}/.ssh"
 touch "${AUTHORIZED_KEYS_PATH}"
 chmod 600 "${AUTHORIZED_KEYS_PATH}"
+if [[ "$(id -u)" == "0" ]]; then
+  GIT_USER_GROUP="$(id -gn "${GIT_USER}")"
+  chown "${GIT_USER}:${GIT_USER_GROUP}" "${GIT_USER_HOME}/.ssh" "${AUTHORIZED_KEYS_PATH}"
+fi
 replace_authorized_keys_entry "${AUTHORIZED_KEYS_PATH}" "${PUBLIC_KEY_BODY}" "${AUTHORIZED_KEYS_ENTRY}"
+
+# Machine-readable, secret-free lifecycle metadata consumed by the control plane.
+printf 'EVANDER_GIT_PUBLIC_KEY_BODY=%s\n' "${PUBLIC_KEY_BODY}"
+printf 'EVANDER_GIT_AUTHORIZED_KEYS_PATH=%s\n' "${AUTHORIZED_KEYS_PATH}"
+printf 'EVANDER_GIT_AUTH_ACCESS=%s\n' "${AUTH_ACCESS}"
 
 echo "Git SSH bootstrap complete for ${VM_NAME} (${VM_IP})"
 if [[ "${AUTH_ACCESS}" == "write" ]]; then
@@ -382,6 +399,3 @@ fi
 echo
 echo "Guest host alias:"
 echo "  ${GIT_SSH_ALIAS}"
-echo
-echo "Use this remote shape inside the VM:"
-echo "  ssh://${GIT_SSH_ALIAS}${GIT_ROOT}/<repo>.git"

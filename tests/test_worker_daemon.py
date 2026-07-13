@@ -597,7 +597,7 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
         worker_root=tmp_path / "worker-root",
         container_runtime=FakeContainerRuntime(),
         token="test-token",
-        allowed_git_source_prefixes=["ssh://evander-git-host/git-remotes/"],
+        allowed_git_source_prefixes=["ssh://evander-git-host/runtime/managed-git/"],
         git_ssh_source_dir=ssh_source,
     )
     calls: list[dict[str, object]] = []
@@ -611,7 +611,10 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     daemon.clone_repo(
         "session-1",
         WorkerRepoCloneRequest(
-            repo_source="ssh://evander-git-host/git-remotes/repo.git",
+            repo_source=(
+                "ssh://evander-git-host/runtime/managed-git/"
+                "mr_0123456789abcdefabcd.git"
+            ),
             clone_branch="main",
             repo_name="repo",
         ),
@@ -622,9 +625,70 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     clone_call = next(call for call in calls if call["args"][:2] == ["git", "clone"])
     assert clone_call["env"]["HOME"] == str(paths.agent_home)  # type: ignore[index]
     assert clone_call["env"]["GIT_SSH_COMMAND"] == (  # type: ignore[index]
-        f"ssh -F {paths.agent_home / '.ssh' / 'config'} "
-        f"-i {paths.agent_home / '.ssh' / 'evander-git'}"
+        f"ssh -F {paths.agent_home / '.ssh' / 'config'}"
     )
+
+
+def test_worker_reconciles_existing_checkout_remote_without_recloning(
+    tmp_path: Path,
+) -> None:
+    first_source = tmp_path / "legacy-source"
+    second_source = tmp_path / "managed-source"
+    for source, content in ((first_source, "legacy\n"), (second_source, "managed\n")):
+        source.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.invalid"],
+            cwd=source,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Worker Test"], cwd=source, check=True
+        )
+        (source / "README.md").write_text(content, encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=source, check=True)
+
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(first_source), repo_name="repo"),
+    )
+    checkout = WorkerSessionPaths.resolve(
+        daemon.worker_root, "session-1"
+    ).repo_root / "repo"
+    (checkout / "unpublished.txt").write_text("keep me\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a checkout for requested source"):
+        daemon.clone_repo(
+            "session-1",
+            WorkerRepoCloneRequest(repo_source=str(second_source), repo_name="repo"),
+        )
+
+    reconciled = daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(
+            repo_source=str(second_source),
+            repo_name="repo",
+            reconcile_existing_remote=True,
+        ),
+    )
+
+    assert reconciled.cloned is False
+    assert (checkout / "unpublished.txt").read_text(encoding="utf-8") == "keep me\n"
+    assert subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == str(second_source)
 
 
 def test_worker_prepares_and_reuses_task_scoped_worktree(tmp_path: Path) -> None:
@@ -2016,6 +2080,7 @@ def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
     assert deleted_again.status_code == 200
     assert deleted_again.json() == {"deleted": True, "job_id": "job-1"}
     assert runtime.removed == ["job-1"]
+
 
 
 def test_logs_are_written_and_read_from_session_logs(tmp_path: Path) -> None:

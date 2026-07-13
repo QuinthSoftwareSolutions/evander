@@ -80,14 +80,13 @@ The security model is:
   - The worker daemon is deployed by the dedicated Ansible worker playbook, not by
     `scripts/install_systemd_units.sh` on the control plane.
 
-- Host-local Git remotes:
-  - `scripts/create_git_remote.sh`
-  - `scripts/bootstrap_git_vm.sh`
-  - `scripts/setup_issue_git_vm.sh`
-  - `scripts/mirror_issue_repo.sh`
-  - `scripts/promote_agent_branch.sh`
-  - `scripts/open_agent_pr.sh`
-  - `scripts/git_ssh_command_wrapper.sh`
+- Managed Git repositories:
+  - Domain service: `src/evander/admin/services/managed_git_service.py`
+  - Operator CLI: `evander-cli git-repos ...`
+  - Registry: `runtime/managed-git-repositories.json`
+  - Bare repositories: `runtime/managed-git/`
+  - Ephemeral worktrees: `runtime/git-worktrees/`
+  - Restricted SSH enforcement: `scripts/git_ssh_command_wrapper.sh`
   - Docs: `docs/git-remotes.md`
 
 ## Important Defaults
@@ -262,17 +261,18 @@ Issue flows create the VM first, then clone/bootstrap a repo as separate steps:
 
 ```bash
 evander-cli create-issue-vm 14084 --dotnet --nuget /path/to/project.slnx --playwright
-evander-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
+evander-cli git-repos register --directory-path root --repo-source /path/to/local/repo
+evander-cli clone-repo-into-vm vm-14084 --managed-repo-id <managed-repo-id>
 ```
 
-For host-local Git remotes:
+For managed Git repositories:
 
-1. Create or refresh the bare mirror with `scripts/create_git_remote.sh`,
-   `scripts/mirror_issue_repo.sh`, or `scripts/setup_issue_git_vm.sh`.
-2. Bootstrap guest Git SSH with `scripts/bootstrap_git_vm.sh`.
+1. Register or refresh the upstream with `evander-cli git-repos register`.
+2. Clone into the VM/container using only the returned `managed_repo_id`; the control plane
+   provisions scoped guest Git SSH internally.
 3. Let the guest push only to `refs/heads/agents/<session-id>/<topic>`.
-4. Promote from the host with `scripts/promote_agent_branch.sh`.
-5. Open or update the PR from a trusted host clone with `scripts/open_agent_pr.sh`.
+4. Let the queued workflow pin and promote the trigger's exact SHA.
+5. Publish that approved SHA with the managed push/PR effects and an explicit lease.
 
 The guest clone flow writes `/home/agent/AGENTS.md`, configures `git sync-base` and
 `git push-agent`, and uses root-owned logs under `/var/log/evander/agent-runs`.

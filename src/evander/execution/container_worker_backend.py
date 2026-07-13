@@ -264,6 +264,7 @@ class ContainerWorkerVmExecutionBackend:
         repo_source: str,
         clone_branch: str | None = None,
         repo_name: str | None = None,
+        reconcile_existing_remote: bool = False,
     ) -> WorkerRepoCloneRecord:
         return self.client.clone_repo(
             session_id,
@@ -271,6 +272,7 @@ class ContainerWorkerVmExecutionBackend:
                 repo_source=repo_source,
                 clone_branch=clone_branch,
                 repo_name=repo_name,
+                reconcile_existing_remote=reconcile_existing_remote,
             ),
         )
 

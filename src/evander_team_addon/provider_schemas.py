@@ -265,12 +265,10 @@ class TeamVerifyReleaseCandidateEffectDefinition(EffectDefinition):
 
 class TeamPublishReviewBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:team:publish-review-branch"]
-    host_repo_path: ConfigValue
+    managed_repo_id: ConfigValue
     target_branch: ConfigValue
-    bare_repo_name: ConfigValue | None = None
-    bare_repo_path: ConfigValue | None = None
-    source_branch: ConfigValue | None = None
-    commit_sha: ConfigValue | None = None
+    source_branch: ConfigValue
+    expected_commit_sha: ConfigValue
 
 
 class TeamMarkReleasePublishedEffectDefinition(EffectDefinition):
@@ -293,13 +291,11 @@ class TeamMarkReleasePublishedEffectDefinition(EffectDefinition):
 
 class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
     type: Literal["effect:team:consolidate-git-branches"]
-    host_repo_path: ConfigValue
+    managed_repo_id: ConfigValue
     source_branches: ConfigValue
     target_branch: ConfigValue
     base_branch: ConfigValue | None = None
-    bare_repo_path: ConfigValue | None = None
-    bare_repo_name: ConfigValue | None = None
-    expected_source_commits: ConfigValue | None = None
+    expected_source_commits: ConfigValue
     allowed_changed_paths: ConfigValue | None = None
 
     @field_validator("source_branches")
@@ -578,10 +574,10 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
     },
     "effect:team:publish-review-branch": {
         "success": {"type": "boolean"},
+        "managed_repo_id": {"type": ["string", "null"]},
         "review_branch": {"type": ["string", "null"]},
         "target_branch": {"type": ["string", "null"]},
         "commit_sha": {"type": ["string", "null"]},
-        "host_repo_path": {"type": ["string", "null"]},
         "message": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]},
     },

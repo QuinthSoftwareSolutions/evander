@@ -3,11 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
 import shlex
-import subprocess
-import tempfile
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -1136,11 +1133,11 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         "Publish a review branch or commit for a Team Git promotion request.",
         [
             _catalog_field(
-                "host_repo_path",
-                "Host repo path",
+                "managed_repo_id",
+                "Managed repository ID",
                 "string",
                 required=True,
-                description="Trusted host checkout path used to publish the review branch.",
+                description="Evander-managed repository containing the pinned source commit.",
             ),
             _catalog_field(
                 "target_branch",
@@ -1150,28 +1147,18 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Branch name to create or update for review.",
             ),
             _catalog_field(
-                "bare_repo_name",
-                "Bare repo name",
-                "string",
-                description="Optional host-local bare repo name when resolving the remote.",
-            ),
-            _catalog_field(
-                "bare_repo_path",
-                "Bare repo path",
-                "string",
-                description="Optional explicit host-local bare repo path.",
-            ),
-            _catalog_field(
                 "source_branch",
                 "Source branch",
                 "string",
-                description="Source branch to publish when no commit SHA is supplied.",
+                required=True,
+                description="Agent branch containing the pinned source commit.",
             ),
             _catalog_field(
-                "commit_sha",
-                "Commit SHA",
+                "expected_commit_sha",
+                "Expected commit SHA",
                 "string",
-                description="Specific commit to publish when the promotion selected one.",
+                required=True,
+                description="Exact source commit approved for promotion.",
             ),
         ],
     ),
@@ -1224,15 +1211,11 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         "Merge multiple Team source branches into a deterministic target branch.",
         [
             _catalog_field(
-                "host_repo_path",
-                "Host repo path",
+                "managed_repo_id",
+                "Managed repository ID",
                 "string",
                 required=True,
-                description=(
-                    "Trusted host checkout path used for Git identity/config, and as "
-                    "the fallback consolidation checkout when no bare repository is "
-                    "available."
-                ),
+                description="Evander-managed repository used for consolidation.",
             ),
             _catalog_field(
                 "source_branches",
@@ -1256,21 +1239,12 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Optional base branch to reset from before merging source branches.",
             ),
             _catalog_field(
-                "bare_repo_path",
-                "Bare repo path",
-                "string",
-                description=(
-                    "Optional dropbox bare repository path used to consolidate branches "
-                    "inside a temporary checkout without moving the trusted host checkout."
-                ),
-            ),
-            _catalog_field(
-                "bare_repo_name",
-                "Bare repo name",
-                "string",
-                description=(
-                    "Optional dropbox bare repository name resolved under EVANDER_GIT_ROOT."
-                ),
+                "expected_source_commits",
+                "Expected source commits",
+                "json",
+                required=True,
+                description="Exact approved commit SHA for every source branch.",
+                json_value_type="object",
             ),
         ],
     ),
@@ -3149,10 +3123,7 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
                     display_name="Clone release candidate",
                     type="effect:agent:clone-repo",
                     session_id=run.session_id,
-                    repo_source=git.host_repo_path,
-                    canonical_origin_url=git.canonical_origin_url,
-                    bare_repo_name=git.bare_repo_name,
-                    bare_repo_path=git.bare_repo_path,
+                    managed_repo_id=git.managed_repo_id,
                     clone_branch=release.release_branch,
                     git_access_mode="read-only",
                 ),
@@ -3285,44 +3256,54 @@ class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = _definition_payload(
             self.effect_definition,
-            "host_repo_path",
-            "bare_repo_name",
-            "expected_source_commits",
-            "allowed_changed_paths",
-            "bare_repo_path",
+            "managed_repo_id",
             "source_branch",
-            "commit_sha",
+            "expected_commit_sha",
             "target_branch",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
         try:
-            host_repo_path = _required_text(payload.get("host_repo_path"), "host_repo_path")
+            managed_repo_id = _required_text(
+                payload.get("managed_repo_id"), "managed_repo_id"
+            )
             target_branch = validate_branch_name(
                 _required_text(payload.get("target_branch"), "target_branch")
             )
-            bare_repo_path = _resolve_bare_repo_path(
-                _optional_text(payload.get("bare_repo_path")),
-                _optional_text(payload.get("bare_repo_name")),
+            source_branch = validate_branch_name(
+                _required_text(payload.get("source_branch"), "source_branch")
             )
-            source_branch_value = _optional_text(payload.get("source_branch"))
-            source_branch = (
-                validate_branch_name(source_branch_value)
-                if source_branch_value is not None
-                else None
+            expected_commit_sha = _required_text(
+                payload.get("expected_commit_sha"), "expected_commit_sha"
             )
-            commit_sha = _optional_text(payload.get("commit_sha"))
-            if source_branch is None and commit_sha is None:
-                raise ValueError("source_branch or commit_sha is required")
         except ValueError as exc:
             return _review_publish_failure(None, None, str(exc))
-        return _publish_review_branch(
-            host_repo_path=host_repo_path,
-            bare_repo_path=bare_repo_path,
-            target_branch=target_branch,
-            source_branch=source_branch,
-            commit_sha=commit_sha,
-        )
+        admin_service = getattr(self.runtime_context, "admin_service", None)
+        promoter = getattr(admin_service, "promote_agent_branch", None)
+        if not callable(promoter):
+            return _review_publish_failure(
+                target_branch, None, "managed Git promotion service is unavailable"
+            )
+        try:
+            result = promoter(
+                managed_repo_id=managed_repo_id,
+                agent_branch=source_branch,
+                target_branch=target_branch,
+                expected_commit_sha=expected_commit_sha,
+                directory_path=str(
+                    getattr(self.runtime_context, "metadata", {}).get("directory_path")
+                    or "root"
+                ),
+            )
+        except Exception as exc:
+            return _review_publish_failure(target_branch, None, str(exc))
+        output = dict(result) if isinstance(result, Mapping) else {"success": True}
+        output.setdefault("success", True)
+        output.setdefault("managed_repo_id", managed_repo_id)
+        output.setdefault("target_branch", target_branch)
+        output.setdefault("review_branch", target_branch)
+        output.setdefault("commit_sha", expected_commit_sha)
+        return output
 
 
 class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
@@ -3379,19 +3360,19 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = _definition_payload(
             self.effect_definition,
-            "host_repo_path",
+            "managed_repo_id",
             "source_branches",
             "target_branch",
             "base_branch",
-            "bare_repo_path",
-            "bare_repo_name",
             "expected_source_commits",
             "allowed_changed_paths",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
-        host_repo_path = _required_text(payload.get("host_repo_path"), "host_repo_path")
         try:
+            managed_repo_id = _required_text(
+                payload.get("managed_repo_id"), "managed_repo_id"
+            )
             source_branches = [
                 validate_branch_name(branch)
                 for branch in _string_list(payload.get("source_branches"), "source_branches")
@@ -3401,13 +3382,6 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             )
             base_value = _optional_text(payload.get("base_branch"))
             base_branch = validate_branch_name(base_value) if base_value else None
-            bare_repo_value = _optional_text(payload.get("bare_repo_path"))
-            bare_repo_name = _optional_text(payload.get("bare_repo_name"))
-            bare_repo_path = (
-                _resolve_bare_repo_path(bare_repo_value, bare_repo_name)
-                if bare_repo_value is not None or bare_repo_name is not None
-                else None
-            )
             expected_source_commits = {
                 validate_branch_name(str(branch)): _required_text(
                     commit,
@@ -3421,6 +3395,10 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
                     or {}
                 ).items()
             }
+            if set(expected_source_commits) != set(source_branches):
+                raise ValueError(
+                    "expected_source_commits must contain every source branch exactly once"
+                )
             allowed_changed_paths = (
                 _string_list(
                     payload.get("allowed_changed_paths"),
@@ -3433,15 +3411,28 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             return _consolidation_failure(None, str(exc))
         if not source_branches:
             return _consolidation_failure(target_branch, "source_branches is required")
-        return _consolidate_git_branches(
-            host_repo_path=host_repo_path,
-            source_branches=source_branches,
-            target_branch=target_branch,
-            base_branch=base_branch,
-            bare_repo_path=bare_repo_path,
-            expected_source_commits=expected_source_commits,
-            allowed_changed_paths=allowed_changed_paths,
-        )
+        admin_service = getattr(self.runtime_context, "admin_service", None)
+        managed_git = getattr(admin_service, "managed_git_admin", None)
+        consolidate = getattr(managed_git, "consolidate_branches", None)
+        if not callable(consolidate):
+            return _consolidation_failure(
+                target_branch, "managed Git consolidation service is unavailable"
+            )
+        try:
+            return consolidate(
+                managed_repo_id=managed_repo_id,
+                directory_path=str(
+                    getattr(self.runtime_context, "metadata", {}).get("directory_path")
+                    or "root"
+                ),
+                source_branches=source_branches,
+                target_branch=target_branch,
+                base_branch=base_branch,
+                expected_source_commits=expected_source_commits,
+                allowed_changed_paths=allowed_changed_paths,
+            )
+        except Exception as exc:
+            return _consolidation_failure(target_branch, str(exc))
 
 
 class TeamIndexMemoryEffectProvider(EffectProviderBase):
@@ -5179,7 +5170,9 @@ def _prepare_project_repo(
 
     agent_id = _required_text(agent.get("id"), "agent.id")
     session_id = _required_text(agent.get("session_id"), "session_id")
-    repo_source = _required_text(_value(git, "host_repo_path"), "project.git.host_repo_path")
+    managed_repo_id = _required_text(
+        _value(git, "managed_repo_id"), "project.git.managed_repo_id"
+    )
     clone_branch = _optional_text(_value(git, "base_branch"))
     provider = AgentCloneRepoEffectProvider()
     provider.initialize(
@@ -5188,10 +5181,7 @@ def _prepare_project_repo(
             display_name="Prepare Team project repository",
             type="effect:agent:clone-repo",
             session_id=session_id,
-            repo_source=repo_source,
-            canonical_origin_url=_optional_text(_value(git, "canonical_origin_url")),
-            bare_repo_name=_optional_text(_value(git, "bare_repo_name")),
-            bare_repo_path=_optional_text(_value(git, "bare_repo_path")),
+            managed_repo_id=managed_repo_id,
             clone_branch=clone_branch,
             vm_user="agent",
         ),
@@ -7484,7 +7474,7 @@ def _consolidation_failure(
 
 def _review_publish_failure(
     target_branch: str | None,
-    host_repo_path: str | None,
+    managed_repo_id: str | None,
     error: str,
 ) -> dict[str, Any]:
     return {
@@ -7492,657 +7482,7 @@ def _review_publish_failure(
         "review_branch": target_branch,
         "target_branch": target_branch,
         "commit_sha": None,
-        "host_repo_path": host_repo_path,
+        "managed_repo_id": managed_repo_id,
         "message": None,
         "error": error,
     }
-
-
-def _git_text(proc: subprocess.CompletedProcess[str]) -> str:
-    return (proc.stdout or "") + (proc.stderr or "")
-
-
-def _resolve_bare_repo_path(
-    bare_repo_path: str | None,
-    bare_repo_name: str | None,
-) -> Path:
-    if bare_repo_path and bare_repo_name:
-        raise ValueError("bare_repo_path and bare_repo_name are mutually exclusive")
-    if bare_repo_path:
-        return Path(bare_repo_path)
-    if not bare_repo_name:
-        raise ValueError("bare_repo_path or bare_repo_name is required")
-    normalized = bare_repo_name if bare_repo_name.endswith(".git") else f"{bare_repo_name}.git"
-    git_root = os.environ.get("EVANDER_GIT_ROOT")
-    root = Path(git_root) if git_root else Path(__file__).resolve().parents[2] / "git-remotes"
-    return root / normalized
-
-
-def _publish_review_branch(
-    *,
-    host_repo_path: str,
-    bare_repo_path: Path,
-    target_branch: str,
-    source_branch: str | None,
-    commit_sha: str | None,
-) -> dict[str, Any]:
-    repo_path = Path(host_repo_path)
-    if not (repo_path / ".git").exists():
-        return _review_publish_failure(
-            target_branch,
-            host_repo_path,
-            f"{host_repo_path} is not a git repository",
-        )
-    if not bare_repo_path.exists():
-        return _review_publish_failure(
-            target_branch,
-            host_repo_path,
-            f"bare repo not found: {bare_repo_path}",
-        )
-
-    def _git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    source_ref = commit_sha if commit_sha is not None else f"refs/heads/{source_branch}"
-    temp_ref = f"refs/evander/team-promotions/{target_branch}"
-    target_ref = f"refs/heads/{target_branch}"
-    fetch = _git(
-        "fetch",
-        "--no-tags",
-        str(bare_repo_path),
-        f"+{source_ref}:{temp_ref}",
-    )
-    if fetch.returncode != 0:
-        return _review_publish_failure(target_branch, host_repo_path, _git_text(fetch))
-
-    resolved = _git("rev-parse", "--verify", f"{temp_ref}^{{commit}}")
-    if resolved.returncode != 0:
-        _git("update-ref", "-d", temp_ref)
-        return _review_publish_failure(target_branch, host_repo_path, _git_text(resolved))
-
-    resolved_commit = resolved.stdout.strip()
-    update = _git("update-ref", target_ref, resolved_commit)
-    _git("update-ref", "-d", temp_ref)
-    if update.returncode != 0:
-        return _review_publish_failure(target_branch, host_repo_path, _git_text(update))
-
-    return {
-        "success": True,
-        "review_branch": target_branch,
-        "target_branch": target_branch,
-        "commit_sha": resolved_commit,
-        "host_repo_path": host_repo_path,
-        "message": f"Published {resolved_commit} to {target_branch}",
-        "error": None,
-    }
-
-
-def _git_index_lock_path(git_marker: Path) -> Path | None:
-    if git_marker.is_dir():
-        return git_marker / "index.lock"
-    if not git_marker.is_file():
-        return None
-    try:
-        text = git_marker.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return None
-    prefix = "gitdir:"
-    if not text.casefold().startswith(prefix):
-        return None
-    git_dir = Path(text[len(prefix) :].strip())
-    if not git_dir.is_absolute():
-        git_dir = git_marker.parent / git_dir
-    return git_dir / "index.lock"
-
-
-def _copy_git_identity(
-    source_repo: Path,
-    target_repo: Path,
-) -> None:
-    def _source_git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=str(source_repo),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    def _target_git(*args: str) -> None:
-        subprocess.run(
-            ["git", *args],
-            cwd=str(target_repo),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    for key, fallback in (
-        ("user.name", "Evander Team Release"),
-        ("user.email", "evander-team-release@example.invalid"),
-    ):
-        value = _source_git("config", "--get", key)
-        _target_git(
-            "config",
-            key,
-            value.stdout.strip() if value.returncode == 0 else fallback,
-        )
-
-
-def _git_source_manifests(
-    git_call,
-    *,
-    merge_sources: list[tuple[str, str]],
-    base_commit_sha: str | None,
-    expected_source_commits: Mapping[str, str],
-) -> dict[str, Any]:
-    if base_commit_sha is None:
-        return {}
-    manifests: dict[str, Any] = {}
-    for source, source_ref in merge_sources:
-        reviewed_commit_sha = expected_source_commits.get(source)
-        if reviewed_commit_sha is None:
-            continue
-        commits = git_call(
-            "rev-list",
-            "--reverse",
-            f"{base_commit_sha}..{source_ref}",
-        )
-        paths = git_call(
-            "diff",
-            "--name-status",
-            f"{base_commit_sha}...{source_ref}",
-        )
-        tree = git_call("rev-parse", f"{source_ref}^{{tree}}")
-        if commits.returncode != 0 or paths.returncode != 0 or tree.returncode != 0:
-            continue
-        manifests[source] = {
-            "base_commit_sha": base_commit_sha,
-            "reviewed_commit_sha": reviewed_commit_sha,
-            "tree_hash": tree.stdout.strip(),
-            "commit_shas": [line for line in commits.stdout.splitlines() if line],
-            "changed_paths": [line for line in paths.stdout.splitlines() if line],
-        }
-    return manifests
-
-
-def _manifest_path_names(entries: Sequence[str]) -> set[str]:
-    paths: set[str] = set()
-    for entry in entries:
-        parts = str(entry).split("\t")
-        paths.update(part for part in parts[1:] if part)
-    return paths
-
-
-def _unexpected_manifest_paths(
-    manifests: Mapping[str, Any],
-    allowed_changed_paths: Sequence[str] | None,
-) -> list[str]:
-    if allowed_changed_paths is None:
-        return []
-    allowed = _manifest_path_names(allowed_changed_paths)
-    actual: set[str] = set()
-    for manifest in manifests.values():
-        if isinstance(manifest, Mapping):
-            changed_paths = manifest.get("changed_paths")
-            if isinstance(changed_paths, list):
-                actual.update(_manifest_path_names(changed_paths))
-    return sorted(actual - allowed)
-
-
-def _consolidate_git_branches_in_isolated_worktree(
-    *,
-    host_repo_path: str,
-    bare_repo_path: Path,
-    source_branches: list[str],
-    target_branch: str,
-    base_branch: str | None,
-    expected_source_commits: Mapping[str, str] | None = None,
-    allowed_changed_paths: Sequence[str] | None = None,
-) -> dict[str, Any]:
-    repo_path = Path(host_repo_path)
-    if not bare_repo_path.exists():
-        return _consolidation_failure(
-            target_branch,
-            f"bare repo not found: {bare_repo_path}",
-            error_code="source_ref_missing",
-        )
-    with tempfile.TemporaryDirectory(prefix="evander-team-consolidate-") as tmp:
-        worktree = Path(tmp) / "worktree"
-
-        def _git(*args: str) -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                ["git", *args],
-                cwd=str(worktree),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-        def _fetch_branch(
-            branch: str,
-            destination_ref: str,
-        ) -> tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str] | None]:
-            bare_fetch = _git(
-                "fetch",
-                "--no-tags",
-                "origin",
-                f"+refs/heads/{branch}:{destination_ref}",
-            )
-            if bare_fetch.returncode == 0:
-                return bare_fetch, None
-            host_fetch = _git(
-                "fetch",
-                "--no-tags",
-                str(repo_path),
-                f"+refs/heads/{branch}:{destination_ref}",
-            )
-            return host_fetch, bare_fetch
-
-        clone = subprocess.run(
-            ["git", "clone", "--no-tags", str(bare_repo_path), str(worktree)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if clone.returncode != 0:
-            return _consolidation_failure(
-                target_branch,
-                _git_text(clone),
-                error_code="unexpected_git_failure",
-            )
-        _copy_git_identity(repo_path, worktree)
-
-        target_remote_ref = f"refs/remotes/origin/{target_branch}"
-        fetch_target, _bare_target_failure = _fetch_branch(
-            target_branch,
-            target_remote_ref,
-        )
-        target_exists = fetch_target.returncode == 0
-        if target_exists:
-            checkout = _git("checkout", "-B", target_branch, target_remote_ref)
-        elif base_branch is not None:
-            base_remote_ref = f"refs/remotes/origin/{base_branch}"
-            fetch_base, bare_base_failure = _fetch_branch(
-                base_branch,
-                base_remote_ref,
-            )
-            if fetch_base.returncode != 0:
-                return _consolidation_failure(
-                    target_branch,
-                    _combined_git_fetch_output(bare_base_failure, fetch_base),
-                    error_code="source_ref_missing",
-                )
-            checkout = _git("checkout", "-B", target_branch, base_remote_ref)
-        else:
-            checkout = _git("checkout", "-B", target_branch)
-        if checkout.returncode != 0:
-            return _consolidation_failure(
-                target_branch,
-                _git_text(checkout),
-                error_code="unexpected_git_failure",
-            )
-
-        base_head = _git("rev-parse", "HEAD")
-        base_commit_sha = base_head.stdout.strip() if base_head.returncode == 0 else None
-
-        merge_sources: list[tuple[str, str]] = []
-        for source in source_branches:
-            ref_hash = hashlib.sha256(
-                f"{target_branch}\0{source}".encode("utf-8")
-            ).hexdigest()[:16]
-            temp_ref = f"refs/evander/team-consolidations/{ref_hash}"
-            fetch, bare_fetch_failure = _fetch_branch(source, temp_ref)
-            if fetch.returncode != 0:
-                failure = _consolidation_failure(
-                    target_branch,
-                    (
-                        f"failed to fetch source branch {source} from "
-                        f"{bare_repo_path} or {repo_path}"
-                    ),
-                    error_code="source_ref_missing",
-                )
-                failure["output"] = _combined_git_fetch_output(
-                    bare_fetch_failure,
-                    fetch,
-                )
-                failure["conflict_branch"] = source
-                return failure
-            expected_commit = (expected_source_commits or {}).get(source)
-            if expected_commit is not None:
-                resolved = _git("rev-parse", f"{temp_ref}^{{commit}}")
-                actual_commit = (
-                    resolved.stdout.strip() if resolved.returncode == 0 else None
-                )
-                if actual_commit != expected_commit:
-                    failure = _consolidation_failure(
-                        target_branch,
-                        (
-                            f"source branch {source} moved after review from "
-                            f"{expected_commit}; current tip is "
-                            f"{actual_commit or 'unresolved'}"
-                        ),
-                        error_code="scope_mismatch",
-                    )
-                    failure["conflict_branch"] = source
-                    failure["unexpected_commit_shas"] = (
-                        [actual_commit] if actual_commit is not None else []
-                    )
-                    return failure
-            merge_sources.append((source, expected_commit or temp_ref))
-
-        source_manifests = _git_source_manifests(
-            _git,
-            merge_sources=merge_sources,
-            base_commit_sha=base_commit_sha,
-            expected_source_commits=expected_source_commits or {},
-        )
-        unexpected_paths = _unexpected_manifest_paths(
-            source_manifests,
-            allowed_changed_paths,
-        )
-        if unexpected_paths:
-            failure = _consolidation_failure(
-                target_branch,
-                "release contains paths outside the reviewed manifests",
-                error_code="scope_mismatch",
-            )
-            failure["unexpected_paths"] = unexpected_paths
-            return failure
-
-        merged: list[str] = []
-        for source, merge_ref in merge_sources:
-            merge = _git(
-                "merge",
-                "--no-ff",
-                "-m",
-                f"Merge {source} into {target_branch}",
-                merge_ref,
-            )
-            if merge.returncode != 0:
-                _git("merge", "--abort")
-                failure = _consolidation_failure(
-                    target_branch,
-                    f"merge conflict while merging {source} into {target_branch}",
-                    error_code="merge_conflict",
-                )
-                failure["merged_branches"] = merged
-                failure["conflict_branch"] = source
-                failure["output"] = _git_text(merge)
-                return failure
-            merged.append(source)
-
-        head = _git("rev-parse", "HEAD")
-        commit_sha = head.stdout.strip() if head.returncode == 0 else None
-        tree = _git("rev-parse", "HEAD^{tree}")
-        tree_hash = tree.stdout.strip() if tree.returncode == 0 else None
-        push = _git("push", "origin", f"HEAD:refs/heads/{target_branch}")
-        if push.returncode != 0:
-            failure = _consolidation_failure(
-                target_branch,
-                _git_text(push),
-                error_code="unexpected_git_failure",
-            )
-            failure["merged_branches"] = merged
-            return failure
-        return {
-            "success": True,
-            "target_branch": target_branch,
-            "merged_branches": merged,
-            "commit_sha": commit_sha,
-            "tree_hash": tree_hash,
-            "conflict_branch": None,
-            "output": None,
-            "error": None,
-            "error_code": None,
-            "base_commit_sha": base_commit_sha,
-            "source_manifests": source_manifests,
-        }
-
-
-def _combined_git_fetch_output(
-    first: subprocess.CompletedProcess[str] | None,
-    second: subprocess.CompletedProcess[str],
-) -> str:
-    parts = []
-    if first is not None:
-        text = _git_text(first).strip()
-        if text:
-            parts.append(f"bare mirror: {text}")
-    text = _git_text(second).strip()
-    if text:
-        parts.append(f"trusted host repo: {text}")
-    return "\n".join(parts)
-
-
-def _consolidate_git_branches(
-    *,
-    host_repo_path: str,
-    source_branches: list[str],
-    target_branch: str,
-    base_branch: str | None,
-    bare_repo_path: Path | None = None,
-    expected_source_commits: Mapping[str, str] | None = None,
-    allowed_changed_paths: Sequence[str] | None = None,
-) -> dict[str, Any]:
-    """Merge ``source_branches`` into ``target_branch`` inside ``host_repo_path``.
-
-    Branch names are validated by the caller. Merges run in the listed order and
-    produce deterministic merge commits. A merge conflict aborts the merge and
-    returns ``success=False`` with the conflict output; nothing is auto-resolved.
-    """
-
-    repo_path = Path(host_repo_path)
-    git_marker = repo_path / ".git"
-    if not git_marker.exists():
-        return _consolidation_failure(
-            target_branch,
-            f"{host_repo_path} is not a git repository",
-            error_code="not_git_repository",
-        )
-    if bare_repo_path is not None and bare_repo_path.exists():
-        return _consolidate_git_branches_in_isolated_worktree(
-            host_repo_path=host_repo_path,
-            bare_repo_path=bare_repo_path,
-            source_branches=source_branches,
-            target_branch=target_branch,
-            base_branch=base_branch,
-            expected_source_commits=expected_source_commits,
-            allowed_changed_paths=allowed_changed_paths,
-        )
-
-    def _git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    lock_path = _git_index_lock_path(git_marker)
-    if lock_path is not None and lock_path.exists():
-        return _consolidation_failure(
-            target_branch,
-            f"stale git index lock blocks release promotion: {lock_path}",
-            error_code="stale_index_lock",
-        )
-
-    # A linked worktree (``.git`` is a file pointing at the gitdir) is already an
-    # isolated checkout, so a dirty tree there is acceptable; a primary worktree
-    # must be clean before we move HEAD around.
-    isolated_worktree = git_marker.is_file()
-    status = _git("status", "--porcelain")
-    if status.returncode != 0:
-        return _consolidation_failure(
-            target_branch,
-            _git_text(status),
-            error_code="unexpected_git_failure",
-        )
-    if status.stdout.strip() and not isolated_worktree:
-        failure = _consolidation_failure(
-            target_branch,
-            "refusing to merge into a dirty worktree",
-            error_code="checkout_dirty",
-        )
-        failure["output"] = status.stdout
-        return failure
-    merge_sources: list[tuple[str, str]] = []
-    temp_refs: list[str] = []
-    if bare_repo_path is None:
-        merge_sources = [(source, source) for source in source_branches]
-    else:
-        bare_repo_exists = bare_repo_path.exists()
-        for source in source_branches:
-            resolved = _git(
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                f"refs/heads/{source}^{{commit}}",
-            )
-            if not bare_repo_exists:
-                if resolved.returncode == 0:
-                    merge_sources.append((source, source))
-                    continue
-                return _consolidation_failure(
-                    target_branch,
-                    f"bare repo not found: {bare_repo_path}",
-                    error_code="source_ref_missing",
-                )
-            ref_hash = hashlib.sha256(f"{target_branch}\0{source}".encode("utf-8")).hexdigest()[:16]
-            temp_ref = f"refs/evander/team-consolidations/{ref_hash}"
-            fetch = _git(
-                "fetch",
-                "--no-tags",
-                str(bare_repo_path),
-                f"+refs/heads/{source}:{temp_ref}",
-            )
-            if fetch.returncode != 0:
-                for ref in temp_refs:
-                    _git("update-ref", "-d", ref)
-                failure = _consolidation_failure(
-                    target_branch,
-                    f"failed to fetch source branch {source} from {bare_repo_path}",
-                    error_code="source_ref_missing",
-                )
-                failure["output"] = _git_text(fetch)
-                failure["conflict_branch"] = source
-                return failure
-            temp_refs.append(temp_ref)
-            merge_sources.append((source, temp_ref))
-
-    pinned_merge_sources: list[tuple[str, str]] = []
-    for source, source_ref in merge_sources:
-        expected_commit = (expected_source_commits or {}).get(source)
-        if expected_commit is None:
-            pinned_merge_sources.append((source, source_ref))
-            continue
-        resolved = _git("rev-parse", f"{source_ref}^{{commit}}")
-        actual_commit = resolved.stdout.strip() if resolved.returncode == 0 else None
-        if actual_commit != expected_commit:
-            for ref in temp_refs:
-                _git("update-ref", "-d", ref)
-            failure = _consolidation_failure(
-                target_branch,
-                (
-                    f"source branch {source} moved after review from {expected_commit}; "
-                    f"current tip is {actual_commit or 'unresolved'}"
-                ),
-                error_code="scope_mismatch",
-            )
-            failure["conflict_branch"] = source
-            failure["unexpected_commit_shas"] = (
-                [actual_commit] if actual_commit is not None else []
-            )
-            return failure
-        pinned_merge_sources.append((source, expected_commit))
-    merge_sources = pinned_merge_sources
-
-    def _cleanup_temp_refs() -> None:
-        for ref in temp_refs:
-            _git("update-ref", "-d", ref)
-
-    try:
-        target_ref = f"refs/heads/{target_branch}"
-        target_exists = _git("rev-parse", "--verify", "--quiet", target_ref).returncode == 0
-        if target_exists:
-            checkout = _git("checkout", target_branch)
-        elif base_branch is not None:
-            checkout = _git("checkout", "-B", target_branch, base_branch)
-        else:
-            checkout = _git("checkout", "-B", target_branch)
-        if checkout.returncode != 0:
-            return _consolidation_failure(
-                target_branch,
-                _git_text(checkout),
-                error_code="unexpected_git_failure",
-            )
-
-        base_head = _git("rev-parse", "HEAD")
-        base_commit_sha = base_head.stdout.strip() if base_head.returncode == 0 else None
-        source_manifests = _git_source_manifests(
-            _git,
-            merge_sources=merge_sources,
-            base_commit_sha=base_commit_sha,
-            expected_source_commits=expected_source_commits or {},
-        )
-        unexpected_paths = _unexpected_manifest_paths(
-            source_manifests,
-            allowed_changed_paths,
-        )
-        if unexpected_paths:
-            failure = _consolidation_failure(
-                target_branch,
-                "release contains paths outside the reviewed manifests",
-                error_code="scope_mismatch",
-            )
-            failure["unexpected_paths"] = unexpected_paths
-            return failure
-
-        merged: list[str] = []
-        for source, merge_ref in merge_sources:
-            merge = _git(
-                "merge",
-                "--no-ff",
-                "-m",
-                f"Merge {source} into {target_branch}",
-                merge_ref,
-            )
-            if merge.returncode != 0:
-                _git("merge", "--abort")
-                failure = _consolidation_failure(
-                    target_branch,
-                    f"merge conflict while merging {source} into {target_branch}",
-                    error_code="merge_conflict",
-                )
-                failure["merged_branches"] = merged
-                failure["conflict_branch"] = source
-                failure["output"] = _git_text(merge)
-                return failure
-            merged.append(source)
-
-        head = _git("rev-parse", "HEAD")
-        commit_sha = head.stdout.strip() if head.returncode == 0 else None
-        tree = _git("rev-parse", "HEAD^{tree}")
-        tree_hash = tree.stdout.strip() if tree.returncode == 0 else None
-        return {
-            "success": True,
-            "target_branch": target_branch,
-            "merged_branches": merged,
-            "commit_sha": commit_sha,
-            "tree_hash": tree_hash,
-            "conflict_branch": None,
-            "output": None,
-            "error": None,
-            "error_code": None,
-            "base_commit_sha": base_commit_sha,
-            "source_manifests": source_manifests,
-        }
-    finally:
-        _cleanup_temp_refs()

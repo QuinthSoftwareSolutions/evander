@@ -142,10 +142,9 @@ class VmCloneRepoEffectDefinition(EffectDefinition):
     target: ConfigValue | None = None
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
-    repo_source: ConfigValue
+    managed_repo_id: ConfigValue
     clone_branch: ConfigValue | None = None
     vm_user: ConfigValue | None = None
-    directory_path: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "VmCloneRepoEffectDefinition":
@@ -271,13 +270,9 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
     target: ConfigValue | None = None
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
-    repo_source: ConfigValue
-    canonical_origin_url: ConfigValue | None = None
-    bare_repo_name: ConfigValue | None = None
-    bare_repo_path: ConfigValue | None = None
+    managed_repo_id: ConfigValue
     clone_branch: ConfigValue | None = None
     vm_user: ConfigValue | None = None
-    directory_path: ConfigValue | None = None
     git_author_name: ConfigValue | None = None
     git_author_email: ConfigValue | None = None
     git_committer_name: ConfigValue | None = None
@@ -366,6 +361,7 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     agent_context_retry_enabled: ConfigValue | None = None
     agent_context_retry_max_attempts: ConfigValue | None = None
     agent_context_retry_target_chars: ConfigValue | None = None
+
 
 
 class ChatAssistantEnsureSessionEffectDefinition(EffectDefinition):
@@ -777,6 +773,7 @@ class IssueUpsertAdoProxyEffectDefinition(EffectDefinition):
     directory_path: ConfigValue | None = None
     organization_url: ConfigValue | None = None
     project: ConfigValue | None = None
+    managed_repo_id: ConfigValue | None = None
     repo_source: ConfigValue | None = None
     yaml_output_dir: ConfigValue | None = None
     item: ConfigValue | None = None
@@ -1076,87 +1073,39 @@ class SessionRenewIfExpiredEffectDefinition(EffectDefinition):
         return self
 
 
+class GitEnsureManagedRepoEffectDefinition(EffectDefinition):
+    type: Literal["effect:git:ensure-managed-repo"]
+    directory_path: ConfigValue
+    repo_source: ConfigValue
+
+
 class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:git:promote-agent-branch"]
-    host_repo_path: ConfigValue
-    bare_repo_path: ConfigValue | None = None
-    bare_repo_name: ConfigValue | None = None
+    managed_repo_id: ConfigValue
     agent_branch: ConfigValue
-    review_branch: ConfigValue | None = None
-    target_branch: ConfigValue | None = None
-    expected_commit_sha: ConfigValue | None = None
-    remote_name: ConfigValue | None = None
-    publish_target_to_bare: ConfigValue | None = None
-
-    @model_validator(mode="after")
-    def validate_bare_repo_selector(self) -> "GitPromoteAgentBranchEffectDefinition":
-        if self.bare_repo_path is None and self.bare_repo_name is None:
-            raise ValueError(
-                "effect:git:promote-agent-branch requires bare_repo_path or bare_repo_name"
-            )
-        if (
-            self.bare_repo_path is not None
-            and self.bare_repo_name is not None
-            and not (
-                _is_binding_config_value(self.bare_repo_path)
-                or _is_binding_config_value(self.bare_repo_name)
-            )
-        ):
-            raise ValueError(
-                "effect:git:promote-agent-branch bare_repo_path and bare_repo_name are mutually exclusive"
-            )
-        return self
+    target_branch: ConfigValue
+    expected_commit_sha: ConfigValue
 
 
 class GitPushBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:git:push-branch"]
-    host_repo_path: ConfigValue
-    bare_repo_path: ConfigValue | None = None
-    bare_repo_name: ConfigValue | None = None
-    local_branch: ConfigValue
-    expected_commit_sha: ConfigValue | None = None
-    origin_branch: ConfigValue
-    canonical_origin_url: ConfigValue | None = None
-    provider: ConfigValue | None = None
-    base_branch: ConfigValue | None = None
-    session_id: ConfigValue | None = None
-    work_item_id: ConfigValue | None = None
-
-    @model_validator(mode="after")
-    def validate_bare_repo_selector(self) -> "GitPushBranchEffectDefinition":
-        if (
-            self.bare_repo_path is not None
-            and self.bare_repo_name is not None
-            and not (
-                _is_binding_config_value(self.bare_repo_path)
-                or _is_binding_config_value(self.bare_repo_name)
-            )
-        ):
-            raise ValueError(
-                "effect:git:push-branch bare_repo_path and bare_repo_name are mutually exclusive"
-            )
-        return self
-
-
-def _is_binding_config_value(value: ConfigValue | None) -> bool:
-    return isinstance(value, str) and "${{" in value and "}}" in value
+    managed_repo_id: ConfigValue
+    source_ref: ConfigValue
+    expected_commit_sha: ConfigValue
+    destination_branch: ConfigValue
 
 
 class PrCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:pr:create"]
-    host_repo_path: ConfigValue
-    local_branch: ConfigValue | None = None
-    origin_branch: ConfigValue | None = None
-    canonical_origin_url: ConfigValue | None = None
-    provider: ConfigValue | None = None
-    project: ConfigValue | None = None
+    managed_repo_id: ConfigValue
+    source_ref: ConfigValue
+    expected_commit_sha: ConfigValue
+    destination_branch: ConfigValue
     base_branch: ConfigValue | None = None
     session_id: ConfigValue | None = None
     work_item_id: ConfigValue | None = None
     title: ConfigValue | None = None
     fallback_title: ConfigValue | None = None
     body: ConfigValue | None = None
-    body_file: ConfigValue | None = None
-    body_artifact_ids: ConfigValue | None = None
     draft: ConfigValue | None = None
     fill: ConfigValue | None = True

@@ -35,8 +35,8 @@ from .common import (
     utc_now,
 )
 from .git_common import (
-    _bare_repo_fields,
     _emit_git_promotion_event,
+    _managed_repo_fields,
     _normalize_agent_branch_ref,
     _project_git_or_error,
 )
@@ -288,7 +288,7 @@ def _apply_git_release_recovery(
         "promotion_id": failed_promotion.id,
         "promotion_kind": failed_promotion.promotion_kind,
         "project_id": project.id,
-        "host_repo_path": git.host_repo_path,
+        "managed_repo_id": git.managed_repo_id,
         "agent_branch": agent_branch,
         "target_branch": target_branch,
         "release_branch": release.release_branch,
@@ -302,7 +302,7 @@ def _apply_git_release_recovery(
             allowed_changed_paths if release.policy_version >= 2 else None
         ),
     }
-    payload.update(_bare_repo_fields(git))
+    payload.update(_managed_repo_fields(git))
     summary = _optional_text(request.get("summary"))
     if summary is not None:
         payload["summary"] = summary
@@ -599,7 +599,7 @@ def _build_release_package(
                 "promotion_kind": "feature",
                 "project_id": project.id,
                 "release_package_id": release_id,
-                "host_repo_path": git.host_repo_path,
+                "managed_repo_id": git.managed_repo_id,
                 "base_branch": git.base_branch,
                 "source_branches": list(feature_sources_by_task[promotion.task_id]),
                 "expected_source_commits": {
@@ -609,7 +609,7 @@ def _build_release_package(
                 "target_branch": promotion.target_branch,
                 "task_id": promotion.task_id,
             }
-            payload.update(_bare_repo_fields(git))
+            payload.update(_managed_repo_fields(git))
             _emit_git_promotion_event(
                 result,
                 promotion_id=promotion_id,
@@ -856,14 +856,14 @@ def _queue_release_promotion_if_ready(
         "promotion_kind": "release",
         "project_id": project.id,
         "release_package_id": release.id,
-        "host_repo_path": git.host_repo_path,
+        "managed_repo_id": git.managed_repo_id,
         "base_branch": git.base_branch,
         "source_branches": list(feature_branches),
         "expected_source_commits": _release_expected_feature_commits(state, release),
         "allowed_changed_paths": allowed_changed_paths,
         "target_branch": target_release_branch,
     }
-    payload.update(_bare_repo_fields(git))
+    payload.update(_managed_repo_fields(git))
     _emit_git_promotion_event(
         result,
         promotion_id=release_promotion.id,

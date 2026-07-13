@@ -161,17 +161,13 @@ def test_agent_clone_repo_uses_session_container_image(
         "evander.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
     )
-    monkeypatch.setattr(
-        "evander.effects.providers.agent_clone_repo._container_git_mirror_resolver",
-        lambda context, directory_path: SimpleNamespace(
-            resolve=lambda **kwargs: SimpleNamespace(
-                worker_repo_source="ssh://evander-git-host/agents/repo.git",
-                canonical_repo_source="git@example.test/repo.git",
-                mirror_path=tmp_path / "repo.git",
-                repo_name="repo",
-            )
-        ),
-    )
+    context = _context(tmp_path, session_repository)
+    context.admin_service.resolve_managed_git_clone = lambda **kwargs: {
+        "managed_repo_id": "mr_0123456789abcdefabcd",
+        "clone_url": "https://example.invalid/repo.git",
+        "display_name": "repo",
+        "default_branch": "main",
+    }
     provider = AgentCloneRepoEffectProvider()
     provider.initialize(
         AgentCloneRepoEffectDefinition(
@@ -179,10 +175,10 @@ def test_agent_clone_repo_uses_session_container_image(
             display_name="Clone",
             type="effect:agent:clone-repo",
             session_id="session-1",
-            repo_source="git@example.test/repo.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             git_access_mode="read-only",
         ),
-        _context(tmp_path, session_repository),
+        context,
     )
 
     result = provider.execute()

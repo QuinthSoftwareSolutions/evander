@@ -6,7 +6,6 @@ import inspect
 import logging
 import os
 import re
-import shutil
 import subprocess
 import time
 import uuid
@@ -132,6 +131,7 @@ app = typer.Typer(
     help="Utilities for the Evander host control plane.", cls=GroupedHelpTyperGroup
 )
 directories_app = typer.Typer(help="Directory management and directory-scoped config inspection.")
+git_repos_app = typer.Typer(help="Manage Evander-owned bare Git repositories.")
 wake_schedules_app = typer.Typer(help="Manage scheduled wake requests.")
 teams_auth_app = typer.Typer(help="Manage delegated Teams auth.")
 teams_meeting_app = typer.Typer(help="Manage live Teams meeting agent sessions.")
@@ -141,6 +141,7 @@ setup_app = typer.Typer(
     invoke_without_command=True,
 )
 app.add_typer(directories_app, name="directories")
+app.add_typer(git_repos_app, name="git-repos", rich_help_panel="Health and State")
 app.add_typer(wake_schedules_app, name="wake-schedules")
 app.add_typer(teams_auth_app, name="teams-auth", rich_help_panel="Sessions and Feedback")
 app.add_typer(teams_meeting_app, name="teams-meeting", rich_help_panel="Sessions and Feedback")
@@ -285,6 +286,37 @@ def _echo_model_json(model: object) -> None:
         typer.echo(json.dumps(model.model_dump(mode="json"), indent=2, sort_keys=True))
         return
     typer.echo(json.dumps(model, indent=2, sort_keys=True))
+
+
+def _managed_git_jsonable(value: object) -> object:
+    if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+        return value.model_dump(mode="json")
+    if is_dataclass(value):
+        return _managed_git_jsonable(asdict(value))
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _managed_git_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_managed_git_jsonable(item) for item in value]
+    return value
+
+
+def _echo_managed_git_json(value: object) -> None:
+    typer.echo(json.dumps(_managed_git_jsonable(value), indent=2, sort_keys=True))
+
+
+def _managed_git_call(operation, /, *args: object, **kwargs: object) -> object:
+    try:
+        return operation(*args, **kwargs)
+    except Exception as exc:
+        if isinstance(exc, (LookupError, RuntimeError, ValueError)) or isinstance(
+            getattr(exc, "status_code", None), int
+        ):
+            raise typer.BadParameter(str(exc) or "Managed Git operation failed") from exc
+        raise
 
 
 def _build_teams_ingest_worker(cfg: GatewayConfig, *, project_dir: Path):
@@ -1078,13 +1110,6 @@ def _load_optional_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def _resolve_git_root(root_dir: Path) -> Path:
-    env_value = os.environ.get("EVANDER_GIT_ROOT", "").strip()
-    if env_value:
-        return Path(env_value)
-    return root_dir / "git-remotes"
-
-
 def _matching_issue_session_ids(
     issue_number: str, sessions: dict[str, SessionManifest]
 ) -> set[str]:
@@ -1297,54 +1322,6 @@ def _prune_approvals_for_sessions(runtime: object, *, session_ids: set[str]) -> 
     return removed_count
 
 
-def _remove_issue_bare_repo(
-    issue_number: str, *, root_dir: Path, runtime_dir: Path
-) -> tuple[bool, str | None]:
-    git_root = _resolve_git_root(root_dir)
-    bare_repo_path = git_root / f"{issue_number}_repo.git"
-    hook_log_paths = [
-        root_dir / "runtime" / "hook-logs" / f"{bare_repo_path.name}.post-receive.log",
-        runtime_dir / "hook-logs" / f"{bare_repo_path.name}.post-receive.log",
-    ]
-    trusted_repo_path: str | None = None
-    if bare_repo_path.exists():
-        try:
-            config_result = subprocess.run(
-                [
-                    "git",
-                    f"--git-dir={bare_repo_path}",
-                    "config",
-                    "--get",
-                    "evander.trustedRepoPath",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        except OSError:
-            config_result = None
-        if config_result is not None and config_result.returncode == 0:
-            trusted_repo_path = (config_result.stdout or "").strip() or None
-        shutil.rmtree(bare_repo_path, ignore_errors=True)
-    for hook_log_path in hook_log_paths:
-        if hook_log_path.exists():
-            hook_log_path.unlink()
-    if trusted_repo_path:
-        mirror_remote_name = f"{issue_number}-mirror"
-        try:
-            subprocess.run(
-                ["git", "-C", trusted_repo_path, "remote", "remove", mirror_remote_name],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        except OSError:
-            pass
-    return bare_repo_path.exists() is False, str(
-        bare_repo_path
-    ) if bare_repo_path.exists() else str(bare_repo_path)
-
-
 def _list_existing_issue_vm_names() -> set[str]:
     completed = subprocess.run(
         ["virsh", "list", "--all", "--name"],
@@ -1372,18 +1349,6 @@ def _issue_numbers_from_pr_map(path: Path) -> set[str]:
         if not isinstance(raw_entry, dict):
             continue
         issue_number = _extract_issue_number(str(raw_entry.get("session_id", "")).strip())
-        if issue_number is not None:
-            issue_numbers.add(issue_number)
-    return issue_numbers
-
-
-def _issue_numbers_from_bare_repos(root_dir: Path) -> set[str]:
-    git_root = _resolve_git_root(root_dir)
-    if not git_root.exists():
-        return set()
-    issue_numbers: set[str] = set()
-    for bare_repo in git_root.glob("*_repo.git"):
-        issue_number = _extract_issue_number(bare_repo.name.removesuffix("_repo.git"))
         if issue_number is not None:
             issue_numbers.add(issue_number)
     return issue_numbers
@@ -1688,6 +1653,185 @@ def directories_config_set(
     _echo_admin_result_or_exit(result)
     assert result.data is not None
     typer.echo(json.dumps(result.data.model_dump(mode="json"), indent=2, sort_keys=True))
+
+
+@git_repos_app.command("register", short_help="Register or refresh a managed repository.")
+def git_repos_register(
+    directory_path: Annotated[
+        str,
+        typer.Option(
+            "--directory-path",
+            help="Owning directory path used for trust-boundary isolation.",
+        ),
+    ],
+    repo_source: Annotated[
+        str,
+        typer.Option(
+            "--repo-source",
+            help="Canonical URL or local Git source used during registration.",
+        ),
+    ],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    default_branch: Annotated[
+        str | None,
+        typer.Option(
+            "--default-branch",
+            help="Override the detected canonical default branch.",
+        ),
+    ] = None,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh/--no-refresh",
+            help="Refresh canonical refs while registering the repository.",
+        ),
+    ] = True,
+) -> None:
+    managed_git = build_admin_runtime(config).managed_git_admin
+    result = _managed_git_call(
+        managed_git.register_repository,
+        directory_path,
+        repo_source,
+        default_branch=default_branch,
+        refresh=refresh,
+    )
+    _echo_managed_git_json(result)
+
+
+@git_repos_app.command("list", short_help="List managed repositories.")
+def git_repos_list(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory_path: Annotated[
+        str | None,
+        typer.Option(
+            "--directory-path",
+            help="Limit results to an owning directory subtree.",
+        ),
+    ] = None,
+    include_descendants: Annotated[
+        bool,
+        typer.Option(
+            "--include-descendants/--no-include-descendants",
+            help="Include repositories owned by descendant directories.",
+        ),
+    ] = True,
+) -> None:
+    managed_git = build_admin_runtime(config).managed_git_admin
+    repositories = _managed_git_call(
+        managed_git.list_repositories,
+        directory_path=directory_path,
+        include_descendants=include_descendants,
+    )
+    _echo_managed_git_json({"repositories": repositories})
+
+
+@git_repos_app.command("show", short_help="Show one managed repository.")
+def git_repos_show(
+    managed_repo_id: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory_path: Annotated[
+        str | None,
+        typer.Option(
+            "--directory-path",
+            help="Require the repository to be visible from this directory path.",
+        ),
+    ] = None,
+) -> None:
+    managed_git = build_admin_runtime(config).managed_git_admin
+    repository = _managed_git_call(
+        managed_git.get_repository,
+        managed_repo_id,
+        directory_path=directory_path,
+    )
+    _echo_managed_git_json(repository)
+
+
+@git_repos_app.command("refresh", short_help="Refresh canonical refs for a repository.")
+def git_repos_refresh(
+    managed_repo_id: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    managed_git = build_admin_runtime(config).managed_git_admin
+    result = _managed_git_call(managed_git.refresh_repository, managed_repo_id)
+    _echo_managed_git_json(result)
+
+
+@git_repos_app.command("delete", short_help="Delete an unused managed repository.")
+def git_repos_delete(
+    managed_repo_id: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    managed_git = build_admin_runtime(config).managed_git_admin
+    result = _managed_git_call(managed_git.delete_repository, managed_repo_id)
+    _echo_managed_git_json(result)
+
+
+@git_repos_app.command("maintenance", short_help="Run managed repository maintenance.")
+def git_repos_maintenance(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    managed_repo_id: Annotated[
+        str | None,
+        typer.Option(
+            "--managed-repo-id",
+            help="Run maintenance for one repository instead of every repository.",
+        ),
+    ] = None,
+) -> None:
+    managed_git = build_admin_runtime(config).managed_git_admin
+    result = _managed_git_call(managed_git.maintenance, managed_repo_id)
+    _echo_managed_git_json(result)
+
+
+@git_repos_app.command("migrate", short_help="Migrate legacy managed Git state explicitly.")
+def git_repos_migrate(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Inventory legacy Git state and report blockers without writing.",
+        ),
+    ] = False,
+    apply_stage: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help="Create managed repositories and rewrite active bindings.",
+        ),
+    ] = False,
+    finalize: Annotated[
+        str | None,
+        typer.Option(
+            "--finalize",
+            metavar="MIGRATION_ID",
+            help="Verify and delete manifest-owned rollback artifacts.",
+        ),
+    ] = None,
+) -> None:
+    selected_stage_count = int(dry_run) + int(apply_stage) + int(finalize is not None)
+    if selected_stage_count != 1:
+        raise typer.BadParameter(
+            "Provide exactly one migration stage: --dry-run, --apply, or --finalize MIGRATION_ID."
+        )
+
+    migration_id: str | None = None
+    if dry_run:
+        stage = "dry-run"
+    elif apply_stage:
+        stage = "apply"
+    else:
+        migration_id = str(finalize or "").strip()
+        if not migration_id:
+            raise typer.BadParameter("--finalize requires a non-empty migration id.")
+        stage = "finalize"
+
+    managed_git = build_admin_runtime(config).managed_git_admin
+    result = _managed_git_call(
+        managed_git.migrate,
+        stage,
+        migration_id=migration_id,
+    )
+    _echo_managed_git_json(result)
 
 
 @app.command(
@@ -2928,49 +3072,9 @@ def destroy_issue_vm(
     target: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    issue_number = _resolve_issue_number_or_raise(target)
-    vm_name = f"vm-{issue_number}"
-    cfg = _load_runtime_config_from_option(config)
-    runtime = build_runtime(cfg)
-
-    session_repository = _runtime_session_repository(runtime)
-    sessions = {session.session_id: session for session in session_repository.list_sessions()}
-    session_ids = _matching_issue_session_ids(issue_number, sessions)
-    if session_ids:
-        for session_id in session_ids:
-            session_repository.delete_session(session_id)
-    removed_approvals = _prune_approvals_for_sessions(runtime, session_ids=session_ids)
-
-    removed_pr_map_entries, removed_streams = _prune_pr_map(
-        cfg.pr_map_path, session_ids=session_ids
-    )
-    removed_cursors, removed_feedback = _prune_pr_feedback_store(
-        cfg.runtime_dir / "pr-feedback-store.json",
-        streams=removed_streams,
-    )
-
-    root_dir = Path(__file__).resolve().parents[2]
-    bare_repo_removed, bare_repo_path = _remove_issue_bare_repo(
-        issue_number,
-        root_dir=root_dir,
-        runtime_dir=cfg.runtime_dir,
-    )
-
-    destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
-    _run_subprocess_compat(
-        [str(destroy_script), vm_name], check=True, capture_output=False, text=False
-    )
-
-    typer.echo(
-        f"Destroyed issue VM {vm_name}; "
-        f"removed_sessions={len(session_ids)} "
-        f"removed_pr_map_entries={removed_pr_map_entries} "
-        f"removed_approvals={removed_approvals} "
-        f"removed_feedback_cursors={removed_cursors} "
-        f"removed_feedback_items={removed_feedback} "
-        f"bare_repo_removed={bare_repo_removed} "
-        f"bare_repo_path={bare_repo_path}"
-    )
+    service = build_admin_runtime(config).vm_agent_admin
+    result = service.destroy_issue_vm(target)
+    _echo_action_result_or_exit(result)
 
 
 @app.command(
@@ -2989,8 +3093,6 @@ def prune_orphaned_issue_state(
         for issue_number in (_extract_issue_number(vm_name) for vm_name in live_vm_names)
         if issue_number is not None
     }
-    root_dir = Path(__file__).resolve().parents[2]
-
     session_repository = _runtime_session_repository(runtime)
     sessions = {session.session_id: session for session in session_repository.list_sessions()}
     orphan_session_ids = {
@@ -3019,11 +3121,6 @@ def prune_orphaned_issue_state(
         for issue_number in _issue_numbers_from_pr_map(cfg.pr_map_path)
         if issue_number not in live_issue_numbers
     )
-    orphan_issue_numbers.update(
-        issue_number
-        for issue_number in _issue_numbers_from_bare_repos(root_dir)
-        if issue_number not in live_issue_numbers
-    )
 
     session_streams = _session_streams_for_session_ids(sessions, session_ids=orphan_session_ids)
     if orphan_session_ids:
@@ -3045,26 +3142,13 @@ def prune_orphaned_issue_state(
         streams=removed_streams,
     )
 
-    removed_bare_repo_count = 0
-    for issue_number in sorted(orphan_issue_numbers):
-        if issue_number in live_issue_numbers:
-            continue
-        bare_repo_removed, _ = _remove_issue_bare_repo(
-            issue_number,
-            root_dir=root_dir,
-            runtime_dir=cfg.runtime_dir,
-        )
-        if bare_repo_removed:
-            removed_bare_repo_count += 1
-
     typer.echo(
         f"Pruned orphaned issue state "
         f"removed_sessions={len(orphan_session_ids)} "
         f"removed_approvals={removed_approvals} "
         f"removed_pr_map_entries={removed_pr_map_entries_a + removed_pr_map_entries_b} "
         f"removed_feedback_cursors={removed_cursors} "
-        f"removed_feedback_items={removed_feedback} "
-        f"removed_bare_repos={removed_bare_repo_count}"
+        f"removed_feedback_items={removed_feedback}"
     )
 
 
@@ -3166,12 +3250,24 @@ def create_issue(
         str,
         typer.Option("--body", help="Issue body/description."),
     ] = "",
+    managed_repo_id: Annotated[
+        str | None,
+        typer.Option(
+            "--managed-repo-id",
+            help="Existing managed repository to bind to the issue.",
+        ),
+    ] = None,
     repo_source: Annotated[
         str | None,
         typer.Option(
-            "--repo-source", help="Default repo source used when starting a VM for this issue."
+            "--repo-source",
+            help="Transient repository source to register and bind to this issue.",
         ),
     ] = None,
+    directory_path: Annotated[
+        str,
+        typer.Option("--directory-path", help="Owning directory path."),
+    ] = "root",
     yaml_path: Annotated[
         Path | None,
         typer.Option(
@@ -3184,8 +3280,10 @@ def create_issue(
     issue = service.create_issue(
         title=title,
         body=body,
+        managed_repo_id=managed_repo_id,
         repo_source=repo_source,
         yaml_path=str(yaml_path) if yaml_path is not None else None,
+        directory_path=directory_path,
     )
     typer.echo(f"Created local issue {issue.issue_number} ({issue.title}) at {issue.yaml_path}")
 
@@ -3205,13 +3303,24 @@ def create_local_issue(
         str,
         typer.Option("--body", help="Local issue body/description."),
     ] = "",
+    managed_repo_id: Annotated[
+        str | None,
+        typer.Option(
+            "--managed-repo-id",
+            help="Existing managed repository to bind to the local issue.",
+        ),
+    ] = None,
     repo_source: Annotated[
         str | None,
         typer.Option(
             "--repo-source",
-            help="Default repo source used when starting a VM for this local issue.",
+            help="Transient repository source to register and bind to this local issue.",
         ),
     ] = None,
+    directory_path: Annotated[
+        str,
+        typer.Option("--directory-path", help="Owning directory path."),
+    ] = "root",
     yaml_path: Annotated[
         Path | None,
         typer.Option(
@@ -3224,8 +3333,10 @@ def create_local_issue(
     issue = service.create_local_issue(
         title=title,
         body=body,
+        managed_repo_id=managed_repo_id,
         repo_source=repo_source,
         yaml_path=str(yaml_path) if yaml_path is not None else None,
+        directory_path=directory_path,
     )
     typer.echo(f"Created local issue {issue.issue_number} ({issue.title}) at {issue.yaml_path}")
 
@@ -3770,9 +3881,12 @@ def create_vm(
 )
 def clone_repo_into_vm(
     vm_name: str,
-    repo_source: Annotated[
+    managed_repo_id: Annotated[
         str,
-        typer.Option("--repo-source", help="Host repo path or remote URL to clone into the guest."),
+        typer.Option(
+            "--managed-repo-id",
+            help="Directory-scoped managed repository ID to clone into the guest.",
+        ),
     ],
     clone_branch: Annotated[
         str | None,
@@ -3796,7 +3910,7 @@ def clone_repo_into_vm(
     result = service.clone_repo_into_vm(
         vm_name=vm_name,
         session_id=session_id,
-        repo_source=repo_source,
+        managed_repo_id=managed_repo_id,
         clone_branch=clone_branch,
         vm_user=vm_user,
         directory_path=directory_path,

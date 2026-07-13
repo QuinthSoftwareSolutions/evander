@@ -6,7 +6,7 @@ from typing import Any
 
 from evander.ado_proxy_issues import upsert_ado_proxy_issue_items
 
-from .base import EffectProviderBase
+from .base import EffectProviderBase, scoped_effect_directory_path
 
 
 class IssueUpsertAdoProxyEffectProvider(EffectProviderBase):
@@ -15,9 +15,10 @@ class IssueUpsertAdoProxyEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
 
-        directory_path = (
+        directory_path = scoped_effect_directory_path(
+            self._context(),
             self._normalize_optional_string(payload.get("directory_path"))
-            or self._context_directory_path()
+            or self._context_directory_path(),
         )
         item = payload.get("item")
         items = payload.get("items")
@@ -37,6 +38,34 @@ class IssueUpsertAdoProxyEffectProvider(EffectProviderBase):
                 getattr(resolved_directory, "azure_devops_project", None)
             )
         repo_source = self._normalize_optional_string(payload.get("repo_source"))
+        managed_repo_id = self._normalize_optional_string(payload.get("managed_repo_id"))
+        admin_service = self._context().admin_service
+        if repo_source is not None:
+            if admin_service is None:
+                raise RuntimeError("managed Git registration is not available")
+            ensure_repository = getattr(admin_service, "ensure_managed_git_repository", None)
+            if not callable(ensure_repository):
+                raise RuntimeError("managed Git registration is not available")
+            record = ensure_repository(
+                directory_path=directory_path,
+                repo_source=repo_source,
+            )
+            registered_id = self._normalize_optional_string(
+                record.get("managed_repo_id") if isinstance(record, Mapping) else None
+            )
+            if registered_id is None:
+                raise RuntimeError("managed Git registration did not return managed_repo_id")
+            if managed_repo_id is not None and managed_repo_id != registered_id:
+                raise ValueError(
+                    "managed_repo_id and repo_source resolve to different managed repositories"
+                )
+            managed_repo_id = registered_id
+        elif managed_repo_id is not None:
+            managed_git = getattr(admin_service, "managed_git_admin", None)
+            get_repository = getattr(managed_git, "get_repository", None)
+            if not callable(get_repository):
+                raise RuntimeError("managed Git scoped lookup is not available")
+            get_repository(managed_repo_id, directory_path=directory_path)
         yaml_output_dir = self._normalize_path(payload.get("yaml_output_dir"))
         runtime_dir = self._runtime_dir()
         if yaml_output_dir is not None and not yaml_output_dir.is_absolute():
@@ -47,11 +76,29 @@ class IssueUpsertAdoProxyEffectProvider(EffectProviderBase):
             directory_path=directory_path,
             organization_url=organization_url,
             project=project,
-            repo_source=repo_source,
+            managed_repo_id=managed_repo_id,
             yaml_output_dir=yaml_output_dir,
             source="ado_proxy_upsert",
             items=normalized_items,
         )
+        if managed_repo_id is not None:
+            if admin_service is None:
+                raise RuntimeError("managed Git binding is not available")
+            bind_repository = getattr(admin_service, "bind_managed_git_repository", None)
+            unbind_repositories = getattr(
+                admin_service, "unbind_all_managed_git_repositories", None
+            )
+            if not callable(bind_repository):
+                raise RuntimeError("managed Git binding is not available")
+            if not callable(unbind_repositories):
+                raise RuntimeError("managed Git unbinding is not available")
+            for ticket in result.tickets:
+                unbind_repositories(kind="issues", binding_id=ticket.issue_id)
+                bind_repository(
+                    managed_repo_id=managed_repo_id,
+                    kind="issues",
+                    binding_id=ticket.issue_id,
+                )
         return result.model_dump()
 
     def _effect_payload(self) -> dict[str, Any]:
@@ -61,6 +108,7 @@ class IssueUpsertAdoProxyEffectProvider(EffectProviderBase):
             "directory_path",
             "organization_url",
             "project",
+            "managed_repo_id",
             "repo_source",
             "yaml_output_dir",
             "item",

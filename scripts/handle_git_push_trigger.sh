@@ -62,9 +62,14 @@ import fcntl
 from evander.events.models import TriggerEvent
 from evander.orchestration.host_polling import HostWakeNotifier, wake_socket_path_for_lock
 from evander.triggers.queue import SqliteTriggerEventQueue
-from evander.triggers.providers.git_push import build_git_push_payloads, git_push_trigger_matches_repo
+from evander.triggers.providers.git_push import (
+    _load_managed_repo_metadata,
+    build_git_push_payloads,
+    git_push_trigger_matches_repo,
+)
+from evander.workflow.graph_metadata import resolve_workflow_graph_metadata
 from evander.workflow.node_state import workflow_node_is_enabled
-from evander.workflow.packs import compose_workflow_ir
+from evander.workflow.runtime_config import _compose_configured_workflow_ir
 
 def _resolve_repo(path_text: str) -> Path:
     return Path(path_text).expanduser().resolve()
@@ -78,32 +83,65 @@ def _load_config(path: Path) -> dict:
 
 
 def _resolve_git_push_triggers(*, config: dict, project_dir: Path) -> list[dict]:
-    normalized_triggers: list[dict] = []
-    triggers = config.get("triggers", [])
-    if isinstance(triggers, list):
-        normalized_triggers.extend(trigger for trigger in triggers if isinstance(trigger, dict))
-
-    configured_packs = config.get("workflow_packs")
-    inline_ir = config.get("workflow_ir")
-    has_configured_packs = isinstance(configured_packs, list) and bool(configured_packs)
-    has_inline_ir = isinstance(inline_ir, dict)
-    if not has_configured_packs and not has_inline_ir:
-        return normalized_triggers
-
-    composition = compose_workflow_ir(
+    composed = _compose_configured_workflow_ir(
         project_dir=project_dir,
-        workflow_packs=configured_packs if has_configured_packs else [],
-        inline_ir=inline_ir if has_inline_ir else None,
+        payload=dict(config),
     )
-    for trigger in composition.triggers:
+    node_collections = (
+        composed.get("triggers"),
+        composed.get("gates"),
+        composed.get("effects"),
+        composed.get("queries"),
+    )
+    nodes_by_id = {
+        str(node.get("id") or "").strip(): node
+        for collection in node_collections
+        if isinstance(collection, list)
+        for node in collection
+        if isinstance(node, dict) and str(node.get("id") or "").strip()
+    }
+    graph_metadata = resolve_workflow_graph_metadata(
+        nodes_by_id=nodes_by_id,
+        edges=composed.get("edges") if isinstance(composed.get("edges"), list) else [],
+        workflow_graphs=(
+            composed.get("workflow_graphs")
+            if isinstance(composed.get("workflow_graphs"), list)
+            else []
+        ),
+    )
+
+    normalized_triggers: list[dict] = []
+    triggers = composed.get("triggers")
+    for trigger in triggers if isinstance(triggers, list) else []:
         if not isinstance(trigger, dict):
             continue
         normalized = dict(trigger)
         trigger_config = normalized.pop("config", None)
         if isinstance(trigger_config, dict):
             normalized.update(trigger_config)
+        explicit_directory = str(normalized.get("directory_path") or "").strip()
+        graph = graph_metadata.get(str(normalized.get("id") or "").strip())
+        normalized["_evander_effective_directory_path"] = (
+            explicit_directory
+            or (graph.directory_path if graph is not None else "")
+            or "root"
+        )
         normalized_triggers.append(normalized)
     return normalized_triggers
+
+
+def _trigger_can_access_repository(*, trigger: dict, owner_directory: str) -> bool:
+    owner = str(owner_directory or "").strip()
+    workflow_directory = str(
+        trigger.get("_evander_effective_directory_path") or "root"
+    ).strip() or "root"
+    return bool(
+        owner
+        and (
+            workflow_directory == owner
+            or workflow_directory.startswith(f"{owner}/")
+        )
+    )
 
 
 def _resolve_config_path(value: object, *, config_path: Path, project_dir: Path) -> Path:
@@ -172,6 +210,8 @@ def _build_trigger_events(
     git_push_triggers: list[dict],
 ) -> list[TriggerEvent]:
     events: list[TriggerEvent] = []
+    repo_metadata = _load_managed_repo_metadata(repo_path)
+    owner_directory = str(repo_metadata.get("directory_path") or "").strip()
     for raw_line in updates_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line:
@@ -193,6 +233,16 @@ def _build_trigger_events(
         for payload in payloads:
             event_hash = str(payload.get("event_hash") or new_rev)
             for trigger in git_push_triggers:
+                if not git_push_trigger_matches_repo(
+                    trigger,
+                    str(payload.get("managed_repo_id") or ""),
+                ):
+                    continue
+                if not _trigger_can_access_repository(
+                    trigger=trigger,
+                    owner_directory=owner_directory,
+                ):
+                    continue
                 trigger_id = str(trigger["id"]).strip()
                 events.append(
                     TriggerEvent(
@@ -302,7 +352,6 @@ def main() -> int:
         and workflow_node_is_enabled(trigger)
         and str(trigger.get("type", "")).strip() == "trigger:git:push"
         and str(trigger.get("id", "")).strip()
-        and git_push_trigger_matches_repo(trigger, str(repo_path))
     ]
     if not git_push_triggers:
         return 0

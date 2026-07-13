@@ -462,7 +462,7 @@ export type IssueRecord = {
   rejection_reason?: string | null;
   yaml_path: string;
   directory_path: string;
-  repo_source?: string | null;
+  managed_repo_id?: string | null;
   source_type: string;
   state?: string | null;
   url?: string | null;
@@ -492,7 +492,7 @@ export type IssueDetail = {
   description?: string | null;
   state?: string | null;
   directory_path?: string | null;
-  repo_source?: string | null;
+  managed_repo_id?: string | null;
   yaml_path?: string | null;
   url?: string | null;
   source?: string | null;

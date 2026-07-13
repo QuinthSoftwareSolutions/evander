@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import fcntl
+import os
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -155,12 +158,170 @@ def _validate_admin_memory_scope(
 
 
 class TeamAdminService:
-    def __init__(self, repository: TeamStateRepository) -> None:
+    _PROJECT_REPOSITORY_BINDING_KIND = "team_projects"
+
+    def __init__(
+        self,
+        repository: TeamStateRepository,
+        *,
+        managed_git_admin: Any | None = None,
+    ) -> None:
         self._repository = repository
+        self._managed_git_admin = managed_git_admin
 
     @property
     def repository(self) -> TeamStateRepository:
         return self._repository
+
+    def _project_repository_binding_exists(
+        self,
+        managed_repo_id: str,
+        project_id: str,
+    ) -> bool:
+        managed_git = self._managed_git_admin
+        if managed_git is None:
+            return False
+        record = managed_git.get_repository(managed_repo_id)
+        return any(
+            isinstance(binding, Mapping)
+            and binding.get("kind") == self._PROJECT_REPOSITORY_BINDING_KIND
+            and binding.get("binding_id") == project_id
+            for binding in record.get("bindings") or []
+        )
+
+    def _set_project_repository_binding(
+        self,
+        managed_repo_id: str,
+        project_id: str,
+        *,
+        bound: bool,
+    ) -> None:
+        managed_git = self._managed_git_admin
+        if managed_git is None:
+            return
+        operation = managed_git.bind if bound else managed_git.unbind
+        operation(
+            managed_repo_id,
+            kind=self._PROJECT_REPOSITORY_BINDING_KIND,
+            binding_id=project_id,
+        )
+
+    @contextmanager
+    def _project_repository_binding_lock(self):
+        lock_path = self._repository.store.path.parent / "project-repository-bindings.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    def _update_with_project_repository_binding(
+        self,
+        mutate: Any,
+        *,
+        project_id: str,
+        next_managed_repo_id: str | None,
+        expected_revision: int | None,
+    ) -> TeamState:
+        managed_git = self._managed_git_admin
+        if managed_git is None:
+            return self._repository.update(mutate, expected_revision=expected_revision)
+
+        with self._project_repository_binding_lock():
+            current_project = self._repository.read().projects.get(project_id)
+            previous_managed_repo_id = (
+                current_project.git.managed_repo_id
+                if current_project is not None and current_project.git is not None
+                else None
+            )
+            return self._update_with_locked_project_repository_binding(
+                mutate,
+                project_id=project_id,
+                previous_managed_repo_id=previous_managed_repo_id,
+                next_managed_repo_id=next_managed_repo_id,
+                expected_revision=expected_revision,
+            )
+
+    def _update_with_locked_project_repository_binding(
+        self,
+        mutate: Any,
+        *,
+        project_id: str,
+        previous_managed_repo_id: str | None,
+        next_managed_repo_id: str | None,
+        expected_revision: int | None,
+    ) -> TeamState:
+        previous_was_bound = bool(
+            previous_managed_repo_id
+            and self._project_repository_binding_exists(
+                previous_managed_repo_id,
+                project_id,
+            )
+        )
+        next_was_bound = bool(
+            next_managed_repo_id
+            and (
+                (next_managed_repo_id == previous_managed_repo_id and previous_was_bound)
+                or self._project_repository_binding_exists(next_managed_repo_id, project_id)
+            )
+        )
+
+        def restore_original_bindings() -> None:
+            rollback_errors: list[BaseException] = []
+            if previous_managed_repo_id and previous_was_bound:
+                try:
+                    self._set_project_repository_binding(
+                        previous_managed_repo_id,
+                        project_id,
+                        bound=True,
+                    )
+                except BaseException as exc:
+                    rollback_errors.append(exc)
+            if next_managed_repo_id and not next_was_bound:
+                try:
+                    self._set_project_repository_binding(
+                        next_managed_repo_id,
+                        project_id,
+                        bound=False,
+                    )
+                except BaseException as exc:
+                    rollback_errors.append(exc)
+            if rollback_errors:
+                raise RuntimeError(
+                    "could not restore managed repository bindings after Team project failure"
+                ) from rollback_errors[0]
+
+        try:
+            if next_managed_repo_id and not next_was_bound:
+                self._set_project_repository_binding(
+                    next_managed_repo_id,
+                    project_id,
+                    bound=True,
+                )
+            if (
+                previous_managed_repo_id
+                and previous_managed_repo_id != next_managed_repo_id
+                and previous_was_bound
+            ):
+                self._set_project_repository_binding(
+                    previous_managed_repo_id,
+                    project_id,
+                    bound=False,
+                )
+        except BaseException:
+            restore_original_bindings()
+            raise
+
+        try:
+            return self._repository.update(mutate, expected_revision=expected_revision)
+        except BaseException:
+            restore_original_bindings()
+            raise
 
     def dismiss_action_record_attention(
         self,
@@ -836,14 +997,15 @@ class TeamAdminService:
         normalized_lead_role_id = _optional_text(lead_role_id)
         normalized_lead_role_name = _optional_text(lead_role_name) or "Project Lead"
         goal_inputs = list(goals or [])
+        current_state = self._repository.read()
+        effective_project_id = normalized_project_id or _generated_id(
+            prefix="project",
+            labels=[normalized_team_id, normalized_name],
+            existing_ids=current_state.projects,
+        )
 
         def _mutate(state: TeamState) -> TeamState:
             team = _require_present(state.teams, normalized_team_id, "team")
-            effective_project_id = normalized_project_id or _generated_id(
-                prefix="project",
-                labels=[normalized_team_id, normalized_name],
-                existing_ids=state.projects,
-            )
             _require_absent(state.projects, effective_project_id, "project")
             role_base_id = _default_role_id(
                 team_id=normalized_team_id,
@@ -939,7 +1101,14 @@ class TeamAdminService:
             team.updated_at = now
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        if git is None:
+            return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._update_with_project_repository_binding(
+            _mutate,
+            project_id=effective_project_id,
+            next_managed_repo_id=git.managed_repo_id,
+            expected_revision=expected_revision,
+        )
 
     def update_project(
         self,
@@ -954,6 +1123,10 @@ class TeamAdminService:
         status: ProjectStatus | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        next_managed_repo_id = (
+            git.managed_repo_id if set_git and git is not None else None
+        )
+
         def _mutate(state: TeamState) -> TeamState:
             project = _require_present(state.projects, project_id, "project")
             if name is not None:
@@ -969,7 +1142,14 @@ class TeamAdminService:
             project.updated_at = utc_now()
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        if not set_git:
+            return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._update_with_project_repository_binding(
+            _mutate,
+            project_id=project_id,
+            next_managed_repo_id=next_managed_repo_id,
+            expected_revision=expected_revision,
+        )
 
     def create_git_work_context_with_id(
         self,
@@ -2509,7 +2689,15 @@ class TeamAdminService:
             result["created_agent_ids"] = dict(result["agent_ids"])
             return state
 
-        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        if git is None:
+            state = self._repository.update(_mutate, expected_revision=expected_revision)
+        else:
+            state = self._update_with_project_repository_binding(
+                _mutate,
+                project_id=project_id,
+                next_managed_repo_id=git.managed_repo_id,
+                expected_revision=expected_revision,
+            )
         result["revision"] = state.revision
         result["created_team_id"] = team_id
         result["created_project_id"] = project_id

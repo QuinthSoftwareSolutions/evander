@@ -56,7 +56,9 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "does not turn containers into a VM-equivalent trust boundary" in docs
     assert "Non-`none` networking requires the worker egress policy" in docs
     assert "--allowed-git-source-prefix" in docs
-    assert "ssh://<git_ssh_alias><git_root>/<mirror>.git" in docs
+    assert "effect:agent:clone-repo` requires `managed_repo_id`" in docs
+    assert "reuse the same\nmanaged bare repository" in docs
+    assert "does not create a second cache mirror" in docs
     assert "GitHub/Azure DevOps egress" in docs
     assert "mssql_provision_database" in docs
     assert "session-owned" in docs

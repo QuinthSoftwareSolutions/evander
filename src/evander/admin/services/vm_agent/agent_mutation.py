@@ -247,6 +247,10 @@ class VmAgentMutationMixin:
         for candidate in records:
             container_repository.delete(candidate.execution_id)
             removed_mappings += 1
+        managed_git = self._deps.managed_git_admin
+        if managed_git is not None:
+            managed_git.unbind_all("sessions", session_id)
+            managed_git.unbind_all("authorized_sessions", session_id)
         removed_session = self.runtime.session_repository.delete_session(session_id)
         removed_assistant_mappings = self._delete_chat_assistant_session_mappings({session_id})
         removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})

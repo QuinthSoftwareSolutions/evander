@@ -32,10 +32,29 @@ class GitPushTriggerProvider(TriggerProviderBase):
         self, *, repo_path: str, old_rev: str, new_rev: str, ref_name: str
     ) -> TriggerEvent | None:
         trigger = self._trigger()
-        if not git_push_trigger_matches_repo(trigger, repo_path):
+        repo_metadata = _load_managed_repo_metadata(Path(repo_path).expanduser().resolve())
+        managed_repo_id = repo_metadata.get("managed_repo_id")
+        if not managed_repo_id or not git_push_trigger_matches_repo(trigger, managed_repo_id):
+            return None
+        owner_directory = repo_metadata.get("directory_path")
+        workflow_directory = str(
+            (self.runtime_context.metadata if self.runtime_context else {}).get(
+                "directory_path"
+            )
+            or "root"
+        )
+        if not owner_directory or not (
+            workflow_directory == owner_directory
+            or workflow_directory.startswith(f"{owner_directory}/")
+        ):
             return None
         payloads = build_git_push_payloads(
-            repo_path=repo_path, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name
+            repo_path=repo_path,
+            old_rev=old_rev,
+            new_rev=new_rev,
+            ref_name=ref_name,
+            managed_repo_id=managed_repo_id,
+            default_branch=repo_metadata.get("default_branch"),
         )
         if not payloads:
             return None
@@ -62,27 +81,40 @@ class GitPushTriggerProvider(TriggerProviderBase):
 
 
 def git_push_trigger_matches_repo(
-    trigger: GitPushTriggerDefinition | dict[str, Any], repo_path: str
+    trigger: GitPushTriggerDefinition | dict[str, Any], managed_repo_id: str
 ) -> bool:
-    normalized_repo = str(Path(repo_path).expanduser().resolve())
+    normalized_repo_id = _managed_repo_id_from_value(managed_repo_id)
+    if normalized_repo_id is None:
+        return False
     if isinstance(trigger, GitPushTriggerDefinition):
-        path_to_repo = trigger.path_to_repo
-        path_glob = trigger.path_glob
+        configured_repo_id = trigger.managed_repo_id
+        repo_id_glob = trigger.managed_repo_id_glob
     else:
-        path_to_repo = _normalize_optional_string(trigger.get("path_to_repo"))
-        path_glob = _normalize_optional_string(trigger.get("path_glob"))
-    if path_to_repo:
-        return normalized_repo == str(Path(path_to_repo).expanduser().resolve())
-    if path_glob:
-        return fnmatch.fnmatch(normalized_repo, path_glob)
+        configured_repo_id = _normalize_optional_string(trigger.get("managed_repo_id"))
+        repo_id_glob = _normalize_optional_string(trigger.get("managed_repo_id_glob"))
+    if configured_repo_id:
+        return normalized_repo_id == configured_repo_id
+    if repo_id_glob:
+        return fnmatch.fnmatchcase(normalized_repo_id, repo_id_glob)
     return False
 
 
 def build_git_push_payload(
-    *, repo_path: str, old_rev: str, new_rev: str, ref_name: str
+    *,
+    repo_path: str,
+    old_rev: str,
+    new_rev: str,
+    ref_name: str,
+    managed_repo_id: str | None = None,
+    default_branch: str | None = None,
 ) -> dict[str, Any] | None:
     payloads = build_git_push_payloads(
-        repo_path=repo_path, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name
+        repo_path=repo_path,
+        old_rev=old_rev,
+        new_rev=new_rev,
+        ref_name=ref_name,
+        managed_repo_id=managed_repo_id,
+        default_branch=default_branch,
     )
     if not payloads:
         return None
@@ -90,14 +122,30 @@ def build_git_push_payload(
 
 
 def build_git_push_payloads(
-    *, repo_path: str, old_rev: str, new_rev: str, ref_name: str
+    *,
+    repo_path: str,
+    old_rev: str,
+    new_rev: str,
+    ref_name: str,
+    managed_repo_id: str | None = None,
+    default_branch: str | None = None,
 ) -> list[dict[str, Any]]:
     normalized_repo = str(Path(repo_path).expanduser().resolve())
+    repo_metadata = _load_managed_repo_metadata(Path(normalized_repo))
+    resolved_managed_repo_id = _normalize_optional_string(managed_repo_id) or repo_metadata.get(
+        "managed_repo_id"
+    )
+    if resolved_managed_repo_id is None:
+        return []
+    resolved_default_branch = _normalize_optional_string(default_branch) or repo_metadata.get(
+        "default_branch"
+    )
     branch_name = _branch_name_from_ref(ref_name)
     if branch_name is not None:
         return [
             _build_branch_payload(
-                normalized_repo=normalized_repo,
+                managed_repo_id=resolved_managed_repo_id,
+                default_branch=resolved_default_branch,
                 branch_name=branch_name,
                 old_rev=old_rev,
                 new_rev=new_rev,
@@ -107,30 +155,41 @@ def build_git_push_payloads(
 
     if is_agent_pr_notes_ref(ref_name):
         return _build_note_push_payloads(
-            normalized_repo=normalized_repo, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name
+            normalized_repo=normalized_repo,
+            managed_repo_id=resolved_managed_repo_id,
+            default_branch=resolved_default_branch,
+            old_rev=old_rev,
+            new_rev=new_rev,
+            ref_name=ref_name,
         )
 
     return []
 
 
 def _build_branch_payload(
-    *, normalized_repo: str, branch_name: str, old_rev: str, new_rev: str, ref_name: str
+    *,
+    managed_repo_id: str,
+    default_branch: str | None,
+    branch_name: str,
+    old_rev: str,
+    new_rev: str,
+    ref_name: str,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "managed_repo_id": managed_repo_id,
         "branch_name": branch_name,
         "commit_hash": new_rev,
+        "new_commit_hash": new_rev,
         "event_hash": new_rev,
         "old_commit_hash": old_rev,
         "ref_name": ref_name,
-        "repo_path": normalized_repo,
-        "repo_name": Path(normalized_repo).name.removesuffix(".git"),
+        "default_branch": default_branch,
     }
     session_id = _extract_session_id(branch_name)
     if session_id:
         payload["session_id"] = session_id
         payload["review_branch"] = _derive_review_branch(branch_name)
         payload["notes_ref"] = agent_pr_notes_ref_for_session(session_id)
-    payload.update(_load_repo_metadata(Path(normalized_repo)))
     return payload
 
 
@@ -162,7 +221,13 @@ def _derive_review_branch(branch_name: str) -> str:
 
 
 def _build_note_push_payloads(
-    *, normalized_repo: str, old_rev: str, new_rev: str, ref_name: str
+    *,
+    normalized_repo: str,
+    managed_repo_id: str,
+    default_branch: str | None,
+    old_rev: str,
+    new_rev: str,
+    ref_name: str,
 ) -> list[dict[str, Any]]:
     repo_path = Path(normalized_repo)
     changed_targets = _list_changed_note_targets(
@@ -176,8 +241,12 @@ def _build_note_push_payloads(
     for branch_name, tip_sha in branches:
         if tip_sha not in changed_targets:
             continue
+        session_id = _extract_session_id(branch_name)
+        if session_id is None or agent_pr_notes_ref_for_session(session_id) != ref_name:
+            continue
         payload = _build_branch_payload(
-            normalized_repo=normalized_repo,
+            managed_repo_id=managed_repo_id,
+            default_branch=default_branch,
             branch_name=branch_name,
             old_rev=old_rev,
             new_rev=tip_sha,
@@ -263,18 +332,29 @@ def _list_agent_branch_tips(repo_path: Path) -> list[tuple[str, str]]:
     return branches
 
 
-def _load_repo_metadata(repo_path: Path) -> dict[str, str]:
+def _load_managed_repo_metadata(repo_path: Path) -> dict[str, str]:
     metadata: dict[str, str] = {}
     config_mappings = {
-        "trusted_repo_path": "evander.trustedRepoPath",
-        "base_branch": "evander.baseBranch",
-        "canonical_origin_url": "evander.canonicalOriginUrl",
+        "managed_repo_id": "evander.managedRepoId",
+        "default_branch": "evander.baseBranch",
+        "directory_path": "evander.directoryPath",
     }
     for payload_key, config_key in config_mappings.items():
         value = _git_config_get(repo_path, config_key)
         if value:
             metadata[payload_key] = value
     return metadata
+
+
+def _managed_repo_id_from_value(value: object) -> str | None:
+    candidate = _normalize_optional_string(value)
+    if candidate is None:
+        return None
+    if candidate.startswith("mr_"):
+        return candidate
+    return _load_managed_repo_metadata(Path(candidate).expanduser().resolve()).get(
+        "managed_repo_id"
+    )
 
 
 def _git_config_get(repo_path: Path, key: str) -> str | None:
@@ -300,10 +380,17 @@ def publish_git_push_event(
     *, runtime_dir: Path, repo_path: str, old_rev: str, new_rev: str, ref_name: str
 ) -> None:
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    normalized_repo = Path(repo_path).expanduser().resolve()
+    managed_repo_id = _load_managed_repo_metadata(normalized_repo).get("managed_repo_id")
+    if managed_repo_id is None:
+        raise RuntimeError(
+            "Git push source is not a registered managed repository; run "
+            "`evander-cli git-repos migrate --dry-run` before restarting workers"
+        )
     event_payload = {
-        "repo_path": str(Path(repo_path).resolve()),
-        "old_rev": old_rev,
-        "new_rev": new_rev,
+        "managed_repo_id": managed_repo_id,
+        "old_commit_hash": old_rev,
+        "new_commit_hash": new_rev,
         "ref_name": ref_name,
         "occurred_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }

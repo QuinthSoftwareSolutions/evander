@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.git_ssh_authorized_keys import remove_git_authorized_key_by_public_key_body
+
 from evander.admin.services.vm_agent.common_imports import (
     dataclass,
     AgentCreatePort,
@@ -15,7 +17,6 @@ from evander.admin.services.vm_agent.common_imports import (
     VmLifecyclePort,
     WorkflowConfigPort,
     agent_pr_notes_ref_for_session,
-    git_helpers,
     os,
     process_helpers,
     project_helpers,
@@ -44,9 +45,8 @@ class VmAgentAdminDependencies:
     resolve_issue_setup: Any
     resolve_local_issue_record: Any
     resolve_local_issue_key: Any
-    resolve_repo_source: Any
-    sync_repo_into_bare_remote: Any
     clone_repo_into_vm: Any
+    managed_git_admin: Any | None = None
     vm_lifecycle: VmLifecyclePort | None = None
     agent_create: AgentCreatePort | None = None
     agent_prompt_dispatch: AgentPromptDispatchPort | None = None
@@ -198,169 +198,6 @@ class VmAgentAdminSupport:
     def find_local_issue_by_remote_identifier(self, issue_identifier: str) -> Any | None:
         return self.local_issue_identity_resolver.find_by_remote_identifier(issue_identifier)
 
-    def resolve_repo_source(self, repo_source: str) -> tuple[str, str]:
-        resolve_script = self.project_dir / "scripts" / "resolve_repo_source.sh"
-        path_result = process_helpers.run_subprocess(
-            [str(resolve_script), "--path-only", repo_source], capture_output=True, text=True
-        )
-        if path_result.returncode != 0:
-            raise RuntimeError(
-                (path_result.stderr or path_result.stdout or "").strip()
-                or f"Failed to resolve repo source: {repo_source}"
-            )
-        name_result = process_helpers.run_subprocess(
-            [str(resolve_script), "--name-only", repo_source], capture_output=True, text=True
-        )
-        if name_result.returncode != 0:
-            raise RuntimeError(
-                (name_result.stderr or name_result.stdout or "").strip()
-                or f"Failed to determine repo name: {repo_source}"
-            )
-        return (path_result.stdout or "").strip(), (name_result.stdout or "").strip()
-
-    def sync_repo_into_bare_remote(
-        self,
-        repo_name: str,
-        resolved_repo_path: str,
-        *,
-        issue_setup: Any,
-        repo_source: str | None = None,
-    ) -> Path:
-        create_remote_script = self.project_dir / "scripts" / "create_git_remote.sh"
-        completed = process_helpers.run_subprocess(
-            [str(create_remote_script), repo_name, "agents"],
-            capture_output=True,
-            text=True,
-            env=os.environ
-            | {
-                "EVANDER_GIT_ROOT": issue_setup.git_root,
-                "EVANDER_GIT_HOST": issue_setup.git_host,
-                "EVANDER_GIT_USER": issue_setup.git_user,
-                "EVANDER_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
-            },
-        )
-        if completed.returncode != 0:
-            raise RuntimeError(
-                (completed.stderr or completed.stdout or "").strip()
-                or f"Failed to create git remote for {repo_name}"
-            )
-        bare_repo_path = Path(issue_setup.git_root) / f"{repo_name}.git"
-        fetch_result = process_helpers.run_subprocess(
-            [
-                "git",
-                f"--git-dir={bare_repo_path}",
-                "fetch",
-                "--prune",
-                resolved_repo_path,
-                "+refs/heads/*:refs/heads/*",
-                "+refs/tags/*:refs/tags/*",
-                *git_helpers.PROTECTED_MIRROR_HEAD_REFSPECS,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if fetch_result.returncode != 0:
-            raise RuntimeError(
-                (fetch_result.stderr or fetch_result.stdout or "").strip()
-                or f"Failed to mirror repo into {bare_repo_path}"
-            )
-        trusted_repo_result = process_helpers.run_subprocess(
-            [
-                "git",
-                f"--git-dir={bare_repo_path}",
-                "config",
-                "evander.trustedRepoPath",
-                resolved_repo_path,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if trusted_repo_result.returncode != 0:
-            raise RuntimeError(
-                (trusted_repo_result.stderr or trusted_repo_result.stdout or "").strip()
-                or f"Failed to record trusted repo path for {bare_repo_path}"
-            )
-        mirror_source = (repo_source or resolved_repo_path).strip()
-        for key, value in (
-            ("evander.mirrorSource", mirror_source),
-            (
-                "evander.mirrorRemoteName",
-                git_helpers.mirror_remote_name_for_repo(resolved_repo_path),
-            ),
-            ("evander.mirrorSyncRemote", "1"),
-            ("evander.mirrorForceLocal", "0"),
-        ):
-            result = process_helpers.run_subprocess(
-                ["git", f"--git-dir={bare_repo_path}", "config", key, value],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    (result.stderr or result.stdout or "").strip()
-                    or f"Failed to record {key} for {bare_repo_path}"
-                )
-        mirror_remote_name = git_helpers.mirror_remote_name_for_repo(resolved_repo_path)
-        canonical_origin_url = git_helpers.resolve_canonical_origin_url_for_repo(
-            resolved_repo_path, mirror_remote_name
-        )
-        if canonical_origin_url:
-            canonical_config_result = process_helpers.run_subprocess(
-                [
-                    "git",
-                    f"--git-dir={bare_repo_path}",
-                    "config",
-                    "evander.canonicalOriginUrl",
-                    canonical_origin_url,
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if canonical_config_result.returncode != 0:
-                raise RuntimeError(
-                    (canonical_config_result.stderr or canonical_config_result.stdout or "").strip()
-                    or f"Failed to record canonical origin URL for {bare_repo_path}"
-                )
-        default_base_branch = git_helpers.default_base_branch_for_repo_remote(
-            resolved_repo_path, mirror_remote_name
-        )
-        if default_base_branch:
-            base_branch_config_result = process_helpers.run_subprocess(
-                [
-                    "git",
-                    f"--git-dir={bare_repo_path}",
-                    "config",
-                    "evander.baseBranch",
-                    default_base_branch,
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if base_branch_config_result.returncode != 0:
-                raise RuntimeError(
-                    (
-                        base_branch_config_result.stderr or base_branch_config_result.stdout or ""
-                    ).strip()
-                    or f"Failed to record base branch for {bare_repo_path}"
-                )
-            symbolic_ref_result = process_helpers.run_subprocess(
-                [
-                    "git",
-                    f"--git-dir={bare_repo_path}",
-                    "symbolic-ref",
-                    "HEAD",
-                    f"refs/heads/{default_base_branch}",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if symbolic_ref_result.returncode != 0:
-                raise RuntimeError(
-                    (symbolic_ref_result.stderr or symbolic_ref_result.stdout or "").strip()
-                    or f"Failed to set HEAD for {bare_repo_path}"
-                )
-        return bare_repo_path
-
     def clone_repo_into_vm(
         self,
         *,
@@ -369,7 +206,8 @@ class VmAgentAdminSupport:
         session_id: str,
         repo_name: str,
         issue_setup: Any,
-        repo_source: str | None = None,
+        remote_repo_name: str,
+        remote_git_root: str,
         clone_branch: str | None = None,
         issue_number: str | None = None,
         vm_ip: str | None = None,
@@ -379,17 +217,32 @@ class VmAgentAdminSupport:
         git_committer_email: str | None = None,
     ) -> str:
         bootstrap_git_script = self.project_dir / "scripts" / "bootstrap_git_vm.sh"
+        existing_session = self.runtime.session_repository.get_session(session_id)
+        existing_metadata = (
+            existing_session.metadata
+            if existing_session is not None and isinstance(existing_session.metadata, dict)
+            else {}
+        )
+        existing_access = existing_metadata.get("managed_git_access")
+        if isinstance(existing_access, dict):
+            old_key_body = str(existing_access.get("public_key_body") or "").strip()
+            old_keys_path = str(existing_access.get("authorized_keys_path") or "").strip()
+            if old_key_body and old_keys_path:
+                remove_git_authorized_key_by_public_key_body(
+                    authorized_keys_path=old_keys_path,
+                    public_key_body=old_key_body,
+                )
         completed = process_helpers.run_subprocess(
             [str(bootstrap_git_script), vm_name, vm_user],
             capture_output=True,
             text=True,
             env=os.environ
             | {
-                "EVANDER_GIT_ROOT": issue_setup.git_root,
+                "EVANDER_GIT_ROOT": remote_git_root,
                 "EVANDER_GIT_HOST": issue_setup.git_host,
                 "EVANDER_GIT_USER": issue_setup.git_user,
                 "EVANDER_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
-                "EVANDER_GIT_REPO": repo_name,
+                "EVANDER_GIT_REPO": remote_repo_name,
                 "EVANDER_GIT_SESSION_ID": session_id,
             },
         )
@@ -399,18 +252,69 @@ class VmAgentAdminSupport:
                 or f"Failed to bootstrap guest git for {vm_name}"
             )
 
+        bootstrap_fields: dict[str, str] = {}
+        for line in (completed.stdout or "").splitlines():
+            name, separator, value = line.partition("=")
+            if separator and name in {
+                "EVANDER_GIT_PUBLIC_KEY_BODY",
+                "EVANDER_GIT_AUTHORIZED_KEYS_PATH",
+                "EVANDER_GIT_AUTH_ACCESS",
+            }:
+                bootstrap_fields[name] = value.strip()
+        public_key_body = bootstrap_fields.get("EVANDER_GIT_PUBLIC_KEY_BODY", "")
+        authorized_keys_path = bootstrap_fields.get(
+            "EVANDER_GIT_AUTHORIZED_KEYS_PATH", ""
+        )
+        access_mode = bootstrap_fields.get("EVANDER_GIT_AUTH_ACCESS", "")
+        if not public_key_body or not authorized_keys_path or access_mode not in {
+            "read-only",
+            "write",
+        }:
+            raise RuntimeError(
+                "Git bootstrap did not return complete managed access lifecycle metadata"
+            )
+        session_repository = self.runtime.session_repository
+        session = session_repository.get_session(session_id)
+        if session is None:
+            remove_git_authorized_key_by_public_key_body(
+                authorized_keys_path=authorized_keys_path,
+                public_key_body=public_key_body,
+            )
+            raise RuntimeError(
+                f"Cannot record managed Git access for missing session {session_id}"
+            )
+        current_metadata = session.metadata if isinstance(session.metadata, dict) else {}
+        try:
+            session_repository.upsert_session(
+                session.model_copy(
+                    update={
+                        "metadata": {
+                            **current_metadata,
+                            "managed_git_access": {
+                                "managed_repo_id": remote_repo_name,
+                                "access_mode": access_mode,
+                                "public_key_body": public_key_body,
+                                "authorized_keys_path": authorized_keys_path,
+                            },
+                        }
+                    }
+                )
+            )
+        except BaseException:
+            remove_git_authorized_key_by_public_key_body(
+                authorized_keys_path=authorized_keys_path,
+                public_key_body=public_key_body,
+            )
+            raise
+
         vm_ip = vm_ip or vm_helpers.resolve_vm_ip(vm_name)
         ssh_private_key_path = vm_helpers.resolve_private_key_path()
         if not vm_ip or ssh_private_key_path is None:
             raise RuntimeError(f"Unable to resolve SSH access for {vm_name}")
 
-        remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{repo_name}.git"
+        remote_url = f"ssh://{issue_setup.git_ssh_alias}{remote_git_root}/{remote_repo_name}.git"
         pr_notes_ref = agent_pr_notes_ref_for_session(session_id)
-        canonical_remote_url = (
-            repo_source.strip()
-            if repo_source and git_helpers.is_remote_git_source(repo_source)
-            else ""
-        )
+        canonical_remote_url = ""
         guest_repo_root = f"/home/{vm_user}/{repo_name}"
         agent_pr_note_helper_b64 = project_helpers.guest_agent_pr_note_helper_b64(self.project_dir)
         agent_push_helper_b64 = project_helpers.guest_push_agent_helper_b64(self.project_dir)

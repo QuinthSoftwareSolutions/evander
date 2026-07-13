@@ -394,25 +394,11 @@ function autoDevSquadTemplate() {
         example: "Reviewed Auto-Dev Delivery",
       },
       {
-        path: "project.git.host_repo_path",
-        label: "Git Host Repo Path",
-        description: "Optional host path for Git integration.",
+        path: "project.git.managed_repo_id",
+        label: "Managed Git Repository ID",
+        description: "Registered Evander managed repository.",
         required: false,
-        example: "/srv/repos/auto-dev-squad",
-      },
-      {
-        path: "project.git.bare_repo_name",
-        label: "Git Bare Repo Name",
-        description: "Optional bare repo name. Provide exactly one bare repo field if Git is enabled.",
-        required: false,
-        example: "auto-dev-squad.git",
-      },
-      {
-        path: "project.git.bare_repo_path",
-        label: "Git Bare Repo Path",
-        description: "Optional bare repo path. Provide exactly one bare repo field if Git is enabled.",
-        required: false,
-        example: "/srv/git/auto-dev-squad.git",
+        example: "mr_0123456789abcdef0123",
       },
       {
         path: "project.git.base_branch",
@@ -420,13 +406,6 @@ function autoDevSquadTemplate() {
         description: "Optional upstream branch to mirror.",
         required: false,
         example: "main",
-      },
-      {
-        path: "project.git.canonical_origin_url",
-        label: "Git Canonical Origin",
-        description: "Optional canonical origin URL.",
-        required: false,
-        example: "ssh://git.example/auto-dev-squad.git",
       },
       {
         path: "project.git.provider",
@@ -1620,14 +1599,9 @@ async function createTeamAddonServer(
           jsonResponse(response, { error: "repo_source is required" }, 400);
           return;
         }
-        const baseName = path.basename(repoSource).replace(/\.git$/, "") || "project";
-        const bareRepoName = String(payload.bare_repo_name || `${baseName}.git`).replace(/\.git$/, "");
         const git = {
-          host_repo_path: repoSource,
-          bare_repo_name: `${bareRepoName}.git`,
+          managed_repo_id: "mr_0123456789abcdef0123",
           base_branch: "main",
-          canonical_origin_url: "git@github.com:Example/imported-project.git",
-          provider: "github",
         };
         jsonResponse(
           response,
@@ -1635,12 +1609,8 @@ async function createTeamAddonServer(
             imported: {
               success: true,
               repo_source: repoSource,
-              host_repo_path: git.host_repo_path,
-              bare_repo_name: git.bare_repo_name,
-              bare_repo_path: `/srv/git-remotes/${git.bare_repo_name}`,
+              managed_repo_id: git.managed_repo_id,
               base_branch: git.base_branch,
-              canonical_origin_url: git.canonical_origin_url,
-              provider: git.provider,
               git,
             },
             git,
@@ -2762,8 +2732,7 @@ test("team add-on UI imports Git repo config into project forms", async (t) => {
   const projectForm = page.locator("#create-project-from-projects-form");
   await projectForm.waitFor({ state: "visible" });
   await projectForm.locator("summary", { hasText: "Git config" }).click();
-  await projectForm.locator('[name="host_repo_path"]').fill("/srv/repos/imported-project");
-  await projectForm.locator('[name="bare_repo"]').fill("team-import.git");
+  await projectForm.locator('[name="repo_source"]').fill("/srv/repos/imported-project");
   await projectForm.getByRole("button", { name: "Import Git repo" }).click();
 
   await page
@@ -2771,14 +2740,12 @@ test("team add-on UI imports Git repo config into project forms", async (t) => {
       hasText: "Imported Git repo. Review the populated Git fields, then save.",
     })
     .waitFor({ state: "visible" });
-  assert.equal(await projectForm.locator('[name="host_repo_path"]').inputValue(), "/srv/repos/imported-project");
-  assert.equal(await projectForm.locator('[name="bare_repo"]').inputValue(), "team-import.git");
-  assert.equal(await projectForm.locator('[name="base_branch"]').inputValue(), "main");
+  assert.equal(await projectForm.locator('[name="repo_source"]').inputValue(), "/srv/repos/imported-project");
   assert.equal(
-    await projectForm.locator('[name="canonical_origin_url"]').inputValue(),
-    "git@github.com:Example/imported-project.git",
+    await projectForm.locator('[name="managed_repo_id"]').inputValue(),
+    "mr_0123456789abcdef0123",
   );
-  assert.equal(await projectForm.locator('[name="provider"]').inputValue(), "github");
+  assert.equal(await projectForm.locator('[name="base_branch"]').inputValue(), "main");
 
   const importRequest = requests.find(
     (request) =>
@@ -2788,7 +2755,6 @@ test("team add-on UI imports Git repo config into project forms", async (t) => {
   assert.ok(importRequest);
   assert.deepEqual(importRequest.payload, {
     repo_source: "/srv/repos/imported-project",
-    bare_repo_name: "team-import.git",
   });
 });
 
@@ -3002,6 +2968,7 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
   );
 });
 
+
 test("team add-on focused tabs submit retained create forms with revisions", async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
@@ -3050,8 +3017,7 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   await projectForm.locator('[name="lead_agent_id"]').selectOption(managerId);
   await projectForm.locator('[name="goal_description"]').fill("Ship reviewed work");
   await projectForm.locator("summary", { hasText: "Git config" }).click();
-  await projectForm.locator('[name="host_repo_path"]').fill("/srv/git/project");
-  await projectForm.locator('[name="bare_repo"]').fill("project.git");
+  await projectForm.locator('[name="managed_repo_id"]').fill("mr_0123456789abcdef0123");
   await projectForm.locator('[name="base_branch"]').fill("main");
   await projectForm.getByRole("button", { name: "Create project" }).click();
   await waitForCondition(
@@ -3112,8 +3078,7 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   assert.equal(mutationRequests[1].payload.team_id, teamId);
   assert.equal(mutationRequests[1].payload.lead_agent_id, managerId);
   assert.deepEqual(mutationRequests[1].payload.git, {
-    host_repo_path: "/srv/git/project",
-    bare_repo_name: "project.git",
+    managed_repo_id: "mr_0123456789abcdef0123",
     base_branch: "main",
   });
   assert.equal(mutationRequests[2].payload.team_id, teamId);
@@ -3759,6 +3724,7 @@ test("team add-on Org chart context menu creates teams from the bare canvas", as
   await dialog.locator('[name="manager_display_name"]').fill("Context Manager");
   await dialog.getByRole("button", { name: "Create team" }).click();
 
+  await waitForStatusText(page, "Saved revision 9.", requests);
   await waitForRevision(page, 9);
   await dialog.waitFor({ state: "hidden" });
   const request = requests.find(
@@ -4283,8 +4249,7 @@ function seededGitState() {
         lead_agent_id: "alpha-lead",
         goals: [{ id: "alpha-goal", description: "Ship alpha work" }],
         git: {
-          host_repo_path: "/srv/git/alpha-project",
-          bare_repo_name: "alpha-project.git",
+          managed_repo_id: "mr_aaaaaaaaaaaaaaaaaaaa",
           base_branch: "main",
         },
         status: "active",
@@ -4296,8 +4261,7 @@ function seededGitState() {
         lead_agent_id: "beta-lead",
         goals: [{ id: "beta-goal", description: "Ship beta work" }],
         git: {
-          host_repo_path: "/srv/git/beta-project",
-          bare_repo_name: "beta-project.git",
+          managed_repo_id: "mr_bbbbbbbbbbbbbbbbbbbb",
           base_branch: "main",
         },
         status: "active",
@@ -5105,8 +5069,7 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   assert.equal(await inlineProjectForm.locator('[name="lead_agent_id"] option[value="beta-manager"]').count(), 1);
   await inlineProjectForm.locator("summary", { hasText: "Git config" }).click();
   assert.equal(await inlineProjectForm.getByRole("button", { name: "Import Git repo" }).count(), 1);
-  await inlineProjectForm.locator('[name="host_repo_path"]').fill("/srv/repos/second-project");
-  await inlineProjectForm.locator('[name="bare_repo"]').fill("second-project.git");
+  await inlineProjectForm.locator('[name="repo_source"]').fill("/srv/repos/second-project");
   await inlineProjectForm.getByRole("button", { name: "Import Git repo" }).click();
   await page
     .locator("#status-message", {
@@ -5115,10 +5078,9 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
     .waitFor({ state: "visible" });
   assert.equal(await inlineProjectForm.locator('[name="base_branch"]').inputValue(), "main");
   assert.equal(
-    await inlineProjectForm.locator('[name="canonical_origin_url"]').inputValue(),
-    "git@github.com:Example/imported-project.git",
+    await inlineProjectForm.locator('[name="managed_repo_id"]').inputValue(),
+    "mr_0123456789abcdef0123",
   );
-  assert.equal(await inlineProjectForm.locator('[name="provider"]').inputValue(), "github");
   await inlineProjectForm.locator('[name="name"]').fill("Second Project");
   await inlineProjectForm.locator('[name="lead_agent_id"]').selectOption("beta-manager");
   await inlineProjectForm.locator('[name="goal_description"]').fill("Ship beta follow-up");
@@ -5146,7 +5108,6 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   assert.ok(inlineImportRequest);
   assert.deepEqual(inlineImportRequest.payload, {
     repo_source: "/srv/repos/second-project",
-    bare_repo_name: "second-project.git",
   });
   assert.equal(mutationRequests[0].payload.team_id, "team-beta");
   assert.equal(mutationRequests[0].payload.display_name, "Beta Ops");
@@ -5157,11 +5118,8 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   assert.equal(mutationRequests[2].payload.lead_agent_id, "beta-manager");
   assert.deepEqual(mutationRequests[2].payload.goals, [{ description: "Ship beta follow-up" }]);
   assert.deepEqual(mutationRequests[2].payload.git, {
-    host_repo_path: "/srv/repos/second-project",
-    bare_repo_name: "second-project.git",
+    managed_repo_id: "mr_0123456789abcdef0123",
     base_branch: "main",
-    canonical_origin_url: "git@github.com:Example/imported-project.git",
-    provider: "github",
   });
 });
 
@@ -5823,8 +5781,7 @@ function seededOrgChartState() {
         lead_agent_id: "lead",
         goals: [],
         git: {
-          host_repo_path: "/srv/git/project",
-          bare_repo_name: "project.git",
+          managed_repo_id: "mr_0123456789abcdef0123",
           base_branch: "main",
         },
         status: "active",
@@ -6497,7 +6454,10 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   assert.equal(await page.locator("#team-planning-page .planning-project-card details[open]").count(), 0);
   const alphaProjectCard = page.locator("#team-planning-page .planning-project-card", { hasText: "Alpha Project" });
   await alphaProjectCard.locator(":scope > details > summary").click();
-  await page.locator("#team-planning-page").getByText("Git: host /srv/git/alpha-project").waitFor({
+  await page
+    .locator("#team-planning-page")
+    .getByText("Git: managed mr_aaaaaaaaaaaaaaaaaaaa - base main")
+    .waitFor({
     state: "visible",
   });
   await page.locator("#team-planning-page").getByText("Draft pending delivery").waitFor({

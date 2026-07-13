@@ -480,11 +480,9 @@ const fieldTooltips = {
   "edit:review-profile:criterion_required": "Required criteria should be satisfied or explicitly failed in review decisions.",
   "edit:review-profile:archived": "Archived profiles stay in state but cannot be selected for new review requests.",
 
-  host_repo_path: "Host-local working repository path. The canonical remote URL alone is not enough; the host needs a local repository path.",
-  bare_repo: "Bare mirror name or absolute bare mirror path. Values starting with / are saved as paths; other values are saved as names.",
+  repo_source: "Transient Git URL or local checkout used to register a managed repository.",
+  managed_repo_id: "Stable Evander managed repository ID stored with the project.",
   base_branch: "Canonical base branch used for agent branches, reviews, and promotions.",
-  canonical_origin_url: "Trusted upstream Git URL used when opening or promoting work outside the sandbox mirror.",
-  provider: "Git hosting provider used by host-side PR and promotion helpers.",
   canonical_release_branch_prefix: "Prefix used when constructing canonical release branch names.",
 };
 
@@ -1430,6 +1428,7 @@ function bindForms() {
     }
     void importGitRepoForForm(form, button);
   });
+
 
   document.addEventListener("click", (event) => {
     const addButton = event.target?.closest?.("[data-review-profile-criterion-add]");
@@ -6319,12 +6318,10 @@ function renderTeamInlineProjectForm(teamId) {
       <details class="team-inline-create-advanced">
         <summary>Git config</summary>
         <div class="team-inline-create-fields">
-          <label>Host repo path <input name="host_repo_path" /></label>
-          <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
+          <label>Repository source <input name="repo_source" placeholder="Git URL or local checkout" /></label>
           ${gitImportControls()}
+          <label>Managed repository ID <input name="managed_repo_id" placeholder="mr_..." /></label>
           <label>Base branch <input name="base_branch" placeholder="main" /></label>
-          <label>Canonical origin URL <input name="canonical_origin_url" /></label>
-          <label>Provider <select name="provider">${renderSelectOptions(gitProviders, { placeholder: "Default" })}</select></label>
           <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
         </div>
       </details>
@@ -10502,14 +10499,11 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
 }
 
 function renderProjectGit(git) {
-  if (!git || !git.host_repo_path) {
+  if (!git || !git.managed_repo_id) {
     return "";
   }
-  const bare = git.bare_repo_name || git.bare_repo_path || "";
-  const parts = [`host ${git.host_repo_path}`];
-  if (bare) parts.push(`bare ${bare}`);
+  const parts = [`managed ${git.managed_repo_id}`];
   if (git.base_branch) parts.push(`base ${git.base_branch}`);
-  if (git.provider) parts.push(`provider ${git.provider}`);
   return `<div class="meta-line">Git: ${escapeHtml(parts.join(" - "))}</div>`;
 }
 
@@ -11231,6 +11225,7 @@ function renderReleasePolicyDetails(release) {
     : "";
   return `${waiverMarkup}${scopeMarkup}`;
 }
+
 
 function renderTemplateSetup() {
   fillTemplateSelect();
@@ -12660,20 +12655,12 @@ async function importGitRepoForForm(form, button) {
     return false;
   }
   const data = formData(form);
-  const repoSource = text(data.host_repo_path) || text(data.canonical_origin_url);
+  const repoSource = text(data.repo_source);
   if (!repoSource) {
-    setStatus("Host repo path or canonical origin URL is required before import.", "error");
-    return false;
-  }
-  const bareRepo = text(data.bare_repo || data.bare_repo_name);
-  if (bareRepo && bareRepo.startsWith("/")) {
-    setStatus("Import creates a control-plane bare repo name; use a name, not an absolute path.", "error");
+    setStatus("Repository source is required before import.", "error");
     return false;
   }
   const payload = { repo_source: repoSource };
-  if (bareRepo) {
-    payload.bare_repo_name = bareRepo;
-  }
   const directoryPath = text(form.dataset.directoryPath);
   if (directoryPath) {
     payload.directory_path = directoryPath;
@@ -12698,7 +12685,7 @@ async function importGitRepoForForm(form, button) {
     const body = await response.json();
     applyImportedGitConfig(form, body.git || body.imported?.git || {});
     const imported = body.imported || {};
-    setGitImportStatus(statusTarget, imported.bare_repo_name || "Imported.");
+    setGitImportStatus(statusTarget, imported.managed_repo_id || "Imported.");
     setStatus("Imported Git repo. Review the populated Git fields, then save.", "ok");
     return true;
   } catch (error) {
@@ -12714,11 +12701,8 @@ async function importGitRepoForForm(form, button) {
 
 function applyImportedGitConfig(form, git) {
   const fields = {
-    host_repo_path: git.host_repo_path,
-    bare_repo: git.bare_repo_name || git.bare_repo_path,
+    managed_repo_id: git.managed_repo_id,
     base_branch: git.base_branch,
-    canonical_origin_url: git.canonical_origin_url,
-    provider: git.provider,
     canonical_release_branch_prefix: git.canonical_release_branch_prefix,
   };
   Object.entries(fields).forEach(([name, value]) => {
@@ -14367,25 +14351,13 @@ function payloadForForm(form, data = formData(form)) {
 }
 
 function gitConfigForForm(data) {
-  const hostRepoPath = text(data.host_repo_path);
-  if (!hostRepoPath) {
+  const managedRepoId = text(data.managed_repo_id);
+  if (!managedRepoId) {
     return null;
   }
-  const git = { host_repo_path: hostRepoPath };
-  const bareRepo = text(data.bare_repo);
-  if (bareRepo) {
-    if (bareRepo.startsWith("/")) {
-      git.bare_repo_path = bareRepo;
-    } else {
-      git.bare_repo_name = bareRepo;
-    }
-  }
+  const git = { managed_repo_id: managedRepoId };
   const optionalFields = [
-    "bare_repo_name",
-    "bare_repo_path",
     "base_branch",
-    "canonical_origin_url",
-    "provider",
     "canonical_release_branch_prefix",
   ];
   optionalFields.forEach((field) => {
@@ -14407,13 +14379,6 @@ function releasePolicyForForm(data) {
     throw new Error("Release policy must be a JSON object.");
   }
   return policy;
-}
-
-function gitToBareRepo(git) {
-  if (!git) {
-    return "";
-  }
-  return text(git.bare_repo_path || git.bare_repo_name);
 }
 
 async function submitReviewDecision(form) {
@@ -14604,14 +14569,14 @@ function renderEditFields(type, record) {
         placeholder: "id | description | state",
       })}
       <p class="subheading">Git config</p>
-      ${textField("Host repo path", "host_repo_path", record.git?.host_repo_path || "")}
-      ${textField("Bare repo", "bare_repo", gitToBareRepo(record.git), {
-        placeholder: "repo.git or /srv/git/repo.git",
+      ${textField("Repository source", "repo_source", "", {
+        placeholder: "Git URL or local checkout",
       })}
       ${gitImportControls()}
+      ${textField("Managed repository ID", "managed_repo_id", record.git?.managed_repo_id || "", {
+        placeholder: "mr_...",
+      })}
       ${textField("Base branch", "base_branch", record.git?.base_branch || "main")}
-      ${textField("Canonical origin URL", "canonical_origin_url", record.git?.canonical_origin_url || "")}
-      ${selectField("Provider", "provider", "git-providers", record.git?.provider || "", { placeholder: "Default" })}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
       <p class="subheading">Release gates</p>
       ${textareaField("Release policy JSON", "release_policy_json", record.release_policy ? JSON.stringify(record.release_policy, null, 2) : "", {

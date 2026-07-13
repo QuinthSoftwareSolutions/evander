@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -307,10 +308,10 @@ def _trigger_adapter() -> _MaterializingTriggerAdapter:
                 "id": "git",
                 "display_name": "Git",
                 "type": "trigger:git:push",
-                "path_glob": "/tmp/*.git",
+                "managed_repo_id_glob": "mr_*",
             },
             "trigger:git:push",
-            "path_glob",
+            "managed_repo_id_glob",
         ),
         (
             {
@@ -478,7 +479,7 @@ def test_conformance_schema_accepts_required_trigger_shapes(
                 "display_name": "Git",
                 "type": "trigger:git:push",
             },
-            "path_to_repo or path_glob",
+            "managed_repo_id or managed_repo_id_glob",
             "trigger:git:push",
         ),
     ],
@@ -1736,7 +1737,30 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
     assert pr_completed.poll() == []
 
     repo = tmp_path / "repo.git"
-    repo.mkdir(parents=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(repo)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={repo}",
+            "config",
+            "evander.managedRepoId",
+            "mr_0123456789abcdefabcd",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", f"--git-dir={repo}", "config", "evander.baseBranch", "main"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", f"--git-dir={repo}", "config", "evander.directoryPath", "root"],
+        check=True,
+    )
     git_provider = GitPushTriggerProvider()
     git_provider.initialize(
         _trigger_adapter().validate_python(
@@ -1744,7 +1768,7 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
                 "id": "git-trigger",
                 "display_name": "Git",
                 "type": "trigger:git:push",
-                "path_glob": str(repo.parent / "*.git"),
+                "managed_repo_id_glob": "mr_012345*",
             }
         ),
         _build_runtime_context(runtime_dir),
@@ -1759,7 +1783,9 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
     assert git_event is not None
     assert git_event.payload["branch_name"] == "main"
     assert git_event.payload["commit_hash"] == "a" * 40
-    assert git_event.payload["repo_name"] == "repo"
+    assert git_event.payload["managed_repo_id"] == "mr_0123456789abcdefabcd"
+    assert git_event.payload["default_branch"] == "main"
+    assert not any("path" in key for key in git_event.payload)
 
     # Non-local provider mode should use adapter path; patch adapter/streams to avoid network.
     pr_remote = PullRequestNewFeedbackTriggerProvider()

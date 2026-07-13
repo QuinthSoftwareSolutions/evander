@@ -5,7 +5,6 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from evander.admin.services.git_helpers import resolve_git_root
 from evander.directories import DirectoryService
 from evander.directory_config import (
     DirectoryConfigResolver,
@@ -20,7 +19,6 @@ from evander.runtime import RuntimeContext
 
 
 class EffectiveIssueSetupConfig(BaseModel):
-    git_root: str
     git_host: str
     git_user: str
     git_ssh_alias: str
@@ -67,7 +65,6 @@ def resolve_effective_issue_setup_config(
         )
     return EffectiveIssueSetupConfig.model_validate(
         {
-            "git_root": str(effective.get("git_root") or resolve_git_root(root_dir)),
             "git_host": str(effective.get("git_host") or "192.168.250.1"),
             "git_user": str(effective.get("git_user") or os.environ.get("USER", "agent")),
             "git_ssh_alias": str(effective.get("git_ssh_alias") or "evander-git-host"),

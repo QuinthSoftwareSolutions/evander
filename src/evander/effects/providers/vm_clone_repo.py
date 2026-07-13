@@ -17,10 +17,9 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
             "target": effect.target,
             "session_id": effect.session_id,
             "vm_name": effect.vm_name,
-            "repo_source": effect.repo_source,
+            "managed_repo_id": effect.managed_repo_id,
             "clone_branch": effect.clone_branch,
             "vm_user": effect.vm_user,
-            "directory_path": effect.directory_path,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -34,13 +33,13 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
         result = repo_cloner(
             vm_name=vm_name,
             session_id=session_id,
-            repo_source=self._required_string(
-                payload.get("repo_source"), "effect:vm:clone-repo requires repo_source"
+            managed_repo_id=self._required_string(
+                payload.get("managed_repo_id"),
+                "effect:vm:clone-repo requires managed_repo_id",
             ),
             clone_branch=self._normalize_optional_string(payload.get("clone_branch")),
             vm_user=self._normalize_optional_string(payload.get("vm_user")) or "agent",
-            directory_path=self._normalize_optional_string(payload.get("directory_path"))
-            or str(context.metadata.get("directory_path") or "root"),
+            directory_path=str(context.metadata.get("directory_path") or "root"),
         )
         return {
             "success": bool(result.success),
@@ -51,7 +50,10 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
             "guest_repo_name": self._normalize_optional_string(
                 getattr(result, "guest_repo_name", None)
             ),
-            "remote_url": self._normalize_optional_string(getattr(result, "remote_url", None)),
+            "managed_repo_id": self._required_string(
+                payload.get("managed_repo_id"),
+                "effect:vm:clone-repo requires managed_repo_id",
+            ),
             "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
         }
 

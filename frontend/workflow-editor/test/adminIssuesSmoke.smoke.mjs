@@ -44,7 +44,7 @@ test("admin shell issues page exposes VM bootstrap labels and tooltips", async (
     description: "Add VM bootstrap options.",
     yaml_path: "",
     directory_path: "root/team",
-    repo_source: "repo",
+    managed_repo_id: "mr_0123456789abcdef0123",
     source_type: "local",
     state: "New",
     tags: [],
@@ -71,7 +71,7 @@ test("admin shell issues page exposes VM bootstrap labels and tooltips", async (
     description: issueRecord.description,
     state: issueRecord.state,
     directory_path: issueRecord.directory_path,
-    repo_source: issueRecord.repo_source,
+    managed_repo_id: issueRecord.managed_repo_id,
     yaml_path: issueRecord.yaml_path,
     url: null,
     source: issueRecord.source,
@@ -226,7 +226,9 @@ test("admin shell issues page exposes VM bootstrap labels and tooltips", async (
   });
 
   await ensureSectionsExpanded(page);
-  await assert.doesNotReject(() => page.getByRole("heading", { name: "Issues" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    page.getByRole("heading", { name: "Issues", level: 1 }).waitFor({ state: "visible" }),
+  );
   await assert.doesNotReject(() => page.getByRole("button", { name: "Create VM" }).waitFor({ state: "visible" }));
   await page.getByRole("button", { name: "Create VM" }).hover();
   await assert.doesNotReject(() =>

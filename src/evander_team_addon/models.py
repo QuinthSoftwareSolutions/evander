@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -471,51 +472,27 @@ class Team(TeamModel):
 
 
 class ProjectGitConfig(TeamModel):
-    host_repo_path: str
-    bare_repo_name: str | None = None
-    bare_repo_path: str | None = None
-    base_branch: str = "main"
-    canonical_origin_url: str | None = None
-    provider: str | None = None
+    managed_repo_id: str
+    base_branch: str | None = None
     canonical_release_branch_prefix: str = DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
 
-    @field_validator("host_repo_path", mode="before")
+    @field_validator("managed_repo_id", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
-        return _required_text(value, info.field_name)
+        normalized = _required_text(value, info.field_name)
+        if re.fullmatch(r"mr_[0-9a-f]{20}", normalized) is None:
+            raise ValueError("managed_repo_id must match mr_<20-hex>")
+        return normalized
 
     @field_validator("base_branch", mode="before")
     @classmethod
-    def _required_with_default(cls, value: object, info) -> str:
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return cls.model_fields[info.field_name].default
-        return _required_text(value, info.field_name)
+    def _optional_base_branch(cls, value: object) -> str | None:
+        return _optional_text(value)
 
     @field_validator("canonical_release_branch_prefix", mode="before")
     @classmethod
     def _canonical_release_branch_prefix(cls, value: object) -> str:
         return normalize_canonical_release_branch_prefix(value)
-
-    @field_validator(
-        "bare_repo_name",
-        "bare_repo_path",
-        "canonical_origin_url",
-        "provider",
-        mode="before",
-    )
-    @classmethod
-    def _optional_text(cls, value: object) -> str | None:
-        return _optional_text(value)
-
-    @model_validator(mode="after")
-    def _validate_bare_repo(self) -> "ProjectGitConfig":
-        provided = [value for value in (self.bare_repo_name, self.bare_repo_path) if value]
-        if len(provided) != 1:
-            raise ValueError(
-                "exactly one of bare_repo_name or bare_repo_path must be set"
-            )
-        return self
-
 
 class ReleaseVerificationCommand(TeamModel):
     name: str

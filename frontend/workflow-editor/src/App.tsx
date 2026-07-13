@@ -460,7 +460,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
   "trigger:pull-request:completed": "Start when a tracked pull request reaches a terminal state.",
   "trigger:ci:run:completed": "Start when a CI run completes on GitHub Actions or Azure DevOps.",
-  "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
+  "trigger:git:push": "Start from Git push events captured for a managed repository.",
   "trigger:agent:run:completed": "Start when a guest agent run completes.",
   "gate:filter": "Allow only matching events to continue downstream.",
   "gate:map": "Project upstream outputs into a new payload shape.",
@@ -478,6 +478,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:agent:prompt": "Send a prompt to an agent session.",
   "effect:agent:exec": "Run a shell command in an agent session.",
   "effect:agent:destroy": "Destroy an agent session and its backend target.",
+  "effect:agent:clone-repo": "Clone a managed repository into an agent session.",
   "effect:session:approve-mcp-tools-for-run": "Approve MCP tools for one agent session during this run.",
   "effect:session:revoke-mcp-tool-approval-lease": "Revoke an MCP tool approval lease for one agent session.",
   "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
@@ -487,7 +488,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:http:request": "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control.",
   "effect:runtime:diagnostics-snapshot": "Capture a bounded, redacted host runtime diagnostics snapshot.",
   "effect:vm:create": "Create a VM for the workflow.",
-  "effect:vm:clone-repo": "Clone a repository into a target VM.",
+  "effect:vm:clone-repo": "Clone a managed repository into a target VM.",
   "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
   "effect:vm:bootstrap-frontend": "Bootstrap frontend dependencies in a VM.",
   "effect:vm:start": "Start an existing VM.",
@@ -507,13 +508,15 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:artifact:stage": "Copy a file or directory from /home/agent into /artifacts.",
   "effect:artifact:publish-artifacts": "Publish the session /artifacts folder, or selected source paths, as an immutable tar.gz archive.",
   "effect:artifact:import-published": "Import a published artifact archive into a session artifacts folder.",
-  "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
-  "effect:pr:create": "Create a pull request from the host side.",
+  "effect:git:ensure-managed-repo": "Register or refresh a directory-scoped managed repository.",
+  "effect:git:promote-agent-branch": "Promote a pinned agent commit into a host-owned managed-repository ref.",
+  "effect:git:push-branch": "Publish a pinned managed-repository commit with an explicit lease.",
+  "effect:pr:create": "Publish a pinned commit and create or reuse its pull request.",
   "effect:pull-request:update": "Update pull request metadata or tags.",
   "effect:pull-request:add-tag": "Add a tag to a pull request when it is not already present.",
   "effect:pull-request:remove-tag": "Remove a tag from a pull request when it is present.",
   "query:vm:run-state": "Read the current run state for a VM.",
-  "query:git:pr-note": "Read pull-request note context from a host checkout.",
+  "query:git:pr-note": "Read the note attached to an exact commit in a managed repository.",
   "query:pull-request:list": "List provider pull requests.",
   "query:communication:messages": "Read messages from a read-capable Teams or Discord target.",
   "query:pull-request:get": "Get a provider pull request by id.",
@@ -1772,7 +1775,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
     };
   }
   if (kind === "trigger" && type === "trigger:git:push") {
-    return { id, display_name: "Git push", type, path_glob: "/path/to/git-remotes/*.git" };
+    return { id, display_name: "Git push", type, managed_repo_id_glob: "mr_*" };
   }
   if (kind === "trigger" && type === "trigger:agent:run:completed") {
     return { id, display_name: "Agent run completed", type, vm_user: "agent" };
@@ -1892,6 +1895,16 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "effect" && type === "effect:agent:destroy") {
     return { id, display_name: "Agent destroy", type, session_id: "session-id" };
   }
+  if (kind === "effect" && type === "effect:agent:clone-repo") {
+    return {
+      id,
+      display_name: "Clone repo into agent",
+      type,
+      session_id: "session-id",
+      managed_repo_id: "mr_00000000000000000000",
+      clone_branch: "main",
+    };
+  }
   if (kind === "effect" && type === "effect:semantic:ensure-collection") {
     return { id, display_name: "Ensure semantic collection", type, collection_name: "agent_memory" };
   }
@@ -1955,7 +1968,14 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
     return { id, display_name: "New VM effect", type };
   }
   if (kind === "effect" && type === "effect:vm:clone-repo") {
-    return { id, display_name: "Clone repo into VM", type, repo_source: "/path/to/repo", clone_branch: "main" };
+    return {
+      id,
+      display_name: "Clone repo into VM",
+      type,
+      target: "session-id",
+      managed_repo_id: "mr_00000000000000000000",
+      clone_branch: "main",
+    };
   }
   if (kind === "effect" && type === "effect:vm:bootstrap-python") {
     return {
@@ -2129,18 +2149,48 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       overwrite: false,
     };
   }
+  if (kind === "effect" && type === "effect:git:ensure-managed-repo") {
+    return {
+      id,
+      display_name: "Ensure managed repository",
+      type,
+      directory_path: "root",
+      repo_source: "/path/to/repository",
+    };
+  }
   if (kind === "effect" && type === "effect:git:promote-agent-branch") {
     return {
       id,
       display_name: "Promote agent branch",
       type,
-      host_repo_path: "/path/to/trusted/repo",
-      bare_repo_path: "/path/to/git-remotes/sample.git",
+      managed_repo_id: "mr_00000000000000000000",
       agent_branch: "agents/session-1/topic",
+      target_branch: "review/session-1/topic",
+      expected_commit_sha: "0000000000000000000000000000000000000000",
+    };
+  }
+  if (kind === "effect" && type === "effect:git:push-branch") {
+    return {
+      id,
+      display_name: "Publish branch",
+      type,
+      managed_repo_id: "mr_00000000000000000000",
+      source_ref: "refs/heads/review/session-1/topic",
+      expected_commit_sha: "0000000000000000000000000000000000000000",
+      destination_branch: "feature/topic",
     };
   }
   if (kind === "effect" && type === "effect:pr:create") {
-    return { id, display_name: "New PR effect", type, host_repo_path: "/path/to/repo" };
+    return {
+      id,
+      display_name: "New PR effect",
+      type,
+      managed_repo_id: "mr_00000000000000000000",
+      source_ref: "refs/heads/review/session-1/topic",
+      expected_commit_sha: "0000000000000000000000000000000000000000",
+      destination_branch: "feature/topic",
+      base_branch: "main",
+    };
   }
   if (kind === "effect" && type === "effect:pull-request:update") {
     return {
@@ -2176,8 +2226,9 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       id,
       display_name: "Git PR note",
       type,
-      host_repo_path: "/path/to/trusted/repo",
-      local_branch: "review/session-1/topic",
+      managed_repo_id: "mr_00000000000000000000",
+      commit_sha: "0000000000000000000000000000000000000000",
+      notes_ref: "refs/notes/agents/session-1/pr",
     };
   }
   if (kind === "query" && type === "query:session-context") {

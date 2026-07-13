@@ -814,12 +814,12 @@ class ApprovalPendingCreatedTriggerDefinition(TriggerDefinition):
 
 class GitPushTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:git:push"]
-    path_to_repo: str | None = None
-    path_glob: str | None = None
+    managed_repo_id: str | None = None
+    managed_repo_id_glob: str | None = None
 
-    @field_validator("path_to_repo", "path_glob", mode="before")
+    @field_validator("managed_repo_id", "managed_repo_id_glob", mode="before")
     @classmethod
-    def normalize_optional_path_field(cls, value: object) -> object:
+    def normalize_optional_repo_id_field(cls, value: object) -> object:
         if value is None:
             return None
         text = str(value).strip()
@@ -827,10 +827,12 @@ class GitPushTriggerDefinition(TriggerDefinition):
 
     @model_validator(mode="after")
     def validate_repo_selector(self) -> "GitPushTriggerDefinition":
-        if not self.path_to_repo and not self.path_glob:
-            raise ValueError("trigger:git:push requires path_to_repo or path_glob")
-        if self.path_to_repo and self.path_glob:
-            raise ValueError("trigger:git:push path_to_repo and path_glob are mutually exclusive")
+        if not self.managed_repo_id and not self.managed_repo_id_glob:
+            raise ValueError("trigger:git:push requires managed_repo_id or managed_repo_id_glob")
+        if self.managed_repo_id and self.managed_repo_id_glob:
+            raise ValueError(
+                "trigger:git:push managed_repo_id and managed_repo_id_glob are mutually exclusive"
+            )
         return self
 
 

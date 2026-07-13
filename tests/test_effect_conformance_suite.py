@@ -152,7 +152,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "display_name": "Clone agent repo",
             "type": "effect:agent:clone-repo",
             "session_id": "session-1",
-            "repo_source": "/tmp/repo",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
         }
     )
     agent_frontend = adapter.validate_python(
@@ -267,9 +267,10 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "id": "effect-promote",
             "display_name": "Promote branch",
             "type": "effect:git:promote-agent-branch",
-            "host_repo_path": "/repo",
-            "bare_repo_path": "/git-remotes/repo.git",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
             "agent_branch": "agents/session-1/topic",
+            "target_branch": "review/session-1/topic",
+            "expected_commit_sha": "a" * 40,
         }
     )
     push_branch = adapter.validate_python(
@@ -277,9 +278,10 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "id": "effect-push-branch",
             "display_name": "Push branch",
             "type": "effect:git:push-branch",
-            "host_repo_path": "/repo",
-            "local_branch": "review/session-1/topic",
-            "origin_branch": "feature/issue-1",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "source_ref": "refs/evander/operations/op-1/source",
+            "expected_commit_sha": "a" * 40,
+            "destination_branch": "feature/issue-1",
         }
     )
     pr_create = adapter.validate_python(
@@ -287,7 +289,10 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "id": "effect-pr",
             "display_name": "Create PR",
             "type": "effect:pr:create",
-            "host_repo_path": "/repo",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "source_ref": "refs/evander/operations/op-1/source",
+            "expected_commit_sha": "a" * 40,
+            "destination_branch": "feature/issue-1",
         }
     )
     communication = adapter.validate_python(

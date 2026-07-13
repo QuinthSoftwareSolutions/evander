@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-07-13 - Managed Bare Repositories And Ephemeral Worktrees
+
+- Replaced issue-specific mirror/persistent-checkout routing with one directory-scoped managed
+  bare repository per canonical upstream, addressed everywhere by deterministic `managed_repo_id`.
+- Added the locked, atomically replaced managed-repository registry and privileged `git-repos`
+  CLI/Admin lifecycle for registration, refresh, inspection, maintenance, guarded deletion, and
+  explicit dry-run/apply/finalize migration.
+- Made canonical refresh transactional while preserving quarantined agent, review, Team, notes,
+  and operation refs, and enforced disjoint guest/host/upstream namespaces.
+- Pinned exact agent commits for promotion, note lookup, Team consolidation, upstream publication,
+  and PR creation; added compare-and-swap targets and explicit destination leases so stale events
+  cannot publish or regress a newer branch.
+- Moved merge and PR preparation into unique detached operation worktrees with hardened checkout
+  settings, guaranteed cleanup, stale-process reconciliation, and no temporary paths or credentials
+  in workflow output or persistent state.
+- Converted VM, container-worker, workflow-pack, Team project/release, Admin, and UI contracts from
+  checkout/bare paths to managed IDs; issue and session deletion now removes bindings and SSH
+  authorization without deleting shared repositories or unpublished refs.
+- Retired the path-based mirror/promotion helper flow as an operator interface and documented the
+  queue-driven managed repository workflow, breaking migration, smoke acceptance, explicit
+  retention, and manifest-scoped finalization.
+- Hardened migration restartability with manual-worker lock detection, credential-safe diagnostics,
+  strict read-only rollback artifacts, exact orphan-key bindings, and defensive SSH-key deletion
+  checks.
+- Revoked container-worker host and guest Git keys when a clone fails after provisioning, while
+  retaining the authorization binding whenever complete revocation cannot be proven.
+
 ## 2026-07-10 - Team Release Evidence And Scope Gates
 
 - Required every mandatory review-profile criterion to pass, carried rejected

@@ -143,6 +143,87 @@ def _team_ephemeral_service(repo: TeamStateRepository) -> TeamEphemeralService:
     return TeamEphemeralService(repo)
 
 
+def test_team_project_managed_repository_bindings_follow_state_and_rollback(
+    tmp_path: Path,
+) -> None:
+    first_id = "mr_11111111111111111111"
+    second_id = "mr_22222222222222222222"
+
+    class FakeManagedGit:
+        def __init__(self) -> None:
+            self.bindings: dict[str, set[tuple[str, str]]] = {
+                first_id: set(),
+                second_id: set(),
+            }
+
+        def get_repository(self, managed_repo_id: str) -> dict[str, object]:
+            return {
+                "managed_repo_id": managed_repo_id,
+                "bindings": [
+                    {"kind": kind, "binding_id": binding_id}
+                    for kind, binding_id in sorted(self.bindings[managed_repo_id])
+                ],
+            }
+
+        def bind(self, managed_repo_id: str, *, kind: str, binding_id: str) -> None:
+            self.bindings[managed_repo_id].add((kind, binding_id))
+
+        def unbind(self, managed_repo_id: str, *, kind: str, binding_id: str) -> None:
+            self.bindings[managed_repo_id].discard((kind, binding_id))
+
+    repository = TeamStateRepository(tmp_path)
+    _team_admin_service(repository).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    managed_git = FakeManagedGit()
+    admin = TeamAdminService(repository, managed_git_admin=managed_git)
+    admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        git=ProjectGitConfig(managed_repo_id=first_id),
+        expected_revision=1,
+    )
+    assert managed_git.bindings[first_id] == {("team_projects", "project")}
+
+    with pytest.raises(TeamStateConflictError):
+        admin.update_project(
+            project_id="project",
+            git=ProjectGitConfig(managed_repo_id=second_id),
+            set_git=True,
+            expected_revision=1,
+        )
+    assert repository.read().projects["project"].git == ProjectGitConfig(
+        managed_repo_id=first_id
+    )
+    assert managed_git.bindings[first_id] == {("team_projects", "project")}
+    assert managed_git.bindings[second_id] == set()
+
+    admin.update_project(
+        project_id="project",
+        git=ProjectGitConfig(managed_repo_id=second_id),
+        set_git=True,
+        expected_revision=2,
+    )
+    assert managed_git.bindings[first_id] == set()
+    assert managed_git.bindings[second_id] == {("team_projects", "project")}
+
+    admin.update_project(
+        project_id="project",
+        git=None,
+        set_git=True,
+        expected_revision=3,
+    )
+    assert repository.read().projects["project"].git is None
+    assert managed_git.bindings[first_id] == set()
+    assert managed_git.bindings[second_id] == set()
+
+
 def _team_runtime_sections() -> dict[str, list[dict[str, object]]]:
     pack = WorkflowPack.model_validate(team_runtime_v1())
     sections: dict[str, list[dict[str, object]]] = {
@@ -320,7 +401,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert "outputs" not in effects["team-record-review-promotion"]
     assert effects["team-record-review-promotion"]["result_outputs"] == {
         "review_branch": "${{team-git-promote-review-branch.review_branch ?? null}}",
-        "host_repo_path": "${{team-git-promote-review-branch.host_repo_path ?? null}}",
+        "managed_repo_id": "${{team-git-promote-review-branch.managed_repo_id ?? null}}",
         "message": "${{team-git-promote-review-branch.message ?? null}}",
     }
     validation = service.workflow_config_admin.validate_workflow_editor_document(
@@ -453,7 +534,6 @@ class FakeRepoCloner:
             message=self.message,
             target_dir="/home/agent/Truman",
             guest_repo_name="Truman",
-            remote_url="ssh://evander-git-host/git-remotes/Truman.git",
         )
 
 
@@ -2526,6 +2606,7 @@ def test_build_prompt_includes_release_package_recovery_context(tmp_path: Path) 
     )
 
 
+
 def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
     tmp_path: Path,
 ) -> None:
@@ -3759,8 +3840,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
 
     def _set_git(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             base_branch="main",
         )
         return state
@@ -3794,7 +3874,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
         {
             "vm_name": "vm-backend",
             "session_id": "session-backend",
-            "repo_source": "/opt/repos/Truman",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
             "clone_branch": "main",
             "vm_user": "agent",
             "directory_path": "root",
@@ -3857,8 +3937,7 @@ def test_wake_due_agents_refreshes_state_after_repo_clone_revision_change(
 
     def _set_git(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             base_branch="main",
         )
         return state
@@ -3903,8 +3982,7 @@ def test_wake_due_agents_retries_git_context_commit_conflict_without_recloning(
 
     def _set_git(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             base_branch="main",
         )
         return state
@@ -3971,8 +4049,7 @@ def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_fail
 
     def _set_git(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             base_branch="main",
         )
         return state
@@ -4072,9 +4149,7 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
 
     def _set_git(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
-            canonical_origin_url="https://example.test/org/Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             base_branch="main",
         )
         return state
@@ -4094,7 +4169,6 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
                 "session_id": "session-backend",
                 "target_dir": "/home/agent/Truman",
                 "guest_repo_name": "Truman",
-                "remote_url": "ssh://evander-git-host/git-remotes/Truman.git",
                 "pr_notes_ref": "refs/notes/agent-pr/test",
                 "execution_backend": "libvirt_vm",
                 "vm_name": None,
@@ -4126,10 +4200,9 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
     assert result["success"] is True
     assert len(captured_effects) == 1
     clone_effect = captured_effects[0]
-    assert getattr(clone_effect, "repo_source") == "/opt/repos/Truman"
-    assert getattr(clone_effect, "canonical_origin_url") == "https://example.test/org/Truman.git"
-    assert getattr(clone_effect, "bare_repo_name") == "Truman.git"
-    assert getattr(clone_effect, "bare_repo_path") is None
+    assert getattr(clone_effect, "managed_repo_id") == "mr_0123456789abcdefabcd"
+    assert not hasattr(clone_effect, "repo_source")
+    assert not hasattr(clone_effect, "bare_repo_path")
 
 
 def test_wake_due_agents_provider_ignores_stale_action_contract_metadata(
@@ -4393,8 +4466,7 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
 
     def _set_git(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
         )
         return state
 
@@ -5752,9 +5824,14 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     promote = effects["team-git-promote-review-branch"]
     assert promote["type"] == "effect:team:publish-review-branch"
     assert promote["source_branch"] == (
-        "${{team-git-promotion-requested.payload.source_branch ?? null}}"
+        "${{team-git-promotion-requested.payload.source_branch}}"
     )
-    assert promote["commit_sha"] == "${{team-git-promotion-requested.payload.commit_sha ?? null}}"
+    assert promote["managed_repo_id"] == (
+        "${{team-git-promotion-requested.payload.managed_repo_id}}"
+    )
+    assert promote["expected_commit_sha"] == (
+        "${{team-git-promotion-requested.payload.expected_commit_sha}}"
+    )
     assert promote["target_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
     assert effects["team-record-review-promotion"]["type"] == "effect:team:record-git-promotion"
     assert effects["team-record-review-promotion"]["promotion_id"] == (
@@ -5773,11 +5850,11 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-consolidate-feature-branches"]["source_branches"] == (
         "${{team-git-promotion-requested.payload.source_branches}}"
     )
-    assert effects["team-consolidate-feature-branches"]["bare_repo_path"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    assert effects["team-consolidate-feature-branches"]["managed_repo_id"] == (
+        "${{team-git-promotion-requested.payload.managed_repo_id}}"
     )
-    assert effects["team-consolidate-feature-branches"]["bare_repo_name"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+    assert effects["team-consolidate-feature-branches"]["expected_source_commits"] == (
+        "${{team-git-promotion-requested.payload.expected_source_commits}}"
     )
     assert effects["team-record-feature-promotion"]["type"] == ("effect:team:record-git-promotion")
     assert ("team-git-promotion-feature", "team-consolidate-feature-branches") in edges
@@ -5787,11 +5864,11 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-consolidate-release-branches"]["type"] == (
         "effect:team:consolidate-git-branches"
     )
-    assert effects["team-consolidate-release-branches"]["bare_repo_path"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    assert effects["team-consolidate-release-branches"]["managed_repo_id"] == (
+        "${{team-git-promotion-requested.payload.managed_repo_id}}"
     )
-    assert effects["team-consolidate-release-branches"]["bare_repo_name"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+    assert effects["team-consolidate-release-branches"]["expected_source_commits"] == (
+        "${{team-git-promotion-requested.payload.expected_source_commits}}"
     )
     assert effects["team-record-release-promotion"]["type"] == ("effect:team:record-git-promotion")
     assert ("team-git-promotion-release", "team-consolidate-release-branches") in edges
@@ -5827,23 +5904,23 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     # canonical_push -> push-branch -> record-git-promotion -> mark-release-published
     push = effects["team-push-canonical-branch"]
     assert push["type"] == "effect:git:push-branch"
-    assert push["bare_repo_path"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    assert push["managed_repo_id"] == (
+        "${{team-git-promotion-requested.payload.managed_repo_id}}"
     )
-    assert push["bare_repo_name"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+    assert push["source_ref"] == "${{team-git-promotion-requested.payload.source_branch}}"
+    assert push["expected_commit_sha"] == (
+        "${{team-git-promotion-requested.payload.expected_commit_sha}}"
     )
-    assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
-    assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    assert push["destination_branch"] == (
+        "${{team-git-promotion-requested.payload.target_branch}}"
+    )
     record_canonical = effects["team-record-canonical-promotion"]
     assert record_canonical["type"] == "effect:team:record-git-promotion"
     assert record_canonical["promotion_id"] == (
         "${{team-git-promotion-requested.payload.promotion_id}}"
     )
     assert record_canonical["success"] == "${{team-push-canonical-branch.success}}"
-    assert record_canonical["commit_sha"] == (
-        "${{team-push-canonical-branch.local_commit ?? null}}"
-    )
+    assert record_canonical["commit_sha"] == "${{team-push-canonical-branch.commit_sha ?? null}}"
     assert record_canonical["result_outputs"]["error_code"] == (
         "${{team-push-canonical-branch.reason ?? null}}"
     )
@@ -5852,7 +5929,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
         "${{team-git-promotion-requested.payload.release_package_id}}"
     )
     assert effects["team-mark-release-published"]["published_commit_sha"] == (
-        "${{team-push-canonical-branch.local_commit ?? null}}"
+        "${{team-push-canonical-branch.commit_sha ?? null}}"
     )
     assert effects["team-mark-release-published"]["result_outputs"]["error_code"] == (
         "${{team-push-canonical-branch.reason ?? null}}"
@@ -5880,14 +5957,16 @@ def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
     # ephemeral/review/feature branches must never reach effect:git:push-branch.
     assert [node["id"] for node in push_nodes] == ["team-push-canonical-branch"]
     push = push_nodes[0]
-    assert push["bare_repo_path"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    assert push["managed_repo_id"] == (
+        "${{team-git-promotion-requested.payload.managed_repo_id}}"
     )
-    assert push["bare_repo_name"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+    assert push["source_ref"] == "${{team-git-promotion-requested.payload.source_branch}}"
+    assert push["expected_commit_sha"] == (
+        "${{team-git-promotion-requested.payload.expected_commit_sha}}"
     )
-    assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
-    assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    assert push["destination_branch"] == (
+        "${{team-git-promotion-requested.payload.target_branch}}"
+    )
 
     edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
     assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges

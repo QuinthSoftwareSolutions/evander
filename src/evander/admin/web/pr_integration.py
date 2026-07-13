@@ -23,10 +23,10 @@ class PrIntegrationPreflightRequest(BaseModel):
 
     provider: str = "azure_devops"
     repo: str
+    managed_repo_id: str
     pr_ids: list[str] = Field(default_factory=list)
     mode: MergePreflightMode
     directory_path: str = "root"
-    repo_source: str | None = None
     organization_url: str | None = None
     project: str | None = None
 
@@ -39,12 +39,12 @@ class PrIntegrationPreflightRequest(BaseModel):
             raise ValueError(f"provider {text!r} is not supported")
         return "azure_devops"
 
-    @field_validator("repo", mode="before")
+    @field_validator("repo", "managed_repo_id", mode="before")
     @classmethod
-    def _normalize_repo(cls, value: object) -> str:
+    def _normalize_required_repo_fields(cls, value: object, info) -> str:
         text = cls._normalize_optional_text(value)
         if not text:
-            raise ValueError("repo is required")
+            raise ValueError(f"{info.field_name} is required")
         return text
 
     @field_validator("directory_path", mode="before")
@@ -63,7 +63,7 @@ class PrIntegrationPreflightRequest(BaseModel):
             raise ValueError("mode must be single, pairwise, or ordered")
         return normalized  # type: ignore[return-value]
 
-    @field_validator("repo_source", "organization_url", "project", mode="before")
+    @field_validator("organization_url", "project", mode="before")
     @classmethod
     def _normalize_optional_text_field(cls, value: object) -> str | None:
         return cls._normalize_optional_text(value)
@@ -115,10 +115,12 @@ def _response_payload(
     report: Any,
 ) -> dict[str, Any]:
     payload = report.model_dump(mode="json")
+    payload.pop("repo_path", None)
     payload.update(
         {
             "provider": request_payload.provider,
             "repo": request_payload.repo,
+            "managed_repo_id": request_payload.managed_repo_id,
             "directory_path": request_payload.directory_path,
         }
     )
@@ -157,9 +159,9 @@ def pr_integration_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -
                 pr_ids=payload.pr_ids,
                 mode=payload.mode,
                 directory_path=payload.directory_path,
+                managed_repo_id=payload.managed_repo_id,
                 organization_url=payload.organization_url,
                 project=payload.project,
-                repo_source=payload.repo_source,
             )
         except ValueError as exc:
             return json_error(str(exc))

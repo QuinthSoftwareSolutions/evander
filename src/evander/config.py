@@ -209,6 +209,7 @@ class AssistantSettingsConfig(BaseModel):
         return _normalize_optional_text(value)
 
 
+
 class InboundPhoneRoute(BaseModel):
     id: str = Field(min_length=1)
     did: str | None = None
@@ -289,6 +290,10 @@ class GatewayConfig(BaseModel):
     container_worker_request_timeout_seconds: float = Field(default=30.0, gt=0)
     container_worker_workspace_persistence: str = Field(default="session", min_length=1)
     container_worker_git_allowed_from: str | None = None
+    managed_git_commit_name: str | None = None
+    managed_git_commit_email: str | None = None
+    managed_git_operation_timeout_seconds: float = Field(default=300.0, gt=0)
+    managed_git_worktree_stale_seconds: float = Field(default=3600.0, ge=0)
     container_worker_guest_openai_base_url: str | None = None
     container_worker_guest_anthropic_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None
@@ -754,6 +759,7 @@ class GatewayConfig(BaseModel):
     def normalize_container_worker_images_field(cls, value: object) -> dict[str, str]:
         return normalize_container_worker_images(value)
 
+
     @field_validator(
         "retell_from_number",
         "retell_default_agent_id",
@@ -775,9 +781,14 @@ class GatewayConfig(BaseModel):
         text = str(value).strip()
         return text or None
 
-    @field_validator("container_worker_git_allowed_from", mode="before")
+    @field_validator(
+        "container_worker_git_allowed_from",
+        "managed_git_commit_name",
+        "managed_git_commit_email",
+        mode="before",
+    )
     @classmethod
-    def normalize_container_worker_git_allowed_from(cls, value: object) -> object:
+    def normalize_managed_git_optional_text(cls, value: object) -> object:
         if value is None:
             return None
         text = str(value).strip()

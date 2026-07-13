@@ -15,10 +15,9 @@ class VmRunStateQueryDefinition(QueryDefinition):
 
 class GitPrNoteQueryDefinition(QueryDefinition):
     type: Literal["query:git:pr-note"]
-    host_repo_path: ConfigValue
-    local_branch: ConfigValue
-    remote_name: ConfigValue | None = None
-    notes_ref: ConfigValue | None = None
+    managed_repo_id: ConfigValue
+    commit_sha: ConfigValue
+    notes_ref: ConfigValue
 
 
 class SessionContextQueryDefinition(QueryDefinition):

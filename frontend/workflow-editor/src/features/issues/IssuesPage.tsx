@@ -22,6 +22,7 @@ type IssueFormState = {
   mode: IssueMode;
   title: string;
   repoSource: string;
+  managedRepoId: string;
   state: string;
   body: string;
   yamlPath: string;
@@ -45,6 +46,7 @@ const EMPTY_FORM: IssueFormState = {
   mode: "manual",
   title: "",
   repoSource: "",
+  managedRepoId: "",
   state: "New",
   body: "",
   yamlPath: "",
@@ -82,7 +84,7 @@ function issueSummaryText(issue: IssueDetail): string {
     `State: ${issue.state ?? ""}`,
     `Source: ${issueSourceLabel(issue.source_type)}`,
     `Directory: ${issue.directory_path ?? "root"}`,
-    `Repo source: ${issue.repo_source ?? "None"}`,
+    `Managed repository: ${issue.managed_repo_id ?? "None"}`,
   ];
   if (issue.reason) {
     lines.push(`Reason: ${issue.reason}`);
@@ -193,7 +195,8 @@ function issueFormFromDetail(issue: IssueDetail): IssueFormState {
   return {
     mode: "manual",
     title: issue.title,
-    repoSource: issue.repo_source ?? "",
+    repoSource: "",
+    managedRepoId: issue.managed_repo_id ?? "",
     state: issue.state ?? "New",
     body: issue.body,
     yamlPath: issue.yaml_path ?? "",
@@ -441,6 +444,7 @@ export function IssuesPage() {
           title: form.mode === "manual" ? form.title : "",
           body: form.mode === "manual" ? form.body : "",
           repo_source: form.repoSource || null,
+          managed_repo_id: form.repoSource ? null : form.managedRepoId || null,
           yaml_path: form.mode === "import" ? form.yamlPath || null : null,
           directory_path: selectedDirectoryPath,
           start_vm: form.startVm,
@@ -476,6 +480,7 @@ export function IssuesPage() {
           title: form.title,
           body: form.body,
           repo_source: form.repoSource || null,
+          managed_repo_id: form.repoSource ? null : form.managedRepoId || null,
           state: form.state,
         }),
       });
@@ -717,8 +722,22 @@ export function IssuesPage() {
                   />
                 </label>
                 <label className="field-stack">
-                  <span>Repo source</span>
-                  <input value={form.repoSource} onChange={(event) => setForm((current) => ({ ...current, repoSource: event.target.value }))} disabled={mutationLocked} />
+                  <span>Repository source to register</span>
+                  <input
+                    value={form.repoSource}
+                    onChange={(event) => setForm((current) => ({ ...current, repoSource: event.target.value }))}
+                    placeholder="Git URL or local checkout (transient)"
+                    disabled={mutationLocked}
+                  />
+                </label>
+                <label className="field-stack">
+                  <span>Managed repository ID</span>
+                  <input
+                    value={form.managedRepoId}
+                    onChange={(event) => setForm((current) => ({ ...current, managedRepoId: event.target.value }))}
+                    placeholder="mr_..."
+                    disabled={mutationLocked || Boolean(form.repoSource)}
+                  />
                 </label>
                 {creating && form.mode === "import" ? (
                   <label className="field-stack">
@@ -813,7 +832,7 @@ export function IssuesPage() {
                   <div><span>Issue</span><strong>{selectedIssue.issue_number}</strong></div>
                   <div><span>Source</span><strong>{issueSourceLabel(selectedIssue.source_type)}</strong></div>
                   <div><span>Updated</span><strong>{formatTimestamp(selectedIssue.updated_at)}</strong></div>
-                  <div><span>Repo source</span><Tooltip content={selectedIssue.repo_source ?? "No repo source is recorded for this issue."}><strong className="issue-meta-value issue-path-value">{selectedIssue.repo_source ?? "None"}</strong></Tooltip></div>
+                  <div><span>Managed repository</span><Tooltip content={selectedIssue.managed_repo_id ?? "No managed repository is bound to this issue."}><strong className="issue-meta-value issue-path-value">{selectedIssue.managed_repo_id ?? "None"}</strong></Tooltip></div>
                   <div><span>Directory</span><Tooltip content={`Directory scope: ${selectedIssue.directory_path ?? "root"}`}><strong className="issue-meta-value issue-path-value">{selectedIssue.directory_path ?? "root"}</strong></Tooltip></div>
                   <div><span>YAML path</span><Tooltip content={selectedIssue.yaml_path ?? "This issue does not currently have a YAML file path."}><strong className="issue-meta-value issue-path-value">{selectedIssue.yaml_path ?? "No file"}</strong></Tooltip></div>
                 </div>

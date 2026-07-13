@@ -1243,6 +1243,18 @@ def _upsert_unified_issue_record(
     metadata = _preserved_local_issue_metadata(existing_record=existing_record, yaml_path=yaml_path)
     metadata["proxy_cache"] = _proxy_cache_from_work_item(work_item)
 
+    managed_repo_id = existing_record.managed_repo_id if existing_record is not None else None
+    managed_git_admin = None
+    if config.repo_path:
+        from evander.admin.composition import build_admin_runtime
+
+        managed_git_admin = build_admin_runtime(runtime_dir=config.runtime_dir).managed_git_admin
+        managed_record = managed_git_admin.register_repository(
+            directory_path=normalized_directory_path,
+            repo_source=config.repo_path,
+        )
+        managed_repo_id = str(managed_record["managed_repo_id"])
+
     remote_reference = RemoteIssueReference(
         provider="azure_devops",
         organization=config.organization_url.rstrip("/"),
@@ -1262,7 +1274,7 @@ def _upsert_unified_issue_record(
         description=description,
         yaml_path=str(yaml_path),
         directory_path=normalized_directory_path,
-        repo_source=config.repo_path,
+        managed_repo_id=managed_repo_id,
         source_type="remote_proxy",
         remote_reference=remote_reference,
         tags=[str(tag) for tag in work_item.get("tags", []) if str(tag).strip()],
@@ -1277,6 +1289,9 @@ def _upsert_unified_issue_record(
         updated_at=now,
     )
     store.put(record.issue_id, record)
+    if managed_git_admin is not None and managed_repo_id is not None:
+        managed_git_admin.unbind_all(kind="issues", binding_id=record.issue_id)
+        managed_git_admin.bind(managed_repo_id, kind="issues", binding_id=record.issue_id)
     return record
 
 

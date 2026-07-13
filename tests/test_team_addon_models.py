@@ -210,6 +210,7 @@ def _valid_state() -> TeamState:
     )
 
 
+
 def _state_with_runtime_operations() -> TeamState:
     now = datetime(2026, 1, 1, tzinfo=UTC)
     state = _valid_state()
@@ -555,39 +556,37 @@ def test_session_manifest_has_no_team_addon_fields() -> None:
     assert "agent_id" not in SessionManifest.model_fields
 
 
-def test_project_git_config_requires_exactly_one_bare_repo() -> None:
-    config = ProjectGitConfig(host_repo_path="/srv/repo", bare_repo_name="repo.git")
-    assert config.bare_repo_name == "repo.git"
-    assert config.base_branch == "main"
+def test_project_git_config_requires_managed_repo_id() -> None:
+    config = ProjectGitConfig(managed_repo_id="mr_0123456789abcdefabcd")
+    assert config.managed_repo_id == "mr_0123456789abcdefabcd"
+    assert config.base_branch is None
     assert config.canonical_release_branch_prefix == "releases/<project-id>/"
 
-    path_config = ProjectGitConfig(
-        host_repo_path="/srv/repo", bare_repo_path="/srv/bare/repo.git"
-    )
-    assert path_config.bare_repo_path == "/srv/bare/repo.git"
+    with pytest.raises(ValidationError, match="managed_repo_id"):
+        ProjectGitConfig.model_validate({})
 
-    with pytest.raises(ValidationError, match="exactly one of bare_repo_name"):
-        ProjectGitConfig(host_repo_path="/srv/repo")
+    with pytest.raises(ValidationError, match="must match mr_<20-hex>"):
+        ProjectGitConfig(managed_repo_id="legacy-repo")
 
-    with pytest.raises(ValidationError, match="exactly one of bare_repo_name"):
-        ProjectGitConfig(
-            host_repo_path="/srv/repo",
-            bare_repo_name="repo.git",
-            bare_repo_path="/srv/bare/repo.git",
+    with pytest.raises(ValidationError, match="repo_source"):
+        ProjectGitConfig.model_validate(
+            {
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "repo_source": "https://example.invalid/operator-checkout.git",
+            }
         )
 
 
 def test_project_accepts_git_config() -> None:
     state = _valid_state().model_dump(mode="python")
     state["projects"]["project"]["git"] = {
-        "host_repo_path": "/srv/repo",
-        "bare_repo_name": "repo.git",
+        "managed_repo_id": "mr_0123456789abcdefabcd",
     }
 
     validated = TeamState.model_validate(state)
 
     assert validated.projects["project"].git is not None
-    assert validated.projects["project"].git.host_repo_path == "/srv/repo"
+    assert validated.projects["project"].git.managed_repo_id == "mr_0123456789abcdefabcd"
 
 
 @pytest.mark.parametrize(
@@ -633,8 +632,7 @@ def test_canonical_release_branch_honors_project_prefix() -> None:
         name="Project",
         lead_agent_id="lead",
         git=ProjectGitConfig(
-            host_repo_path="/srv/repo",
-            bare_repo_name="repo.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             canonical_release_branch_prefix="ship/",
         ),
     )
@@ -648,8 +646,7 @@ def test_canonical_release_branch_prefix_normalizes_trailing_slash() -> None:
         name="Project",
         lead_agent_id="lead",
         git=ProjectGitConfig(
-            host_repo_path="/srv/repo",
-            bare_repo_name="repo.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             canonical_release_branch_prefix="release",
         ),
     )

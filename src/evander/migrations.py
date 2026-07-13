@@ -372,7 +372,6 @@ def migrate_issue_setup_env_to_root(
 ) -> DomainMigrationResult:
     env_values = _load_optional_env_file(env_file) if env_file is not None else {}
     payload = EffectiveIssueSetupDirectoryConfig(
-        git_root=_merged_env_value("EVANDER_GIT_ROOT", env_values) or "git-remotes",
         git_host=_merged_env_value("EVANDER_GIT_HOST", env_values) or "192.168.250.1",
         git_user=_merged_env_value("EVANDER_GIT_USER", env_values)
         or os.environ.get("USER", "agent"),

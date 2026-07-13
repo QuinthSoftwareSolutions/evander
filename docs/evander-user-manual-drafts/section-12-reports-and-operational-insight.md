@@ -183,9 +183,10 @@ Steps:
    1. provider (`azure_devops`),
    2. repo,
    3. directory path,
-   4. mode (`single`, `pairwise`, or `ordered`),
-   5. PR ID list.
-4. Keep `repo_source` blank unless the directory override must be replaced.
+   4. managed repository ID,
+   5. mode (`single`, `pairwise`, or `ordered`),
+   6. PR ID list.
+4. Confirm the managed repository is visible inside the selected directory boundary.
 5. Click **Run report**.
 6. Read the overall status and `summary_text`.
 7. Review participants and checks to see where the conflicts or branch drift appear.

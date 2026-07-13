@@ -8,7 +8,7 @@ import pytest
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.admin.web.pr_integration import pr_integration_routes
 from evander.pr_merge_preflight import (
@@ -201,7 +201,7 @@ def test_admin_web_pr_integration_preflight_parses_request_and_returns_report(
             "pr_ids": "17, 18\n19",
             "mode": "ordered",
             "directory_path": "root/team-a",
-            "repo_source": "/work/repo",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
         },
     )
 
@@ -210,7 +210,8 @@ def test_admin_web_pr_integration_preflight_parses_request_and_returns_report(
     assert payload["provider"] == "azure_devops"
     assert payload["repo"] == "repo-1"
     assert payload["directory_path"] == "root/team-a"
-    assert payload["repo_path"] == "/tmp/repo"
+    assert payload["managed_repo_id"] == "mr_0123456789abcdefabcd"
+    assert "repo_path" not in payload
     assert payload["mode"] == "ordered"
     assert payload["status"] == "clean"
     assert payload["summary_text"] == "ordered preflight clean for PRs 17, 18, 19."
@@ -225,7 +226,7 @@ def test_admin_web_pr_integration_preflight_parses_request_and_returns_report(
         "directory_path": "root/team-a",
         "organization_url": None,
         "project": None,
-        "repo_source": "/work/repo",
+        "managed_repo_id": "mr_0123456789abcdefabcd",
     }
 
 
@@ -233,19 +234,40 @@ def test_admin_web_pr_integration_preflight_parses_request_and_returns_report(
     ("body", "expected_error"),
     [
         (
-            {"provider": "github", "repo": "repo-1", "pr_ids": ["17"], "mode": "single"},
+            {
+                "provider": "github",
+                "repo": "repo-1",
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "pr_ids": ["17"],
+                "mode": "single",
+            },
             "provider 'github' is not supported",
         ),
         (
-            {"repo": "repo-1", "pr_ids": ["17"], "mode": "bogus"},
+            {
+                "repo": "repo-1",
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "pr_ids": ["17"],
+                "mode": "bogus",
+            },
             "mode must be single, pairwise, or ordered",
         ),
         (
-            {"repo": "repo-1", "pr_ids": [], "mode": "single"},
+            {
+                "repo": "repo-1",
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "pr_ids": [],
+                "mode": "single",
+            },
             "pr_ids must include at least one PR id",
         ),
         (
-            {"repo": "repo-1", "pr_ids": ["17", "18"], "mode": "single"},
+            {
+                "repo": "repo-1",
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "pr_ids": ["17", "18"],
+                "mode": "single",
+            },
             "single mode requires exactly one PR id",
         ),
     ],
@@ -324,7 +346,7 @@ def test_admin_web_pr_integration_preflight_requires_workflow_write_permission(
                     "pr_ids": ["17"],
                     "mode": "single",
                     "directory_path": "root/team-a",
-                    "repo_source": "/work/repo",
+                    "managed_repo_id": "mr_0123456789abcdefabcd",
                 }
             )
         )

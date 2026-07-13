@@ -186,7 +186,7 @@ def upsert_ado_proxy_issue_from_remote_payload(
     project: str | None = None,
     organization_url: str | None = None,
     yaml_output_dir: Path | None = None,
-    repo_source: str | None = None,
+    managed_repo_id: str | None = None,
     source: str = "proxy_azure_devops",
     now: datetime | None = None,
 ) -> LocalIssueRecord:
@@ -201,7 +201,7 @@ def upsert_ado_proxy_issue_from_remote_payload(
         remote_payload.get("organization_url")
     )
     now = _utc(now) or datetime.now(UTC)
-    normalized_repo_source = _optional_text(repo_source)
+    normalized_managed_repo_id = _optional_text(managed_repo_id)
     normalized_source = _optional_text(source) or "proxy_azure_devops"
     store = JsonStore(runtime_dir / "local-issues.json", LocalIssueRecord)
     deleted_proxy_yaml_paths: list[Path] = []
@@ -237,7 +237,7 @@ def upsert_ado_proxy_issue_from_remote_payload(
                 description=str(remote_payload.get("description") or ""),
                 yaml_path=str(yaml_path),
                 directory_path=normalized_directory_path,
-                repo_source=normalized_repo_source,
+                managed_repo_id=normalized_managed_repo_id,
                 source_type="remote_proxy",
                 source=normalized_source,
                 state=_optional_text(remote_payload.get("state")),
@@ -261,8 +261,8 @@ def upsert_ado_proxy_issue_from_remote_payload(
                         yaml_output_dir=yaml_output_dir,
                     )
                 )
-        if normalized_repo_source is not None:
-            issue.repo_source = normalized_repo_source
+        if normalized_managed_repo_id is not None:
+            issue.managed_repo_id = normalized_managed_repo_id
         issue.remote_reference = _updated_remote_reference(
             issue.remote_reference,
             work_item_id=work_item_id,
@@ -756,7 +756,7 @@ def _build_proxy_issue_yaml_payload(issue: LocalIssueRecord) -> dict[str, Any]:
         "url": work_item_url,
         "comments": [dict(comment) for comment in issue.comments],
         "directory_path": issue.directory_path,
-        "repo_source": issue.repo_source,
+        "managed_repo_id": issue.managed_repo_id,
         "remote_reference": remote.model_dump(mode="json") if remote is not None else None,
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }

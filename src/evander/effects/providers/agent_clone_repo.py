@@ -12,9 +12,9 @@ from urllib.parse import unquote, urlparse, urlunparse
 from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from evander.events.provider_models import AgentCloneRepoEffectDefinition
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
-from evander.git_mirror import ContainerGitMirrorResolver
 from evander.git_ssh_authorized_keys import (
     authorized_keys_path_for_user,
+    install_git_read_authorized_key,
     install_git_write_authorized_key,
     remove_git_authorized_key_by_public_key_body,
 )
@@ -53,13 +53,9 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "target": effect.target,
             "session_id": effect.session_id,
             "vm_name": effect.vm_name,
-            "repo_source": effect.repo_source,
-            "canonical_origin_url": effect.canonical_origin_url,
-            "bare_repo_name": effect.bare_repo_name,
-            "bare_repo_path": effect.bare_repo_path,
+            "managed_repo_id": effect.managed_repo_id,
             "clone_branch": effect.clone_branch,
             "vm_user": effect.vm_user,
-            "directory_path": effect.directory_path,
             "git_author_name": effect.git_author_name,
             "git_author_email": effect.git_author_email,
             "git_committer_name": effect.git_committer_name,
@@ -71,9 +67,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         git_author_identity = _git_author_identity_from_payload(payload)
         git_committer_identity = _git_committer_identity_from_payload(payload)
 
-        directory_path = normalize_optional_string(payload.get("directory_path")) or str(
-            context.metadata.get("directory_path") or "root"
-        )
+        directory_path = str(context.metadata.get("directory_path") or "root")
         execution_backend, config = selected_execution_backend_for_target(
             context, payload, directory_path=directory_path
         )
@@ -98,19 +92,30 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             session_id,
             fallback_directory_path=getattr(session, "directory_path", directory_path),
         )
-        repo_source = required_string(
-            payload.get("repo_source"), "effect:agent:clone-repo requires repo_source"
+        managed_repo_id = required_string(
+            payload.get("managed_repo_id"),
+            "effect:agent:clone-repo requires managed_repo_id",
         )
         clone_branch = normalize_optional_string(payload.get("clone_branch"))
-        mirror_resolver = _container_git_mirror_resolver(context, directory_path)
-        mirror = mirror_resolver.resolve(
-            repo_source=repo_source,
-            canonical_repo_source=normalize_optional_string(payload.get("canonical_origin_url")),
-            bare_repo_name=normalize_optional_string(payload.get("bare_repo_name")),
-            bare_repo_path=normalize_optional_string(payload.get("bare_repo_path")),
-            clone_branch=clone_branch,
+        clone_resolver = getattr(context.admin_service, "resolve_managed_git_clone", None)
+        if not callable(clone_resolver):
+            raise RuntimeError("managed Git clone resolver is not available")
+        clone_info = clone_resolver(
+            managed_repo_id=managed_repo_id,
             directory_path=directory_path,
             session_id=session_id,
+        )
+        if hasattr(clone_info, "model_dump"):
+            clone_info = clone_info.model_dump(mode="python")
+        if not isinstance(clone_info, Mapping):
+            raise RuntimeError("managed Git clone resolver returned an invalid response")
+        clone_url = required_string(
+            clone_info.get("clone_url") or clone_info.get("worker_repo_source"),
+            "managed Git clone URL is unavailable",
+        )
+        repo_name = required_string(
+            clone_info.get("repo_name") or clone_info.get("display_name") or managed_repo_id,
+            "managed Git display name is unavailable",
         )
         backend = container_backend(context, config)
         backend.prepare_session(
@@ -120,62 +125,110 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 "directory_path": session.directory_path if session is not None else directory_path,
             },
         )
+        session_directory_path = (
+            session.directory_path if session is not None else directory_path
+        )
+        container_job_timeout_seconds = float(config.container_worker_job_timeout_seconds)
         git_access_mode = normalize_git_access_mode(payload.get("git_access_mode"))
-        if git_access_mode == "read-only":
-            _remove_session_git_write_access(context, session_id)
-            self._remove_container_git_write_key_files(
-                backend=backend,
-                config=config,
-                session=session,
-                session_id=session_id,
-                directory_path=session.directory_path if session is not None else directory_path,
-                timeout_seconds=float(config.container_worker_job_timeout_seconds),
+        access_metadata: dict[str, object] | None = None
+        clone_source = clone_url
+        if _remote_url_requires_git_ssh(clone_url):
+            managed_git = getattr(context.admin_service, "managed_git_admin", None)
+            resolve_internal = getattr(managed_git, "resolve_internal_repository", None)
+            if not callable(resolve_internal):
+                raise RuntimeError("managed Git internal repository resolver is unavailable")
+            bare_repo_path, managed_git_root = resolve_internal(
+                managed_repo_id,
+                directory_path,
             )
-        result = backend.clone_repo(
-            session_id=session_id,
-            repo_source=mirror.worker_repo_source,
-            clone_branch=clone_branch,
-            repo_name=mirror.repo_name,
-        )
-        self._write_container_git_helpers(
-            backend=backend,
-            session_id=session_id,
-            target_dir=result.target_dir,
-        )
-        write_access_metadata: dict[str, object] | None = None
-        if git_access_mode == "write" and _remote_url_requires_git_ssh(result.remote_url):
-            write_access_metadata = self._provision_container_git_write_access(
+            access_metadata = self._provision_container_git_access(
                 backend=backend,
                 config=config,
                 context=context,
                 session_id=session_id,
-                mirror_resolver=mirror_resolver,
-                mirror_path=mirror.mirror_path,
+                issue_setup=_container_git_connection_config(context, directory_path),
+                managed_repo_id=managed_repo_id,
+                bare_repo_path=bare_repo_path,
+                managed_git_root=managed_git_root,
+                access_mode=git_access_mode,
             )
-        if result.cloned or write_access_metadata is not None or git_access_mode == "read-only":
-            self._configure_container_git(
-                backend=backend,
-                config=config,
+            clone_source = _container_git_remote_url_with_ssh_alias(
+                clone_url,
+                str(access_metadata["git_ssh_alias"]),
+            )
+        try:
+            result = backend.clone_repo(
                 session_id=session_id,
-                session=session,
-                directory_path=session.directory_path if session is not None else directory_path,
-                target_dir=result.target_dir,
-                repo_source=mirror.canonical_repo_source,
-                remote_url=result.remote_url,
-                push_remote_url=(
-                    _container_git_remote_url_with_ssh_alias(
-                        result.remote_url,
-                        str(write_access_metadata["git_ssh_alias"]),
-                    )
-                    if write_access_metadata is not None
-                    else None
-                ),
+                repo_source=clone_source,
                 clone_branch=clone_branch,
-                git_access_mode=git_access_mode,
-                git_author_identity=git_author_identity,
-                git_committer_identity=git_committer_identity,
-                timeout_seconds=float(config.container_worker_job_timeout_seconds),
+                repo_name=repo_name,
+                reconcile_existing_remote=bool(
+                    isinstance(getattr(session, "metadata", None), Mapping)
+                    and session.metadata.get(
+                        "managed_git_remote_reconciliation_required"
+                    )
+                ),
             )
+            self._write_container_git_helpers(
+                backend=backend,
+                session_id=session_id,
+                target_dir=result.target_dir,
+            )
+            write_access_metadata = access_metadata if git_access_mode == "write" else None
+            if result.cloned or access_metadata is not None:
+                self._configure_container_git(
+                    backend=backend,
+                    config=config,
+                    session_id=session_id,
+                    session=session,
+                    directory_path=session_directory_path,
+                    target_dir=result.target_dir,
+                    repo_source=clone_source,
+                    remote_url=result.remote_url,
+                    push_remote_url=(
+                        _container_git_remote_url_with_ssh_alias(
+                            result.remote_url,
+                            str(write_access_metadata["git_ssh_alias"]),
+                        )
+                        if write_access_metadata is not None
+                        else None
+                    ),
+                    clone_branch=clone_branch,
+                    git_access_mode=git_access_mode,
+                    git_author_identity=git_author_identity,
+                    git_committer_identity=git_committer_identity,
+                    timeout_seconds=container_job_timeout_seconds,
+                )
+            bind_repository = getattr(
+                context.admin_service, "bind_managed_git_repository", None
+            )
+            if callable(bind_repository):
+                bind_repository(
+                    managed_repo_id=managed_repo_id,
+                    kind="sessions",
+                    binding_id=session_id,
+                )
+        except BaseException as exc:
+            if access_metadata is not None:
+                try:
+                    cleanup_failures = self._rollback_container_git_access(
+                        backend=backend,
+                        config=config,
+                        context=context,
+                        session=session,
+                        session_id=session_id,
+                        directory_path=session_directory_path,
+                        access_metadata=access_metadata,
+                        timeout_seconds=container_job_timeout_seconds,
+                    )
+                except Exception:
+                    cleanup_failures = ["rollback failed unexpectedly"]
+                if cleanup_failures:
+                    exc.add_note(
+                        "Container Git access rollback was incomplete: "
+                        + ", ".join(cleanup_failures)
+                    )
+            raise
         return {
             "success": True,
             "message": (
@@ -186,18 +239,94 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "session_id": session_id,
             "target_dir": result.target_dir,
             "guest_repo_name": result.guest_repo_name,
-            "remote_url": result.remote_url,
             # Older worker implementations and compatible test doubles may not
             # return a commit snapshot. Keep clone responses backwards-compatible
             # while exposing the immutable commit whenever the worker provides it.
             "commit_sha": getattr(result, "commit_sha", None),
-            "canonical_repo_source": mirror.canonical_repo_source,
+            "managed_repo_id": managed_repo_id,
             "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
             "git_access_mode": git_access_mode,
-            "git_write_access": write_access_metadata,
+            "git_write_access": _public_git_access_metadata(write_access_metadata),
             "execution_backend": "container_worker_vm",
             "vm_name": None,
         }
+
+    def _rollback_container_git_access(
+        self,
+        *,
+        backend: Any,
+        config: Any,
+        context: Any,
+        session: Any,
+        session_id: str,
+        directory_path: str,
+        access_metadata: Mapping[str, object],
+        timeout_seconds: float,
+    ) -> list[str]:
+        failures: list[str] = []
+        host_access_revoked = False
+        authorized_keys_path = normalize_optional_string(
+            access_metadata.get("authorized_keys_path")
+        )
+        public_key_body = normalize_optional_string(access_metadata.get("public_key_body"))
+        if authorized_keys_path and public_key_body:
+            try:
+                # A successful call proves the key is absent afterwards. The boolean return
+                # only distinguishes "removed" from "already absent".
+                remove_git_authorized_key_by_public_key_body(
+                    authorized_keys_path=authorized_keys_path,
+                    public_key_body=public_key_body,
+                )
+            except Exception:
+                failures.append("host key revocation failed")
+            else:
+                host_access_revoked = True
+        else:
+            failures.append("host key revocation metadata is incomplete")
+
+        worker_key_files_removed = False
+        try:
+            self._remove_container_git_write_key_files(
+                backend=backend,
+                config=config,
+                session=session,
+                session_id=session_id,
+                directory_path=directory_path,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception:
+            failures.append("worker key removal failed")
+        else:
+            worker_key_files_removed = True
+
+        metadata_cleared = False
+        if host_access_revoked and worker_key_files_removed and public_key_body:
+            try:
+                metadata_cleared = _clear_session_git_access_metadata(
+                    context,
+                    session_id,
+                    expected_public_key_body=public_key_body,
+                )
+            except Exception:
+                failures.append("session Git access metadata cleanup failed")
+            if not metadata_cleared and not any(
+                failure == "session Git access metadata cleanup failed"
+                for failure in failures
+            ):
+                failures.append("session Git access metadata changed during cleanup")
+
+        if host_access_revoked and worker_key_files_removed and metadata_cleared:
+            unbind = getattr(
+                context.admin_service, "unbind_managed_git_repositories", None
+            )
+            if callable(unbind):
+                try:
+                    unbind(kind="authorized_sessions", binding_id=session_id)
+                except Exception:
+                    failures.append("authorized session binding cleanup failed")
+            else:
+                failures.append("authorized session binding cleanup is unavailable")
+        return failures
 
     def _write_container_git_helpers(
         self,
@@ -227,15 +356,18 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             ],
         )
 
-    def _provision_container_git_write_access(
+    def _provision_container_git_access(
         self,
         *,
         backend: Any,
         config: Any,
         context: Any,
         session_id: str,
-        mirror_resolver: ContainerGitMirrorResolver,
-        mirror_path: Path,
+        issue_setup: Any,
+        managed_repo_id: str,
+        bare_repo_path: Path,
+        managed_git_root: Path,
+        access_mode: str,
     ) -> dict[str, object]:
         provision_git_write_key = getattr(backend, "provision_git_write_key", None)
         if not callable(provision_git_write_key):
@@ -243,32 +375,55 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         _remove_session_git_write_access(context, session_id)
         key_record = provision_git_write_key(
             session_id=session_id,
-            git_host=mirror_resolver.git_host,
-            git_user=mirror_resolver.git_user,
-            git_ssh_alias=mirror_resolver.git_ssh_alias,
+            git_host=issue_setup.git_host,
+            git_user=issue_setup.git_user,
+            git_ssh_alias=issue_setup.git_ssh_alias,
         )
         project_dir = Path(getattr(context.admin_service, "project_dir", Path.cwd()))
         allowed_from = container_worker_git_allowed_from(config)
-        installed = install_git_write_authorized_key(
-            public_key=str(key_record.public_key),
-            git_root=mirror_resolver.git_root_path,
-            authorized_repo_path=mirror_path,
-            session_id=session_id,
-            allowed_from=allowed_from,
-            wrapper_path=project_dir / "scripts" / "git_ssh_command_wrapper.sh",
-            authorized_keys_path=authorized_keys_path_for_user(mirror_resolver.git_user),
-        )
+        authorized_keys_path = authorized_keys_path_for_user(issue_setup.git_user)
+        common_install_args = {
+            "public_key": str(key_record.public_key),
+            "git_root": managed_git_root,
+            "authorized_repo_path": bare_repo_path,
+            "allowed_from": allowed_from,
+            "wrapper_path": project_dir / "scripts" / "git_ssh_command_wrapper.sh",
+            "authorized_keys_path": authorized_keys_path,
+        }
+        if access_mode == "write":
+            installed = install_git_write_authorized_key(
+                **common_install_args,
+                session_id=session_id,
+            )
+        else:
+            installed = install_git_read_authorized_key(**common_install_args)
         metadata = {
             "public_key_body": installed.public_key_body,
+            "managed_repo_id": managed_repo_id,
+            "git_user": issue_setup.git_user,
             "authorized_keys_path": str(installed.authorized_keys_path),
-            "authorized_repo_path": str(installed.authorized_repo_path),
-            "authorized_ref_prefix": installed.authorized_ref_prefix,
-            "authorized_pr_notes_ref": installed.authorized_pr_notes_ref,
+            "access_mode": access_mode,
             "allowed_from": installed.allowed_from,
             "git_ssh_alias": str(key_record.git_ssh_alias),
         }
+        if access_mode == "write":
+            metadata.update(
+                {
+                    "authorized_ref_prefix": installed.authorized_ref_prefix,
+                    "authorized_pr_notes_ref": installed.authorized_pr_notes_ref,
+                }
+            )
         try:
             _record_session_git_write_access(context, session_id, metadata)
+            bind_repository = getattr(
+                context.admin_service, "bind_managed_git_repository", None
+            )
+            if callable(bind_repository):
+                bind_repository(
+                    managed_repo_id=managed_repo_id,
+                    kind="authorized_sessions",
+                    binding_id=session_id,
+                )
         except Exception:
             remove_git_authorized_key_by_public_key_body(
                 authorized_keys_path=installed.authorized_keys_path,
@@ -538,13 +693,13 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         result = repo_cloner(
             vm_name=vm_name,
             session_id=session_id,
-            repo_source=required_string(
-                payload.get("repo_source"), "effect:agent:clone-repo requires repo_source"
+            managed_repo_id=required_string(
+                payload.get("managed_repo_id"),
+                "effect:agent:clone-repo requires managed_repo_id",
             ),
             clone_branch=normalize_optional_string(payload.get("clone_branch")),
             vm_user=normalize_optional_string(payload.get("vm_user")) or "agent",
-            directory_path=normalize_optional_string(payload.get("directory_path"))
-            or str(context.metadata.get("directory_path") or "root"),
+            directory_path=str(context.metadata.get("directory_path") or "root"),
             git_author_name=git_author_identity.name if git_author_identity is not None else None,
             git_author_email=git_author_identity.email if git_author_identity is not None else None,
             git_committer_name=(
@@ -560,7 +715,10 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "session_id": session_id,
             "target_dir": normalize_optional_string(getattr(result, "target_dir", None)),
             "guest_repo_name": normalize_optional_string(getattr(result, "guest_repo_name", None)),
-            "remote_url": normalize_optional_string(getattr(result, "remote_url", None)),
+            "managed_repo_id": required_string(
+                payload.get("managed_repo_id"),
+                "effect:agent:clone-repo requires managed_repo_id",
+            ),
             "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
             "execution_backend": execution_backend,
             "vm_name": result.vm_name or vm_name,
@@ -629,7 +787,7 @@ def _is_container_mounted_path(path: str) -> bool:
     return False
 
 
-def _container_git_mirror_resolver(context: Any, directory_path: str) -> ContainerGitMirrorResolver:
+def _container_git_connection_config(context: Any, directory_path: str) -> Any:
     admin_service = getattr(context, "admin_service", None)
     project_dir = Path(getattr(admin_service, "project_dir", Path.cwd()))
     issue_setup = None
@@ -654,13 +812,25 @@ def _container_git_mirror_resolver(context: Any, directory_path: str) -> Contain
         raise RuntimeError(
             "effect:agent:clone-repo with container_worker_vm requires issue setup config"
         )
-    return ContainerGitMirrorResolver(
-        project_dir=project_dir,
-        git_root=issue_setup.git_root,
-        git_host=issue_setup.git_host,
-        git_user=issue_setup.git_user,
-        git_ssh_alias=issue_setup.git_ssh_alias,
-    )
+    return issue_setup
+
+
+def _public_git_access_metadata(
+    metadata: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if metadata is None:
+        return None
+    return {
+        key: metadata[key]
+        for key in (
+            "managed_repo_id",
+            "authorized_ref_prefix",
+            "authorized_pr_notes_ref",
+            "allowed_from",
+            "git_ssh_alias",
+        )
+        if key in metadata
+    }
 
 
 def normalize_git_access_mode(value: object) -> str:
@@ -740,6 +910,38 @@ def _record_session_git_write_access(
     upsert_session(session.model_copy(update={"metadata": updated_metadata}))
 
 
+def _clear_session_git_access_metadata(
+    context: Any,
+    session_id: str,
+    *,
+    expected_public_key_body: str,
+) -> bool:
+    runtime = getattr(getattr(context, "admin_service", None), "runtime", None)
+    repository = getattr(runtime, "session_repository", None)
+    get_session = getattr(repository, "get_session", None)
+    upsert_session = getattr(repository, "upsert_session", None)
+    if not callable(get_session) or not callable(upsert_session):
+        return False
+    session = get_session(session_id)
+    if session is None:
+        return True
+    current_metadata = getattr(session, "metadata", {})
+    if not isinstance(current_metadata, dict):
+        return True
+    git_access = current_metadata.get("container_git_write_access")
+    if git_access is None:
+        return True
+    if not isinstance(git_access, Mapping):
+        return False
+    current_public_key_body = normalize_optional_string(git_access.get("public_key_body"))
+    if current_public_key_body != expected_public_key_body:
+        return False
+    updated_metadata = dict(current_metadata)
+    updated_metadata.pop("container_git_write_access", None)
+    upsert_session(session.model_copy(update={"metadata": updated_metadata}))
+    return True
+
+
 def _remove_session_git_write_access(
     context: Any,
     session_id: str,
@@ -760,12 +962,15 @@ def _remove_session_git_write_access(
     if not isinstance(git_access, dict):
         return
     public_key_body = normalize_optional_string(git_access.get("public_key_body"))
-    authorized_keys_path = normalize_optional_string(git_access.get("authorized_keys_path"))
-    if public_key_body and authorized_keys_path:
+    git_user = normalize_optional_string(git_access.get("git_user"))
+    if public_key_body and git_user:
         remove_git_authorized_key_by_public_key_body(
-            authorized_keys_path=authorized_keys_path,
+            authorized_keys_path=authorized_keys_path_for_user(git_user),
             public_key_body=public_key_body,
         )
+    unbind = getattr(context.admin_service, "unbind_managed_git_repositories", None)
+    if callable(unbind):
+        unbind(kind="authorized_sessions", binding_id=session_id)
     updated_metadata = dict(current_metadata)
     updated_metadata.pop("container_git_write_access", None)
     upsert_session(session.model_copy(update={"metadata": updated_metadata}))

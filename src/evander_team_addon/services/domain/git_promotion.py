@@ -38,8 +38,8 @@ from .common import (
 )
 from .git_common import (
     GIT_PROMOTION_EVENT_TYPE,
-    _bare_repo_fields,
     _emit_git_promotion_event,
+    _managed_repo_fields,
     _normalize_agent_branch_ref,
     _project_git_or_error,
 )
@@ -135,6 +135,12 @@ def _apply_ephemeral_git_review_promotion(
             f"ephemeral assignment {assignment_id} has invalid agent_branch: {exc}"
         )
         return None
+    expected_commit_sha = _optional_text(assignment.commit_sha)
+    if expected_commit_sha is None:
+        result["errors"].append(
+            f"ephemeral assignment {assignment_id} requires commit_sha for promotion"
+        )
+        return None
     target_branch = review_branch(actor.team_id, assignment_id)
     promotion_id = f"promotion-{uuid4().hex}"
     state.git_promotions[promotion_id] = GitPromotionRecord(
@@ -146,17 +152,18 @@ def _apply_ephemeral_git_review_promotion(
         source_branch=source_branch,
         target_branch=target_branch,
         promotion_kind="review",
+        commit_sha=expected_commit_sha,
     )
     payload: dict[str, Any] = {
         "promotion_id": promotion_id,
         "promotion_kind": "review",
         "project_id": project.id,
-        "host_repo_path": git.host_repo_path,
+        "managed_repo_id": git.managed_repo_id,
         "source_branch": source_branch,
+        "expected_commit_sha": expected_commit_sha,
         "target_branch": target_branch,
         "assignment_id": assignment_id,
     }
-    payload.update(_bare_repo_fields(git))
     if deliverable_id is not None:
         payload["deliverable_id"] = deliverable_id
     _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
@@ -213,11 +220,14 @@ def _apply_persistent_git_review_promotion(
         except ValueError as exc:
             result["errors"].append(f"git review promotion has invalid source_branch: {exc}")
             return None
-    elif commit_sha is not None:
-        source_branch = _commit_source_branch(commit_sha)
     else:
         result["errors"].append(
-            f"git review promotion for deliverable {deliverable_id} requires source_branch or commit_sha"
+            f"git review promotion for deliverable {deliverable_id} requires source_branch"
+        )
+        return None
+    if commit_sha is None:
+        result["errors"].append(
+            f"git review promotion for deliverable {deliverable_id} requires commit_sha"
         )
         return None
 
@@ -238,12 +248,12 @@ def _apply_persistent_git_review_promotion(
         "promotion_id": promotion_id,
         "promotion_kind": "review",
         "project_id": project.id,
-        "host_repo_path": git.host_repo_path,
+        "managed_repo_id": git.managed_repo_id,
         "source_branch": source_branch,
+        "expected_commit_sha": commit_sha,
         "target_branch": target_branch,
         "deliverable_id": deliverable_id,
     }
-    payload.update(_bare_repo_fields(git))
     if source_branch_value is not None:
         payload["source_branch"] = source_branch_value
     if commit_sha is not None:
@@ -335,7 +345,7 @@ def _apply_git_feature_update(
         "promotion_id": promotion_id,
         "promotion_kind": "feature",
         "project_id": project.id,
-        "host_repo_path": git.host_repo_path,
+        "managed_repo_id": git.managed_repo_id,
         "base_branch": git.base_branch,
         "source_branches": source_branches,
         "expected_source_commits": expected_source_commits,
@@ -738,17 +748,13 @@ def _queue_canonical_push_after_release_success(
         "promotion_kind": "canonical_push",
         "project_id": project.id,
         "release_package_id": release.id,
-        "host_repo_path": git.host_repo_path,
+        "managed_repo_id": git.managed_repo_id,
         "base_branch": git.base_branch,
         "source_branch": existing.source_branch,
         "expected_commit_sha": approved_commit_sha,
         "target_branch": existing.target_branch,
     }
-    payload.update(_bare_repo_fields(git))
-    if git.canonical_origin_url is not None:
-        payload["canonical_origin_url"] = git.canonical_origin_url
-    if git.provider is not None:
-        payload["provider"] = git.provider
+    payload.update(_managed_repo_fields(git))
     _emit_git_promotion_event(result, promotion_id=existing.id, payload=payload)
     result["git_promotion_event_ids"].append(existing.id)
 
@@ -832,7 +838,7 @@ def _promotion_failure_recipient(
 __all__ = [
     "GIT_PROMOTION_EVENT_TYPE",
     "_project_git_or_error",
-    "_bare_repo_fields",
+    "_managed_repo_fields",
     "_emit_git_promotion_event",
     "_normalize_agent_branch_ref",
     "_apply_git_review_promotion",

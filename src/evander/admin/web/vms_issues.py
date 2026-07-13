@@ -180,7 +180,7 @@ def _issue_record_payload(issue: LocalIssueRecord) -> dict[str, Any]:
         "rejection_reason": issue.rejection_reason,
         "yaml_path": issue.yaml_path,
         "directory_path": issue.directory_path,
-        "repo_source": issue.repo_source,
+        "managed_repo_id": issue.managed_repo_id,
         "source_type": issue.source_type,
         "state": issue.state,
         "url": issue.url,
@@ -220,7 +220,7 @@ def _issue_detail_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "description": payload.get("description"),
         "state": payload.get("state"),
         "directory_path": payload.get("directory_path"),
-        "repo_source": payload.get("repo_source"),
+        "managed_repo_id": payload.get("managed_repo_id"),
         "yaml_path": payload.get("yaml_path"),
         "url": payload.get("url"),
         "source": payload.get("source"),
@@ -518,6 +518,9 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
                 issue = service.issue_git_admin.create_local_issue(
                     title=str(payload.get("title") or ""),
                     body=str(payload.get("body") or ""),
+                    managed_repo_id=(
+                        str(payload.get("managed_repo_id") or "").strip() or None
+                    ),
                     repo_source=str(payload.get("repo_source") or "").strip() or None,
                     yaml_path=str(payload.get("yaml_path") or "").strip() or None,
                     directory_path=directory_path,
@@ -557,12 +560,19 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
             ):
                 return error_response
             payload = await _json_body(request)
+            repo_source = str(payload.get("repo_source") or "").strip() or None
+            requested_managed_repo_id = (
+                str(payload.get("managed_repo_id") or "").strip() or None
+            )
+            if "managed_repo_id" not in payload and "repo_source" not in payload:
+                requested_managed_repo_id = existing_issue.managed_repo_id
             issue = service.issue_git_admin.update_local_issue(
                 issue_id,
                 title=str(payload.get("title") or ""),
                 body=str(payload.get("body") or ""),
                 state=str(payload.get("state") or "New"),
-                repo_source=str(payload.get("repo_source") or "").strip() or None,
+                managed_repo_id=requested_managed_repo_id,
+                repo_source=repo_source,
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)

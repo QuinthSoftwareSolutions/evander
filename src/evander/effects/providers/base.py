@@ -9,6 +9,7 @@ from evander.events.models import (
     WorkflowNodeEnvelope,
     materialize_node_definition,
 )
+from evander.models import DirectoryPath
 from evander.provider_runtime.contracts import (
     AgentResumer,
     AgentPromptActivity,
@@ -30,6 +31,25 @@ from evander.provider_runtime.contracts import (
     VmPowerController,
 )
 from evander.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
+
+
+def scoped_effect_directory_path(
+    context: "EffectRuntimeContext",
+    requested: object | None = None,
+) -> str:
+    """Resolve an effect directory without allowing a child to claim an ancestor/sibling."""
+
+    scope = DirectoryPath(
+        segments=str(context.metadata.get("directory_path") or "root")
+    ).as_posix()
+    target = DirectoryPath(
+        segments=str(requested).strip() if requested is not None else scope
+    ).as_posix()
+    if target != scope and not target.startswith(f"{scope}/"):
+        raise ValueError(
+            f"directory_path {target!r} is outside workflow directory scope {scope!r}"
+        )
+    return target
 
 
 @dataclass(frozen=True)
