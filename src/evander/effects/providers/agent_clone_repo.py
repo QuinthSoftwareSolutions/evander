@@ -187,6 +187,10 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "target_dir": result.target_dir,
             "guest_repo_name": result.guest_repo_name,
             "remote_url": result.remote_url,
+            # Older worker implementations and compatible test doubles may not
+            # return a commit snapshot. Keep clone responses backwards-compatible
+            # while exposing the immutable commit whenever the worker provides it.
+            "commit_sha": getattr(result, "commit_sha", None),
             "canonical_repo_source": mirror.canonical_repo_source,
             "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
             "git_access_mode": git_access_mode,

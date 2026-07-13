@@ -27,6 +27,7 @@ from evander.worker.models import (
     WorkerGitWriteKeyRequest,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
+    WorkerTaskWorktreeRequest,
 )
 from evander.worker_daemon import (
     WorkerDiskTelemetry,
@@ -624,6 +625,43 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
         f"ssh -F {paths.agent_home / '.ssh' / 'config'} "
         f"-i {paths.agent_home / '.ssh' / 'evander-git'}"
     )
+
+
+def test_worker_prepares_and_reuses_task_scoped_worktree(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    clone = daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    assert clone.commit_sha
+
+    request = WorkerTaskWorktreeRequest(
+        repo_name="repo",
+        worktree_name="task-a-1234",
+        branch="agents/session-1/tasks/task-a-1234",
+        base_ref="main",
+    )
+    created = daemon.prepare_task_worktree("session-1", request)
+    reused = daemon.prepare_task_worktree("session-1", request)
+
+    assert created.created is True
+    assert reused.created is False
+    assert created.commit_sha == clone.commit_sha
+    assert reused.target_dir == "/home/agent/worktrees/repo/task-a-1234"
 
 
 def test_worker_provisions_session_git_write_key_and_preserves_config(

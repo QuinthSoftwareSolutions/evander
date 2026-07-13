@@ -517,6 +517,60 @@ class ProjectGitConfig(TeamModel):
         return self
 
 
+class ReleaseVerificationCommand(TeamModel):
+    name: str
+    cwd: str = "."
+    argv: list[str]
+    timeout_seconds: int = Field(default=3600, ge=1, le=14400)
+
+    @field_validator("name", "cwd", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("argv", mode="before")
+    @classmethod
+    def _argv(cls, value: object) -> list[str]:
+        values = _text_list(value, "argv")
+        if not values:
+            raise ValueError("argv must contain at least one command argument")
+        return values
+
+
+class ReleaseReviewRequirement(TeamModel):
+    reviewer_agent_id: str
+    review_profile_id: str
+
+    @field_validator("reviewer_agent_id", "review_profile_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
+class ProjectReleasePolicy(TeamModel):
+    verification_backend: Literal["container_worker_vm"] = "container_worker_vm"
+    container_image: str | None = None
+    verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
+    review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
+    allow_ungated: bool = False
+
+    @field_validator("container_image", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _require_gate(self) -> "ProjectReleasePolicy":
+        if not self.allow_ungated and not (
+            self.verification_commands or self.review_requirements
+        ):
+            raise ValueError(
+                "release policy requires verification_commands or review_requirements "
+                "unless allow_ungated is true"
+            )
+        return self
+
+
 class Project(TeamModel):
     id: str
     team_id: str
@@ -524,6 +578,7 @@ class Project(TeamModel):
     lead_agent_id: str
     goals: list[ProjectGoal] = Field(default_factory=list)
     git: ProjectGitConfig | None = None
+    release_policy: ProjectReleasePolicy | None = None
     status: ProjectStatus = ProjectStatus.ACTIVE
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -824,6 +879,10 @@ class DeliverableGitRefs(TeamModel):
     feature_branch: str | None = None
     release_branch: str | None = None
     commit_sha: str | None = None
+    submitted_commit_sha: str | None = None
+    reviewed_commit_sha: str | None = None
+    feature_commit_sha: str | None = None
+    release_commit_sha: str | None = None
     promotion_record_ids: list[str] = Field(default_factory=list)
 
     @field_validator(
@@ -832,6 +891,10 @@ class DeliverableGitRefs(TeamModel):
         "feature_branch",
         "release_branch",
         "commit_sha",
+        "submitted_commit_sha",
+        "reviewed_commit_sha",
+        "feature_commit_sha",
+        "release_commit_sha",
         "branch_context_id",
         mode="before",
     )
@@ -861,6 +924,74 @@ class DeliverableVerification(TeamModel):
         return _unique_text_list(value, "evidence_refs")
 
 
+class ReviewFindingRecord(TeamModel):
+    id: str
+    source_review_request_id: str
+    source_deliverable_id: str
+    owner_review_profile_id: str | None = None
+    owner_role_id: str | None = None
+    criterion_id: str | None = None
+    text: str
+    state: Literal["open", "resolved"] = "open"
+    resolution: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    resolved_by_review_request_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    resolved_at: datetime | None = None
+
+    @field_validator(
+        "id",
+        "source_review_request_id",
+        "source_deliverable_id",
+        "text",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "owner_review_profile_id",
+        "owner_role_id",
+        "criterion_id",
+        "resolution",
+        "resolved_by_review_request_id",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _evidence_refs(cls, value: object) -> list[str]:
+        return _unique_text_list(value, "evidence_refs")
+
+
+class DeliverableReviewManifest(TeamModel):
+    base_commit_sha: str
+    reviewed_commit_sha: str
+    tree_hash: str | None = None
+    commit_shas: list[str] = Field(default_factory=list)
+    changed_paths: list[str] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("base_commit_sha", "reviewed_commit_sha", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("tree_hash", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("commit_shas", "changed_paths", mode="before")
+    @classmethod
+    def _text_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
+
+
 class Deliverable(TeamModel):
     id: str
     task_id: str
@@ -871,6 +1002,8 @@ class Deliverable(TeamModel):
     review_request_ids: list[str] = Field(default_factory=list)
     git_refs: DeliverableGitRefs = Field(default_factory=DeliverableGitRefs)
     verification: DeliverableVerification | None = None
+    carried_findings: list[ReviewFindingRecord] = Field(default_factory=list)
+    review_manifest: DeliverableReviewManifest | None = None
     supersedes_deliverable_id: str | None = None
     superseded_by_deliverable_id: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -985,17 +1118,20 @@ class ReviewCriterionResult(TeamModel):
 
 class ReviewRequest(TeamModel):
     id: str
-    deliverable_id: str
+    deliverable_id: str | None = None
+    release_package_id: str | None = None
+    candidate_commit_sha: str | None = None
     reviewer_agent_id: str
     state: TeamRecordState = TeamRecordState.PENDING
     findings: list[str] = Field(default_factory=list)
     review_profile_id: str | None = None
     instructions: str | None = None
     criteria: list[ReviewCriterionResult] = Field(default_factory=list)
+    reviewed_commit_sha: str | None = None
     created_at: datetime | None = None
     decision_at: datetime | None = None
 
-    @field_validator("id", "deliverable_id", "reviewer_agent_id", mode="before")
+    @field_validator("id", "reviewer_agent_id", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
@@ -1005,10 +1141,31 @@ class ReviewRequest(TeamModel):
     def _findings(cls, value: object) -> list[str]:
         return _text_list(value, "findings")
 
-    @field_validator("review_profile_id", "instructions", mode="before")
+    @field_validator(
+        "review_profile_id",
+        "instructions",
+        "reviewed_commit_sha",
+        "deliverable_id",
+        "release_package_id",
+        "candidate_commit_sha",
+        mode="before",
+    )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _validate_target(self) -> "ReviewRequest":
+        targets = int(self.deliverable_id is not None) + int(
+            self.release_package_id is not None
+        )
+        if targets != 1:
+            raise ValueError(
+                "review request requires exactly one of deliverable_id or release_package_id"
+            )
+        if self.release_package_id is not None and self.candidate_commit_sha is None:
+            raise ValueError("release review request requires candidate_commit_sha")
+        return self
 
 
 class AgentInboxItem(TeamModel):
@@ -1402,6 +1559,90 @@ class AgentStandDown(TeamModel):
         return self.cleared_at is None
 
 
+class ReleaseVerificationWaiver(TeamModel):
+    deliverable_id: str
+    verification_status: Literal["partial", "not_run", "unknown", "missing"]
+    reason: str
+    actor_kind: Literal["agent", "operator"]
+    actor_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("deliverable_id", "reason", "actor_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
+class ReleaseScopeValidation(TeamModel):
+    state: Literal["pending", "passed", "blocked", "not_required"] = "pending"
+    base_commit_sha: str | None = None
+    release_commit_sha: str | None = None
+    reviewed_commit_shas: list[str] = Field(default_factory=list)
+    unexpected_commit_shas: list[str] = Field(default_factory=list)
+    unexpected_paths: list[str] = Field(default_factory=list)
+    validated_at: datetime | None = None
+
+    @field_validator("base_commit_sha", "release_commit_sha", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator(
+        "reviewed_commit_shas",
+        "unexpected_commit_shas",
+        "unexpected_paths",
+        mode="before",
+    )
+    @classmethod
+    def _text_lists(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
+
+
+class ReleaseVerificationCommandResult(TeamModel):
+    name: str
+    state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
+    job_id: str | None = None
+    exit_code: int | None = None
+    duration_seconds: float | None = None
+    log_excerpt: str | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("job_id", "log_excerpt", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class ReleaseVerificationRun(TeamModel):
+    id: str
+    release_package_id: str
+    candidate_commit_sha: str
+    session_id: str
+    state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
+    command_results: list[ReleaseVerificationCommandResult] = Field(default_factory=list)
+    current_command_index: int = Field(default=0, ge=0)
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    finished_at: datetime | None = None
+
+    @field_validator(
+        "id", "release_package_id", "candidate_commit_sha", "session_id", mode="before"
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("error", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
 class ReleasePackage(TeamModel):
     id: str
     project_id: str
@@ -1411,7 +1652,17 @@ class ReleasePackage(TeamModel):
     release_branch: str | None = None
     canonical_branch: str | None = None
     published_commit_sha: str | None = None
+    base_commit_sha: str | None = None
+    candidate_commit_sha: str | None = None
+    candidate_tree_hash: str | None = None
+    approved_commit_sha: str | None = None
+    verification_run_ids: list[str] = Field(default_factory=list)
+    review_request_ids: list[str] = Field(default_factory=list)
+    manifest: dict[str, Any] = Field(default_factory=dict)
     git_promotion_record_ids: list[str] = Field(default_factory=list)
+    policy_version: int = Field(default=1, ge=1)
+    verification_waivers: list[ReleaseVerificationWaiver] = Field(default_factory=list)
+    scope_validation: ReleaseScopeValidation | None = None
     state: TeamRecordState = TeamRecordState.PENDING
     published_at: datetime | None = None
     error: str | None = None
@@ -1428,6 +1679,8 @@ class ReleasePackage(TeamModel):
         "artifact_refs",
         "feature_branches",
         "git_promotion_record_ids",
+        "verification_run_ids",
+        "review_request_ids",
         mode="before",
     )
     @classmethod
@@ -1438,6 +1691,10 @@ class ReleasePackage(TeamModel):
         "release_branch",
         "canonical_branch",
         "published_commit_sha",
+        "base_commit_sha",
+        "candidate_commit_sha",
+        "candidate_tree_hash",
+        "approved_commit_sha",
         "error",
         mode="before",
     )
@@ -1516,11 +1773,22 @@ class EphemeralAssignment(TeamModel):
         return dict(value)
 
 
+class GitPromotionSource(TeamModel):
+    source_branch: str
+    expected_commit_sha: str
+
+    @field_validator("source_branch", "expected_commit_sha", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
 class GitPromotionRecord(TeamModel):
     id: str
     project_id: str
     actor_agent_id: str
     source_branch: str
+    sources: list[GitPromotionSource] = Field(default_factory=list)
     target_branch: str
     promotion_kind: Literal["review", "feature", "release", "canonical_push"]
     task_id: str | None = None
@@ -1590,6 +1858,7 @@ class TeamState(TeamModel):
     conversations: dict[str, TeamConversation] = Field(default_factory=dict)
     conversation_messages: dict[str, TeamConversationMessage] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
+    release_verification_runs: dict[str, ReleaseVerificationRun] = Field(default_factory=dict)
     ephemeral_assignments: dict[str, EphemeralAssignment] = Field(default_factory=dict)
     git_promotions: dict[str, GitPromotionRecord] = Field(default_factory=dict)
     git_work_contexts: dict[str, GitWorkContext] = Field(default_factory=dict)
@@ -2323,6 +2592,31 @@ class TeamState(TeamModel):
                     errors.append(
                         f"deliverable {deliverable.id} review {review_request_id} does not point back"
                     )
+            finding_ids: set[str] = set()
+            for finding in deliverable.carried_findings:
+                if finding.id in finding_ids:
+                    errors.append(
+                        f"deliverable {deliverable.id} has duplicate carried finding {finding.id}"
+                    )
+                finding_ids.add(finding.id)
+                if finding.source_review_request_id not in self.review_requests:
+                    errors.append(
+                        f"deliverable {deliverable.id} finding {finding.id} references "
+                        f"missing source review {finding.source_review_request_id}"
+                    )
+                if finding.source_deliverable_id not in self.deliverables:
+                    errors.append(
+                        f"deliverable {deliverable.id} finding {finding.id} references "
+                        f"missing source deliverable {finding.source_deliverable_id}"
+                    )
+                if (
+                    finding.resolved_by_review_request_id is not None
+                    and finding.resolved_by_review_request_id not in self.review_requests
+                ):
+                    errors.append(
+                        f"deliverable {deliverable.id} finding {finding.id} references "
+                        f"missing resolving review {finding.resolved_by_review_request_id}"
+                    )
             if deliverable.supersedes_deliverable_id is not None:
                 previous = self.deliverables.get(deliverable.supersedes_deliverable_id)
                 if previous is None:
@@ -2410,10 +2704,21 @@ class TeamState(TeamModel):
 
     def _validate_reviews(self, errors: list[str]) -> None:
         for review in self.review_requests.values():
-            if review.deliverable_id not in self.deliverables:
+            if (
+                review.deliverable_id is not None
+                and review.deliverable_id not in self.deliverables
+            ):
                 errors.append(
                     f"review request {review.id} references missing deliverable "
                     f"{review.deliverable_id}"
+                )
+            if (
+                review.release_package_id is not None
+                and review.release_package_id not in self.release_packages
+            ):
+                errors.append(
+                    f"review request {review.id} references missing release package "
+                    f"{review.release_package_id}"
                 )
             if review.reviewer_agent_id not in self.agents:
                 errors.append(
@@ -2569,6 +2874,50 @@ class TeamState(TeamModel):
                 task = self.tasks.get(deliverable.task_id)
                 if task is not None and task.project_id != project.id:
                     errors.append(f"release {release.id} includes deliverable {deliverable_id} outside project")
+            waiver_deliverable_ids: set[str] = set()
+            for waiver in release.verification_waivers:
+                if waiver.deliverable_id not in release.deliverable_ids:
+                    errors.append(
+                        f"release {release.id} waiver references deliverable "
+                        f"{waiver.deliverable_id} outside the package"
+                    )
+                if waiver.deliverable_id in waiver_deliverable_ids:
+                    errors.append(
+                        f"release {release.id} has duplicate waiver for "
+                        f"{waiver.deliverable_id}"
+                    )
+                waiver_deliverable_ids.add(waiver.deliverable_id)
+            for run_id in release.verification_run_ids:
+                run = self.release_verification_runs.get(run_id)
+                if run is None:
+                    errors.append(
+                        f"release {release.id} references missing verification run {run_id}"
+                    )
+                elif run.release_package_id != release.id:
+                    errors.append(
+                        f"release {release.id} references verification run {run_id} "
+                        f"owned by {run.release_package_id}"
+                    )
+            for review_id in release.review_request_ids:
+                review = self.review_requests.get(review_id)
+                if review is None:
+                    errors.append(
+                        f"release {release.id} references missing review request {review_id}"
+                    )
+                elif review.release_package_id != release.id:
+                    errors.append(
+                        f"release {release.id} references review {review_id} owned by "
+                        f"{review.release_package_id}"
+                    )
+                elif (
+                    release.candidate_commit_sha is not None
+                    and review.candidate_commit_sha != release.candidate_commit_sha
+                ):
+                    errors.append(
+                        f"release {release.id} review {review_id} targets "
+                        f"{review.candidate_commit_sha}, not candidate "
+                        f"{release.candidate_commit_sha}"
+                    )
 
     def _validate_ephemeral_assignments(self, errors: list[str]) -> None:
         for assignment in self.ephemeral_assignments.values():
@@ -3337,6 +3686,16 @@ def release_package_payload_with_derived(
     release: ReleasePackage,
 ) -> dict[str, Any]:
     payload = release.model_dump(mode="json")
+    payload["verification_runs"] = [
+        state.release_verification_runs[run_id].model_dump(mode="json")
+        for run_id in release.verification_run_ids
+        if run_id in state.release_verification_runs
+    ]
+    payload["release_reviews"] = [
+        state.review_requests[review_id].model_dump(mode="json")
+        for review_id in release.review_request_ids
+        if review_id in state.review_requests
+    ]
     related_promotions = _release_related_promotions(state, release)
     pending_promotions = [
         promotion.id for promotion in related_promotions if promotion.state == "pending"

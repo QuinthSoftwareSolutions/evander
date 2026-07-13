@@ -4543,6 +4543,16 @@ function seededGitState() {
         summary: "Waiting for review.",
         state: "pending",
         review_request_ids: ["review-waiting"],
+        carried_findings: [
+          {
+            id: "finding-ui",
+            source_review_request_id: "review-prior",
+            source_deliverable_id: "deliverable-prior",
+            owner_review_profile_id: "profile-alpha",
+            text: "Remove the stale station-tool spec.",
+            state: "open",
+          },
+        ],
         git_refs: {
           agent_branch: "agents/alpha-lead/waiting",
           review_branch: "team/alpha/reviews/waiting",
@@ -4757,6 +4767,20 @@ function seededGitState() {
         release_branch: "team/alpha/releases/accepted",
         canonical_branch: "releases/alpha/accepted",
         published_commit_sha: "ccc333",
+        verification_waivers: [
+          {
+            deliverable_id: "deliverable-accepted",
+            verification_status: "partial",
+            reason: "Operator environment unavailable.",
+            actor_kind: "operator",
+            actor_id: "release-admin",
+          },
+        ],
+        scope_validation: {
+          state: "passed",
+          unexpected_commit_shas: [],
+          unexpected_paths: [],
+        },
         git_promotion_record_ids: ["promo-release"],
         state: "accepted",
         published_at: "2026-06-09T15:00:00Z",
@@ -6683,6 +6707,10 @@ test("team add-on UI renders git refs and releases and submits a review decision
     state: "visible",
   });
   await waitingRow.getByText("Profile criteria:").waitFor({ state: "visible" });
+  await waitingRow.getByText("Open carried findings:").waitFor({ state: "visible" });
+  await waitingRow.getByText("finding-ui - Remove the stale station-tool spec.").waitFor({
+    state: "visible",
+  });
 
   const acceptedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-accepted"]');
   await openDeliveryRow(acceptedRow);
@@ -6695,6 +6723,11 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await acceptedRow.getByText("Release team/alpha/releases/accepted", { exact: true }).first().waitFor({
     state: "visible",
   });
+  await acceptedRow.getByText("Verification waivers:").waitFor({ state: "visible" });
+  await acceptedRow.getByText(/deliverable-accepted \(partial\).*release-admin/).waitFor({
+    state: "visible",
+  });
+  await acceptedRow.getByText("Scope validation: passed").waitFor({ state: "visible" });
   await acceptedRow.getByText("tests: passed - Targeted tests passed").waitFor({
     state: "visible",
   });
@@ -6769,9 +6802,17 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await workspaceDecisionForm.waitFor({ state: "visible" });
   await workspaceDecisionForm.locator('[name="state"]').selectOption("accepted");
   await workspaceDecisionForm.locator('[name="findings"]').fill("Looks good to me.");
+  await workspaceDecisionForm.locator('[name="criterion_state__tests"]').selectOption("passed");
   await workspaceDecisionForm
-    .locator('[name="criteria"]')
-    .fill("tests | passed | Added acceptance notes\ndocs | passed | README updated");
+    .locator('[name="criterion_finding__tests"]')
+    .fill("Added acceptance notes");
+  await workspaceDecisionForm.locator('[name="criterion_state__docs"]').selectOption("passed");
+  await workspaceDecisionForm
+    .locator('[name="criterion_finding__docs"]')
+    .fill("README updated");
+  await workspaceDecisionForm
+    .locator('[name="finding_resolution__finding-ui"]')
+    .fill("Removed and re-ran the OperatorClient test.");
   await workspaceDecisionForm.getByRole("button", { name: "Submit decision" }).click();
   await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
   await waitForCondition(
@@ -6796,6 +6837,13 @@ test("team add-on UI renders git refs and releases and submits a review decision
       criterion_id: "docs",
       state: "passed",
       finding: "README updated",
+    },
+  ]);
+  assert.deepEqual(decisionRequest.payload.finding_resolutions, [
+    {
+      finding_id: "finding-ui",
+      resolution: "Removed and re-ran the OperatorClient test.",
+      evidence_refs: [],
     },
   ]);
   assert.equal(decisionRequest.payload.expected_revision, 4);

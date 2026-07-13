@@ -20,6 +20,7 @@ from evander_team_addon.models import (
     AgentVoiceProfile,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableReviewManifest,
     DeliverableVerification,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
@@ -29,9 +30,13 @@ from evander_team_addon.models import (
     GovernanceAgendaItemState,
     GovernanceRuntime,
     ProjectGitConfig,
+    ProjectReleasePolicy,
+    ReleaseReviewRequirement,
+    ReleaseVerificationCommand,
     ProjectGoal,
     ProjectStatus,
     ReleasePackage,
+    ReviewRequest,
     ReviewProfileCriterion,
     RolePermission,
     TeamDispatchActivity,
@@ -61,12 +66,14 @@ from evander_team_addon.services.domain.ephemeral import (
 )
 from evander_team_addon.services.domain.git_promotion import GIT_PROMOTION_EVENT_TYPE
 from evander_team_addon.services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
+from evander_team_addon.services.domain.review import _review_decision_policy_error
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
+from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 from evander_team_addon.services.commands import (
     TeamAgentControlCommandService,
@@ -144,6 +151,10 @@ def _team_ephemeral_service(repo: TeamStateRepository) -> TeamEphemeralService:
 
 def _team_git_release_service(repo: TeamStateRepository) -> TeamGitReleaseService:
     return TeamGitReleaseService(repo)
+
+
+def _team_release_gate_service(repo: TeamStateRepository) -> TeamReleaseGateService:
+    return TeamReleaseGateService(repo)
 
 
 def _seed_git_work_context(
@@ -8786,6 +8797,9 @@ def _set_project_git(
             canonical_origin_url=canonical_origin_url,
             provider=provider,
         )
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            allow_ungated=True
+        )
         return state
 
     repo.update(_mutate)
@@ -8834,7 +8848,20 @@ def test_update_feature_branch_command_replay_conflict_and_outbox(
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
-    _seed_task(repo, task_id="task")
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+    )
+
+    def _set_review_branch(state):
+        state.deliverables["deliverable"].git_refs.review_branch = (
+            "team/team/reviews/deliverable"
+        )
+        return state
+
+    repo.update(_set_review_branch)
     _lease_agent_dispatch(
         repo,
         agent_id="backend",
@@ -9399,7 +9426,14 @@ def test_apply_agent_action_persistent_git_review_promotion_checks_authority(
 def test_apply_agent_action_git_feature_update_default_branch(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
-    _seed_task(repo, task_id="task")
+    _seed_accepted_review_sources(
+        repo,
+        task_id="task",
+        sources={
+            "ephemeral-1": "team/team/reviews/ephemeral-1",
+            "ephemeral-2": "team/team/reviews/ephemeral-2",
+        },
+    )
 
     state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
@@ -9427,13 +9461,21 @@ def test_apply_agent_action_git_feature_update_default_branch(tmp_path: Path) ->
         "team/team/reviews/ephemeral-1",
         "team/team/reviews/ephemeral-2",
     ]
+    assert event["payload"]["expected_source_commits"] == {
+        "team/team/reviews/ephemeral-1": "ephemeral-1-reviewed",
+        "team/team/reviews/ephemeral-2": "ephemeral-2-reviewed",
+    }
     assert event["payload"]["target_branch"] == "team/team/features/task-backend"
 
 
 def test_apply_agent_action_git_feature_update_supervisor_allowed(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
-    _seed_task(repo, task_id="task")
+    _seed_accepted_review_sources(
+        repo,
+        task_id="task",
+        sources={"source-x": "team/team/reviews/x"},
+    )
 
     # lead supervises backend (the task owner) and may consolidate the task branches.
     _state, lead_result = _team_agent_action_service(repo).apply_agent_action(
@@ -9526,7 +9568,8 @@ def test_record_git_feature_promotion_result_attaches_to_accepted_source_deliver
     refs = state.deliverables["deliverable"].git_refs
     assert refs.review_branch == "team/team/reviews/deliverable"
     assert refs.feature_branch == "team/team/features/task-backend"
-    assert refs.commit_sha == "feedface"
+    assert refs.commit_sha == "reviewed-commit"
+    assert refs.feature_commit_sha == "feedface"
     assert refs.promotion_record_ids == [promotion_id]
 
 
@@ -9558,24 +9601,13 @@ def test_record_git_feature_promotion_result_requires_source_branch_match(
             ],
         },
     )
-    assert result["success"] is True
-    promotion_id = result["git_promotion_event_ids"][0]
-
-    state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
-        promotion_id=promotion_id,
-        success=True,
-        outputs={"merged_branches": ["team/team/reviews/unrelated"]},
-        commit_sha="feedface",
-    )
-
-    assert promotion_result["updated_deliverable_ids"] == []
-    assert len(promotion_result["created_deliverable_ids"]) == 1
-    synthetic_id = promotion_result["created_deliverable_ids"][0]
-    assert state.git_promotions[promotion_id].deliverable_id == synthetic_id
+    assert result["success"] is False
+    assert any("must match exactly one accepted" in error for error in result["errors"])
+    assert state.git_promotions == {}
     refs = state.deliverables["deliverable"].git_refs
     assert refs.review_branch == "team/team/reviews/deliverable"
     assert refs.feature_branch is None
-    assert refs.commit_sha is None
+    assert refs.commit_sha == "reviewed-commit"
     assert refs.promotion_record_ids == []
 
 
@@ -9636,7 +9668,8 @@ def test_repair_feature_promotion_deliverables_removes_safe_synthetic_pending(
     assert promotion.deliverable_id == "deliverable"
     refs = state.deliverables["deliverable"].git_refs
     assert refs.feature_branch == "team/team/features/task-backend"
-    assert refs.commit_sha == "feedface"
+    assert refs.commit_sha == "reviewed-commit"
+    assert refs.feature_commit_sha == "feedface"
     assert refs.promotion_record_ids == ["promotion-feature"]
 
 
@@ -9660,8 +9693,67 @@ def _seed_accepted_feature_deliverable(
     def _mutate(state):
         deliverable = state.deliverables[deliverable_id]
         deliverable.state = TeamRecordState.ACCEPTED
+        deliverable.verification = DeliverableVerification(
+            status="passed",
+            summary="Seeded release verification passed.",
+        )
+        deliverable.git_refs.commit_sha = "reviewed-commit"
+        review_id = f"review-{deliverable_id}"
+        state.review_requests[review_id] = ReviewRequest(
+            id=review_id,
+            deliverable_id=deliverable_id,
+            reviewer_agent_id="worker",
+            state=TeamRecordState.ACCEPTED,
+            reviewed_commit_sha="reviewed-commit",
+        )
+        deliverable.review_request_ids = [review_id]
         if feature is not None:
             deliverable.git_refs.feature_branch = feature
+            deliverable.git_refs.feature_commit_sha = "reviewed-commit"
+            deliverable.review_manifest = DeliverableReviewManifest(
+                base_commit_sha="base-commit",
+                reviewed_commit_sha="reviewed-commit",
+                tree_hash="reviewed-tree",
+                commit_shas=["reviewed-commit"],
+                changed_paths=["M\tsrc/reviewed.py"],
+            )
+        return state
+
+    repo.update(_mutate)
+
+
+def _seed_accepted_review_sources(
+    repo: TeamStateRepository,
+    *,
+    task_id: str,
+    sources: dict[str, str],
+) -> None:
+    _seed_task(repo, task_id=task_id)
+    for deliverable_id in sources:
+        _team_admin_service(repo).record_deliverable(
+            deliverable_id=deliverable_id,
+            task_id=task_id,
+            producer_agent_id="backend",
+            summary=f"Reviewed source {deliverable_id}.",
+        )
+
+    def _mutate(state):
+        for deliverable_id, review_branch in sources.items():
+            commit_sha = f"{deliverable_id}-reviewed"
+            review_id = f"review-{deliverable_id}"
+            deliverable = state.deliverables[deliverable_id]
+            deliverable.state = TeamRecordState.ACCEPTED
+            deliverable.verification = DeliverableVerification(status="passed")
+            deliverable.git_refs.commit_sha = commit_sha
+            deliverable.git_refs.review_branch = review_branch
+            deliverable.review_request_ids = [review_id]
+            state.review_requests[review_id] = ReviewRequest(
+                id=review_id,
+                deliverable_id=deliverable_id,
+                reviewer_agent_id="worker",
+                state=TeamRecordState.ACCEPTED,
+                reviewed_commit_sha=commit_sha,
+            )
         return state
 
     repo.update(_mutate)
@@ -9749,6 +9841,10 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert len(result["git_promotion_event_ids"]) == 1
     payloads = {event["payload"]["promotion_kind"]: event["payload"] for event in result["events"]}
     assert payloads["release"]["source_branches"] == ["team/team/features/task-backend"]
+    assert payloads["release"]["expected_source_commits"] == {
+        "team/team/features/task-backend": "reviewed-commit"
+    }
+    assert payloads["release"]["allowed_changed_paths"] == ["M\tsrc/reviewed.py"]
     assert payloads["release"]["target_branch"] == "team/team/releases/rel-1"
     assert "canonical_push" not in payloads
 
@@ -9780,6 +9876,487 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     )
     assert payloads["canonical_push"]["provider"] == "azure_devops"
     assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
+def test_partial_verification_release_requires_audited_lead_waiver(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _make_partial(state):
+        state.deliverables["deliverable"].verification = DeliverableVerification(
+            status="partial",
+            summary="Backend passed; OperatorClient was not run.",
+        )
+        return state
+
+    repo.update(_make_partial)
+    state, missing = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-missing-waiver",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    assert missing["success"] is False
+    assert any("authorized verification waiver" in error for error in missing["errors"])
+    assert state.release_packages == {}
+
+    state, accepted = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-waived",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                    "verification_waivers": [
+                        {
+                            "deliverable_id": "deliverable",
+                            "reason": "OperatorClient environment is unavailable; ship backend only.",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert accepted["success"] is True
+    waiver = state.release_packages["release-waived"].verification_waivers[0]
+    assert waiver.verification_status == "partial"
+    assert waiver.actor_kind == "agent"
+    assert waiver.actor_id == "lead"
+
+
+def test_ordinary_release_role_cannot_authorize_verification_waiver(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _grant_release_only(state):
+        state.roles["project__backend"].permissions = [RolePermission.REQUEST_RELEASE]
+        state.deliverables["deliverable"].verification = DeliverableVerification(
+            status="partial"
+        )
+        return state
+
+    repo.update(_grant_release_only)
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "git_release_requests": [
+                {
+                    "id": "release-unauthorized-waiver",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                    "verification_waivers": [
+                        {"deliverable_id": "deliverable", "reason": "Skip it."}
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("project lead or top-level team manager" in error for error in result["errors"])
+    assert state.release_packages == {}
+
+
+def test_failed_verification_cannot_be_waived(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _make_failed(state):
+        state.deliverables["deliverable"].verification = DeliverableVerification(
+            status="failed",
+            summary="OperatorClient test compilation failed.",
+        )
+        return state
+
+    repo.update(_make_failed)
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-failed",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                    "verification_waivers": [
+                        {"deliverable_id": "deliverable", "reason": "Accept the risk."}
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("failed verification and cannot be released" in error for error in result["errors"])
+    assert state.release_packages == {}
+
+
+def test_operator_verification_waiver_records_authenticated_actor(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _make_not_run(state):
+        state.deliverables["deliverable"].verification = DeliverableVerification(
+            status="not_run"
+        )
+        return state
+
+    repo.update(_make_not_run)
+    state, result = _team_admin_service(repo).create_release_package_with_result(
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        release_id="operator-waived",
+        verification_waivers=[
+            {
+                "deliverable_id": "deliverable",
+                "reason": "Approved by the authenticated release operator.",
+            }
+        ],
+        operator_actor_id="operator:release-admin",
+    )
+
+    assert result["success"] is True
+    waiver = state.release_packages["operator-waived"].verification_waivers[0]
+    assert waiver.actor_kind == "operator"
+    assert waiver.actor_id == "operator:release-admin"
+
+
+def test_canonical_push_waits_for_candidate_verification_and_release_review(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_review_profile(repo, applicable_role_ids=["project__worker"])
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _configure_release_gates(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            verification_commands=[
+                ReleaseVerificationCommand(
+                    name="operator-client",
+                    cwd="Src/Clients/OperatorClient",
+                    argv=["npm", "test", "--", "--runInBand"],
+                )
+            ],
+            review_requirements=[
+                ReleaseReviewRequirement(
+                    reviewer_agent_id="worker",
+                    review_profile_id="profile",
+                )
+            ],
+        )
+        return state
+
+    repo.update(_configure_release_gates)
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-gated",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    assert requested["success"] is True
+    release_promotion_id = state.release_packages[
+        "release-gated"
+    ].git_promotion_record_ids[0]
+
+    state, consolidated = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=True,
+        commit_sha="candidate-feedface",
+        outputs={"base_commit_sha": "base-main", "tree_hash": "candidate-tree"},
+    )
+    release = state.release_packages["release-gated"]
+    assert release.candidate_commit_sha == "candidate-feedface"
+    assert release.candidate_tree_hash == "candidate-tree"
+    assert release.approved_commit_sha is None
+    assert len(release.verification_run_ids) == 1
+    assert release.review_request_ids == []
+    assert all(
+        state.git_promotions[promotion_id].promotion_kind != "canonical_push"
+        for promotion_id in release.git_promotion_record_ids
+    )
+    assert consolidated["events"][0]["event_type"] == (
+        "team.release.verification_requested"
+    )
+
+    run_id = release.verification_run_ids[0]
+    state, verified = _team_release_gate_service(repo).record_verification_result(
+        release_package_id="release-gated",
+        verification_run_id=run_id,
+        candidate_commit_sha="candidate-feedface",
+        verification_state="passed",
+        command_results=[{"name": "operator-client", "state": "passed", "exit_code": 0}],
+    )
+    assert verified["success"] is True
+    review_id = state.release_packages["release-gated"].review_request_ids[0]
+    review = state.review_requests[review_id]
+    assert review.release_package_id == "release-gated"
+    assert review.candidate_commit_sha == "candidate-feedface"
+    assert review.reviewed_commit_sha == "candidate-feedface"
+    state.release_packages["release-gated"].candidate_commit_sha = "different-candidate"
+    assert _review_decision_policy_error(
+        state,
+        review=review,
+        decision_state=TeamRecordState.REJECTED,
+        criterion_results=[],
+        finding_resolutions=[],
+    ) == (
+        f"release review {review.id} targets candidate candidate-feedface, "
+        "not the pinned candidate different-candidate"
+    )
+
+    state, decided = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": review_id,
+                    "state": "accepted",
+                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                }
+            ],
+        },
+    )
+
+    assert decided["success"] is True
+    release = state.release_packages["release-gated"]
+    assert release.approved_commit_sha == "candidate-feedface"
+    canonical = [
+        state.git_promotions[promotion_id]
+        for promotion_id in release.git_promotion_record_ids
+        if state.git_promotions[promotion_id].promotion_kind == "canonical_push"
+    ]
+    assert len(canonical) == 1
+    assert [source.model_dump() for source in canonical[0].sources] == [
+        {
+            "source_branch": "team/team/releases/release-gated",
+            "expected_commit_sha": "candidate-feedface",
+        }
+    ]
+
+
+def test_release_candidate_runs_ci_before_configured_release_reviews_and_push(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    admin = _team_admin_service(repo)
+    admin.create_review_profile(
+        profile_id="release-review-profile",
+        team_id="team",
+        project_id="project",
+        name="Release review",
+        expected_revision=repo.read().revision,
+    )
+    admin.create_review_profile(
+        profile_id="release-test-profile",
+        team_id="team",
+        project_id="project",
+        name="Release test review",
+        expected_revision=repo.read().revision,
+    )
+
+    def _configure_policy(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            verification_commands=[
+                ReleaseVerificationCommand(
+                    name="solution tests",
+                    cwd="Src",
+                    argv=["dotnet", "test", "./App.slnx"],
+                    timeout_seconds=7200,
+                )
+            ],
+            review_requirements=[
+                ReleaseReviewRequirement(
+                    reviewer_agent_id="backend",
+                    review_profile_id="release-review-profile",
+                ),
+                ReleaseReviewRequirement(
+                    reviewer_agent_id="worker",
+                    review_profile_id="release-test-profile",
+                ),
+            ],
+        )
+        return state
+
+    repo.update(_configure_policy)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, release_result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-gated",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    release_promotion_id = release_result["git_promotion_event_ids"][0]
+
+    state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=True,
+        outputs={"tree_hash": "candidate-tree"},
+        commit_sha="candidate-sha",
+    )
+
+    release = state.release_packages["rel-gated"]
+    assert release.candidate_commit_sha == "candidate-sha"
+    assert release.candidate_tree_hash == "candidate-tree"
+    assert release.approved_commit_sha is None
+    assert release.review_request_ids == []
+    assert len(release.verification_run_ids) == 1
+    assert not any(
+        promotion.promotion_kind == "canonical_push"
+        for promotion in state.git_promotions.values()
+    )
+    assert [event["event_type"] for event in promotion_result["events"]] == [
+        "team.release.verification_requested"
+    ]
+
+    verification_run_id = release.verification_run_ids[0]
+    state, verification_result = TeamReleaseGateService(repo).record_verification_result(
+        release_package_id=release.id,
+        verification_run_id=verification_run_id,
+        candidate_commit_sha="candidate-sha",
+        verification_state="passed",
+        command_results=[{"name": "solution tests", "state": "passed", "exit_code": 0}],
+    )
+
+    release = state.release_packages["rel-gated"]
+    assert state.release_verification_runs[verification_run_id].state == "passed"
+    assert len(release.review_request_ids) == 2
+    assert verification_result["created_review_request_ids"] == release.review_request_ids
+    assert release.approved_commit_sha is None
+    assert not any(
+        promotion.promotion_kind == "canonical_push"
+        for promotion in state.git_promotions.values()
+    )
+
+    review_by_agent = {
+        state.review_requests[review_id].reviewer_agent_id: review_id
+        for review_id in release.review_request_ids
+    }
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-release-review")
+    state, _first_review = _command_service(repo).decide_review_command(
+        session_id="session-backend",
+        review_request_id=review_by_agent["backend"],
+        state="accepted",
+        request_id="request-release-review-backend",
+    )
+    assert state.release_packages["rel-gated"].approved_commit_sha is None
+
+    _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-release-test")
+    state, second_review = _command_service(repo).decide_review_command(
+        session_id="session-worker",
+        review_request_id=review_by_agent["worker"],
+        state="accepted",
+        request_id="request-release-review-worker",
+    )
+
+    release = state.release_packages["rel-gated"]
+    assert release.approved_commit_sha == "candidate-sha"
+    canonical = next(
+        promotion
+        for promotion in state.git_promotions.values()
+        if promotion.promotion_kind == "canonical_push"
+    )
+    assert canonical.sources[0].expected_commit_sha == "candidate-sha"
+    canonical_event = next(
+        event
+        for event in second_review["events"]
+        if event["payload"]["promotion_kind"] == "canonical_push"
+    )
+    assert canonical_event["payload"]["expected_commit_sha"] == "candidate-sha"
+
+
+def test_git_release_request_fails_closed_without_project_release_policy(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+
+    def _remove_policy(state):
+        state.projects["project"].release_policy = None
+        return state
+
+    repo.update(_remove_policy)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-unsafe",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("no release policy" in error for error in result["errors"])
+    assert state.release_packages == {}
 
 
 def test_duplicate_git_release_request_points_to_existing_package(
@@ -9933,7 +10510,7 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
                 {
                     "release_package_id": "rel-1",
                     "agent_branch": "refs/heads/agents/lead/release-resolved",
-                    "commit_sha": "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
+                    "commit_sha": "reviewed-commit",
                     "summary": "Resolved release merge conflict.",
                 }
             ],
@@ -9951,7 +10528,7 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
     assert event["idempotency_key"] == (
         "team-addon:team.git.release_recovery_requested:"
         f"rel-1:{release_promotion_id}:agents/lead/release-resolved:"
-        "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932"
+        "reviewed-commit"
     )
     assert event["payload"] == {
         "release_package_id": "rel-1",
@@ -9965,7 +10542,12 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
         "release_branch": "team/team/releases/rel-1",
         "canonical_branch": "releases/project/rel-1",
         "base_branch": "main",
-        "expected_commit_sha": "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
+        "expected_commit_sha": "reviewed-commit",
+        "source_branches": ["agents/lead/release-resolved"],
+        "expected_source_commits": {
+            "agents/lead/release-resolved": "reviewed-commit"
+        },
+        "allowed_changed_paths": ["M\tsrc/reviewed.py"],
         "summary": "Resolved release merge conflict.",
     }
 
@@ -10018,39 +10600,18 @@ def test_apply_agent_action_git_release_recovery_continues_failed_feature_promot
                 {
                     "release_package_id": "rel-1",
                     "agent_branch": "refs/heads/agents/backend/work",
-                    "commit_sha": "708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
+                    "commit_sha": "reviewed-commit",
                 }
             ],
         },
     )
 
-    assert recovery["success"] is True
-    assert recovery["release_recovery_event_ids"] == ["rel-1"]
-    event = recovery["events"][0]
-    assert event["payload"]["promotion_kind"] == "feature"
-    assert event["payload"]["promotion_id"] == feature_promotion_id
-    assert event["payload"]["target_branch"] == feature_promotion.target_branch
-    assert event["payload"]["release_branch"] == "team/team/releases/rel-1"
-
-    state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
-        promotion_id=feature_promotion_id,
-        success=True,
-        commit_sha="708b1b89daaa9f47f7bb5f7a96d6935cf4b45932",
-    )
-
-    release = state.release_packages["rel-1"]
-    assert release.state == TeamRecordState.PENDING
-    assert release.error is None
-    assert state.deliverables["deliverable"].git_refs.feature_branch == (
-        feature_promotion.target_branch
-    )
-    release_promotions = [
-        state.git_promotions[promotion_id]
-        for promotion_id in release.git_promotion_record_ids
-        if state.git_promotions[promotion_id].promotion_kind == "release"
-    ]
-    assert len(release_promotions) == 1
-    assert promotion_result["git_promotion_event_ids"] == [release_promotions[0].id]
+    assert recovery["success"] is False
+    assert recovery["release_recovery_event_ids"] == []
+    assert any("cannot bypass missing reviewed manifests" in error for error in recovery["errors"])
+    assert recovery["events"] == []
+    assert state.release_packages["rel-1"].state == TeamRecordState.BLOCKED
+    assert state.deliverables["deliverable"].git_refs.feature_branch is None
 
 
 def test_release_recovery_keys_each_failed_promotion_and_keeps_remaining_error(
@@ -10301,13 +10862,25 @@ def test_apply_agent_action_git_release_request_auto_promotes_review_branch(
     state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=feature_promotion_id,
         success=True,
-        outputs={"merged_branches": ["team/team/reviews/deliverable"]},
+        outputs={
+            "merged_branches": ["team/team/reviews/deliverable"],
+            "source_manifests": {
+                "team/team/reviews/deliverable": {
+                    "base_commit_sha": "base-commit",
+                    "reviewed_commit_sha": "reviewed-commit",
+                    "tree_hash": "reviewed-tree",
+                    "commit_shas": ["reviewed-commit"],
+                    "changed_paths": ["M\tsrc/reviewed.py"],
+                }
+            },
+        },
         commit_sha="feedface",
     )
 
     deliverable = state.deliverables["deliverable"]
     assert deliverable.git_refs.feature_branch == "team/team/features/task-lead"
-    assert deliverable.git_refs.commit_sha == "feedface"
+    assert deliverable.git_refs.commit_sha == "reviewed-commit"
+    assert deliverable.git_refs.feature_commit_sha == "feedface"
     release = state.release_packages["rel-1"]
     assert release.feature_branches == ["team/team/features/task-lead"]
     release_promotions = [
@@ -11390,7 +11963,7 @@ def test_apply_agent_action_review_decision_criteria_without_profile_errors(
     assert state.review_requests["review-1"].state == TeamRecordState.PENDING
 
 
-def test_apply_agent_action_review_decision_without_criteria_still_works(
+def test_apply_agent_action_review_decision_requires_profile_criteria(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -11406,10 +11979,187 @@ def test_apply_agent_action_review_decision_without_criteria_still_works(
         },
     )
 
-    assert result["success"] is True
+    assert result["success"] is False
+    assert any("missing required criterion" in error for error in result["errors"])
     review = state.review_requests["review-1"]
-    assert review.state == TeamRecordState.ACCEPTED
+    assert review.state == TeamRecordState.PENDING
     assert review.criteria == []
+
+
+@pytest.mark.parametrize("criterion_state", ["failed", "skipped"])
+def test_accepted_review_requires_required_criteria_to_pass(
+    tmp_path: Path,
+    criterion_state: str,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+    _request_review_with_profile(repo)
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": "review-1",
+                    "state": "accepted",
+                    "criteria": [
+                        {"criterion_id": "tests", "state": criterion_state}
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert any("required criteria that did not pass" in error for error in result["errors"])
+    assert state.review_requests["review-1"].state == TeamRecordState.PENDING
+    assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
+
+
+def test_review_findings_survive_rework_and_require_matching_profile_resolution(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+    _request_review_with_profile(repo)
+
+    state, rejected = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": "review-1",
+                    "state": "rejected",
+                    "findings": ["PLC administration UI is missing."],
+                    "criteria": [
+                        {
+                            "criterion_id": "tests",
+                            "state": "failed",
+                            "finding": "OperatorClient spec does not compile.",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    assert rejected["success"] is True
+    assert len(state.deliverables["deliverable"].carried_findings) == 2
+
+    _team_admin_service(repo).record_deliverable(
+        deliverable_id="deliverable-v2",
+        task_id="task",
+        producer_agent_id="backend",
+        summary="Reworked deliverable.",
+        supersedes_deliverable_id="deliverable",
+    )
+    _seed_review_profile(
+        repo,
+        profile_id="wrong-profile",
+        applicable_role_ids=["project__backend"],
+    )
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "wrong-review",
+                    "deliverable_id": "deliverable-v2",
+                    "reviewer_agent_id": "backend",
+                    "review_profile_id": "wrong-profile",
+                }
+            ],
+        },
+    )
+    assert requested["success"] is True
+    carried_ids = [
+        finding.id for finding in state.deliverables["deliverable-v2"].carried_findings
+    ]
+    assert len(carried_ids) == 2
+
+    state, wrong = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "review_decisions": [
+                {
+                    "review_request_id": "wrong-review",
+                    "state": "accepted",
+                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                    "finding_resolutions": [
+                        {
+                            "finding_id": carried_ids[0],
+                            "resolution": "Claimed fixed by another profile.",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    assert wrong["success"] is False
+    assert any("matching review profile" in error for error in wrong["errors"])
+    assert all(
+        finding.state == "open"
+        for finding in state.deliverables["deliverable-v2"].carried_findings
+    )
+    state, wrong_accepted = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "review_decisions": [
+                {
+                    "review_request_id": "wrong-review",
+                    "state": "accepted",
+                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                }
+            ],
+        },
+    )
+    assert wrong_accepted["success"] is True
+    assert state.deliverables["deliverable-v2"].state == TeamRecordState.PENDING
+
+    _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "review_requests": [
+                {
+                    "id": "review-2",
+                    "deliverable_id": "deliverable-v2",
+                    "reviewer_agent_id": "worker",
+                    "review_profile_id": "profile",
+                }
+            ],
+        },
+    )
+    state, resolved = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": "review-2",
+                    "state": "accepted",
+                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                    "finding_resolutions": [
+                        {
+                            "finding_id": finding_id,
+                            "resolution": "Fixed and rechecked.",
+                            "evidence_refs": ["test://focused"],
+                        }
+                        for finding_id in carried_ids
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert resolved["success"] is True
+    assert state.deliverables["deliverable-v2"].state == TeamRecordState.ACCEPTED
+    assert all(
+        finding.state == "resolved"
+        and finding.resolved_by_review_request_id == "review-2"
+        for finding in repo.read().deliverables["deliverable-v2"].carried_findings
+    )
 
 
 def test_record_review_decision_repository_stores_criteria(tmp_path: Path) -> None:

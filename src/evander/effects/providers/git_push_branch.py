@@ -194,6 +194,34 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         payload: Mapping[str, Any],
         canonical_origin_url: str | None = None,
     ) -> dict[str, Any]:
+        expected_commit_sha = self._normalize_optional_string(
+            payload.get("expected_commit_sha")
+        )
+        if expected_commit_sha is not None:
+            resolved = subprocess.run(
+                ["git", "-C", source_repo_path, "rev-parse", local_branch],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            actual_commit_sha = resolved.stdout.strip() if resolved.returncode == 0 else None
+            if actual_commit_sha != expected_commit_sha:
+                message = (
+                    f"ref {local_branch} resolved to {actual_commit_sha or 'missing'}, "
+                    f"expected approved commit {expected_commit_sha}"
+                )
+                return {
+                    "success": False,
+                    "action": "git_push_branch",
+                    "preflight_success": False,
+                    "reason": "source_commit_mismatch",
+                    "message": message,
+                    "error": message,
+                    "local_branch": local_branch,
+                    "origin_branch": origin_branch,
+                    "expected_commit_sha": expected_commit_sha,
+                    "actual_commit_sha": actual_commit_sha,
+                }
         result = push_branch(
             host_repo_path=source_repo_path,
             local_branch=local_branch,
@@ -307,6 +335,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
             "bare_repo_path",
             "bare_repo_name",
             "local_branch",
+            "expected_commit_sha",
             "origin_branch",
             "canonical_origin_url",
             "provider",

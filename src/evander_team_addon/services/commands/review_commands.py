@@ -191,6 +191,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
         request_id: str,
         findings: Sequence[str] | None = None,
         criteria: Sequence[Mapping[str, Any]] | None = None,
+        finding_resolutions: Sequence[Mapping[str, Any]] | None = None,
         override_routing_gap_reason: str | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
@@ -204,6 +205,9 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 "state": state,
                 "findings": list(findings or []),
                 "criteria": [dict(item) for item in criteria or []],
+                "finding_resolutions": [
+                    dict(item) for item in finding_resolutions or []
+                ],
                 "override_routing_gap_reason": override_routing_gap_reason,
             },
             field_name="review_decision",
@@ -251,6 +255,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     review=review,
                 )
                 if _is_team_manager(command_state, agent)
+                and review.release_package_id is None
                 and resolved.runtime is not None
                 and resolved.runtime.wake_reason == "manager_fallback"
                 else None
@@ -269,7 +274,12 @@ class TeamReviewCommandService(TeamCommandExecutor):
                         reviewer=command_state.agents.get(review.reviewer_agent_id),
                     ),
                 )
-            decision_result = {"errors": [], "created_inbox_item_ids": []}
+            decision_result = {
+                "errors": [],
+                "created_inbox_item_ids": [],
+                "events": [],
+                "git_promotion_event_ids": [],
+            }
             projects_to_recalc: set[str] = set()
             decided_id = _apply_review_decision(
                 command_state,
@@ -294,6 +304,33 @@ class TeamReviewCommandService(TeamCommandExecutor):
             for project_id in sorted(projects_to_recalc):
                 _recalculate_project_status(command_state, project_id)
             decided_review = command_state.review_requests[decided_id]
+            if decided_review.release_package_id is not None:
+                release = command_state.release_packages[
+                    decided_review.release_package_id
+                ]
+                return TeamCommandApplyResult(
+                    response_payload={
+                        "review_request_id": decided_id,
+                        "decided_review_request_ids": [decided_id],
+                        "created_inbox_item_ids": list(
+                            decision_result["created_inbox_item_ids"]
+                        ),
+                        "review": decided_review.model_dump(mode="json"),
+                        "release_package": release.model_dump(mode="json"),
+                        "release_package_id": release.id,
+                        "events": list(decision_result.get("events") or []),
+                        "intent_recorded": True,
+                        "async_effect_pending": bool(
+                            decision_result["created_inbox_item_ids"]
+                            or decision_result.get("events")
+                        ),
+                        "progress_made": True,
+                    },
+                    created_domain_ids=[
+                        decided_id,
+                        *list(decision_result["created_inbox_item_ids"]),
+                    ],
+                )
             deliverable = command_state.deliverables[decided_review.deliverable_id]
             task = command_state.tasks[deliverable.task_id]
             return TeamCommandApplyResult(

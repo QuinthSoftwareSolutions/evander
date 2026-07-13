@@ -53,6 +53,7 @@ from .models import (
     GovernanceAgendaItemType,
     GovernanceGoal,
     ProjectGitConfig,
+    ProjectReleasePolicy,
     ProjectGoal,
     ProjectStatus,
     ReviewProfileCriterion,
@@ -619,6 +620,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 lead_role_name=_optional(payload, "lead_role_name"),
                 goals=goals,
                 git=_optional_git_config(payload),
+                release_policy=_optional_release_policy(payload),
                 expected_revision=expected_revision,
             ),
             create_collection="projects",
@@ -634,6 +636,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def patch_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         has_git = "git" in payload
+        has_release_policy = "release_policy" in payload
         has_goals = "goals" in payload
         goals = (
             [ProjectGoal.model_validate(item) for item in _optional_list(payload, "goals")]
@@ -649,6 +652,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 name=_optional(payload, "name"),
                 git=_optional_git_config(payload),
                 set_git=has_git,
+                release_policy=_optional_release_policy(payload),
+                set_release_policy=has_release_policy,
                 goals=goals,
                 status=ProjectStatus(raw_status) if raw_status else None,
                 expected_revision=expected_revision,
@@ -1833,6 +1838,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         criteria = (
             _optional_list(payload, "criteria") if payload.get("criteria") is not None else None
         )
+        finding_resolutions = (
+            _optional_list(payload, "finding_resolutions")
+            if payload.get("finding_resolutions") is not None
+            else None
+        )
         review_request_id = request.path_params["review_request_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
@@ -1841,6 +1851,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 state=TeamRecordState(_required(payload, "state")),
                 findings=_optional_string_list(payload, "findings"),
                 criteria=criteria,
+                finding_resolutions=finding_resolutions,
                 expected_revision=expected_revision,
             ),
             target_collection="review_requests",
@@ -1992,6 +2003,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             release_id=_optional(payload, "id") or _optional(payload, "release_package_id"),
             release_branch=_optional(payload, "release_branch"),
             canonical_branch=_optional(payload, "canonical_branch"),
+            verification_waivers=(
+                _optional_list(payload, "verification_waivers")
+                if payload.get("verification_waivers") is not None
+                else None
+            ),
+            operator_actor_id=_operator_actor_from_request(context.auth, request),
             expected_revision=_expected_revision(payload),
         )
         response_payload = _state_payload(request, state)
@@ -2013,7 +2030,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             {
                 "revision": state.revision,
                 "release_packages": [
-                    release.model_dump(mode="json") for release in state.release_packages.values()
+                    release_package_payload_with_derived(state, release)
+                    for release in state.release_packages.values()
                 ],
             }
         )
@@ -2023,7 +2041,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         release = state.release_packages.get(request.path_params["release_package_id"])
         if release is None:
             return JSONResponse({"error": "release package not found"}, status_code=404)
-        return JSONResponse(release.model_dump(mode="json"))
+        return JSONResponse(release_package_payload_with_derived(state, release))
 
     async def list_git_promotions(_request: Request) -> JSONResponse:
         state = repository.read()
@@ -4532,6 +4550,17 @@ def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:
         else:
             normalized["bare_repo_name"] = bare_repo
     return ProjectGitConfig.model_validate(normalized)
+
+
+def _optional_release_policy(
+    payload: Mapping[str, Any],
+) -> ProjectReleasePolicy | None:
+    raw = payload.get("release_policy")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("release_policy must be a JSON object")
+    return ProjectReleasePolicy.model_validate(dict(raw))
 
 
 def _current_agent_avatar_asset_id(state: Any, agent_id: str) -> str | None:

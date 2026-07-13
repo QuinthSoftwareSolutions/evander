@@ -1114,6 +1114,7 @@ class GitPushBranchEffectDefinition(EffectDefinition):
     bare_repo_path: ConfigValue | None = None
     bare_repo_name: ConfigValue | None = None
     local_branch: ConfigValue
+    expected_commit_sha: ConfigValue | None = None
     origin_branch: ConfigValue
     canonical_origin_url: ConfigValue | None = None
     provider: ConfigValue | None = None

@@ -138,7 +138,7 @@ class DockerContainerRuntime:
             "-v",
             f"{paths.artifacts}:/artifacts",
             "-w",
-            self.sandbox_profile.workdir,
+            request.working_directory or self.sandbox_profile.workdir,
         ]
         for mount in identity_mounts:
             args.extend(["-v", mount])

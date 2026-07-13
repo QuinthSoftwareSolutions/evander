@@ -645,6 +645,7 @@ Arguments:
 | `state` | enum | yes | `accepted`, `rejected`, or `blocked`. |
 | `findings` | string[] | no | Review findings. |
 | `criteria` | object[] | no | `{ "criterion_id", "state", "finding"? }`; state is `passed`, `failed`, or `skipped`. |
+| `finding_resolutions` | object[] | no | `{ "finding_id", "resolution", "evidence_refs"? }` for carried findings owned by this review profile or legacy reviewer role. |
 | `override_routing_gap_reason` | string or null | no | Manager-fallback escape hatch when required by current runtime rules. |
 | `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
 | `request_id` | string | no | Idempotency key. |
@@ -655,6 +656,11 @@ Semantics:
 - Only the assigned reviewer may decide.
 - Criterion ids must exist on the attached review profile when criteria are
   supplied.
+- An accepted profiled review must supply every required criterion with state
+  `passed`; optional criteria may be omitted.
+- Rejected/blocked findings survive on superseding deliverables. Acceptance
+  requires this review to resolve every open finding it owns, and the
+  deliverable remains pending until all carried findings are resolved.
 - `accepted` marks the review accepted; the deliverable becomes accepted only
   when all attached reviews are accepted, and the task becomes accepted only when
   all active deliverables for that task are accepted.
@@ -741,6 +747,8 @@ Semantics:
 - Caller must own the task or supervise the owner.
 - Project Git config is required.
 - Branch names are validated before any git work.
+- Every source branch must map to exactly one accepted current deliverable and
+  is pinned to the immutable commit accepted by its review.
 - Records a `feature` git promotion and emits the existing promotion event.
 - Returns `git_promotion_event_id` and target feature branch.
 
@@ -758,6 +766,7 @@ Arguments:
 | `release_branch` | string or null | no | Release branch override. |
 | `canonical_branch` | string or null | no | Canonical branch override. |
 | `summary` | string or null | no | Release summary. |
+| `verification_waivers` | object[] | no | `{ "deliverable_id", "reason" }` for partial, not-run, unknown, or missing verification. Only a project lead or top-level team manager may supply agent waivers. |
 | `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
 | `request_id` | string | no | Idempotency key. |
 
@@ -767,6 +776,14 @@ Semantics:
 - Only the project lead, team manager, or a same-project role with
   `request_release` may request a release.
 - Every deliverable must belong to the project and be accepted.
+- Failed verification is never waivable. Other incomplete verification states
+  require an audited waiver from authorized leadership (or an authenticated
+  operator through the Admin API).
+- Accepted Git reviews, feature commits, and reviewed path manifests are pinned;
+  a moved branch tip or path outside the reviewed union hard-blocks the release
+  and cannot be waived.
+- The consolidated release commit must pass the project's configured release
+  verification commands and release-review profiles before canonical push.
 - The repository derives source branches from deliverable `git_refs`; agents do
   not provide `source_branch`, `target_branch`, or `commit_sha` here.
 - Do not use this to retry an existing blocked package.

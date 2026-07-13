@@ -6328,6 +6328,11 @@ function renderTeamInlineProjectForm(teamId) {
           <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
         </div>
       </details>
+      <details class="team-inline-create-advanced">
+        <summary>Release gates</summary>
+        <label>Release policy JSON<textarea name="release_policy_json" rows="10" placeholder='{"verification_commands": [...], "review_requirements": [...]}'></textarea></label>
+        <p class="field-help">Git releases fail closed until this policy defines disposable verification commands and/or release reviewers.</p>
+      </details>
       ${renderTeamInlineCreateActions(teamId, "project", "Create project")}
     </form>
   `;
@@ -6895,6 +6900,7 @@ function renderTeamProjectDetail(project) {
       </div>
       ${renderProjectCostCounter(project.id)}
       ${renderProjectGit(project.git)}
+      ${renderProjectReleasePolicy(project.release_policy)}
       <section class="agent-detail-section">
         <h3>Goals</h3>
         ${renderGoals(project.goals || [], { compact: true })}
@@ -9606,6 +9612,7 @@ function renderProjects() {
                 <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
                 ${renderProjectCostCounter(project.id)}
                 ${renderProjectGit(project.git)}
+                ${renderProjectReleasePolicy(project.release_policy)}
               </div>
               <div class="record-actions">
                 <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
@@ -9744,6 +9751,7 @@ function renderProjectFocusDetail(project) {
     </div>
     ${renderProjectCostCounter(project.id)}
     ${renderProjectGit(project.git)}
+    ${renderProjectReleasePolicy(project.release_policy)}
     <div class="projects-detail-grid">
       <section>
         <h3>Goals</h3>
@@ -10468,6 +10476,7 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
               <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
               ${renderProjectCostCounter(project.id)}
               ${renderProjectGit(project.git)}
+              ${renderProjectReleasePolicy(project.release_policy)}
             </div>
             <div class="record-actions">
               <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
@@ -10502,6 +10511,15 @@ function renderProjectGit(git) {
   if (git.base_branch) parts.push(`base ${git.base_branch}`);
   if (git.provider) parts.push(`provider ${git.provider}`);
   return `<div class="meta-line">Git: ${escapeHtml(parts.join(" - "))}</div>`;
+}
+
+function renderProjectReleasePolicy(policy) {
+  if (!policy) {
+    return `<div class="meta-line">Release gates: not configured (Git releases are blocked)</div>`;
+  }
+  const commands = (policy.verification_commands || []).map((command) => command.name);
+  const reviewers = (policy.review_requirements || []).map((requirement) => requirement.reviewer_agent_id);
+  return `<div class="meta-line">Release gates: ${escapeHtml(commands.length ? `${commands.length} verification checks` : "no verification checks")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers")}${policy.allow_ungated ? " - ungated explicitly allowed" : ""}</div>`;
 }
 
 function renderGoals(goals, { compact = false } = {}) {
@@ -10717,6 +10735,10 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
           const profile = review.review_profile_id
             ? state.review_profiles[review.review_profile_id] || null
             : null;
+          const deliverable = state.deliverables[review.deliverable_id] || null;
+          const carriedFindings = (deliverable?.carried_findings || []).filter(
+            (finding) => finding.state === "open",
+          );
           return `
             <li class="record-item">
               <div class="record-line">
@@ -10727,7 +10749,8 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
               ${review.instructions ? `<div class="meta-line">Instructions: ${escapeHtml(review.instructions)}</div>` : ""}
               ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => escapeHtml(finding)).join("; ")}</div>` : ""}
               ${renderCriterionResults(review.criteria || [])}
-              ${interactive ? renderReviewDecisionForm(review, profile) : ""}
+              ${renderCarriedFindings(carriedFindings)}
+              ${interactive ? renderReviewDecisionForm(review, profile, carriedFindings) : ""}
             </li>
           `;
         })
@@ -10736,12 +10759,11 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
   `;
 }
 
-function renderReviewDecisionForm(review, profile) {
+function renderReviewDecisionForm(review, profile, carriedFindings = []) {
   if (terminalRecordStates.has(review.state)) {
     return "";
   }
   const selectedState = decisionStates.includes(review.state) ? review.state : "";
-  const criteriaPlaceholder = renderReviewCriteriaPlaceholder(profile?.criteria || []);
   const criteriaHelp = renderReviewCriteriaHelp(profile?.criteria || []);
   return `
     <form
@@ -10766,13 +10788,56 @@ function renderReviewDecisionForm(review, profile) {
         Findings
         <textarea name="findings" rows="2"></textarea>
       </label>
-      <label>
-        Criteria results
-        <textarea name="criteria" rows="3" placeholder="${escapeAttr(criteriaPlaceholder)}"></textarea>
-      </label>
+      ${renderReviewCriterionInputs(profile?.criteria || [])}
+      ${renderFindingResolutionInputs(carriedFindings)}
       ${criteriaHelp}
       <button type="submit">Submit decision</button>
     </form>
+  `;
+}
+
+function renderReviewCriterionInputs(criteria) {
+  if (!criteria.length) return "";
+  return `
+    <fieldset data-review-criterion-inputs>
+      <legend>Criteria results</legend>
+      ${criteria.map((criterion) => `
+        <div class="criteria-editor-row" data-review-criterion-id="${escapeAttr(criterion.id)}">
+          <label>${escapeHtml(criterion.label)}${criterion.required === false ? " (optional)" : " (required)"}
+            <select name="criterion_state__${escapeAttr(criterion.id)}"${criterion.required === false ? "" : " required"}>
+              <option value="">Select</option>
+              <option value="passed">Passed</option>
+              <option value="failed">Failed</option>
+              <option value="skipped">Skipped</option>
+            </select>
+          </label>
+          <label>Finding
+            <input name="criterion_finding__${escapeAttr(criterion.id)}" type="text" />
+          </label>
+        </div>
+      `).join("")}
+    </fieldset>
+  `;
+}
+
+function renderCarriedFindings(findings) {
+  if (!findings.length) return "";
+  return `<div class="meta-line"><strong>Open carried findings:</strong><ul>${findings
+    .map((finding) => `<li>${escapeHtml(finding.id)} - ${escapeHtml(finding.text)}</li>`)
+    .join("")}</ul></div>`;
+}
+
+function renderFindingResolutionInputs(findings) {
+  if (!findings.length) return "";
+  return `
+    <fieldset data-finding-resolution-inputs>
+      <legend>Carried-finding resolutions</legend>
+      ${findings.map((finding) => `
+        <label>${escapeHtml(finding.text)}
+          <input name="finding_resolution__${escapeAttr(finding.id)}" type="text" placeholder="Resolution and evidence" />
+        </label>
+      `).join("")}
+    </fieldset>
   `;
 }
 
@@ -11116,6 +11181,7 @@ function renderReleases() {
               ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
               ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
               ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+              ${renderReleasePolicyDetails(release)}
             </li>
           `;
         })
@@ -11145,10 +11211,25 @@ function renderCompactRelease(release) {
           ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
           ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
           ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+          ${renderReleasePolicyDetails(release)}
         </div>
       </details>
     </li>
   `;
+}
+
+function renderReleasePolicyDetails(release) {
+  const waivers = release.verification_waivers || [];
+  const scope = release.scope_validation || null;
+  const waiverMarkup = waivers.length
+    ? `<div class="meta-line"><strong>Verification waivers:</strong><ul>${waivers
+        .map((waiver) => `<li>${escapeHtml(waiver.deliverable_id)} (${escapeHtml(waiver.verification_status)}): ${escapeHtml(waiver.reason)} - ${escapeHtml(waiver.actor_kind)} ${escapeHtml(waiver.actor_id)}</li>`)
+        .join("")}</ul></div>`
+    : "";
+  const scopeMarkup = scope
+    ? `<div class="meta-line">Scope validation: ${escapeHtml(scope.state)}${(scope.unexpected_commit_shas || []).length ? ` - unexpected commits ${escapeHtml(scope.unexpected_commit_shas.join(", "))}` : ""}${(scope.unexpected_paths || []).length ? ` - unexpected paths ${escapeHtml(scope.unexpected_paths.join(", "))}` : ""}</div>`
+    : "";
+  return `${waiverMarkup}${scopeMarkup}`;
 }
 
 function renderTemplateSetup() {
@@ -12047,6 +12128,8 @@ function renderReleaseSummary(releasePackages) {
             const artifactText = (release.artifact_refs || []).length
               ? release.artifact_refs.map((ref) => escapeHtml(ref)).join(", ")
               : "";
+            const verificationText = (release.verification_runs || []).map((run) => `${run.id}: ${run.state || "pending"}`).join(", ");
+            const releaseReviewText = (release.release_reviews || []).map((review) => `${review.id}: ${review.state || "pending"}`).join(", ");
             return `
               <li class="record-item">
                 <div class="record-line">
@@ -12056,11 +12139,16 @@ function renderReleaseSummary(releasePackages) {
                 <div class="meta-line">Project ${escapeHtml(release.project_id)}${deliverables ? ` - deliverables ${escapeHtml(deliverables)}` : ""}</div>
                 ${release.release_branch ? `<div class="meta-line">Release ${escapeHtml(release.release_branch)}</div>` : ""}
                 ${release.canonical_branch ? `<div class="meta-line">Canonical ${escapeHtml(release.canonical_branch)}</div>` : ""}
+                ${release.candidate_commit_sha ? `<div class="meta-line">Candidate ${escapeHtml(release.candidate_commit_sha)}</div>` : ""}
+                ${release.approved_commit_sha ? `<div class="meta-line">Approved ${escapeHtml(release.approved_commit_sha)}</div>` : ""}
                 ${release.published_commit_sha ? `<div class="meta-line">Commit ${escapeHtml(release.published_commit_sha)}</div>` : ""}
+                ${verificationText ? `<div class="meta-line">Verification: ${escapeHtml(verificationText)}</div>` : ""}
+                ${releaseReviewText ? `<div class="meta-line">Release reviews: ${escapeHtml(releaseReviewText)}</div>` : ""}
                 ${promotionText ? `<div class="meta-line">Git promotions: ${escapeHtml(promotionText)}</div>` : ""}
                 ${artifactText ? `<div class="meta-line">Artifact refs: ${artifactText}</div>` : ""}
                 ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
                 ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+                ${renderReleasePolicyDetails(release)}
               </li>
             `;
           })
@@ -14142,6 +14230,10 @@ function payloadForForm(form, data = formData(form)) {
     if (git) {
       payload.git = git;
     }
+    const releasePolicy = releasePolicyForForm(data);
+    if (releasePolicy) {
+      payload.release_policy = releasePolicy;
+    }
     return payload;
   }
   if (formId === "create-role-form") {
@@ -14305,6 +14397,18 @@ function gitConfigForForm(data) {
   return git;
 }
 
+function releasePolicyForForm(data) {
+  const raw = text(data.release_policy_json);
+  if (!raw) {
+    return null;
+  }
+  const policy = JSON.parse(raw);
+  if (!policy || Array.isArray(policy) || typeof policy !== "object") {
+    throw new Error("Release policy must be a JSON object.");
+  }
+  return policy;
+}
+
 function gitToBareRepo(git) {
   if (!git) {
     return "";
@@ -14330,7 +14434,8 @@ async function submitReviewDecision(form) {
   const payload = {
     state: stateValue,
     findings: splitList(data.findings),
-    criteria: parseCriterionResults(data.criteria),
+    criteria: reviewCriterionResultsFromForm(form),
+    finding_resolutions: findingResolutionsFromForm(form),
   };
   await submitMutation(
     form,
@@ -14339,6 +14444,35 @@ async function submitReviewDecision(form) {
     payload,
     { resetOnSuccess: false },
     );
+}
+
+function reviewCriterionResultsFromForm(form) {
+  return [...form.querySelectorAll("[data-review-criterion-id]")]
+    .map((row) => {
+      const criterionId = text(row.dataset.reviewCriterionId);
+      const stateValue = text(row.querySelector("select")?.value);
+      if (!stateValue) return null;
+      return {
+        criterion_id: criterionId,
+        state: stateValue,
+        finding: text(row.querySelector('input[type="text"]')?.value),
+      };
+    })
+    .filter(Boolean);
+}
+
+function findingResolutionsFromForm(form) {
+  return [...form.querySelectorAll('[name^="finding_resolution__"]')]
+    .map((input) => {
+      const resolution = text(input.value);
+      if (!resolution) return null;
+      return {
+        finding_id: input.name.slice("finding_resolution__".length),
+        resolution,
+        evidence_refs: [],
+      };
+    })
+    .filter(Boolean);
 }
 
 function openEditDialog(type, id) {
@@ -14479,6 +14613,11 @@ function renderEditFields(type, record) {
       ${textField("Canonical origin URL", "canonical_origin_url", record.git?.canonical_origin_url || "")}
       ${selectField("Provider", "provider", "git-providers", record.git?.provider || "", { placeholder: "Default" })}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
+      <p class="subheading">Release gates</p>
+      ${textareaField("Release policy JSON", "release_policy_json", record.release_policy ? JSON.stringify(record.release_policy, null, 2) : "", {
+        rows: 12,
+        placeholder: '{"verification_commands": [...], "review_requirements": [...]}',
+      })}
     `;
   }
   if (type === "agent") {
@@ -14634,6 +14773,7 @@ function editPayloadForForm(type, form) {
       status: text(data.status),
       goals: parseGoals(data.goals),
       git: gitConfigForForm(data),
+      release_policy: releasePolicyForForm(data),
     };
   }
   if (type === "agent") {

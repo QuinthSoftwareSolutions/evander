@@ -256,6 +256,13 @@ class TeamRecordGitPromotionEffectDefinition(EffectDefinition):
         raise ValueError("effect:team:record-git-promotion result_outputs must be a JSON object")
 
 
+class TeamVerifyReleaseCandidateEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:verify-release-candidate"]
+    release_package_id: ConfigValue
+    verification_run_id: ConfigValue
+    candidate_commit_sha: ConfigValue
+
+
 class TeamPublishReviewBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:team:publish-review-branch"]
     host_repo_path: ConfigValue
@@ -292,6 +299,8 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
     base_branch: ConfigValue | None = None
     bare_repo_path: ConfigValue | None = None
     bare_repo_name: ConfigValue | None = None
+    expected_source_commits: ConfigValue | None = None
+    allowed_changed_paths: ConfigValue | None = None
 
     @field_validator("source_branches")
     @classmethod
@@ -300,6 +309,28 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
             return value
         raise ValueError(
             "effect:team:consolidate-git-branches source_branches must be a JSON array"
+        )
+
+    @field_validator("expected_source_commits")
+    @classmethod
+    def validate_expected_source_commits(
+        cls, value: ConfigValue | None
+    ) -> ConfigValue | None:
+        if value is None or isinstance(value, (Mapping, str)):
+            return value
+        raise ValueError(
+            "effect:team:consolidate-git-branches expected_source_commits must be a JSON object"
+        )
+
+    @field_validator("allowed_changed_paths")
+    @classmethod
+    def validate_allowed_changed_paths(
+        cls, value: ConfigValue | None
+    ) -> ConfigValue | None:
+        if value is None or isinstance(value, (list, str)):
+            return value
+        raise ValueError(
+            "effect:team:consolidate-git-branches allowed_changed_paths must be a JSON array"
         )
 
 
@@ -534,6 +565,17 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "created_inbox_item_ids": {"type": "array"},
         "error": {"type": ["string", "null"]},
     },
+    "effect:team:verify-release-candidate": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "release_package_id": {"type": "string"},
+        "verification_run_id": {"type": "string"},
+        "verification_state": {"type": "string"},
+        "created_review_request_ids": {"type": "array"},
+        "created_inbox_item_ids": {"type": "array"},
+        "published_event_ids": {"type": "array"},
+        "error": {"type": ["string", "null"]},
+    },
     "effect:team:publish-review-branch": {
         "success": {"type": "boolean"},
         "review_branch": {"type": ["string", "null"]},
@@ -563,6 +605,11 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "output": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]},
         "error_code": {"type": ["string", "null"]},
+        "unexpected_commit_shas": {"type": "array"},
+        "base_commit_sha": {"type": ["string", "null"]},
+        "source_manifests": {"type": "object"},
+        "unexpected_paths": {"type": "array"},
+        "tree_hash": {"type": ["string", "null"]},
     },
     "effect:team:index-memory": {
         "success": {"type": "boolean"},

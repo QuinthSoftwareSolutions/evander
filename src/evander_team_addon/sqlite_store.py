@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 21
+SQLITE_SCHEMA_VERSION = 22
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -939,11 +939,123 @@ class TeamStateSqliteStore:
                     column_name="verification_json",
                     definition="TEXT",
                 )
+                for column_name in (
+                    "submitted_commit_sha",
+                    "reviewed_commit_sha",
+                    "feature_commit_sha",
+                    "release_commit_sha",
+                ):
+                    _ensure_column(
+                        connection,
+                        table_name="team_deliverables",
+                        column_name=column_name,
+                        definition="TEXT",
+                    )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="carried_findings_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="review_manifest_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_requests",
+                    column_name="reviewed_commit_sha",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_requests",
+                    column_name="release_package_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_requests",
+                    column_name="candidate_commit_sha",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_projects",
+                    column_name="release_policy_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="policy_version",
+                    definition="INTEGER NOT NULL DEFAULT 1",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="verification_waivers_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="scope_validation_json",
+                    definition="TEXT",
+                )
+                for column_name in (
+                    "base_commit_sha",
+                    "candidate_commit_sha",
+                    "candidate_tree_hash",
+                    "approved_commit_sha",
+                ):
+                    _ensure_column(
+                        connection,
+                        table_name="team_release_packages",
+                        column_name=column_name,
+                        definition="TEXT",
+                    )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="verification_run_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="review_request_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="manifest_json",
+                    definition="TEXT NOT NULL DEFAULT '{}'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_git_promotions",
+                    column_name="sources_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
                 connection.execute(
                     """
                     UPDATE team_tasks
                     SET state_entered_at = COALESCE(NULLIF(state_entered_at, ''), updated_at, created_at)
                     WHERE state_entered_at IS NULL OR state_entered_at = ''
+                    """
+                )
+                connection.execute(
+                    """
+                    UPDATE team_release_packages
+                    SET state = 'blocked',
+                        error = 'legacy_unpinned_release: recreate this nonterminal release under the current immutable candidate policy',
+                        updated_at = COALESCE(updated_at, created_at)
+                    WHERE policy_version < 2
+                      AND state NOT IN ('accepted', 'rejected')
                     """
                 )
                 connection.execute(
@@ -1044,6 +1156,7 @@ class TeamStateSqliteStore:
             "conversations": {},
             "conversation_messages": {},
             "release_packages": {},
+            "release_verification_runs": {},
             "ephemeral_assignments": {},
             "git_promotions": {},
             "git_work_contexts": {},
@@ -1070,6 +1183,7 @@ class TeamStateSqliteStore:
         self._read_conversations(connection, payload)
         self._read_conversation_messages(connection, payload)
         self._read_release_packages(connection, payload)
+        self._read_release_verification_runs(connection, payload)
         self._read_ephemeral_assignments(connection, payload)
         self._read_git_promotions(connection, payload)
         self._read_git_work_contexts(connection, payload)
@@ -1099,6 +1213,9 @@ class TeamStateSqliteStore:
         self._write_conversations(connection, payload["conversations"])
         self._write_conversation_messages(connection, payload["conversation_messages"])
         self._write_release_packages(connection, payload["release_packages"])
+        self._write_release_verification_runs(
+            connection, payload["release_verification_runs"]
+        )
         self._write_ephemeral_assignments(connection, payload["ephemeral_assignments"])
         self._write_git_promotions(connection, payload["git_promotions"])
         self._write_git_work_contexts(connection, payload["git_work_contexts"])
@@ -1446,6 +1563,11 @@ class TeamStateSqliteStore:
                 "lead_agent_id": row["lead_agent_id"],
                 "goals": goals.get(row["id"], []),
                 "git": _json_loads(row["git_json"]) if row["git_json"] is not None else None,
+                "release_policy": (
+                    _json_loads(row["release_policy_json"])
+                    if row["release_policy_json"] is not None
+                    else None
+                ),
                 "status": row["status"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -1457,9 +1579,10 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_projects(
-                    id, team_id, name, lead_agent_id, git_json, status, created_at, updated_at
+                    id, team_id, name, lead_agent_id, git_json, release_policy_json,
+                    status, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project["id"],
@@ -1467,6 +1590,11 @@ class TeamStateSqliteStore:
                     project["name"],
                     project["lead_agent_id"],
                     _json_dumps(project.get("git")) if project.get("git") is not None else None,
+                    (
+                        _json_dumps(project.get("release_policy"))
+                        if project.get("release_policy") is not None
+                        else None
+                    ),
                     project.get("status", "active"),
                     project["created_at"],
                     project["updated_at"],
@@ -1871,11 +1999,21 @@ class TeamStateSqliteStore:
                     "feature_branch": row["feature_branch"],
                     "release_branch": row["release_branch"],
                     "commit_sha": row["commit_sha"],
+                    "submitted_commit_sha": row["submitted_commit_sha"],
+                    "reviewed_commit_sha": row["reviewed_commit_sha"],
+                    "feature_commit_sha": row["feature_commit_sha"],
+                    "release_commit_sha": row["release_commit_sha"],
                     "promotion_record_ids": promotions.get(row["id"], []),
                 },
                 "verification": (
                     _json_loads(row["verification_json"])
                     if row["verification_json"] is not None
+                    else None
+                ),
+                "carried_findings": _json_loads(row["carried_findings_json"]),
+                "review_manifest": (
+                    _json_loads(row["review_manifest_json"])
+                    if row["review_manifest_json"] is not None
                     else None
                 ),
                 "supersedes_deliverable_id": row["supersedes_deliverable_id"],
@@ -1894,10 +2032,12 @@ class TeamStateSqliteStore:
                 INSERT INTO team_deliverables(
                     id, task_id, producer_agent_id, summary, state, branch_context_id,
                     agent_branch, review_branch, feature_branch, release_branch, commit_sha,
-                    verification_json, supersedes_deliverable_id,
-                    superseded_by_deliverable_id, created_at
+                    submitted_commit_sha, reviewed_commit_sha, feature_commit_sha,
+                    release_commit_sha, verification_json, supersedes_deliverable_id,
+                    superseded_by_deliverable_id, carried_findings_json,
+                    review_manifest_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -1911,6 +2051,10 @@ class TeamStateSqliteStore:
                     git_refs.get("feature_branch"),
                     git_refs.get("release_branch"),
                     git_refs.get("commit_sha"),
+                    git_refs.get("submitted_commit_sha"),
+                    git_refs.get("reviewed_commit_sha"),
+                    git_refs.get("feature_commit_sha"),
+                    git_refs.get("release_commit_sha"),
                     (
                         _json_dumps(deliverable.get("verification"))
                         if deliverable.get("verification") is not None
@@ -1918,6 +2062,12 @@ class TeamStateSqliteStore:
                     ),
                     deliverable.get("supersedes_deliverable_id"),
                     deliverable.get("superseded_by_deliverable_id"),
+                    _json_dumps(deliverable.get("carried_findings", [])),
+                    (
+                        _json_dumps(deliverable.get("review_manifest"))
+                        if deliverable.get("review_manifest") is not None
+                        else None
+                    ),
                     deliverable["created_at"],
                 ),
             )
@@ -2055,13 +2205,16 @@ class TeamStateSqliteStore:
         for row in connection.execute("SELECT * FROM team_review_requests ORDER BY id"):
             payload["review_requests"][row["id"]] = {
                 "id": row["id"],
-                "deliverable_id": row["deliverable_id"],
+                "deliverable_id": row["deliverable_id"] or None,
+                "release_package_id": row["release_package_id"],
+                "candidate_commit_sha": row["candidate_commit_sha"],
                 "reviewer_agent_id": row["reviewer_agent_id"],
                 "state": row["state"],
                 "findings": findings.get(row["id"], []),
                 "review_profile_id": row["review_profile_id"],
                 "instructions": row["instructions"],
                 "criteria": criteria.get(row["id"], []),
+                "reviewed_commit_sha": row["reviewed_commit_sha"],
                 "created_at": row["created_at"],
                 "decision_at": row["decision_at"],
             }
@@ -2074,18 +2227,22 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_review_requests(
-                    id, deliverable_id, reviewer_agent_id, state, review_profile_id,
-                    instructions, created_at, decision_at
+                    id, deliverable_id, release_package_id, candidate_commit_sha,
+                    reviewer_agent_id, state, review_profile_id, instructions,
+                    reviewed_commit_sha, created_at, decision_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["id"],
-                    request["deliverable_id"],
+                    request.get("deliverable_id") or "",
+                    request.get("release_package_id"),
+                    request.get("candidate_commit_sha"),
                     request["reviewer_agent_id"],
                     request.get("state", "pending"),
                     request.get("review_profile_id"),
                     request.get("instructions"),
+                    request.get("reviewed_commit_sha"),
                     request.get("created_at"),
                     request.get("decision_at"),
                 ),
@@ -2440,10 +2597,24 @@ class TeamStateSqliteStore:
                 "release_branch": row["release_branch"],
                 "canonical_branch": row["canonical_branch"],
                 "published_commit_sha": row["published_commit_sha"],
+                "base_commit_sha": row["base_commit_sha"],
+                "candidate_commit_sha": row["candidate_commit_sha"],
+                "candidate_tree_hash": row["candidate_tree_hash"],
+                "approved_commit_sha": row["approved_commit_sha"],
+                "verification_run_ids": _json_loads(row["verification_run_ids_json"]),
+                "review_request_ids": _json_loads(row["review_request_ids_json"]),
+                "manifest": _json_loads(row["manifest_json"]),
                 "git_promotion_record_ids": promotions.get(row["id"], []),
                 "state": row["state"],
                 "published_at": row["published_at"],
                 "error": row["error"],
+                "policy_version": row["policy_version"],
+                "verification_waivers": _json_loads(row["verification_waivers_json"]),
+                "scope_validation": (
+                    _json_loads(row["scope_validation_json"])
+                    if row["scope_validation_json"] is not None
+                    else None
+                ),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
@@ -2457,9 +2628,13 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_release_packages(
                     id, project_id, release_branch, canonical_branch, published_commit_sha,
-                    state, published_at, error, created_at, updated_at
+                    base_commit_sha, candidate_commit_sha, candidate_tree_hash,
+                    approved_commit_sha, verification_run_ids_json, review_request_ids_json,
+                    manifest_json,
+                    state, published_at, error, policy_version,
+                    verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
@@ -2467,9 +2642,23 @@ class TeamStateSqliteStore:
                     package.get("release_branch"),
                     package.get("canonical_branch"),
                     package.get("published_commit_sha"),
+                    package.get("base_commit_sha"),
+                    package.get("candidate_commit_sha"),
+                    package.get("candidate_tree_hash"),
+                    package.get("approved_commit_sha"),
+                    _json_dumps(package.get("verification_run_ids", [])),
+                    _json_dumps(package.get("review_request_ids", [])),
+                    _json_dumps(package.get("manifest", {})),
                     package.get("state", "pending"),
                     package.get("published_at"),
                     package.get("error"),
+                    package.get("policy_version", 1),
+                    _json_dumps(package.get("verification_waivers", [])),
+                    (
+                        _json_dumps(package.get("scope_validation"))
+                        if package.get("scope_validation") is not None
+                        else None
+                    ),
                     package["created_at"],
                     package.get("updated_at"),
                 ),
@@ -2505,6 +2694,27 @@ class TeamStateSqliteStore:
                 package["id"],
                 "promotion_record_id",
                 package.get("git_promotion_record_ids", []),
+            )
+
+    @staticmethod
+    def _read_release_verification_runs(
+        connection: sqlite3.Connection, payload: dict[str, Any]
+    ) -> None:
+        for row in connection.execute(
+            "SELECT id, payload_json FROM team_release_verification_runs ORDER BY id"
+        ):
+            payload["release_verification_runs"][row["id"]] = _json_loads(
+                row["payload_json"]
+            )
+
+    @staticmethod
+    def _write_release_verification_runs(
+        connection: sqlite3.Connection, runs: dict[str, Any]
+    ) -> None:
+        for run in runs.values():
+            connection.execute(
+                "INSERT INTO team_release_verification_runs(id, payload_json) VALUES (?, ?)",
+                (run["id"], _json_dumps(run)),
             )
 
     @staticmethod
@@ -2612,6 +2822,7 @@ class TeamStateSqliteStore:
                 "project_id": row["project_id"],
                 "actor_agent_id": row["actor_agent_id"],
                 "source_branch": row["source_branch"],
+                "sources": _json_loads(row["sources_json"]),
                 "target_branch": row["target_branch"],
                 "promotion_kind": row["promotion_kind"],
                 "task_id": row["task_id"],
@@ -2633,17 +2844,18 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_git_promotions(
-                    id, project_id, actor_agent_id, source_branch, target_branch,
+                    id, project_id, actor_agent_id, source_branch, sources_json, target_branch,
                     promotion_kind, task_id, deliverable_id, release_package_id, state,
                     commit_sha, outputs_json, error, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     promotion["id"],
                     promotion["project_id"],
                     promotion["actor_agent_id"],
                     promotion["source_branch"],
+                    _json_dumps(promotion.get("sources", [])),
                     promotion["target_branch"],
                     promotion["promotion_kind"],
                     promotion.get("task_id"),
@@ -3213,6 +3425,7 @@ _STATE_TABLES = (
     "team_git_work_contexts",
     "team_git_promotions",
     "team_ephemeral_assignments",
+    "team_release_verification_runs",
     "team_release_packages",
     "team_conversation_messages",
     "team_conversations",
@@ -3349,6 +3562,7 @@ CREATE TABLE IF NOT EXISTS team_projects (
     name TEXT NOT NULL,
     lead_agent_id TEXT NOT NULL,
     git_json TEXT,
+    release_policy_json TEXT,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -3520,7 +3734,13 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     feature_branch TEXT,
     release_branch TEXT,
     commit_sha TEXT,
+    submitted_commit_sha TEXT,
+    reviewed_commit_sha TEXT,
+    feature_commit_sha TEXT,
+    release_commit_sha TEXT,
     verification_json TEXT,
+    carried_findings_json TEXT NOT NULL DEFAULT '[]',
+    review_manifest_json TEXT,
     supersedes_deliverable_id TEXT,
     superseded_by_deliverable_id TEXT,
     created_at TEXT NOT NULL
@@ -3582,10 +3802,13 @@ CREATE TABLE IF NOT EXISTS team_review_profile_criteria (
 CREATE TABLE IF NOT EXISTS team_review_requests (
     id TEXT PRIMARY KEY,
     deliverable_id TEXT NOT NULL,
+    release_package_id TEXT,
+    candidate_commit_sha TEXT,
     reviewer_agent_id TEXT NOT NULL,
     state TEXT NOT NULL,
     review_profile_id TEXT,
     instructions TEXT,
+    reviewed_commit_sha TEXT,
     created_at TEXT,
     decision_at TEXT
 );
@@ -3739,14 +3962,29 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     release_branch TEXT,
     canonical_branch TEXT,
     published_commit_sha TEXT,
+    base_commit_sha TEXT,
+    candidate_commit_sha TEXT,
+    candidate_tree_hash TEXT,
+    approved_commit_sha TEXT,
+    verification_run_ids_json TEXT NOT NULL DEFAULT '[]',
+    review_request_ids_json TEXT NOT NULL DEFAULT '[]',
+    manifest_json TEXT NOT NULL DEFAULT '{}',
     state TEXT NOT NULL,
     published_at TEXT,
     error TEXT,
+    policy_version INTEGER NOT NULL DEFAULT 1,
+    verification_waivers_json TEXT NOT NULL DEFAULT '[]',
+    scope_validation_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_team_release_packages_project_state
     ON team_release_packages(project_id, state, created_at, id);
+
+CREATE TABLE IF NOT EXISTS team_release_verification_runs (
+    id TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS team_release_deliverables (
     package_id TEXT NOT NULL,
@@ -3825,6 +4063,7 @@ CREATE TABLE IF NOT EXISTS team_git_promotions (
     project_id TEXT NOT NULL,
     actor_agent_id TEXT NOT NULL,
     source_branch TEXT NOT NULL,
+    sources_json TEXT NOT NULL DEFAULT '[]',
     target_branch TEXT NOT NULL,
     promotion_kind TEXT NOT NULL,
     task_id TEXT,

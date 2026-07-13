@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import (
@@ -96,6 +96,7 @@ class WorkerJobRequest(BaseModel):
     command: list[str]
     repo_source: str | None = None
     clone_branch: str | None = None
+    working_directory: str | None = None
     resource_limits: WorkerResourceLimits = Field(default_factory=WorkerResourceLimits)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -126,13 +127,26 @@ class WorkerJobRequest(BaseModel):
             raise ValueError("command entries must be non-empty strings")
         return value
 
-    @field_validator("repo_source", "clone_branch", mode="before")
+    @field_validator("repo_source", "clone_branch", "working_directory", mode="before")
     @classmethod
     def normalize_optional_string(cls, value: object) -> str | None:
         if value is None:
             return None
         text = str(value).strip()
         return text or None
+
+    @field_validator("working_directory")
+    @classmethod
+    def validate_working_directory(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        path = PurePosixPath(value)
+        if not path.is_absolute() or ".." in path.parts:
+            raise ValueError("working_directory must be an absolute contained path")
+        allowed = PurePosixPath("/home/agent")
+        if path != allowed and allowed not in path.parents:
+            raise ValueError("working_directory must be under /home/agent")
+        return str(path)
 
     @model_validator(mode="before")
     @classmethod
@@ -304,6 +318,40 @@ class WorkerRepoCloneRecord(BaseModel):
     guest_repo_name: str
     remote_url: str
     cloned: bool
+    commit_sha: str | None = None
+
+
+class WorkerTaskWorktreeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo_name: str
+    worktree_name: str
+    branch: str
+    base_ref: str
+
+    @field_validator("repo_name", "worktree_name", mode="before")
+    @classmethod
+    def normalize_component(cls, value: object, info: ValidationInfo) -> str:
+        return str(validate_worker_component_id(value, field_name=info.field_name))
+
+    @field_validator("branch", "base_ref", mode="before")
+    @classmethod
+    def normalize_ref(cls, value: object, info: ValidationInfo) -> str:
+        text = str(value or "").strip()
+        if not text or "\n" in text or "\r" in text:
+            raise ValueError(f"{info.field_name} must be a non-empty single-line Git ref")
+        return text
+
+
+class WorkerTaskWorktreeRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    repo_name: str
+    target_dir: str
+    branch: str
+    commit_sha: str
+    created: bool
 
 
 class WorkerGitWriteKeyRequest(BaseModel):
@@ -512,6 +560,7 @@ class WorkerJobRecord(BaseModel):
     session_id: str
     image: str
     command: list[str]
+    working_directory: str | None = None
     container_name: str
     container_id: str | None = None
     status: str = "created"

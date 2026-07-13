@@ -61,6 +61,8 @@ from .models import (
     WorkerSessionPaths,
     WorkerSessionRecord,
     WorkerSessionStorageTelemetry,
+    WorkerTaskWorktreeRecord,
+    WorkerTaskWorktreeRequest,
     WorkerTelemetryPayload,
     ensure_resolved_path_within,
     now_utc,
@@ -196,6 +198,7 @@ class WorkerDaemon:
             session_id=request.session_id,
             image=request.image,
             command=request.command,
+            working_directory=request.working_directory,
             container_name=container_name,
             status="starting",
             started_at=now_utc(),
@@ -710,6 +713,102 @@ class WorkerDaemon:
             guest_repo_name=repo_name,
             remote_url=request.repo_source,
             cloned=cloned,
+            commit_sha=self._git_commit_sha(_target_dir, paths.agent_home),
+        )
+
+    def prepare_task_worktree(
+        self,
+        session_id: str,
+        request: WorkerTaskWorktreeRequest,
+    ) -> WorkerTaskWorktreeRecord:
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        repo_dir = paths.repo_root / request.repo_name
+        ensure_resolved_path_within(
+            base=paths.repo_root,
+            candidate=repo_dir,
+            description="task worktree repository",
+        )
+        if not (repo_dir / ".git").exists():
+            raise ValueError(f"session repository does not exist: {request.repo_name}")
+        worktrees_root = paths.agent_home / "worktrees" / request.repo_name
+        target_dir = worktrees_root / request.worktree_name
+        ensure_resolved_path_within(
+            base=paths.agent_home,
+            candidate=target_dir,
+            description="task worktree target",
+        )
+        env = _git_subprocess_env(paths.agent_home)
+        self._validate_git_branch(repo_dir, request.branch, env=env)
+        created = False
+        if target_dir.exists():
+            current_branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if current_branch != request.branch:
+                raise ValueError(
+                    f"task worktree {request.worktree_name} uses branch "
+                    f"{current_branch!r}, expected {request.branch!r}"
+                )
+        else:
+            worktrees_root.mkdir(parents=True, exist_ok=True)
+            local_branch = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{request.branch}"],
+                cwd=repo_dir,
+                env=env,
+                check=False,
+            )
+            args = ["git", "worktree", "add"]
+            if local_branch.returncode == 0:
+                args.extend([str(target_dir), request.branch])
+            else:
+                args.extend(["-b", request.branch, str(target_dir), request.base_ref])
+            subprocess.run(
+                args,
+                cwd=repo_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            created = True
+        subprocess.run(
+            ["git", "config", "extensions.worktreeConfig", "true"],
+            cwd=repo_dir,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for key, value in (
+            ("evander.workBranch", request.branch),
+            ("evander.baseBranch", request.base_ref),
+        ):
+            subprocess.run(
+                ["git", "config", "--worktree", key, value],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        helper_source = repo_dir / ".evander"
+        helper_target = target_dir / ".evander"
+        if helper_source.is_dir() and not helper_target.exists():
+            shutil.copytree(helper_source, helper_target)
+        return WorkerTaskWorktreeRecord(
+            session_id=session_id,
+            repo_name=request.repo_name,
+            target_dir=(
+                f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"
+            ),
+            branch=request.branch,
+            commit_sha=self._git_commit_sha(target_dir, paths.agent_home),
+            created=created,
         )
 
     def provision_git_write_key(
@@ -1526,6 +1625,35 @@ class WorkerDaemon:
                 f"repo_source is not allowed for this worker: {repo_source!r}; "
                 f"allowed prefixes: {allowed}"
             )
+
+    @staticmethod
+    def _git_commit_sha(repo_dir: Path, agent_home: Path) -> str:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD^{commit}"],
+            cwd=repo_dir,
+            env=_git_subprocess_env(agent_home),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    @staticmethod
+    def _validate_git_branch(
+        repo_dir: Path,
+        branch: str,
+        *,
+        env: dict[str, str],
+    ) -> None:
+        result = subprocess.run(
+            ["git", "check-ref-format", "--branch", branch],
+            cwd=repo_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"invalid task branch: {branch!r}")
 
     def _sync_git_ssh_into_agent_home(
         self,

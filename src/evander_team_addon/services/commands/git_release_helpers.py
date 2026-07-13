@@ -71,6 +71,7 @@ def _team_request_release_normalized_payload(
     release_branch: str | None,
     canonical_branch: str | None,
     summary: str | None,
+    verification_waivers: Sequence[Mapping[str, Any]],
     handled_inbox_item_ids: Sequence[str],
     correlation_id: str | None,
     causation_id: str | None,
@@ -82,6 +83,19 @@ def _team_request_release_normalized_payload(
         "release_branch": _optional_text(release_branch),
         "canonical_branch": _optional_text(canonical_branch),
         "summary": _optional_text(summary),
+        "verification_waivers": [
+            {
+                "deliverable_id": _required_text(
+                    item.get("deliverable_id"),
+                    "verification_waivers.deliverable_id",
+                ),
+                "reason": _required_text(
+                    item.get("reason"),
+                    "verification_waivers.reason",
+                ),
+            }
+            for item in verification_waivers
+        ],
         "handled_inbox_item_ids": sorted(
             _unique_text_list(handled_inbox_item_ids, "handled_inbox_item_ids")
         ),

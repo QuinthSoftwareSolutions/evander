@@ -15,6 +15,7 @@ from evander_team_addon.models import (
     GitPromotionRecord,
     ProjectGitConfig,
     ProjectGoal,
+    ProjectReleasePolicy,
     ProjectStatus,
     ReleasePackage,
     TeamInboxItemState,
@@ -156,7 +157,8 @@ def test_record_git_promotion_success_attaches_git_refs(tmp_path: Path) -> None:
     refs = state.deliverables["deliverable-1"].git_refs
     assert refs.review_branch == "team/team/reviews/ephemeral-1"
     assert refs.agent_branch == "agents/eph-1/ephemeral-1"
-    assert refs.commit_sha == "deadbeef"
+    assert refs.commit_sha is None
+    assert refs.reviewed_commit_sha == "deadbeef"
     assert "promotion-1" in refs.promotion_record_ids
 
 
@@ -223,6 +225,9 @@ def test_record_release_promotion_success_publishes_canonical_push(
     def _mutate(state):
         state.projects["project"].git.canonical_origin_url = "https://example.invalid/Truman.git"
         state.projects["project"].git.provider = "azure_devops"
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            allow_ungated=True
+        )
         state.git_promotions["release-promotion"] = GitPromotionRecord(
             id="release-promotion",
             project_id="project",
@@ -490,7 +495,7 @@ def test_mark_release_published_supersedes_older_blocked_duplicate(
     assert state.projects["project"].status != ProjectStatus.BLOCKED
 
 
-def test_mark_release_published_does_not_supersede_pending_duplicate(
+def test_mark_release_published_supersedes_legacy_duplicate_blocked_by_migration(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -519,8 +524,8 @@ def test_mark_release_published_does_not_supersede_pending_duplicate(
     )
 
     assert result["success"] is True
-    assert result["superseded_release_package_ids"] == []
-    assert repo.read().release_packages["release-pending"].state == TeamRecordState.PENDING
+    assert result["superseded_release_package_ids"] == ["release-pending"]
+    assert repo.read().release_packages["release-pending"].state == TeamRecordState.REJECTED
 
 
 def test_mark_release_published_ignores_late_success_for_rejected_release(
@@ -715,6 +720,58 @@ def test_consolidate_git_branches_merges_in_order(tmp_path: Path) -> None:
     assert result["merged_branches"] == ["feat-a"]
     assert result["commit_sha"]
     assert result["conflict_branch"] is None
+
+
+def test_consolidate_git_branches_blocks_source_tip_moved_after_review(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _branch_with(repo, "feat-a", "reviewed\n")
+    reviewed_commit = _git(repo, "rev-parse", "feat-a").stdout.strip()
+    _git(repo, "checkout", "-q", "feat-a")
+    (repo / "extra.txt").write_text("stale release baggage\n", encoding="utf-8")
+    _git(repo, "add", "extra.txt")
+    _git(repo, "commit", "-q", "-m", "unreviewed baggage")
+    moved_commit = _git(repo, "rev-parse", "feat-a").stdout.strip()
+    _git(repo, "checkout", "-q", "main")
+
+    result = _consolidate_provider(
+        tmp_path,
+        host_repo_path=str(repo),
+        source_branches=["feat-a"],
+        expected_source_commits={"feat-a": reviewed_commit},
+        target_branch="team/team/releases/release-1",
+        base_branch="main",
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "scope_mismatch"
+    assert result["unexpected_commit_shas"] == [moved_commit]
+    assert "moved after review" in str(result["error"])
+
+
+def test_consolidate_git_branches_blocks_paths_outside_reviewed_manifest(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _branch_with(repo, "feat-a", "reviewed\n")
+    reviewed_commit = _git(repo, "rev-parse", "feat-a").stdout.strip()
+
+    result = _consolidate_provider(
+        tmp_path,
+        host_repo_path=str(repo),
+        source_branches=["feat-a"],
+        expected_source_commits={"feat-a": reviewed_commit},
+        allowed_changed_paths=["M\tallowed-only.txt"],
+        target_branch="team/team/releases/release-1",
+        base_branch="main",
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "scope_mismatch"
+    assert result["unexpected_paths"] == ["file.txt"]
 
 
 def test_consolidate_git_branches_fetches_missing_source_from_bare_repo(

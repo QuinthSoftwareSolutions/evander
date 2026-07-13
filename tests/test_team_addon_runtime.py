@@ -245,6 +245,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "team-operator-escalation",
         "team-git-promotion-requested",
         "team-git-release-recovery-requested",
+        "team-release-verification-requested",
         "system.chat_assistant",
     ]
     assert "team-wake-due-agents" in _node_ids(config.effects)
@@ -252,6 +253,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert "team-notify-operator" in _node_ids(config.effects)
     assert "team-git-promote-review-branch" in _node_ids(config.effects)
     assert "team-promote-release-recovery-branch" in _node_ids(config.effects)
+    assert "team-verify-release-candidate" in _node_ids(config.effects)
 
     service = build_admin_runtime(tmp_path / "runtime")
     document = service.workflow_config_admin.read_workflow_editor_document()
@@ -300,6 +302,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert document.output_schemas["team-consolidate-feature-branches"]["commit_sha"] == {
         "type": ["string", "null"]
     }
+    assert document.output_schemas["team-verify-release-candidate"][
+        "verification_state"
+    ] == {"type": "string"}
     graphs = [
         graph.model_dump(mode="json") if hasattr(graph, "model_dump") else graph
         for graph in document.graphs
@@ -450,6 +455,21 @@ class FakeRepoCloner:
             guest_repo_name="Truman",
             remote_url="ssh://evander-git-host/git-remotes/Truman.git",
         )
+
+
+class FakeVmExecutor:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def vm_exec(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(dict(kwargs))
+        return {
+            "success": True,
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "message": "task worktree prepared",
+        }
 
 
 class FakeArtifactReader:
@@ -3761,6 +3781,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             agent_resumer=resumer,
             vm_file_copier=FakeFileCopier(),
             vm_repo_cloner=repo_cloner,
+            vm_executor=FakeVmExecutor(),
             session_lookup=session_store,
             session_metadata_updater=session_store,
         ),
@@ -3787,17 +3808,17 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert project_repo["target_dir"] == "/home/agent/Truman"
     assert project_repo["base_branch"] == "main"
     assert project_repo["branch_context_id"]
-    assert project_repo["agent_branch"] == "agents/session-backend/work-session-backend"
+    assert project_repo["agent_branch"] == "agents/session-backend/tasks/task-0ebb429f"
     git_context = project_repo["git_work_contexts"][0]
     assert git_context == {
         "id": project_repo["branch_context_id"],
         "branch_context_id": project_repo["branch_context_id"],
         "agent_id": "backend",
         "task_id": "task",
-        "agent_branch": "agents/session-backend/work-session-backend",
+        "agent_branch": "agents/session-backend/tasks/task-0ebb429f",
         "base_branch": "main",
         "dispatch_id": result["dispatches"][0]["dispatch_id"],
-        "worktree_path": "/home/agent/Truman",
+        "worktree_path": "/home/agent/worktrees/Truman/task-0ebb429f",
         "state": "active",
     }
     assert project_repo["branch_contexts_by_task_id"] == {"task": git_context}
@@ -3816,8 +3837,8 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     prompt = str(resumer.calls[0]["prompt"])
     assert '"project_repo"' in prompt
     assert project_repo["branch_context_id"] in prompt
-    assert "agents/session-backend/work-session-backend" in prompt
-    assert "/home/agent/Truman" in prompt
+    assert "agents/session-backend/tasks/task-0ebb429f" in prompt
+    assert "/home/agent/worktrees/Truman/task-0ebb429f" in prompt
     assert "The project host checkout is not mounted in the guest" in prompt
     assert "project_repo.git_work_contexts" in prompt
     assert session_store.calls[1]["metadata"]["team_addon"]["project_repo"] == project_repo
@@ -3858,6 +3879,7 @@ def test_wake_due_agents_refreshes_state_after_repo_clone_revision_change(
             agent_resumer=resumer,
             vm_file_copier=FakeFileCopier(),
             vm_repo_cloner=repo_cloner,
+            vm_executor=FakeVmExecutor(),
             session_lookup=session_store,
             session_metadata_updater=session_store,
         ),
@@ -3914,6 +3936,7 @@ def test_wake_due_agents_retries_git_context_commit_conflict_without_recloning(
             agent_resumer=resumer,
             vm_file_copier=FakeFileCopier(),
             vm_repo_cloner=repo_cloner,
+            vm_executor=FakeVmExecutor(),
             session_lookup=session_store,
             session_metadata_updater=session_store,
         ),
@@ -3996,6 +4019,7 @@ def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_fail
             agent_resumer=resumer,
             vm_file_copier=FakeFileCopier(),
             vm_repo_cloner=FakeRepoCloner(),
+            vm_executor=FakeVmExecutor(),
             session_lookup=session_store,
             session_metadata_updater=session_store,
         ),
@@ -4072,7 +4096,7 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
                 "guest_repo_name": "Truman",
                 "remote_url": "ssh://evander-git-host/git-remotes/Truman.git",
                 "pr_notes_ref": "refs/notes/agent-pr/test",
-                "execution_backend": "container_worker_vm",
+                "execution_backend": "libvirt_vm",
                 "vm_name": None,
             }
 
@@ -4093,6 +4117,7 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
             vm_file_copier=FakeFileCopier(),
             session_lookup=FakeSessionStore(),
             session_metadata_updater=FakeSessionStore(),
+            vm_executor=FakeVmExecutor(),
         ),
     )
 
@@ -4388,6 +4413,7 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
             agent_resumer=resumer,
             vm_file_copier=FakeFileCopier(),
             vm_repo_cloner=FakeRepoCloner(success=False, message="repo missing"),
+            vm_executor=FakeVmExecutor(),
             session_lookup=session_store,
             session_metadata_updater=session_store,
         ),
@@ -5771,19 +5797,21 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert ("team-git-promotion-release", "team-consolidate-release-branches") in edges
     assert ("team-consolidate-release-branches", "team-record-release-promotion") in edges
 
-    # release recovery -> promote agent ref -> record release promotion
+    # release recovery -> validate/consolidate the pinned ref -> record release promotion
     recovery_promote = effects["team-promote-release-recovery-branch"]
-    assert recovery_promote["type"] == "effect:git:promote-agent-branch"
-    assert recovery_promote["agent_branch"] == (
-        "${{team-git-release-recovery-requested.payload.agent_branch}}"
+    assert recovery_promote["type"] == "effect:team:consolidate-git-branches"
+    assert recovery_promote["source_branches"] == (
+        "${{team-git-release-recovery-requested.payload.source_branches}}"
     )
     assert recovery_promote["target_branch"] == (
         "${{team-git-release-recovery-requested.payload.target_branch}}"
     )
-    assert recovery_promote["expected_commit_sha"] == (
-        "${{team-git-release-recovery-requested.payload.expected_commit_sha ?? null}}"
+    assert recovery_promote["expected_source_commits"] == (
+        "${{team-git-release-recovery-requested.payload.expected_source_commits}}"
     )
-    assert recovery_promote["publish_target_to_bare"] is True
+    assert recovery_promote["allowed_changed_paths"] == (
+        "${{team-git-release-recovery-requested.payload.allowed_changed_paths}}"
+    )
     recovery_record = effects["team-record-release-recovery-promotion"]
     assert recovery_record["type"] == "effect:team:record-git-promotion"
     assert recovery_record["promotion_id"] == (

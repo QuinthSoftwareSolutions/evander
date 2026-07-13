@@ -18,6 +18,7 @@ from .models import (
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
+    WorkerTaskWorktreeRequest,
 )
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
@@ -80,6 +81,19 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             payload = await request.json()
             clone_request = WorkerRepoCloneRequest.model_validate(payload)
             record = daemon.clone_repo(request.path_params["session_id"], clone_request)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except subprocess.CalledProcessError as exc:
+            return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
+        return JSONResponse(record.model_dump(mode="json"))
+
+    async def prepare_task_worktree(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            worktree_request = WorkerTaskWorktreeRequest.model_validate(payload)
+            record = daemon.prepare_task_worktree(
+                request.path_params["session_id"], worktree_request
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except subprocess.CalledProcessError as exc:
@@ -244,6 +258,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/v1/telemetry", telemetry, methods=["GET"]),
             Route("/v1/sessions", prepare_session, methods=["POST"]),
             Route("/v1/sessions/{session_id}/repo", clone_session_repo, methods=["POST"]),
+            Route(
+                "/v1/sessions/{session_id}/worktrees",
+                prepare_task_worktree,
+                methods=["POST"],
+            ),
             Route(
                 "/v1/sessions/{session_id}/git/write-key",
                 provision_session_git_write_key,

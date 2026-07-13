@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 from .git_release_helpers import (
     _empty_git_command_result,
@@ -292,6 +292,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         summary: str | None = None,
+        verification_waivers: Sequence[Mapping[str, Any]] | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -307,6 +308,9 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
         normalized_release_branch = _optional_text(release_branch)
         normalized_canonical_branch = _optional_text(canonical_branch)
         normalized_summary = _optional_text(summary)
+        normalized_verification_waivers = [
+            dict(item) for item in (verification_waivers or [])
+        ]
         normalized_handled_ids = _unique_text_list(
             handled_inbox_item_ids or [],
             "handled_inbox_item_ids",
@@ -326,6 +330,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
             release_branch=normalized_release_branch,
             canonical_branch=normalized_canonical_branch,
             summary=normalized_summary,
+            verification_waivers=normalized_verification_waivers,
             handled_inbox_item_ids=normalized_handled_ids,
             correlation_id=context.correlation_id,
             causation_id=context.causation_id,
@@ -375,6 +380,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                     "release_branch": normalized_release_branch,
                     "canonical_branch": normalized_canonical_branch,
                     "summary": normalized_summary,
+                    "verification_waivers": normalized_verification_waivers,
                 },
                 result=intent_result,
                 projects_to_recalc=projects_to_recalc,

@@ -349,6 +349,7 @@ provider loader:
 | `team.operator.escalation_requested` | Team automation requested operator escalation |
 | `team.git.promotion_requested` | Team Git branch promotion requested |
 | `team.git.release_recovery_requested` | Team release recovery promotion requested |
+| `team.release.verification_requested` | A pinned Team release candidate is ready for disposable CI verification |
 
 For newly created Team deliverables, prefer the dedicated
 `trigger:team:deliverable-created` add-on trigger instead of matching raw internal events. Generated

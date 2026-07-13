@@ -37,9 +37,12 @@ from evander_team_addon.models import (
     AgentRuntime,
     AgentStatus,
     AgentVoiceProfile,
+    DeliverableReviewManifest,
+    DeliverableVerification,
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
+    ProjectReleasePolicy,
     ReleasePackage,
     TeamConversationMessage,
     TeamInboxItemState,
@@ -4293,9 +4296,22 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
     repo = TeamStateRepository(tmp_path / "runtime")
 
     def _attach_feature_branch(current):
-        current.deliverables[
-            "deliverable"
-        ].git_refs.feature_branch = "team/team/features/task-backend"
+        deliverable = current.deliverables["deliverable"]
+        deliverable.verification = DeliverableVerification(status="passed")
+        deliverable.git_refs.commit_sha = "reviewed-commit"
+        deliverable.git_refs.feature_branch = "team/team/features/task-backend"
+        deliverable.git_refs.feature_commit_sha = "reviewed-commit"
+        deliverable.review_manifest = DeliverableReviewManifest(
+            base_commit_sha="base-commit",
+            reviewed_commit_sha="reviewed-commit",
+            tree_hash="reviewed-tree",
+            commit_shas=["reviewed-commit"],
+            changed_paths=["src/backend.py"],
+        )
+        current.review_requests["review"].reviewed_commit_sha = "reviewed-commit"
+        current.projects["project"].release_policy = ProjectReleasePolicy(
+            allow_ungated=True
+        )
         return current
 
     repo.update(_attach_feature_branch)

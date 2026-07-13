@@ -804,7 +804,10 @@ promote.
 
 Persistent agents may include `git_refs` on deliverables when the project has
 Git configured and the runtime has created a Git work context for that task
-worktree. Git deliverables must include the context's `branch_context_id`; the
+worktree. Persistent sessions receive one deterministic branch and physical Git
+worktree per task under `/home/agent/worktrees/<repo>/...`; later wakes reuse the
+same task branch without sharing a mutable checkout with another task. Git
+deliverables must include the context's `branch_context_id`; the
 server derives the accepted `git_refs.agent_branch` from that context and
 rejects mismatched agent-supplied branches. These refs are not published
 automatically; a supervising agent, project lead, or manager requests
@@ -814,6 +817,21 @@ Deliverables may also include `verification` with `status` set to `passed`,
 `failed`, `partial`, `not_run`, or `unknown`, plus an optional summary and
 evidence refs. Use `not_run` when test tooling, services, or credentials were
 unavailable.
+
+Review acceptance is policy-enforced. When a review has a profile, every
+required criterion must be present and `passed`; optional criteria may be
+omitted. Rejected or blocked review findings are stored on the deliverable and
+copied to its superseding rework deliverable. An accepted review can resolve
+only findings owned by the same review profile (or, for legacy unprofiled
+reviews, the same reviewer role), and a deliverable cannot become accepted
+while any carried finding remains open.
+
+Release requests enforce the verification record instead of treating it as
+informational. `failed` verification cannot be waived. `partial`, `not_run`,
+`unknown`, or missing verification requires a reasoned waiver from the project
+lead, top-level team manager, or an authenticated operator; ordinary roles with
+`request_release` cannot grant waivers. Each waiver records the deliverable,
+status, reason, actor kind, actor id, and timestamp on the release package.
 
 ### Communication And Escalation Rules
 
@@ -964,6 +982,8 @@ wrong-dispatch, inactive, or mismatched branch contexts.
   `effect:team:record-git-promotion`.
 - `feature` — `team_update_feature_branch` can consolidate review branches into a
   task feature branch when the actor owns the task or supervises its owner.
+  Every source must match one accepted current deliverable, and the promotion
+  pins the exact commit accepted by that deliverable's review.
   Routes to `effect:team:consolidate-git-branches` then
   `effect:team:record-git-promotion`.
 - `release` and `canonical_push` — `team_request_release` creates a pending
@@ -981,16 +1001,43 @@ wrong-dispatch, inactive, or mismatched branch contexts.
   Pure artifact releases do not require project Git config and do not create
   release or canonical branches.
 
-Four add-on-owned effect providers complete these flows:
+New Git release packages use the current release policy; historical terminal
+records remain readable without being retroactively reopened, while legacy
+nonterminal packages are blocked with `legacy_unpinned_release` and must be
+recreated. Consolidation merges the pinned reviewed/feature commit rather than
+the current branch tip; it rejects a source only when that pinned commit is no
+longer contained by the source ref. The feature promotion records a reviewed manifest (base, tree, commits,
+and changed paths), and release consolidation rejects commits or paths outside
+the union of those manifests. Scope mismatches are hard blockers and cannot be
+waived.
+
+For Git releases, configure `Project.release_policy`. It selects the
+`container_worker_vm` verification backend, optional container image, ordered
+verification commands (`name`, `cwd`, `argv`, and timeout), and release review
+requirements (`reviewer_agent_id` plus `review_profile_id`). The consolidated
+release commit is pinned as the candidate, verification runs against that exact
+commit, and configured reviewers decide that same candidate. Canonical push is
+created only after verification, all release reviews, and scope validation pass.
+Set `allow_ungated: true` only for an intentionally ungated project; a missing
+policy blocks a new Git release rather than silently publishing it. Admin Web
+project create/edit forms expose the policy as JSON and release rows show the
+pinned candidate, verification state, release-review state, and approved SHA.
+
+Five add-on-owned effect providers complete these flows:
 `effect:team:publish-review-branch` (publish a source branch or commit from the
 project's bare repo into a durable `team/<team-id>/reviews/...` branch inside
 the project's `host_repo_path`),
 `effect:team:record-git-promotion` (mark a promotion succeeded/failed and attach
-branches to `git_refs`), `effect:team:mark-release-published` (publish or block a
-release package), and `effect:team:consolidate-git-branches` (deterministic merge
+branches to `git_refs`), `effect:team:verify-release-candidate` (create a
+disposable container-worker session, check out the pinned candidate, run the
+ordered commands, and destroy the session),
+`effect:team:mark-release-published` (publish or block a release package), and
+`effect:team:consolidate-git-branches` (deterministic merge
 of multiple source branches strictly inside the project's `host_repo_path`,
 aborting and failing on conflict — never auto-resolving). The core
-`effect:git:push-branch` effect is reused unchanged for canonical publication.
+`effect:git:push-branch` effect performs an expected-commit preflight for
+canonical publication and refuses to push if the local release ref moved away
+from the approved candidate.
 
 **Publication boundary.** Internal branches (agent, review, feature, and release)
 never leave the project's `host_repo_path`. The **only** branch pushed to the

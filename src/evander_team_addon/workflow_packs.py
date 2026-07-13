@@ -47,6 +47,8 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-git-promotion-release",
                 "team-consolidate-release-branches",
                 "team-record-release-promotion",
+                "team-release-verification-requested",
+                "team-verify-release-candidate",
                 "team-git-release-recovery-requested",
                 "team-promote-release-recovery-branch",
                 "team-record-release-recovery-promotion",
@@ -105,6 +107,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Team Git release recovery requested",
                 "type": "trigger:event",
                 "event_type": "team.git.release_recovery_requested",
+            },
+            {
+                "id": "team-release-verification-requested",
+                "display_name": "Team release verification requested",
+                "type": "trigger:event",
+                "event_type": "team.release.verification_requested",
             },
         ],
         "gates": [
@@ -393,6 +401,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
                 "bare_repo_path": "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}",
                 "bare_repo_name": "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}",
+                "expected_source_commits": (
+                    "${{team-git-promotion-requested.payload.expected_source_commits ?? null}}"
+                ),
+                "allowed_changed_paths": (
+                    "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
+                ),
             },
             {
                 "id": "team-record-feature-promotion",
@@ -413,6 +427,21 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                     "error_code": (
                         "${{team-consolidate-feature-branches.error_code ?? null}}"
                     ),
+                    "unexpected_commit_shas": (
+                        "${{team-consolidate-feature-branches.unexpected_commit_shas ?? null}}"
+                    ),
+                    "base_commit_sha": (
+                        "${{team-consolidate-feature-branches.base_commit_sha ?? null}}"
+                    ),
+                    "source_manifests": (
+                        "${{team-consolidate-feature-branches.source_manifests ?? null}}"
+                    ),
+                    "unexpected_paths": (
+                        "${{team-consolidate-feature-branches.unexpected_paths ?? null}}"
+                    ),
+                    "tree_hash": (
+                        "${{team-consolidate-feature-branches.tree_hash ?? null}}"
+                    ),
                 },
             },
             {
@@ -425,6 +454,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
                 "bare_repo_path": "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}",
                 "bare_repo_name": "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}",
+                "expected_source_commits": (
+                    "${{team-git-promotion-requested.payload.expected_source_commits ?? null}}"
+                ),
+                "allowed_changed_paths": (
+                    "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
+                ),
             },
             {
                 "id": "team-record-release-promotion",
@@ -445,12 +480,41 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                     "error_code": (
                         "${{team-consolidate-release-branches.error_code ?? null}}"
                     ),
+                    "unexpected_commit_shas": (
+                        "${{team-consolidate-release-branches.unexpected_commit_shas ?? null}}"
+                    ),
+                    "base_commit_sha": (
+                        "${{team-consolidate-release-branches.base_commit_sha ?? null}}"
+                    ),
+                    "source_manifests": (
+                        "${{team-consolidate-release-branches.source_manifests ?? null}}"
+                    ),
+                    "unexpected_paths": (
+                        "${{team-consolidate-release-branches.unexpected_paths ?? null}}"
+                    ),
+                    "tree_hash": (
+                        "${{team-consolidate-release-branches.tree_hash ?? null}}"
+                    ),
                 },
             },
             {
+                "id": "team-verify-release-candidate",
+                "display_name": "Verify pinned release candidate",
+                "type": "effect:team:verify-release-candidate",
+                "release_package_id": (
+                    "${{team-release-verification-requested.payload.release_package_id}}"
+                ),
+                "verification_run_id": (
+                    "${{team-release-verification-requested.payload.verification_run_id}}"
+                ),
+                "candidate_commit_sha": (
+                    "${{team-release-verification-requested.payload.candidate_commit_sha}}"
+                ),
+            },
+            {
                 "id": "team-promote-release-recovery-branch",
-                "display_name": "Promote resolved release recovery branch",
-                "type": "effect:git:promote-agent-branch",
+                "display_name": "Validate and consolidate release recovery branch",
+                "type": "effect:team:consolidate-git-branches",
                 "host_repo_path": (
                     "${{team-git-release-recovery-requested.payload.host_repo_path}}"
                 ),
@@ -460,16 +524,21 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "bare_repo_path": (
                     "${{team-git-release-recovery-requested.payload.bare_repo_path ?? null}}"
                 ),
-                "agent_branch": (
-                    "${{team-git-release-recovery-requested.payload.agent_branch}}"
+                "source_branches": (
+                    "${{team-git-release-recovery-requested.payload.source_branches}}"
                 ),
                 "target_branch": (
                     "${{team-git-release-recovery-requested.payload.target_branch}}"
                 ),
-                "expected_commit_sha": (
-                    "${{team-git-release-recovery-requested.payload.expected_commit_sha ?? null}}"
+                "base_branch": (
+                    "${{team-git-release-recovery-requested.payload.base_branch ?? null}}"
                 ),
-                "publish_target_to_bare": True,
+                "expected_source_commits": (
+                    "${{team-git-release-recovery-requested.payload.expected_source_commits}}"
+                ),
+                "allowed_changed_paths": (
+                    "${{team-git-release-recovery-requested.payload.allowed_changed_paths}}"
+                ),
             },
             {
                 "id": "team-record-release-recovery-promotion",
@@ -484,15 +553,29 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 ),
                 "error": "${{team-promote-release-recovery-branch.error ?? null}}",
                 "result_outputs": {
-                    "agent_branch": (
-                        "${{team-promote-release-recovery-branch.agent_branch ?? null}}"
+                    "merged_branches": (
+                        "${{team-promote-release-recovery-branch.merged_branches ?? null}}"
                     ),
                     "target_branch": (
                         "${{team-promote-release-recovery-branch.target_branch ?? null}}"
                     ),
-                    "message": "${{team-promote-release-recovery-branch.message ?? null}}",
-                    "published_target_to_bare": (
-                        "${{team-promote-release-recovery-branch.published_target_to_bare ?? false}}"
+                    "tree_hash": (
+                        "${{team-promote-release-recovery-branch.tree_hash ?? null}}"
+                    ),
+                    "base_commit_sha": (
+                        "${{team-promote-release-recovery-branch.base_commit_sha ?? null}}"
+                    ),
+                    "source_manifests": (
+                        "${{team-promote-release-recovery-branch.source_manifests ?? null}}"
+                    ),
+                    "error_code": (
+                        "${{team-promote-release-recovery-branch.error_code ?? null}}"
+                    ),
+                    "unexpected_commit_shas": (
+                        "${{team-promote-release-recovery-branch.unexpected_commit_shas ?? null}}"
+                    ),
+                    "unexpected_paths": (
+                        "${{team-promote-release-recovery-branch.unexpected_paths ?? null}}"
                     ),
                 },
             },
@@ -508,6 +591,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                     "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
                 ),
                 "local_branch": "${{team-git-promotion-requested.payload.source_branch}}",
+                "expected_commit_sha": (
+                    "${{team-git-promotion-requested.payload.expected_commit_sha ?? null}}"
+                ),
                 "origin_branch": "${{team-git-promotion-requested.payload.target_branch}}",
                 "canonical_origin_url": (
                     "${{team-git-promotion-requested.payload.canonical_origin_url ?? null}}"
@@ -590,6 +676,10 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             {"source_id": "team-consolidate-feature-branches", "target_id": "team-record-feature-promotion"},
             {"source_id": "team-git-promotion-release", "target_id": "team-consolidate-release-branches"},
             {"source_id": "team-consolidate-release-branches", "target_id": "team-record-release-promotion"},
+            {
+                "source_id": "team-release-verification-requested",
+                "target_id": "team-verify-release-candidate",
+            },
             {
                 "source_id": "team-git-release-recovery-requested",
                 "target_id": "team-promote-release-recovery-branch",

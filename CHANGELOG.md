@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-07-10 - Team Release Evidence And Scope Gates
+
+- Required every mandatory review-profile criterion to pass, carried rejected
+  findings across rework deliverables, and limited finding resolution to the
+  matching review profile or legacy reviewer role.
+- Required audited lead, top-level manager, or authenticated-operator waivers
+  for incomplete verification while making failed verification unwaivable.
+- Pinned reviewed and feature commits, recorded reviewed change manifests, and
+  hard-blocked moved source tips or release paths outside the reviewed scope.
+- Added candidate-commit verification and release-review gates so canonical
+  publication occurs only after the configured checks approve the same commit.
+- Prepared deterministic task-specific branches and Git worktrees for persistent
+  sessions, preventing unrelated task commits from leaking through one shared checkout.
+- Ran release checks in a disposable container-worker session, added exact-SHA
+  canonical push preflight, and failed closed for missing policies and legacy
+  nonterminal unpinned releases.
+- Exposed criteria, carried findings, waiver audit details, and scope diagnostics
+  in the Team API and Delivery UI.
+
 ## 2026-07-10 - Team Agent Mail Archive
 
 - Added a read-only Agent Mail view for browsing current and historical Team inbox

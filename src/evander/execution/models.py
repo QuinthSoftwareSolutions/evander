@@ -32,6 +32,7 @@ class ExecutionSpec(BaseModel):
     image: str | None = None
     repo_source: str | None = None
     clone_branch: str | None = None
+    working_directory: str | None = None
     resource_limits: dict[str, Any] | None = None
     persistence_mode: str | None = None
     workspace_mode: str | None = None
@@ -44,6 +45,7 @@ class ExecutionSpec(BaseModel):
         "image",
         "repo_source",
         "clone_branch",
+        "working_directory",
         "persistence_mode",
         "workspace_mode",
         mode="before",
@@ -72,6 +74,7 @@ class PreparedExecution(BaseModel):
     image: str | None = None
     repo_source: str | None = None
     clone_branch: str | None = None
+    working_directory: str | None = None
     resource_limits: dict[str, Any] | None = None
     persistence_mode: str | None = None
     workspace_mode: str | None = None
@@ -88,6 +91,7 @@ class ExecutionHandle(BaseModel):
     image: str | None = None
     repo_source: str | None = None
     clone_branch: str | None = None
+    working_directory: str | None = None
     resource_limits: dict[str, Any] | None = None
     persistence_mode: str | None = None
     workspace_mode: str | None = None

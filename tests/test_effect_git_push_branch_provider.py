@@ -145,6 +145,56 @@ def test_git_push_branch_provider_uses_failure_message_as_error(tmp_path: Path) 
     assert result["error"] == "Canonical remote rejected the push."
 
 
+def test_git_push_branch_provider_rejects_moving_source_ref_before_push(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repo)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    (repo / "file.txt").write_text("candidate\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "file.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "candidate"], check=True)
+    candidate = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repo / "file.txt").write_text("moved\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "commit", "-am", "moved"], check=True)
+
+    admin_service = _AdminServiceStub(result={"success": True})
+    provider = GitPushBranchEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(
+            id="effect-push-pinned",
+            display_name="Push pinned candidate",
+            type="effect:git:push-branch",
+            host_repo_path=str(repo),
+            local_branch="main",
+            expected_commit_sha=candidate,
+            origin_branch="release/main",
+        ),
+        runtime_context=_build_context(tmp_path, admin_service),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert result["reason"] == "source_commit_mismatch"
+    assert result["expected_commit_sha"] == candidate
+    assert admin_service.calls == []
+
+
 def test_git_push_branch_provider_pushes_from_bare_repo_without_touching_host_checkout(
     tmp_path: Path,
 ) -> None:

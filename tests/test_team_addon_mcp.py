@@ -40,10 +40,14 @@ from evander_team_addon.mcp import (
 )
 from evander_team_addon.models import (
     AgentRuntime,
+    DeliverableReviewManifest,
+    DeliverableVerification,
     EphemeralAgentPolicy,
     GovernanceAgendaItemState,
     ProjectGitConfig,
     ProjectGoal,
+    ProjectReleasePolicy,
+    ReviewRequest,
     TeamRecordState,
     TeamTaskState,
 )
@@ -265,15 +269,37 @@ def _seed_slice8_state(runtime_dir: Path) -> TeamStateRepository:
     )
 
     def _set_git_and_refs(state):
-        state.projects["project"].git = ProjectGitConfig(
+        project = state.projects["project"]
+        project.git = ProjectGitConfig(
             host_repo_path="/opt/repos/Truman",
             bare_repo_name="Truman.git",
             canonical_origin_url="https://example.invalid/Truman.git",
             provider="azure_devops",
         )
-        refs = state.deliverables["deliverable"].git_refs
+        project.release_policy = ProjectReleasePolicy(allow_ungated=True)
+        deliverable = state.deliverables["deliverable"]
+        deliverable.verification = DeliverableVerification(status="passed")
+        refs = deliverable.git_refs
         refs.agent_branch = "agents/session-backend/work"
+        refs.review_branch = "team/team/reviews/deliverable"
+        refs.commit_sha = "reviewed-commit"
         refs.feature_branch = "team/team/features/task-backend"
+        refs.feature_commit_sha = "reviewed-commit"
+        deliverable.review_manifest = DeliverableReviewManifest(
+            base_commit_sha="base-commit",
+            reviewed_commit_sha="reviewed-commit",
+            tree_hash="reviewed-tree",
+            commit_shas=["reviewed-commit"],
+            changed_paths=["src/reviewed.py"],
+        )
+        state.review_requests["review-deliverable"] = ReviewRequest(
+            id="review-deliverable",
+            deliverable_id="deliverable",
+            reviewer_agent_id="lead",
+            state=TeamRecordState.ACCEPTED,
+            reviewed_commit_sha="reviewed-commit",
+        )
+        deliverable.review_request_ids = ["review-deliverable"]
         return state
 
     repo.update(_set_git_and_refs)

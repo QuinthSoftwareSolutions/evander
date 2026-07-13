@@ -31,6 +31,7 @@ from ..models import (
     PersistentAgent,
     Project,
     ProjectGitConfig,
+    ProjectReleasePolicy,
     ProjectGoal,
     ProjectStatus,
     ReviewCriterionResult,
@@ -108,9 +109,12 @@ from .domain.governance import (
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import _build_release_package
 from .domain.review import (
+    _apply_finding_resolutions,
     _cascade_review_decision,
     _is_review_decision_state,
+    _record_open_review_findings,
     _reopen_accepted_deliverable_for_pending_review,
+    _review_decision_policy_error,
     _review_profile_for_request,
 )
 from .domain.work_due import _mark_agent_work_due
@@ -818,6 +822,7 @@ class TeamAdminService:
         lead_display_name: str | None = None,
         goals: list[ProjectGoal | Mapping[str, Any]] | None = None,
         git: ProjectGitConfig | None = None,
+        release_policy: ProjectReleasePolicy | None = None,
         lead_role_id: str | None = None,
         lead_role_name: str | None = None,
         expected_revision: int | None = None,
@@ -926,6 +931,7 @@ class TeamAdminService:
                 lead_agent_id=lead.id,
                 goals=project_goals,
                 git=git,
+                release_policy=release_policy,
                 created_at=now,
                 updated_at=now,
             )
@@ -942,6 +948,8 @@ class TeamAdminService:
         name: str | None = None,
         git: ProjectGitConfig | None = None,
         set_git: bool = False,
+        release_policy: ProjectReleasePolicy | None = None,
+        set_release_policy: bool = False,
         goals: list[ProjectGoal] | None = None,
         status: ProjectStatus | None = None,
         expected_revision: int | None = None,
@@ -952,6 +960,8 @@ class TeamAdminService:
                 project.name = name
             if set_git:
                 project.git = git
+            if set_release_policy:
+                project.release_policy = release_policy
             if goals is not None:
                 project.goals = goals
             if status is not None:
@@ -2080,6 +2090,15 @@ class TeamAdminService:
                 artifact_refs=artifact_refs or [],
                 state=state,
                 supersedes_deliverable_id=normalized_supersedes_deliverable_id,
+                carried_findings=(
+                    [
+                        finding.model_copy(deep=True)
+                        for finding in superseded_deliverable.carried_findings
+                        if finding.state == "open"
+                    ]
+                    if superseded_deliverable is not None
+                    else []
+                ),
             )
             state_model.deliverables[deliverable.id] = deliverable
             if superseded_deliverable is not None:
@@ -2565,6 +2584,11 @@ class TeamAdminService:
                 findings=findings or [],
                 review_profile_id=effective_review_profile_id,
                 instructions=instructions,
+                reviewed_commit_sha=(
+                    deliverable.git_refs.reviewed_commit_sha
+                    or deliverable.git_refs.submitted_commit_sha
+                    or deliverable.git_refs.commit_sha
+                ),
                 created_at=now,
                 decision_at=decision_at,
             )
@@ -2596,6 +2620,7 @@ class TeamAdminService:
         state: TeamRecordState,
         findings: list[str] | None = None,
         criteria: list[ReviewCriterionResult] | None = None,
+        finding_resolutions: list[Mapping[str, Any]] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_id = _required_text(review_request_id, "review_request_id")
@@ -2609,11 +2634,39 @@ class TeamAdminService:
             if criteria is not None
             else None
         )
+        normalized_finding_resolutions = [
+            dict(item) for item in (finding_resolutions or [])
+        ]
 
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(state_model.review_requests, normalized_id, "review request")
+            effective_criteria = (
+                criterion_results if criterion_results is not None else list(review.criteria)
+            )
+            policy_error = _review_decision_policy_error(
+                state_model,
+                review=review,
+                decision_state=state,
+                criterion_results=effective_criteria,
+                finding_resolutions=normalized_finding_resolutions,
+            )
+            if policy_error is not None:
+                raise ValueError(policy_error)
             if criterion_results is not None:
                 review.criteria = criterion_results
+            _apply_finding_resolutions(
+                state_model,
+                review=review,
+                decision_state=state,
+                finding_resolutions=normalized_finding_resolutions,
+            )
+            _record_open_review_findings(
+                state_model,
+                review=review,
+                decision_state=state,
+                findings=findings_list,
+                criterion_results=effective_criteria,
+            )
             projects_to_recalc: set[str] = set()
             _cascade_review_decision(
                 state_model,
@@ -2641,6 +2694,8 @@ class TeamAdminService:
         release_id: str | None = None,
         release_branch: str | None = None,
         canonical_branch: str | None = None,
+        verification_waivers: list[Mapping[str, Any]] | None = None,
+        operator_actor_id: str = "operator",
         expected_revision: int | None = None,
     ) -> TeamState:
         state, _result = self.create_release_package_with_result(
@@ -2649,6 +2704,8 @@ class TeamAdminService:
             release_id=release_id,
             release_branch=release_branch,
             canonical_branch=canonical_branch,
+            verification_waivers=verification_waivers,
+            operator_actor_id=operator_actor_id,
             expected_revision=expected_revision,
         )
         return state
@@ -2661,6 +2718,8 @@ class TeamAdminService:
         release_id: str | None = None,
         release_branch: str | None = None,
         canonical_branch: str | None = None,
+        verification_waivers: list[Mapping[str, Any]] | None = None,
+        operator_actor_id: str = "operator",
         expected_revision: int | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_project_id = _required_text(project_id, "project_id")
@@ -2670,6 +2729,11 @@ class TeamAdminService:
             "deliverable_ids": list(deliverable_ids),
             "release_branch": _optional_text(release_branch),
             "canonical_branch": _optional_text(canonical_branch),
+            "verification_waivers": [
+                dict(item) for item in (verification_waivers or [])
+            ],
+            "waiver_actor_kind": "operator",
+            "waiver_actor_id": _required_text(operator_actor_id, "operator_actor_id"),
         }
         result: dict[str, Any] = {
             "success": False,

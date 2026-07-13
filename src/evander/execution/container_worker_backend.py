@@ -21,6 +21,8 @@ from evander.worker.models import (
     WorkerResourceLimits,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
+    WorkerTaskWorktreeRecord,
+    WorkerTaskWorktreeRequest,
     now_utc,
 )
 from evander.worker.security import sanitize_metadata, sanitize_text
@@ -101,6 +103,7 @@ class ContainerWorkerVmExecutionBackend:
             image=spec.image or self.config.container_worker_default_image,
             repo_source=spec.repo_source,
             clone_branch=spec.clone_branch,
+            working_directory=spec.working_directory,
             resource_limits=spec.resource_limits,
             persistence_mode=persistence_mode,
             workspace_mode=workspace_mode,
@@ -141,6 +144,7 @@ class ContainerWorkerVmExecutionBackend:
             image=request.image,
             repo_source=prepared.repo_source,
             clone_branch=prepared.clone_branch,
+            working_directory=prepared.working_directory,
             resource_limits=prepared.resource_limits,
             persistence_mode=prepared.persistence_mode,
             workspace_mode=prepared.workspace_mode,
@@ -270,6 +274,25 @@ class ContainerWorkerVmExecutionBackend:
             ),
         )
 
+    def prepare_task_worktree(
+        self,
+        *,
+        session_id: str,
+        repo_name: str,
+        worktree_name: str,
+        branch: str,
+        base_ref: str,
+    ) -> WorkerTaskWorktreeRecord:
+        return self.client.prepare_task_worktree(
+            session_id,
+            WorkerTaskWorktreeRequest(
+                repo_name=repo_name,
+                worktree_name=worktree_name,
+                branch=branch,
+                base_ref=base_ref,
+            ),
+        )
+
     def provision_git_write_key(
         self,
         *,
@@ -383,6 +406,8 @@ class ContainerWorkerVmExecutionBackend:
             payload["repo_source"] = prepared.repo_source
         if prepared.clone_branch:
             payload["clone_branch"] = prepared.clone_branch
+        if prepared.working_directory:
+            payload["working_directory"] = prepared.working_directory
         if prepared.resource_limits:
             payload["resource_limits"] = WorkerResourceLimits.model_validate(
                 prepared.resource_limits

@@ -189,6 +189,7 @@ def test_prepare_builds_metadata_without_http_call(tmp_path: Path) -> None:
             image="custom-runner:latest",
             repo_source="git@example.test/repo.git",
             clone_branch="feature/test",
+            working_directory="/home/agent/repos/repo",
             resource_limits={"cpus": 1.5},
             persistence_mode="session",
             workspace_mode="session",
@@ -202,6 +203,7 @@ def test_prepare_builds_metadata_without_http_call(tmp_path: Path) -> None:
     assert prepared.image == "custom-runner:latest"
     assert prepared.repo_source == "git@example.test/repo.git"
     assert prepared.clone_branch == "feature/test"
+    assert prepared.working_directory == "/home/agent/repos/repo"
     assert prepared.resource_limits == {"cpus": 1.5}
     assert prepared.persistence_mode == "session"
     assert prepared.metadata["directory_path"] == "root/team"
@@ -221,6 +223,7 @@ def test_start_sends_worker_job_request_and_records_mapping(tmp_path: Path) -> N
             image="custom-runner:latest",
             repo_source="git@example.test/repo.git",
             clone_branch="feature/test",
+            working_directory="/home/agent/repos/repo",
             resource_limits={"memory": "512m"},
             metadata={"purpose": "test"},
         )
@@ -235,6 +238,7 @@ def test_start_sends_worker_job_request_and_records_mapping(tmp_path: Path) -> N
     assert request.command == ["bash", "-lc", "echo hello"]
     assert request.repo_source == "git@example.test/repo.git"
     assert request.clone_branch == "feature/test"
+    assert request.working_directory == "/home/agent/repos/repo"
     assert request.resource_limits.memory == "512m"
     assert request.metadata["purpose"] == "test"
     assert handle.execution_id == "exec-1"
