@@ -54,6 +54,8 @@ LEGACY_ADO_WORKER_BOOTSTRAP_FIELDS = frozenset(
         "ado_project_or_solution",
         "ado_bootstrap_mssql",
         "ado_mssql_sa_password_env",
+        "create_prs_automatically",
+        "create_prs_as_draft",
     }
 )
 
@@ -101,6 +103,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "container_worker_git_allowed_from",
             "managed_git_commit_name",
             "managed_git_commit_email",
+            "managed_git_operation_timeout_seconds",
             "managed_git_worktree_stale_seconds",
             "container_worker_guest_openai_base_url",
             "container_worker_guest_anthropic_base_url",
@@ -677,9 +680,9 @@ class DirectoryConfigStore:
                 f"directory config payload for domain {domain!r} must be a JSON object"
             )
         if domain == "ado_worker":
-            # These retired issue-bootstrap settings may remain in pre-directory-config
-            # ado-worker files. They no longer influence worker behavior, but retaining
-            # them must not prevent the supported worker settings from loading.
+            # These retired settings may remain in pre-directory-config ado-worker
+            # files. They no longer influence worker behavior, but retaining them must
+            # not prevent the supported worker settings from loading.
             payload = {
                 key: value
                 for key, value in payload.items()
