@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-14 - Scoped Release And Relay Integrity Fixes
+
+- Failed closed when directory-scoped managed-Git credential configuration cannot be resolved,
+  revalidated reviewer/profile scope on release-gate retry, and reset and cleaned replayed release
+  verifier checkouts before executing frozen commands.
+- Preserved exact top-level local OpenAI tool calls ahead of namespace inference and classified SSH
+  and container execution timeouts as timed-out release verification runs.
+
 ## 2026-07-13 - Managed PR And Immutable Recovery Hardening
 
 - Kept consultation snapshot fetches inside the scoped read-credential lifecycle and rejected

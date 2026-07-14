@@ -6462,10 +6462,7 @@ class ManagedGitAdminService:
         resolver = getattr(self.runtime, "provider_config", None)
         resolve = getattr(resolver, "resolve_for_directory", None)
         if callable(resolve):
-            try:
-                resolved_config = resolve(str(record["directory_path"]))
-            except Exception:
-                resolved_config = self.config
+            resolved_config = resolve(str(record["directory_path"]))
         return resolved_config
 
     def _provider_credentials(

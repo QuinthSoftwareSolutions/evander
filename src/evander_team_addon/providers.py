@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import shlex
+import subprocess
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -3155,26 +3156,39 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
                     or "failed to clone release candidate"
                 )
             target_dir = _required_text(clone_result.get("target_dir"), "target_dir")
-            pin = AgentExecEffectProvider()
-            pin.initialize(
-                AgentExecEffectDefinition(
-                    id=f"team-pin-release-candidate-{run_id}",
-                    display_name="Pin release candidate checkout",
-                    type="effect:agent:exec",
-                    session_id=run.session_id,
-                    command=[
-                        "git",
-                        "checkout",
-                        "--detach",
-                        candidate_sha,
-                    ],
-                    working_directory=target_dir,
-                    timeout_seconds=120,
-                    check=True,
+            checkout_commands = (
+                (
+                    "pin",
+                    "Pin release candidate checkout",
+                    ["git", "checkout", "--detach", "--force", candidate_sha],
                 ),
-                self.runtime_context,
+                (
+                    "reset",
+                    "Reset release candidate checkout",
+                    ["git", "reset", "--hard", candidate_sha],
+                ),
+                (
+                    "clean",
+                    "Clean release candidate checkout",
+                    ["git", "clean", "-ffdx"],
+                ),
             )
-            pin.execute()
+            for operation, display_name, checkout_command in checkout_commands:
+                checkout = AgentExecEffectProvider()
+                checkout.initialize(
+                    AgentExecEffectDefinition(
+                        id=f"team-{operation}-release-candidate-{run_id}",
+                        display_name=display_name,
+                        type="effect:agent:exec",
+                        session_id=run.session_id,
+                        command=checkout_command,
+                        working_directory=target_dir,
+                        timeout_seconds=120,
+                        check=True,
+                    ),
+                    self.runtime_context,
+                )
+                checkout.execute()
 
             for command in verification_commands:
                 started = time.monotonic()
@@ -3195,9 +3209,30 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
                     ),
                     self.runtime_context,
                 )
-                command_output = executor.execute()
+                try:
+                    command_output = executor.execute()
+                except (TimeoutError, subprocess.TimeoutExpired) as exc:
+                    duration = time.monotonic() - started
+                    error = str(exc) or f"release verification command {command.name!r} timed out"
+                    command_results.append(
+                        {
+                            "name": command.name,
+                            "state": "timed_out",
+                            "duration_seconds": duration,
+                            "log_excerpt": error[-8000:],
+                        }
+                    )
+                    terminal_state = "timed_out"
+                    failure_kind = "timeout"
+                    terminal_error = error
+                    break
                 duration = time.monotonic() - started
                 success = bool(command_output.get("success"))
+                command_status = str(command_output.get("status") or "").strip().casefold()
+                command_timed_out = not success and (
+                    command_output.get("failure_kind") == "timeout"
+                    or command_status in {"unknown", "preparing", "starting", "running"}
+                )
                 excerpt = "\n".join(
                     part
                     for part in (
@@ -3209,7 +3244,9 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
                 command_results.append(
                     {
                         "name": command.name,
-                        "state": "passed" if success else "failed",
+                        "state": (
+                            "passed" if success else "timed_out" if command_timed_out else "failed"
+                        ),
                         "job_id": _optional_text(command_output.get("execution_id")),
                         "exit_code": command_output.get("exit_code"),
                         "duration_seconds": duration,
@@ -3217,17 +3254,20 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
                     }
                 )
                 if not success:
-                    terminal_state = "failed"
-                    failure_kind = (
-                        "candidate"
-                        if command_output.get("failure_kind") == "command"
-                        else "infrastructure"
-                    )
-                    terminal_error = (
-                        f"release verification command {command.name!r} failed"
-                    )
+                    if command_timed_out:
+                        terminal_state = "timed_out"
+                        failure_kind = "timeout"
+                        terminal_error = f"release verification command {command.name!r} timed out"
+                    else:
+                        terminal_state = "failed"
+                        failure_kind = (
+                            "candidate"
+                            if command_output.get("failure_kind") == "command"
+                            else "infrastructure"
+                        )
+                        terminal_error = f"release verification command {command.name!r} failed"
                     break
-        except TimeoutError as exc:
+        except (TimeoutError, subprocess.TimeoutExpired) as exc:
             terminal_state = "timed_out"
             failure_kind = "timeout"
             terminal_error = str(exc) or "release verification timed out"

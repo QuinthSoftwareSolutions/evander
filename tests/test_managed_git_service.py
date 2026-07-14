@@ -175,6 +175,32 @@ def test_git_environment_drops_inherited_askpass_credentials(
     assert "EVANDER_GIT_PASSWORD" not in worktree_env
 
 
+def test_git_environment_fails_closed_when_scoped_config_resolution_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_config = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime",
+        github_token_env="ROOT_GITHUB_TOKEN",
+    )
+
+    def fail_resolution(directory_path: str) -> object:
+        raise ValueError(f"malformed directory config for {directory_path}")
+
+    runtime = SimpleNamespace(
+        provider_config=SimpleNamespace(resolve_for_directory=fail_resolution)
+    )
+    service = ManagedGitAdminService(root_config, runtime, tmp_path)
+    monkeypatch.setenv("ROOT_GITHUB_TOKEN", "root-secret")
+
+    with pytest.raises(ValueError, match="malformed directory config for root/team-a"):
+        service._git_environment(
+            {
+                "provider": "github",
+                "directory_path": "root/team-a",
+            }
+        )
+
+
 def test_git_subprocess_timeout_is_bounded_and_path_free(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

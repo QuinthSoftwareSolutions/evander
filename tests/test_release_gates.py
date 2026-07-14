@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from evander_team_addon.models import (
     GitPromotionRecord,
     PersistentAgent,
@@ -282,3 +284,66 @@ def test_retry_keeps_release_blocked_until_every_blocked_review_is_replaced() ->
     assert release.state == TeamRecordState.PENDING
     assert release.gate_failure is None
     assert second_result["retried_gate_id"] == "review-b"
+
+
+@pytest.mark.parametrize(
+    ("scope_change", "error"),
+    [
+        ("reviewer_team", "release reviewer reviewer is missing or outside team team"),
+        ("profile_project", "release review profile profile does not apply to project project"),
+    ],
+)
+def test_review_retry_revalidates_reviewer_and_profile_scope(
+    scope_change: str,
+    error: str,
+) -> None:
+    requirement = ReleaseReviewRequirement(
+        reviewer_agent_id="reviewer",
+        review_profile_id="profile",
+    )
+    release, _promotion = _release_and_promotion(review_requirements=[requirement])
+    release.state = TeamRecordState.BLOCKED
+    release.review_request_ids = ["review"]
+    state = TeamState.empty()
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(review_requirements=[requirement])
+    )
+    state.agents["reviewer"] = PersistentAgent(
+        id="reviewer",
+        team_id="team",
+        role_id="reviewer-role",
+        session_id="session-reviewer",
+    )
+    state.review_profiles["profile"] = ReviewProfile(
+        id="profile",
+        team_id="team",
+        project_id="project",
+        name="Release review",
+    )
+    state.review_requests["review"] = ReviewRequest(
+        id="review",
+        release_package_id=release.id,
+        candidate_commit_sha="candidate-sha",
+        reviewer_agent_id="reviewer",
+        review_profile_id="profile",
+        reviewed_commit_sha="candidate-sha",
+        state=TeamRecordState.BLOCKED,
+    )
+    if scope_change == "reviewer_team":
+        state.agents["reviewer"].team_id = "other-team"
+    else:
+        state.review_profiles["profile"].project_id = "other-project"
+
+    with pytest.raises(ValueError, match=error):
+        retry_release_gate(
+            state,
+            release=release,
+            gate_kind="review",
+            gate_id="review",
+            reason="Retry after infrastructure recovery.",
+            requested_by="operator",
+            result={},
+        )
+
+    assert release.review_request_ids == ["review"]
+    assert state.review_requests["review"].superseded_by_review_request_id is None

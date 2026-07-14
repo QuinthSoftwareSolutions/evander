@@ -143,6 +143,7 @@ class OpenAICompatibleUpstream:
 class LocalOpenAIToolCompatibility:
     request_body: bytes
     function_namespaces: dict[str, tuple[str, str]]
+    top_level_function_names: frozenset[str]
 
 
 class OpenAIRelay:
@@ -372,6 +373,7 @@ class OpenAIRelay:
             local_openai_tool_compatibility = LocalOpenAIToolCompatibility(
                 request_body=request_body,
                 function_namespaces={},
+                top_level_function_names=frozenset(),
             )
             if request_context.config.model_provider_mode == "local_openai":
                 local_openai_tool_compatibility = (
@@ -396,6 +398,9 @@ class OpenAIRelay:
                     operator_steering_note=steering_injection.note,
                     function_namespaces=(
                         local_openai_tool_compatibility.function_namespaces
+                    ),
+                    top_level_function_names=(
+                        local_openai_tool_compatibility.top_level_function_names
                     ),
                 )
 
@@ -443,6 +448,9 @@ class OpenAIRelay:
                     upstream_response.content,
                     function_namespaces=(
                         local_openai_tool_compatibility.function_namespaces
+                    ),
+                    top_level_function_names=(
+                        local_openai_tool_compatibility.top_level_function_names
                     ),
                 )
                 return Response(
@@ -694,6 +702,7 @@ class OpenAIRelay:
         provider_name: str = "openai",
         operator_steering_note: OperatorSteeringNote | None = None,
         function_namespaces: dict[str, tuple[str, str]] | None = None,
+        top_level_function_names: frozenset[str] = frozenset(),
     ) -> StreamingResponse:
         self.stream_started_count += 1
         stream_id = self.stream_started_count
@@ -763,6 +772,7 @@ class OpenAIRelay:
                                 buffer=rewrite_buffer,
                                 chunk=chunk,
                                 function_namespaces=function_namespaces or {},
+                                top_level_function_names=top_level_function_names,
                             )
                         )
                         if rewritten:
@@ -771,6 +781,7 @@ class OpenAIRelay:
                         yield self._rewrite_local_openai_function_call_sse_line(
                             rewrite_buffer,
                             function_namespaces=function_namespaces or {},
+                            top_level_function_names=top_level_function_names,
                         )
                 except (httpx.ReadError, httpx.RemoteProtocolError) as exc:
                     # Some upstream streaming responses terminate with a transport-level
@@ -780,6 +791,7 @@ class OpenAIRelay:
                         yield self._rewrite_local_openai_function_call_sse_line(
                             rewrite_buffer,
                             function_namespaces=function_namespaces or {},
+                            top_level_function_names=top_level_function_names,
                         )
                         rewrite_buffer = b""
                     self.stream_transport_terminated_count += 1
@@ -843,6 +855,7 @@ class OpenAIRelay:
         unchanged = LocalOpenAIToolCompatibility(
             request_body=request_body,
             function_namespaces={},
+            top_level_function_names=frozenset(),
         )
         if method != "POST" or upstream_path != "responses":
             return unchanged
@@ -855,6 +868,13 @@ class OpenAIRelay:
 
         rewritten_tools: list[object] = []
         function_namespaces: dict[str, tuple[str, str]] = {}
+        top_level_function_names = frozenset(
+            str(tool.get("name") or "").strip()
+            for tool in payload["tools"]
+            if isinstance(tool, dict)
+            and tool.get("type") == "function"
+            and str(tool.get("name") or "").strip()
+        )
         changed = False
         for tool in payload["tools"]:
             if not isinstance(tool, dict) or tool.get("type") != "namespace":
@@ -895,6 +915,7 @@ class OpenAIRelay:
         return LocalOpenAIToolCompatibility(
             request_body=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
             function_namespaces=function_namespaces,
+            top_level_function_names=top_level_function_names,
         )
 
     @staticmethod
@@ -907,6 +928,7 @@ class OpenAIRelay:
         response_body: bytes,
         *,
         function_namespaces: dict[str, tuple[str, str]],
+        top_level_function_names: frozenset[str] = frozenset(),
     ) -> bytes:
         if not function_namespaces:
             return response_body
@@ -917,6 +939,7 @@ class OpenAIRelay:
         if not OpenAIRelay._rewrite_local_openai_function_calls_payload(
             payload,
             function_namespaces=function_namespaces,
+            top_level_function_names=top_level_function_names,
         ):
             return response_body
         return json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -926,6 +949,7 @@ class OpenAIRelay:
         payload: object,
         *,
         function_namespaces: dict[str, tuple[str, str]],
+        top_level_function_names: frozenset[str] = frozenset(),
     ) -> bool:
         changed = False
         if isinstance(payload, list):
@@ -934,6 +958,7 @@ class OpenAIRelay:
                     OpenAIRelay._rewrite_local_openai_function_calls_payload(
                         item,
                         function_namespaces=function_namespaces,
+                        top_level_function_names=top_level_function_names,
                     )
                     or changed
                 )
@@ -945,6 +970,7 @@ class OpenAIRelay:
             resolved = OpenAIRelay._resolve_local_openai_function_namespace(
                 function_name,
                 function_namespaces=function_namespaces,
+                top_level_function_names=top_level_function_names,
             )
             if resolved is not None:
                 namespace, inner_name = resolved
@@ -956,6 +982,7 @@ class OpenAIRelay:
                 OpenAIRelay._rewrite_local_openai_function_calls_payload(
                     value,
                     function_namespaces=function_namespaces,
+                    top_level_function_names=top_level_function_names,
                 )
                 or changed
             )
@@ -966,7 +993,10 @@ class OpenAIRelay:
         function_name: str,
         *,
         function_namespaces: dict[str, tuple[str, str]],
+        top_level_function_names: frozenset[str] = frozenset(),
     ) -> tuple[str, str] | None:
+        if function_name in top_level_function_names:
+            return None
         candidates = [function_name]
         separator_normalized = function_name
         for separator in (":", ".", "/"):
@@ -1001,6 +1031,7 @@ class OpenAIRelay:
         buffer: bytes,
         chunk: bytes,
         function_namespaces: dict[str, tuple[str, str]],
+        top_level_function_names: frozenset[str] = frozenset(),
     ) -> tuple[bytes, bytes]:
         if not function_namespaces:
             return buffer + chunk, b""
@@ -1014,6 +1045,7 @@ class OpenAIRelay:
             OpenAIRelay._rewrite_local_openai_function_call_sse_line(
                 line,
                 function_namespaces=function_namespaces,
+                top_level_function_names=top_level_function_names,
             )
             for line in complete_lines
         )
@@ -1024,6 +1056,7 @@ class OpenAIRelay:
         line: bytes,
         *,
         function_namespaces: dict[str, tuple[str, str]],
+        top_level_function_names: frozenset[str] = frozenset(),
     ) -> bytes:
         if not function_namespaces or not line.startswith(b"data:"):
             return line
@@ -1040,6 +1073,7 @@ class OpenAIRelay:
         if not OpenAIRelay._rewrite_local_openai_function_calls_payload(
             payload,
             function_namespaces=function_namespaces,
+            top_level_function_names=top_level_function_names,
         ):
             return line
         rewritten = json.dumps(payload, separators=(",", ":")).encode("utf-8")

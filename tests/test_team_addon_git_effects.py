@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import subprocess
 from datetime import timedelta
 from pathlib import Path
+
+import pytest
 
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_create import AgentCreateEffectProvider
@@ -522,10 +525,70 @@ def test_release_verifier_executes_commands_from_frozen_manifest(
 
     assert result["success"] is True
     assert create_directories == ["root/team-a"]
+    assert executed_commands[:3] == [
+        ["git", "checkout", "--detach", "--force", "candidate-sha"],
+        ["git", "reset", "--hard", "candidate-sha"],
+        ["git", "clean", "-ffdx"],
+    ]
     assert ["python", "-m", "frozen_check"] in executed_commands
     assert ["python", "-m", "live_policy_check"] not in executed_commands
     assert recorded["verification_state"] == "passed"
     assert recorded["command_results"][0]["name"] == "frozen-check"
+
+
+@pytest.mark.parametrize("timeout_mode", ["ssh_exception", "container_nonterminal"])
+def test_release_verifier_classifies_agent_command_timeouts(
+    tmp_path: Path,
+    monkeypatch,
+    timeout_mode: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    executed_commands, _create_directories = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    recorded: dict[str, object] = {}
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        executed_commands.append(command)
+        if command == ["python", "-m", "frozen_check"]:
+            if timeout_mode == "ssh_exception":
+                raise subprocess.TimeoutExpired(command, timeout=60)
+            return {
+                "success": False,
+                "status": "running",
+                "execution_id": "execution-running",
+                "failure_kind": "infrastructure",
+                "stderr": "container command still running",
+            }
+        return {
+            "success": True,
+            "execution_id": f"execution-{len(executed_commands)}",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    def _record_result(self, **kwargs):
+        del self
+        recorded.update(kwargs)
+        return repo.read(), {"success": True}
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_result",
+        _record_result,
+    )
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert recorded["verification_state"] == "timed_out"
+    assert recorded["failure_kind"] == "timeout"
+    assert recorded["command_results"][0]["state"] == "timed_out"
 
 
 def test_release_verifier_treats_reported_cleanup_failure_as_infrastructure_failure(

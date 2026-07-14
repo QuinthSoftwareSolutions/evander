@@ -27,6 +27,23 @@ from .work_due import _mark_agent_work_due
 RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE = "team.release.verification_requested"
 
 
+def _release_review_scope_error(
+    *,
+    project: Any,
+    reviewer: Any,
+    profile: Any,
+    reviewer_agent_id: str,
+    review_profile_id: str,
+) -> str | None:
+    if reviewer is None or reviewer.team_id != project.team_id:
+        return f"release reviewer {reviewer_agent_id} is missing or outside team {project.team_id}"
+    if profile is None or profile.team_id != project.team_id or profile.archived:
+        return f"release review profile {review_profile_id} is unavailable"
+    if profile.project_id not in {None, project.id}:
+        return f"release review profile {profile.id} does not apply to project {project.id}"
+    return None
+
+
 def begin_release_gates(
     state: TeamState,
     *,
@@ -280,37 +297,19 @@ def create_release_reviews_or_approve(
             continue
         reviewer = state.agents.get(requirement.reviewer_agent_id)
         profile = state.review_profiles.get(requirement.review_profile_id)
-        if reviewer is None or reviewer.team_id != project.team_id:
+        scope_error = _release_review_scope_error(
+            project=project,
+            reviewer=reviewer,
+            profile=profile,
+            reviewer_agent_id=requirement.reviewer_agent_id,
+            review_profile_id=requirement.review_profile_id,
+        )
+        if scope_error is not None:
             _reject_release(
                 release,
                 stage="configuration",
                 kind="configuration",
-                error=(
-                    f"release reviewer {requirement.reviewer_agent_id} is missing or outside "
-                    f"team {project.team_id}"
-                ),
-                result=result,
-            )
-            return
-        if profile is None or profile.team_id != project.team_id or profile.archived:
-            _reject_release(
-                release,
-                stage="configuration",
-                kind="configuration",
-                error=(
-                    f"release review profile {requirement.review_profile_id} is unavailable"
-                ),
-                result=result,
-            )
-            return
-        if profile.project_id not in {None, project.id}:
-            _reject_release(
-                release,
-                stage="configuration",
-                kind="configuration",
-                error=(
-                    f"release review profile {profile.id} does not apply to project {project.id}"
-                ),
+                error=scope_error,
                 result=result,
             )
             return
@@ -510,8 +509,17 @@ def retry_release_gate(
         else None
     )
     reviewer = state.agents.get(current.reviewer_agent_id)
-    if project is None or profile is None or reviewer is None or profile.archived:
+    if project is None:
         raise ValueError("release reviewer or review profile is unavailable")
+    scope_error = _release_review_scope_error(
+        project=project,
+        reviewer=reviewer,
+        profile=profile,
+        reviewer_agent_id=current.reviewer_agent_id,
+        review_profile_id=current.review_profile_id or "",
+    )
+    if scope_error is not None:
+        raise ValueError(scope_error)
     review = ReviewRequest(
         id=f"release-review-{release.id}-{uuid4().hex}",
         release_package_id=release.id,
