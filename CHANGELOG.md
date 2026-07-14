@@ -10,6 +10,10 @@
   `destination_branch` output contract, and based verification retries on frozen release commands.
 - Validated default-branch overrides before persisting refreshed repository metadata so failed
   registrations cannot poison later managed-Git refreshes.
+- Froze release-review criteria when each gate is issued and routed consultation setup failures
+  through snapshot cleanup so failed requests cannot bypass gates or retain pins indefinitely.
+- Rejected unsupported PR providers and missing tracking sessions before pushing branches or
+  creating provider pull requests.
 
 ## 2026-07-13 - Documentation Accuracy And Drift Checks
 

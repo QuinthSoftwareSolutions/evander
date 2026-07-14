@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 24
+SQLITE_SCHEMA_VERSION = 25
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -979,6 +979,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_review_requests",
                     column_name="candidate_commit_sha",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_requests",
+                    column_name="criteria_snapshot_json",
                     definition="TEXT",
                 )
                 for column_name in (
@@ -2230,6 +2236,11 @@ class TeamStateSqliteStore:
                 "state": row["state"],
                 "findings": findings.get(row["id"], []),
                 "review_profile_id": row["review_profile_id"],
+                "criteria_snapshot": (
+                    _json_loads(row["criteria_snapshot_json"])
+                    if row["criteria_snapshot_json"] is not None
+                    else None
+                ),
                 "instructions": row["instructions"],
                 "criteria": criteria.get(row["id"], []),
                 "reviewed_commit_sha": row["reviewed_commit_sha"],
@@ -2254,12 +2265,13 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_review_requests(
                     id, deliverable_id, release_package_id, candidate_commit_sha,
-                    reviewer_agent_id, state, review_profile_id, instructions,
+                    reviewer_agent_id, state, review_profile_id, criteria_snapshot_json,
+                    instructions,
                     reviewed_commit_sha, supersedes_review_request_id,
                     superseded_by_review_request_id, retry_reason,
                     retry_requested_by, created_at, decision_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["id"],
@@ -2269,6 +2281,11 @@ class TeamStateSqliteStore:
                     request["reviewer_agent_id"],
                     request.get("state", "pending"),
                     request.get("review_profile_id"),
+                    (
+                        _json_dumps(request.get("criteria_snapshot"))
+                        if request.get("criteria_snapshot") is not None
+                        else None
+                    ),
                     request.get("instructions"),
                     request.get("reviewed_commit_sha"),
                     request.get("supersedes_review_request_id"),
@@ -3849,6 +3866,7 @@ CREATE TABLE IF NOT EXISTS team_review_requests (
     reviewer_agent_id TEXT NOT NULL,
     state TEXT NOT NULL,
     review_profile_id TEXT,
+    criteria_snapshot_json TEXT,
     instructions TEXT,
     reviewed_commit_sha TEXT,
     supersedes_review_request_id TEXT,

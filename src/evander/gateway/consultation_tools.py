@@ -121,6 +121,74 @@ def _ensure_dispatched(
         _publish_claimed(config, [record])
 
 
+def _cleanup_failed_dispatch_setup(
+    config: GatewayConfig,
+    admin: Any,
+    store: CodeConsultationStore,
+    consultation_id: str,
+    *,
+    error: Exception,
+) -> None:
+    reason = f"consultation dispatch setup failed: {error}"
+    record = store.fail(consultation_id, error=reason)
+    if record.started_at is None:
+        try:
+            admin.managed_git_admin.release_snapshot_pin(
+                record.managed_repo_id,
+                record.directory_path,
+                consultation_id=record.consultation_id,
+                expected_commit_sha=record.commit_sha,
+            )
+        except Exception as cleanup_exc:
+            store.mark_cleanup(
+                record.consultation_id,
+                success=False,
+                error=str(cleanup_exc),
+            )
+            try:
+                _publish_failed_dispatch_cleanup(config, record, reason=reason)
+            except Exception as cleanup_dispatch_exc:
+                raise RuntimeError(
+                    f"snapshot release failed ({cleanup_exc}); cleanup dispatch failed: "
+                    f"{cleanup_dispatch_exc}"
+                ) from cleanup_dispatch_exc
+            return
+        store.mark_cleanup(record.consultation_id, success=True)
+        return
+
+    try:
+        _publish_failed_dispatch_cleanup(config, record, reason=reason)
+    except Exception as cleanup_exc:
+        store.mark_cleanup(
+            record.consultation_id,
+            success=False,
+            error=f"cleanup dispatch failed: {cleanup_exc}",
+        )
+        raise
+
+
+def _publish_failed_dispatch_cleanup(
+    config: GatewayConfig,
+    record: Any,
+    *,
+    reason: str,
+) -> None:
+    InternalEventBus(internal_event_store_path(config.runtime_dir)).publish(
+        event_type=CONSULTATION_TERMINATE_EVENT_TYPE,
+        payload={
+            "consultation_id": record.consultation_id,
+            "reason": reason,
+            "status": "cancelled",
+        },
+        correlation_key=record.consultation_id,
+        idempotency_key=f"code-consultation:setup-cleanup:{record.consultation_id}",
+        source=InternalEventSource(
+            source_type="mcp_tool",
+            source_name=ToolName.CONSULT_CODEBASE.value,
+        ),
+    )
+
+
 def _wait_for_record(
     store: CodeConsultationStore,
     consultation_id: str,
@@ -264,14 +332,30 @@ def register_consultation_tools(
                         expected_commit_sha=snapshot["commit_sha"],
                     )
             if record.status not in TERMINAL_CONSULTATION_STATUSES:
-                admin.managed_git_admin.pin_snapshot(
-                    record.managed_repo_id,
-                    record.directory_path,
-                    consultation_id=record.consultation_id,
-                    commit_sha=record.commit_sha,
-                )
-                _schedule_timeout(config, record.consultation_id, record.expires_at)
-                _ensure_dispatched(config, store, record)
+                try:
+                    admin.managed_git_admin.pin_snapshot(
+                        record.managed_repo_id,
+                        record.directory_path,
+                        consultation_id=record.consultation_id,
+                        commit_sha=record.commit_sha,
+                    )
+                    _schedule_timeout(config, record.consultation_id, record.expires_at)
+                    _ensure_dispatched(config, store, record)
+                except Exception as setup_exc:
+                    try:
+                        _cleanup_failed_dispatch_setup(
+                            config,
+                            admin,
+                            store,
+                            record.consultation_id,
+                            error=setup_exc,
+                        )
+                    except Exception as cleanup_exc:
+                        raise RuntimeError(
+                            f"{setup_exc}; consultation cleanup setup also failed: "
+                            f"{cleanup_exc}"
+                        ) from cleanup_exc
+                    raise
             record = _wait_for_record(
                 store,
                 record.consultation_id,

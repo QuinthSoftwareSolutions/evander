@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import evander.gateway as gateway_module
+import evander.gateway.consultation_tools as consultation_tools_module
+import pytest
 
 from evander.config import GatewayConfig
 from evander.consultations import (
@@ -331,4 +333,94 @@ def test_cancelling_a_queued_consultation_publishes_snapshot_cleanup(
     assert [(event.event_type, event.payload["consultation_id"]) for event in events] == [
         ("agent.consultation.requested", first["consultation_id"]),
         ("agent.consultation.terminate", second["consultation_id"]),
+    ]
+
+
+def test_consult_codebase_releases_snapshot_when_timeout_setup_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AGENT_PROMPT_TOKEN_SECRET", "consultation-secret")
+    managed_git = _ManagedGit()
+    monkeypatch.setattr(
+        gateway_module,
+        "build_admin_runtime",
+        lambda _runtime_dir: SimpleNamespace(managed_git_admin=managed_git),
+    )
+    monkeypatch.setattr(
+        consultation_tools_module,
+        "_schedule_timeout",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("schedule unavailable")),
+    )
+    context = _runtime(tmp_path, allowed_tools=[ToolName.CONSULT_CODEBASE])
+    server = create_server(context)
+
+    with pytest.raises(Exception, match="schedule unavailable"):
+        _call_tool(
+            server,
+            "consult_codebase",
+            {
+                "session_id": "senior-1",
+                "managed_repo_id": "mr_0123456789abcdef0123",
+                "source_ref": "main",
+                "query": "Where is request routing implemented?",
+                "wait_seconds": 0,
+            },
+        )
+
+    consultation_id = managed_git.pins[0][2]["consultation_id"]
+    record = CodeConsultationStore(
+        consultation_store_path(context.config.runtime_dir)
+    ).get(consultation_id)
+    assert record is not None
+    assert record.status == "failed"
+    assert record.cleanup_status == "completed"
+    assert managed_git.released_pins[-1][2]["consultation_id"] == consultation_id
+
+
+def test_consult_codebase_enqueues_cleanup_when_dispatch_publication_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AGENT_PROMPT_TOKEN_SECRET", "consultation-secret")
+    managed_git = _ManagedGit()
+    monkeypatch.setattr(
+        gateway_module,
+        "build_admin_runtime",
+        lambda _runtime_dir: SimpleNamespace(managed_git_admin=managed_git),
+    )
+    monkeypatch.setattr(
+        consultation_tools_module,
+        "_publish_claimed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("event publication unavailable")
+        ),
+    )
+    context = _runtime(tmp_path, allowed_tools=[ToolName.CONSULT_CODEBASE])
+    server = create_server(context)
+
+    with pytest.raises(Exception, match="event publication unavailable"):
+        _call_tool(
+            server,
+            "consult_codebase",
+            {
+                "session_id": "senior-1",
+                "managed_repo_id": "mr_0123456789abcdef0123",
+                "source_ref": "main",
+                "query": "Where is request routing implemented?",
+                "wait_seconds": 0,
+            },
+        )
+
+    consultation_id = managed_git.pins[0][2]["consultation_id"]
+    record = CodeConsultationStore(
+        consultation_store_path(context.config.runtime_dir)
+    ).get(consultation_id)
+    assert record is not None
+    assert record.status == "failed"
+    assert record.started_at is not None
+    assert record.cleanup_status == "pending"
+    events = InternalEventBus(internal_event_store_path(context.config.runtime_dir)).list_events()
+    assert [(event.event_type, event.payload["consultation_id"]) for event in events] == [
+        ("agent.consultation.terminate", consultation_id)
     ]

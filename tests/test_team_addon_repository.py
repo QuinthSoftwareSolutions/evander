@@ -3808,6 +3808,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "superseded_by_review_request_id" in review_columns
     assert "retry_reason" in review_columns
     assert "retry_requested_by" in review_columns
+    assert "criteria_snapshot_json" in review_columns
     assert "gate_failure_json" in release_columns
     assert "team_dispatch_activity" in tables
     assert "team_idempotency_records" in tables
@@ -10179,6 +10180,90 @@ def test_canonical_push_waits_for_candidate_verification_and_release_review(
             "expected_commit_sha": "candidate-feedface",
         }
     ]
+
+
+def test_release_review_uses_criteria_snapshot_after_profile_edit(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_review_profile(repo, applicable_role_ids=["project__worker"])
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _configure_release_review(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            review_requirements=[
+                ReleaseReviewRequirement(
+                    reviewer_agent_id="worker",
+                    review_profile_id="profile",
+                )
+            ]
+        )
+        return state
+
+    repo.update(_configure_release_review)
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-frozen-review",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    state, _ = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=requested["git_promotion_event_ids"][0],
+        success=True,
+        commit_sha="candidate-sha",
+        outputs={"tree_hash": "candidate-tree"},
+    )
+    review_id = state.release_packages["release-frozen-review"].review_request_ids[0]
+    assert [
+        criterion.id for criterion in state.review_requests[review_id].criteria_snapshot or []
+    ] == ["tests", "docs"]
+
+    state = _team_admin_service(repo).update_review_profile(
+        profile_id="profile",
+        criteria=[],
+        expected_revision=state.revision,
+    )
+    assert state.review_profiles["profile"].criteria == []
+
+    state, missing = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {"review_request_id": review_id, "state": "accepted"}
+            ],
+        },
+    )
+    assert missing["success"] is False
+    assert any("missing required criterion results: tests" in error for error in missing["errors"])
+    assert state.review_requests[review_id].state == TeamRecordState.PENDING
+    assert state.release_packages["release-frozen-review"].approved_commit_sha is None
+
+    state, accepted = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": review_id,
+                    "state": "accepted",
+                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                }
+            ],
+        },
+    )
+    assert accepted["success"] is True
+    assert state.release_packages["release-frozen-review"].approved_commit_sha == "candidate-sha"
 
 
 def test_release_candidate_runs_ci_before_configured_release_reviews_and_push(

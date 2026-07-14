@@ -1116,6 +1116,7 @@ class ReviewRequest(TeamModel):
     state: TeamRecordState = TeamRecordState.PENDING
     findings: list[str] = Field(default_factory=list)
     review_profile_id: str | None = None
+    criteria_snapshot: list[ReviewProfileCriterion] | None = None
     instructions: str | None = None
     criteria: list[ReviewCriterionResult] = Field(default_factory=list)
     reviewed_commit_sha: str | None = None
@@ -1169,6 +1170,11 @@ class ReviewRequest(TeamModel):
         ):
             raise ValueError(
                 "superseding release review requires retry_reason and retry_requested_by"
+            )
+        if self.criteria_snapshot is not None:
+            _ensure_unique(
+                [criterion.id for criterion in self.criteria_snapshot],
+                "review criteria snapshot",
             )
         return self
 
@@ -2904,15 +2910,20 @@ class TeamState(TeamModel):
                         f"review request {review.id} references missing review profile "
                         f"{review.review_profile_id}"
                     )
+            if review.criteria_snapshot is not None and review.review_profile_id is None:
+                errors.append(
+                    f"review request {review.id} has a criteria snapshot but no review profile"
+                )
             if review.criteria and review.review_profile_id is None:
                 errors.append(
                     f"review request {review.id} has criterion results but no review profile"
                 )
-            valid_criterion_ids = (
-                {criterion.id for criterion in profile.criteria}
-                if profile is not None
-                else set()
+            criterion_definitions = (
+                review.criteria_snapshot
+                if review.criteria_snapshot is not None
+                else profile.criteria if profile is not None else []
             )
+            valid_criterion_ids = {criterion.id for criterion in criterion_definitions}
             seen: set[str] = set()
             for result in review.criteria:
                 if profile is not None and result.criterion_id not in valid_criterion_ids:

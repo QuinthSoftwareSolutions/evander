@@ -321,6 +321,9 @@ def create_release_reviews_or_approve(
             candidate_commit_sha=candidate,
             reviewer_agent_id=reviewer.id,
             review_profile_id=profile.id,
+            criteria_snapshot=[
+                criterion.model_copy(deep=True) for criterion in profile.criteria
+            ],
             reviewed_commit_sha=candidate,
             state=TeamRecordState.PENDING,
             instructions=(
@@ -515,6 +518,9 @@ def retry_release_gate(
         candidate_commit_sha=candidate,
         reviewer_agent_id=current.reviewer_agent_id,
         review_profile_id=current.review_profile_id,
+        criteria_snapshot=[
+            criterion.model_copy(deep=True) for criterion in profile.criteria
+        ],
         reviewed_commit_sha=candidate,
         supersedes_review_request_id=current.id,
         retry_reason=normalized_reason,

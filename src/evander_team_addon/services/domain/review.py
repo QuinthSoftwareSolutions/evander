@@ -14,6 +14,7 @@ from ...models import (
     ReviewCriterionResult,
     ReviewFindingRecord,
     ReviewProfile,
+    ReviewProfileCriterion,
     ReviewRequest,
     TeamInboxItemType,
     TeamInboxPriority,
@@ -456,16 +457,12 @@ def _build_criterion_results(
 
     if not raw_criteria:
         return [], None
-    profile = (
-        state.review_profiles.get(review.review_profile_id)
-        if review.review_profile_id is not None
-        else None
-    )
-    if profile is None:
+    criterion_definitions = _criterion_definitions_for_review(state, review)
+    if criterion_definitions is None:
         return None, (
             f"review decision for {review.id} has criterion results but no review profile"
         )
-    valid_ids = {criterion.id for criterion in profile.criteria}
+    valid_ids = {criterion.id for criterion in criterion_definitions}
     seen: set[str] = set()
     results: list[ReviewCriterionResult] = []
     for entry in raw_criteria:
@@ -494,6 +491,20 @@ def _build_criterion_results(
     return results, None
 
 
+def _criterion_definitions_for_review(
+    state: TeamState,
+    review: ReviewRequest,
+) -> list[ReviewProfileCriterion] | None:
+    if review.criteria_snapshot is not None:
+        return review.criteria_snapshot
+    profile = (
+        state.review_profiles.get(review.review_profile_id)
+        if review.review_profile_id is not None
+        else None
+    )
+    return profile.criteria if profile is not None else None
+
+
 def _review_decision_policy_error(
     state: TeamState,
     *,
@@ -503,16 +514,12 @@ def _review_decision_policy_error(
     finding_resolutions: list[dict[str, Any]],
     findings: list[str] | None = None,
 ) -> str | None:
-    profile = (
-        state.review_profiles.get(review.review_profile_id)
-        if review.review_profile_id is not None
-        else None
-    )
-    if decision_state == TeamRecordState.ACCEPTED and profile is not None:
+    criterion_definitions = _criterion_definitions_for_review(state, review)
+    if decision_state == TeamRecordState.ACCEPTED and criterion_definitions is not None:
         by_id = {result.criterion_id: result for result in criterion_results}
         missing = [
             criterion.id
-            for criterion in profile.criteria
+            for criterion in criterion_definitions
             if criterion.required and criterion.id not in by_id
         ]
         if missing:
@@ -522,7 +529,7 @@ def _review_decision_policy_error(
             )
         not_passed = [
             criterion.id
-            for criterion in profile.criteria
+            for criterion in criterion_definitions
             if criterion.required
             and by_id[criterion.id].state != "passed"
         ]

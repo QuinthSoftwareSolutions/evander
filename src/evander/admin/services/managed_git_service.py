@@ -1609,6 +1609,11 @@ class ManagedGitAdminService:
         title_explicit = bool(str(title or "").strip())
         normalized_body = str(body or "")
         provider = str(record.get("provider") or "").strip()
+        if provider not in {"github", "azure_devops"}:
+            raise ValueError(
+                f"Managed PR creation is unsupported for provider {provider or 'generic'}"
+            )
+        tracking_session = self._resolve_pr_tracking_session(normalized_session_id)
         if provider == "azure_devops":
             normalized_work_item_id = self._azure_work_item_id(
                 normalized_work_item_id,
@@ -1649,10 +1654,6 @@ class ManagedGitAdminService:
                     title_explicit=title_explicit,
                     work_item_id=normalized_work_item_id,
                 )
-            else:
-                raise ValueError(
-                    f"Managed PR creation is unsupported for provider {provider or 'generic'}"
-                )
             self._persist_pr_tracking(
                 record,
                 pr=pr,
@@ -1660,6 +1661,7 @@ class ManagedGitAdminService:
                 target_branch=base,
                 session_id=normalized_session_id,
                 directory_path=directory_path,
+                tracking_session=tracking_session,
             )
         return {
             "success": True,
@@ -2057,6 +2059,7 @@ class ManagedGitAdminService:
         target_branch: str,
         session_id: str,
         directory_path: str,
+        tracking_session: tuple[Any, Any] | None = None,
     ) -> None:
         provider = str(pr.get("provider") or record.get("provider") or "").strip()
         pr_id = str(pr.get("pr_id") or "").strip()
@@ -2069,6 +2072,8 @@ class ManagedGitAdminService:
             repo = "/".join(self._azure_repository_parts(canonical_url))
         else:
             raise ValueError(f"Unsupported PR tracking provider: {provider}")
+        if session_id and tracking_session is None:
+            tracking_session = self._resolve_pr_tracking_session(session_id)
         PrMapStore(self._pr_map_path()).upsert_binding(
             provider=provider,
             repo=repo,
@@ -2081,12 +2086,8 @@ class ManagedGitAdminService:
         )
         if not session_id:
             return
-        repository = getattr(self.runtime, "session_repository", None)
-        if repository is None:
-            repository = JsonSessionManifestRepository(self._session_store_path())
-        manifest = repository.get_session(session_id)
-        if manifest is None:
-            raise ValueError(f"Unknown session for PR feedback tracking: {session_id}")
+        assert tracking_session is not None
+        repository, manifest = tracking_session
         stream = {"provider": provider, "repo": repo, "pr_id": pr_id}
         metadata = dict(manifest.metadata)
         streams = metadata.get("pr_feedback_streams")
@@ -2108,6 +2109,17 @@ class ManagedGitAdminService:
         repository.upsert_session(
             manifest.model_copy(update={"metadata": metadata, "allowed_tools": allowed_tools})
         )
+
+    def _resolve_pr_tracking_session(self, session_id: str) -> tuple[Any, Any] | None:
+        if not session_id:
+            return None
+        repository = getattr(self.runtime, "session_repository", None)
+        if repository is None:
+            repository = JsonSessionManifestRepository(self._session_store_path())
+        manifest = repository.get_session(session_id)
+        if manifest is None:
+            raise ValueError(f"Unknown session for PR feedback tracking: {session_id}")
+        return repository, manifest
 
     def _pr_map_path(self) -> Path:
         configured = getattr(self.config, "pr_map_path", None)

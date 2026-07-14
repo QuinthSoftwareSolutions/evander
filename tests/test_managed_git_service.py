@@ -788,6 +788,73 @@ def test_pr_tracking_persists_map_and_session_feedback_binding(tmp_path: Path) -
     assert ToolName.POST_PR_FEEDBACK_REPLY in session.allowed_tools
 
 
+def test_pr_create_rejects_unsupported_provider_before_push(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    monkeypatch.setattr(
+        service,
+        "_require_scoped_record",
+        lambda *_args, **_kwargs: {
+            "provider": "local",
+            "default_branch": "main",
+        },
+    )
+    push_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        service,
+        "push_branch",
+        lambda *args, **kwargs: push_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(ValueError, match="unsupported for provider local"):
+        service.pr_create(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            source_ref="refs/evander/operations/op-1/source",
+            expected_commit_sha="a" * 40,
+            destination_branch="feature/topic",
+            directory_path="root",
+        )
+
+    assert push_calls == []
+
+
+def test_pr_create_rejects_unknown_tracking_session_before_push(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path)
+    monkeypatch.setattr(
+        service,
+        "_require_scoped_record",
+        lambda *_args, **_kwargs: {
+            "provider": "github",
+            "canonical_repository_url": "https://github.com/example/repo.git",
+            "default_branch": "main",
+        },
+    )
+    push_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        service,
+        "push_branch",
+        lambda *args, **kwargs: push_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(ValueError, match="Unknown session for PR feedback tracking: missing"):
+        service.pr_create(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            source_ref="refs/evander/operations/op-1/source",
+            expected_commit_sha="a" * 40,
+            destination_branch="feature/topic",
+            directory_path="root",
+            session_id="missing",
+        )
+
+    assert push_calls == []
+    assert not service._pr_map_path().exists()
+
+
 def test_azure_work_item_id_is_derived_from_issue_session() -> None:
     assert ManagedGitAdminService._azure_work_item_id("", "issue-14760-run-1") == "14760"
     assert ManagedGitAdminService._azure_work_item_id("42", "issue-14760-run-1") == "42"
