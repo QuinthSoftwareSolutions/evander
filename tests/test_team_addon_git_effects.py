@@ -851,6 +851,36 @@ def test_publish_review_branch_preserves_source_ref_moved_failure() -> None:
     assert result["reason"] == "source_ref_moved"
 
 
+def test_publish_review_branch_rejects_sibling_directory_override() -> None:
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": True},
+        consolidation_result={"success": True},
+    )
+    provider = TeamPublishReviewBranchEffectProvider()
+    provider.initialize(
+        TeamPublishReviewBranchEffectDefinition(
+            id="publish-review",
+            display_name="Publish Review",
+            type="effect:team:publish-review-branch",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team-b",
+            source_branch="agents/session-1/work",
+            expected_commit_sha="a" * 40,
+            target_branch="team/team/reviews/deliverable",
+        ),
+        EffectRuntimeContext(
+            admin_service=admin,
+            metadata={"directory_path": "root/team-a"},
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert "outside workflow directory scope" in result["error"]
+    assert admin.promotion_calls == []
+
+
 def test_consolidate_git_branches_delegates_exact_source_commits() -> None:
     expected_result = {
         "success": True,
@@ -918,4 +948,34 @@ def test_consolidate_git_branches_rejects_incomplete_commit_map() -> None:
 
     assert result["success"] is False
     assert "expected_source_commits must contain every source branch" in str(result["error"])
+    assert admin.managed_git_admin.calls == []
+
+
+def test_consolidate_git_branches_rejects_sibling_directory_override() -> None:
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": True},
+        consolidation_result={"success": True},
+    )
+    provider = TeamConsolidateGitBranchesEffectProvider()
+    provider.initialize(
+        TeamConsolidateGitBranchesEffectDefinition(
+            id="consolidate",
+            display_name="Consolidate",
+            type="effect:team:consolidate-git-branches",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team-b",
+            source_branches=["team/team/features/task-backend"],
+            target_branch="team/team/releases/release-1",
+            expected_source_commits={"team/team/features/task-backend": "b" * 40},
+        ),
+        EffectRuntimeContext(
+            admin_service=admin,
+            metadata={"directory_path": "root/team-a"},
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert "outside workflow directory scope" in result["error"]
     assert admin.managed_git_admin.calls == []

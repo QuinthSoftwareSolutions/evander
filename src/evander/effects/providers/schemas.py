@@ -278,12 +278,18 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
     git_committer_name: ConfigValue | None = None
     git_committer_email: ConfigValue | None = None
     git_access_mode: ConfigValue | None = None
+    pinned_ref: ConfigValue | None = None
+    pinned_commit_sha: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "AgentCloneRepoEffectDefinition":
         selectors = [self.target, self.session_id, self.vm_name]
         if not any(value is not None for value in selectors):
             raise ValueError("effect:agent:clone-repo requires target, session_id, or vm_name")
+        if (self.pinned_ref is None) != (self.pinned_commit_sha is None):
+            raise ValueError(
+                "effect:agent:clone-repo requires pinned_ref and pinned_commit_sha together"
+            )
         return self
 
     @field_validator("git_access_mode", mode="before")
@@ -1134,6 +1140,7 @@ class PrCreateEffectDefinition(EffectDefinition):
     source_ref: ConfigValue
     expected_commit_sha: ConfigValue
     destination_branch: ConfigValue
+    fallback_destination_branch: ConfigValue | None = None
     base_branch: ConfigValue | None = None
     session_id: ConfigValue | None = None
     work_item_id: ConfigValue | None = None

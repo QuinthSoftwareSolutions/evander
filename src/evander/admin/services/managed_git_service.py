@@ -30,7 +30,9 @@ from evander.admin.payloads import AdminRevisionConflict
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 from evander.consultations import consultation_snapshot_ref
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
-from evander.models import DirectoryPath
+from evander.models import DirectoryPath, ToolName
+from evander.pr_tracking import PrMapStore
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.storage import JsonObjectStore
 
 
@@ -68,6 +70,7 @@ _B64_ASSIGNMENT_PATTERN = re.compile(
     r"(?P<value>[A-Za-z0-9+/=]+)"
 )
 _MAX_CONSULTATION_EVIDENCE_BLOB_BYTES = 5 * 1024 * 1024
+_AZURE_PR_DESCRIPTION_MAX_CHARS = 4000
 
 
 class ManagedGitNotFoundError(LookupError):
@@ -575,10 +578,22 @@ class ManagedGitAdminService:
         with self._file_lock(self._lock_root / f"registration-{identity_lock}.lock"):
             existing = self._find_accessible_identity(directory, source.canonical_identity)
             if existing is not None:
-                if requested_default and existing.get("default_branch") != requested_default:
+                override_changed = bool(
+                    requested_default
+                    and (
+                        existing.get("default_branch") != requested_default
+                        or existing.get("default_branch_source") != "override"
+                    )
+                )
+                if override_changed:
                     existing_owner = str(existing["directory_path"])
                     if authorize_existing_owner is not None and existing_owner != directory:
                         authorize_existing_owner(existing_owner)
+                    if refresh:
+                        return self._refresh_repository_with_override(
+                            str(existing["managed_repo_id"]),
+                            requested_default,
+                        )
                     self._update_record_fields(
                         existing["managed_repo_id"],
                         default_branch=requested_default,
@@ -607,7 +622,19 @@ class ManagedGitAdminService:
                     directory_path=directory,
                     source=source,
                 )
-                if requested_default:
+                override_changed = bool(
+                    requested_default
+                    and (
+                        descendant.get("default_branch") != requested_default
+                        or descendant.get("default_branch_source") != "override"
+                    )
+                )
+                if override_changed:
+                    if refresh:
+                        return self._refresh_repository_with_override(
+                            str(descendant["managed_repo_id"]),
+                            requested_default,
+                        )
                     self._update_record_fields(
                         descendant["managed_repo_id"],
                         default_branch=requested_default,
@@ -722,12 +749,23 @@ class ManagedGitAdminService:
         return self._public_record(record)
 
     def refresh_repository(self, managed_repo_id: str) -> dict[str, Any]:
+        return self._refresh_repository_with_override(managed_repo_id, None)
+
+    def _refresh_repository_with_override(
+        self,
+        managed_repo_id: str,
+        default_branch_override: str | None,
+    ) -> dict[str, Any]:
         record = self._require_record(managed_repo_id)
+        effective_record = dict(record)
+        if default_branch_override is not None:
+            effective_record["default_branch"] = default_branch_override
+            effective_record["default_branch_source"] = "override"
         with (
             self._repo_lock(managed_repo_id, exclusive=False),
             self._target_lock(managed_repo_id, "canonical-refresh"),
         ):
-            result = self._refresh_record(record)
+            result = self._refresh_record(effective_record)
         now = result["refreshed_at"]
 
         def update(payload: dict[str, Any]):
@@ -736,7 +774,12 @@ class ManagedGitAdminService:
                 raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
             current["refreshed_at"] = now
             current["updated_at"] = now
-            if current.get("default_branch_source") != "override" and result.get("default_branch"):
+            if default_branch_override is not None:
+                current["default_branch"] = default_branch_override
+                current["default_branch_source"] = "override"
+            elif current.get("default_branch_source") != "override" and result.get(
+                "default_branch"
+            ):
                 current["default_branch"] = result["default_branch"]
             return dict(current)
 
@@ -1468,9 +1511,46 @@ class ManagedGitAdminService:
                 if destination_commit and not self._is_ancestor(
                     bare_path, destination_commit, expected
                 ):
-                    raise ManagedGitConflictError(
-                        f"Upstream {destination_ref} is not an ancestor of the approved commit"
+                    counts = self._run_git(
+                        [
+                            "git",
+                            f"--git-dir={bare_path}",
+                            "rev-list",
+                            "--left-right",
+                            "--count",
+                            f"{destination_operation_ref}...{source_operation_ref}",
+                        ],
+                        check=False,
                     )
+                    destination_ahead_count = 0
+                    source_ahead_count = 0
+                    if counts.returncode == 0:
+                        parts = counts.stdout.strip().split()
+                        if len(parts) >= 2:
+                            try:
+                                destination_ahead_count = int(parts[0])
+                                source_ahead_count = int(parts[1])
+                            except ValueError:
+                                pass
+                    return {
+                        "success": False,
+                        "preflight_success": False,
+                        "reason": "destination_branch_ahead",
+                        "message": (
+                            f"Destination branch {destination} has commits that are not "
+                            "contained in the approved commit; merge the destination branch "
+                            "before publishing."
+                        ),
+                        "managed_repo_id": managed_repo_id,
+                        "source_ref": normalized_source,
+                        "destination_branch": destination,
+                        "destination_ref": destination_ref,
+                        "expected_commit_sha": expected,
+                        "destination_commit": destination_commit,
+                        "local_commit": expected,
+                        "destination_ahead_count": destination_ahead_count,
+                        "local_ahead_count": source_ahead_count,
+                    }
                 lease = (
                     f"--force-with-lease={destination_ref}:{destination_commit}"
                     if destination_commit
@@ -1523,9 +1603,17 @@ class ManagedGitAdminService:
             field_name="base_branch",
         )
         expected = _normalize_object_id(expected_commit_sha, field_name="expected_commit_sha")
+        normalized_session_id = str(session_id or "").strip()
+        normalized_work_item_id = str(work_item_id or "").strip()
         normalized_title = str(title or "").strip() or f"Merge {destination} into {base}"
+        title_explicit = bool(str(title or "").strip())
         normalized_body = str(body or "")
         provider = str(record.get("provider") or "").strip()
+        if provider == "azure_devops":
+            normalized_work_item_id = self._azure_work_item_id(
+                normalized_work_item_id,
+                normalized_session_id,
+            )
         destination_ref = f"refs/heads/{destination}"
         with self._target_lock(managed_repo_id, f"upstream:{destination_ref}"):
             published = self.push_branch(
@@ -1558,11 +1646,21 @@ class ManagedGitAdminService:
                     title=normalized_title,
                     body=normalized_body,
                     draft=bool(draft),
+                    title_explicit=title_explicit,
+                    work_item_id=normalized_work_item_id,
                 )
             else:
                 raise ValueError(
                     f"Managed PR creation is unsupported for provider {provider or 'generic'}"
                 )
+            self._persist_pr_tracking(
+                record,
+                pr=pr,
+                source_branch=destination,
+                target_branch=base,
+                session_id=normalized_session_id,
+                directory_path=directory_path,
+            )
         return {
             "success": True,
             "managed_repo_id": managed_repo_id,
@@ -1570,8 +1668,8 @@ class ManagedGitAdminService:
             "destination_branch": destination,
             "expected_commit_sha": expected,
             "base_branch": base,
-            "session_id": str(session_id or "").strip() or None,
-            "work_item_id": str(work_item_id or "").strip() or None,
+            "session_id": normalized_session_id or None,
+            "work_item_id": normalized_work_item_id or None,
             **pr,
         }
 
@@ -1723,6 +1821,8 @@ class ManagedGitAdminService:
         title: str,
         body: str,
         draft: bool,
+        title_explicit: bool = True,
+        work_item_id: str = "",
     ) -> dict[str, Any]:
         organization, project, repository = self._azure_repository_parts(
             str(record["canonical_repository_url"])
@@ -1747,6 +1847,7 @@ class ManagedGitAdminService:
             "&api-version=7.1"
         )
         auth = "Basic " + base64.b64encode(f":{token}".encode()).decode()
+        bounded_body, truncation = self._bounded_azure_pr_description(body)
         existing = self._azure_request_json(api_root + query, auth=auth)
         values = existing.get("value") if isinstance(existing, dict) else None
         if isinstance(values, list) and values:
@@ -1761,11 +1862,33 @@ class ManagedGitAdminService:
                     source_commit.get("commitId") if isinstance(source_commit, Mapping) else None
                 ),
             )
+            pr_id = str(item.get("pullRequestId") or "").strip()
+            if not pr_id:
+                raise RuntimeError("Azure DevOps PR API returned no pull request ID")
+            update: dict[str, Any] = {"description": bounded_body}
+            if title_explicit:
+                update["title"] = title
+            updated_item = self._azure_request_json(
+                f"{api_root}/{quote(pr_id, safe='')}?api-version=7.1",
+                auth=auth,
+                payload=update,
+                method="PATCH",
+            )
+            item = {**dict(item), **updated_item}
+            link_result = self._ensure_azure_work_item_link(
+                item,
+                organization=organization,
+                project=project,
+                work_item_id=work_item_id,
+                auth=auth,
+            )
             return {
                 "provider": "azure_devops",
-                "pr_id": str(item.get("pullRequestId") or ""),
-                "pr_url": item.get("url"),
+                "pr_id": pr_id,
+                "pr_url": self._azure_pr_web_url(item),
                 "created": False,
+                **truncation,
+                **link_result,
             }
         created = self._azure_request_json(
             api_root + "?api-version=7.1",
@@ -1774,7 +1897,7 @@ class ManagedGitAdminService:
                 "sourceRefName": f"refs/heads/{destination_branch}",
                 "targetRefName": f"refs/heads/{base_branch}",
                 "title": title,
-                "description": body,
+                "description": bounded_body,
                 "isDraft": draft,
             },
         )
@@ -1805,12 +1928,195 @@ class ManagedGitAdminService:
                     details={**mismatch.details, "cleanup_failed": True},
                 ) from cleanup_error
             raise
+        link_result = self._ensure_azure_work_item_link(
+            created,
+            organization=organization,
+            project=project,
+            work_item_id=work_item_id,
+            auth=auth,
+        )
         return {
             "provider": "azure_devops",
             "pr_id": str(created.get("pullRequestId") or ""),
-            "pr_url": created.get("url"),
+            "pr_url": self._azure_pr_web_url(created),
             "created": True,
+            **truncation,
+            **link_result,
         }
+
+    @staticmethod
+    def _bounded_azure_pr_description(body: str) -> tuple[str, dict[str, Any]]:
+        original_length = len(body)
+        truncated = original_length > _AZURE_PR_DESCRIPTION_MAX_CHARS
+        bounded = body[:_AZURE_PR_DESCRIPTION_MAX_CHARS] if truncated else body
+        return bounded, {
+            "description_truncated": truncated,
+            "description_original_length": original_length,
+            "description_length": len(bounded),
+        }
+
+    @staticmethod
+    def _azure_pr_web_url(pr: Mapping[str, Any]) -> Any:
+        links = pr.get("_links")
+        web = links.get("web") if isinstance(links, Mapping) else None
+        href = web.get("href") if isinstance(web, Mapping) else None
+        return href or pr.get("url")
+
+    @staticmethod
+    def _azure_work_item_id(explicit: str, session_id: str) -> str:
+        for candidate in (explicit, session_id):
+            normalized = str(candidate or "").strip()
+            if normalized.isdigit():
+                return normalized
+            match = re.match(r"^(?:vm-|issue-)([0-9]+)(?:-|$)", normalized)
+            if match:
+                return match.group(1)
+        return ""
+
+    def _ensure_azure_work_item_link(
+        self,
+        pr: Mapping[str, Any],
+        *,
+        organization: str,
+        project: str,
+        work_item_id: str,
+        auth: str,
+    ) -> dict[str, Any]:
+        if not work_item_id:
+            return {"work_item_linked": False}
+        repository = pr.get("repository")
+        repository_id = (
+            str(repository.get("id") or "").strip()
+            if isinstance(repository, Mapping)
+            else ""
+        )
+        project_info = repository.get("project") if isinstance(repository, Mapping) else None
+        project_id = (
+            str(project_info.get("id") or "").strip()
+            if isinstance(project_info, Mapping)
+            else ""
+        )
+        pr_id = str(pr.get("pullRequestId") or "").strip()
+        if not repository_id or not project_id or not pr_id:
+            return {
+                "work_item_linked": False,
+                "work_item_link_warning": (
+                    "Azure DevOps PR response omitted repository identity required for "
+                    "work-item association"
+                ),
+            }
+        artifact_url = f"vstfs:///Git/PullRequestId/{project_id}%2F{repository_id}%2F{pr_id}"
+        work_item_url = (
+            "https://dev.azure.com/"
+            f"{quote(organization, safe='')}/{quote(project, safe='')}/_apis/wit/"
+            f"workitems/{quote(work_item_id, safe='')}"
+        )
+        try:
+            item = self._azure_request_json(
+                f"{work_item_url}?$expand=relations&api-version=7.1",
+                auth=auth,
+            )
+            relations = item.get("relations")
+            if isinstance(relations, list) and any(
+                isinstance(relation, Mapping)
+                and relation.get("rel") == "ArtifactLink"
+                and relation.get("url") == artifact_url
+                for relation in relations
+            ):
+                return {"work_item_linked": True}
+            self._azure_request_json(
+                f"{work_item_url}?api-version=7.1",
+                auth=auth,
+                payload=[
+                    {
+                        "op": "add",
+                        "path": "/relations/-",
+                        "value": {
+                            "rel": "ArtifactLink",
+                            "url": artifact_url,
+                            "attributes": {"name": "Pull Request"},
+                        },
+                    }
+                ],
+                method="PATCH",
+                content_type="application/json-patch+json",
+            )
+        except Exception as exc:
+            return {
+                "work_item_linked": False,
+                "work_item_link_warning": str(exc),
+            }
+        return {"work_item_linked": True}
+
+    def _persist_pr_tracking(
+        self,
+        record: Mapping[str, Any],
+        *,
+        pr: Mapping[str, Any],
+        source_branch: str,
+        target_branch: str,
+        session_id: str,
+        directory_path: str,
+    ) -> None:
+        provider = str(pr.get("provider") or record.get("provider") or "").strip()
+        pr_id = str(pr.get("pr_id") or "").strip()
+        if not provider or not pr_id:
+            raise RuntimeError("Pull request provider did not return tracking identity")
+        canonical_url = str(record.get("canonical_repository_url") or "")
+        if provider == "github":
+            repo = self._github_slug(canonical_url)
+        elif provider == "azure_devops":
+            repo = "/".join(self._azure_repository_parts(canonical_url))
+        else:
+            raise ValueError(f"Unsupported PR tracking provider: {provider}")
+        PrMapStore(self._pr_map_path()).upsert_binding(
+            provider=provider,
+            repo=repo,
+            pr_id=pr_id,
+            pr_url=str(pr.get("pr_url") or "").strip() or None,
+            source_branch=source_branch,
+            target_branch=target_branch,
+            session_id=session_id,
+            directory_path=directory_path,
+        )
+        if not session_id:
+            return
+        repository = getattr(self.runtime, "session_repository", None)
+        if repository is None:
+            repository = JsonSessionManifestRepository(self._session_store_path())
+        manifest = repository.get_session(session_id)
+        if manifest is None:
+            raise ValueError(f"Unknown session for PR feedback tracking: {session_id}")
+        stream = {"provider": provider, "repo": repo, "pr_id": pr_id}
+        metadata = dict(manifest.metadata)
+        streams = metadata.get("pr_feedback_streams")
+        streams = list(streams) if isinstance(streams, list) else []
+        if stream not in streams:
+            streams.append(stream)
+        metadata["pr_feedback_streams"] = streams
+        allowed_tools = list(manifest.allowed_tools)
+        for tool in (
+            ToolName.HAS_PENDING_FEEDBACK,
+            ToolName.LIST_PULL_REQUESTS,
+            ToolName.GET_PULL_REQUEST,
+            ToolName.LIST_UNREAD_FEEDBACK,
+            ToolName.LIST_ALL_FEEDBACK,
+            ToolName.POST_PR_FEEDBACK_REPLY,
+        ):
+            if tool not in allowed_tools:
+                allowed_tools.append(tool)
+        repository.upsert_session(
+            manifest.model_copy(update={"metadata": metadata, "allowed_tools": allowed_tools})
+        )
+
+    def _pr_map_path(self) -> Path:
+        configured = getattr(self.config, "pr_map_path", None)
+        if configured:
+            path = Path(configured).expanduser()
+            if not path.is_absolute():
+                path = self.project_dir / path
+            return path.resolve(strict=False)
+        return (self.runtime_dir / "pr-map.json").resolve(strict=False)
 
     @staticmethod
     def _verify_provider_pr_source_commit(
@@ -1854,10 +2160,11 @@ class ManagedGitAdminService:
         url: str,
         *,
         auth: str,
-        payload: Mapping[str, Any] | None = None,
+        payload: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
         method: str | None = None,
+        content_type: str = "application/json",
     ) -> dict[str, Any]:
-        data = json.dumps(dict(payload)).encode() if payload is not None else None
+        data = json.dumps(payload).encode() if payload is not None else None
         request = Request(
             url,
             data=data,
@@ -1865,7 +2172,7 @@ class ManagedGitAdminService:
             headers={
                 "Accept": "application/json",
                 "Authorization": auth,
-                "Content-Type": "application/json",
+                "Content-Type": content_type,
             },
         )
         try:

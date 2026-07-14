@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-import shlex
 from typing import Any
 
 from evander.consultations import (
@@ -24,14 +23,12 @@ from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCreateEffectDefinition,
     AgentDestroyEffectDefinition,
-    AgentExecEffectDefinition,
     CodeConsultationEffectDefinition,
 )
 
 from .agent_clone_repo import AgentCloneRepoEffectProvider
 from .agent_create import AgentCreateEffectProvider
 from .agent_destroy import AgentDestroyEffectProvider
-from .agent_exec import AgentExecEffectProvider
 from .agent_session import container_backend, effective_config_for_session
 from .base import EffectProviderBase
 
@@ -130,32 +127,13 @@ class CodeConsultationEffectProvider(EffectProviderBase):
                     session_id=record.session_id,
                     managed_repo_id=record.managed_repo_id,
                     git_access_mode="read-only",
+                    pinned_ref=consultation_snapshot_ref(record.consultation_id),
+                    pinned_commit_sha=record.commit_sha,
                 ),
             )
             workspace_path = str(clone_result.get("target_dir") or "").strip()
             if not workspace_path:
                 raise RuntimeError("consultation repository clone returned no target_dir")
-            commit = shlex.quote(record.commit_sha)
-            snapshot_ref = shlex.quote(consultation_snapshot_ref(record.consultation_id))
-            self._execute_nested(
-                AgentExecEffectProvider,
-                AgentExecEffectDefinition(
-                    id=f"{self._effect().id}.checkout",
-                    display_name="Pin consultation repository snapshot",
-                    type="effect:agent:exec",
-                    session_id=record.session_id,
-                    working_directory=workspace_path,
-                    command=(
-                        f"git fetch --no-tags origin {snapshot_ref} && "
-                        f'test "$(git rev-parse FETCH_HEAD)" = {commit} && '
-                        "git checkout --detach FETCH_HEAD && "
-                        f'test "$(git rev-parse HEAD)" = {commit} && '
-                        "git status --short"
-                    ),
-                    timeout_seconds=120,
-                    check=True,
-                ),
-            )
             record = store.mark_running(
                 record.consultation_id,
                 workspace_path=workspace_path,

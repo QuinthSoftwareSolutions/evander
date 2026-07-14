@@ -19,9 +19,11 @@ class PrCreateEffectProvider(EffectProviderBase):
         expected_commit_sha = self._normalize_required_string(
             payload.get("expected_commit_sha"), "expected_commit_sha"
         )
-        destination_branch = self._normalize_required_string(
-            payload.get("destination_branch"), "destination_branch"
-        )
+        destination_branch = self._normalize_optional_string(payload.get("destination_branch"))
+        if destination_branch is None:
+            destination_branch = self._normalize_required_string(
+                payload.get("fallback_destination_branch"), "destination_branch"
+            )
 
         context = self._context()
         pr_create = getattr(context.pull_request_creator, "pr_create", None)
@@ -62,6 +64,7 @@ class PrCreateEffectProvider(EffectProviderBase):
             "source_ref",
             "expected_commit_sha",
             "destination_branch",
+            "fallback_destination_branch",
             "base_branch",
             "session_id",
             "work_item_id",

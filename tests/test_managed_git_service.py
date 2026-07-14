@@ -16,6 +16,8 @@ from evander.admin.services.managed_git_service import (
     REGISTRY_SCHEMA,
 )
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.models import SessionManifest, ToolName
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 
 
 def _run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
@@ -609,6 +611,188 @@ def test_azure_pr_create_and_reuse_reject_moved_source_branch(
     assert ("PATCH" in methods) is (not reuse_existing)
 
 
+def test_azure_pr_reuse_refreshes_metadata_links_work_item_and_returns_web_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = "1" * 40
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "test-token")
+    service = _service(tmp_path)
+    record = {
+        "canonical_repository_url": "https://dev.azure.com/Org/Project/_git/Repo",
+        "provider": "azure_devops",
+        "directory_path": "root",
+    }
+    pr_item = {
+        "pullRequestId": 19,
+        "url": "https://dev.azure.com/Org/Project/_apis/git/repositories/Repo/pullRequests/19",
+        "_links": {"web": {"href": "https://dev.azure.com/Org/Project/_git/Repo/pullrequest/19"}},
+        "lastMergeSourceCommit": {"commitId": expected_commit},
+        "repository": {"id": "repo-id", "project": {"id": "project-id"}},
+    }
+    responses = iter(
+        [
+            {"value": [pr_item]},
+            pr_item,
+            {"relations": []},
+            {"id": 42},
+        ]
+    )
+    calls: list[dict[str, object]] = []
+
+    def _fake_azure_request_json(
+        url: str,
+        *,
+        auth: str,
+        payload=None,
+        method: str | None = None,
+        content_type: str = "application/json",
+    ) -> dict[str, object]:
+        del auth
+        calls.append(
+            {
+                "url": url,
+                "payload": payload,
+                "method": method,
+                "content_type": content_type,
+            }
+        )
+        return next(responses)
+
+    monkeypatch.setattr(service, "_azure_request_json", _fake_azure_request_json)
+
+    result = service._create_or_reuse_azure_pr(
+        record,
+        destination_branch="feature/issue-42",
+        base_branch="main",
+        expected_commit_sha=expected_commit,
+        title="Updated title",
+        body="x" * 4100,
+        draft=False,
+        title_explicit=True,
+        work_item_id="42",
+    )
+
+    assert result["created"] is False
+    assert result["pr_url"] == "https://dev.azure.com/Org/Project/_git/Repo/pullrequest/19"
+    assert result["description_truncated"] is True
+    assert result["description_original_length"] == 4100
+    assert result["description_length"] == 4000
+    assert result["work_item_linked"] is True
+    assert calls[1]["method"] == "PATCH"
+    assert calls[1]["payload"] == {"description": "x" * 4000, "title": "Updated title"}
+    assert calls[3]["method"] == "PATCH"
+    assert calls[3]["content_type"] == "application/json-patch+json"
+    relation = calls[3]["payload"][0]["value"]  # type: ignore[index]
+    assert relation["rel"] == "ArtifactLink"
+    assert relation["url"] == "vstfs:///Git/PullRequestId/project-id%2Frepo-id%2F19"
+
+
+def test_azure_pr_create_bounds_description_and_returns_web_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = "1" * 40
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "test-token")
+    service = _service(tmp_path)
+    record = {
+        "canonical_repository_url": "https://dev.azure.com/Org/Project/_git/Repo",
+        "provider": "azure_devops",
+        "directory_path": "root",
+    }
+    created = {
+        "pullRequestId": 20,
+        "url": "https://dev.azure.com/Org/Project/_apis/git/repositories/Repo/pullRequests/20",
+        "_links": {"web": {"href": "https://dev.azure.com/Org/Project/_git/Repo/pullrequest/20"}},
+        "lastMergeSourceCommit": {"commitId": expected_commit},
+    }
+    calls: list[dict[str, object]] = []
+
+    def _fake_azure_request_json(
+        url: str,
+        *,
+        auth: str,
+        payload=None,
+        method: str | None = None,
+        content_type: str = "application/json",
+    ) -> dict[str, object]:
+        del url, auth, content_type
+        calls.append({"payload": payload, "method": method})
+        return {"value": []} if len(calls) == 1 else created
+
+    monkeypatch.setattr(service, "_azure_request_json", _fake_azure_request_json)
+
+    result = service._create_or_reuse_azure_pr(
+        record,
+        destination_branch="feature/topic",
+        base_branch="main",
+        expected_commit_sha=expected_commit,
+        title="Topic",
+        body="y" * 4001,
+        draft=True,
+    )
+
+    assert result["created"] is True
+    assert result["pr_url"] == "https://dev.azure.com/Org/Project/_git/Repo/pullrequest/20"
+    assert result["description_truncated"] is True
+    assert len(calls[1]["payload"]["description"]) == 4000  # type: ignore[index]
+
+
+def test_pr_tracking_persists_map_and_session_feedback_binding(tmp_path: Path) -> None:
+    config = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime",
+        pr_map_path=tmp_path / "runtime" / "pr-map.json",
+        session_store_path=tmp_path / "runtime" / "sessions.json",
+    )
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="issue-42-run",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    service = ManagedGitAdminService(
+        config,
+        SimpleNamespace(session_repository=sessions),
+        tmp_path,
+    )
+
+    service._persist_pr_tracking(
+        {
+            "canonical_repository_url": "https://github.com/example/repo.git",
+            "provider": "github",
+        },
+        pr={
+            "provider": "github",
+            "pr_id": "42",
+            "pr_url": "https://github.com/example/repo/pull/42",
+        },
+        source_branch="feature/issue-42",
+        target_branch="main",
+        session_id="issue-42-run",
+        directory_path="root/team-a",
+    )
+
+    pr_map = json.loads(config.pr_map_path.read_text(encoding="utf-8"))
+    entry = pr_map["entries"]["github:example/repo:42"]
+    assert entry["session_id"] == "issue-42-run"
+    assert entry["directory_path"] == "root/team-a"
+    session = sessions.get_session("issue-42-run")
+    assert session is not None
+    assert session.metadata["pr_feedback_streams"] == [
+        {"provider": "github", "repo": "example/repo", "pr_id": "42"}
+    ]
+    assert ToolName.LIST_UNREAD_FEEDBACK in session.allowed_tools
+    assert ToolName.POST_PR_FEEDBACK_REPLY in session.allowed_tools
+
+
+def test_azure_work_item_id_is_derived_from_issue_session() -> None:
+    assert ManagedGitAdminService._azure_work_item_id("", "issue-14760-run-1") == "14760"
+    assert ManagedGitAdminService._azure_work_item_id("42", "issue-14760-run-1") == "42"
+
+
 def test_local_registration_never_mutates_checkout(tmp_path: Path) -> None:
     source, _, _ = _source_repository(tmp_path)
     service = _service(tmp_path)
@@ -649,6 +833,55 @@ def test_default_branch_override_is_stored_in_registry_and_bare_metadata(
     assert record["default_branch"] == "trunk"
     assert _run("git", f"--git-dir={bare}", "config", "--get", "evander.baseBranch") == "trunk"
     assert _run("git", f"--git-dir={bare}", "symbolic-ref", "HEAD") == "refs/heads/trunk"
+
+
+def test_failed_refresh_does_not_persist_invalid_default_branch_override(
+    tmp_path: Path,
+) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    bare = _bare_path(service, record["managed_repo_id"])
+
+    with pytest.raises(ManagedGitConflictError, match="not present upstream"):
+        service.register_repository(
+            "root",
+            str(source),
+            default_branch="missing-branch",
+            refresh=True,
+        )
+
+    stored = _internal_record(service, record["managed_repo_id"])
+    assert stored["default_branch"] == "main"
+    assert stored["default_branch_source"] == "upstream"
+    assert _run("git", f"--git-dir={bare}", "config", "--get", "evander.baseBranch") == (
+        "main"
+    )
+
+
+def test_failed_refresh_after_descendant_promotion_rolls_back_default_override(
+    tmp_path: Path,
+) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    service.register_repository("root/team/project", str(source))
+
+    with pytest.raises(ManagedGitConflictError, match="not present upstream"):
+        service.register_repository(
+            "root/team",
+            str(source),
+            default_branch="missing-branch",
+            refresh=True,
+        )
+
+    records = service.list_repositories()
+    assert len(records) == 1
+    assert records[0]["directory_path"] == "root/team"
+    assert records[0]["default_branch"] == "main"
+    bare = _bare_path(service, records[0]["managed_repo_id"])
+    assert _run("git", f"--git-dir={bare}", "config", "--get", "evander.baseBranch") == (
+        "main"
+    )
 
 
 def test_refresh_updates_canonical_refs_and_preserves_host_and_guest_namespaces(
@@ -847,6 +1080,29 @@ def test_push_branch_publishes_exact_sha_with_destination_lease(tmp_path: Path) 
         )
         == ""
     )
+
+
+def test_push_branch_returns_merge_required_when_destination_is_ahead(tmp_path: Path) -> None:
+    source, upstream, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    approved = _commit(source, "approved.txt", "approved\n", "approved")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+    _run("git", "checkout", "-b", "destination", first, cwd=source)
+    destination = _commit(source, "destination.txt", "destination\n", "destination")
+    _run("git", "push", "origin", "destination:main", cwd=source)
+
+    result = service.push_branch(repo_id, "review/topic", approved, "main", "root")
+
+    assert result["success"] is False
+    assert result["preflight_success"] is False
+    assert result["reason"] == "destination_branch_ahead"
+    assert result["destination_branch"] == "main"
+    assert result["destination_ahead_count"] == 1
+    assert result["local_ahead_count"] == 1
+    assert _run("git", f"--git-dir={upstream}", "rev-parse", "refs/heads/main") == destination
 
 
 def test_push_reports_source_ref_moved_when_repush_wins_pin_transaction(

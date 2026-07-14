@@ -918,7 +918,7 @@
           "message": {
             "type": "string"
           },
-          "origin_branch": {
+          "destination_branch": {
             "type": "string"
           },
           "reason": {
@@ -1181,7 +1181,8 @@
         "config": {
           "base_branch": "${{trigger-git-push-1.default_branch}}",
           "body": "---\n\nThank you for your contribution to the ${{query-session-context-1.metadata.ado_project ?? \"target\"}} repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-standalone.body}}",
-          "destination_branch": "feature/${{trigger-git-push-1.session_id}}",
+          "destination_branch": "${{query-session-context-1.metadata.pr_origin_branch ?? null}}",
+          "fallback_destination_branch": "feature/${{trigger-git-push-1.session_id}}",
           "draft": true,
           "fill": true,
           "expected_commit_sha": "${{trigger-git-push-1.commit_hash}}",
@@ -1227,7 +1228,7 @@
           "message": {
             "type": "string"
           },
-          "origin_branch": {
+          "destination_branch": {
             "type": "string"
           },
           "reason": {
@@ -1245,8 +1246,8 @@
       {
         "config": {
           "model": "gpt-5.4",
-          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-1.origin_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-1.origin_branch}}\ngit merge origin/${{effect-pr-create-1.origin_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-1.origin_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
-          "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-1.origin_branch}}",
+          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-1.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-1.destination_branch}}\ngit merge origin/${{effect-pr-create-1.destination_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-1.destination_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
+          "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-1.destination_branch}}",
           "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
           "target": "${{trigger-git-push-1.session_id}}",
           "vm_user": "agent"

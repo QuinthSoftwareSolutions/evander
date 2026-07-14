@@ -831,6 +831,10 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             gates["gate-filter-standalone-pr-preflight"]["config"]["when"]
             == expected_standalone_preflight_filter
         )
+        assert "destination_branch" in gates["gate-filter-8"]["outputs"]
+        assert "origin_branch" not in gates["gate-filter-8"]["outputs"]
+        assert "destination_branch" in gates["gate-filter-standalone-pr-preflight"]["outputs"]
+        assert "origin_branch" not in gates["gate-filter-standalone-pr-preflight"]["outputs"]
     for edges in (default_edges, container_edges):
         assert ("query-session-context-1", "query-git-pr-note-1") not in edges
         assert (
@@ -901,12 +905,18 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             "${{trigger-git-push-1.commit_hash}}"
         )
         assert standalone_pr["config"]["destination_branch"] == (
+            "${{query-session-context-1.metadata.pr_origin_branch ?? null}}"
+        )
+        assert standalone_pr["config"]["fallback_destination_branch"] == (
             "feature/${{trigger-git-push-1.session_id}}"
         )
         assert "issue_number" not in standalone_pr["config"]["title"]
         assert "issue_title" not in standalone_pr["config"]["title"]
         assert "${{query-git-pr-note-standalone.body}}" in standalone_pr["config"]["body"]
         standalone_prompt = effects["effect-agent-enqueue-prompt-standalone-pr"]
+        issue_prompt = effects["effect-agent-enqueue-prompt-3"]
+        assert "effect-pr-create-1.destination_branch" in issue_prompt["config"]["prompt"]
+        assert "effect-pr-create-1.origin_branch" not in issue_prompt["config"]["prompt"]
         expected_standalone_queue_key = (
             "pr-create-preflight:${{trigger-git-push-1.session_id}}:"
             "${{effect-pr-create-standalone.destination_branch}}"

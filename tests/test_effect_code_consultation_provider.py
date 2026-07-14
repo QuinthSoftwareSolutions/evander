@@ -19,7 +19,6 @@ from evander.consultations import (
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_create import AgentCreateEffectProvider
 from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
-from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.code_consultation import CodeConsultationEffectProvider
 from evander.events.provider_models import CodeConsultationEffectDefinition
@@ -100,8 +99,6 @@ def test_prepare_materializes_worker_clones_and_pins_snapshot(tmp_path, monkeypa
                 "session_id": "consult-worker-one",
                 "target_dir": "/home/agent/repos/example",
             }
-        if provider_type is AgentExecEffectProvider:
-            return {"success": True}
         raise AssertionError(provider_type)
 
     monkeypatch.setattr(provider, "_execute_nested", execute_nested)
@@ -120,14 +117,11 @@ def test_prepare_materializes_worker_clones_and_pins_snapshot(tmp_path, monkeypa
     assert [provider_type for provider_type, _definition in calls] == [
         AgentCreateEffectProvider,
         AgentCloneRepoEffectProvider,
-        AgentExecEffectProvider,
     ]
     assert calls[0][1].allowed_tools == ["submit_codebase_consultation_result"]
     assert calls[1][1].git_access_mode == "read-only"
-    assert "git fetch --no-tags origin refs/evander/consultations/consult-one" in (
-        calls[2][1].command
-    )
-    assert "git checkout --detach FETCH_HEAD" in calls[2][1].command
+    assert calls[1][1].pinned_ref == "refs/evander/consultations/consult-one"
+    assert calls[1][1].pinned_commit_sha == "a" * 40
     assert store.get("consult-one").status == "running"
 
 

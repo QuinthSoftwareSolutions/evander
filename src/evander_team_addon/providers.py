@@ -28,6 +28,7 @@ from evander.effects.providers.base import (
     EffectLifecycleHookBase,
     EffectProviderBase,
     EffectRuntimeContext,
+    scoped_effect_directory_path,
 )
 from evander.artifact_spaces import (
     ArtifactSpacePermissionError,
@@ -3309,8 +3310,9 @@ class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
             expected_commit_sha = _required_text(
                 payload.get("expected_commit_sha"), "expected_commit_sha"
             )
-            directory_path = _optional_text(payload.get("directory_path")) or str(
-                getattr(self.runtime_context, "metadata", {}).get("directory_path") or "root"
+            directory_path = scoped_effect_directory_path(
+                self.runtime_context,
+                _optional_text(payload.get("directory_path")),
             )
         except ValueError as exc:
             return _review_publish_failure(None, None, str(exc))
@@ -3441,8 +3443,9 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
                 if payload.get("allowed_changed_paths") is not None
                 else None
             )
-            directory_path = _optional_text(payload.get("directory_path")) or str(
-                getattr(self.runtime_context, "metadata", {}).get("directory_path") or "root"
+            directory_path = scoped_effect_directory_path(
+                self.runtime_context,
+                _optional_text(payload.get("directory_path")),
             )
         except ValueError as exc:
             return _consolidation_failure(None, str(exc))

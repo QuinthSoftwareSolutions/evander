@@ -2191,6 +2191,20 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 ),
             ),
             _field(
+                "pinned_ref",
+                "Pinned ref",
+                "string",
+                bindable=True,
+                description="Optional ref to fetch before scoped read credentials are removed.",
+            ),
+            _field(
+                "pinned_commit_sha",
+                "Pinned commit SHA",
+                "string",
+                bindable=True,
+                description="Exact commit required for pinned_ref.",
+            ),
+            _field(
                 "git_author_name",
                 "Git author name",
                 "string",
@@ -3414,6 +3428,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("source_ref", "Source ref", "string", required=True, bindable=True),
             _field("expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True),
             _field("destination_branch", "Destination branch", "string", required=True, bindable=True),
+            _field(
+                "fallback_destination_branch",
+                "Fallback destination branch",
+                "string",
+                bindable=True,
+            ),
             _field("base_branch", "Base branch", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("work_item_id", "Work item ID", "string", bindable=True),

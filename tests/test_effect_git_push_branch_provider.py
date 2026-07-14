@@ -91,6 +91,24 @@ def test_git_push_branch_provider_uses_failure_message_as_error() -> None:
     assert result["error"] == "Canonical destination changed before publication."
 
 
+def test_git_push_branch_provider_rejects_sibling_directory_override() -> None:
+    admin_service = _AdminServiceStub({"success": True})
+    provider = GitPushBranchEffectProvider()
+    provider.initialize(
+        _definition(directory_path="root/team-b"),
+        EffectRuntimeContext(
+            admin_service=admin_service,
+            env={},
+            metadata={"directory_path": "root/team-a"},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="outside workflow directory scope"):
+        provider.execute()
+
+    assert admin_service.calls == []
+
+
 @pytest.mark.parametrize(
     ("field_name", "message"),
     [

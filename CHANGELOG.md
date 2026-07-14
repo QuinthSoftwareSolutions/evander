@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-13 - Managed PR And Immutable Recovery Hardening
+
+- Kept consultation snapshot fetches inside the scoped read-credential lifecycle and rejected
+  sibling directory overrides across generic and Team managed-Git publication effects.
+- Restored merge-required PR preflight results, PR map/session feedback bindings, Azure work-item
+  links, browser URLs, bounded descriptions, and metadata refresh when reusing pull requests.
+- Preserved explicit standalone PR destination branches, aligned conflict bindings with the
+  `destination_branch` output contract, and based verification retries on frozen release commands.
+- Validated default-branch overrides before persisting refreshed repository metadata so failed
+  registrations cannot poison later managed-Git refreshes.
+
 ## 2026-07-13 - Documentation Accuracy And Drift Checks
 
 - Refreshed operator, architecture, backend, add-on, Admin Web, and user-manual documentation

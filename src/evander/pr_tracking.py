@@ -111,6 +111,49 @@ class PrMapStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
+    def upsert_binding(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        pr_url: str | None,
+        source_branch: str,
+        target_branch: str,
+        session_id: str,
+        directory_path: str,
+    ) -> dict[str, Any]:
+        normalized_provider = pr_map_provider_name(provider)
+        normalized_repo = str(repo or "").strip()
+        normalized_pr_id = str(pr_id or "").strip()
+        if not normalized_provider or not normalized_repo or not normalized_pr_id:
+            raise ValueError("PR binding requires provider, repo, and pr_id")
+        timestamp = _isoformat_utc(datetime.now(UTC))
+        key = f"{normalized_provider}:{normalized_repo}:{normalized_pr_id}"
+        with _locked_pr_map_payload(self.path) as payload:
+            entries = payload.setdefault("entries", {})
+            if not isinstance(entries, dict):
+                entries = {}
+                payload["entries"] = entries
+            previous = entries.get(key)
+            entry = dict(previous) if isinstance(previous, dict) else {}
+            entry.update(
+                {
+                    "provider": normalized_provider,
+                    "repo": normalized_repo,
+                    "pr_id": normalized_pr_id,
+                    "pr_url": str(pr_url or "").strip() or None,
+                    "origin_branch": str(source_branch or "").strip(),
+                    "base_branch": str(target_branch or "").strip(),
+                    "session_id": str(session_id or "").strip(),
+                    "directory_path": str(directory_path or "").strip() or "root",
+                    "updated_at": timestamp,
+                }
+            )
+            entries[key] = entry
+            payload["updated_at"] = timestamp
+        return entry
+
     def update_status(
         self,
         snapshot: dict[str, Any],

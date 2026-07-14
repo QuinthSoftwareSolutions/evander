@@ -61,6 +61,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "git_committer_name": effect.git_committer_name,
             "git_committer_email": effect.git_committer_email,
             "git_access_mode": effect.git_access_mode,
+            "pinned_ref": effect.pinned_ref,
+            "pinned_commit_sha": effect.pinned_commit_sha,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -98,6 +100,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "effect:agent:clone-repo requires managed_repo_id",
         )
         clone_branch = normalize_optional_string(payload.get("clone_branch"))
+        pinned_ref = normalize_optional_string(payload.get("pinned_ref"))
+        pinned_commit_sha = normalize_optional_string(payload.get("pinned_commit_sha"))
         clone_resolver = getattr(context.admin_service, "resolve_managed_git_clone", None)
         if not callable(clone_resolver):
             raise RuntimeError("managed Git clone resolver is not available")
@@ -196,6 +200,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                     ),
                     clone_branch=clone_branch,
                     git_access_mode=git_access_mode,
+                    pinned_ref=pinned_ref,
+                    pinned_commit_sha=pinned_commit_sha,
                     git_author_identity=git_author_identity,
                     git_committer_identity=git_committer_identity,
                     timeout_seconds=container_job_timeout_seconds,
@@ -244,6 +250,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             # return a commit snapshot. Keep clone responses backwards-compatible
             # while exposing the immutable commit whenever the worker provides it.
             "commit_sha": getattr(result, "commit_sha", None),
+            "pinned_ref": pinned_ref,
+            "pinned_commit_sha": pinned_commit_sha,
             "managed_repo_id": managed_repo_id,
             "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
             "git_access_mode": git_access_mode,
@@ -506,6 +514,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         push_remote_url: str | None,
         clone_branch: str | None,
         git_access_mode: str,
+        pinned_ref: str | None,
+        pinned_commit_sha: str | None,
         git_author_identity: GitIdentity | None,
         git_committer_identity: GitIdentity | None,
         timeout_seconds: float,
@@ -519,6 +529,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             push_remote_url=push_remote_url,
             clone_branch=clone_branch,
             git_access_mode=git_access_mode,
+            pinned_ref=pinned_ref,
+            pinned_commit_sha=pinned_commit_sha,
             git_author_identity=git_author_identity,
             git_committer_identity=git_committer_identity,
         )
@@ -589,6 +601,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         push_remote_url: str | None = None,
         clone_branch: str | None,
         git_access_mode: str = "write",
+        pinned_ref: str | None = None,
+        pinned_commit_sha: str | None = None,
         git_identity: GitIdentity | None = None,
         git_author_identity: GitIdentity | None = None,
         git_committer_identity: GitIdentity | None = None,
@@ -613,7 +627,15 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             f"BRANCH_SUFFIX={shlex.quote(session_id)}",
             f"PR_NOTES_REF={shlex.quote(pr_notes_ref)}",
             f"GIT_ACCESS_MODE={shlex.quote(normalized_git_access_mode)}",
+            f"PINNED_REF={shlex.quote(pinned_ref or '')}",
+            f"PINNED_COMMIT_SHA={shlex.quote(pinned_commit_sha or '')}",
             "WORK_BRANCH=work",
+            'if [ -n "$PINNED_REF" ]; then',
+            '  git fetch --no-tags origin "$PINNED_REF"',
+            '  test "$(git rev-parse FETCH_HEAD)" = "$PINNED_COMMIT_SHA"',
+            "  git checkout --detach FETCH_HEAD",
+            '  test "$(git rev-parse HEAD)" = "$PINNED_COMMIT_SHA"',
+            "fi",
             'if [ -n "$PUSH_REMOTE_URL" ]; then',
             '  if git remote get-url agent >/dev/null 2>&1; then git remote set-url agent "$PUSH_REMOTE_URL"; else git remote add agent "$PUSH_REMOTE_URL"; fi',
             '  if [ -n "$CANONICAL_REMOTE_URL" ] && [ "$CANONICAL_REMOTE_URL" != "$PUSH_REMOTE_URL" ]; then',
@@ -634,7 +656,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             'if [ -n "$BASE_BRANCH" ]; then git config evander.baseBranch "$BASE_BRANCH"; fi',
             'git config evander.workBranch "$WORK_BRANCH"',
             "CURRENT_BRANCH=$(git branch --show-current || true)",
-            'if [ "$CURRENT_BRANCH" != "$WORK_BRANCH" ]; then',
+            'if [ -z "$PINNED_REF" ] && [ "$CURRENT_BRANCH" != "$WORK_BRANCH" ]; then',
             '  if git show-ref --verify --quiet "refs/heads/$WORK_BRANCH"; then git switch "$WORK_BRANCH"; else git switch -c "$WORK_BRANCH"; fi',
             "fi",
             'git config evander.sessionId "$SESSION_ID"',

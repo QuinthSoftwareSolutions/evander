@@ -5972,6 +5972,33 @@ def test_agent_clone_container_read_only_command_disables_push_agent_alias() -> 
     assert 'rm -f "$HOME/.ssh/evander-git-write"' in command
 
 
+def test_agent_clone_container_fetches_pinned_ref_before_removing_read_key() -> None:
+    command = AgentCloneRepoEffectProvider._container_git_config_command(
+        session_id="consult-worker-one",
+        target_dir="/home/agent/repos/repo",
+        repo_source=(
+            "ssh://evander-git-host-write/opt/evander/runtime/managed-git/"
+            "mr_0123456789abcdefabcd.git"
+        ),
+        remote_url=(
+            "ssh://evander-git-host-write/opt/evander/runtime/managed-git/"
+            "mr_0123456789abcdefabcd.git"
+        ),
+        clone_branch="main",
+        git_access_mode="read-only",
+        pinned_ref="refs/evander/consultations/consult-one",
+        pinned_commit_sha="a" * 40,
+    )
+
+    fetch = 'git fetch --no-tags origin "$PINNED_REF"'
+    remove_key = 'rm -f "$HOME/.ssh/evander-git-write"'
+    assert fetch in command
+    assert command.index(fetch) < command.index(remove_key)
+    assert 'test "$(git rev-parse FETCH_HEAD)" = "$PINNED_COMMIT_SHA"' in command
+    assert "git checkout --detach FETCH_HEAD" in command
+    assert 'if [ -z "$PINNED_REF" ] &&' in command
+
+
 def test_agent_clone_container_configures_git_author_identity() -> None:
     command = AgentCloneRepoEffectProvider._container_git_config_command(
         session_id="session-1",

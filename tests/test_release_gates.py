@@ -166,6 +166,42 @@ def test_successful_verification_only_policy_approves_release() -> None:
     assert canonical_push.sources[0].expected_commit_sha == "candidate-sha"
 
 
+def test_verification_retry_uses_commands_frozen_in_release_manifest() -> None:
+    frozen_command = ReleaseVerificationCommand(name="frozen-tests", argv=["pytest", "-q"])
+    release, _promotion = _release_and_promotion(verification_commands=[frozen_command])
+    release.state = TeamRecordState.BLOCKED
+    failed_run = ReleaseVerificationRun(
+        id="verification-run",
+        release_package_id=release.id,
+        candidate_commit_sha="candidate-sha",
+        session_id="verification-session",
+        state="failed",
+        failure_kind="infrastructure",
+        command_results=[ReleaseVerificationCommandResult(name=frozen_command.name)],
+    )
+    release.verification_run_ids = [failed_run.id]
+    state = TeamState.empty()
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(allow_ungated=True)
+    )
+    state.release_verification_runs[failed_run.id] = failed_run
+
+    result: dict[str, object] = {}
+    retry_release_gate(
+        state,
+        release=release,
+        gate_kind="verification",
+        gate_id=failed_run.id,
+        reason="Verifier infrastructure recovered.",
+        requested_by="operator",
+        result=result,
+    )
+
+    replacement = state.release_verification_runs[str(result["replacement_gate_id"])]
+    assert [item.name for item in replacement.command_results] == [frozen_command.name]
+    assert release.state == TeamRecordState.PENDING
+
+
 def test_retry_keeps_release_blocked_until_every_blocked_review_is_replaced() -> None:
     requirements = [
         ReleaseReviewRequirement(

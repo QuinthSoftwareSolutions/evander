@@ -456,10 +456,9 @@ def retry_release_gate(
             raise ValueError(
                 "only infrastructure-failed or timed-out verification may be retried"
             )
-        project = state.projects.get(release.project_id)
-        policy = project.release_policy if project is not None else None
-        if policy is None or not policy.verification_commands:
-            raise ValueError("release verification policy is unavailable")
+        verification_commands = release.manifest.verification_commands
+        if not verification_commands:
+            raise ValueError("release manifest has no verification commands")
         attempt_number = max(
             (
                 state.release_verification_runs[run_id].attempt_number
@@ -479,7 +478,7 @@ def retry_release_gate(
             retry_requested_by=normalized_requested_by,
             command_results=[
                 ReleaseVerificationCommandResult(name=command.name)
-                for command in policy.verification_commands
+                for command in verification_commands
             ],
         )
         current.superseded_by_verification_run_id = run.id
