@@ -385,10 +385,10 @@ a human operator rather than another Team agent.
 
 The Mail view is the Agent Mail surface for agent-to-agent messages. It is
 separate from operator Chat: use Chat for a signed-in human's conversation with
-one persistent agent, and use Mail to inspect durable inter-agent inbox and
-outbox records, delivery state, and message context. `team_chats.read_all`
-applies only to other operators' Chat histories; it does not grant broader
-Agent Mail access.
+one persistent agent, and use Mail to inspect the sent and received projections
+over Team's single durable inbox collection, including handling state and
+message context. `team_chats.read_all` applies only to other operators' Chat
+histories; it does not grant broader Agent Mail access.
 
 ### Team Memory
 
@@ -429,7 +429,8 @@ Team roles are first-class state records under `TeamState.roles`. Agents store a
 `role_id` instead of a free-form role string, and role records carry the display
 name, optional project scope, default ephemeral policy, and permission list for
 that role. The Admin API exposes role CRUD at `/api/addons/team-addon/roles`,
-and the bundled UI includes a `Roles` view plus create/edit forms. Bundled
+and the bundled UI includes role create/edit forms inside the `Teams` view;
+there is no separate top-level `Roles` view. Bundled
 permissions include `create_root_task`, `prepare_bookkeeping_action`,
 `review_bookkeeping_action`, `request_payment_preparation`, and
 `request_release`; release authorization checks the agent's role permission
@@ -689,7 +690,7 @@ set:
   `low_priority_wake_after_cycles` defaults to `4`; low-priority inbox items
   count Team wake evaluations and are batched until the threshold is reached
   unless another wake reason delivers them earlier.
-  High-signal wake requests, such as high/normal response-requested inbox,
+  High-signal wake requests, such as high/normal pending inbox,
   ready task handoffs, review requests, rework requests, and remaining work
   found when a dispatch finalizes, emit a debounced
   `team.agent.wake_requested` internal event. The default debounce is 10
@@ -771,7 +772,6 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_request_status`
 - `team_ask_question`
 - `team_send_progress_report`
-- `team_reply_to_chat`
 - `team_send_operator_chat_message`
 - `team_escalate_operator`
 - `team_record_memory`
@@ -801,7 +801,7 @@ Ordinary persistent Team wakes may receive these tools:
 Tool visibility is scoped by wake class:
 
 - Normal persistent wakes get ordinary Team action tools.
-- Team Chat wakes get `team_reply_to_chat`, plus ordinary tools only when that
+- Team Chat wakes get the chat-class tool `team_reply_to_chat`, plus ordinary tools only when that
   chat dispatch may mutate Team state.
 - Governance wakes get governance tools only.
 - Ephemeral worker wakes get `team_report_ephemeral_result` only.

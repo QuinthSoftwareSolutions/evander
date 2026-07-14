@@ -1,0 +1,45 @@
+flowchart TB
+    request[Parent requests bounded assignment]
+    capacity{Policy and capacity valid?}
+    durable[Durable assignment\nrequested / spawn_pending]
+    create[Core creates disposable session]
+    running[Worker runs with only\nteam_report_ephemeral_result]
+    result{Result report}
+    completed[Completed result\nsummary, artifacts, optional exact branch]
+    failed[Failed result\ndurable error evidence]
+
+    subgraph decision[Parent decision lane]
+        inspect[Parent inspects completed evidence]
+        choice{Accept?}
+        accepted[Accepted]
+        rejected[Rejected with reason]
+        deliverable[Deliverable attributed to parent\nnormal review still required]
+    end
+
+    subgraph cleanup[Independent cleanup lane]
+        route[Route completed core session]
+        destroy[Destroy disposable session]
+        cleaned[Cleanup recorded]
+        cleanupFailed[Cleanup failure retained]
+    end
+
+    request --> capacity
+    capacity -- no --> deny[Reject without partial batch]
+    capacity -- yes --> durable --> create --> running --> result
+    result -- success --> completed
+    result -- error --> failed
+
+    completed --> inspect --> choice
+    choice -- yes --> accepted --> deliverable
+    choice -- no --> rejected
+
+    completed --> route
+    failed --> route
+    route --> destroy
+    destroy -- success --> cleaned
+    destroy -- failure --> cleanupFailed
+    cleaned -. parent may decide before or after cleanup .-> inspect
+
+    invariant[Cleanup and parent decision are independent milestones.\nDestroying the session never deletes assignment evidence.]
+    invariant --- decision
+    invariant --- cleanup

@@ -152,7 +152,7 @@ The trigger/effect runtime is designed as two layers with explicit ownership bou
 ## Optional Add-ons
 
 Add-ons are external, opt-in layers for opinionated product experiences on top
-of Truman. Core exposes generic loading, Admin Web mounting, workflow-provider
+of Evander. Core exposes generic loading, Admin Web mounting, workflow-provider
 bridging, and runtime storage namespacing; add-ons own their domain concepts.
 For example, a hierarchical agent-team module belongs in an add-on package, not
 in core session, workflow, or Admin Web models. See [add-ons](addons.md).
@@ -229,7 +229,8 @@ This sequence minimizes payload volume when there is no new feedback and support
 Trigger ingestion is intentionally split so queue ownership stays centralized while provider-specific
 logic remains isolated:
 
-- `evander-trigger-orchestrator` owns:
+- The trigger worker (`evander-cli trigger-orchestrator`, or
+  `evander-trigger-orchestrator.service` under systemd) owns:
   - loading/validating global trigger config (`config/trigger-orchestrator/config.json`)
   - provider polling cadence + single-instance locking
   - durable event queue persistence (`trigger-orchestrator-events.json`)
@@ -389,7 +390,7 @@ for the full model run. Per-profile queues provide admission control, and capaci
 after cleanup. This keeps persistent agent identity, inboxes, and Team governance out of a
 short-lived read-only query path.
 
-## Planned Next Integrations
+## Current Provider Integrations And Trust Boundaries
 
 - Discord integration now uses a provider-backed bot API adapter (`discord_backend: bot_api`) while
   preserving the same MCP tool contract.

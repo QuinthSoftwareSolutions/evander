@@ -1,0 +1,32 @@
+flowchart TB
+    subgraph outside[External trust zone]
+        openai[Model provider]
+        packages[Package feeds]
+        systems[Approved HTTP targets and provider APIs]
+    end
+
+    subgraph host[Evander host trust zone]
+        secrets[Host secrets and credentials]
+        policy[Session policy, approvals, and audit]
+        services[Gateway and narrow relays]
+        state[Runtime state and managed Git]
+    end
+
+    subgraph isolated[Default-deny execution zone]
+        vm[Disposable libvirt VM]
+        container[Disposable worker container]
+    end
+
+    secrets --> services
+    policy --> services
+    state --> services
+    services --> openai
+    services --> packages
+    services --> systems
+    vm -->|allowlisted host ports only| services
+    container -->|allowlisted host ports only| services
+    vm -. no general internet .-> outside
+    container -. no general internet .-> outside
+
+    classDef deny stroke:#a33d3d,stroke-width:2px,stroke-dasharray:5 5;
+    class vm,container deny;

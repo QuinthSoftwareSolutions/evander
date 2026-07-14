@@ -7,6 +7,8 @@
   verifier checkouts before executing frozen commands.
 - Preserved exact top-level local OpenAI tool calls ahead of namespace inference and classified SSH
   and container execution timeouts as timed-out release verification runs.
+- Preserved upgrades from ADO worker configurations containing retired automatic-PR settings and
+  made the managed-Git operation timeout configurable through host and directory provider config.
 
 ## 2026-07-13 - Managed PR And Immutable Recovery Hardening
 
@@ -22,6 +24,18 @@
   through snapshot cleanup so failed requests cannot bypass gates or retain pins indefinitely.
 - Rejected unsupported PR providers and missing tracking sessions before pushing branches or
   creating provider pull requests.
+
+## 2026-07-13 - Illustrated Evander And Team Technical Manual
+
+- Replaced the former operator-manual draft set with one 30-chapter canonical source covering
+  core Evander and the Team Add-on from first principles through architecture, operations,
+  troubleshooting, extension, glossary, and a generated linked subject index.
+- Added source-controlled Mermaid diagrams and deterministic sanitized dark-mode screenshots,
+  with one repeatable build that publishes matching Markdown, self-contained HTML, PDF, and DOCX
+  editions plus a source/output provenance record.
+- Added publication-integrity checks tied to the implemented service, firewall, Admin navigation,
+  Team navigation, current CLI, screenshot, and diagram inventories, and corrected stale trigger,
+  Team role, Agent Mail, chat-tool, and wake-eligibility documentation found during source review.
 
 ## 2026-07-13 - Documentation Accuracy And Drift Checks
 

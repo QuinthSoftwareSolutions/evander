@@ -788,7 +788,7 @@ Storage layout for directory config:
   ollama pull qwen3-coder:30b
   ```
 
-  Keep Ollama host-local or on a private control-plane address; guests and worker containers should still reach only Truman's session-scoped relay URL. Because the relay itself defaults to `0.0.0.0:11434`, `local_openai` rejects the default `http://127.0.0.1:11434/v1` upstream unless the relay is moved off wildcard/loopback on that port. Either bind the relay only on the guest-facing control-plane address while Ollama keeps `127.0.0.1:11434`, or move Ollama to another private port and set `local_openai_api_base_url` accordingly.
+  Keep Ollama host-local or on a private control-plane address; guests and worker containers should still reach only Evander's session-scoped relay URL. Because the relay itself defaults to `0.0.0.0:11434`, `local_openai` rejects the default `http://127.0.0.1:11434/v1` upstream unless the relay is moved off wildcard/loopback on that port. Either bind the relay only on the guest-facing control-plane address while Ollama keeps `127.0.0.1:11434`, or move Ollama to another private port and set `local_openai_api_base_url` accordingly.
 - Example local Ollama directory-scoped `providers.json` overlay when the relay keeps its default listener and Ollama is moved to `127.0.0.1:11435`:
 
   ```json
@@ -845,7 +845,7 @@ A transport-terminated warning without client-visible failure can be expected fo
   by directory policy or missing from `allowed_tools` are omitted, approval-required tools remain
   visible with approval metadata in policy summaries, and direct calls still enforce policy even
   when a tool is hidden from the manifest.
-- Once an MCP transport session is bound to a Truman session, later `/mcp` requests on that
+- Once an MCP transport session is bound to an Evander session, later `/mcp` requests on that
   transport must omit `session_id` or repeat the same value. A conflicting `session_id` is rejected
   instead of switching the manifest to another session.
 - Required MCP arguments: none beyond the session binding.
@@ -1216,7 +1216,7 @@ For the `openai_realtime_didww` backend, configure:
 ```
 
 For fixed inbound DIDWW routes, add an `inbound_phone_routes` entry that binds the DID to an
-existing active Truman session in the same directory. Keep the bridge host-local and enable the
+existing active Evander session in the same directory. Keep the bridge host-local and enable the
 inbound listener only when needed:
 
 ```bash
@@ -2532,8 +2532,10 @@ Failure recovery:
 
 ## Host-Side Trigger Orchestrator
 
-- The scaffold includes `evander-trigger-orchestrator`, a singleton host worker that polls
-  configured triggers and persists trigger events to a durable queue.
+- The scaffold includes a singleton host trigger worker, launched interactively as
+  `evander-cli trigger-orchestrator` or persistently as
+  `evander-trigger-orchestrator.service`, that polls configured triggers and persists trigger
+  events to a durable queue.
 - Global worker config lives at `config/trigger-orchestrator/config.json`.
 - For orchestration-only production deployments, start from `config/trigger-orchestrator/orchestration-core.config.json.example` (uses `runtime/orchestration-core` + `profiles/core-minimal`).
 - Runtime defaults (when config fields are null/omitted):
@@ -2549,7 +2551,7 @@ Failure recovery:
 Run one cycle for validation/debug:
 
 ```bash
-evander-trigger-orchestrator --runtime-dir runtime --once --log-level DEBUG
+evander-cli trigger-orchestrator --runtime-dir runtime --once --log-level DEBUG
 ```
 
 Run continuously under systemd:

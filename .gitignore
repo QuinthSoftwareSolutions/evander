@@ -88,3 +88,5 @@ frontend/workflow-editor/tsconfig.tsbuildinfo
 /integrations/teams-meeting-media-bridge/**/bin/
 /integrations/teams-meeting-media-bridge/**/obj/
 NEWS.md
+/output/
+/.playwright-cli/

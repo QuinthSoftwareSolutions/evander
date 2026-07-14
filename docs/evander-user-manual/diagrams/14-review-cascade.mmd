@@ -1,0 +1,28 @@
+stateDiagram-v2
+    [*] --> TaskInProgress
+    TaskInProgress --> DeliverableSubmitted: submit versioned evidence
+    DeliverableSubmitted --> ReviewPending: create required review requests
+
+    ReviewPending --> DeliverableAccepted: every review accepts and no carried finding remains open
+    DeliverableAccepted --> TaskAccepted: all current task deliverables accepted
+    TaskAccepted --> [*]
+
+    ReviewPending --> DeliverableRejected: any reviewer rejects candidate evidence
+    DeliverableRejected --> TaskInProgress: return task for rework
+    TaskInProgress --> SuccessorDeliverable: address findings
+    SuccessorDeliverable --> ReviewPending: supersede rejected deliverable and carry open findings
+
+    ReviewPending --> DeliverableBlocked: reviewer records a concrete process or evidence blocker
+    DeliverableBlocked --> TaskBlocked: block propagates
+    TaskBlocked --> [*]
+
+    note right of SuccessorDeliverable
+      The rejected review remains immutable.
+      A new deliverable and new reviews carry lineage.
+    end note
+
+    note right of TaskBlocked
+      Blocked is not rejection and does not
+      automatically enter the rework cascade.
+      Explicit intervention must create the next valid step.
+    end note

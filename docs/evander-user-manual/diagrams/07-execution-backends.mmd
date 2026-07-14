@@ -1,0 +1,15 @@
+flowchart TB
+    request[Session or workflow requests execution]
+    select{Directory execution_backend}
+    libvirt[libvirt_vm]
+    worker[container_worker_vm]
+    vm[Create overlay and cloud-init ISO\nlaunch disposable VM]
+    job[Submit authenticated worker job]
+    container[Create constrained Docker container\non worker VM]
+    common[Common session, policy, relay, Git,\nartifact, telemetry, and cleanup contracts]
+    terminal[Terminal outcome and cleanup evidence]
+
+    request --> select
+    select --> libvirt --> vm --> common
+    select --> worker --> job --> container --> common
+    common --> terminal

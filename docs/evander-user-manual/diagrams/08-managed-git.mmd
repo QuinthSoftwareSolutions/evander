@@ -1,0 +1,22 @@
+flowchart LR
+    upstream[Canonical upstream]
+    bare[(Managed bare repository\nmanaged_repo_id)]
+    refresh[refs/evander/refresh/...]
+    agent[refs/heads/agents/session/topic]
+    review[review and Team refs]
+    operation[host-only operation ref]
+    worktree[unique detached worktree]
+    publish[leased upstream push]
+
+    upstream -->|credentialed refresh| refresh
+    refresh -->|atomic ref transaction| bare
+    bare --> agent
+    agent -->|pin exact commit| operation
+    operation --> review
+    operation --> worktree
+    worktree -->|prepare or verify| operation
+    operation -->|compare-and-swap| publish
+    publish --> upstream
+
+    guard[Guest writes are restricted to its exact agent namespace; host workflows publish only pinned SHAs.]
+    guard --- agent

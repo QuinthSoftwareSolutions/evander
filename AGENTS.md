@@ -62,7 +62,8 @@ The security model is:
     Git and edited through Admin Web.
 
 - Provider and wake workers:
-  - ADO backlog/PR feedback worker: `evander-ado-worker`
+  - ADO PR feedback/completion worker: `evander-ado-worker`; Azure DevOps work-item intake is
+    workflow-owned
   - ADO proxy issue freshness worker: `evander-proxy-issue-sync`
   - Discord ingest: `evander-discord-ingest`
   - Discord wake: `evander-discord-wake`

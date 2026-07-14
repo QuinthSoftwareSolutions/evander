@@ -1,0 +1,25 @@
+flowchart LR
+    source[Trigger provider]
+    queue[(Durable event queue)]
+    compiler[Pack loader and graph validation]
+    trigger[Trigger node]
+    gate[Gate nodes\nfilter, map, switch, loops]
+    query[Query provider\nread-only projection]
+    effect[Effect provider\ncontrolled mutation]
+    records[(Execution records\nand idempotency)]
+    downstream[Completion event]
+
+    compiler --> trigger
+    compiler --> gate
+    compiler --> effect
+    source --> queue
+    queue --> trigger
+    trigger --> gate
+    gate --> query
+    gate --> effect
+    query --> effect
+    trigger --> records
+    gate --> records
+    effect --> records
+    effect --> downstream
+    downstream --> queue

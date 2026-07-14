@@ -156,7 +156,7 @@ def test_admin_navigation_is_covered_by_manuals() -> None:
     assert labels
     for manual_path in (
         ROOT / "docs/admin-ui-user-manual.md",
-        ROOT / "docs/evander-user-manual-drafts/section-22-reference.md",
+        ROOT / "docs/evander-user-manual/chapters/28-system-reference.md",
     ):
         manual = manual_path.read_text(encoding="utf-8")
         missing = sorted(label for label in labels if label not in manual)
@@ -197,7 +197,7 @@ def test_team_navigation_is_covered_by_manuals() -> None:
     assert parser.labels
     for manual_path in (
         ROOT / "docs/evander-user-manual.md",
-        ROOT / "docs/evander-user-manual-drafts/section-13-team-add-on.md",
+        ROOT / "docs/evander-user-manual/chapters/28-system-reference.md",
     ):
         manual = " ".join(manual_path.read_text(encoding="utf-8").split())
         missing = sorted(label for label in parser.labels if label not in manual)
@@ -212,24 +212,3 @@ def test_workflow_gate_catalog_is_documented() -> None:
         reference = reference_path.read_text(encoding="utf-8")
         missing = sorted(gate for gate in gates if gate not in reference)
         assert not missing, f"{reference_path.relative_to(ROOT)} missing gates: {missing}"
-
-
-def _substantive_lines(path: Path) -> set[str]:
-    lines = _without_fenced_code(path.read_text(encoding="utf-8")).splitlines()
-    return {
-        " ".join(line.split())
-        for line in lines
-        if len(" ".join(line.split())) >= 60
-        and not line.lstrip().startswith(("#", ">"))
-        and "](" not in line
-    }
-
-
-def test_manual_draft_prose_is_synchronized() -> None:
-    consolidated = _substantive_lines(ROOT / "docs/evander-user-manual.md")
-    failures: list[str] = []
-    for draft in sorted((ROOT / "docs/evander-user-manual-drafts").glob("*.md")):
-        missing = _substantive_lines(draft) - consolidated
-        if missing:
-            failures.append(f"{draft.name}: {len(missing)} substantive lines differ")
-    assert not failures, "\n" + "\n".join(failures)

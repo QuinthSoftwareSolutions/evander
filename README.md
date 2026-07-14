@@ -132,7 +132,7 @@ Directory-scoped config is rooted at `root`:
    events and provisions fixed routes through the gateway using
    `VOICE_MEDIA_CONTROLLER_TOKEN`. After the inbound call reaches a terminal
    bridge state, it syncs the sanitized result back to the gateway so the
-   originating Truman session receives the normal voice-session reconciliation.
+   originating Evander session receives the normal voice-session reconciliation.
 
    Optional Teams meeting voice sessions require the Windows-hosted bridge in
    `integrations/teams-meeting-media-bridge`. Set `BRIDGE_ADAPTER_MODE=Graph`
@@ -296,6 +296,12 @@ panel surfaces explicit missing reasons instead of inferring or inventing releas
 For a task-oriented guide to every Admin UI section, see
 [`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).
 
+For the complete layered technical reference to core Evander and the Team Add-on, including
+architecture, runbooks, diagrams, glossary, and linked subject index, see the
+[`Evander Technical Manual`](docs/evander-user-manual.md). The same edition is published as
+[HTML](docs/evander-user-manual.html), [PDF](docs/evander-user-manual.pdf), and
+[DOCX](docs/evander-user-manual.docx).
+
 Dashboard-tagged read requests use a short-lived backend JSON cache so repeated opens do not
 re-run every systemd, VM inventory, workflow, approval, session, and audit read immediately. The
 detail tabs keep their normal live reads, and the dashboard Refresh button bypasses the cache.
@@ -371,7 +377,9 @@ Sign-out clears only the local admin session cookie. v1 does not force Microsoft
 
 ### Trigger orchestrator
 
-The scaffold includes `evander-trigger-orchestrator`, a host-side worker that:
+The scaffold includes the host-side trigger worker, launched interactively as
+`evander-cli trigger-orchestrator` or persistently as
+`evander-trigger-orchestrator.service`, that:
 
 - validates and loads trigger definitions from `config/trigger-orchestrator/config.json`
 - polls provider-specific trigger implementations (`cron`, `ticket`, `discord`, `email`, `pull-request`, `git`)
@@ -385,7 +393,7 @@ The scaffold includes `evander-trigger-orchestrator`, a host-side worker that:
 One-shot cycle execution is supported for ops/debugging:
 
 ```bash
-evander-trigger-orchestrator --runtime-dir runtime --once --log-level INFO
+evander-cli trigger-orchestrator --runtime-dir runtime --once --log-level INFO
 ```
 
 For continuous operation, run the systemd unit:

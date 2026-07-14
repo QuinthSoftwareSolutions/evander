@@ -67,7 +67,7 @@ Graph mode supports selectable speech backends:
 
 The join request may include `projection` and `realtime` objects. OpenAI Realtime mode uses those
 objects as the meeting session instructions/model overrides so a projected Teams session can speak
-as the originating Truman agent instead of an unrelated meeting-only hand-off.
+as the originating Evander agent instead of an unrelated meeting-only hand-off.
 
 ## Production Bridge Configuration
 

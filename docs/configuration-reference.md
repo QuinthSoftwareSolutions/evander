@@ -139,7 +139,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`). Legacy one-item `directory_paths` values are accepted and emitted during the compatibility window, but each graph has exactly one canonical directory. `user_ids` are ownership/audit metadata, not a visibility boundary; Admin Web group assignments and direct workflow grants control graph visibility. Pack-backed workflows store the same metadata as `graphs` inside the pack file. |
 | `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names (for example `await_agent_completion`) applied after structural compile/validation. |
-| `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/evander/triggers/models.py`). |
+| `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator definition list; event envelopes live in `src/evander/events/models.py`, while trigger-specific schemas and implementations live under `src/evander/triggers/`. |
 | `gate_execution_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON gate execution log path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |
 | `gate_lock_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator single-instance lock file path. |
@@ -1422,7 +1422,7 @@ invent fallback graph IDs for state nodes.
 | `didww_sip_bridge_url` | provider config overlays | Host-owned SIP bridge URL used by `openai_realtime_didww` calls. |
 | `didww_sip_bridge_token_env` | provider config overlays | Host env-var name for the DIDWW SIP bridge bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
 | `didww_from_number` | provider config overlays | Optional caller ID sent to the DIDWW SIP bridge. |
-| `inbound_phone_routes` | provider config overlays | Fixed inbound DID or called-number routes that bind a caller policy, directory scope, and Realtime projection prompt to an existing Truman session. |
+| `inbound_phone_routes` | provider config overlays | Fixed inbound DID or called-number routes that bind a caller policy, directory scope, and Realtime projection prompt to an existing Evander session. |
 
 ### Inbound phone route keys
 
@@ -1434,7 +1434,7 @@ Each `inbound_phone_routes` entry is a JSON object with these keys.
 | `did` | within each `inbound_phone_routes` entry | Normalized inbound DID match value; numbers are reduced to `+` and digits only. |
 | `called_number` | within each `inbound_phone_routes` entry | Optional normalized called-number match value; numbers are reduced to `+` and digits only. |
 | `directory_path` | within each `inbound_phone_routes` entry | Directory scope used to resolve provider overlays and route-specific context. |
-| `session_id` | within each `inbound_phone_routes` entry | Active Truman session used to project the inbound call and receive reconciliation wakes. |
+| `session_id` | within each `inbound_phone_routes` entry | Active Evander session used to project the inbound call and receive reconciliation wakes. |
 | `allowed_callers` | within each `inbound_phone_routes` entry | Allow-list of normalized caller numbers. |
 | `blocked_callers` | within each `inbound_phone_routes` entry | Optional deny-list of normalized caller numbers. |
 | `route_prompt` | within each `inbound_phone_routes` entry | Route prompt used to build the projected live voice session. |

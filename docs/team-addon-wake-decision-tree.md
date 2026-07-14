@@ -74,7 +74,7 @@ flowchart TD
     work -->|Yes| rotation{"Context rotation<br/>pending?"}
 
     rotation -->|Yes| lease_now_rotation["Lease now<br/>resume_mode becomes new_context"]
-    rotation -->|No| immediate_inbox{"High or normal<br/>response-requested inbox?"}
+    rotation -->|No| immediate_inbox{"High or normal<br/>pending inbox?"}
 
     immediate_inbox -->|Yes| lease_inbox["Lease now<br/>wake_reason: inbox"]
     immediate_inbox -->|No| action_feedback{"Latest failed action<br/>needs feedback?"}
@@ -124,14 +124,14 @@ flowchart LR
         children["Open child tasks<br/>need supervision"]
     end
 
-    subgraph Inbox["Requested inbox"]
+    subgraph Inbox["Wakeable inbox"]
         question["question<br/>default normal"]
         status_request["status_request<br/>default normal"]
         operator_directive["operator_directive<br/>normal"]
         review_request["review request<br/>normal"]
         review_rejected["review rejected<br/>normal"]
         low_notice["deliverable notice or<br/>ephemeral result notice<br/>low"]
-        requested_report["status_report with<br/>response_requested true"]
+        status_report["status_report<br/>normal wakes regardless of reply intent;<br/>low wakes when a reply is requested"]
     end
 
     subgraph Feedback["Action feedback"]
@@ -151,7 +151,7 @@ flowchart LR
 
     classDef source fill:#f5f8ff,stroke:#3867d6,color:#102044;
     classDef sink fill:#e8fff0,stroke:#208a42,color:#102a16;
-    class new_task,deps,children,question,status_request,operator_directive,review_request,review_rejected,low_notice,requested_report,invalid_action,manual,idle,every_wake source;
+    class new_task,deps,children,question,status_request,operator_directive,review_request,review_rejected,low_notice,status_report,invalid_action,manual,idle,every_wake source;
     class normal_due sink;
 ```
 

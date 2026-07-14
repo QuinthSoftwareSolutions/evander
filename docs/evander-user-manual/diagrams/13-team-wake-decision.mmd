@@ -1,0 +1,22 @@
+flowchart TB
+    tick[Scheduled sweep or explicit wake signal]
+    candidate{Agent active and session usable?}
+    blocker{Paused, stood down, busy,\nleased, or over cost cap?}
+    chat{Queued operator Chat?}
+    work{Ready task, review, directive,\nnon-low inbox, or other work due?}
+    lease[Atomically acquire dispatch lease]
+    prep[Prepare Git work context and prompt]
+    resume[Resume agent with wake-scoped tools]
+    final[Finalize activity, release lease,\nschedule follow-up if needed]
+    skip[Record reason and remain retryable]
+
+    tick --> candidate
+    candidate -- no --> skip
+    candidate -- yes --> blocker
+    blocker -- yes --> skip
+    blocker -- no --> chat
+    chat -- yes --> lease
+    chat -- no --> work
+    work -- no --> skip
+    work -- yes --> lease
+    lease --> prep --> resume --> final
