@@ -30,6 +30,7 @@ from evander_team_addon.mcp import (
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
+    TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
@@ -40,10 +41,14 @@ from evander_team_addon.mcp import (
 )
 from evander_team_addon.models import (
     AgentRuntime,
+    DeliverableReviewManifest,
+    DeliverableVerification,
     EphemeralAgentPolicy,
     GovernanceAgendaItemState,
     ProjectGitConfig,
     ProjectGoal,
+    ProjectReleasePolicy,
+    ReviewRequest,
     TeamRecordState,
     TeamTaskState,
 )
@@ -265,15 +270,34 @@ def _seed_slice8_state(runtime_dir: Path) -> TeamStateRepository:
     )
 
     def _set_git_and_refs(state):
-        state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
-            canonical_origin_url="https://example.invalid/Truman.git",
-            provider="azure_devops",
+        project = state.projects["project"]
+        project.git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
         )
-        refs = state.deliverables["deliverable"].git_refs
+        project.release_policy = ProjectReleasePolicy(allow_ungated=True)
+        deliverable = state.deliverables["deliverable"]
+        deliverable.verification = DeliverableVerification(status="passed")
+        refs = deliverable.git_refs
         refs.agent_branch = "agents/session-backend/work"
+        refs.review_branch = "team/team/reviews/deliverable"
+        refs.commit_sha = "reviewed-commit"
         refs.feature_branch = "team/team/features/task-backend"
+        refs.feature_commit_sha = "reviewed-commit"
+        deliverable.review_manifest = DeliverableReviewManifest(
+            base_commit_sha="base-commit",
+            reviewed_commit_sha="reviewed-commit",
+            tree_hash="reviewed-tree",
+            commit_shas=["reviewed-commit"],
+            changed_paths=["src/reviewed.py"],
+        )
+        state.review_requests["review-deliverable"] = ReviewRequest(
+            id="review-deliverable",
+            deliverable_id="deliverable",
+            reviewer_agent_id="lead",
+            state=TeamRecordState.ACCEPTED,
+            reviewed_commit_sha="reviewed-commit",
+        )
+        deliverable.review_request_ids = ["review-deliverable"]
         return state
 
     repo.update(_set_git_and_refs)
@@ -318,11 +342,14 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
     submit_description = tools[TEAM_SUBMIT_DELIVERABLE_TOOL].description or ""
     publish_description = tools[TEAM_PUBLISH_REVIEW_BRANCH_TOOL].description or ""
+    retry_release_description = tools[TEAM_RETRY_RELEASE_GATE_TOOL].description or ""
     assert "verification records status" in submit_description
     assert "git_refs are provenance only" in submit_description
     assert "not required merely because team_submit_deliverable included git_refs" in (
         publish_description
     )
+    assert "infrastructure-failed or timed-out verification" in retry_release_description
+    assert "process-blocked reviews" in retry_release_description
 
 
 def test_team_addon_mcp_registers_operator_directive_tool(tmp_path: Path) -> None:
@@ -642,6 +669,17 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     assert created_task["created_task_ids"] == ["task-mcp"]
     assert created_task["published_event_ids"]
     assert created_task["outbox_record_ids"]
+    assert created_task["completed_outbox_record_ids"] == created_task["outbox_record_ids"]
+    wake_outbox_records = TeamStateRepository(
+        context.config.runtime_dir
+    ).list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+    created_wake_outbox = [
+        record
+        for record in wake_outbox_records
+        if record.id in created_task["outbox_record_ids"]
+    ]
+    assert len(created_wake_outbox) == 1
+    assert created_wake_outbox[0].status.value == "completed"
     scheduled = json.loads(
         scheduled_internal_event_store_path(context.config.runtime_dir).read_text(
             encoding="utf-8",

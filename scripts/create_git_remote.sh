@@ -3,17 +3,20 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: create_git_remote.sh <repo-name> [branch-namespace]
+Usage: create_git_remote.sh <repo-name> [hook-profile]
 
-Create a bare Git remote for agent output on the host-only network.
+Internal initializer for Evander-owned bare repositories and deployment mirrors.
+Operators should register managed repositories with `evander-cli git-repos register`
+instead of invoking this script directly.
 
 Arguments:
-  repo-name         Bare repository name. ".git" suffix is optional.
-  branch-namespace  Prefix used in the recommended push pattern.
-                    Default: agents
+  repo-name     Bare repository name. ".git" suffix is optional.
+  hook-profile  Reserved for the managed-repository service.
 
 Configuration:
-  Reads root directory-scoped issue setup config when present.
+  EVANDER_GIT_ROOT     Internal root that owns the bare repository.
+  EVANDER_GIT_USER     Host account that owns the repository.
+  EVANDER_RUNTIME_DIR  Runtime root for post-receive event logs.
 EOF
 }
 
@@ -28,21 +31,19 @@ if [[ $# -lt 1 ]]; then
 fi
 
 REPO_NAME="$1"
-BRANCH_NAMESPACE="${2:-agents}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/runtime_config.sh
 source "${SCRIPT_DIR}/lib/runtime_config.sh"
 load_issue_setup_config
 
-GIT_ROOT="${EVANDER_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
-GIT_HOST="${EVANDER_GIT_HOST:-192.168.250.1}"
+RUNTIME_DIR="${EVANDER_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
+GIT_ROOT="${EVANDER_GIT_ROOT:-${RUNTIME_DIR}/managed-git}"
 DEFAULT_GIT_USER="${USER:-}"
 if [[ -z "${DEFAULT_GIT_USER}" ]]; then
   DEFAULT_GIT_USER="$(id -un 2>/dev/null || echo root)"
 fi
 GIT_USER="${EVANDER_GIT_USER:-${DEFAULT_GIT_USER}}"
-GIT_SSH_ALIAS="${EVANDER_GIT_SSH_ALIAS:-evander-git-host}"
 TRIGGER_HOOK_SCRIPT="${ROOT_DIR}/scripts/handle_git_push_trigger.sh"
 
 repair_git_remote_ownership_if_root() {
@@ -194,7 +195,7 @@ chmod +x "${REPO_DIR}/hooks/pre-receive"
 cat > "${REPO_DIR}/hooks/post-receive" <<HOOK
 #!/usr/bin/env bash
 set -euo pipefail
-LOG_DIR="${ROOT_DIR}/runtime/hook-logs"
+LOG_DIR="${RUNTIME_DIR}/hook-logs"
 LOG_FILE="\${LOG_DIR}/$(basename "${REPO_DIR}").post-receive.log"
 mkdir -p "\${LOG_DIR}"
 {
@@ -220,14 +221,4 @@ HOOK
 chmod +x "${REPO_DIR}/hooks/post-receive"
 repair_git_remote_ownership_if_root "${REPO_DIR}" "${GIT_USER}"
 
-echo "Bare remote ready: ${REPO_DIR}"
-echo
-echo "Before first writable VM use:"
-echo "  EVANDER_GIT_REPO=$(basename "${REPO_DIR}") EVANDER_GIT_SESSION_ID=<session-id> ./scripts/bootstrap_git_vm.sh <vm-name>"
-echo "With only EVANDER_GIT_REPO metadata, bootstrap_git_vm.sh installs repo-scoped read-only Git access."
-echo
-echo "Add from VM:"
-echo "  git remote add agent ssh://${GIT_SSH_ALIAS}${REPO_DIR}"
-echo
-echo "Recommended push pattern:"
-echo "  git push agent HEAD:refs/heads/${BRANCH_NAMESPACE}/\${SESSION_ID:-manual}/\$(git rev-parse --abbrev-ref HEAD)"
+echo "Initialized Evander internal bare repository: ${REPO_DIR}"

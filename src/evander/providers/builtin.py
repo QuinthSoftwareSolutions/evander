@@ -35,12 +35,16 @@ from evander.effects.providers.event_schedule import EventScheduleEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.effects.providers.chat_assistant import ChatAssistantEnsureSessionEffectProvider
+from evander.effects.providers.code_consultation import CodeConsultationEffectProvider
 from evander.effects.providers.communication_send_message import (
     CommunicationSendMessageEffectProvider,
 )
 from evander.effects.providers.http_request import HttpRequestEffectProvider
 from evander.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
+)
+from evander.effects.providers.git_ensure_managed_repo import (
+    GitEnsureManagedRepoEffectProvider,
 )
 from evander.effects.providers.git_push_branch import GitPushBranchEffectProvider
 from evander.effects.providers.issue_update_metadata import IssueUpdateMetadataEffectProvider
@@ -237,6 +241,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:agent:prompt": AgentPromptEffectProvider,
             "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectProvider,
             "effect:chat-assistant:ensure-session": ChatAssistantEnsureSessionEffectProvider,
+            "effect:agent:code-consultation": CodeConsultationEffectProvider,
             "effect:agent:exec": AgentExecEffectProvider,
             "effect:http:request": HttpRequestEffectProvider,
             "effect:runtime:diagnostics-snapshot": RuntimeDiagnosticsSnapshotEffectProvider,
@@ -261,6 +266,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             ),
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
             "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
+            "effect:git:ensure-managed-repo": GitEnsureManagedRepoEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
             "effect:git:push-branch": GitPushBranchEffectProvider,
             "effect:pr:create": PrCreateEffectProvider,

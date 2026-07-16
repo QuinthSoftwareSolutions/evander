@@ -53,14 +53,17 @@ from .models import (
     GovernanceAgendaItemType,
     GovernanceGoal,
     ProjectGitConfig,
+    ProjectReleasePolicy,
     ProjectGoal,
     ProjectStatus,
     ReviewProfileCriterion,
     RolePermission,
     TeamCaseStatus,
+    TeamInboxItemType,
     TeamRecordState,
     TeamInboxItemState,
     TeamInboxPriority,
+    TeamOutboxStatus,
     TeamTaskState,
     TeamState,
     _agent_payload_with_role,
@@ -80,6 +83,8 @@ from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from .services.domain.wake import _append_agent_wake_requested_event_for_inbox_item
 from .services.admin_service import TeamAdminService
 from .services.chat_service import TeamChatService
 from .services.memory_service import list_memory_records, memory_record_payload
@@ -92,6 +97,8 @@ DEFAULT_TIMELINE_LIMIT = 50
 MAX_TIMELINE_LIMIT = 200
 DEFAULT_STATE_HISTORY_LIMIT = 100
 MAX_STATE_HISTORY_LIMIT = 500
+DEFAULT_INBOX_HISTORY_LIMIT = 50
+MAX_INBOX_HISTORY_LIMIT = 200
 TEAM_VIEW_IDS = (
     "workspace",
     "operations",
@@ -101,6 +108,7 @@ TEAM_VIEW_IDS = (
     "cases",
     "people",
     "chat",
+    "mail",
     "governance",
     "planning",
     "timeline",
@@ -235,6 +243,7 @@ TEAM_VIEW_COLLECTIONS["workspace"] = {
     "git_promotions",
 }
 TEAM_VIEW_COLLECTIONS["chat"] = {"agents"}
+TEAM_VIEW_COLLECTIONS["mail"] = {"teams", "roles", "agents"}
 TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "teams",
     "governance_groups",
@@ -280,19 +289,24 @@ def _team_costs_payload(
 
 def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     repository = TeamStateRepository(context.runtime_dir)
-    admin_service = TeamAdminService(repository)
+    admin_service = TeamAdminService(
+        repository,
+        managed_git_admin=getattr(context.service, "managed_git_admin", None),
+    )
     chat_service = TeamChatService(repository)
     runtime_service = TeamRuntimeService(repository)
     avatar_storage = AvatarStorage(context.runtime_dir)
 
     def _state_payload(request: Request, state: TeamState) -> dict[str, Any]:
-        return _team_state_payload_for_request(
+        payload = _team_state_payload_for_request(
             context.auth,
             request,
             state,
             session_records=_session_records_by_id(_session_repository_from_context(context)),
             agent_execution_records=_agent_execution_records_by_session(context.service),
         )
+        _add_release_outbox_metadata(payload, repository)
+        return payload
 
     def _state_response(
         request: Request,
@@ -351,6 +365,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def get_bootstrap(request: Request) -> JSONResponse:
         state = repository.read()
         return JSONResponse(_bootstrap_payload_for_request(context.auth, request, state))
+
+    async def get_inbox_history(request: Request) -> JSONResponse:
+        return JSONResponse(_inbox_history_payload_for_request(request, repository.read()))
 
     async def get_view(request: Request) -> JSONResponse:
         view = request.path_params["view"]
@@ -606,6 +623,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 lead_role_name=_optional(payload, "lead_role_name"),
                 goals=goals,
                 git=_optional_git_config(payload),
+                release_policy=_optional_release_policy(payload),
                 expected_revision=expected_revision,
             ),
             create_collection="projects",
@@ -621,6 +639,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def patch_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         has_git = "git" in payload
+        has_release_policy = "release_policy" in payload
         has_goals = "goals" in payload
         goals = (
             [ProjectGoal.model_validate(item) for item in _optional_list(payload, "goals")]
@@ -636,6 +655,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 name=_optional(payload, "name"),
                 git=_optional_git_config(payload),
                 set_git=has_git,
+                release_policy=_optional_release_policy(payload),
+                set_release_policy=has_release_policy,
                 goals=goals,
                 status=ProjectStatus(raw_status) if raw_status else None,
                 expected_revision=expected_revision,
@@ -651,21 +672,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         import_git_repo = getattr(service, "import_git_repo", None)
         if not callable(import_git_repo):
             return JSONResponse({"error": "Git repo import is unavailable"}, status_code=503)
-        bare_repo_name = _optional(payload, "bare_repo_name") or _optional(payload, "repo_name")
-        bare_repo = _optional(payload, "bare_repo")
-        if bare_repo:
-            if bare_repo.startswith("/"):
-                raise ValueError("bare_repo must be a bare repo name for import, not a path")
-            if bare_repo_name and bare_repo_name != bare_repo:
-                raise ValueError("bare_repo cannot differ from bare_repo_name")
-            bare_repo_name = bare_repo
         try:
-            repo_source = _required(payload, "repo_source", "host_repo_path")
+            repo_source = _required(payload, "repo_source")
             directory_path = _optional(payload, "directory_path") or "root"
             imported = await run_in_threadpool(
                 lambda: import_git_repo(
                     repo_source=repo_source,
-                    bare_repo_name=bare_repo_name,
                     directory_path=directory_path,
                 )
             )
@@ -955,12 +967,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def create_conversation(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         identity = _operator_identity_from_request(context.auth, request)
+        # A chat is resolved for the current operator and agent, rather than applying
+        # a client-side state snapshot. Do not reject it when unrelated Team data moved.
         state, conversation, created = chat_service.create_or_get_conversation(
             agent_id=_required(payload, "agent_id"),
             operator_user_id=identity["user_id"],
             operator_display_name=identity["display_name"],
             created_by=identity["actor"],
-            expected_revision=_expected_revision(payload),
         )
         scope = _chat_scope_for_operator(context.auth, request, state, identity["user_id"])
         response_payload = _conversation_collection_payload(
@@ -1061,6 +1074,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             write=True,
             identity=identity,
         )
+        # Chat messages are append-only. The service validates the current
+        # conversation and agent state, so a stale global revision must not block a send.
         state, message = chat_service.record_operator_chat_message(
             conversation_id=conversation_id,
             body=_required(payload, "body"),
@@ -1069,7 +1084,6 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 context,
                 request,
             ),
-            expected_revision=_expected_revision(payload),
         )
         conversation = state.conversations[conversation_id]
         dispatch_id = f"team-chat:{message.id}"
@@ -1818,6 +1832,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         criteria = (
             _optional_list(payload, "criteria") if payload.get("criteria") is not None else None
         )
+        finding_resolutions = (
+            _optional_list(payload, "finding_resolutions")
+            if payload.get("finding_resolutions") is not None
+            else None
+        )
         review_request_id = request.path_params["review_request_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
@@ -1826,6 +1845,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 state=TeamRecordState(_required(payload, "state")),
                 findings=_optional_string_list(payload, "findings"),
                 criteria=criteria,
+                finding_resolutions=finding_resolutions,
                 expected_revision=expected_revision,
             ),
             target_collection="review_requests",
@@ -1852,11 +1872,22 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             requesting_session_id=_optional(payload, "requesting_session_id"),
             expected_revision=_expected_revision(payload),
         )
+        wake_result: dict[str, Any] = {"events": []}
+        _append_agent_wake_requested_event_for_inbox_item(
+            state,
+            item=item,
+            result=wake_result,
+            now=item.created_at,
+        )
+        published_event_ids = _publish_team_events(context, wake_result["events"])
         return _state_response(
             request,
             state,
             status_code=201,
-            extra={"operator_directive": item.model_dump(mode="json")},
+            extra={
+                "operator_directive": item.model_dump(mode="json"),
+                "published_event_ids": published_event_ids,
+            },
         )
 
     async def dismiss_action_record(request: Request) -> JSONResponse:
@@ -1966,6 +1997,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             release_id=_optional(payload, "id") or _optional(payload, "release_package_id"),
             release_branch=_optional(payload, "release_branch"),
             canonical_branch=_optional(payload, "canonical_branch"),
+            verification_waivers=(
+                _optional_list(payload, "verification_waivers")
+                if payload.get("verification_waivers") is not None
+                else None
+            ),
+            operator_actor_id=_operator_actor_from_request(context.auth, request),
             expected_revision=_expected_revision(payload),
         )
         response_payload = _state_payload(request, state)
@@ -1987,8 +2024,38 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             {
                 "revision": state.revision,
                 "release_packages": [
-                    release.model_dump(mode="json") for release in state.release_packages.values()
+                    release_package_payload_with_derived(state, release)
+                    for release in state.release_packages.values()
                 ],
+            }
+        )
+
+    async def retry_release_gate(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        release_id = request.path_params["release_package_id"]
+        state, result = admin_service.retry_release_gate_with_result(
+            release_package_id=release_id,
+            gate_kind=_required(payload, "gate_kind"),
+            gate_id=_required(payload, "gate_id"),
+            reason=_required(payload, "reason"),
+            operator_actor_id=_operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        published_event_ids = _publish_team_events(context, result.get("events"))
+        if _request_wants_view_scoped_response(request):
+            return _state_response(
+                request,
+                state,
+                extra={
+                    "release_package": result["release_package"],
+                    "replacement_gate_id": result.get("replacement_gate_id"),
+                    "published_event_ids": published_event_ids,
+                },
+            )
+        return JSONResponse(
+            {
+                **result,
+                "published_event_ids": published_event_ids,
             }
         )
 
@@ -1997,7 +2064,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         release = state.release_packages.get(request.path_params["release_package_id"])
         if release is None:
             return JSONResponse({"error": "release package not found"}, status_code=404)
-        return JSONResponse(release.model_dump(mode="json"))
+        return JSONResponse(release_package_payload_with_derived(state, release))
 
     async def list_git_promotions(_request: Request) -> JSONResponse:
         state = repository.read()
@@ -2180,6 +2247,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route("/views/{view}", get_view, methods=["GET"]),
         route("/state", get_state, methods=["GET"]),
         route("/state/stream", stream_state, methods=["GET"]),
+        route("/inbox", get_inbox_history, methods=["GET"]),
         route("/templates", list_templates, methods=["GET"]),
         route(
             "/templates/{template_id}",
@@ -2370,6 +2438,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route("/release-packages", create_release_package, methods=["POST"]),
         route("/release-packages", list_release_packages, methods=["GET"]),
         route(
+            "/release-packages/{release_package_id}/retry-gate",
+            retry_release_gate,
+            methods=["POST"],
+        ),
+        route(
             "/release-packages/{release_package_id}",
             get_release_package,
             methods=["GET"],
@@ -2552,6 +2625,50 @@ def _team_state_payload_for_request(
     return payload
 
 
+def _add_release_outbox_metadata(
+    payload: dict[str, Any],
+    repository: TeamStateRepository,
+) -> None:
+    release_packages = payload.get("release_packages")
+    if not isinstance(release_packages, dict) or not release_packages:
+        return
+    promotion_to_release: dict[str, dict[str, Any]] = {}
+    for release_payload in release_packages.values():
+        if not isinstance(release_payload, dict):
+            continue
+        for promotion_id in release_payload.get("git_promotion_record_ids") or []:
+            if isinstance(promotion_id, str) and promotion_id:
+                promotion_to_release[promotion_id] = release_payload
+    if not promotion_to_release:
+        return
+    for record in repository.list_outbox_records(intent_type=GIT_PROMOTION_EVENT_TYPE):
+        if record.aggregate_id not in promotion_to_release:
+            continue
+        release_payload = promotion_to_release[record.aggregate_id]
+        release_payload["promotion_attempt_count"] = max(
+            int(release_payload.get("promotion_attempt_count") or 0),
+            record.attempt_count,
+        )
+        row = {
+            "id": record.id,
+            "status": record.status.value,
+            "aggregate_id": record.aggregate_id,
+            "available_at": record.available_at.isoformat(),
+            "attempt_count": record.attempt_count,
+            "claimed_by": record.claimed_by,
+            "completed_at": (
+                record.completed_at.isoformat() if record.completed_at is not None else None
+            ),
+            "last_error_code": record.last_error_code,
+            "last_error_message": record.last_error_message,
+        }
+        release_payload.setdefault("outbox_records", []).append(
+            {key: value for key, value in row.items() if value is not None}
+        )
+        if record.status in {TeamOutboxStatus.PENDING, TeamOutboxStatus.CLAIMED}:
+            release_payload.setdefault("active_outbox_record_ids", []).append(record.id)
+
+
 def _bootstrap_payload_for_request(
     auth: Any | None,
     request: Request,
@@ -2717,6 +2834,168 @@ def _timeline_payload_for_request(request: Request, state: TeamState) -> dict[st
         "description": "Derived timeline from the current TeamState snapshot.",
         "filters": filters,
     }
+
+
+def _inbox_history_payload_for_request(request: Request, state: TeamState) -> dict[str, Any]:
+    team_id = _query_text(request, "team_id")
+    agent_id = _query_text(request, "agent_id")
+    direction = (_query_text(request, "direction") or "all").casefold()
+    item_type = _query_text(request, "item_type")
+    item_state = _query_text(request, "state")
+    search_text = _query_text(request, "q")
+    limit = _query_limited_int(
+        request,
+        "limit",
+        default=DEFAULT_INBOX_HISTORY_LIMIT,
+        max_value=MAX_INBOX_HISTORY_LIMIT,
+    )
+    offset = _query_non_negative_int(request, "offset", default=0)
+
+    if direction not in {"all", "received", "sent"}:
+        raise ValueError("direction must be all, received, or sent")
+    if direction != "all" and not agent_id:
+        raise ValueError("agent_id is required when filtering inbox direction")
+    if item_type and item_type not in {value.value for value in TeamInboxItemType}:
+        raise ValueError(f"unknown inbox item_type: {item_type}")
+    if item_state and item_state not in {value.value for value in TeamInboxItemState}:
+        raise ValueError(f"unknown inbox state: {item_state}")
+
+    rows = list(state.inbox.values())
+    if team_id:
+        team_agent_ids = {
+            agent.id for agent in state.agents.values() if agent.team_id == team_id
+        }
+        rows = [
+            item
+            for item in rows
+            if item.recipient_agent_id in team_agent_ids
+            or item.sender_agent_id in team_agent_ids
+        ]
+    if agent_id:
+        if direction == "received":
+            rows = [item for item in rows if item.recipient_agent_id == agent_id]
+        elif direction == "sent":
+            rows = [item for item in rows if item.sender_agent_id == agent_id]
+        else:
+            rows = [
+                item
+                for item in rows
+                if item.recipient_agent_id == agent_id or item.sender_agent_id == agent_id
+            ]
+    if item_type:
+        rows = [item for item in rows if item.item_type.value == item_type]
+    if search_text:
+        needle = search_text.casefold()
+        rows = [item for item in rows if needle in _inbox_history_search_text(state, item)]
+
+    state_counts = {
+        value.value: sum(1 for item in rows if item.state == value)
+        for value in TeamInboxItemState
+    }
+    if item_state:
+        rows = [item for item in rows if item.state.value == item_state]
+
+    rows.sort(key=_inbox_history_sort_key, reverse=True)
+    total_count = len(rows)
+    page = rows[offset : offset + limit]
+    filters = {
+        key: value
+        for key, value in {
+            "team_id": team_id,
+            "agent_id": agent_id,
+            "direction": direction if direction != "all" else None,
+            "item_type": item_type,
+            "state": item_state,
+            "q": search_text,
+        }.items()
+        if value is not None
+    }
+    return {
+        "revision": state.revision,
+        "generated_at": state.updated_at.isoformat(),
+        "filters": filters,
+        "state_counts": state_counts,
+        "total_count": total_count,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(page) < total_count,
+        "items": [
+            _inbox_history_item_payload(state, item, focus_agent_id=agent_id)
+            for item in page
+        ],
+    }
+
+
+def _inbox_history_item_payload(
+    state: TeamState,
+    item: Any,
+    *,
+    focus_agent_id: str | None,
+) -> dict[str, Any]:
+    payload = item.model_dump(mode="json")
+    payload["sender"] = _inbox_history_agent_payload(state, item.sender_agent_id)
+    payload["recipient"] = _inbox_history_agent_payload(state, item.recipient_agent_id)
+    task = state.tasks.get(item.task_id) if item.task_id else None
+    payload["task"] = (
+        {
+            "id": task.id,
+            "title": task.title,
+            "project_id": task.project_id,
+            "state": task.state.value,
+        }
+        if task is not None
+        else None
+    )
+    if focus_agent_id and item.sender_agent_id == focus_agent_id:
+        payload["direction"] = "sent"
+    elif focus_agent_id and item.recipient_agent_id == focus_agent_id:
+        payload["direction"] = "received"
+    else:
+        payload["direction"] = "internal" if item.sender_agent_id else "system"
+    return payload
+
+
+def _inbox_history_agent_payload(state: TeamState, agent_id: str | None) -> dict[str, Any] | None:
+    if not agent_id:
+        return None
+    agent = state.agents.get(agent_id)
+    if agent is None:
+        return {"id": agent_id, "display_name": agent_id}
+    role = state.roles.get(agent.role_id) if agent.role_id else None
+    team = state.teams.get(agent.team_id) if agent.team_id else None
+    return {
+        "id": agent.id,
+        "display_name": agent.display_name or agent.id,
+        "team_id": agent.team_id,
+        "team_name": team.name if team is not None else None,
+        "role_name": role.name if role is not None else None,
+        "avatar": agent.avatar.model_dump(mode="json") if agent.avatar is not None else None,
+    }
+
+
+def _inbox_history_search_text(state: TeamState, item: Any) -> str:
+    sender = state.agents.get(item.sender_agent_id) if item.sender_agent_id else None
+    recipient = state.agents.get(item.recipient_agent_id)
+    values = [
+        item.id,
+        item.item_type.value,
+        item.state.value,
+        item.priority.value,
+        item.sender_agent_id or "",
+        sender.display_name if sender is not None else "",
+        item.recipient_agent_id,
+        recipient.display_name if recipient is not None else "",
+        item.task_id or "",
+        json.dumps(item.payload, sort_keys=True, ensure_ascii=False),
+    ]
+    return "\n".join(str(value or "") for value in values).casefold()
+
+
+def _inbox_history_sort_key(item: Any) -> tuple[float, str]:
+    timestamp = item.created_at
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return (timestamp.timestamp(), item.id)
 
 
 def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:
@@ -4288,17 +4567,18 @@ def _optional_git_config(payload: Mapping[str, Any]) -> ProjectGitConfig | None:
         return None
     if not isinstance(git_payload, Mapping):
         raise ValueError("git must be a JSON object")
-    normalized = dict(git_payload)
-    bare_repo = _optional(normalized, "bare_repo")
-    normalized.pop("bare_repo", None)
-    if bare_repo:
-        if normalized.get("bare_repo_name") or normalized.get("bare_repo_path"):
-            raise ValueError("bare_repo cannot be combined with bare_repo_name or bare_repo_path")
-        if bare_repo.startswith("/"):
-            normalized["bare_repo_path"] = bare_repo
-        else:
-            normalized["bare_repo_name"] = bare_repo
-    return ProjectGitConfig.model_validate(normalized)
+    return ProjectGitConfig.model_validate(dict(git_payload))
+
+
+def _optional_release_policy(
+    payload: Mapping[str, Any],
+) -> ProjectReleasePolicy | None:
+    raw = payload.get("release_policy")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("release_policy must be a JSON object")
+    return ProjectReleasePolicy.model_validate(dict(raw))
 
 
 def _current_agent_avatar_asset_id(state: Any, agent_id: str) -> str | None:

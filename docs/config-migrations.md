@@ -1,5 +1,12 @@
 # Configuration Migrations
 
+## Migration Index
+
+| Migration | Required when | Target state |
+|---|---|---|
+| [Retell Phonebook To Directory Contacts](#retell-phonebook-to-directory-contacts) | A legacy provider config still contains `retell_phonebook`. | Directory-scoped `contacts.json` plus `retell_default_agent_id`. |
+| [Trigger/Effect Orchestrator Core Config Split](#triggereffect-orchestrator-core-config-split) | Trigger config still embeds effect/runtime-core settings. | Trigger definitions stay in `config.json`; shared orchestration settings move to the core config. |
+
 ## Retell Phonebook To Directory Contacts
 
 Retell-specific `retell_phonebook` entries in `providers.json` are retired. Move each old

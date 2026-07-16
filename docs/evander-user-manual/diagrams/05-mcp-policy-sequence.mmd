@@ -1,0 +1,24 @@
+sequenceDiagram
+    autonumber
+    participant A as Agent in isolated target
+    participant G as MCP gateway
+    participant S as Session policy
+    participant P as Approval store
+    participant D as Domain service
+    participant U as Audit store
+
+    A->>G: Tool call plus session identity
+    G->>S: Resolve session and require tool
+    S-->>G: Allowed, denied, or approval required
+    alt denied
+        G->>U: Record denied attempt
+        G-->>A: Structured policy error
+    else approval required
+        G->>P: Match exact active approval grant
+        P-->>G: Grant or missing/expired/mismatched
+        G->>U: Record decision
+    end
+    G->>D: Execute validated request
+    D-->>G: Result or domain error
+    G->>U: Record outcome and sanitized arguments
+    G-->>A: Tool result

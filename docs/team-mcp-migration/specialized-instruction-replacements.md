@@ -1,5 +1,8 @@
 # Specialized Team Instruction Replacements
 
+> **Status:** Historical migration design. The replacement instructions are now implemented; use
+> [`../addons.md`](../addons.md) for current behavior.
+
 This document maps Team guidance surfaces that are not the ordinary persistent
 Team wake prompt: Team Chat, governance, inactive Team agents, ephemeral
 workers, missing-action recovery, and delayed action feedback. It is

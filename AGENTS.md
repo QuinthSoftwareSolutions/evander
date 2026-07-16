@@ -62,7 +62,8 @@ The security model is:
     Git and edited through Admin Web.
 
 - Provider and wake workers:
-  - ADO backlog/PR feedback worker: `evander-ado-worker`
+  - ADO PR feedback/completion worker: `evander-ado-worker`; Azure DevOps work-item intake is
+    workflow-owned
   - ADO proxy issue freshness worker: `evander-proxy-issue-sync`
   - Discord ingest: `evander-discord-ingest`
   - Discord wake: `evander-discord-wake`
@@ -80,14 +81,13 @@ The security model is:
   - The worker daemon is deployed by the dedicated Ansible worker playbook, not by
     `scripts/install_systemd_units.sh` on the control plane.
 
-- Host-local Git remotes:
-  - `scripts/create_git_remote.sh`
-  - `scripts/bootstrap_git_vm.sh`
-  - `scripts/setup_issue_git_vm.sh`
-  - `scripts/mirror_issue_repo.sh`
-  - `scripts/promote_agent_branch.sh`
-  - `scripts/open_agent_pr.sh`
-  - `scripts/git_ssh_command_wrapper.sh`
+- Managed Git repositories:
+  - Domain service: `src/evander/admin/services/managed_git_service.py`
+  - Operator CLI: `evander-cli git-repos ...`
+  - Registry: `runtime/managed-git-repositories.json`
+  - Bare repositories: `runtime/managed-git/`
+  - Ephemeral worktrees: `runtime/git-worktrees/`
+  - Restricted SSH enforcement: `scripts/git_ssh_command_wrapper.sh`
   - Docs: `docs/git-remotes.md`
 
 ## Important Defaults
@@ -98,6 +98,7 @@ The security model is:
   - `11434` for OpenAI relay
   - `11666` for NuGet relay
   - `11777` for HTTP target relay
+  - `11881` for the npm audit relay
   - `8081` for Nexus PyPI/npm package cache when enabled
   - `3142` for apt-cacher-ng worker provisioning when enabled
   - Source of truth: `config/firewall.env.example`
@@ -138,7 +139,9 @@ The current install script renders and enables:
 - `evander-gateway.service`
 - `evander-admin-web.service`
 - `evander-openai-relay.service`
+- `evander-didww-sip-bridge.service`
 - `evander-nuget-relay.service`
+- `evander-npm-audit-facade.service`
 - `evander-http-target-relay.service`
 - `evander-ado-worker.service`
 - `evander-proxy-issue-sync.service`
@@ -157,7 +160,13 @@ Before install/start, populate the required local config and secret files for th
 - optional `config/gateway.env`
 - optional `config/openai-relay.env`
 - optional `config/nuget-relay.env`
+- optional `config/npm-audit-facade.env`
+- optional `config/didww-sip-bridge.env`
 - `config/ado-worker/config.json`
+- optional `config/proxy-issue-sync/config.json`
+- optional `config/discord-ingest/config.json`
+- optional `config/discord-wake/config.json`
+- optional `config/scheduled-wake/config.json`
 - `config/trigger-orchestrator/config.json`
 - optional `config/teams-ingest/config.json`
 - optional `config/teams-meeting-ingest/config.json`
@@ -262,17 +271,18 @@ Issue flows create the VM first, then clone/bootstrap a repo as separate steps:
 
 ```bash
 evander-cli create-issue-vm 14084 --dotnet --nuget /path/to/project.slnx --playwright
-evander-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
+evander-cli git-repos register --directory-path root --repo-source /path/to/local/repo
+evander-cli clone-repo-into-vm vm-14084 --managed-repo-id <managed-repo-id>
 ```
 
-For host-local Git remotes:
+For managed Git repositories:
 
-1. Create or refresh the bare mirror with `scripts/create_git_remote.sh`,
-   `scripts/mirror_issue_repo.sh`, or `scripts/setup_issue_git_vm.sh`.
-2. Bootstrap guest Git SSH with `scripts/bootstrap_git_vm.sh`.
+1. Register or refresh the upstream with `evander-cli git-repos register`.
+2. Clone into the VM/container using only the returned `managed_repo_id`; the control plane
+   provisions scoped guest Git SSH internally.
 3. Let the guest push only to `refs/heads/agents/<session-id>/<topic>`.
-4. Promote from the host with `scripts/promote_agent_branch.sh`.
-5. Open or update the PR from a trusted host clone with `scripts/open_agent_pr.sh`.
+4. Let the queued workflow pin and promote the trigger's exact SHA.
+5. Publish that approved SHA with the managed push/PR effects and an explicit lease.
 
 The guest clone flow writes `/home/agent/AGENTS.md`, configures `git sync-base` and
 `git push-agent`, and uses root-owned logs under `/var/log/evander/agent-runs`.
@@ -360,12 +370,11 @@ Do not leave stalled test processes running while continuing work.
 
 ## Guidance For Future Changes
 
-- Treat `src/evander/admin/composition.py::build_admin_runtime` as the supported admin
-  runtime assembly point for CLI, gateway, and Admin Web integration. Keep the compatibility
-  facades in `src/evander/admin/facades.py` thin and domain-scoped; place new admin domain
-  logic in narrower services under `src/evander/admin/services/` with clear ownership
-  boundaries for operations, issue/git, VM/agent, workflow config, skills, reporting, and PR
-  preflight.
+- Treat `src/evander/admin/composition.py::build_admin_runtime` and
+  `AdminRuntimeComponents` as the supported admin runtime assembly surface for CLI, gateway,
+  and Admin Web integration. Place domain logic in the narrow services under
+  `src/evander/admin/services/`; keep route handlers and compatibility adapters thin and
+  domain-scoped.
 - Keep base VMs minimal; prefer post-launch bootstraps for optional toolchains.
 - Prefer host-seeded artifacts over guest internet installs.
 - If adding a new guest capability, update the bootstrap script, `README.md`,

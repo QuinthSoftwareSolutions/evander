@@ -105,6 +105,8 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     create_task = nodes["effect:team:create-task"]
     create_case = nodes["effect:team:create-case"]
     update_case = nodes["effect:team:update-case"]
+    publish_review = nodes["effect:team:publish-review-branch"]
+    consolidate = nodes["effect:team:consolidate-git-branches"]
     read_state = nodes["query:team:state"]
     internal_event_trigger = nodes["trigger:event"]
     internal_event_field = next(
@@ -177,6 +179,12 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     assert update_case["label"] == "Update Team case"
     assert update_case_fields["case_id"]["required"] is True
     assert update_case_fields["description"]["multiline"] is True
+    publish_review_fields = {field["key"]: field for field in publish_review["fields"]}
+    consolidate_fields = {field["key"]: field for field in consolidate["fields"]}
+    assert publish_review_fields["directory_path"]["kind"] == "string"
+    assert publish_review_fields["directory_path"]["required"] is False
+    assert consolidate_fields["directory_path"]["kind"] == "string"
+    assert consolidate_fields["directory_path"]["required"] is False
     state_fields = {field["key"]: field for field in read_state["fields"]}
     assert state_fields["include_records"]["kind"] == "boolean"
     assert state_fields["include_records"]["default_value"] is True

@@ -13,12 +13,41 @@ from evander.git_pr_notes import agent_pr_notes_ref_for_session
 from evander.triggers.queue import SqliteTriggerEventQueue
 
 
+_MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
+
+
+def _configure_managed_repo(
+    repo_path: Path,
+    *,
+    managed_repo_id: str = _MANAGED_REPO_ID,
+    directory_path: str = "root",
+) -> None:
+    if not (repo_path / "HEAD").exists():
+        subprocess.run(
+            ["git", "init", "--bare", str(repo_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    for key, value in (
+        ("evander.managedRepoId", managed_repo_id),
+        ("evander.baseBranch", "main"),
+        ("evander.directoryPath", directory_path),
+    ):
+        subprocess.run(
+            ["git", f"--git-dir={repo_path}", "config", key, value],
+            check=True,
+        )
+
+
 def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
-    repo_path.mkdir(parents=True)
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git"
+    ).resolve()
+    _configure_managed_repo(repo_path)
     queue_path = tmp_path / "runtime" / "trigger-events.json"
     wake_path = tmp_path / "runtime" / "effect-orchestrator.wake.sock"
     wake_path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,7 +64,7 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_to_repo": str(repo_path),
+                        "managed_repo_id": _MANAGED_REPO_ID,
                     }
                 ],
             }
@@ -78,16 +107,19 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
     assert record["trigger_type"] == "trigger:git:push"
     assert record["payload"]["branch_name"] == "main"
     assert record["payload"]["commit_hash"] == "1" * 40
-    assert record["payload"]["repo_name"] == "sample"
-    assert record["payload"]["repo_path"] == str(repo_path)
+    assert record["payload"]["managed_repo_id"] == _MANAGED_REPO_ID
+    assert record["payload"]["default_branch"] == "main"
+    assert not any("path" in key for key in record["payload"])
 
 
 def test_handle_git_push_trigger_enqueues_to_sqlite_backend(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
-    repo_path.mkdir(parents=True)
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git"
+    ).resolve()
+    _configure_managed_repo(repo_path)
     queue_path = tmp_path / "runtime" / "trigger-events.json"
     db_path = tmp_path / "runtime" / "orchestration.db"
     config_path = tmp_path / "trigger-config.json"
@@ -103,7 +135,7 @@ def test_handle_git_push_trigger_enqueues_to_sqlite_backend(tmp_path: Path) -> N
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_to_repo": str(repo_path),
+                        "managed_repo_id": _MANAGED_REPO_ID,
                     }
                 ],
             }
@@ -139,10 +171,17 @@ def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> No
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    configured_repo_path = (tmp_path / "git-remotes" / "configured.git").resolve()
-    configured_repo_path.mkdir(parents=True)
-    pushed_repo_path = (tmp_path / "git-remotes" / "incoming.git").resolve()
-    pushed_repo_path.mkdir(parents=True)
+    configured_repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_11111111111111111111.git"
+    ).resolve()
+    _configure_managed_repo(configured_repo_path)
+    pushed_repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_22222222222222222222.git"
+    ).resolve()
+    _configure_managed_repo(
+        pushed_repo_path,
+        managed_repo_id="mr_ffffffffffffffffffff",
+    )
     queue_path = tmp_path / "runtime" / "trigger-events.json"
     config_path = tmp_path / "trigger-config.json"
     config_path.write_text(
@@ -155,7 +194,7 @@ def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> No
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_glob": str(configured_repo_path.parent / "configured*.git"),
+                        "managed_repo_id": _MANAGED_REPO_ID,
                     }
                 ],
             }
@@ -181,37 +220,143 @@ def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> No
         assert json.loads(queue_path.read_text(encoding="utf-8")) == {}
 
 
+def test_handle_git_push_trigger_enforces_explicit_directory_trust_scope(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "handle_git_push_trigger.sh"
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / f"{_MANAGED_REPO_ID}.git"
+    ).resolve()
+    _configure_managed_repo(repo_path, directory_path="root/team-a")
+    queue_path = tmp_path / "runtime" / "trigger-events.json"
+    config_path = tmp_path / "trigger-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "event_queue_store_path": str(queue_path),
+                "triggers": [
+                    {
+                        "id": "git-sibling",
+                        "display_name": "Sibling Git push",
+                        "type": "trigger:git:push",
+                        "managed_repo_id_glob": "mr_*",
+                        "directory_path": "root/team-b",
+                    },
+                    {
+                        "id": "git-descendant",
+                        "display_name": "Descendant Git push",
+                        "type": "trigger:git:push",
+                        "managed_repo_id_glob": "mr_*",
+                        "directory_path": "root/team-a/project",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(script), str(repo_path)],
+        input=f"{'0' * 40} {'1' * 40} refs/heads/main\n",
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+        },
+        cwd=root,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    assert list(queue_payload) == [f"git-descendant:main:{'1' * 40}"]
+
+
+def test_handle_git_push_trigger_enforces_effective_graph_directory_trust_scope(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "handle_git_push_trigger.sh"
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / f"{_MANAGED_REPO_ID}.git"
+    ).resolve()
+    _configure_managed_repo(repo_path, directory_path="root/team-a")
+    queue_path = tmp_path / "runtime" / "trigger-events.json"
+    config_path = tmp_path / "trigger-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "event_queue_store_path": str(queue_path),
+                "workflow_graphs": [
+                    {
+                        "id": "sibling-graph",
+                        "name": "Sibling graph",
+                        "directory_path": "root/team-b",
+                        "node_ids": ["git-sibling"],
+                    },
+                    {
+                        "id": "descendant-graph",
+                        "name": "Descendant graph",
+                        "directory_path": "root/team-a/project",
+                        "node_ids": ["git-descendant"],
+                    },
+                ],
+                "workflow_ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "git-sibling",
+                            "display_name": "Sibling Git push",
+                            "type": "trigger:git:push",
+                            "config": {"managed_repo_id_glob": "mr_*"},
+                        },
+                        {
+                            "id": "git-descendant",
+                            "display_name": "Descendant Git push",
+                            "type": "trigger:git:push",
+                            "config": {"managed_repo_id_glob": "mr_*"},
+                        },
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(script), str(repo_path)],
+        input=f"{'0' * 40} {'1' * 40} refs/heads/main\n",
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+        },
+        cwd=root,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    assert list(queue_payload) == [f"git-descendant:main:{'1' * 40}"]
+
+
 def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git"
+    ).resolve()
     subprocess.run(
         ["git", "init", "--bare", str(repo_path)], check=True, capture_output=True, text=True
     )
-    subprocess.run(
-        [
-            "git",
-            f"--git-dir={repo_path}",
-            "config",
-            "evander.trustedRepoPath",
-            "/trusted/repo",
-        ],
-        check=True,
-    )
-    subprocess.run(
-        ["git", f"--git-dir={repo_path}", "config", "evander.baseBranch", "main"], check=True
-    )
-    subprocess.run(
-        [
-            "git",
-            f"--git-dir={repo_path}",
-            "config",
-            "evander.canonicalOriginUrl",
-            "https://example.com/org/repo.git",
-        ],
-        check=True,
-    )
+    _configure_managed_repo(repo_path)
     queue_path = tmp_path / "runtime" / "trigger-events.json"
     config_path = tmp_path / "trigger-config.json"
     config_path.write_text(
@@ -224,7 +369,7 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_glob": str(repo_path.parent / "*.git"),
+                        "managed_repo_id_glob": "mr_012345*",
                     }
                 ],
             }
@@ -251,9 +396,9 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
     assert record["payload"]["session_id"] == "session-1"
     assert record["payload"]["review_branch"] == "review/session-1/topic-branch"
     assert record["payload"]["notes_ref"] == agent_pr_notes_ref_for_session("session-1")
-    assert record["payload"]["trusted_repo_path"] == "/trusted/repo"
-    assert record["payload"]["base_branch"] == "main"
-    assert record["payload"]["canonical_origin_url"] == "https://example.com/org/repo.git"
+    assert record["payload"]["managed_repo_id"] == _MANAGED_REPO_ID
+    assert record["payload"]["default_branch"] == "main"
+    assert not any("path" in key for key in record["payload"])
 
 
 def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_branch_tip(
@@ -262,11 +407,14 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git"
+    ).resolve()
     worktree = (tmp_path / "worktree").resolve()
     subprocess.run(
         ["git", "init", "--bare", str(repo_path)], check=True, capture_output=True, text=True
     )
+    _configure_managed_repo(repo_path)
     subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True, text=True)
     subprocess.run(["git", "-C", str(worktree), "config", "user.name", "Test User"], check=True)
     subprocess.run(
@@ -275,20 +423,6 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
     subprocess.run(
         ["git", "-C", str(worktree), "remote", "add", "origin", str(repo_path)], check=True
     )
-    subprocess.run(
-        [
-            "git",
-            f"--git-dir={repo_path}",
-            "config",
-            "evander.trustedRepoPath",
-            "/trusted/repo",
-        ],
-        check=True,
-    )
-    subprocess.run(
-        ["git", f"--git-dir={repo_path}", "config", "evander.baseBranch", "main"], check=True
-    )
-
     (worktree / "hello.txt").write_text("Hello World", encoding="utf-8")
     subprocess.run(["git", "-C", str(worktree), "add", "hello.txt"], check=True)
     subprocess.run(
@@ -309,19 +443,20 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
         capture_output=True,
         text=True,
     )
+    notes_ref = agent_pr_notes_ref_for_session("session-1")
     subprocess.run(
-        ["git", "-C", str(worktree), "notes", "--ref=agent-pr", "add", "-m", "Summary", "HEAD"],
+        ["git", "-C", str(worktree), "notes", f"--ref={notes_ref}", "add", "-m", "Summary", "HEAD"],
         check=True,
     )
     old_notes_rev = "0" * 40
     subprocess.run(
-        ["git", "-C", str(worktree), "push", "origin", "refs/notes/agent-pr"],
+        ["git", "-C", str(worktree), "push", "origin", notes_ref],
         check=True,
         capture_output=True,
         text=True,
     )
     new_notes_rev = subprocess.run(
-        ["git", f"--git-dir={repo_path}", "rev-parse", "refs/notes/agent-pr"],
+        ["git", f"--git-dir={repo_path}", "rev-parse", notes_ref],
         check=True,
         capture_output=True,
         text=True,
@@ -339,7 +474,7 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_to_repo": str(repo_path),
+                        "managed_repo_id": _MANAGED_REPO_ID,
                     }
                 ],
             }
@@ -349,7 +484,7 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
 
     result = subprocess.run(
         [str(script), str(repo_path)],
-        input=f"{old_notes_rev} {new_notes_rev} refs/notes/agent-pr\n",
+        input=f"{old_notes_rev} {new_notes_rev} {notes_ref}\n",
         text=True,
         capture_output=True,
         env={
@@ -366,8 +501,9 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
     assert record["payload"]["branch_name"] == "agents/session-1/topic"
     assert record["payload"]["session_id"] == "session-1"
     assert record["payload"]["review_branch"] == "review/session-1/topic"
-    assert record["payload"]["notes_ref"] == "refs/notes/agent-pr"
+    assert record["payload"]["notes_ref"] == notes_ref
     assert record["payload"]["commit_hash"] == tip_sha
+    assert record["payload"]["managed_repo_id"] == _MANAGED_REPO_ID
     assert record["payload"]["note_ref_new_rev"] == new_notes_rev
 
 
@@ -377,11 +513,14 @@ def test_handle_git_push_trigger_enqueues_per_session_notes_only_update(
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git"
+    ).resolve()
     worktree = (tmp_path / "worktree").resolve()
     subprocess.run(
         ["git", "init", "--bare", str(repo_path)], check=True, capture_output=True, text=True
     )
+    _configure_managed_repo(repo_path)
     subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True, text=True)
     subprocess.run(["git", "-C", str(worktree), "config", "user.name", "Test User"], check=True)
     subprocess.run(
@@ -436,7 +575,7 @@ def test_handle_git_push_trigger_enqueues_per_session_notes_only_update(
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_to_repo": str(repo_path),
+                        "managed_repo_id": _MANAGED_REPO_ID,
                     }
                 ],
             }
@@ -467,8 +606,10 @@ def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Pa
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
-    repo_path.mkdir(parents=True)
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git"
+    ).resolve()
+    _configure_managed_repo(repo_path)
     queue_path = tmp_path / "runtime" / "trigger-events.json"
     config_path = tmp_path / "trigger-config.json"
     config_path.write_text(
@@ -481,7 +622,7 @@ def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Pa
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_to_repo": str(repo_path),
+                        "managed_repo_id": _MANAGED_REPO_ID,
                     }
                 ],
             }
@@ -528,8 +669,10 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
-    repo_path.mkdir(parents=True)
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git"
+    ).resolve()
+    _configure_managed_repo(repo_path)
     config_dir = tmp_path / "orchestrator"
     config_dir.mkdir()
     config_path = config_dir / "trigger-config.json"
@@ -543,7 +686,7 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_to_repo": str(repo_path),
+                        "managed_repo_id": _MANAGED_REPO_ID,
                     }
                 ],
             }
@@ -578,8 +721,10 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
-    repo_path.mkdir(parents=True)
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git"
+    ).resolve()
+    _configure_managed_repo(repo_path)
 
     config_dir = root / "config" / "trigger-orchestrator"
     config_path = config_dir / f"test-trigger-config-{uuid.uuid4().hex}.json"
@@ -597,7 +742,7 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_to_repo": str(repo_path),
+                        "managed_repo_id": _MANAGED_REPO_ID,
                     }
                 ],
             }
@@ -642,8 +787,10 @@ def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
-    repo_path.mkdir(parents=True)
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git"
+    ).resolve()
+    _configure_managed_repo(repo_path)
 
     config_dir = root / "config" / "trigger-orchestrator"
     packs_dir = root / "config" / "workflow-packs"
@@ -666,7 +813,7 @@ def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
                             "display_name": "Git push",
                             "type": "trigger:git:push",
                             "config": {
-                                "path_to_repo": str(repo_path),
+                                "managed_repo_id": _MANAGED_REPO_ID,
                             },
                         },
                         {
@@ -675,7 +822,7 @@ def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
                             "type": "trigger:git:push",
                             "enabled": False,
                             "config": {
-                                "path_to_repo": str(repo_path),
+                                "managed_repo_id": _MANAGED_REPO_ID,
                             },
                         }
                     ],
@@ -736,8 +883,10 @@ def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: P
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
-    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
-    repo_path.mkdir(parents=True)
+    repo_path = (
+        tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git"
+    ).resolve()
+    _configure_managed_repo(repo_path)
     queue_path = tmp_path / "runtime" / "trigger-events.json"
     queue_path.parent.mkdir(parents=True, exist_ok=True)
     queue_path.write_text(
@@ -755,7 +904,7 @@ def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: P
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_to_repo": str(repo_path),
+                        "managed_repo_id": _MANAGED_REPO_ID,
                     }
                 ],
             }

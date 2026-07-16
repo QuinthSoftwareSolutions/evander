@@ -68,12 +68,19 @@ class DockerContainerRuntime:
         if not payload:
             return {"status": "unknown"}
         state = payload[0].get("State", {})
+        exit_code = state.get("ExitCode")
+        oom_killed = bool(state.get("OOMKilled"))
+        runtime_error = str(state.get("Error") or "").strip() or None
         return {
             "status": docker_state_to_status(state),
+            "exit_code": exit_code,
+            "oom_killed": oom_killed,
+            "runtime_error": runtime_error,
             "raw_state": {
                 "status": state.get("Status"),
                 "running": state.get("Running"),
-                "exit_code": state.get("ExitCode"),
+                "exit_code": exit_code,
+                "oom_killed": oom_killed,
             },
         }
 
@@ -138,7 +145,7 @@ class DockerContainerRuntime:
             "-v",
             f"{paths.artifacts}:/artifacts",
             "-w",
-            self.sandbox_profile.workdir,
+            request.working_directory or self.sandbox_profile.workdir,
         ]
         for mount in identity_mounts:
             args.extend(["-v", mount])

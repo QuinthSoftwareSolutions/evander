@@ -426,7 +426,7 @@ class TeamCostService:
         if self._pricing_catalog is not None:
             return self._pricing_catalog
         try:
-            return default_model_pricing_catalog()
+            return default_model_pricing_catalog(runtime_dir=self.runtime_dir)
         except Exception:
             return None
 

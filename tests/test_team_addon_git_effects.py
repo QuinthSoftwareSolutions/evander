@@ -1,19 +1,36 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
+from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
+from evander.effects.providers.agent_create import AgentCreateEffectProvider
+from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
+from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.models import WorkflowNodeEnvelope
 from evander_team_addon.models import (
+    AgentInboxItem,
     Deliverable,
     DeliverableGitRefs,
     EphemeralAgentPolicy,
     GitPromotionRecord,
     ProjectGitConfig,
     ProjectGoal,
+    ProjectReleasePolicy,
+    ProjectStatus,
+    ReleaseCandidateDeliverableEvidence,
+    ReleaseCandidateManifest,
     ReleasePackage,
+    ReleaseScopeValidation,
+    ReleaseVerificationCommand,
+    ReleaseVerificationCommandResult,
+    ReleaseVerificationRun,
+    TeamInboxItemState,
     TeamInboxItemType,
     TeamRecordState,
 )
@@ -22,15 +39,18 @@ from evander_team_addon.provider_schemas import (
     TeamMarkReleasePublishedEffectDefinition,
     TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
+    TeamVerifyReleaseCandidateEffectDefinition,
 )
 from evander_team_addon.providers import (
     TeamConsolidateGitBranchesEffectProvider,
     TeamMarkReleasePublishedEffectProvider,
     TeamPublishReviewBranchEffectProvider,
     TeamRecordGitPromotionEffectProvider,
+    TeamVerifyReleaseCandidateEffectProvider,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
@@ -88,8 +108,7 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
 def _seed_review_promotion(repo: TeamStateRepository) -> None:
     def _mutate(state):
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
         )
         state.deliverables["deliverable-1"] = Deliverable(
             id="deliverable-1",
@@ -152,7 +171,8 @@ def test_record_git_promotion_success_attaches_git_refs(tmp_path: Path) -> None:
     refs = state.deliverables["deliverable-1"].git_refs
     assert refs.review_branch == "team/team/reviews/ephemeral-1"
     assert refs.agent_branch == "agents/eph-1/ephemeral-1"
-    assert refs.commit_sha == "deadbeef"
+    assert refs.commit_sha is None
+    assert refs.reviewed_commit_sha == "deadbeef"
     assert "promotion-1" in refs.promotion_record_ids
 
 
@@ -217,8 +237,10 @@ def test_record_release_promotion_success_publishes_canonical_push(
     _seed_release(repo)
 
     def _mutate(state):
-        state.projects["project"].git.canonical_origin_url = "https://example.invalid/Truman.git"
-        state.projects["project"].git.provider = "azure_devops"
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            allow_ungated=True
+        )
+        state.projects["project"].git.directory_path = "root/team-a"
         state.git_promotions["release-promotion"] = GitPromotionRecord(
             id="release-promotion",
             project_id="project",
@@ -259,8 +281,11 @@ def test_record_release_promotion_success_publishes_canonical_push(
     assert events[0].payload["promotion_kind"] == "canonical_push"
     assert events[0].payload["source_branch"] == "team/team/releases/release-1"
     assert events[0].payload["target_branch"] == "releases/project/release-1"
-    assert events[0].payload["canonical_origin_url"] == ("https://example.invalid/Truman.git")
-    assert events[0].payload["provider"] == "azure_devops"
+    assert events[0].payload["managed_repo_id"] == "mr_0123456789abcdefabcd"
+    assert events[0].payload["directory_path"] == "root/team-a"
+    assert events[0].payload["expected_commit_sha"] == "feedface"
+    assert "bare_repo_name" not in events[0].payload
+    assert "canonical_origin_url" not in events[0].payload
 
 
 def test_record_canonical_promotion_success_updates_record(
@@ -348,8 +373,7 @@ def test_record_canonical_promotion_failure_blocks_release(
 def _seed_release(repo: TeamStateRepository) -> None:
     def _mutate(state):
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
         )
         state.deliverables["deliverable-1"] = Deliverable(
             id="deliverable-1",
@@ -367,11 +391,241 @@ def _seed_release(repo: TeamStateRepository) -> None:
             feature_branches=["team/team/features/task-backend"],
             release_branch="team/team/releases/release-1",
             canonical_branch="releases/project/release-1",
+            policy_version=2,
+            scope_validation=ReleaseScopeValidation(state="pending"),
             state=TeamRecordState.PENDING,
         )
         return state
 
     repo.update(_mutate)
+
+
+def _seed_release_verification(repo: TeamStateRepository) -> None:
+    _seed_release(repo)
+    frozen_command = ReleaseVerificationCommand(
+        name="frozen-check",
+        cwd="frozen",
+        argv=["python", "-m", "frozen_check"],
+    )
+
+    def _mutate(state):
+        release = state.release_packages["release-1"]
+        state.projects["project"].git.directory_path = "root/team-a"
+        release.candidate_commit_sha = "candidate-sha"
+        release.verification_run_ids = ["verification-1"]
+        release.manifest = ReleaseCandidateManifest(
+            project_id="project",
+            release_package_id=release.id,
+            candidate_commit_sha="candidate-sha",
+            release_branch=release.release_branch,
+            deliverables=[ReleaseCandidateDeliverableEvidence(deliverable_id="deliverable-1")],
+            verification_commands=[frozen_command],
+        )
+        state.release_verification_runs["verification-1"] = ReleaseVerificationRun(
+            id="verification-1",
+            release_package_id=release.id,
+            candidate_commit_sha="candidate-sha",
+            session_id="verification-session",
+            command_results=[ReleaseVerificationCommandResult(name="frozen-check")],
+        )
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            verification_commands=[
+                ReleaseVerificationCommand(
+                    name="live-policy-check",
+                    cwd="live",
+                    argv=["python", "-m", "live_policy_check"],
+                )
+            ]
+        )
+        return state
+
+    repo.update(_mutate)
+
+
+def _verify_release_provider(tmp_path: Path) -> dict[str, object]:
+    provider = TeamVerifyReleaseCandidateEffectProvider()
+    provider.initialize(
+        TeamVerifyReleaseCandidateEffectDefinition(
+            id="verify-release",
+            display_name="Verify release",
+            type="effect:team:verify-release-candidate",
+            release_package_id="release-1",
+            verification_run_id="verification-1",
+            candidate_commit_sha="candidate-sha",
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+    return provider.execute()
+
+
+def _stub_release_verifier_setup(
+    monkeypatch,
+    *,
+    destroy_result: dict[str, object],
+) -> tuple[list[list[str]], list[str]]:
+    executed_commands: list[list[str]] = []
+    create_directories: list[str] = []
+
+    def _create(self, **kwargs):
+        del kwargs
+        create_directories.append(self.effect_definition.directory_path)
+        return {"success": True}
+
+    monkeypatch.setattr(AgentCreateEffectProvider, "execute", _create)
+    monkeypatch.setattr(
+        AgentCloneRepoEffectProvider,
+        "execute",
+        lambda self, **kwargs: {"success": True, "target_dir": "/workspace/repo"},
+    )
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        executed_commands.append(command)
+        return {
+            "success": True,
+            "execution_id": f"execution-{len(executed_commands)}",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+    monkeypatch.setattr(
+        AgentDestroyEffectProvider,
+        "execute",
+        lambda self, **kwargs: destroy_result,
+    )
+    return executed_commands, create_directories
+
+
+def test_release_verifier_executes_commands_from_frozen_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    executed_commands, create_directories = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    recorded: dict[str, object] = {}
+
+    def _record_result(self, **kwargs):
+        del self
+        recorded.update(kwargs)
+        return repo.read(), {"success": True}
+
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_result",
+        _record_result,
+    )
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert create_directories == ["root/team-a"]
+    assert executed_commands[:3] == [
+        ["git", "checkout", "--detach", "--force", "candidate-sha"],
+        ["git", "reset", "--hard", "candidate-sha"],
+        ["git", "clean", "-ffdx"],
+    ]
+    assert ["python", "-m", "frozen_check"] in executed_commands
+    assert ["python", "-m", "live_policy_check"] not in executed_commands
+    assert recorded["verification_state"] == "passed"
+    assert recorded["command_results"][0]["name"] == "frozen-check"
+
+
+@pytest.mark.parametrize("timeout_mode", ["ssh_exception", "container_nonterminal"])
+def test_release_verifier_classifies_agent_command_timeouts(
+    tmp_path: Path,
+    monkeypatch,
+    timeout_mode: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    executed_commands, _create_directories = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    recorded: dict[str, object] = {}
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        executed_commands.append(command)
+        if command == ["python", "-m", "frozen_check"]:
+            if timeout_mode == "ssh_exception":
+                raise subprocess.TimeoutExpired(command, timeout=60)
+            return {
+                "success": False,
+                "status": "running",
+                "execution_id": "execution-running",
+                "failure_kind": "infrastructure",
+                "stderr": "container command still running",
+            }
+        return {
+            "success": True,
+            "execution_id": f"execution-{len(executed_commands)}",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    def _record_result(self, **kwargs):
+        del self
+        recorded.update(kwargs)
+        return repo.read(), {"success": True}
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_result",
+        _record_result,
+    )
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert recorded["verification_state"] == "timed_out"
+    assert recorded["failure_kind"] == "timeout"
+    assert recorded["command_results"][0]["state"] == "timed_out"
+
+
+def test_release_verifier_treats_reported_cleanup_failure_as_infrastructure_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+
+    def _remove_live_policy(state):
+        state.projects["project"].release_policy = None
+        return state
+
+    repo.update(_remove_live_policy)
+    _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": False, "message": "worker deletion failed"},
+    )
+    recorded: dict[str, object] = {}
+
+    def _record_result(self, **kwargs):
+        del self
+        recorded.update(kwargs)
+        return repo.read(), {"success": True}
+
+    monkeypatch.setattr(
+        TeamReleaseGateService,
+        "record_verification_result",
+        _record_result,
+    )
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert recorded["verification_state"] == "failed"
+    assert recorded["failure_kind"] == "infrastructure"
+    assert recorded["error"] == ("failed to destroy release verifier: worker deletion failed")
 
 
 def _mark_release_provider(tmp_path: Path, **config: object) -> dict[str, object]:
@@ -402,12 +656,154 @@ def test_mark_release_published_success(tmp_path: Path) -> None:
 
     assert result["success"] is True
     assert result["state"] == "accepted"
+    assert result["superseded_release_package_ids"] == []
     state = repo.read()
     release = state.release_packages["release-1"]
     assert release.state == TeamRecordState.ACCEPTED
     assert release.published_commit_sha == "cafef00d"
     assert release.canonical_branch == "releases/project/release-1"
     assert release.published_at is not None
+
+
+def test_mark_release_published_supersedes_older_blocked_duplicate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _add_duplicate(state):
+        current = state.release_packages["release-1"]
+        state.release_packages["release-old"] = ReleasePackage(
+            id="release-old",
+            project_id="project",
+            deliverable_ids=list(current.deliverable_ids),
+            release_branch="team/team/releases/release-old",
+            git_promotion_record_ids=["promotion-release-old"],
+            policy_version=2,
+            scope_validation=ReleaseScopeValidation(state="pending"),
+            state=TeamRecordState.BLOCKED,
+            error="merge conflict",
+            created_at=current.created_at - timedelta(minutes=1),
+        )
+        state.projects["project"].status = ProjectStatus.BLOCKED
+        state.inbox["inbox-release-old"] = AgentInboxItem(
+            id="inbox-release-old",
+            recipient_agent_id="lead",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            payload={
+                "kind": "release_publish_failed",
+                "release_package_id": "release-old",
+            },
+        )
+        state.git_promotions["promotion-release-old"] = GitPromotionRecord(
+            id="promotion-release-old",
+            project_id="project",
+            actor_agent_id="lead",
+            source_branch="team/team/releases/release-old",
+            target_branch="releases/project/release-old",
+            promotion_kind="canonical_push",
+            release_package_id="release-old",
+            state="failed",
+            error="push rejected",
+        )
+        state.inbox["inbox-promotion-old"] = AgentInboxItem(
+            id="inbox-promotion-old",
+            recipient_agent_id="lead",
+            item_type=TeamInboxItemType.PROGRESS_REPORT,
+            payload={
+                "kind": "git_promotion_failed",
+                "promotion_id": "promotion-release-old",
+            },
+        )
+        return state
+
+    repo.update(_add_duplicate)
+
+    result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert result["success"] is True
+    assert result["superseded_release_package_ids"] == ["release-old"]
+    assert set(result["resolved_inbox_item_ids"]) == {
+        "inbox-release-old",
+        "inbox-promotion-old",
+    }
+    state = repo.read()
+    assert state.release_packages["release-old"].state == TeamRecordState.REJECTED
+    assert state.release_packages["release-old"].error is None
+    assert state.inbox["inbox-release-old"].state == TeamInboxItemState.HANDLED
+    assert state.inbox["inbox-promotion-old"].state == TeamInboxItemState.HANDLED
+    assert state.projects["project"].status != ProjectStatus.BLOCKED
+
+
+def test_mark_release_published_leaves_legacy_duplicate_rejected_by_migration(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _add_pending_duplicate(state):
+        current = state.release_packages["release-1"]
+        state.release_packages["release-pending"] = ReleasePackage(
+            id="release-pending",
+            project_id="project",
+            deliverable_ids=list(current.deliverable_ids),
+            release_branch="team/team/releases/release-pending",
+            state=TeamRecordState.PENDING,
+            created_at=current.created_at - timedelta(minutes=1),
+        )
+        return state
+
+    repo.update(_add_pending_duplicate)
+
+    result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert result["success"] is True
+    assert result["superseded_release_package_ids"] == []
+    legacy_release = repo.read().release_packages["release-pending"]
+    assert legacy_release.state == TeamRecordState.REJECTED
+    assert legacy_release.error is not None
+    assert legacy_release.error.startswith("legacy_unpinned_release:")
+
+
+def test_mark_release_published_ignores_late_success_for_rejected_release(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release(repo)
+
+    def _reject(state):
+        state.release_packages["release-1"].state = TeamRecordState.REJECTED
+        return state
+
+    repo.update(_reject)
+
+    result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert result["success"] is True
+    assert result["state"] == TeamRecordState.REJECTED.value
+    assert result["ignored_terminal_state"] is True
+    release = repo.read().release_packages["release-1"]
+    assert release.state == TeamRecordState.REJECTED
+    assert release.published_commit_sha is None
+    assert release.published_at is None
 
 
 def test_mark_release_published_failure_notifies_lead(tmp_path: Path) -> None:
@@ -433,309 +829,216 @@ def test_mark_release_published_failure_notifies_lead(tmp_path: Path) -> None:
     assert notice.payload["kind"] == "release_publish_failed"
 
 
-# --- consolidation effect -------------------------------------------------
+# --- managed Git delegation effects -----------------------------------------
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
-        check=False,
+class _ManagedGitAdminStub:
+    def __init__(self, result: dict[str, object]) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
+
+    def consolidate_branches(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(dict(kwargs))
+        return dict(self.result)
+
+
+class _AdminRuntimeStub:
+    def __init__(self, *, promotion_result: dict[str, object], consolidation_result: dict[str, object]) -> None:
+        self.promotion_result = promotion_result
+        self.promotion_calls: list[dict[str, object]] = []
+        self.managed_git_admin = _ManagedGitAdminStub(consolidation_result)
+
+    def promote_agent_branch(self, **kwargs: object) -> dict[str, object]:
+        self.promotion_calls.append(dict(kwargs))
+        return dict(self.promotion_result)
+
+
+def test_publish_review_branch_delegates_pinned_promotion() -> None:
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": True, "commit_sha": "a" * 40},
+        consolidation_result={"success": True},
     )
-    if check and result.returncode != 0:
-        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr}")
-    return result
-
-
-def _init_repo(repo: Path) -> None:
-    repo.mkdir(parents=True, exist_ok=True)
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "test@example.invalid")
-    _git(repo, "config", "user.name", "Team Test")
-    (repo / "file.txt").write_text("base\n")
-    _git(repo, "add", "file.txt")
-    _git(repo, "commit", "-q", "-m", "base")
-
-
-def _branch_with(repo: Path, branch: str, content: str) -> None:
-    _git(repo, "checkout", "-q", "-b", branch, "main")
-    (repo / "file.txt").write_text(content)
-    _git(repo, "commit", "-q", "-am", branch)
-    _git(repo, "checkout", "-q", "main")
-
-
-def _consolidate_provider(tmp_path: Path, **config: object) -> dict[str, object]:
-    provider = TeamConsolidateGitBranchesEffectProvider()
-    provider.initialize(
-        TeamConsolidateGitBranchesEffectDefinition(
-            id="consolidate",
-            display_name="Consolidate",
-            type="effect:team:consolidate-git-branches",
-            **config,
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
-    )
-    return provider.execute()
-
-
-def _publish_review_provider(tmp_path: Path, **config: object) -> dict[str, object]:
     provider = TeamPublishReviewBranchEffectProvider()
     provider.initialize(
         TeamPublishReviewBranchEffectDefinition(
             id="publish-review",
             display_name="Publish Review",
             type="effect:team:publish-review-branch",
-            **config,
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team-a",
+            source_branch="agents/session-1/work",
+            expected_commit_sha="a" * 40,
+            target_branch="team/team/reviews/deliverable",
         ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+        EffectRuntimeContext(admin_service=admin, metadata={"directory_path": "root"}),
     )
-    return provider.execute()
 
-
-def _git_dir(git_dir: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        ["git", f"--git-dir={git_dir}", *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if check and result.returncode != 0:
-        raise AssertionError(f"git --git-dir={git_dir} {' '.join(args)} failed: {result.stderr}")
-    return result
-
-
-def test_publish_review_branch_imports_unreachable_bare_commit(tmp_path: Path) -> None:
-    bare = tmp_path / "dropbox.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-    source = tmp_path / "source"
-    _init_repo(source)
-    _git(source, "remote", "add", "origin", str(bare))
-    _git(source, "push", "-u", "origin", "main")
-    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
-    _branch_with(source, "agents/session-1/work", "agent work\n")
-    commit_sha = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
-    _git(source, "push", "origin", "agents/session-1/work")
-    _git_dir(bare, "update-ref", "-d", "refs/heads/agents/session-1/work")
-    trusted = tmp_path / "trusted"
-    subprocess.run(["git", "clone", str(bare), str(trusted)], check=True, capture_output=True)
-    (trusted / "file.txt").write_text("local dirty state\n")
-
-    result = _publish_review_provider(
-        tmp_path,
-        host_repo_path=str(trusted),
-        bare_repo_path=str(bare),
-        commit_sha=commit_sha,
-        target_branch="team/team/reviews/deliverable",
-    )
+    result = provider.execute()
 
     assert result["success"] is True
+    assert result["managed_repo_id"] == "mr_0123456789abcdefabcd"
     assert result["review_branch"] == "team/team/reviews/deliverable"
-    assert result["commit_sha"] == commit_sha
-    ref = _git(trusted, "rev-parse", "refs/heads/team/team/reviews/deliverable")
-    assert ref.stdout.strip() == commit_sha
-    assert _git(trusted, "branch", "--show-current").stdout.strip() == "main"
-    assert (trusted / "file.txt").read_text(encoding="utf-8") == "local dirty state\n"
+    assert admin.promotion_calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "agent_branch": "agents/session-1/work",
+            "target_branch": "team/team/reviews/deliverable",
+            "expected_commit_sha": "a" * 40,
+            "directory_path": "root/team-a",
+        }
+    ]
 
 
-def test_publish_review_branch_reports_missing_source(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    bare = tmp_path / "dropbox.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-
-    result = _publish_review_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        bare_repo_path=str(bare),
-        target_branch="team/team/reviews/missing",
+def test_publish_review_branch_preserves_source_ref_moved_failure() -> None:
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": False, "reason": "source_ref_moved"},
+        consolidation_result={"success": True},
     )
+    provider = TeamPublishReviewBranchEffectProvider()
+    provider.initialize(
+        TeamPublishReviewBranchEffectDefinition(
+            id="publish-review",
+            display_name="Publish Review",
+            type="effect:team:publish-review-branch",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            source_branch="agents/session-1/work",
+            expected_commit_sha="a" * 40,
+            target_branch="team/team/reviews/deliverable",
+        ),
+        EffectRuntimeContext(admin_service=admin),
+    )
+
+    result = provider.execute()
 
     assert result["success"] is False
-    assert "source_branch or commit_sha is required" in str(result["error"])
+    assert result["reason"] == "source_ref_moved"
 
 
-def test_consolidate_git_branches_merges_in_order(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    _branch_with(repo, "feat-a", "a\n")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        source_branches=["feat-a"],
-        target_branch="team/team/releases/release-1",
-        base_branch="main",
+def test_publish_review_branch_rejects_sibling_directory_override() -> None:
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": True},
+        consolidation_result={"success": True},
+    )
+    provider = TeamPublishReviewBranchEffectProvider()
+    provider.initialize(
+        TeamPublishReviewBranchEffectDefinition(
+            id="publish-review",
+            display_name="Publish Review",
+            type="effect:team:publish-review-branch",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team-b",
+            source_branch="agents/session-1/work",
+            expected_commit_sha="a" * 40,
+            target_branch="team/team/reviews/deliverable",
+        ),
+        EffectRuntimeContext(
+            admin_service=admin,
+            metadata={"directory_path": "root/team-a"},
+        ),
     )
 
-    assert result["success"] is True
-    assert result["merged_branches"] == ["feat-a"]
-    assert result["commit_sha"]
-    assert result["conflict_branch"] is None
-
-
-def test_consolidate_git_branches_fetches_missing_source_from_bare_repo(
-    tmp_path: Path,
-) -> None:
-    bare = tmp_path / "dropbox.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-    source = tmp_path / "source"
-    _init_repo(source)
-    _git(source, "remote", "add", "origin", str(bare))
-    _git(source, "push", "-u", "origin", "main")
-    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
-    trusted = tmp_path / "trusted"
-    subprocess.run(
-        ["git", "clone", str(bare), str(trusted)],
-        check=True,
-        capture_output=True,
-    )
-    _git(trusted, "config", "user.email", "test@example.invalid")
-    _git(trusted, "config", "user.name", "Team Test")
-    _branch_with(source, "agents/session-1/work", "agent work\n")
-    source_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
-    _git(source, "push", "origin", "agents/session-1/work")
-    assert (
-        _git(
-            trusted,
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "agents/session-1/work^{commit}",
-            check=False,
-        ).returncode
-        != 0
-    )
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(trusted),
-        bare_repo_path=str(bare),
-        source_branches=["agents/session-1/work"],
-        target_branch="team/team/features/task-ui",
-        base_branch="main",
-    )
-
-    assert result["success"] is True
-    assert result["merged_branches"] == ["agents/session-1/work"]
-    assert _git(trusted, "merge-base", "--is-ancestor", source_commit, "HEAD").returncode == 0
-    temp_refs = _git(
-        trusted,
-        "for-each-ref",
-        "--format=%(refname)",
-        "refs/evander/team-consolidations",
-    )
-    assert temp_refs.stdout.strip() == ""
-    assert _git(trusted, "branch", "--show-current").stdout.strip() == (
-        "team/team/features/task-ui"
-    )
-
-
-def test_consolidate_git_branches_refreshes_stale_local_source_from_bare_repo(
-    tmp_path: Path,
-) -> None:
-    bare = tmp_path / "dropbox.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-    source = tmp_path / "source"
-    _init_repo(source)
-    _git(source, "remote", "add", "origin", str(bare))
-    _git(source, "push", "-u", "origin", "main")
-    _git_dir(bare, "symbolic-ref", "HEAD", "refs/heads/main")
-    trusted = tmp_path / "trusted"
-    subprocess.run(["git", "clone", str(bare), str(trusted)], check=True, capture_output=True)
-    _git(trusted, "config", "user.email", "test@example.invalid")
-    _git(trusted, "config", "user.name", "Team Test")
-    _branch_with(source, "agents/session-1/work", "old agent work\n")
-    old_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
-    _git(source, "push", "origin", "agents/session-1/work")
-    _git(
-        trusted,
-        "fetch",
-        str(bare),
-        "+refs/heads/agents/session-1/work:refs/heads/agents/session-1/work",
-    )
-    _git(source, "checkout", "-q", "agents/session-1/work")
-    (source / "file.txt").write_text("new agent work\n")
-    _git(source, "commit", "-q", "-am", "new agent work")
-    new_commit = _git(source, "rev-parse", "agents/session-1/work").stdout.strip()
-    _git(source, "push", "origin", "agents/session-1/work")
-    assert (
-        _git(trusted, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip() == old_commit
-    )
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(trusted),
-        bare_repo_path=str(bare),
-        source_branches=["agents/session-1/work"],
-        target_branch="team/team/features/task-ui",
-        base_branch="main",
-    )
-
-    assert result["success"] is True
-    assert _git(trusted, "merge-base", "--is-ancestor", new_commit, "HEAD").returncode == 0
-    assert (trusted / "file.txt").read_text(encoding="utf-8") == "new agent work\n"
-    assert (
-        _git(trusted, "rev-parse", "refs/heads/agents/session-1/work").stdout.strip() == old_commit
-    )
-
-
-def test_consolidate_git_branches_allows_local_sources_when_bare_repo_missing(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    _branch_with(repo, "feat-a", "a\n")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        bare_repo_path=str(tmp_path / "missing.git"),
-        source_branches=["feat-a"],
-        target_branch="team/team/releases/release-1",
-        base_branch="main",
-    )
-
-    assert result["success"] is True
-    assert result["merged_branches"] == ["feat-a"]
-    assert (repo / "file.txt").read_text(encoding="utf-8") == "a\n"
-
-
-def test_consolidate_git_branches_refuses_dirty_worktree(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    (repo / "file.txt").write_text("uncommitted change\n")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        source_branches=["main"],
-        target_branch="team/team/releases/release-2",
-    )
+    result = provider.execute()
 
     assert result["success"] is False
-    assert "dirty worktree" in str(result["error"])
-    assert result["merged_branches"] == []
+    assert "outside workflow directory scope" in result["error"]
+    assert admin.promotion_calls == []
 
 
-def test_consolidate_git_branches_aborts_on_conflict(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    _branch_with(repo, "feat-a", "a\n")
-    _branch_with(repo, "feat-b", "b\n")
-
-    result = _consolidate_provider(
-        tmp_path,
-        host_repo_path=str(repo),
-        source_branches=["feat-a", "feat-b"],
-        target_branch="team/team/releases/release-3",
-        base_branch="main",
+def test_consolidate_git_branches_delegates_exact_source_commits() -> None:
+    expected_result = {
+        "success": True,
+        "commit_sha": "c" * 40,
+        "target_branch": "team/team/releases/release-1",
+        "merged_branches": ["team/team/features/task-backend"],
+    }
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": True},
+        consolidation_result=expected_result,
+    )
+    provider = TeamConsolidateGitBranchesEffectProvider()
+    provider.initialize(
+        TeamConsolidateGitBranchesEffectDefinition(
+            id="consolidate",
+            display_name="Consolidate",
+            type="effect:team:consolidate-git-branches",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team-a",
+            source_branches=["team/team/features/task-backend"],
+            target_branch="team/team/releases/release-1",
+            base_branch="main",
+            expected_source_commits={"team/team/features/task-backend": "b" * 40},
+            allowed_changed_paths=["src/backend.py"],
+        ),
+        EffectRuntimeContext(admin_service=admin, metadata={"directory_path": "root"}),
     )
 
+    result = provider.execute()
+
+    assert result == expected_result
+    assert admin.managed_git_admin.calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root/team-a",
+            "source_branches": ["team/team/features/task-backend"],
+            "target_branch": "team/team/releases/release-1",
+            "base_branch": "main",
+            "expected_source_commits": {"team/team/features/task-backend": "b" * 40},
+            "allowed_changed_paths": ["src/backend.py"],
+        }
+    ]
+
+
+def test_consolidate_git_branches_rejects_incomplete_commit_map() -> None:
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": True},
+        consolidation_result={"success": True},
+    )
+    provider = TeamConsolidateGitBranchesEffectProvider()
+    provider.initialize(
+        TeamConsolidateGitBranchesEffectDefinition(
+            id="consolidate",
+            display_name="Consolidate",
+            type="effect:team:consolidate-git-branches",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            source_branches=["team/team/features/task-backend"],
+            target_branch="team/team/releases/release-1",
+            expected_source_commits={},
+        ),
+        EffectRuntimeContext(admin_service=admin),
+    )
+
+    result = provider.execute()
+
     assert result["success"] is False
-    assert result["conflict_branch"] == "feat-b"
-    assert result["merged_branches"] == ["feat-a"]
-    # The conflicted merge must be aborted, leaving no in-progress merge.
-    status = _git(repo, "status", "--porcelain")
-    assert "UU" not in status.stdout
+    assert "expected_source_commits must contain every source branch" in str(result["error"])
+    assert admin.managed_git_admin.calls == []
+
+
+def test_consolidate_git_branches_rejects_sibling_directory_override() -> None:
+    admin = _AdminRuntimeStub(
+        promotion_result={"success": True},
+        consolidation_result={"success": True},
+    )
+    provider = TeamConsolidateGitBranchesEffectProvider()
+    provider.initialize(
+        TeamConsolidateGitBranchesEffectDefinition(
+            id="consolidate",
+            display_name="Consolidate",
+            type="effect:team:consolidate-git-branches",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team-b",
+            source_branches=["team/team/features/task-backend"],
+            target_branch="team/team/releases/release-1",
+            expected_source_commits={"team/team/features/task-backend": "b" * 40},
+        ),
+        EffectRuntimeContext(
+            admin_service=admin,
+            metadata={"directory_path": "root/team-a"},
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert "outside workflow directory scope" in result["error"]
+    assert admin.managed_git_admin.calls == []

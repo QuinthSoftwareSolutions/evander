@@ -142,10 +142,9 @@ class VmCloneRepoEffectDefinition(EffectDefinition):
     target: ConfigValue | None = None
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
-    repo_source: ConfigValue
+    managed_repo_id: ConfigValue
     clone_branch: ConfigValue | None = None
     vm_user: ConfigValue | None = None
-    directory_path: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "VmCloneRepoEffectDefinition":
@@ -271,24 +270,26 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
     target: ConfigValue | None = None
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
-    repo_source: ConfigValue
-    canonical_origin_url: ConfigValue | None = None
-    bare_repo_name: ConfigValue | None = None
-    bare_repo_path: ConfigValue | None = None
+    managed_repo_id: ConfigValue
     clone_branch: ConfigValue | None = None
     vm_user: ConfigValue | None = None
-    directory_path: ConfigValue | None = None
     git_author_name: ConfigValue | None = None
     git_author_email: ConfigValue | None = None
     git_committer_name: ConfigValue | None = None
     git_committer_email: ConfigValue | None = None
     git_access_mode: ConfigValue | None = None
+    pinned_ref: ConfigValue | None = None
+    pinned_commit_sha: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "AgentCloneRepoEffectDefinition":
         selectors = [self.target, self.session_id, self.vm_name]
         if not any(value is not None for value in selectors):
             raise ValueError("effect:agent:clone-repo requires target, session_id, or vm_name")
+        if (self.pinned_ref is None) != (self.pinned_commit_sha is None):
+            raise ValueError(
+                "effect:agent:clone-repo requires pinned_ref and pinned_commit_sha together"
+            )
         return self
 
     @field_validator("git_access_mode", mode="before")
@@ -366,6 +367,39 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     agent_context_retry_enabled: ConfigValue | None = None
     agent_context_retry_max_attempts: ConfigValue | None = None
     agent_context_retry_target_chars: ConfigValue | None = None
+
+
+class CodeConsultationEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:code-consultation"]
+    consultation_id: ConfigValue
+    operation: ConfigValue
+    outcome: ConfigValue | None = None
+    status: ConfigValue | None = None
+    reason: ConfigValue | None = None
+
+    @field_validator("operation")
+    @classmethod
+    def validate_operation(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip().casefold()
+            if normalized not in {"prepare", "finalize", "terminate"}:
+                raise ValueError(
+                    "effect:agent:code-consultation operation must be prepare, finalize, or terminate"
+                )
+            return normalized
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip().casefold()
+            if normalized not in {"timed_out", "cancelled"}:
+                raise ValueError(
+                    "effect:agent:code-consultation status must be timed_out or cancelled"
+                )
+            return normalized
+        return value
 
 
 class ChatAssistantEnsureSessionEffectDefinition(EffectDefinition):
@@ -777,6 +811,7 @@ class IssueUpsertAdoProxyEffectDefinition(EffectDefinition):
     directory_path: ConfigValue | None = None
     organization_url: ConfigValue | None = None
     project: ConfigValue | None = None
+    managed_repo_id: ConfigValue | None = None
     repo_source: ConfigValue | None = None
     yaml_output_dir: ConfigValue | None = None
     item: ConfigValue | None = None
@@ -1076,68 +1111,41 @@ class SessionRenewIfExpiredEffectDefinition(EffectDefinition):
         return self
 
 
+class GitEnsureManagedRepoEffectDefinition(EffectDefinition):
+    type: Literal["effect:git:ensure-managed-repo"]
+    directory_path: ConfigValue
+    repo_source: ConfigValue
+
+
 class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:git:promote-agent-branch"]
-    host_repo_path: ConfigValue
-    bare_repo_path: ConfigValue | None = None
-    bare_repo_name: ConfigValue | None = None
+    managed_repo_id: ConfigValue
     agent_branch: ConfigValue
-    review_branch: ConfigValue | None = None
-    target_branch: ConfigValue | None = None
-    expected_commit_sha: ConfigValue | None = None
-    remote_name: ConfigValue | None = None
-
-    @model_validator(mode="after")
-    def validate_bare_repo_selector(self) -> "GitPromoteAgentBranchEffectDefinition":
-        if self.bare_repo_path is None and self.bare_repo_name is None:
-            raise ValueError(
-                "effect:git:promote-agent-branch requires bare_repo_path or bare_repo_name"
-            )
-        if (
-            self.bare_repo_path is not None
-            and self.bare_repo_name is not None
-            and not (
-                _is_binding_config_value(self.bare_repo_path)
-                or _is_binding_config_value(self.bare_repo_name)
-            )
-        ):
-            raise ValueError(
-                "effect:git:promote-agent-branch bare_repo_path and bare_repo_name are mutually exclusive"
-            )
-        return self
+    target_branch: ConfigValue
+    expected_commit_sha: ConfigValue
 
 
 class GitPushBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:git:push-branch"]
-    host_repo_path: ConfigValue
-    local_branch: ConfigValue
-    origin_branch: ConfigValue
-    canonical_origin_url: ConfigValue | None = None
-    provider: ConfigValue | None = None
-    base_branch: ConfigValue | None = None
-    session_id: ConfigValue | None = None
-    work_item_id: ConfigValue | None = None
-
-
-def _is_binding_config_value(value: ConfigValue | None) -> bool:
-    return isinstance(value, str) and "${{" in value and "}}" in value
+    managed_repo_id: ConfigValue
+    directory_path: ConfigValue | None = None
+    source_ref: ConfigValue
+    expected_commit_sha: ConfigValue
+    destination_branch: ConfigValue
 
 
 class PrCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:pr:create"]
-    host_repo_path: ConfigValue
-    local_branch: ConfigValue | None = None
-    origin_branch: ConfigValue | None = None
-    canonical_origin_url: ConfigValue | None = None
-    provider: ConfigValue | None = None
-    project: ConfigValue | None = None
+    managed_repo_id: ConfigValue
+    source_ref: ConfigValue
+    expected_commit_sha: ConfigValue
+    destination_branch: ConfigValue
+    fallback_destination_branch: ConfigValue | None = None
     base_branch: ConfigValue | None = None
     session_id: ConfigValue | None = None
     work_item_id: ConfigValue | None = None
     title: ConfigValue | None = None
     fallback_title: ConfigValue | None = None
     body: ConfigValue | None = None
-    body_file: ConfigValue | None = None
-    body_artifact_ids: ConfigValue | None = None
     draft: ConfigValue | None = None
     fill: ConfigValue | None = True

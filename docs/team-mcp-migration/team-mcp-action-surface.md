@@ -1,8 +1,11 @@
 # Team MCP Action Surface Design
 
+> **Status:** Historical design for an implemented API. Use [`../addons.md`](../addons.md) for the
+> current Team add-on action and operator reference.
+
 This document designs an MCP tool surface that can replace the persistent
 agent-authored `/artifacts/team-action.json` contract without changing Team
-semantics. It is a design document only; it does not define an implemented API.
+semantics. It was a design document; the resulting API is now implemented.
 
 The goal is not to expose one generic action blob through MCP. The goal is to
 give agents small, intent-specific tools with synchronous validation, immediate
@@ -645,6 +648,7 @@ Arguments:
 | `state` | enum | yes | `accepted`, `rejected`, or `blocked`. |
 | `findings` | string[] | no | Review findings. |
 | `criteria` | object[] | no | `{ "criterion_id", "state", "finding"? }`; state is `passed`, `failed`, or `skipped`. |
+| `finding_resolutions` | object[] | no | `{ "finding_id", "resolution", "evidence_refs"? }` for carried findings owned by this review profile or legacy reviewer role. |
 | `override_routing_gap_reason` | string or null | no | Manager-fallback escape hatch when required by current runtime rules. |
 | `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
 | `request_id` | string | no | Idempotency key. |
@@ -655,6 +659,11 @@ Semantics:
 - Only the assigned reviewer may decide.
 - Criterion ids must exist on the attached review profile when criteria are
   supplied.
+- An accepted profiled review must supply every required criterion with state
+  `passed`; optional criteria may be omitted.
+- Rejected/blocked findings survive on superseding deliverables. Acceptance
+  requires this review to resolve every open finding it owns, and the
+  deliverable remains pending until all carried findings are resolved.
 - `accepted` marks the review accepted; the deliverable becomes accepted only
   when all attached reviews are accepted, and the task becomes accepted only when
   all active deliverables for that task are accepted.
@@ -741,6 +750,8 @@ Semantics:
 - Caller must own the task or supervise the owner.
 - Project Git config is required.
 - Branch names are validated before any git work.
+- Every source branch must map to exactly one accepted current deliverable and
+  is pinned to the immutable commit accepted by its review.
 - Records a `feature` git promotion and emits the existing promotion event.
 - Returns `git_promotion_event_id` and target feature branch.
 
@@ -758,6 +769,7 @@ Arguments:
 | `release_branch` | string or null | no | Release branch override. |
 | `canonical_branch` | string or null | no | Canonical branch override. |
 | `summary` | string or null | no | Release summary. |
+| `verification_waivers` | object[] | no | `{ "deliverable_id", "reason" }` for partial, not-run, unknown, or missing verification. Only a project lead or top-level team manager may supply agent waivers. |
 | `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
 | `request_id` | string | no | Idempotency key. |
 
@@ -767,6 +779,14 @@ Semantics:
 - Only the project lead, team manager, or a same-project role with
   `request_release` may request a release.
 - Every deliverable must belong to the project and be accepted.
+- Failed verification is never waivable. Other incomplete verification states
+  require an audited waiver from authorized leadership (or an authenticated
+  operator through the Admin API).
+- Accepted Git reviews, feature commits, and reviewed path manifests are pinned;
+  a moved branch tip or path outside the reviewed union hard-blocks the release
+  and cannot be waived.
+- The consolidated release commit must pass the project's configured release
+  verification commands and release-review profiles before canonical push.
 - The repository derives source branches from deliverable `git_refs`; agents do
   not provide `source_branch`, `target_branch`, or `commit_sha` here.
 - Do not use this to retry an existing blocked package.
@@ -802,6 +822,41 @@ Semantics:
 - A failed release promotion must exist for the package.
 - Emits the existing release recovery event.
 - Returns `release_package_id`.
+
+### `team_retry_release_gate`
+
+Create a new immutable attempt for an eligible blocked release gate while
+keeping the pinned release candidate unchanged.
+
+Arguments:
+
+| Name | Type | Required | Semantics |
+| --- | --- | --- | --- |
+| `release_package_id` | string | yes | Existing blocked release package. |
+| `gate_kind` | `verification` or `review` | yes | Gate family to retry. |
+| `gate_id` | string | yes | Current verification run or release review id. |
+| `reason` | string | yes | Audited explanation of the resolved process or infrastructure blocker. |
+| `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
+| `request_id` | string | yes | Idempotency key. |
+
+Semantics:
+
+- Caller must have release-request permission for the project and an active
+  Team dispatch.
+- Release package must be `blocked` and have a pinned candidate SHA.
+- Verification retries are limited to the current timed-out or
+  infrastructure-failed attempt. Nonzero test/build exits are candidate
+  failures and cannot be retried.
+- Review retries are limited to the current process-blocked release review.
+  Release-review decisions are immutable: rejected reviews require changed,
+  reviewed content, while blocked is reserved for a non-candidate process or
+  evidence-access blocker with a concrete finding.
+- The old attempt remains immutable and links to a successor that targets the
+  same candidate SHA. The successor links back to the old attempt and stores the
+  retry reason and requesting agent identity.
+- Verification retries emit a new durable verification-request event; review
+  retries create a new reviewer inbox item and wake request.
+- Returns the retried and replacement gate ids, release payload, and events.
 
 ### `team_request_ephemeral_agent`
 

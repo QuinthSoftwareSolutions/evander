@@ -3,9 +3,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
+import shlex
 import subprocess
+import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,6 +14,13 @@ from typing import Any
 
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
+from evander.effects.providers.agent_create import AgentCreateEffectProvider
+from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
+from evander.effects.providers.agent_exec import AgentExecEffectProvider
+from evander.effects.providers.agent_session import (
+    container_backend,
+    selected_execution_backend_for_target,
+)
 from evander.effects.providers.artifacts import (
     ArtifactImportPublishedEffectProvider,
     ArtifactPublishArtifactsEffectProvider,
@@ -21,6 +29,7 @@ from evander.effects.providers.base import (
     EffectLifecycleHookBase,
     EffectProviderBase,
     EffectRuntimeContext,
+    scoped_effect_directory_path,
 )
 from evander.artifact_spaces import (
     ArtifactSpacePermissionError,
@@ -39,6 +48,9 @@ from evander.events.scheduled import (
 from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
+    AgentCreateEffectDefinition,
+    AgentDestroyEffectDefinition,
+    AgentExecEffectDefinition,
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
 )
@@ -136,6 +148,7 @@ from .provider_schemas import (
     TeamStateQueryDefinition,
     TeamSessionRoutingQueryDefinition,
     TeamUpdateCaseEffectDefinition,
+    TeamVerifyReleaseCandidateEffectDefinition,
     TeamWakeDueAgentsEffectDefinition,
     TeamWakeGovernanceManagersEffectDefinition,
 )
@@ -152,10 +165,15 @@ from .services.domain.ephemeral import (
 from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from .services.domain.operator_escalation import OPERATOR_ESCALATION_EVENT_TYPE
 from .services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
+from .services.domain.release_gates import RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE
 from .services.domain.review import _apply_review_request, _review_request_was_created
-from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
+from .services.domain.wake import (
+    AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    _append_agent_wake_requested_event,
+)
 from .services.ephemeral_service import TeamEphemeralService
 from .services.git_release_service import TeamGitReleaseService
+from .services.release_gate_service import TeamReleaseGateService
 from .services.memory_service import (
     DEFAULT_MEMORY_LIMIT,
     TeamMemorySemanticService,
@@ -165,12 +183,14 @@ from .services.memory_service import (
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 14
+TEAM_AGENT_GUIDANCE_VERSION = 15
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
 TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
 TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "evander-team-addon-governance"
+TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS = 3
+TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS = 1.0
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "b64_"
 _ARTIFACT_SPACE_REF_PREFIX = "artifact-space:"
@@ -1115,11 +1135,17 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         "Publish a review branch or commit for a Team Git promotion request.",
         [
             _catalog_field(
-                "host_repo_path",
-                "Host repo path",
+                "managed_repo_id",
+                "Managed repository ID",
                 "string",
                 required=True,
-                description="Trusted host checkout path used to publish the review branch.",
+                description="Evander-managed repository containing the pinned source commit.",
+            ),
+            _catalog_field(
+                "directory_path",
+                "Directory path",
+                "string",
+                description="Owning directory scope for the managed repository.",
             ),
             _catalog_field(
                 "target_branch",
@@ -1129,28 +1155,18 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Branch name to create or update for review.",
             ),
             _catalog_field(
-                "bare_repo_name",
-                "Bare repo name",
-                "string",
-                description="Optional host-local bare repo name when resolving the remote.",
-            ),
-            _catalog_field(
-                "bare_repo_path",
-                "Bare repo path",
-                "string",
-                description="Optional explicit host-local bare repo path.",
-            ),
-            _catalog_field(
                 "source_branch",
                 "Source branch",
                 "string",
-                description="Source branch to publish when no commit SHA is supplied.",
+                required=True,
+                description="Agent branch containing the pinned source commit.",
             ),
             _catalog_field(
-                "commit_sha",
-                "Commit SHA",
+                "expected_commit_sha",
+                "Expected commit SHA",
                 "string",
-                description="Specific commit to publish when the promotion selected one.",
+                required=True,
+                description="Exact source commit approved for promotion.",
             ),
         ],
     ),
@@ -1203,11 +1219,17 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         "Merge multiple Team source branches into a deterministic target branch.",
         [
             _catalog_field(
-                "host_repo_path",
-                "Host repo path",
+                "managed_repo_id",
+                "Managed repository ID",
                 "string",
                 required=True,
-                description="Trusted host checkout path used for branch consolidation.",
+                description="Evander-managed repository used for consolidation.",
+            ),
+            _catalog_field(
+                "directory_path",
+                "Directory path",
+                "string",
+                description="Owning directory scope for the managed repository.",
             ),
             _catalog_field(
                 "source_branches",
@@ -1231,20 +1253,12 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Optional base branch to reset from before merging source branches.",
             ),
             _catalog_field(
-                "bare_repo_path",
-                "Bare repo path",
-                "string",
-                description=(
-                    "Optional dropbox bare repository path used to fetch missing source branches."
-                ),
-            ),
-            _catalog_field(
-                "bare_repo_name",
-                "Bare repo name",
-                "string",
-                description=(
-                    "Optional dropbox bare repository name resolved under EVANDER_GIT_ROOT."
-                ),
+                "expected_source_commits",
+                "Expected source commits",
+                "json",
+                required=True,
+                description="Exact approved commit SHA for every source branch.",
+                json_value_type="object",
             ),
         ],
     ),
@@ -1511,6 +1525,11 @@ _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
         "Team Git release recovery requested",
         "Published when Team release automation requests release recovery promotion.",
     ),
+    _team_internal_event(
+        RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE,
+        "Team release verification requested",
+        "Published after a release candidate commit is pinned and ready for CI verification.",
+    ),
 )
 
 
@@ -1655,6 +1674,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             agent_id=_optional_text(payload.get("agent_id")),
             limit=normalized_limit,
             blocked_team_ids=blocked_team_ids,
+            session_is_busy=lambda session_id: _team_session_has_active_prompt(
+                context,
+                session_id=session_id,
+            ),
         )
         chat_dispatches: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -1695,6 +1718,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     default=True,
                 ),
                 blocked_team_ids=blocked_team_ids,
+                session_is_busy=lambda session_id: _team_session_has_active_prompt(
+                    context,
+                    session_id=session_id,
+                ),
             )
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []
@@ -1702,6 +1729,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         git_work_contexts: list[dict[str, Any]] = []
         review_artifact_imports: list[dict[str, Any]] = []
         review_artifact_import_errors: list[dict[str, Any]] = []
+        transient_conflicts: list[dict[str, Any]] = []
+        retry_event_ids: list[str] = []
         for lease in leases:
             agent = lease["agent"]
             try:
@@ -1729,6 +1758,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         dispatch_id=lease["dispatch_id"],
                         tasks=lease.get("tasks"),
                     )
+                except TeamStateConflictError:
+                    raise
                 except Exception as exc:
                     failed_project_repo_preparations.append(
                         _project_repo_prepare_record(
@@ -1740,6 +1771,24 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     raise
                 if project_repo is not None:
                     lease = {**lease, "project_repo": project_repo}
+                    conflict_retry_count = int(
+                        project_repo.get("state_conflict_retry_count") or 0
+                    )
+                    if conflict_retry_count:
+                        transient_conflicts.append(
+                            {
+                                "agent_id": agent["id"],
+                                "session_id": agent["session_id"],
+                                "dispatch_id": lease["dispatch_id"],
+                                "phase": "git_work_context_commit",
+                                "attempt_count": int(
+                                    project_repo.get("state_commit_attempt_count") or 0
+                                ),
+                                "conflict_count": conflict_retry_count,
+                                "resolved": True,
+                                "retry_scheduled": False,
+                            }
+                        )
                     git_work_contexts.extend(
                         _mapping_items(project_repo.get("git_work_contexts"))
                     )
@@ -1786,6 +1835,17 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
+                delivered_action_feedback_dispatch_ids = _lease_action_feedback_dispatch_ids(
+                    lease
+                )
+                if delivered_action_feedback_dispatch_ids:
+                    feedback_service = TeamAdminService(repo)
+                    for source_dispatch_id in delivered_action_feedback_dispatch_ids:
+                        state = feedback_service.mark_action_feedback_delivered(
+                            agent_id=agent["id"],
+                            source_dispatch_id=source_dispatch_id,
+                            delivery_dispatch_id=lease["dispatch_id"],
+                        )
                 dispatch_payload = {
                     "agent_id": agent["id"],
                     "session_id": agent["session_id"],
@@ -1794,6 +1854,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     "team_mcp_tools": tool_grant_result,
                     "result": result_payload,
                 }
+                if delivered_action_feedback_dispatch_ids:
+                    dispatch_payload["delivered_action_feedback_dispatch_ids"] = (
+                        delivered_action_feedback_dispatch_ids
+                    )
                 if project_repo is not None:
                     dispatch_payload["project_repo"] = project_repo
                 if lease.get("review_artifact_imports"):
@@ -1823,6 +1887,49 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     agent_id=agent["id"],
                     session_id=agent["session_id"],
                 )
+            except TeamStateConflictError as exc:
+                conflict_record: dict[str, Any] = {
+                    "agent_id": agent["id"],
+                    "session_id": agent["session_id"],
+                    "dispatch_id": lease["dispatch_id"],
+                    "phase": "git_work_context_commit",
+                    "attempt_count": TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS,
+                    "conflict_count": TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS,
+                    "expected_revision": exc.expected_revision,
+                    "current_revision": exc.current_revision,
+                    "resolved": False,
+                    "retry_scheduled": False,
+                    "retry_event_ids": [],
+                }
+                try:
+                    state = TeamRuntimeService(repo).release_agent_wake_lease_for_retry(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                    )
+                    retry_result: dict[str, Any] = {"events": []}
+                    _append_agent_wake_requested_event(
+                        state,
+                        agent_id=agent["id"],
+                        result=retry_result,
+                        reason="state_conflict_retry",
+                        now=datetime.now(UTC),
+                        delay_seconds=TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS,
+                        idempotency_suffix=f"state-conflict:{lease['dispatch_id']}",
+                    )
+                    scheduled_ids = _publish_team_events(
+                        context,
+                        retry_result["events"],
+                    )
+                    if not scheduled_ids:
+                        raise RuntimeError("transient wake retry event was not scheduled")
+                    retry_event_ids.extend(scheduled_ids)
+                    conflict_record["retry_scheduled"] = True
+                    conflict_record["retry_event_ids"] = scheduled_ids
+                except Exception as retry_exc:
+                    errors.append(
+                        f"{agent['id']}: failed to schedule transient wake retry: {retry_exc}"
+                    )
+                transient_conflicts.append(conflict_record)
             except Exception as exc:  # pragma: no cover - exercised by provider tests with fakes
                 error = str(exc)
                 try:
@@ -1842,6 +1949,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "git_work_contexts": git_work_contexts,
             "review_artifact_imports": review_artifact_imports,
             "review_artifact_import_errors": review_artifact_import_errors,
+            "transient_conflicts": transient_conflicts,
+            "retry_event_ids": retry_event_ids,
+            "retry_scheduled_count": len(retry_event_ids),
             "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
             "cost_guard_blocked_teams": cost_guard_blocked_teams,
             "errors": errors,
@@ -2941,6 +3051,274 @@ class TeamRecordGitPromotionEffectProvider(EffectProviderBase):
         return result
 
 
+class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamVerifyReleaseCandidateEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "release_package_id",
+            "verification_run_id",
+            "candidate_commit_sha",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        release_id = _required_text(payload.get("release_package_id"), "release_package_id")
+        run_id = _required_text(payload.get("verification_run_id"), "verification_run_id")
+        candidate_sha = _required_text(
+            payload.get("candidate_commit_sha"), "candidate_commit_sha"
+        )
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        state = repo.read()
+        release = state.release_packages.get(release_id)
+        run = state.release_verification_runs.get(run_id)
+        if release is None or run is None:
+            raise ValueError("release package or verification run does not exist")
+        if release.candidate_commit_sha != candidate_sha or run.candidate_commit_sha != candidate_sha:
+            raise ValueError("release verification request does not match the pinned candidate")
+        if run.state in {"passed", "failed", "timed_out"}:
+            return {
+                "success": True,
+                "release_package_id": release_id,
+                "verification_run_id": run_id,
+                "verification_state": run.state,
+                "skipped": True,
+            }
+        project = state.projects.get(release.project_id)
+        policy = project.release_policy if project is not None else None
+        git = project.git if project is not None else None
+        manifest = release.manifest
+        if project is None or git is None or manifest is None:
+            raise ValueError(
+                "release project, Git configuration, or frozen candidate manifest is missing"
+            )
+        verification_commands = manifest.verification_commands
+        if not verification_commands:
+            raise ValueError("release verification run has no frozen commands")
+
+        command_results: list[dict[str, Any]] = []
+        terminal_state = "passed"
+        failure_kind: str | None = None
+        terminal_error: str | None = None
+        created = False
+        try:
+            create = AgentCreateEffectProvider()
+            create.initialize(
+                AgentCreateEffectDefinition(
+                    id=f"team-create-release-verifier-{run_id}",
+                    display_name="Create disposable release verifier",
+                    type="effect:agent:create",
+                    execution_backend="container_worker_vm",
+                    session_id=run.session_id,
+                    existing_agent_behavior="upsert",
+                    container_image=(policy.container_image if policy is not None else None),
+                    directory_path=git.directory_path,
+                    dotnet=True,
+                    nuget=True,
+                    ttl_hours=4,
+                    metadata={
+                        "team_release_verification": True,
+                        "release_package_id": release.id,
+                        "candidate_commit_sha": candidate_sha,
+                    },
+                ),
+                self.runtime_context,
+            )
+            create_result = create.execute()
+            if not bool(create_result.get("success")):
+                raise RuntimeError(
+                    _optional_text(create_result.get("message"))
+                    or "failed to create disposable release verifier"
+                )
+            created = True
+
+            clone = AgentCloneRepoEffectProvider()
+            clone.initialize(
+                AgentCloneRepoEffectDefinition(
+                    id=f"team-clone-release-candidate-{run_id}",
+                    display_name="Clone release candidate",
+                    type="effect:agent:clone-repo",
+                    session_id=run.session_id,
+                    managed_repo_id=git.managed_repo_id,
+                    clone_branch=release.release_branch,
+                    git_access_mode="read-only",
+                ),
+                self.runtime_context,
+            )
+            clone_result = clone.execute()
+            if not bool(clone_result.get("success")):
+                raise RuntimeError(
+                    _optional_text(clone_result.get("message"))
+                    or "failed to clone release candidate"
+                )
+            target_dir = _required_text(clone_result.get("target_dir"), "target_dir")
+            checkout_commands = (
+                (
+                    "pin",
+                    "Pin release candidate checkout",
+                    ["git", "checkout", "--detach", "--force", candidate_sha],
+                ),
+                (
+                    "reset",
+                    "Reset release candidate checkout",
+                    ["git", "reset", "--hard", candidate_sha],
+                ),
+                (
+                    "clean",
+                    "Clean release candidate checkout",
+                    ["git", "clean", "-ffdx"],
+                ),
+            )
+            for operation, display_name, checkout_command in checkout_commands:
+                checkout = AgentExecEffectProvider()
+                checkout.initialize(
+                    AgentExecEffectDefinition(
+                        id=f"team-{operation}-release-candidate-{run_id}",
+                        display_name=display_name,
+                        type="effect:agent:exec",
+                        session_id=run.session_id,
+                        command=checkout_command,
+                        working_directory=target_dir,
+                        timeout_seconds=120,
+                        check=True,
+                    ),
+                    self.runtime_context,
+                )
+                checkout.execute()
+
+            for command in verification_commands:
+                started = time.monotonic()
+                executor = AgentExecEffectProvider()
+                executor.initialize(
+                    AgentExecEffectDefinition(
+                        id=f"team-release-check-{run_id}-{len(command_results)}",
+                        display_name=command.name,
+                        type="effect:agent:exec",
+                        session_id=run.session_id,
+                        command=list(command.argv),
+                        working_directory=_release_verification_working_directory(
+                            target_dir,
+                            command.cwd,
+                        ),
+                        timeout_seconds=command.timeout_seconds,
+                        check=False,
+                    ),
+                    self.runtime_context,
+                )
+                try:
+                    command_output = executor.execute()
+                except (TimeoutError, subprocess.TimeoutExpired) as exc:
+                    duration = time.monotonic() - started
+                    error = str(exc) or f"release verification command {command.name!r} timed out"
+                    command_results.append(
+                        {
+                            "name": command.name,
+                            "state": "timed_out",
+                            "duration_seconds": duration,
+                            "log_excerpt": error[-8000:],
+                        }
+                    )
+                    terminal_state = "timed_out"
+                    failure_kind = "timeout"
+                    terminal_error = error
+                    break
+                duration = time.monotonic() - started
+                success = bool(command_output.get("success"))
+                command_status = str(command_output.get("status") or "").strip().casefold()
+                command_timed_out = not success and (
+                    command_output.get("failure_kind") == "timeout"
+                    or command_status in {"unknown", "preparing", "starting", "running"}
+                )
+                excerpt = "\n".join(
+                    part
+                    for part in (
+                        _optional_text(command_output.get("stdout")),
+                        _optional_text(command_output.get("stderr")),
+                    )
+                    if part
+                )[-8000:]
+                command_results.append(
+                    {
+                        "name": command.name,
+                        "state": (
+                            "passed" if success else "timed_out" if command_timed_out else "failed"
+                        ),
+                        "job_id": _optional_text(command_output.get("execution_id")),
+                        "exit_code": command_output.get("exit_code"),
+                        "duration_seconds": duration,
+                        "log_excerpt": excerpt or None,
+                    }
+                )
+                if not success:
+                    if command_timed_out:
+                        terminal_state = "timed_out"
+                        failure_kind = "timeout"
+                        terminal_error = f"release verification command {command.name!r} timed out"
+                    else:
+                        terminal_state = "failed"
+                        failure_kind = (
+                            "candidate"
+                            if command_output.get("failure_kind") == "command"
+                            else "infrastructure"
+                        )
+                        terminal_error = f"release verification command {command.name!r} failed"
+                    break
+        except (TimeoutError, subprocess.TimeoutExpired) as exc:
+            terminal_state = "timed_out"
+            failure_kind = "timeout"
+            terminal_error = str(exc) or "release verification timed out"
+        except Exception as exc:
+            terminal_state = "failed"
+            failure_kind = "infrastructure"
+            terminal_error = str(exc) or type(exc).__name__
+        finally:
+            if created:
+                try:
+                    destroy = AgentDestroyEffectProvider()
+                    destroy.initialize(
+                        AgentDestroyEffectDefinition(
+                            id=f"team-destroy-release-verifier-{run_id}",
+                            display_name="Destroy disposable release verifier",
+                            type="effect:agent:destroy",
+                            session_id=run.session_id,
+                            execution_backend="container_worker_vm",
+                        ),
+                        self.runtime_context,
+                    )
+                    destroy_result = destroy.execute()
+                    if not bool(destroy_result.get("success")):
+                        raise RuntimeError(
+                            _optional_text(destroy_result.get("message"))
+                            or "release verifier deletion reported failure"
+                        )
+                except Exception as exc:
+                    if terminal_state == "passed":
+                        terminal_state = "failed"
+                        failure_kind = "infrastructure"
+                        terminal_error = f"failed to destroy release verifier: {exc}"
+
+        _state, result = TeamReleaseGateService(repo).record_verification_result(
+            release_package_id=release_id,
+            verification_run_id=run_id,
+            candidate_commit_sha=candidate_sha,
+            verification_state=terminal_state,
+            command_results=command_results,
+            failure_kind=failure_kind,
+            error=terminal_error,
+        )
+        published_event_ids = _publish_team_events(
+            self.runtime_context,
+            result.get("events"),
+        )
+        if published_event_ids:
+            result["published_event_ids"] = published_event_ids
+        return result
+
+
 class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -2951,42 +3329,56 @@ class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = _definition_payload(
             self.effect_definition,
-            "host_repo_path",
-            "bare_repo_name",
-            "bare_repo_path",
+            "managed_repo_id",
+            "directory_path",
             "source_branch",
-            "commit_sha",
+            "expected_commit_sha",
             "target_branch",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
         try:
-            host_repo_path = _required_text(payload.get("host_repo_path"), "host_repo_path")
+            managed_repo_id = _required_text(
+                payload.get("managed_repo_id"), "managed_repo_id"
+            )
             target_branch = validate_branch_name(
                 _required_text(payload.get("target_branch"), "target_branch")
             )
-            bare_repo_path = _resolve_bare_repo_path(
-                _optional_text(payload.get("bare_repo_path")),
-                _optional_text(payload.get("bare_repo_name")),
+            source_branch = validate_branch_name(
+                _required_text(payload.get("source_branch"), "source_branch")
             )
-            source_branch_value = _optional_text(payload.get("source_branch"))
-            source_branch = (
-                validate_branch_name(source_branch_value)
-                if source_branch_value is not None
-                else None
+            expected_commit_sha = _required_text(
+                payload.get("expected_commit_sha"), "expected_commit_sha"
             )
-            commit_sha = _optional_text(payload.get("commit_sha"))
-            if source_branch is None and commit_sha is None:
-                raise ValueError("source_branch or commit_sha is required")
+            directory_path = scoped_effect_directory_path(
+                self.runtime_context,
+                _optional_text(payload.get("directory_path")),
+            )
         except ValueError as exc:
             return _review_publish_failure(None, None, str(exc))
-        return _publish_review_branch(
-            host_repo_path=host_repo_path,
-            bare_repo_path=bare_repo_path,
-            target_branch=target_branch,
-            source_branch=source_branch,
-            commit_sha=commit_sha,
-        )
+        admin_service = getattr(self.runtime_context, "admin_service", None)
+        promoter = getattr(admin_service, "promote_agent_branch", None)
+        if not callable(promoter):
+            return _review_publish_failure(
+                target_branch, None, "managed Git promotion service is unavailable"
+            )
+        try:
+            result = promoter(
+                managed_repo_id=managed_repo_id,
+                agent_branch=source_branch,
+                target_branch=target_branch,
+                expected_commit_sha=expected_commit_sha,
+                directory_path=directory_path,
+            )
+        except Exception as exc:
+            return _review_publish_failure(target_branch, None, str(exc))
+        output = dict(result) if isinstance(result, Mapping) else {"success": True}
+        output.setdefault("success", True)
+        output.setdefault("managed_repo_id", managed_repo_id)
+        output.setdefault("target_branch", target_branch)
+        output.setdefault("review_branch", target_branch)
+        output.setdefault("commit_sha", expected_commit_sha)
+        return output
 
 
 class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
@@ -3043,17 +3435,20 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = _definition_payload(
             self.effect_definition,
-            "host_repo_path",
+            "managed_repo_id",
+            "directory_path",
             "source_branches",
             "target_branch",
             "base_branch",
-            "bare_repo_path",
-            "bare_repo_name",
+            "expected_source_commits",
+            "allowed_changed_paths",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
-        host_repo_path = _required_text(payload.get("host_repo_path"), "host_repo_path")
         try:
+            managed_repo_id = _required_text(
+                payload.get("managed_repo_id"), "managed_repo_id"
+            )
             source_branches = [
                 validate_branch_name(branch)
                 for branch in _string_list(payload.get("source_branches"), "source_branches")
@@ -3063,24 +3458,58 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
             )
             base_value = _optional_text(payload.get("base_branch"))
             base_branch = validate_branch_name(base_value) if base_value else None
-            bare_repo_value = _optional_text(payload.get("bare_repo_path"))
-            bare_repo_name = _optional_text(payload.get("bare_repo_name"))
-            bare_repo_path = (
-                _resolve_bare_repo_path(bare_repo_value, bare_repo_name)
-                if bare_repo_value is not None or bare_repo_name is not None
+            expected_source_commits = {
+                validate_branch_name(str(branch)): _required_text(
+                    commit,
+                    f"expected_source_commits.{branch}",
+                )
+                for branch, commit in (
+                    _optional_mapping(
+                        payload.get("expected_source_commits"),
+                        "expected_source_commits",
+                    )
+                    or {}
+                ).items()
+            }
+            if set(expected_source_commits) != set(source_branches):
+                raise ValueError(
+                    "expected_source_commits must contain every source branch exactly once"
+                )
+            allowed_changed_paths = (
+                _string_list(
+                    payload.get("allowed_changed_paths"),
+                    "allowed_changed_paths",
+                )
+                if payload.get("allowed_changed_paths") is not None
                 else None
+            )
+            directory_path = scoped_effect_directory_path(
+                self.runtime_context,
+                _optional_text(payload.get("directory_path")),
             )
         except ValueError as exc:
             return _consolidation_failure(None, str(exc))
         if not source_branches:
             return _consolidation_failure(target_branch, "source_branches is required")
-        return _consolidate_git_branches(
-            host_repo_path=host_repo_path,
-            source_branches=source_branches,
-            target_branch=target_branch,
-            base_branch=base_branch,
-            bare_repo_path=bare_repo_path,
-        )
+        admin_service = getattr(self.runtime_context, "admin_service", None)
+        managed_git = getattr(admin_service, "managed_git_admin", None)
+        consolidate = getattr(managed_git, "consolidate_branches", None)
+        if not callable(consolidate):
+            return _consolidation_failure(
+                target_branch, "managed Git consolidation service is unavailable"
+            )
+        try:
+            return consolidate(
+                managed_repo_id=managed_repo_id,
+                directory_path=directory_path,
+                source_branches=source_branches,
+                target_branch=target_branch,
+                base_branch=base_branch,
+                expected_source_commits=expected_source_commits,
+                allowed_changed_paths=allowed_changed_paths,
+            )
+        except Exception as exc:
+            return _consolidation_failure(target_branch, str(exc))
 
 
 class TeamIndexMemoryEffectProvider(EffectProviderBase):
@@ -4073,6 +4502,7 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:mark-ephemeral-cleaned-up": (TeamMarkEphemeralCleanedUpEffectProvider),
             "effect:team:record-git-promotion": TeamRecordGitPromotionEffectProvider,
+            "effect:team:verify-release-candidate": TeamVerifyReleaseCandidateEffectProvider,
             "effect:team:publish-review-branch": TeamPublishReviewBranchEffectProvider,
             "effect:team:mark-release-published": TeamMarkReleasePublishedEffectProvider,
             "effect:team:consolidate-git-branches": (TeamConsolidateGitBranchesEffectProvider),
@@ -4138,6 +4568,9 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:record-git-promotion": (
                 lambda node: _materialize(TeamRecordGitPromotionEffectDefinition, node)
+            ),
+            "effect:team:verify-release-candidate": (
+                lambda node: _materialize(TeamVerifyReleaseCandidateEffectDefinition, node)
             ),
             "effect:team:publish-review-branch": (
                 lambda node: _materialize(TeamPublishReviewBranchEffectDefinition, node)
@@ -4270,7 +4703,7 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- If release_packages shows an existing blocked package, do not submit "
         "another release request with that id; follow the package's "
         f"next_action_hint. Use {TEAM_RECOVER_RELEASE_TOOL} only when that hint "
-        "identifies a failed release promotion and the resolved commit is pushed "
+        "identifies a failed feature or release promotion and the resolved commit is pushed "
         "to an allowed agents/... ref.\n\n"
         "Inbox, chat, delegation, and controls:\n"
         "- Inbox items with item_type operator_directive are durable operator "
@@ -4365,6 +4798,22 @@ def _team_agent_guidance_inactive_content(*, agent: Mapping[str, Any]) -> str:
     )
 
 
+def _lease_action_feedback_dispatch_ids(lease: Mapping[str, Any]) -> list[str]:
+    if _optional_text(lease.get("reason")) != "action_feedback":
+        return []
+    feedback = lease.get("recent_action_feedback")
+    if not isinstance(feedback, list):
+        return []
+    return sorted(
+        {
+            dispatch_id
+            for item in feedback
+            if isinstance(item, Mapping)
+            and (dispatch_id := _optional_text(item.get("dispatch_id"))) is not None
+        }
+    )
+
+
 def _build_prompt(lease: Mapping[str, Any]) -> str:
     agent = lease["agent"]
     context = build_compact_wake_context(lease)
@@ -4402,7 +4851,7 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         "- Release requests create new release packages only. When release_packages "
         "already contains a blocked package, follow its next_action_hint. Use "
         f"{TEAM_RECOVER_RELEASE_TOOL} only when that hint identifies a failed "
-        "release promotion, after the resolved commit is available under an "
+        "feature or release promotion, after the resolved commit is available under an "
         "agents/... ref.\n\n"
     )
     manager_fallback_section = (
@@ -4741,11 +5190,26 @@ def _project_repo_prompt_guidance(project_repo: object) -> str:
         if git_context_rows
         else ""
     )
+    effective_target = (
+        _optional_text(git_context_rows[0].get("worktree_path"))
+        if len(git_context_rows) == 1
+        else target_dir
+    ) or target_dir
     return (
-        f"Project repository: work in the prepared guest checkout at {target_dir}. "
+        f"Project repository: work in the prepared guest checkout at {effective_target}. "
         "The project host checkout is not mounted in the guest; use this guest "
         f"repo and its configured Git helpers for code changes.{git_context_guidance}\n\n"
     )
+
+
+def _release_verification_working_directory(repo_root: str, cwd: str) -> str:
+    normalized = cwd.strip()
+    if normalized in {"", "."}:
+        return repo_root
+    path = Path(normalized)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError("release verification cwd must stay within the candidate checkout")
+    return f"{repo_root.rstrip('/')}/{normalized.strip('/')}"
 
 
 def _prepare_project_repo(
@@ -4783,7 +5247,9 @@ def _prepare_project_repo(
 
     agent_id = _required_text(agent.get("id"), "agent.id")
     session_id = _required_text(agent.get("session_id"), "session_id")
-    repo_source = _required_text(_value(git, "host_repo_path"), "project.git.host_repo_path")
+    managed_repo_id = _required_text(
+        _value(git, "managed_repo_id"), "project.git.managed_repo_id"
+    )
     clone_branch = _optional_text(_value(git, "base_branch"))
     provider = AgentCloneRepoEffectProvider()
     provider.initialize(
@@ -4792,10 +5258,7 @@ def _prepare_project_repo(
             display_name="Prepare Team project repository",
             type="effect:agent:clone-repo",
             session_id=session_id,
-            repo_source=repo_source,
-            canonical_origin_url=_optional_text(_value(git, "canonical_origin_url")),
-            bare_repo_name=_optional_text(_value(git, "bare_repo_name")),
-            bare_repo_path=_optional_text(_value(git, "bare_repo_path")),
+            managed_repo_id=managed_repo_id,
             clone_branch=clone_branch,
             vm_user="agent",
         ),
@@ -4814,7 +5277,8 @@ def _prepare_project_repo(
         clone_result=clone_result,
         base_branch=clone_branch,
     )
-    state, git_work_contexts = _create_project_repo_git_work_contexts(
+    state, git_work_contexts, commit_diagnostics = _create_project_repo_git_work_contexts(
+        context,
         repo,
         state=state,
         agent_id=agent_id,
@@ -4833,6 +5297,7 @@ def _prepare_project_repo(
         if len(git_work_contexts) == 1:
             project_repo["branch_context_id"] = git_work_contexts[0]["branch_context_id"]
             project_repo["agent_branch"] = git_work_contexts[0]["agent_branch"]
+    project_repo.update(commit_diagnostics)
     _mark_project_repo_prepared(context, session_id=session_id, project_repo=project_repo)
     return state, project_repo
 
@@ -4865,6 +5330,7 @@ def _project_repo_payload(
 
 
 def _create_project_repo_git_work_contexts(
+    context: Any,
     repo: TeamStateRepository,
     *,
     state: Any,
@@ -4875,37 +5341,221 @@ def _create_project_repo_git_work_contexts(
     dispatch_id: str,
     tasks: object,
     base_branch: str | None,
-) -> tuple[Any, list[dict[str, Any]]]:
+) -> tuple[Any, list[dict[str, Any]], dict[str, int]]:
     target_dir = _optional_text(project_repo.get("target_dir"))
     if target_dir is None:
-        return state, []
+        return state, [], {
+            "state_commit_attempt_count": 0,
+            "state_conflict_retry_count": 0,
+        }
     rows: list[dict[str, Any]] = []
-    agent_branch = _project_repo_agent_branch(session_id)
     admin = TeamAdminService(repo)
+    state_commit_attempt_count = 0
+    state_conflict_retry_count = 0
     for task in _project_repo_context_tasks(
         tasks,
         project_id=project_id,
         agent_id=agent_id,
     ):
         task_id = _required_text(task.get("id"), "task.id")
-        state, context_id = admin.create_git_work_context_with_id(
-            context_id=None,
-            agent_id=agent_id,
+        agent_branch = _project_repo_agent_branch(session_id, task_id=task_id)
+        worktree_path = _prepare_project_repo_task_worktree(
+            context,
+            project_repo=project_repo,
+            session_id=session_id,
             task_id=task_id,
             agent_branch=agent_branch,
-            base_branch=base_branch,
-            dispatch_id=dispatch_id,
-            worktree_path=target_dir,
-            expected_revision=getattr(state, "revision", None),
+            base_ref=base_branch or "HEAD",
         )
+        context_id = _project_repo_git_work_context_id(
+            agent_id=agent_id,
+            task_id=task_id,
+            dispatch_id=dispatch_id,
+        )
+        last_conflict: TeamStateConflictError | None = None
+        for _attempt in range(TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS):
+            state_commit_attempt_count += 1
+            state = repo.read()
+            runtime = state.agent_runtimes.get(agent_id)
+            if runtime is None or runtime.active_dispatch_id != dispatch_id:
+                raise RuntimeError(
+                    f"dispatch {dispatch_id} no longer owns the wake lease "
+                    f"for agent {agent_id}"
+                )
+            existing = state.git_work_contexts.get(context_id)
+            if existing is not None:
+                _validate_project_repo_git_work_context(
+                    existing,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    dispatch_id=dispatch_id,
+                    agent_branch=agent_branch,
+                    base_branch=base_branch,
+                    worktree_path=worktree_path,
+                )
+                break
+            try:
+                state, context_id = admin.create_git_work_context_with_id(
+                    context_id=context_id,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    agent_branch=agent_branch,
+                    base_branch=base_branch,
+                    dispatch_id=dispatch_id,
+                    worktree_path=worktree_path,
+                    expected_revision=state.revision,
+                )
+                break
+            except TeamStateConflictError as exc:
+                last_conflict = exc
+                state_conflict_retry_count += 1
+        else:
+            assert last_conflict is not None
+            raise last_conflict
         context_model = state.git_work_contexts[context_id]
         rows.append(_git_work_context_prompt_payload(context_model))
-    return state, rows
+    return state, rows, {
+        "state_commit_attempt_count": state_commit_attempt_count,
+        "state_conflict_retry_count": state_conflict_retry_count,
+    }
 
 
-def _project_repo_agent_branch(session_id: str) -> str:
-    suffix = _slug_id_part(session_id, fallback="session")
-    return validate_branch_name(f"agents/{session_id}/work-{suffix}")
+def _project_repo_git_work_context_id(
+    *,
+    agent_id: str,
+    task_id: str,
+    dispatch_id: str,
+) -> str:
+    material = "\0".join((agent_id, task_id, dispatch_id)).encode("utf-8")
+    return f"gitctx-wake-{hashlib.sha256(material).hexdigest()[:24]}"
+
+
+def _validate_project_repo_git_work_context(
+    context_model: Any,
+    *,
+    agent_id: str,
+    task_id: str,
+    dispatch_id: str,
+    agent_branch: str,
+    base_branch: str | None,
+    worktree_path: str,
+) -> None:
+    expected = {
+        "agent_id": agent_id,
+        "task_id": task_id,
+        "dispatch_id": dispatch_id,
+        "agent_branch": agent_branch,
+        "base_branch": base_branch,
+        "worktree_path": worktree_path,
+    }
+    mismatches = [
+        field_name
+        for field_name, expected_value in expected.items()
+        if getattr(context_model, field_name, None) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            f"Git work context {context_model.id} does not match wake dispatch "
+            f"{dispatch_id}: {', '.join(mismatches)}"
+        )
+
+
+def _project_repo_agent_branch(session_id: str, *, task_id: str) -> str:
+    task_slug = _slug_id_part(task_id, fallback="task")[:40]
+    task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
+    return validate_branch_name(
+        f"agents/{session_id}/tasks/{task_slug}-{task_hash}"
+    )
+
+
+def _prepare_project_repo_task_worktree(
+    context: Any,
+    *,
+    project_repo: Mapping[str, Any],
+    session_id: str,
+    task_id: str,
+    agent_branch: str,
+    base_ref: str,
+) -> str:
+    repo_name = _required_text(project_repo.get("guest_repo_name"), "guest_repo_name")
+    task_slug = _slug_id_part(task_id, fallback="task")[:40]
+    task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
+    worktree_name = f"{task_slug}-{task_hash}"
+    directory_path = str(getattr(context, "metadata", {}).get("directory_path") or "root")
+    selected_backend, config = selected_execution_backend_for_target(
+        context,
+        {"session_id": session_id},
+        directory_path=directory_path,
+    )
+    execution_backend = (
+        _optional_text(project_repo.get("execution_backend")) or selected_backend
+    )
+    if execution_backend == "container_worker_vm":
+        record = container_backend(context, config).prepare_task_worktree(
+            session_id=session_id,
+            repo_name=repo_name,
+            worktree_name=worktree_name,
+            branch=agent_branch,
+            base_ref=base_ref,
+        )
+        if record.branch != agent_branch:
+            raise RuntimeError(
+                f"prepared worktree {record.target_dir} uses {record.branch!r}, "
+                f"expected {agent_branch!r}"
+            )
+        return record.target_dir
+    if execution_backend != "libvirt_vm":
+        raise RuntimeError(
+            f"Team task worktrees do not support execution backend {execution_backend!r}"
+        )
+
+    clone_dir = _required_text(project_repo.get("target_dir"), "target_dir")
+    worktree_path = f"/home/agent/worktrees/{repo_name}/{worktree_name}"
+    quoted_target = shlex.quote(worktree_path)
+    quoted_branch = shlex.quote(agent_branch)
+    quoted_base = shlex.quote(base_ref)
+    command = "\n".join(
+        (
+            "set -eu",
+            f"target={quoted_target}",
+            f"branch={quoted_branch}",
+            f"base={quoted_base}",
+            'mkdir -p "$(dirname "$target")"',
+            "git config extensions.worktreeConfig true",
+            'if [ -e "$target/.git" ]; then',
+            '  test "$(git -C "$target" branch --show-current)" = "$branch"',
+            'elif git show-ref --verify --quiet "refs/heads/$branch"; then',
+            '  git worktree add "$target" "$branch"',
+            "else",
+            '  git worktree add -b "$branch" "$target" "$base"',
+            "fi",
+            'git -C "$target" config --worktree evander.workBranch "$branch"',
+            'git -C "$target" config --worktree evander.baseBranch "$base"',
+            'if [ -d .evander ] && [ ! -e "$target/.evander" ]; then cp -R .evander "$target/.evander"; fi',
+        )
+    )
+    provider = AgentExecEffectProvider()
+    provider.initialize(
+        AgentExecEffectDefinition(
+            id=f"team-prepare-task-worktree-{task_hash}",
+            display_name="Prepare Team task worktree",
+            type="effect:agent:exec",
+            session_id=session_id,
+            command=command,
+            working_directory=clone_dir,
+            timeout_seconds=120,
+            check=True,
+        ),
+        context,
+    )
+    result = provider.execute()
+    if not bool(result.get("success")):
+        raise RuntimeError(
+            _optional_text(result.get("error"))
+            or _optional_text(result.get("message"))
+            or f"failed to prepare task worktree {worktree_path}"
+        )
+    return worktree_path
 
 
 def _project_repo_context_tasks(
@@ -5547,6 +6197,23 @@ def _team_chat_mutation_allowed(message: object) -> bool:
         if key in metadata:
             return bool(metadata[key])
     return True
+
+
+def _team_session_has_active_prompt(context: Any, *, session_id: str) -> bool:
+    activity = getattr(context, "agent_prompt_activity", None)
+    has_active_prompt = getattr(activity, "has_active_enqueue_prompt", None)
+    if not callable(has_active_prompt):
+        return False
+    try:
+        return bool(
+            has_active_prompt(
+                target=session_id,
+                vm_name=session_id,
+                session_id=session_id,
+            )
+        )
+    except Exception:
+        return False
 
 
 def _set_session_team_mcp_tools(
@@ -6864,7 +7531,12 @@ def _string_list(value: object, field_name: str) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _consolidation_failure(target_branch: str | None, error: str) -> dict[str, Any]:
+def _consolidation_failure(
+    target_branch: str | None,
+    error: str,
+    *,
+    error_code: str | None = None,
+) -> dict[str, Any]:
     return {
         "success": False,
         "target_branch": target_branch,
@@ -6873,12 +7545,13 @@ def _consolidation_failure(target_branch: str | None, error: str) -> dict[str, A
         "conflict_branch": None,
         "output": None,
         "error": error,
+        "error_code": error_code,
     }
 
 
 def _review_publish_failure(
     target_branch: str | None,
-    host_repo_path: str | None,
+    managed_repo_id: str | None,
     error: str,
 ) -> dict[str, Any]:
     return {
@@ -6886,226 +7559,7 @@ def _review_publish_failure(
         "review_branch": target_branch,
         "target_branch": target_branch,
         "commit_sha": None,
-        "host_repo_path": host_repo_path,
+        "managed_repo_id": managed_repo_id,
         "message": None,
         "error": error,
     }
-
-
-def _git_text(proc: subprocess.CompletedProcess[str]) -> str:
-    return (proc.stdout or "") + (proc.stderr or "")
-
-
-def _resolve_bare_repo_path(
-    bare_repo_path: str | None,
-    bare_repo_name: str | None,
-) -> Path:
-    if bare_repo_path and bare_repo_name:
-        raise ValueError("bare_repo_path and bare_repo_name are mutually exclusive")
-    if bare_repo_path:
-        return Path(bare_repo_path)
-    if not bare_repo_name:
-        raise ValueError("bare_repo_path or bare_repo_name is required")
-    normalized = bare_repo_name if bare_repo_name.endswith(".git") else f"{bare_repo_name}.git"
-    git_root = os.environ.get("EVANDER_GIT_ROOT")
-    root = Path(git_root) if git_root else Path(__file__).resolve().parents[2] / "git-remotes"
-    return root / normalized
-
-
-def _publish_review_branch(
-    *,
-    host_repo_path: str,
-    bare_repo_path: Path,
-    target_branch: str,
-    source_branch: str | None,
-    commit_sha: str | None,
-) -> dict[str, Any]:
-    repo_path = Path(host_repo_path)
-    if not (repo_path / ".git").exists():
-        return _review_publish_failure(
-            target_branch,
-            host_repo_path,
-            f"{host_repo_path} is not a git repository",
-        )
-    if not bare_repo_path.exists():
-        return _review_publish_failure(
-            target_branch,
-            host_repo_path,
-            f"bare repo not found: {bare_repo_path}",
-        )
-
-    def _git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    source_ref = commit_sha if commit_sha is not None else f"refs/heads/{source_branch}"
-    temp_ref = f"refs/evander/team-promotions/{target_branch}"
-    target_ref = f"refs/heads/{target_branch}"
-    fetch = _git(
-        "fetch",
-        "--no-tags",
-        str(bare_repo_path),
-        f"+{source_ref}:{temp_ref}",
-    )
-    if fetch.returncode != 0:
-        return _review_publish_failure(target_branch, host_repo_path, _git_text(fetch))
-
-    resolved = _git("rev-parse", "--verify", f"{temp_ref}^{{commit}}")
-    if resolved.returncode != 0:
-        _git("update-ref", "-d", temp_ref)
-        return _review_publish_failure(target_branch, host_repo_path, _git_text(resolved))
-
-    resolved_commit = resolved.stdout.strip()
-    update = _git("update-ref", target_ref, resolved_commit)
-    _git("update-ref", "-d", temp_ref)
-    if update.returncode != 0:
-        return _review_publish_failure(target_branch, host_repo_path, _git_text(update))
-
-    return {
-        "success": True,
-        "review_branch": target_branch,
-        "target_branch": target_branch,
-        "commit_sha": resolved_commit,
-        "host_repo_path": host_repo_path,
-        "message": f"Published {resolved_commit} to {target_branch}",
-        "error": None,
-    }
-
-
-def _consolidate_git_branches(
-    *,
-    host_repo_path: str,
-    source_branches: list[str],
-    target_branch: str,
-    base_branch: str | None,
-    bare_repo_path: Path | None = None,
-) -> dict[str, Any]:
-    """Merge ``source_branches`` into ``target_branch`` inside ``host_repo_path``.
-
-    Branch names are validated by the caller. Merges run in the listed order and
-    produce deterministic merge commits. A merge conflict aborts the merge and
-    returns ``success=False`` with the conflict output; nothing is auto-resolved.
-    """
-
-    repo_path = Path(host_repo_path)
-    git_marker = repo_path / ".git"
-    if not git_marker.exists():
-        return _consolidation_failure(target_branch, f"{host_repo_path} is not a git repository")
-
-    def _git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    # A linked worktree (``.git`` is a file pointing at the gitdir) is already an
-    # isolated checkout, so a dirty tree there is acceptable; a primary worktree
-    # must be clean before we move HEAD around.
-    isolated_worktree = git_marker.is_file()
-    status = _git("status", "--porcelain")
-    if status.returncode != 0:
-        return _consolidation_failure(target_branch, _git_text(status))
-    if status.stdout.strip() and not isolated_worktree:
-        failure = _consolidation_failure(target_branch, "refusing to merge into a dirty worktree")
-        failure["output"] = status.stdout
-        return failure
-    merge_sources: list[tuple[str, str]] = []
-    temp_refs: list[str] = []
-    if bare_repo_path is None:
-        merge_sources = [(source, source) for source in source_branches]
-    else:
-        bare_repo_exists = bare_repo_path.exists()
-        for source in source_branches:
-            resolved = _git(
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                f"refs/heads/{source}^{{commit}}",
-            )
-            if not bare_repo_exists:
-                if resolved.returncode == 0:
-                    merge_sources.append((source, source))
-                    continue
-                return _consolidation_failure(
-                    target_branch,
-                    f"bare repo not found: {bare_repo_path}",
-                )
-            ref_hash = hashlib.sha256(f"{target_branch}\0{source}".encode("utf-8")).hexdigest()[:16]
-            temp_ref = f"refs/evander/team-consolidations/{ref_hash}"
-            fetch = _git(
-                "fetch",
-                "--no-tags",
-                str(bare_repo_path),
-                f"+refs/heads/{source}:{temp_ref}",
-            )
-            if fetch.returncode != 0:
-                for ref in temp_refs:
-                    _git("update-ref", "-d", ref)
-                failure = _consolidation_failure(
-                    target_branch,
-                    f"failed to fetch source branch {source} from {bare_repo_path}",
-                )
-                failure["output"] = _git_text(fetch)
-                failure["conflict_branch"] = source
-                return failure
-            temp_refs.append(temp_ref)
-            merge_sources.append((source, temp_ref))
-
-    def _cleanup_temp_refs() -> None:
-        for ref in temp_refs:
-            _git("update-ref", "-d", ref)
-
-    try:
-        target_ref = f"refs/heads/{target_branch}"
-        target_exists = _git("rev-parse", "--verify", "--quiet", target_ref).returncode == 0
-        if target_exists:
-            checkout = _git("checkout", target_branch)
-        elif base_branch is not None:
-            checkout = _git("checkout", "-B", target_branch, base_branch)
-        else:
-            checkout = _git("checkout", "-B", target_branch)
-        if checkout.returncode != 0:
-            return _consolidation_failure(target_branch, _git_text(checkout))
-
-        merged: list[str] = []
-        for source, merge_ref in merge_sources:
-            merge = _git(
-                "merge",
-                "--no-ff",
-                "-m",
-                f"Merge {source} into {target_branch}",
-                merge_ref,
-            )
-            if merge.returncode != 0:
-                _git("merge", "--abort")
-                failure = _consolidation_failure(
-                    target_branch,
-                    f"merge conflict while merging {source} into {target_branch}",
-                )
-                failure["merged_branches"] = merged
-                failure["conflict_branch"] = source
-                failure["output"] = _git_text(merge)
-                return failure
-            merged.append(source)
-
-        head = _git("rev-parse", "HEAD")
-        commit_sha = head.stdout.strip() if head.returncode == 0 else None
-        return {
-            "success": True,
-            "target_branch": target_branch,
-            "merged_branches": merged,
-            "commit_sha": commit_sha,
-            "conflict_branch": None,
-            "output": None,
-            "error": None,
-        }
-    finally:
-        _cleanup_temp_refs()

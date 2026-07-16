@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import inspect
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,7 +116,6 @@ def test_admin_refactor_does_not_add_legacy_dumping_ground() -> None:
 
 
 def test_issue_git_local_issue_methods_live_on_issue_git_components() -> None:
-    service_methods = ("import_git_repo",)
     support_methods = (
         "next_local_issue_number",
         "local_issue_creation_lock",
@@ -128,9 +126,8 @@ def test_issue_git_local_issue_methods_live_on_issue_git_components() -> None:
         "proxy_target_for_issue",
     )
 
-    for method_name in service_methods:
-        assert hasattr(IssueGitAdminService, method_name)
-        assert not hasattr(AdminRuntimeComponents, method_name)
+    assert not hasattr(IssueGitAdminService, "import_git_repo")
+    assert not hasattr(AdminRuntimeComponents, "import_git_repo")
     for method_name in support_methods:
         assert hasattr(IssueGitAdminSupport, method_name)
         assert not hasattr(AdminRuntimeComponents, method_name)
@@ -165,16 +162,6 @@ def test_admin_service_model_usage_visibility_and_audit_methods_are_thin_delegat
         "list_tool_call_audit_entries",
         "_list_tool_call_audit_entries_from_index",
     )
-    delegate_expectations = {
-        "list_model_usage_events": "model_usage_admin.list_model_usage_events",
-        "tool_visibility_payload": "approval_audit_admin.tool_visibility_payload",
-        "list_tool_call_audit_entries": (
-            "approval_audit_admin.list_tool_call_audit_entries"
-        ),
-        "_list_tool_call_audit_entries_from_index": (
-            "approval_audit_admin._list_tool_call_audit_entries_from_index"
-        ),
-    }
     for method_name in method_names:
         owner = (
             ModelUsageAdminService

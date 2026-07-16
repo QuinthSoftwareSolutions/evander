@@ -248,6 +248,18 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.RESPOND_TO_AGENT: (
         "Reply to a pending agent prompt using its one-time response token."
     ),
+    ToolName.CONSULT_CODEBASE: (
+        "Ask a request-scoped agent to inspect an exact managed Git snapshot."
+    ),
+    ToolName.GET_CODEBASE_CONSULTATION: (
+        "Read or briefly wait for a codebase consultation owned by this session."
+    ),
+    ToolName.CANCEL_CODEBASE_CONSULTATION: (
+        "Cancel a queued or running codebase consultation owned by this session."
+    ),
+    ToolName.SUBMIT_CODEBASE_CONSULTATION_RESULT: (
+        "Submit the bounded structured result for a request-scoped consultation worker."
+    ),
     ToolName.RUN_SCRIPT: ("Run an approved host-side script on behalf of the session."),
     ToolName.GET_WORKFLOW_SNAPSHOT: (
         "Read the current workflow editor document and optional run snapshot."

@@ -4,13 +4,12 @@ from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-import subprocess
 
 import pytest
 import yaml
 
 import evander.admin.services.issue_git_service as issue_git_module
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.services.issue_git_service import (
     IssueGitAdminDependencies,
     IssueGitAdminService,
@@ -52,20 +51,8 @@ class FakeIssueGitFacade:
         self.calls.append((name, args, kwargs))
         return {"name": name, "args": args, "kwargs": kwargs}
 
-    def pr_create(self, **kwargs: object) -> dict[str, object]:
-        return self._record("pr_create", **kwargs)
-
-    def push_branch(self, **kwargs: object) -> dict[str, object]:
-        return self._record("push_branch", **kwargs)
-
-    def git_pr_note_query(self, **kwargs: object) -> dict[str, object]:
-        return self._record("git_pr_note_query", **kwargs)
-
     def session_update_metadata(self, **kwargs: object) -> dict[str, object]:
         return self._record("session_update_metadata", **kwargs)
-
-    def import_git_repo(self, **kwargs: object) -> dict[str, object]:
-        return self._record("import_git_repo", **kwargs)
 
     def create_issue(self, **kwargs: object) -> dict[str, object]:
         return self._record("create_issue", **kwargs)
@@ -75,6 +62,45 @@ class FakeIssueGitFacade:
 
     def delete_local_issue(self, issue_identifier: str) -> dict[str, object]:
         return self._record("delete_local_issue", issue_identifier)
+
+
+class FakeManagedGit:
+    FIRST_ID = "mr_11111111111111111111"
+    SECOND_ID = "mr_22222222222222222222"
+
+    def __init__(self) -> None:
+        self.records = {
+            self.FIRST_ID: {"managed_repo_id": self.FIRST_ID, "directory_path": "root"},
+            self.SECOND_ID: {"managed_repo_id": self.SECOND_ID, "directory_path": "root"},
+        }
+        self.bindings: set[tuple[str, str, str]] = set()
+
+    def register_repository(self, *, directory_path: str, repo_source: str) -> dict[str, str]:
+        managed_repo_id = self.SECOND_ID if repo_source.endswith("two") else self.FIRST_ID
+        return {"managed_repo_id": managed_repo_id, "directory_path": directory_path}
+
+    def get_repository(self, managed_repo_id: str, *, directory_path: str) -> dict[str, str]:
+        record = self.records[managed_repo_id]
+        return {**record, "directory_path": directory_path}
+
+    def bind(self, managed_repo_id: str, *, kind: str, binding_id: str) -> dict[str, str]:
+        self.bindings.add((managed_repo_id, kind, binding_id))
+        return {"managed_repo_id": managed_repo_id}
+
+    def unbind(self, managed_repo_id: str, *, kind: str, binding_id: str) -> dict[str, str]:
+        self.bindings.discard((managed_repo_id, kind, binding_id))
+        return {"managed_repo_id": managed_repo_id}
+
+    def unbind_all(self, *, kind: str, binding_id: str) -> list[str]:
+        removed = {
+            managed_repo_id
+            for managed_repo_id, binding_kind, bound_id in self.bindings
+            if binding_kind == kind and bound_id == binding_id
+        }
+        self.bindings = {
+            item for item in self.bindings if not (item[1] == kind and item[2] == binding_id)
+        }
+        return sorted(removed)
 
 
 def _build_issue_admin(tmp_path: Path) -> tuple[SimpleNamespace, FakeStore]:
@@ -106,26 +132,7 @@ def _build_issue_admin(tmp_path: Path) -> tuple[SimpleNamespace, FakeStore]:
             payload["updated_at"] = updated_at.isoformat()
         yaml_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
-    def resolve_issue_setup(directory_path: str, *, root_dir: Path) -> SimpleNamespace:
-        return SimpleNamespace(
-            directory_path=directory_path,
-            root_dir=root_dir,
-            git_root=str(tmp_path / "git"),
-            git_ssh_alias="gitbox",
-        )
-
-    def sync_repo_into_bare_remote(
-        repo_name: str,
-        resolved_repo_path: str,
-        *,
-        issue_setup: SimpleNamespace,
-        repo_source: str | None = None,
-    ) -> Path:
-        del resolved_repo_path, repo_source
-        bare_repo_path = Path(issue_setup.git_root) / f"{repo_name}.git"
-        bare_repo_path.mkdir(parents=True, exist_ok=True)
-        return bare_repo_path
-
+    managed_git_admin = FakeManagedGit()
     admin = SimpleNamespace(
         project_dir=tmp_path,
         runtime=runtime,
@@ -143,9 +150,7 @@ def _build_issue_admin(tmp_path: Path) -> tuple[SimpleNamespace, FakeStore]:
         _refresh_proxy_cache_from_remote=lambda issue, remote_payload: issue,
         _write_local_issue_yaml=write_yaml,
         _direct_owned_entity_ids=lambda directory_path, kind: set(),
-        _resolve_issue_setup=resolve_issue_setup,
-        _resolve_repo_source=lambda repo_source: (repo_source, "sample-repo"),
-        _sync_repo_into_bare_remote=sync_repo_into_bare_remote,
+        managed_git_admin=managed_git_admin,
         issue_service=SimpleNamespace(
             read_remote_issue=lambda **kwargs: {},
             post_remote_comment=lambda **kwargs: {"comment_added": True},
@@ -194,388 +199,8 @@ def _issue_git_dependencies(admin: SimpleNamespace) -> IssueGitAdminDependencies
                 directory_path, **kwargs
             )
         ),
-        resolve_issue_setup=lambda directory_path, **kwargs: admin._resolve_issue_setup(
-            directory_path, **kwargs
-        ),
-        resolve_repo_source=lambda repo_source: admin._resolve_repo_source(repo_source),
-        sync_repo_into_bare_remote=lambda *args, **kwargs: admin._sync_repo_into_bare_remote(
-            *args, **kwargs
-        ),
+        managed_git_admin=admin.managed_git_admin,
     )
-
-
-def test_issue_git_admin_service_pr_create_invokes_script_and_parses_result(
-    tmp_path: Path, monkeypatch: object
-) -> None:
-    admin, _store = _build_issue_admin(tmp_path)
-    service = IssueGitAdminService(_issue_git_dependencies(admin))
-    captured: list[list[str]] = []
-
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured.append(cmd)
-        return subprocess.CompletedProcess(
-            args=cmd,
-            returncode=0,
-            stdout='AGENT_PR_RESULT {"pr_number": 42}\n',
-            stderr="prepared\n",
-        )
-
-    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
-
-    result = service.pr_create(
-        host_repo_path="/repo", local_branch="feature", title="Add PR", draft=True
-    )
-
-    assert captured == [
-        [
-            str(tmp_path / "scripts" / "open_agent_pr.sh"),
-            "--create-pr",
-            "--draft",
-            "--title",
-            "Add PR",
-            "/repo",
-            "feature",
-        ]
-    ]
-    assert result["success"] is True
-    assert result["pr_number"] == 42
-
-
-def test_issue_git_admin_service_import_git_repo_uses_explicit_dependencies(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    admin, _store = _build_issue_admin(tmp_path)
-    calls: list[tuple[str, object]] = []
-    git_root = tmp_path / "git"
-    issue_setup = SimpleNamespace(git_root=str(git_root), git_ssh_alias="gitbox")
-
-    def resolve_issue_setup(directory_path: str, *, root_dir: Path) -> SimpleNamespace:
-        calls.append(("issue_setup", {"directory_path": directory_path, "root_dir": root_dir}))
-        return issue_setup
-
-    def resolve_repo_source(repo_source: str) -> tuple[str, str]:
-        calls.append(("repo_source", repo_source))
-        return "/src/trusted", "trusted"
-
-    def sync_repo_into_bare_remote(
-        repo_name: str,
-        resolved_repo_path: str,
-        *,
-        issue_setup: SimpleNamespace,
-        repo_source: str | None = None,
-    ) -> Path:
-        calls.append(
-            (
-                "sync",
-                {
-                    "repo_name": repo_name,
-                    "resolved_repo_path": resolved_repo_path,
-                    "git_root": issue_setup.git_root,
-                    "repo_source": repo_source,
-                },
-            )
-        )
-        bare_repo_path = Path(issue_setup.git_root) / f"{repo_name}.git"
-        bare_repo_path.mkdir(parents=True, exist_ok=True)
-        return bare_repo_path
-
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append(("git", cmd))
-        key = cmd[-1]
-        if key == "evander.canonicalOriginUrl":
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="https://github.com/example/trusted.git\n",
-                stderr="",
-            )
-        if key == "evander.baseBranch":
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="main\n", stderr=""
-            )
-        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
-
-    admin._resolve_issue_setup = resolve_issue_setup
-    admin._resolve_repo_source = resolve_repo_source
-    admin._sync_repo_into_bare_remote = sync_repo_into_bare_remote
-    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
-
-    service = IssueGitAdminService(_issue_git_dependencies(admin))
-
-    result = service.import_git_repo(
-        repo_source=" /src/trusted ",
-        bare_repo_name="custom.git",
-        directory_path="root/team",
-    )
-
-    assert result["success"] is True
-    assert result["repo_name"] == "custom"
-    assert result["bare_repo_name"] == "custom.git"
-    assert result["bare_repo_path"] == str(git_root / "custom.git")
-    assert result["remote_url"] == f"ssh://gitbox{git_root / 'custom.git'}"
-    assert result["directory_path"] == "root/team"
-    assert result["base_branch"] == "main"
-    assert result["canonical_origin_url"] == "https://github.com/example/trusted.git"
-    assert result["provider"] == "github"
-    assert ("repo_source", "/src/trusted") in calls
-    assert (
-        "sync",
-        {
-            "repo_name": "custom",
-            "resolved_repo_path": "/src/trusted",
-            "git_root": str(git_root),
-            "repo_source": "/src/trusted",
-        },
-    ) in calls
-
-
-def _git_args(cmd: list[str]) -> list[str]:
-    assert cmd[:3] and cmd[0] == "git"
-    args = cmd[3:]
-    while len(args) >= 2 and args[0] == "-c":
-        args = args[2:]
-    return args
-
-
-def test_issue_git_admin_service_push_branch_pushes_with_fixed_git_args(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    admin, _store = _build_issue_admin(tmp_path)
-    service = IssueGitAdminService(_issue_git_dependencies(admin))
-    repo = tmp_path / "trusted"
-    (repo / ".git").mkdir(parents=True)
-    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
-    captured: list[list[str]] = []
-
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured.append(cmd)
-        args = _git_args(cmd)
-        if args == ["remote", "get-url", "evander-pr-origin"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
-        if args[:3] == ["remote", "add", "evander-pr-origin"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-        if args == ["rev-parse", "--verify", "review/session/work^{commit}"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="local-tip\n", stderr=""
-            )
-        if args == [
-            "ls-remote",
-            "--exit-code",
-            "evander-pr-origin",
-            "refs/heads/feature/topic",
-        ]:
-            return subprocess.CompletedProcess(args=cmd, returncode=2, stdout="", stderr="")
-        if args == [
-            "push",
-            "evander-pr-origin",
-            "review/session/work:refs/heads/feature/topic",
-        ]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="", stderr="pushed branch\n"
-            )
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
-
-    result = service.push_branch(
-        host_repo_path=str(repo),
-        local_branch="refs/heads/review/session/work",
-        origin_branch="refs/heads/feature/topic",
-        canonical_origin_url="git@ssh.dev.azure.com:v3/example-org/example-project/example-repo",
-        provider="azure_devops",
-        base_branch="origin/main",
-        session_id="session-1",
-    )
-
-    assert result["success"] is True
-    assert result["action"] == "git_push_branch"
-    assert result["preflight_success"] is True
-    assert result["local_branch"] == "review/session/work"
-    assert result["origin_branch"] == "feature/topic"
-    assert result["base_branch"] == "main"
-    assert result["remote_name"] == "evander-pr-origin"
-    assert (
-        result["push_remote_url"]
-        == "https://dev.azure.com/example-org/example-project/_git/example-repo"
-    )
-    assert "pushed branch" in result["message"]
-    remote_add = next(
-        cmd
-        for cmd in captured
-        if _git_args(cmd)[:3] == ["remote", "add", "evander-pr-origin"]
-    )
-    assert remote_add[-1] == "https://dev.azure.com/example-org/example-project/_git/example-repo"
-    push_cmd = next(cmd for cmd in captured if _git_args(cmd)[0] == "push")
-    assert any(arg.startswith("http.extraHeader=Authorization: Basic ") for arg in push_cmd)
-    assert all("open_agent_pr.sh" not in part for cmd in captured for part in cmd)
-
-
-def test_issue_git_admin_service_push_branch_uses_converted_auth_remote_without_canonical_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    admin, _store = _build_issue_admin(tmp_path)
-    service = IssueGitAdminService(_issue_git_dependencies(admin))
-    repo = tmp_path / "trusted"
-    (repo / ".git").mkdir(parents=True)
-    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
-    captured: list[list[str]] = []
-
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured.append(cmd)
-        args = _git_args(cmd)
-        if args == ["remote", "get-url", "origin"]:
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="git@ssh.dev.azure.com:v3/example-org/example-project/example-repo\n",
-                stderr="",
-            )
-        if args == ["remote", "get-url", "evander-pr-origin"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
-        if args[:3] == ["remote", "add", "evander-pr-origin"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-        if args == ["rev-parse", "--verify", "review/session/work^{commit}"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="local-tip\n", stderr=""
-            )
-        if args == [
-            "ls-remote",
-            "--exit-code",
-            "evander-pr-origin",
-            "refs/heads/feature/topic",
-        ]:
-            return subprocess.CompletedProcess(args=cmd, returncode=2, stdout="", stderr="")
-        if args == [
-            "push",
-            "evander-pr-origin",
-            "review/session/work:refs/heads/feature/topic",
-        ]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="", stderr="pushed branch\n"
-            )
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
-
-    result = service.push_branch(
-        host_repo_path=str(repo),
-        local_branch="review/session/work",
-        origin_branch="feature/topic",
-        provider="azure_devops",
-    )
-
-    assert result["success"] is True
-    assert result["remote_name"] == "evander-pr-origin"
-    assert (
-        result["push_remote_url"]
-        == "https://dev.azure.com/example-org/example-project/_git/example-repo"
-    )
-    remote_add = next(
-        cmd
-        for cmd in captured
-        if _git_args(cmd)[:3] == ["remote", "add", "evander-pr-origin"]
-    )
-    assert remote_add[-1] == "https://dev.azure.com/example-org/example-project/_git/example-repo"
-    assert not any(
-        _git_args(cmd)[0] in {"ls-remote", "fetch", "push"} and _git_args(cmd)[-2] == "origin"
-        for cmd in captured
-    )
-    push_cmd = next(cmd for cmd in captured if _git_args(cmd)[0] == "push")
-    assert any(arg.startswith("http.extraHeader=Authorization: Basic ") for arg in push_cmd)
-
-
-def test_issue_git_admin_service_push_branch_reports_destination_ahead_without_push(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    admin, _store = _build_issue_admin(tmp_path)
-    service = IssueGitAdminService(_issue_git_dependencies(admin))
-    repo = tmp_path / "trusted"
-    (repo / ".git").mkdir(parents=True)
-    captured: list[list[str]] = []
-
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured.append(cmd)
-        args = _git_args(cmd)
-        if args == ["remote", "get-url", "origin"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="ssh://example/repo.git\n", stderr=""
-            )
-        if args == ["rev-parse", "--verify", "review/session/work^{commit}"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="local-tip\n", stderr=""
-            )
-        if args == ["ls-remote", "--exit-code", "origin", "refs/heads/feature/topic"]:
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="remote-tip\trefs/heads/feature/topic\n",
-                stderr="",
-            )
-        if args == [
-            "fetch",
-            "origin",
-            "+refs/heads/feature/topic:refs/remotes/origin/feature/topic",
-        ]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-        if args == ["rev-parse", "--verify", "refs/remotes/origin/feature/topic^{commit}"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="remote-tip\n", stderr=""
-            )
-        if args == [
-            "merge-base",
-            "--is-ancestor",
-            "refs/remotes/origin/feature/topic",
-            "review/session/work",
-        ]:
-            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
-        if args == [
-            "rev-list",
-            "--left-right",
-            "--count",
-            "refs/remotes/origin/feature/topic...review/session/work",
-        ]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="3 2\n", stderr="")
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
-
-    result = service.push_branch(
-        host_repo_path=str(repo),
-        local_branch="review/session/work",
-        origin_branch="feature/topic",
-        base_branch="main",
-        session_id="session-1",
-    )
-
-    assert result["success"] is False
-    assert result["preflight_success"] is False
-    assert result["reason"] == "destination_branch_ahead"
-    assert result["destination_commit"] == "remote-tip"
-    assert result["local_commit"] == "local-tip"
-    assert result["destination_ahead_count"] == 3
-    assert result["local_ahead_count"] == 2
-    assert not any(_git_args(cmd)[0] == "push" for cmd in captured)
-
-
-def test_issue_git_admin_service_push_branch_rejects_refspec_branch_values(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    admin, _store = _build_issue_admin(tmp_path)
-    service = IssueGitAdminService(_issue_git_dependencies(admin))
-    repo = tmp_path / "trusted"
-    (repo / ".git").mkdir(parents=True)
-
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(issue_git_module.process_helpers, "run_subprocess", fake_run)
-
-    with pytest.raises(ValueError, match="valid origin_branch"):
-        service.push_branch(
-            host_repo_path=str(repo),
-            local_branch="review/session/work",
-            origin_branch="feature/topic:refs/heads/other",
-        )
 
 
 def test_issue_git_admin_service_session_update_metadata_updates_store(tmp_path: Path) -> None:
@@ -617,10 +242,21 @@ def test_issue_git_admin_service_create_update_and_delete_local_issue(
         issue_git_module.vm_helpers, "dominfo_field", lambda *args, **kwargs: None
     )
 
-    created = service.create_issue(title="Fix dashboard", body="Build it")
+    created = service.create_issue(
+        title="Fix dashboard",
+        body="Build it",
+        repo_source="/repo/one",
+    )
     created_path = Path(created.yaml_path)
     assert created.issue_id == "root::local::1"
     assert created.title == "Fix dashboard"
+    assert created.managed_repo_id == FakeManagedGit.FIRST_ID
+    assert "repo_source" not in created.model_dump()
+    assert (
+        FakeManagedGit.FIRST_ID,
+        "issues",
+        created.issue_id,
+    ) in admin.managed_git_admin.bindings
     assert created_path.exists()
     assert store.get(created.issue_id) == created
 
@@ -629,15 +265,28 @@ def test_issue_git_admin_service_create_update_and_delete_local_issue(
         title="Fix dashboard v2",
         body="Improve it",
         state="Approved",
+        repo_source="/repo/two",
     )
     assert updated.title == "Fix dashboard v2"
     assert updated.state == "Approved"
+    assert updated.managed_repo_id == FakeManagedGit.SECOND_ID
+    assert (
+        FakeManagedGit.FIRST_ID,
+        "issues",
+        created.issue_id,
+    ) not in admin.managed_git_admin.bindings
+    assert (
+        FakeManagedGit.SECOND_ID,
+        "issues",
+        created.issue_id,
+    ) in admin.managed_git_admin.bindings
     assert "Fix dashboard v2" in created_path.read_text(encoding="utf-8")
 
     delete_result = service.delete_local_issue(created.issue_id)
     assert delete_result.success is True
     assert store.get(created.issue_id) is None
     assert not created_path.exists()
+    assert not admin.managed_git_admin.bindings
 
 
 def test_issue_git_admin_service_delete_local_issue_names_vm_blocker(
@@ -837,30 +486,6 @@ def test_admin_service_delegates_issue_git_methods() -> None:
     service.issue_git_admin = fake
 
     assert (
-        service.issue_git_admin.pr_create(host_repo_path="/repo", local_branch="feature", title="Add PR")["name"]
-        == "pr_create"
-    )
-    assert (
-        service.issue_git_admin.push_branch(
-            host_repo_path="/repo",
-            local_branch="review/session/work",
-            origin_branch="feature/topic",
-        )["name"]
-        == "push_branch"
-    )
-    assert (
-        service.issue_git_admin.git_pr_note_query(host_repo_path="/repo", local_branch="review/session-1/topic")[
-            "name"
-        ]
-        == "git_pr_note_query"
-    )
-    assert (
-        service.issue_git_admin.import_git_repo(repo_source="/repo", bare_repo_name="repo", directory_path="root")[
-            "name"
-        ]
-        == "import_git_repo"
-    )
-    assert (
         service.issue_git_admin.session_update_metadata(target="session-1", metadata={"foo": "bar"})["name"]
         == "session_update_metadata"
     )
@@ -869,20 +494,11 @@ def test_admin_service_delegates_issue_git_methods() -> None:
     assert service.issue_git_admin.delete_local_issue("issue-7")["name"] == "delete_local_issue"
 
     assert [name for name, _args, _kwargs in fake.calls] == [
-        "pr_create",
-        "push_branch",
-        "git_pr_note_query",
-        "import_git_repo",
         "session_update_metadata",
         "create_issue",
         "update_issue",
         "delete_local_issue",
     ]
-    assert fake.calls[0][2] == {
-        "host_repo_path": "/repo",
-        "local_branch": "feature",
-        "title": "Add PR",
-    }
     assert fake.calls[-1] == ("delete_local_issue", ("issue-7",), {})
 
 

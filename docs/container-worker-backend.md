@@ -38,6 +38,13 @@ dispatch does not pull or build images, so approved refs must already be present
 For Anthropic-backed Claude sessions, set `model_provider_mode: "anthropic"` in the effective
 provider config and select the `claude` image alias when creating the container-backed session.
 
+The same image catalog is used by request-scoped codebase consultations. A named
+`agent_consultation_profiles` entry selects the model, provider mode, image alias, deadline, and
+concurrency. Every request receives a new session and workspace; there is no persistent junior
+agent to keep synchronized. Managed Git grants clone/fetch-only credentials, the checkout is
+detached at the recorded commit, and submitted evidence is validated against that immutable
+snapshot before the source agent can read it.
+
 Directory-scoped `providers.json` overlays can inherit the root catalog and override just the
 fallback, or replace both together when a subtree needs a different default:
 
@@ -75,6 +82,9 @@ For a reproducible worker VM deployment, use the dedicated Ansible playbook:
 ```bash
 ./scripts/build_evander_runner_image.sh
 ./scripts/build_evander_claude_runner_image.sh
+# `prod.yml` is operator-local; create it once from the checked-in template.
+test -f ansible/inventory/prod.yml || cp ansible/inventory/hosts.example.yml ansible/inventory/prod.yml
+${EDITOR:-vi} ansible/inventory/prod.yml
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 ```
 
@@ -209,6 +219,7 @@ The default allowlist is intentionally small and private:
 - control-plane OpenAI relay on `11434`
 - control-plane NuGet relay on `11666`
 - control-plane HTTP target relay on `11777`
+- control-plane npm audit facade on `11881` when npm audit support is enabled
 - control-plane Nexus package cache on `8081`
 - control-plane apt-cacher-ng on `3142`
 
@@ -224,12 +235,16 @@ EVANDER_WORKER_TOKEN=... evander-worker-daemon --host 0.0.0.0 --port 11888 --run
 
 The host reads the token from `container_worker_token_env` when it calls the worker. Token values and request headers are not written to the execution mapping store.
 
-The host-side `ExecutionSpec` uses first-class fields for container behavior: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. The backend does not read those values from `metadata`; metadata is only sanitized caller context.
+The host-side `ExecutionSpec` uses first-class fields for container behavior: `command`, `image`,
+the internally resolved clone source and branch, `resource_limits`, `persistence_mode`, and
+`workspace_mode`. The backend does not read those values from `metadata`; metadata is only
+sanitized caller context. Public agent workflows provide `managed_repo_id`; the adapter resolves
+the private clone source before building this lower-level worker request.
 
 ## Security Boundaries
 
 The worker is treated as an untrusted execution surface. The host sends only explicit job fields:
-session id, stable job id, image, command, optional mirror repo source, optional clone branch,
+session id, stable job id, image, command, optional managed-repository SSH clone source and branch,
 resource limits, and sanitized caller metadata. It does not send raw environment variables, OpenAI
 keys, Azure DevOps PATs, GitHub tokens, host credentials, or request headers.
 
@@ -238,10 +253,10 @@ mapping is stored. Raw `env`, `environment`, and `environment_variables` fields 
 the worker request model.
 
 The worker and its containers should not have direct GitHub/Azure DevOps egress in this mode.
-Required private egress is limited to the control-plane SSH endpoint for Git mirrors, the
-configured control-plane gateway, OpenAI relay, HTTP target relay, NuGet relay, Nexus package
-cache, and apt-cacher-ng. Worker-host SQL Server access, when enabled, remains separate and is
-handled by the worker-host SQL rules rather than by the container-forwarded egress policy.
+Required private egress is limited to the explicitly allowlisted control-plane SSH endpoint for Git
+mirrors, gateway, OpenAI relay, HTTP target relay, NuGet relay, npm audit facade on `11881`, Nexus
+package cache, and apt-cacher-ng. Worker-host SQL Server access, when enabled, remains separate and
+is handled by the worker-host SQL rules rather than by the container-forwarded egress policy.
 
 The container sandbox profile reduces accidental and straightforward container privilege exposure.
 It does not turn containers into a VM-equivalent trust boundary.
@@ -249,7 +264,7 @@ It does not turn containers into a VM-equivalent trust boundary.
 The worker VM only covers this bounded first slice: one configured worker, one explicit egress
 policy, and no assumption that Docker networking by itself forms a boundary.
 
-npm and pip need their own registry proxy or mirror; they are not handled by the Git mirror path.
+npm and pip need their own registry proxy or mirror; they are not handled by the managed Git path.
 
 ## Operator Runbook
 
@@ -406,22 +421,20 @@ Worker session storage telemetry is cached inside the daemon with stale-while-re
 normal `GET /v1/telemetry` calls return cached or warming storage data quickly, while
 `GET /v1/telemetry?refresh=1` performs a blocking deep storage scan for explicit refresh.
 
-For `container_worker_vm`, `effect:agent:clone-repo` does not send upstream GitHub or Azure DevOps
-URLs to the clone API. The control plane resolves and refreshes a deterministic bare mirror under
-the configured `git_root`, rewrites the worker clone URL to `ssh://<git_ssh_alias><git_root>/<mirror>.git`,
-and fails before contacting the worker if the upstream refresh fails or the requested branch is not
-present. The in-container repo can still record the canonical upstream URL with Git `insteadOf`, but
-all fetch and push traffic goes through the private restricted-SSH mirror. When a Team project names
-an explicit local mirror with `bare_repo_name` or `bare_repo_path`, the control plane refreshes that
-mirror from the configured host checkout and records the canonical origin only as metadata; it does
-not contact the host checkout's upstream remote during agent wake preparation.
+For `container_worker_vm`, `effect:agent:clone-repo` requires `managed_repo_id`. The control plane
+resolves and refreshes that directory-scoped repository, then sends only its internal
+restricted-SSH clone URL to the worker. It does not send the canonical GitHub/Azure DevOps URL,
+credentials, or a host path through the workflow result. VM and container sessions reuse the same
+managed bare repository; the container path does not create a second cache mirror. Team projects
+also persist only the managed ID, base-branch override, and release-branch policy.
 
 Clone jobs default to writable Git access. The control plane asks the worker daemon to generate a
 per-session SSH key, installs that public key on the control-plane Git user with a forced command
-scoped to the mirror, `refs/heads/agents/<session-id>/...`, and that session's PR notes ref, then
-configures the repo-local `git push-agent` alias. Set `git_access_mode` to `read-only` on
-`effect:agent:clone-repo` when a container session should only fetch through the worker's shared
-read-only key.
+scoped to the managed repository, `refs/heads/agents/<session-id>/...`, and that session's PR notes
+ref, then configures the repo-local `git push-agent` alias. Set `git_access_mode` to `read-only` on
+`effect:agent:clone-repo` when a container session should only fetch. Read-only authorization is
+still scoped to that managed repository and directory boundary; a worker key must not provide
+cross-directory repository access.
 
 `effect:agent:create` on `container_worker_vm` writes the session bootstrap files under
 `/home/agent`: `.evander/session.env`, shell profiles, Codex config in both supported
@@ -496,8 +509,6 @@ evander-cli execution start-container-job \
   --directory root \
   --target-name demo-container-1 \
   --image evander-runner:latest \
-  --repo-source git@example.test/repo.git \
-  --clone-branch main \
   --memory 512m \
   --cpus 1 \
   --pids-limit 256 \
@@ -505,6 +516,10 @@ evander-cli execution start-container-job \
   --command 'echo hello from /home/agent' \
   --json
 ```
+
+This low-level command starts an execution without a repository. Use
+`effect:agent:clone-repo.managed_repo_id` for managed agent code transport; do not pass an upstream
+URL directly to a worker as a substitute for registration.
 
 Follow-up operations can target the execution id, worker job id, target name, or an unambiguous
 session id. They auto-route to the container backend when the target exists in the container worker
@@ -542,6 +557,7 @@ Authorization: Bearer <EVANDER_WORKER_TOKEN>
 
 Routes:
 
+- `GET /v1/telemetry`
 - `POST /v1/jobs`
 - `GET /v1/jobs/{id}`
 - `POST /v1/jobs/{id}/stop`
@@ -551,13 +567,18 @@ Routes:
 - `POST /v1/sessions`
 - `POST /v1/sessions/{session_id}/repo`
 - `POST /v1/sessions/{session_id}/files`
-- `GET /v1/sessions/{session_id}/artifacts/{relative_path}`
+- `POST /v1/sessions/{session_id}/worktrees`
+- `POST /v1/sessions/{session_id}/git/write-key`
+- `DELETE /v1/sessions/{session_id}`
+- `GET /v1/sessions/{session_id}/artifacts/{artifact_path:path}`
 - `POST /v1/sessions/{session_id}/mssql/databases`
 - `GET /v1/sessions/{session_id}/mssql/databases`
 - `DELETE /v1/sessions/{session_id}/mssql/databases/{logical_name}`
 - `GET /healthz`
 
-`POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `repo_source`, optional `clone_branch`, `resource_limits`, and sanitized `metadata`. Raw `env`, `environment`, and `environment_variables` request fields are rejected. If `repo_source` is present, it must start with a configured allowed Git source prefix.
+`POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `repo_source`, optional `clone_branch`, optional `working_directory`, `resource_limits`, and sanitized `metadata`. Raw `env`, `environment`, and `environment_variables` request fields are rejected. If `repo_source` is present, it must start with a configured allowed Git source prefix.
+
+This route list is an operational inventory, not a frozen wire schema. The authoritative request and response models are [`src/evander/worker/models.py`](../src/evander/worker/models.py), and route registration is authoritative in [`src/evander/worker/api.py`](../src/evander/worker/api.py). Client implementations should use those sources so route-specific models and newly added fields are not silently omitted.
 
 ## Docker Constraints
 

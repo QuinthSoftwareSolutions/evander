@@ -75,20 +75,32 @@ def _agent_provider_from_session(session: SessionManifest | Any | None) -> str |
 def _revoke_container_git_write_access_for_session(
     session: SessionManifest | None,
 ) -> bool:
+    return _revoke_managed_git_access_for_session(session)
+
+
+def _revoke_managed_git_access_for_session(
+    session: SessionManifest | None,
+) -> bool:
     if session is None:
         return False
     metadata = session.metadata if isinstance(session.metadata, Mapping) else {}
-    git_access = metadata.get("container_git_write_access")
-    if not isinstance(git_access, Mapping):
-        return False
-    public_key_body = str(git_access.get("public_key_body") or "").strip()
-    authorized_keys_path = str(git_access.get("authorized_keys_path") or "").strip()
-    if not public_key_body or not authorized_keys_path:
-        return False
-    return remove_git_authorized_key_by_public_key_body(
-        authorized_keys_path=authorized_keys_path,
-        public_key_body=public_key_body,
-    )
+    revoked = False
+    for metadata_key in ("container_git_write_access", "managed_git_access"):
+        git_access = metadata.get(metadata_key)
+        if not isinstance(git_access, Mapping):
+            continue
+        public_key_body = str(git_access.get("public_key_body") or "").strip()
+        authorized_keys_path = str(git_access.get("authorized_keys_path") or "").strip()
+        if not public_key_body or not authorized_keys_path:
+            continue
+        revoked = (
+            remove_git_authorized_key_by_public_key_body(
+                authorized_keys_path=authorized_keys_path,
+                public_key_body=public_key_body,
+            )
+            or revoked
+        )
+    return revoked
 
 
 def _chat_thread_mapping_key(*, agent_thread_id: str | None, thread_id: str | None) -> str:
@@ -437,6 +449,7 @@ __all__ = [
     "_log_page_from_start",
     "_managed_codex_skills_root",
     "_revoke_container_git_write_access_for_session",
+    "_revoke_managed_git_access_for_session",
     "_resolve_session_approval_notification_target_ids",
     "_safe_chat_assistant_identifier",
     "_source_project_dir",

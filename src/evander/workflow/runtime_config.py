@@ -22,6 +22,7 @@ from evander.workflow.compiler import (
 from evander.workflow.migrations import migrate_agent_prompt_lifecycle_ports
 from evander.workflow.transforms import resolve_workflow_transforms
 from evander.workflow.validation import WorkflowValidationDiagnostic
+from evander.workflow.system_nodes import is_system_managed_workflow_node_id
 from evander.workflow.packs import (
     BUILTIN_HIDDEN_WORKFLOW_PACKS,
     _pack_path,
@@ -31,13 +32,6 @@ from evander.workflow.packs import (
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_MANAGED_WORKFLOW_NODE_IDS = frozenset(
-    {
-        "system.chat_assistant",
-        "system.chat_assistant.ensure_session",
-        "system.chat_assistant.enqueue_prompt",
-    }
-)
 _WORKFLOW_NODE_COLLECTIONS = ("triggers", "gates", "effects", "queries")
 
 
@@ -316,7 +310,7 @@ def _workflow_edge_target_id(entry: dict[str, Any]) -> str:
 
 
 def _is_system_managed_workflow_node_id(node_id: object) -> bool:
-    return str(node_id or "").strip() in _SYSTEM_MANAGED_WORKFLOW_NODE_IDS
+    return is_system_managed_workflow_node_id(node_id)
 
 
 def _validate_communication_targets(

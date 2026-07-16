@@ -297,7 +297,7 @@ def test_compose_workflow_ir_preserves_disabled_trigger_flag(tmp_path: Path) -> 
     ]
 
 
-def test_hidden_system_workflow_pack_contains_chat_assistant_graph() -> None:
+def test_hidden_system_workflow_pack_contains_control_plane_graphs() -> None:
     project_dir = Path(__file__).resolve().parents[1]
 
     composed = compose_workflow_ir(
@@ -306,10 +306,19 @@ def test_hidden_system_workflow_pack_contains_chat_assistant_graph() -> None:
         built_in_workflow_packs=BUILTIN_HIDDEN_WORKFLOW_PACKS,
     )
 
-    assert [trigger["id"] for trigger in composed.triggers] == ["system.chat_assistant"]
+    assert [trigger["id"] for trigger in composed.triggers] == [
+        "system.chat_assistant",
+        "system.code_consultation.requested",
+        "system.code_consultation.terminate_requested",
+    ]
     assert [effect["id"] for effect in composed.effects] == [
         "system.chat_assistant.ensure_session",
         "system.chat_assistant.enqueue_prompt",
+        "system.code_consultation.prepare",
+        "system.code_consultation.prompt",
+        "system.code_consultation.finalize_completed",
+        "system.code_consultation.finalize_error",
+        "system.code_consultation.terminate",
     ]
     assert composed.edges == [
         {
@@ -321,6 +330,36 @@ def test_hidden_system_workflow_pack_contains_chat_assistant_graph() -> None:
         {
             "source_id": "system.chat_assistant.ensure_session",
             "target_id": "system.chat_assistant.enqueue_prompt",
+            "source_port": None,
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.code_consultation.requested",
+            "target_id": "system.code_consultation.prepare",
+            "source_port": None,
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.code_consultation.prepare",
+            "target_id": "system.code_consultation.prompt",
+            "source_port": None,
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.code_consultation.prompt",
+            "target_id": "system.code_consultation.finalize_completed",
+            "source_port": "completed",
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.code_consultation.prompt",
+            "target_id": "system.code_consultation.finalize_error",
+            "source_port": "error",
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.code_consultation.terminate_requested",
+            "target_id": "system.code_consultation.terminate",
             "source_port": None,
             "allow_cycle": False,
         },
@@ -340,10 +379,19 @@ def test_hidden_system_workflow_pack_loads_from_package_data_when_project_config
         built_in_workflow_packs=workflow_packs.BUILTIN_HIDDEN_WORKFLOW_PACKS,
     )
 
-    assert [trigger["id"] for trigger in composed.triggers] == ["system.chat_assistant"]
+    assert [trigger["id"] for trigger in composed.triggers] == [
+        "system.chat_assistant",
+        "system.code_consultation.requested",
+        "system.code_consultation.terminate_requested",
+    ]
     assert [effect["id"] for effect in composed.effects] == [
         "system.chat_assistant.ensure_session",
         "system.chat_assistant.enqueue_prompt",
+        "system.code_consultation.prepare",
+        "system.code_consultation.prompt",
+        "system.code_consultation.finalize_completed",
+        "system.code_consultation.finalize_error",
+        "system.code_consultation.terminate",
     ]
 
 
@@ -717,19 +765,11 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             },
             {
                 "is_not_null": True,
-                "left": "${{trigger-git-push-1.trusted_repo_path ?? null}}",
-            },
-            {
-                "is_not_null": True,
-                "left": "${{trigger-git-push-1.base_branch ?? null}}",
+                "left": "${{trigger-git-push-1.default_branch ?? null}}",
             },
             {
                 "is_not_null": True,
                 "left": "${{trigger-git-push-1.review_branch ?? null}}",
-            },
-            {
-                "is_not_null": True,
-                "left": "${{trigger-git-push-1.canonical_origin_url ?? null}}",
             },
         ]
     }
@@ -791,6 +831,10 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             gates["gate-filter-standalone-pr-preflight"]["config"]["when"]
             == expected_standalone_preflight_filter
         )
+        assert "destination_branch" in gates["gate-filter-8"]["outputs"]
+        assert "origin_branch" not in gates["gate-filter-8"]["outputs"]
+        assert "destination_branch" in gates["gate-filter-standalone-pr-preflight"]["outputs"]
+        assert "origin_branch" not in gates["gate-filter-standalone-pr-preflight"]["outputs"]
     for edges in (default_edges, container_edges):
         assert ("query-session-context-1", "query-git-pr-note-1") not in edges
         assert (
@@ -851,17 +895,31 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         assert (
             standalone_pr["config"]["fallback_title"] == expected_standalone_fallback_title
         )
-        assert (
-            standalone_pr["config"]["origin_branch"]
-            == "${{query-session-context-1.metadata.pr_origin_branch ?? null}}"
+        assert standalone_pr["config"]["managed_repo_id"] == (
+            "${{trigger-git-push-1.managed_repo_id}}"
+        )
+        assert standalone_pr["config"]["source_ref"] == (
+            "${{trigger-git-push-1.review_branch}}"
+        )
+        assert standalone_pr["config"]["expected_commit_sha"] == (
+            "${{trigger-git-push-1.commit_hash}}"
+        )
+        assert standalone_pr["config"]["destination_branch"] == (
+            "${{query-session-context-1.metadata.pr_origin_branch ?? null}}"
+        )
+        assert standalone_pr["config"]["fallback_destination_branch"] == (
+            "feature/${{trigger-git-push-1.session_id}}"
         )
         assert "issue_number" not in standalone_pr["config"]["title"]
         assert "issue_title" not in standalone_pr["config"]["title"]
         assert "${{query-git-pr-note-standalone.body}}" in standalone_pr["config"]["body"]
         standalone_prompt = effects["effect-agent-enqueue-prompt-standalone-pr"]
+        issue_prompt = effects["effect-agent-enqueue-prompt-3"]
+        assert "effect-pr-create-1.destination_branch" in issue_prompt["config"]["prompt"]
+        assert "effect-pr-create-1.origin_branch" not in issue_prompt["config"]["prompt"]
         expected_standalone_queue_key = (
             "pr-create-preflight:${{trigger-git-push-1.session_id}}:"
-            "${{effect-pr-create-standalone.origin_branch}}"
+            "${{effect-pr-create-standalone.destination_branch}}"
         )
         assert standalone_prompt["type"] == "effect:agent:enqueue-prompt"
         assert standalone_prompt["config"]["queue_key"] == expected_standalone_queue_key

@@ -128,7 +128,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "hostvars[evander_control_plane_host].evander_run_user" in text
     assert "evander_control_plane_private_ip" in text
     assert 'evander_git_host: "<control-plane-private-ip>"' not in text
-    assert 'evander_git_root: "{{ evander_control_plane_deploy_path }}/git-remotes"' in text
+    assert 'evander_git_root: "{{ evander_control_plane_deploy_path }}/runtime/managed-git"' in text
     assert 'evander_git_ssh_alias: "evander-git-host"' in text
     assert "evander_worker_allowed_git_source_prefixes" in text
     assert "ssh://{{ evander_git_ssh_alias }}{{ evander_git_root }}/" in text
@@ -601,11 +601,15 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert worker.index("- role: worker_git_access") < worker.index("- role: repo_checkout")
     assert "Generate restricted worker Git SSH key" in role
     assert "IdentityFile ~/.ssh/evander-git" in role
-    assert "Authorize worker Git key on the control plane" in role
+    assert "Authorize worker deployment-mirror key on the control plane" in role
     assert "git_ssh_command_wrapper.sh" in role
-    assert "EVANDER_GIT_ROOT_B64={{ evander_git_root | b64encode }}" in role
+    assert (
+        "EVANDER_GIT_ROOT_B64={{ (evander_worker_repo_mirror_path | dirname) | b64encode }}"
+        in role
+    )
     assert "EVANDER_GIT_AUTH_ACCESS=read-only" in role
-    assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64={{ evander_git_root | b64encode }}" in role
+    assert "EVANDER_GIT_AUTH_REPO_B64={{ evander_worker_repo_mirror_path | b64encode }}" in role
+    assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64" not in role
     assert "Ensure control-plane deployment repo mirror exists" in role
     assert "scripts/create_git_remote.sh" in role
     assert "evander.mirrorSource" in role

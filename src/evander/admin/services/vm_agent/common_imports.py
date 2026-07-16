@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-from __future__ import annotations
 from collections.abc import Mapping
 from importlib import resources
 import hashlib
@@ -100,14 +98,10 @@ from evander.worker.security import sanitize_text
 
 COMMUNICATION_FILE_SESSION_POLICY_FIELDS = session_helpers.COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 SESSION_BOOL_POLICY_FIELDS = session_helpers.SESSION_BOOL_POLICY_FIELDS
-_PROTECTED_MIRROR_HEAD_REFSPECS = git_helpers.PROTECTED_MIRROR_HEAD_REFSPECS
 _build_issue_session_manifest = session_helpers.build_issue_session_manifest
-_default_base_branch_for_repo_remote = git_helpers.default_base_branch_for_repo_remote
 _guest_agent_pr_note_helper_b64 = project_helpers.guest_agent_pr_note_helper_b64
 _guest_push_agent_helper_b64 = project_helpers.guest_push_agent_helper_b64
 _guest_sync_base_helper_b64 = project_helpers.guest_sync_base_helper_b64
-_is_remote_git_source = git_helpers.is_remote_git_source
-_mirror_remote_name_for_repo = git_helpers.mirror_remote_name_for_repo
 _normalize_allowed_tools = session_helpers.normalize_allowed_tools
 _normalize_plain_string_list = session_helpers.normalize_plain_string_list
 _normalize_session_labels = session_helpers.normalize_session_labels
@@ -118,7 +112,6 @@ _normalize_session_policy_non_negative_int_or_none = (
 _prune_approvals_for_sessions = session_helpers.prune_approvals_for_sessions
 _prune_pr_feedback_store = git_helpers.prune_pr_feedback_store
 _prune_pr_map = git_helpers.prune_pr_map
-_resolve_canonical_origin_url_for_repo = git_helpers.resolve_canonical_origin_url_for_repo
 _resolve_private_key_path = vm_helpers.resolve_private_key_path
 _resolve_session_target = session_helpers.resolve_session_target
 _resolve_vm_ip = vm_helpers.resolve_vm_ip
@@ -184,14 +177,10 @@ __all__ = [
     "VmSummary",
     "WorkflowConfigPort",
     "WorkflowEditorFieldOption",
-    "_PROTECTED_MIRROR_HEAD_REFSPECS",
     "_build_issue_session_manifest",
-    "_default_base_branch_for_repo_remote",
     "_guest_agent_pr_note_helper_b64",
     "_guest_push_agent_helper_b64",
     "_guest_sync_base_helper_b64",
-    "_is_remote_git_source",
-    "_mirror_remote_name_for_repo",
     "_normalize_allowed_tools",
     "_normalize_plain_string_list",
     "_normalize_session_labels",
@@ -200,7 +189,6 @@ __all__ = [
     "_prune_approvals_for_sessions",
     "_prune_pr_feedback_store",
     "_prune_pr_map",
-    "_resolve_canonical_origin_url_for_repo",
     "_resolve_private_key_path",
     "_resolve_session_target",
     "_resolve_vm_ip",

@@ -7,7 +7,7 @@ from pathlib import Path
 from starlette.testclient import TestClient
 
 from evander.admin import composition as admin_composition
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.audit import AuditLogger
 from evander.models import AuditEvent

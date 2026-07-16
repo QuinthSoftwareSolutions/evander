@@ -33,25 +33,13 @@ from evander.workflow.validation import (
     WorkflowValidationDiagnostic,
     validate_workflow_binding_diagnostics,
 )
+from evander.workflow.system_nodes import is_system_managed_workflow_node_id
 
 _TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
 _GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
 _EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
 _QUERY_DEFINITION_ADAPTER = TypeAdapter(QueryDefinitionDiscriminated)
 _EDGE_DEFINITION_ADAPTER = TypeAdapter(EdgeDefinition)
-_SYSTEM_CHAT_ASSISTANT_TRIGGER_ID = "system.chat_assistant"
-_SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID = "system.chat_assistant.ensure_session"
-_SYSTEM_CHAT_ASSISTANT_ENQUEUE_PROMPT_ID = "system.chat_assistant.enqueue_prompt"
-_SYSTEM_MANAGED_WORKFLOW_NODE_IDS = frozenset(
-    {
-        _SYSTEM_CHAT_ASSISTANT_TRIGGER_ID,
-        _SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID,
-        _SYSTEM_CHAT_ASSISTANT_ENQUEUE_PROMPT_ID,
-    }
-)
-
-
-
 def _strip_default_edge_fields(payload: dict[str, object]) -> dict[str, object]:
     edges = payload.get("edges")
     if not isinstance(edges, list):
@@ -204,7 +192,7 @@ def _looks_like_declared_output_schema(value: object) -> bool:
 
 
 def _is_system_managed_workflow_node_id(node_id: str) -> bool:
-    return str(node_id or "").strip() in _SYSTEM_MANAGED_WORKFLOW_NODE_IDS
+    return is_system_managed_workflow_node_id(node_id)
 
 
 def _field_option(
@@ -765,12 +753,18 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:artifact:import-published": (
         "Import a published artifact archive into a session artifacts folder."
     ),
-    "effect:git:promote-agent-branch": ("Promote an agent branch into a trusted host checkout."),
-    "effect:git:push-branch": "Push a trusted host checkout branch to a remote branch.",
-    "effect:pr:create": "Create a pull request from a host-side checkout.",
+    "effect:git:promote-agent-branch": (
+        "Promote a pinned agent commit into a host-owned managed repository ref."
+    ),
+    "effect:git:push-branch": (
+        "Publish a pinned managed repository ref to an upstream branch with a lease."
+    ),
+    "effect:pr:create": "Create a pull request from an approved managed repository ref.",
     "effect:event:schedule": "Schedule a one-shot internal workflow event for later delivery.",
     "query:vm:run-state": "Read the current run state for a VM-backed agent target.",
-    "query:git:pr-note": "Read pull-request note context from a host checkout.",
+    "query:git:pr-note": (
+        "Read pull-request note context for an exact commit in a managed repository."
+    ),
     "query:pull-request:list": "List provider pull requests with optional status, branch, time, or tag filters.",
     "query:pull-request:feedback": "Fetch provider pull-request feedback without owning cursor state.",
     "query:communication:messages": (
@@ -1273,17 +1267,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="trigger:git:push",
         label="Git push",
         fields=[
+            _field("managed_repo_id", "Managed repository ID", "string", bindable=True),
             _field(
-                "path_to_repo",
-                "Repository path",
+                "managed_repo_id_glob",
+                "Managed repository ID glob",
                 "string",
-                description="Exact bare-repo path. Mutually exclusive with Repository glob.",
-            ),
-            _field(
-                "path_glob",
-                "Repository glob",
-                "string",
-                description="Glob pattern for matching multiple bare repos, for example /path/to/git-remotes/*.git.",
+                bindable=True,
             ),
         ],
     ),
@@ -1786,10 +1775,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("target", "Target", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
-            _field("repo_source", "Repo source", "string", required=True, bindable=True),
+            _field(
+                "managed_repo_id",
+                "Managed repository ID",
+                "string",
+                required=True,
+                bindable=True,
+            ),
             _field("clone_branch", "Clone branch", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
-            _field("directory_path", "Directory path", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -2177,13 +2171,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("target", "Target", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
-            _field("repo_source", "Repo source", "string", required=True, bindable=True),
-            _field("canonical_origin_url", "Canonical origin URL", "string", bindable=True),
-            _field("bare_repo_name", "Bare repo name", "string", bindable=True),
-            _field("bare_repo_path", "Bare repo path", "string", bindable=True),
+            _field(
+                "managed_repo_id",
+                "Managed repository ID",
+                "string",
+                required=True,
+                bindable=True,
+            ),
             _field("clone_branch", "Clone branch", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
-            _field("directory_path", "Directory path", "string", bindable=True),
             _field(
                 "git_access_mode",
                 "Git access mode",
@@ -2193,6 +2189,20 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "Optional container-worker Git access mode. "
                     "Use write for git push-agent or read-only for fetch-only sessions."
                 ),
+            ),
+            _field(
+                "pinned_ref",
+                "Pinned ref",
+                "string",
+                bindable=True,
+                description="Optional ref to fetch before scoped read credentials are removed.",
+            ),
+            _field(
+                "pinned_commit_sha",
+                "Pinned commit SHA",
+                "string",
+                bindable=True,
+                description="Exact commit required for pinned_ref.",
             ),
             _field(
                 "git_author_name",
@@ -2234,6 +2244,19 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "Set together with git_committer_name."
                 ),
             ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:git:ensure-managed-repo",
+        label="Ensure managed repository",
+        description=(
+            "Idempotently register or refresh a canonical repository inside the current "
+            "directory trust boundary and return its managed repository ID."
+        ),
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("repo_source", "Repository source", "string", required=True, bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -3064,7 +3087,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("directory_path", "Directory path", "string", bindable=True),
             _field("organization_url", "Organization URL", "string", bindable=True),
             _field("project", "Project", "string", bindable=True),
-            _field("repo_source", "Repo source", "string", bindable=True),
+            _field("managed_repo_id", "Managed repository ID", "string", bindable=True),
+            _field(
+                "repo_source",
+                "Repository source",
+                "string",
+                bindable=True,
+                description="Transient source registered before the issue record is stored.",
+            ),
             _field("yaml_output_dir", "YAML output dir", "string", bindable=True),
             _field("item", "Item", "json", bindable=True),
             _field("items", "Items", "json", bindable=True),
@@ -3371,14 +3401,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:git:promote-agent-branch",
         label="Promote agent branch",
         fields=[
-            _field("host_repo_path", "Host repo path", "string", required=True, bindable=True),
-            _field("bare_repo_path", "Bare repo path", "string", bindable=True),
-            _field("bare_repo_name", "Bare repo name", "string", bindable=True),
+            _field("managed_repo_id", "Managed repository ID", "string", required=True, bindable=True),
             _field("agent_branch", "Agent branch", "string", required=True, bindable=True),
-            _field("review_branch", "Review branch", "string", bindable=True),
-            _field("target_branch", "Target branch", "string", bindable=True),
-            _field("expected_commit_sha", "Expected commit SHA", "string", bindable=True),
-            _field("remote_name", "Remote name", "string", bindable=True),
+            _field("target_branch", "Target branch", "string", required=True, bindable=True),
+            _field("expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -3386,14 +3412,11 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:git:push-branch",
         label="Push git branch",
         fields=[
-            _field("host_repo_path", "Host repo path", "string", required=True, bindable=True),
-            _field("local_branch", "Local branch", "string", required=True, bindable=True),
-            _field("origin_branch", "Origin branch", "string", required=True, bindable=True),
-            _field("canonical_origin_url", "Canonical origin URL", "string", bindable=True),
-            _field("provider", "Provider", "string", bindable=True),
-            _field("base_branch", "Base branch", "string", bindable=True),
-            _field("session_id", "Session ID", "string", bindable=True),
-            _field("work_item_id", "Work item ID", "string", bindable=True),
+            _field("managed_repo_id", "Managed repository ID", "string", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("source_ref", "Source ref", "string", required=True, bindable=True),
+            _field("expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True),
+            _field("destination_branch", "Destination branch", "string", required=True, bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -3401,20 +3424,22 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:pr:create",
         label="PR create",
         fields=[
-            _field("host_repo_path", "Host repo path", "string", required=True, bindable=True),
-            _field("local_branch", "Local branch", "string", bindable=True),
-            _field("origin_branch", "Origin branch", "string", bindable=True),
-            _field("canonical_origin_url", "Canonical origin URL", "string", bindable=True),
-            _field("provider", "Provider", "string", bindable=True),
-            _field("project", "Project", "string", bindable=True),
+            _field("managed_repo_id", "Managed repository ID", "string", required=True, bindable=True),
+            _field("source_ref", "Source ref", "string", required=True, bindable=True),
+            _field("expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True),
+            _field("destination_branch", "Destination branch", "string", required=True, bindable=True),
+            _field(
+                "fallback_destination_branch",
+                "Fallback destination branch",
+                "string",
+                bindable=True,
+            ),
             _field("base_branch", "Base branch", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("work_item_id", "Work item ID", "string", bindable=True),
             _field("title", "Title", "string", bindable=True),
             _field("fallback_title", "Fallback title", "string", bindable=True),
             _field("body", "Body", "string", bindable=True, multiline=True),
-            _field("body_file", "Body file", "string", bindable=True),
-            _field("body_artifact_ids", "Body artifact IDs", "json", bindable=True),
             _field("draft", "Draft", "boolean", bindable=True),
             _field("fill", "Fill", "boolean", bindable=True),
         ],
@@ -3510,10 +3535,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="query:git:pr-note",
         label="Git PR note",
         fields=[
-            _field("host_repo_path", "Host repo path", "string", required=True, bindable=True),
-            _field("local_branch", "Local branch", "string", required=True, bindable=True),
-            _field("remote_name", "Remote name", "string", bindable=True),
-            _field("notes_ref", "Notes ref", "string", bindable=True),
+            _field("managed_repo_id", "Managed repository ID", "string", required=True, bindable=True),
+            _field("commit_sha", "Commit SHA", "string", required=True, bindable=True),
+            _field("notes_ref", "Notes ref", "string", required=True, bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

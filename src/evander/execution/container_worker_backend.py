@@ -21,6 +21,8 @@ from evander.worker.models import (
     WorkerResourceLimits,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
+    WorkerTaskWorktreeRecord,
+    WorkerTaskWorktreeRequest,
     now_utc,
 )
 from evander.worker.security import sanitize_metadata, sanitize_text
@@ -101,6 +103,7 @@ class ContainerWorkerVmExecutionBackend:
             image=spec.image or self.config.container_worker_default_image,
             repo_source=spec.repo_source,
             clone_branch=spec.clone_branch,
+            working_directory=spec.working_directory,
             resource_limits=spec.resource_limits,
             persistence_mode=persistence_mode,
             workspace_mode=workspace_mode,
@@ -141,6 +144,7 @@ class ContainerWorkerVmExecutionBackend:
             image=request.image,
             repo_source=prepared.repo_source,
             clone_branch=prepared.clone_branch,
+            working_directory=prepared.working_directory,
             resource_limits=prepared.resource_limits,
             persistence_mode=prepared.persistence_mode,
             workspace_mode=prepared.workspace_mode,
@@ -260,6 +264,7 @@ class ContainerWorkerVmExecutionBackend:
         repo_source: str,
         clone_branch: str | None = None,
         repo_name: str | None = None,
+        reconcile_existing_remote: bool = False,
     ) -> WorkerRepoCloneRecord:
         return self.client.clone_repo(
             session_id,
@@ -267,6 +272,26 @@ class ContainerWorkerVmExecutionBackend:
                 repo_source=repo_source,
                 clone_branch=clone_branch,
                 repo_name=repo_name,
+                reconcile_existing_remote=reconcile_existing_remote,
+            ),
+        )
+
+    def prepare_task_worktree(
+        self,
+        *,
+        session_id: str,
+        repo_name: str,
+        worktree_name: str,
+        branch: str,
+        base_ref: str,
+    ) -> WorkerTaskWorktreeRecord:
+        return self.client.prepare_task_worktree(
+            session_id,
+            WorkerTaskWorktreeRequest(
+                repo_name=repo_name,
+                worktree_name=worktree_name,
+                branch=branch,
+                base_ref=base_ref,
             ),
         )
 
@@ -383,6 +408,8 @@ class ContainerWorkerVmExecutionBackend:
             payload["repo_source"] = prepared.repo_source
         if prepared.clone_branch:
             payload["clone_branch"] = prepared.clone_branch
+        if prepared.working_directory:
+            payload["working_directory"] = prepared.working_directory
         if prepared.resource_limits:
             payload["resource_limits"] = WorkerResourceLimits.model_validate(
                 prepared.resource_limits
@@ -509,9 +536,18 @@ class ContainerWorkerVmExecutionBackend:
         worker_metadata = (
             dict(record.metadata) if isinstance(getattr(record, "metadata", None), dict) else {}
         )
-        for key in ("codex_outcome", "agent_provider", "model_provider_mode", "model"):
+        for key in (
+            "codex_outcome",
+            "agent_provider",
+            "model_provider_mode",
+            "model",
+            "exit_code",
+            "worker_terminal_kind",
+        ):
             if key in worker_metadata:
                 metadata[key] = worker_metadata[key]
+        if getattr(record, "error", None):
+            metadata["worker_error"] = str(record.error)
         metadata["worker_status"] = record.status
         return sanitize_metadata(metadata)
 

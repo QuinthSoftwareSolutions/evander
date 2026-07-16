@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    participant B as Browser Team UI
+    participant API as Add-on Admin API
+    participant R as Team repository
+    participant SSE as Revision stream
+
+    B->>API: GET bootstrap
+    API->>R: Read compact bootstrap state
+    R-->>API: Current revision and resources
+    API-->>B: Navigation, permissions, resource tokens
+    B->>API: GET views/{active-view}
+    API->>R: Build view-scoped projection
+    API-->>B: View payload only
+    B->>SSE: Open state/stream
+    R-->>SSE: Revision changes
+    SSE-->>B: Revision-only invalidation
+    B->>API: Refresh invalidated active view
+    API-->>B: New scoped payload
+
+    Note over B,API: Mutations use expected revisions and resource tokens while broad state stays out of routine refreshes

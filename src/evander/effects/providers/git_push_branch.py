@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .base import EffectProviderBase
+from .base import EffectProviderBase, scoped_effect_directory_path
 
 
 class GitPushBranchEffectProvider(EffectProviderBase):
@@ -12,49 +12,55 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
 
-        host_repo_path = self._normalize_optional_string(payload.get("host_repo_path"))
-        if not host_repo_path:
-            raise ValueError("effect:git:push-branch requires host_repo_path")
-        local_branch = self._normalize_optional_string(payload.get("local_branch"))
-        if not local_branch:
-            raise ValueError("effect:git:push-branch requires local_branch")
-        origin_branch = self._normalize_optional_string(payload.get("origin_branch"))
-        if not origin_branch:
-            raise ValueError("effect:git:push-branch requires origin_branch")
-
+        managed_repo_id = self._normalize_required_string(
+            payload.get("managed_repo_id"), field_name="managed_repo_id"
+        )
+        source_ref = self._normalize_required_string(
+            payload.get("source_ref"), field_name="source_ref"
+        )
+        expected_commit_sha = self._normalize_required_string(
+            payload.get("expected_commit_sha"), field_name="expected_commit_sha"
+        )
+        destination_branch = self._normalize_required_string(
+            payload.get("destination_branch"), field_name="destination_branch"
+        )
         context = self._context()
+        directory_path = scoped_effect_directory_path(
+            context,
+            self._normalize_optional_string(payload.get("directory_path")),
+        )
         push_branch = getattr(context.git_branch_pusher, "push_branch", None)
         if not callable(push_branch):
             raise RuntimeError("Admin runtime push_branch is not available")
 
         result = push_branch(
-            host_repo_path=host_repo_path,
-            local_branch=local_branch,
-            origin_branch=origin_branch,
-            canonical_origin_url=self._normalize_optional_string(
-                payload.get("canonical_origin_url")
-            ),
-            provider=self._normalize_optional_string(payload.get("provider")),
-            base_branch=self._normalize_optional_string(payload.get("base_branch")),
-            session_id=self._normalize_optional_string(payload.get("session_id")),
-            work_item_id=self._normalize_optional_string(payload.get("work_item_id")),
+            managed_repo_id=managed_repo_id,
+            source_ref=source_ref,
+            expected_commit_sha=expected_commit_sha,
+            destination_branch=destination_branch,
+            directory_path=directory_path,
         )
         output = self._coerce_result(result)
         output.setdefault("success", False)
+        output.setdefault("managed_repo_id", managed_repo_id)
+        output.setdefault("source_ref", source_ref)
+        output.setdefault("expected_commit_sha", expected_commit_sha)
+        output.setdefault("destination_branch", destination_branch)
+        if output["success"] is False and not self._normalize_optional_string(output.get("error")):
+            message = self._normalize_optional_string(output.get("message"))
+            if message is not None:
+                output["error"] = message
         return output
 
     def _effect_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         effect = self.effect_definition
         for field_name in (
-            "host_repo_path",
-            "local_branch",
-            "origin_branch",
-            "canonical_origin_url",
-            "provider",
-            "base_branch",
-            "session_id",
-            "work_item_id",
+            "managed_repo_id",
+            "directory_path",
+            "source_ref",
+            "expected_commit_sha",
+            "destination_branch",
         ):
             if effect is not None and hasattr(effect, field_name):
                 payload[field_name] = getattr(effect, field_name)
@@ -71,6 +77,13 @@ class GitPushBranchEffectProvider(EffectProviderBase):
             return None
         text = str(value).strip()
         return text or None
+
+    @classmethod
+    def _normalize_required_string(cls, value: Any, *, field_name: str) -> str:
+        text = cls._normalize_optional_string(value)
+        if text is None:
+            raise ValueError(f"effect:git:push-branch requires {field_name}")
+        return text
 
     @staticmethod
     def _coerce_result(result: Any) -> dict[str, Any]:

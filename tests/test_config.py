@@ -1269,7 +1269,7 @@ def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
                     "id": "trigger-1",
                     "display_name": "Git push",
                     "type": "trigger:git:push",
-                    "path_glob": "/tmp/*.git",
+                    "managed_repo_id_glob": "mr_*",
                 }
             ],
             "gates": [
@@ -1279,21 +1279,20 @@ def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
                     "type": "gate:filter",
                     "outputs": {
                         "branch_name": {"type": "string"},
+                        "managed_repo_id": {"type": "string"},
                         "commit_hash": {"type": "string"},
+                        "new_commit_hash": {"type": "string"},
                         "old_commit_hash": {"type": "string"},
                         "ref_name": {"type": "string"},
-                        "repo_path": {"type": "string"},
-                        "repo_name": {"type": "string"},
                         "session_id": {"type": "string"},
                         "review_branch": {"type": "string"},
-                        "trusted_repo_path": {"type": "string"},
-                        "base_branch": {"type": "string"},
-                        "canonical_origin_url": {"type": "string"},
+                        "notes_ref": {"type": "string"},
+                        "default_branch": {"type": "string"},
                     },
                     "when": {
                         "all": [
                             {"left": "${{trigger-1.branch_name}}", "starts_with": "agents/"},
-                            {"left": "${{trigger-1.repo_path}}", "ends_with": ".git"},
+                            {"left": "${{trigger-1.managed_repo_id}}", "starts_with": "mr_"},
                             {"left": "${{trigger-1.branch_name}}", "contains": "/"},
                         ]
                     },
@@ -1318,7 +1317,7 @@ def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
     assert config.gates[0].when == {
         "all": [
             {"left": "${{trigger-1.branch_name}}", "starts_with": "agents/"},
-            {"left": "${{trigger-1.repo_path}}", "ends_with": ".git"},
+            {"left": "${{trigger-1.managed_repo_id}}", "starts_with": "mr_"},
             {"left": "${{trigger-1.branch_name}}", "contains": "/"},
         ]
     }

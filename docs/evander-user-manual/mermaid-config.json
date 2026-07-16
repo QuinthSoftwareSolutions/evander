@@ -1,0 +1,25 @@
+{
+  "theme": "neutral",
+  "fontFamily": "Inter, Segoe UI, Arial, sans-serif",
+  "flowchart": {
+    "curve": "basis",
+    "htmlLabels": true,
+    "useMaxWidth": true
+  },
+  "sequence": {
+    "useMaxWidth": true,
+    "wrap": true
+  },
+  "themeVariables": {
+    "primaryColor": "#e7f3f4",
+    "primaryTextColor": "#17313b",
+    "primaryBorderColor": "#29788c",
+    "lineColor": "#436672",
+    "secondaryColor": "#f6efe2",
+    "tertiaryColor": "#edf2ee",
+    "noteBkgColor": "#fff8d9",
+    "noteTextColor": "#3a3424",
+    "noteBorderColor": "#b39139",
+    "fontSize": "16px"
+  }
+}

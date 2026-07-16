@@ -2,7 +2,8 @@
 
 ## Status
 
-Approved direction: keep the existing Admin navigation item as **Users & Groups**, but split the
+Implemented on 2026-05-30. The approved direction kept the existing Admin navigation item as
+**Users & Groups**, but split the
 page into two clear top-level modes: **Users** and **Groups**.
 
 ## Problem

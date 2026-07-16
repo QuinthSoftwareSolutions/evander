@@ -106,7 +106,7 @@ type PrIntegrationPreflightReport = {
   provider: string;
   repo: string;
   directory_path: string;
-  repo_path: string;
+  managed_repo_id: string;
   mode: MergePreflightMode;
   status: MergePreflightStatus;
   target_branch: string | null;
@@ -240,7 +240,7 @@ export function ReportsPage() {
   const [prIntegrationProvider, setPrIntegrationProvider] = useState("azure_devops");
   const [prIntegrationRepo, setPrIntegrationRepo] = useState("");
   const [prIntegrationDirectoryPath, setPrIntegrationDirectoryPath] = useState("root");
-  const [prIntegrationRepoSource, setPrIntegrationRepoSource] = useState("");
+  const [prIntegrationManagedRepoId, setPrIntegrationManagedRepoId] = useState("");
   const [prIntegrationOrganizationUrl, setPrIntegrationOrganizationUrl] = useState("");
   const [prIntegrationProject, setPrIntegrationProject] = useState("");
   const [prIntegrationMode, setPrIntegrationMode] = useState<MergePreflightMode>("single");
@@ -506,10 +506,10 @@ export function ReportsPage() {
           body: JSON.stringify({
             provider: prIntegrationProvider,
             repo: prIntegrationRepo,
+            managed_repo_id: prIntegrationManagedRepoId,
             pr_ids: prIds,
             mode: prIntegrationMode,
             directory_path: prIntegrationDirectoryPath,
-            repo_source: normalizeOptionalText(prIntegrationRepoSource),
             organization_url: normalizeOptionalText(prIntegrationOrganizationUrl),
             project: normalizeOptionalText(prIntegrationProject),
           }),
@@ -1463,8 +1463,8 @@ export function ReportsPage() {
               <div>
                 <h2>PR integration preflight</h2>
                 <p className="muted-text">
-                  Read-only Git merge rehearsal for Azure DevOps pull requests. The report keeps
-                  refs untouched and mirrors the configured directory-scoped repository source.
+                  Read-only Git merge rehearsal for Azure DevOps pull requests in an ephemeral
+                  worktree. The managed repository refs remain untouched.
                 </p>
               </div>
             </div>
@@ -1514,12 +1514,13 @@ export function ReportsPage() {
                   />
                 </label>
                 <label className="field-stack">
-                  <span>Repo source</span>
+                  <span>Managed repository ID</span>
                   <input
                     type="text"
-                    value={prIntegrationRepoSource}
-                    onChange={(event) => setPrIntegrationRepoSource(event.target.value)}
-                    placeholder="/home/agent/repos/project"
+                    value={prIntegrationManagedRepoId}
+                    onChange={(event) => setPrIntegrationManagedRepoId(event.target.value)}
+                    placeholder="mr_0123456789abcdef0123"
+                    required
                   />
                 </label>
                 <label className="field-stack">
@@ -1721,8 +1722,8 @@ export function ReportsPage() {
                         <strong>{prIntegrationReport.directory_path}</strong>
                       </div>
                       <div>
-                        <span>Repo path</span>
-                        <strong>{prIntegrationReport.repo_path}</strong>
+                        <span>Managed repository</span>
+                        <strong>{prIntegrationReport.managed_repo_id}</strong>
                       </div>
                       <div>
                         <span>Target branch</span>

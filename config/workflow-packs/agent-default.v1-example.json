@@ -44,6 +44,10 @@
       },
       {
         "source_id": "effect-vm-create-1",
+        "target_id": "effect-git-ensure-managed-repo-1"
+      },
+      {
+        "source_id": "effect-git-ensure-managed-repo-1",
         "target_id": "effect-vm-clone-repo-1"
       },
       {
@@ -158,6 +162,10 @@
       },
       {
         "source_id": "effect-vm-create-2",
+        "target_id": "effect-git-ensure-managed-repo-2"
+      },
+      {
+        "source_id": "effect-git-ensure-managed-repo-2",
         "target_id": "effect-vm-clone-repo-2"
       },
       {
@@ -255,7 +263,7 @@
       },
       {
         "config": {
-          "path_glob": "/home/jonathan/evander/git-remotes/*.git"
+          "managed_repo_id_glob": "mr_*"
         },
         "display_name": "Git push",
         "id": "trigger-git-push-1",
@@ -782,19 +790,11 @@
               },
               {
                 "is_not_null": true,
-                "left": "${{trigger-git-push-1.trusted_repo_path ?? null}}"
-              },
-              {
-                "is_not_null": true,
-                "left": "${{trigger-git-push-1.base_branch ?? null}}"
+                "left": "${{trigger-git-push-1.default_branch ?? null}}"
               },
               {
                 "is_not_null": true,
                 "left": "${{trigger-git-push-1.review_branch ?? null}}"
-              },
-              {
-                "is_not_null": true,
-                "left": "${{trigger-git-push-1.canonical_origin_url ?? null}}"
               }
             ]
           }
@@ -802,13 +802,10 @@
         "display_name": "Filter repos",
         "id": "gate-filter-2",
         "outputs": {
-          "base_branch": {
+          "default_branch": {
             "type": "string"
           },
           "branch_name": {
-            "type": "string"
-          },
-          "canonical_origin_url": {
             "type": "string"
           },
           "commit_hash": {
@@ -823,19 +820,13 @@
           "ref_name": {
             "type": "string"
           },
-          "repo_name": {
-            "type": "string"
-          },
-          "repo_path": {
+          "managed_repo_id": {
             "type": "string"
           },
           "review_branch": {
             "type": "string"
           },
           "session_id": {
-            "type": "string"
-          },
-          "trusted_repo_path": {
             "type": "string"
           }
         },
@@ -927,7 +918,7 @@
           "message": {
             "type": "string"
           },
-          "origin_branch": {
+          "destination_branch": {
             "type": "string"
           },
           "reason": {
@@ -1076,9 +1067,18 @@
       },
       {
         "config": {
+          "directory_path": "${{gate-merge-1.directory_path}}",
+          "repo_source": "${{gate-merge-1.repo_source}}"
+        },
+        "display_name": "Ensure managed Issue repository",
+        "id": "effect-git-ensure-managed-repo-1",
+        "type": "effect:git:ensure-managed-repo"
+      },
+      {
+        "config": {
           "clone_branch": "${{gate-merge-1.branch}}",
           "directory_path": "${{gate-merge-1.directory_path}}",
-          "repo_source": "${{gate-merge-1.repo_source}}",
+          "managed_repo_id": "${{effect-git-ensure-managed-repo-1.managed_repo_id}}",
           "target": "${{effect-vm-create-1.session_id}}",
           "vm_user": "agent"
         },
@@ -1152,9 +1152,9 @@
       {
         "config": {
           "agent_branch": "${{trigger-git-push-1.branch_name}}",
-          "bare_repo_path": "${{trigger-git-push-1.repo_path}}",
-          "host_repo_path": "${{trigger-git-push-1.trusted_repo_path}}",
-          "review_branch": "${{trigger-git-push-1.review_branch}}"
+          "expected_commit_sha": "${{trigger-git-push-1.commit_hash}}",
+          "managed_repo_id": "${{trigger-git-push-1.managed_repo_id}}",
+          "target_branch": "${{trigger-git-push-1.review_branch}}"
         },
         "display_name": "Promote agent branch",
         "id": "effect-git-promote-agent-branch-1",
@@ -1162,14 +1162,14 @@
       },
       {
         "config": {
-          "base_branch": "${{trigger-git-push-1.base_branch}}",
+          "base_branch": "${{trigger-git-push-1.default_branch}}",
           "body": "---\n\nThank you for your contribution to the ${{query-session-context-1.metadata.ado_project ?? \"target\"}} repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-1.body}}",
-          "canonical_origin_url": "${{gate-filter-2.canonical_origin_url}}",
+          "destination_branch": "feature/issue-${{query-session-context-1.metadata.issue_number}}",
           "draft": true,
           "fill": true,
-          "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
-          "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
-          "provider": "azure_devops",
+          "expected_commit_sha": "${{trigger-git-push-1.commit_hash}}",
+          "managed_repo_id": "${{trigger-git-push-1.managed_repo_id}}",
+          "source_ref": "${{trigger-git-push-1.review_branch}}",
           "session_id": "${{trigger-git-push-1.session_id}}",
           "title": "${{query-session-context-1.metadata.issue_number}}: ${{query-session-context-1.metadata.issue_title}}"
         },
@@ -1179,15 +1179,15 @@
       },
       {
         "config": {
-          "base_branch": "${{trigger-git-push-1.base_branch}}",
+          "base_branch": "${{trigger-git-push-1.default_branch}}",
           "body": "---\n\nThank you for your contribution to the ${{query-session-context-1.metadata.ado_project ?? \"target\"}} repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-standalone.body}}",
-          "canonical_origin_url": "${{gate-filter-2.canonical_origin_url}}",
+          "destination_branch": "${{query-session-context-1.metadata.pr_origin_branch ?? null}}",
+          "fallback_destination_branch": "feature/${{trigger-git-push-1.session_id}}",
           "draft": true,
           "fill": true,
-          "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
-          "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
-          "origin_branch": "${{query-session-context-1.metadata.pr_origin_branch ?? null}}",
-          "provider": "azure_devops",
+          "expected_commit_sha": "${{trigger-git-push-1.commit_hash}}",
+          "managed_repo_id": "${{trigger-git-push-1.managed_repo_id}}",
+          "source_ref": "${{trigger-git-push-1.review_branch}}",
           "session_id": "${{trigger-git-push-1.session_id}}",
           "title": "${{query-session-context-1.metadata.pr_title ?? null}}",
           "fallback_title": "${{query-session-context-1.metadata.pr_title_prefix ?? trigger-git-push-1.session_id}}: ${{trigger-git-push-1.branch_name}}"
@@ -1228,7 +1228,7 @@
           "message": {
             "type": "string"
           },
-          "origin_branch": {
+          "destination_branch": {
             "type": "string"
           },
           "reason": {
@@ -1246,8 +1246,8 @@
       {
         "config": {
           "model": "gpt-5.4",
-          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-1.origin_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-1.origin_branch}}\ngit merge origin/${{effect-pr-create-1.origin_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-1.origin_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
-          "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-1.origin_branch}}",
+          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-1.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-1.destination_branch}}\ngit merge origin/${{effect-pr-create-1.destination_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-1.destination_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
+          "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-1.destination_branch}}",
           "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
           "target": "${{trigger-git-push-1.session_id}}",
           "vm_user": "agent"
@@ -1259,8 +1259,8 @@
       {
         "config": {
           "model": "gpt-5.4",
-          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-standalone.origin_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-standalone.origin_branch}}\ngit merge origin/${{effect-pr-create-standalone.origin_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-standalone.origin_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
-          "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-standalone.origin_branch}}",
+          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-standalone.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-standalone.destination_branch}}\ngit merge origin/${{effect-pr-create-standalone.destination_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-standalone.destination_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
+          "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-standalone.destination_branch}}",
           "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
           "target": "${{trigger-git-push-1.session_id}}",
           "vm_user": "agent"
@@ -1418,7 +1418,16 @@
       {
         "config": {
           "directory_path": "root/example-industry/app",
-          "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
+          "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP"
+        },
+        "display_name": "Ensure managed Review repository",
+        "id": "effect-git-ensure-managed-repo-2",
+        "type": "effect:git:ensure-managed-repo"
+      },
+      {
+        "config": {
+          "directory_path": "root/example-industry/app",
+          "managed_repo_id": "${{effect-git-ensure-managed-repo-2.managed_repo_id}}",
           "target": "${{effect-vm-create-2.session_id}}",
           "vm_user": "agent"
         },
@@ -1742,10 +1751,9 @@
       },
       {
         "config": {
-          "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
-          "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
-          "notes_ref": "${{trigger-git-push-1.notes_ref}}",
-          "remote_name": "${{effect-git-promote-agent-branch-1.remote_name}}"
+          "commit_sha": "${{trigger-git-push-1.commit_hash}}",
+          "managed_repo_id": "${{trigger-git-push-1.managed_repo_id}}",
+          "notes_ref": "${{trigger-git-push-1.notes_ref}}"
         },
         "display_name": "Git PR note",
         "id": "query-git-pr-note-1",
@@ -1753,10 +1761,9 @@
       },
       {
         "config": {
-          "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
-          "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
-          "notes_ref": "${{trigger-git-push-1.notes_ref}}",
-          "remote_name": "${{effect-git-promote-agent-branch-1.remote_name}}"
+          "commit_sha": "${{trigger-git-push-1.commit_hash}}",
+          "managed_repo_id": "${{trigger-git-push-1.managed_repo_id}}",
+          "notes_ref": "${{trigger-git-push-1.notes_ref}}"
         },
         "display_name": "Standalone Git PR note",
         "id": "query-git-pr-note-standalone",

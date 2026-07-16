@@ -1,5 +1,259 @@
 # Changelog
 
+## 2026-07-14 - Scoped Release And Relay Integrity Fixes
+
+- Failed closed when directory-scoped managed-Git credential configuration cannot be resolved,
+  revalidated reviewer/profile scope on release-gate retry, and reset and cleaned replayed release
+  verifier checkouts before executing frozen commands.
+- Preserved exact top-level local OpenAI tool calls ahead of namespace inference and classified SSH
+  and container execution timeouts as timed-out release verification runs.
+- Preserved upgrades from ADO worker configurations containing retired automatic-PR settings and
+  made the managed-Git operation timeout configurable through host and directory provider config.
+
+## 2026-07-13 - Managed PR And Immutable Recovery Hardening
+
+- Kept consultation snapshot fetches inside the scoped read-credential lifecycle and rejected
+  sibling directory overrides across generic and Team managed-Git publication effects.
+- Restored merge-required PR preflight results, PR map/session feedback bindings, Azure work-item
+  links, browser URLs, bounded descriptions, and metadata refresh when reusing pull requests.
+- Preserved explicit standalone PR destination branches, aligned conflict bindings with the
+  `destination_branch` output contract, and based verification retries on frozen release commands.
+- Validated default-branch overrides before persisting refreshed repository metadata so failed
+  registrations cannot poison later managed-Git refreshes.
+- Froze release-review criteria when each gate is issued and routed consultation setup failures
+  through snapshot cleanup so failed requests cannot bypass gates or retain pins indefinitely.
+- Rejected unsupported PR providers and missing tracking sessions before pushing branches or
+  creating provider pull requests.
+
+## 2026-07-13 - Illustrated Evander And Team Technical Manual
+
+- Replaced the former operator-manual draft set with one 30-chapter canonical source covering
+  core Evander and the Team Add-on from first principles through architecture, operations,
+  troubleshooting, extension, glossary, and a generated linked subject index.
+- Added source-controlled Mermaid diagrams and deterministic sanitized dark-mode screenshots,
+  with one repeatable build that publishes matching Markdown, self-contained HTML, PDF, and DOCX
+  editions plus a source/output provenance record.
+- Added publication-integrity checks tied to the implemented service, firewall, Admin navigation,
+  Team navigation, current CLI, screenshot, and diagram inventories, and corrected stale trigger,
+  Team role, Agent Mail, chat-tool, and wake-eligibility documentation found during source review.
+
+## 2026-07-13 - Documentation Accuracy And Drift Checks
+
+- Refreshed operator, architecture, backend, add-on, Admin Web, and user-manual documentation
+  against the current implementation.
+- Classified historical design material and managed upstream documentation so readers can
+  distinguish current references from retained planning records.
+- Added automated local-link, anchor, source-inventory, navigation, workflow-gate, and manual
+  synchronization checks to prevent future documentation drift.
+
+## 2026-07-13 - Scoped Git And Release Gate Hardening
+
+- Reauthorized managed-repository overrides against the repository owner and preserved the owning
+  directory through Team project Git operations, including child-scoped worker clones.
+- Executed release verification and review gates from the frozen candidate manifest, supported
+  verification-only policies, and kept retries blocked while another current review still blocks.
+- Resolved consultation credentials from the worker directory and made incomplete failed cleanup
+  retryable so leaked workers cannot permanently consume consultation capacity.
+- Treated verifier deletion results that report failure as infrastructure failures instead of
+  advancing a release while disposable resources remain allocated.
+
+## 2026-07-13 - Team Release Gate Retry Semantics
+
+- Classified release verification outcomes as candidate, infrastructure, or
+  timeout failures using container exit metadata, making nonzero build/test
+  exits terminal while leaving only transient execution failures retryable.
+- Added immutable verification and release-review attempt lineage, typed gate
+  failures, frozen candidate evidence manifests, and rejection of unchanged
+  content after a candidate or release-review failure.
+- Added an audited `team_retry_release_gate` MCP command plus Admin API and UI
+  actions for eligible retries against the unchanged pinned candidate SHA,
+  persisting the reason and requesting agent/operator identity on the successor.
+- Migrated legacy unpinned nonterminal releases to rejected state and persisted
+  review lineage and gate-failure details in the Team SQLite store.
+
+## 2026-07-13 - Request-Scoped Codebase Consultations
+
+- Added generic MCP tools for bounded codebase consultation, polling, cancellation, and structured
+  result submission without requiring a persistent junior agent or Team Add-on identity.
+- Added named container-only model profiles, per-directory/profile admission control, bounded
+  synchronous waits, durable SQLite state, one-time worker-bound result tokens, and retention.
+- Pinned every request to an exact directory-scoped managed-Git commit under a temporary bound ref,
+  cloned and fetched it with read-only Git access, detached the workspace at that commit, and
+  validated cited paths and line ranges before accepting results.
+- Added a hidden durable workflow for request-time agent/workspace materialization and guaranteed
+  cleanup after completion, failure, timeout, or cancellation, releasing queue capacity only after
+  cleanup.
+
+## 2026-07-13 - Managed Bare Repositories And Ephemeral Worktrees
+
+- Replaced issue-specific mirror/persistent-checkout routing with one directory-scoped managed
+  bare repository per canonical upstream, addressed everywhere by deterministic `managed_repo_id`.
+- Added the locked, atomically replaced managed-repository registry and privileged `git-repos`
+  CLI/Admin lifecycle for registration, refresh, inspection, maintenance, guarded deletion, and
+  explicit dry-run/apply/finalize migration.
+- Made canonical refresh transactional while preserving quarantined agent, review, Team, notes,
+  and operation refs, and enforced disjoint guest/host/upstream namespaces.
+- Pinned exact agent commits for promotion, note lookup, Team consolidation, upstream publication,
+  and PR creation; added compare-and-swap targets and explicit destination leases so stale events
+  cannot publish or regress a newer branch.
+- Moved merge and PR preparation into unique detached operation worktrees with hardened checkout
+  settings, guaranteed cleanup, stale-process reconciliation, and no temporary paths or credentials
+  in workflow output or persistent state.
+- Converted VM, container-worker, workflow-pack, Team project/release, Admin, and UI contracts from
+  checkout/bare paths to managed IDs; issue and session deletion now removes bindings and SSH
+  authorization without deleting shared repositories or unpublished refs.
+- Retired the path-based mirror/promotion helper flow as an operator interface and documented the
+  queue-driven managed repository workflow, breaking migration, smoke acceptance, explicit
+  retention, and manifest-scoped finalization.
+- Hardened migration restartability with manual-worker lock detection, credential-safe diagnostics,
+  strict read-only rollback artifacts, exact orphan-key bindings, and defensive SSH-key deletion
+  checks.
+- Revoked container-worker host and guest Git keys when a clone fails after provisioning, while
+  retaining the authorization binding whenever complete revocation cannot be proven.
+
+## 2026-07-10 - Team Release Evidence And Scope Gates
+
+- Required every mandatory review-profile criterion to pass, carried rejected
+  findings across rework deliverables, and limited finding resolution to the
+  matching review profile or legacy reviewer role.
+- Required audited lead, top-level manager, or authenticated-operator waivers
+  for incomplete verification while making failed verification unwaivable.
+- Pinned reviewed and feature commits, recorded reviewed change manifests, and
+  hard-blocked moved source tips or release paths outside the reviewed scope.
+- Added candidate-commit verification and release-review gates so canonical
+  publication occurs only after the configured checks approve the same commit.
+- Prepared deterministic task-specific branches and Git worktrees for persistent
+  sessions, preventing unrelated task commits from leaking through one shared checkout.
+- Ran release checks in a disposable container-worker session, added exact-SHA
+  canonical push preflight, and failed closed for missing policies and legacy
+  nonterminal unpinned releases.
+- Exposed criteria, carried findings, waiver audit details, and scope diagnostics
+  in the Team API and Delivery UI.
+
+## 2026-07-10 - Team Agent Mail Archive
+
+- Added a read-only Agent Mail view for browsing current and historical Team inbox
+  correspondence with sender, recipient, direction, state, type, full message payload,
+  search, and pagination filters.
+- Added a paginated Team inbox-history API so handled correspondence remains available
+  beyond the bounded state payload used by the operational views.
+- Rendered historical `body` and failure `error` fields in the main Mail reader, with a
+  generic formatted-payload fallback for less common system notice shapes.
+
+## 2026-07-10 - Team Wake Feedback And Terminal Task Repair
+
+- Included concise failed-action feedback in the wake prompt and marked it delivered only
+  after the agent resume succeeds, preventing acknowledged failures from repeatedly waking
+  an otherwise idle agent.
+- Treated rejected tasks as terminal in both Team wake paths, matching task validation,
+  project status, and the Team UI.
+
+## 2026-07-10 - Team Chat Permission Handoff
+
+- Kept reply-only Team Chat messages queued while their target session has an
+  active agent prompt, preventing a queued chat dispatch from revoking the
+  still-running implementation wake's Team MCP permissions.
+- Also excluded busy sessions from regular Team wake leasing, preventing a
+  redundant queued wake from delaying the pending chat handoff.
+
+## 2026-07-10 - Team Chat Stale Revision Tolerance
+
+- Let operators open Team chats and queue chat messages after unrelated Team state changes;
+  chat still enforces the current agent status, conversation access, and privilege policy.
+- Prevented queued Team chat dispatches from waking paused or stood-down agents, including
+  messages queued before the wake blocker was applied.
+
+## 2026-07-10 - Container Git Write Alias Repair
+
+- Configured container-worker Git write keys under a dedicated SSH host alias
+  and routed the `git push-agent` remote through it, leaving the clone/fetch
+  alias bound to its read-only key instead of relying on duplicate OpenSSH
+  host entries.
+
+## 2026-07-10 - GPT-5.6 Pricing Catalog
+
+- Added standard and batch token pricing for GPT-5.6 Sol, Terra, Luna, and the
+  GPT-5.6 alias, effective from the start of the release day so existing usage
+  events can be estimated retroactively.
+- Accounted for GPT-5.6 cache-write tokens at their separate 1.25x input rate
+  without also charging those tokens as ordinary input.
+- Moved the active pricing catalog into operator-owned runtime state, with
+  `init-state` seeding new runtimes from a tracked example without overwriting
+  existing operator edits and migrating customized legacy catalogs.
+
+## 2026-07-10 - Codex Unsupported Tool Failure Classification
+
+- Added local OpenAI Responses compatibility for Codex MCP namespaces: namespace
+  tools are exposed to local models as ordinary functions, then returned function
+  calls are restored to Codex's namespace/name shape before routing.
+- Normalized common local-model MCP separators in streamed and non-streamed tool
+  calls, and restored a uniquely identifiable MCP namespace when a local model
+  omitted it entirely, while leaving hosted OpenAI and Anthropic requests unchanged.
+- Classified completed Codex runs with unsupported router calls as tool-interface
+  failures before context-limit inference, preventing reduced-context retries from
+  repeating an incompatible MCP/tool invocation loop.
+- Preserved the rejected tool names in sanitized worker outcome metadata and
+  surfaced the specific failure in reconstructed execution logs.
+- Refreshed and persisted terminal container logs before classifying Codex outcomes
+  so unsupported router calls cannot be mistaken for context-limit failures.
+- Flushed buffered local-model SSE data when a tolerated upstream transport error
+  ends the stream without a trailing newline.
+
+## 2026-07-10 - Team Release And Wake Review Hardening
+
+- Preserved trusted canonical origins and used detached temporary source refs
+  when publishing bare-backed release branches.
+- Made release recovery promotion-specific, synchronized recovered targets back
+  to the bare mirror after SHA verification, and retained the current remaining
+  failure when several promotions are blocked.
+- Retired only blocked duplicate releases, handled their obsolete failure inbox
+  items, ignored late publication callbacks for rejected releases, and preserved
+  canonical push failure reason codes.
+- Abandoned partial Git work contexts before retrying an exhausted wake-state
+  conflict so a replacement dispatch cannot expose stale active contexts.
+
+## 2026-07-10 - Team Wake Conflict Recovery
+
+- Refreshed Team state after external repository preparation and retried
+  idempotent Git work-context commits when concurrent state writes advance the
+  revision during an immediate agent wake.
+- Rescheduled exhausted transient wake conflicts without counting them as agent
+  no-progress failures, while exposing conflict and retry diagnostics.
+- Completed wake outbox rows after MCP wake events are durably scheduled so the
+  immediate path does not leave orphan pending records for the periodic
+  publisher.
+
+## 2026-07-09 - Team Release Promotion Hardening
+
+- Reused active Team release packages for duplicate release requests over the
+  same deliverable set, returning the existing package instead of queuing
+  another promotion, and retired older blocked duplicates once a replacement
+  release published successfully.
+- Allowed blocked releases to recover failed prerequisite feature promotions,
+  clear the recovered blocker, and continue into release promotion.
+- Ran Team Git consolidation from a temporary checkout when a bare repository is
+  available, leaving the trusted host checkout untouched by release automation.
+- Pushed isolated release refs to the canonical remote from a temporary checkout
+  of the trusted bare mirror instead of requiring the ref in the host checkout,
+  and carried the configured bare-repository selector into canonical promotion
+  events while recording the actual pushed commit for new remote branches.
+- Added release promotion failure reason codes and outbox attempt metadata to
+  release payloads so blocked releases show whether they are waiting on stale
+  locks, dirty checkouts, missing refs, or merge conflicts, while failed
+  promotions whose task, deliverable, or release is already terminal remain
+  historical instead of current runtime attention.
+- Published debounced immediate-wake events for operator-created Team directives
+  so managers do not wait for the periodic wake sweep to receive urgent work.
+- Flushed Team outbox records after persistent agent dispatch finalization so
+  review, recovery, and promotion workflows start without waiting for the cron.
+
+## 2026-07-09 - Local Container Worker Toolchain Mounts
+
+- Made guided same-host container-worker setup create the local worker
+  toolchain cache directories and mount them read-only into worker containers so
+  generated dotnet, Node, Playwright, browser, and NuGet profile paths resolve
+  at runtime.
+
 ## 2026-07-09 - Team Late Review State Guard
 
 - Reopened accepted deliverables and tasks when a new pending review request is

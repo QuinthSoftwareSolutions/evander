@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from ipaddress import ip_address, ip_network
 from pathlib import Path
+import re
 from typing import Any, Literal
 from urllib.parse import urlsplit
 import unicodedata
@@ -15,6 +16,7 @@ from pydantic import (
     Field,
     IPvAnyNetwork,
     TypeAdapter,
+    ValidationInfo,
     ValidationError,
     field_validator,
     model_validator,
@@ -209,6 +211,32 @@ class AssistantSettingsConfig(BaseModel):
         return _normalize_optional_text(value)
 
 
+class AgentConsultationProfile(BaseModel):
+    """Bounded execution settings for one request-scoped consultation worker."""
+
+    execution_backend: Literal["container_worker_vm"] = "container_worker_vm"
+    agent_provider: str = Field(default="codex", min_length=1)
+    model: str = Field(min_length=1)
+    model_provider_mode: Literal[
+        "openai_public", "azure_openai", "anthropic", "local_openai"
+    ] | None = None
+    container_image: str | None = None
+    timeout_seconds: int = Field(default=180, ge=15, le=3600)
+    max_concurrency: int = Field(default=1, ge=1, le=32)
+
+    @field_validator(
+        "agent_provider", "model", "model_provider_mode", "container_image", mode="before"
+    )
+    @classmethod
+    def normalize_profile_text(cls, value: object, info) -> object:
+        if value is None and info.field_name in {"model_provider_mode", "container_image"}:
+            return None
+        text = str(value or "").strip()
+        if not text and info.field_name in {"agent_provider", "model"}:
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return text or None
+
+
 class InboundPhoneRoute(BaseModel):
     id: str = Field(min_length=1)
     did: str | None = None
@@ -289,6 +317,10 @@ class GatewayConfig(BaseModel):
     container_worker_request_timeout_seconds: float = Field(default=30.0, gt=0)
     container_worker_workspace_persistence: str = Field(default="session", min_length=1)
     container_worker_git_allowed_from: str | None = None
+    managed_git_commit_name: str | None = None
+    managed_git_commit_email: str | None = None
+    managed_git_operation_timeout_seconds: float = Field(default=300.0, gt=0)
+    managed_git_worktree_stale_seconds: float = Field(default=3600.0, ge=0)
     container_worker_guest_openai_base_url: str | None = None
     container_worker_guest_anthropic_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None
@@ -442,6 +474,15 @@ class GatewayConfig(BaseModel):
     agent_prompt_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
     agent_prompt_token_ttl_seconds: int = Field(default=3600, ge=1)
     agent_prompt_queue_max_retries: int = Field(default=3, ge=1)
+    agent_consultation_profiles: dict[str, AgentConsultationProfile] = Field(
+        default_factory=dict
+    )
+    agent_consultation_default_profile: str | None = None
+    agent_consultation_max_wait_seconds: int = Field(default=60, ge=0, le=300)
+    agent_consultation_retention_days: int = Field(default=30, ge=1, le=3650)
+    agent_consultation_token_secret_env: str = Field(
+        default="AGENT_PROMPT_TOKEN_SECRET", min_length=1
+    )
     agent_context_retry_enabled: bool = True
     agent_context_retry_max_attempts: int = Field(default=1, ge=0)
     agent_context_retry_target_chars: int = Field(default=16_000, ge=4_000)
@@ -754,6 +795,50 @@ class GatewayConfig(BaseModel):
     def normalize_container_worker_images_field(cls, value: object) -> dict[str, str]:
         return normalize_container_worker_images(value)
 
+    @field_validator("agent_consultation_profiles", mode="before")
+    @classmethod
+    def normalize_agent_consultation_profiles(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("agent_consultation_profiles must be a JSON object")
+        normalized: dict[str, object] = {}
+        for raw_name, profile in value.items():
+            name = str(raw_name or "").strip()
+            if not name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
+                raise ValueError(
+                    "agent consultation profile names must use letters, numbers, '.', '_', or '-'"
+                )
+            normalized[name] = profile
+        return normalized
+
+    @field_validator(
+        "agent_consultation_default_profile",
+        "agent_consultation_token_secret_env",
+        mode="before",
+    )
+    @classmethod
+    def normalize_agent_consultation_text(cls, value: object, info) -> object:
+        if value is None and info.field_name == "agent_consultation_default_profile":
+            return None
+        text = str(value or "").strip()
+        if not text and info.field_name == "agent_consultation_token_secret_env":
+            raise ValueError("agent_consultation_token_secret_env must be non-empty")
+        return text or None
+
+    @model_validator(mode="after")
+    def validate_agent_consultation_default_profile(
+        self, info: ValidationInfo
+    ) -> "GatewayConfig":
+        if (info.context or {}).get("validation_scope") == "overlay":
+            return self
+        default_profile = self.agent_consultation_default_profile
+        if default_profile and default_profile not in self.agent_consultation_profiles:
+            raise ValueError(
+                "agent_consultation_default_profile must name an agent_consultation_profiles entry"
+            )
+        return self
+
     @field_validator(
         "retell_from_number",
         "retell_default_agent_id",
@@ -775,9 +860,14 @@ class GatewayConfig(BaseModel):
         text = str(value).strip()
         return text or None
 
-    @field_validator("container_worker_git_allowed_from", mode="before")
+    @field_validator(
+        "container_worker_git_allowed_from",
+        "managed_git_commit_name",
+        "managed_git_commit_email",
+        mode="before",
+    )
     @classmethod
-    def normalize_container_worker_git_allowed_from(cls, value: object) -> object:
+    def normalize_managed_git_optional_text(cls, value: object) -> object:
         if value is None:
             return None
         text = str(value).strip()

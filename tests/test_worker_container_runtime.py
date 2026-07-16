@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -65,6 +67,44 @@ def test_docker_runtime_defaults_to_none_network() -> None:
 
     assert runtime.docker_network == "none"
     assert runtime.sandbox_profile.network_mode == "none"
+
+
+def test_docker_runtime_exposes_terminal_exit_classification_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    runtime = DockerContainerRuntime()
+
+    def _inspect(*args, **kwargs):
+        del args, kwargs
+        return subprocess.CompletedProcess(
+            args=["docker", "inspect"],
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "State": {
+                            "Status": "exited",
+                            "Running": False,
+                            "ExitCode": 2,
+                            "OOMKilled": False,
+                            "Error": "",
+                        }
+                    }
+                ]
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _inspect)
+
+    inspected = runtime.inspect_job(_record(paths))
+
+    assert inspected["status"] == "failed"
+    assert inspected["exit_code"] == 2
+    assert inspected["oom_killed"] is False
+    assert inspected["runtime_error"] is None
 
 
 def test_docker_run_args_use_restricted_container_shape_and_persistent_mounts(

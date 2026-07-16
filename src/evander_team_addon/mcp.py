@@ -79,6 +79,7 @@ TEAM_PUBLISH_REVIEW_BRANCH_TOOL = "team_publish_review_branch"
 TEAM_UPDATE_FEATURE_BRANCH_TOOL = "team_update_feature_branch"
 TEAM_REQUEST_RELEASE_TOOL = "team_request_release"
 TEAM_RECOVER_RELEASE_TOOL = "team_recover_release"
+TEAM_RETRY_RELEASE_GATE_TOOL = "team_retry_release_gate"
 TEAM_REQUEST_EPHEMERAL_AGENT_TOOL = "team_request_ephemeral_agent"
 TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL = "team_request_ephemeral_agents"
 TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL = "team_accept_ephemeral_result"
@@ -132,6 +133,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
@@ -190,6 +192,7 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
@@ -225,6 +228,7 @@ MCP_TOOL_NAMES = (
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
@@ -1308,6 +1312,7 @@ def _register_slice7_tools(
         request_id: str,
         findings: list[str] | None = None,
         criteria: list[dict[str, Any]] | None = None,
+        finding_resolutions: list[dict[str, Any]] | None = None,
         override_routing_gap_reason: str | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
@@ -1325,6 +1330,7 @@ def _register_slice7_tools(
                 state=state,
                 findings=findings,
                 criteria=criteria,
+                finding_resolutions=finding_resolutions,
                 override_routing_gap_reason=override_routing_gap_reason,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
@@ -1340,7 +1346,10 @@ def _register_slice7_tools(
         name=TEAM_DECIDE_REVIEW_TOOL,
         description=(
             "Record the assigned reviewer's accepted, rejected, or blocked "
-            "decision. Requires review_request_id, state, and request_id."
+            "decision. Decisions are immutable. For release reviews, rejected means "
+            "the candidate failed review; blocked is reserved for a non-candidate "
+            "process or evidence-access blocker and requires a finding. Requires "
+            "review_request_id, state, and request_id."
         ),
     )
 
@@ -1440,6 +1449,7 @@ def _register_slice8_tools(
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         summary: str | None = None,
+        verification_waivers: list[dict[str, Any]] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -1458,6 +1468,7 @@ def _register_slice8_tools(
                 release_branch=release_branch,
                 canonical_branch=canonical_branch,
                 summary=summary,
+                verification_waivers=verification_waivers,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -1512,8 +1523,50 @@ def _register_slice8_tools(
         name=TEAM_RECOVER_RELEASE_TOOL,
         description=(
             "Record asynchronous Git release-recovery intent for a blocked "
-            "release package. Requires release_package_id, agent_branch, "
+            "release package's failed feature or release promotion. Requires "
+            "release_package_id, agent_branch, "
             "commit_sha, and request_id."
+        ),
+    )
+
+    def team_retry_release_gate(
+        release_package_id: str,
+        gate_kind: str,
+        gate_id: str,
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_RETRY_RELEASE_GATE_TOOL,
+        )
+        try:
+            _state, result = command_service.retry_release_gate_command(
+                session_id=caller.session_id,
+                release_package_id=release_package_id,
+                gate_kind=gate_kind,
+                gate_id=gate_id,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_retry_release_gate,
+        name=TEAM_RETRY_RELEASE_GATE_TOOL,
+        description=(
+            "Retry the current gate for a blocked release against its unchanged pinned "
+            "candidate. Only infrastructure-failed or timed-out verification and "
+            "process-blocked reviews are eligible. Requires an audited reason."
         ),
     )
 
@@ -2395,6 +2448,17 @@ def _team_command_mcp_result(
         else:
             if published_event_ids:
                 payload["published_event_ids"] = published_event_ids
+                try:
+                    completed_outbox_ids = _complete_published_wake_outbox_records(
+                        context,
+                        payload=payload,
+                        wake_request_events=wake_request_events,
+                    )
+                except Exception as exc:
+                    payload["outbox_ack_error"] = str(exc)
+                else:
+                    if completed_outbox_ids:
+                        payload["completed_outbox_record_ids"] = completed_outbox_ids
     payload.setdefault("agent_id", caller.agent_id)
     payload.setdefault("governance_group_id", None)
     payload.setdefault("assignment_id", None)
@@ -2413,6 +2477,35 @@ def _wake_request_events(events: object) -> list[Mapping[str, Any]]:
         for event in events
         if isinstance(event, Mapping) and event.get("event_type") == AGENT_WAKE_REQUESTED_EVENT_TYPE
     ]
+
+
+def _complete_published_wake_outbox_records(
+    context: AddonContext,
+    *,
+    payload: Mapping[str, Any],
+    wake_request_events: list[Mapping[str, Any]],
+) -> list[str]:
+    raw_ids = payload.get("outbox_record_ids")
+    if not isinstance(raw_ids, list):
+        return []
+    outbox_ids = {str(record_id) for record_id in raw_ids if str(record_id).strip()}
+    idempotency_keys = {
+        str(event["idempotency_key"])
+        for event in wake_request_events
+        if event.get("idempotency_key") is not None
+    }
+    if not outbox_ids or not idempotency_keys:
+        return []
+
+    repo = TeamStateRepository(context.runtime_dir)
+    completed_ids: list[str] = []
+    for record in repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE):
+        if record.id not in outbox_ids or record.idempotency_key not in idempotency_keys:
+            continue
+        if record.status.value != "completed":
+            repo.complete_outbox_record(record_id=record.id)
+        completed_ids.append(record.id)
+    return completed_ids
 
 
 def _publish_team_events(context: AddonContext, events: object) -> list[str]:

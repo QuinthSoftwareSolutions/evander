@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -210,36 +211,37 @@ def test_git_pr_note_query_provider_returns_note_body(tmp_path: Path) -> None:
         id="query-pr-note",
         display_name="PR note",
         type="query:git:pr-note",
-        host_repo_path="/repo",
-        local_branch="review/session-1/topic",
+        managed_repo_id="mr_0123456789abcdefabcd",
+        commit_sha="a" * 40,
+        notes_ref="refs/notes/agent-pr/session-1",
     )
     admin_service = _AdminServiceStub(
         vms=[],
         pr_note_result={
             "body": "Agent note body",
             "has_note": True,
-            "local_branch": "review/session-1/topic",
-            "host_repo_path": "/repo",
-            "notes_ref": "refs/notes/agent-pr",
-            "local_notes_ref": "refs/notes/agent-pr-cache/repo",
-            "remote_name": "agent-dropbox",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "notes_ref": "refs/notes/agent-pr/session-1",
             "commit_sha": "a" * 40,
         },
         pr_note_calls=[],
+    )
+    admin_service.managed_git_admin = SimpleNamespace(  # type: ignore[attr-defined]
+        read_pr_note=admin_service.git_pr_note_query
     )
 
     factory = QueryProviderFactory(
         provider_config_resolver=_ResolverStub(), admin_service=admin_service
     )
     provider = factory.build(query)
-    output = provider.execute(resolved_config={"remote_name": " agent-dropbox "})
+    output = provider.execute()
 
     assert admin_service.pr_note_calls == [
         {
-            "host_repo_path": "/repo",
-            "local_branch": "review/session-1/topic",
-            "remote_name": "agent-dropbox",
-            "notes_ref": None,
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "commit_sha": "a" * 40,
+            "notes_ref": "refs/notes/agent-pr/session-1",
+            "directory_path": "root",
         }
     ]
     assert output["has_note"] is True

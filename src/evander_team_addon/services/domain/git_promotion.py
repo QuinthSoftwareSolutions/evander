@@ -12,10 +12,10 @@ from ...models import (
     AgentInboxItem,
     Deliverable,
     DeliverableGitRefs,
+    DeliverableReviewManifest,
     EphemeralAssignmentState,
     GitPromotionRecord,
     PersistentAgent,
-    Project,
     ReleasePackage,
     TeamInboxItemType,
     TeamInboxPriority,
@@ -38,8 +38,8 @@ from .common import (
 )
 from .git_common import (
     GIT_PROMOTION_EVENT_TYPE,
-    _bare_repo_fields,
     _emit_git_promotion_event,
+    _managed_repo_fields,
     _normalize_agent_branch_ref,
     _project_git_or_error,
 )
@@ -135,6 +135,12 @@ def _apply_ephemeral_git_review_promotion(
             f"ephemeral assignment {assignment_id} has invalid agent_branch: {exc}"
         )
         return None
+    expected_commit_sha = _optional_text(assignment.commit_sha)
+    if expected_commit_sha is None:
+        result["errors"].append(
+            f"ephemeral assignment {assignment_id} requires commit_sha for promotion"
+        )
+        return None
     target_branch = review_branch(actor.team_id, assignment_id)
     promotion_id = f"promotion-{uuid4().hex}"
     state.git_promotions[promotion_id] = GitPromotionRecord(
@@ -146,17 +152,18 @@ def _apply_ephemeral_git_review_promotion(
         source_branch=source_branch,
         target_branch=target_branch,
         promotion_kind="review",
+        commit_sha=expected_commit_sha,
     )
     payload: dict[str, Any] = {
         "promotion_id": promotion_id,
         "promotion_kind": "review",
         "project_id": project.id,
-        "host_repo_path": git.host_repo_path,
+        **_managed_repo_fields(git),
         "source_branch": source_branch,
+        "expected_commit_sha": expected_commit_sha,
         "target_branch": target_branch,
         "assignment_id": assignment_id,
     }
-    payload.update(_bare_repo_fields(git))
     if deliverable_id is not None:
         payload["deliverable_id"] = deliverable_id
     _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
@@ -213,11 +220,14 @@ def _apply_persistent_git_review_promotion(
         except ValueError as exc:
             result["errors"].append(f"git review promotion has invalid source_branch: {exc}")
             return None
-    elif commit_sha is not None:
-        source_branch = _commit_source_branch(commit_sha)
     else:
         result["errors"].append(
-            f"git review promotion for deliverable {deliverable_id} requires source_branch or commit_sha"
+            f"git review promotion for deliverable {deliverable_id} requires source_branch"
+        )
+        return None
+    if commit_sha is None:
+        result["errors"].append(
+            f"git review promotion for deliverable {deliverable_id} requires commit_sha"
         )
         return None
 
@@ -238,12 +248,12 @@ def _apply_persistent_git_review_promotion(
         "promotion_id": promotion_id,
         "promotion_kind": "review",
         "project_id": project.id,
-        "host_repo_path": git.host_repo_path,
+        **_managed_repo_fields(git),
         "source_branch": source_branch,
+        "expected_commit_sha": commit_sha,
         "target_branch": target_branch,
         "deliverable_id": deliverable_id,
     }
-    payload.update(_bare_repo_fields(git))
     if source_branch_value is not None:
         payload["source_branch"] = source_branch_value
     if commit_sha is not None:
@@ -294,6 +304,33 @@ def _apply_git_feature_update(
     except ValueError as exc:
         result["errors"].append(f"git feature update has invalid branch name: {exc}")
         return None
+    expected_source_commits: dict[str, str] = {}
+    from .release_packages import _reviewed_commit_for_release
+
+    for source_branch in source_branches:
+        source_aliases = _branch_aliases(source_branch)
+        matching = [
+            deliverable
+            for deliverable_id in task.deliverable_ids
+            if (deliverable := state.deliverables.get(deliverable_id)) is not None
+            and deliverable.state == TeamRecordState.ACCEPTED
+            and deliverable.superseded_by_deliverable_id is None
+            and source_aliases & _deliverable_git_branch_aliases(deliverable)
+        ]
+        if len(matching) != 1:
+            result["errors"].append(
+                f"git feature update source {source_branch} must match exactly one "
+                "accepted, current deliverable"
+            )
+            return None
+        reviewed_commit_sha, review_error = _reviewed_commit_for_release(
+            state,
+            matching[0],
+        )
+        if review_error is not None:
+            result["errors"].append(review_error)
+            return None
+        expected_source_commits[source_branch] = reviewed_commit_sha
     promotion_id = f"promotion-{uuid4().hex}"
     state.git_promotions[promotion_id] = GitPromotionRecord(
         id=promotion_id,
@@ -308,9 +345,10 @@ def _apply_git_feature_update(
         "promotion_id": promotion_id,
         "promotion_kind": "feature",
         "project_id": project.id,
-        "host_repo_path": git.host_repo_path,
+        **_managed_repo_fields(git),
         "base_branch": git.base_branch,
         "source_branches": source_branches,
+        "expected_source_commits": expected_source_commits,
         "target_branch": target_branch,
         "task_id": task_id,
     }
@@ -419,9 +457,17 @@ def _attach_feature_promotion_to_accepted_deliverables(
     now = utc_now()
     for deliverable in matching_deliverables:
         refs = deliverable.git_refs
+        raw_manifests = promotion.outputs.get("source_manifests")
+        source_manifests = raw_manifests if isinstance(raw_manifests, dict) else {}
+        source_branch = refs.review_branch or refs.agent_branch
+        raw_manifest = source_manifests.get(source_branch) if source_branch else None
+        if isinstance(raw_manifest, dict):
+            deliverable.review_manifest = DeliverableReviewManifest.model_validate(
+                raw_manifest
+            )
         refs.feature_branch = promotion.target_branch
         if commit_sha is not None:
-            refs.commit_sha = commit_sha
+            refs.feature_commit_sha = commit_sha
         refs.promotion_record_ids = _append_unique(refs.promotion_record_ids, promotion.id)
         task = state.tasks.get(deliverable.task_id)
         if task is not None:
@@ -482,12 +528,16 @@ def _attach_promotion_success(
             refs.review_branch = promotion.target_branch
             if not promotion.source_branch.startswith("commit/"):
                 refs.agent_branch = refs.agent_branch or promotion.source_branch
+            if commit_sha is not None:
+                refs.reviewed_commit_sha = refs.reviewed_commit_sha or commit_sha
         elif kind == "feature":
             refs.feature_branch = promotion.target_branch
+            if commit_sha is not None:
+                refs.feature_commit_sha = commit_sha
         elif kind == "release":
             refs.release_branch = promotion.target_branch
-        if commit_sha is not None:
-            refs.commit_sha = commit_sha
+            if commit_sha is not None:
+                refs.release_commit_sha = commit_sha
         refs.promotion_record_ids = _append_unique(refs.promotion_record_ids, promotion.id)
     elif (
         kind == "feature"
@@ -528,16 +578,43 @@ def _attach_promotion_success(
         else None
     )
     if release is not None:
+        if release.state == TeamRecordState.REJECTED:
+            return
+        _clear_recovered_release_block(state, release=release, promotion=promotion)
         release.git_promotion_record_ids = _append_unique(
             release.git_promotion_record_ids,
             promotion.id,
         )
+        if release.state == TeamRecordState.BLOCKED:
+            return
         if kind == "release":
             release.release_branch = release.release_branch or promotion.target_branch
-            _queue_canonical_push_after_release_success(
+            if release.policy_version >= 2 and release.scope_validation is not None:
+                release.scope_validation.state = "passed"
+                release.scope_validation.release_commit_sha = commit_sha
+                release.scope_validation.validated_at = utc_now()
+            if commit_sha is None:
+                release.state = TeamRecordState.BLOCKED
+                release.error = "release consolidation did not return a candidate commit SHA"
+                result["error"] = release.error
+                return
+            raw_base_commit = promotion.outputs.get("base_commit_sha")
+            if isinstance(raw_base_commit, str) and raw_base_commit.strip():
+                release.base_commit_sha = raw_base_commit.strip()
+            raw_tree_hash = promotion.outputs.get("tree_hash")
+            candidate_tree_hash = (
+                raw_tree_hash.strip()
+                if isinstance(raw_tree_hash, str) and raw_tree_hash.strip()
+                else None
+            )
+            from .release_gates import begin_release_gates
+
+            begin_release_gates(
                 state,
                 release=release,
                 release_promotion=promotion,
+                candidate_commit_sha=commit_sha,
+                candidate_tree_hash=candidate_tree_hash,
                 result=result,
             )
         elif kind == "feature":
@@ -550,6 +627,42 @@ def _attach_promotion_success(
         elif kind == "canonical_push":
             release.canonical_branch = release.canonical_branch or promotion.target_branch
 
+
+def _clear_recovered_release_block(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    promotion: GitPromotionRecord,
+) -> None:
+    if release.state != TeamRecordState.BLOCKED:
+        return
+    related_promotion_ids = set(release.git_promotion_record_ids)
+    remaining_failed_promotions = [
+        candidate
+        for candidate in state.git_promotions.values()
+        if candidate.id != promotion.id
+        and candidate.state == "failed"
+        and (
+            candidate.id in related_promotion_ids
+            or candidate.release_package_id == release.id
+        )
+    ]
+    if remaining_failed_promotions:
+        remaining_failed_promotions.sort(
+            key=lambda candidate: (
+                candidate.updated_at,
+                candidate.created_at,
+                candidate.id,
+            ),
+            reverse=True,
+        )
+        release.error = remaining_failed_promotions[0].error
+        release.updated_at = utc_now()
+        return
+    release.state = TeamRecordState.PENDING
+    release.error = None
+    release.updated_at = utc_now()
+
 def _queue_canonical_push_after_release_success(
     state: TeamState,
     *,
@@ -557,6 +670,31 @@ def _queue_canonical_push_after_release_success(
     release_promotion: GitPromotionRecord,
     result: dict[str, Any],
 ) -> None:
+    approved_commit_sha = release.approved_commit_sha
+    if approved_commit_sha is None or approved_commit_sha != release.candidate_commit_sha:
+        release.state = TeamRecordState.BLOCKED
+        release.error = "release candidate has not passed all configured approval gates"
+        result["error"] = release.error
+        return
+    if release_promotion.commit_sha != approved_commit_sha:
+        release.state = TeamRecordState.BLOCKED
+        release.error = (
+            f"release promotion commit {release_promotion.commit_sha} does not match "
+            f"approved candidate {approved_commit_sha}"
+        )
+        result["error"] = release.error
+        return
+    if (
+        release.policy_version >= 2
+        and (
+            release.scope_validation is None
+            or release.scope_validation.state != "passed"
+        )
+    ):
+        release.state = TeamRecordState.BLOCKED
+        release.error = "release scope validation did not pass"
+        result["error"] = release.error
+        return
     project = state.projects.get(release_promotion.project_id)
     git = project.git if project is not None else None
     if project is None or git is None:
@@ -588,6 +726,12 @@ def _queue_canonical_push_after_release_success(
             source_branch=source_branch,
             target_branch=target_branch,
             promotion_kind="canonical_push",
+            sources=[
+                {
+                    "source_branch": source_branch,
+                    "expected_commit_sha": approved_commit_sha,
+                }
+            ],
         )
         state.git_promotions[existing.id] = existing
         release.git_promotion_record_ids = _append_unique(
@@ -604,15 +748,13 @@ def _queue_canonical_push_after_release_success(
         "promotion_kind": "canonical_push",
         "project_id": project.id,
         "release_package_id": release.id,
-        "host_repo_path": git.host_repo_path,
+        "managed_repo_id": git.managed_repo_id,
         "base_branch": git.base_branch,
         "source_branch": existing.source_branch,
+        "expected_commit_sha": approved_commit_sha,
         "target_branch": existing.target_branch,
     }
-    if git.canonical_origin_url is not None:
-        payload["canonical_origin_url"] = git.canonical_origin_url
-    if git.provider is not None:
-        payload["provider"] = git.provider
+    payload.update(_managed_repo_fields(git))
     _emit_git_promotion_event(result, promotion_id=existing.id, payload=payload)
     result["git_promotion_event_ids"].append(existing.id)
 
@@ -639,6 +781,21 @@ def _attach_promotion_failure(
     if release is not None:
         release.state = TeamRecordState.BLOCKED
         release.error = promotion.error
+        if (
+            release.policy_version >= 2
+            and release.scope_validation is not None
+            and promotion.outputs.get("error_code") == "scope_mismatch"
+        ):
+            release.scope_validation.state = "blocked"
+            release.scope_validation.unexpected_commit_shas = _string_list(
+                promotion.outputs.get("unexpected_commit_shas"),
+                "unexpected_commit_shas",
+            )
+            release.scope_validation.unexpected_paths = _string_list(
+                promotion.outputs.get("unexpected_paths"),
+                "unexpected_paths",
+            )
+            release.scope_validation.validated_at = utc_now()
     recipient_id = _promotion_failure_recipient(state, promotion)
     if recipient_id is not None and recipient_id in state.agents:
         inbox_id = f"inbox-{uuid4().hex}"
@@ -681,7 +838,7 @@ def _promotion_failure_recipient(
 __all__ = [
     "GIT_PROMOTION_EVENT_TYPE",
     "_project_git_or_error",
-    "_bare_repo_fields",
+    "_managed_repo_fields",
     "_emit_git_promotion_event",
     "_normalize_agent_branch_ref",
     "_apply_git_review_promotion",

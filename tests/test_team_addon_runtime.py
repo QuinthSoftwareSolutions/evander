@@ -42,11 +42,13 @@ from evander_team_addon.models import (
     EphemeralAgentPolicy,
     EphemeralAssignment,
     GitWorkContext,
+    GitWorkContextState,
     GitPromotionRecord,
     PersistentAgent,
     Project,
     ProjectGitConfig,
     ProjectGoal,
+    ReleaseGateFailure,
     ReleasePackage,
     ReviewRequest,
     Team,
@@ -63,6 +65,7 @@ from evander_team_addon.models import (
     TeamRole,
     TeamState,
     TeamTaskState,
+    _runtime_agent_payload,
 )
 from evander_team_addon.provider_schemas import (
     TeamCreateCaseEffectDefinition,
@@ -100,7 +103,7 @@ from evander_team_addon.providers import (
     _publish_deliverable_artifact_bundle,
     _publish_team_events,
 )
-from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.repository import TeamStateConflictError, TeamStateRepository
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
@@ -139,6 +142,87 @@ def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionServ
 
 def _team_ephemeral_service(repo: TeamStateRepository) -> TeamEphemeralService:
     return TeamEphemeralService(repo)
+
+
+def test_team_project_managed_repository_bindings_follow_state_and_rollback(
+    tmp_path: Path,
+) -> None:
+    first_id = "mr_11111111111111111111"
+    second_id = "mr_22222222222222222222"
+
+    class FakeManagedGit:
+        def __init__(self) -> None:
+            self.bindings: dict[str, set[tuple[str, str]]] = {
+                first_id: set(),
+                second_id: set(),
+            }
+
+        def get_repository(self, managed_repo_id: str) -> dict[str, object]:
+            return {
+                "managed_repo_id": managed_repo_id,
+                "bindings": [
+                    {"kind": kind, "binding_id": binding_id}
+                    for kind, binding_id in sorted(self.bindings[managed_repo_id])
+                ],
+            }
+
+        def bind(self, managed_repo_id: str, *, kind: str, binding_id: str) -> None:
+            self.bindings[managed_repo_id].add((kind, binding_id))
+
+        def unbind(self, managed_repo_id: str, *, kind: str, binding_id: str) -> None:
+            self.bindings[managed_repo_id].discard((kind, binding_id))
+
+    repository = TeamStateRepository(tmp_path)
+    _team_admin_service(repository).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    managed_git = FakeManagedGit()
+    admin = TeamAdminService(repository, managed_git_admin=managed_git)
+    admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        git=ProjectGitConfig(managed_repo_id=first_id),
+        expected_revision=1,
+    )
+    assert managed_git.bindings[first_id] == {("team_projects", "project")}
+
+    with pytest.raises(TeamStateConflictError):
+        admin.update_project(
+            project_id="project",
+            git=ProjectGitConfig(managed_repo_id=second_id),
+            set_git=True,
+            expected_revision=1,
+        )
+    assert repository.read().projects["project"].git == ProjectGitConfig(
+        managed_repo_id=first_id
+    )
+    assert managed_git.bindings[first_id] == {("team_projects", "project")}
+    assert managed_git.bindings[second_id] == set()
+
+    admin.update_project(
+        project_id="project",
+        git=ProjectGitConfig(managed_repo_id=second_id),
+        set_git=True,
+        expected_revision=2,
+    )
+    assert managed_git.bindings[first_id] == set()
+    assert managed_git.bindings[second_id] == {("team_projects", "project")}
+
+    admin.update_project(
+        project_id="project",
+        git=None,
+        set_git=True,
+        expected_revision=3,
+    )
+    assert repository.read().projects["project"].git is None
+    assert managed_git.bindings[first_id] == set()
+    assert managed_git.bindings[second_id] == set()
 
 
 def _team_runtime_sections() -> dict[str, list[dict[str, object]]]:
@@ -243,6 +327,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "team-operator-escalation",
         "team-git-promotion-requested",
         "team-git-release-recovery-requested",
+        "team-release-verification-requested",
         "system.chat_assistant",
     ]
     assert "team-wake-due-agents" in _node_ids(config.effects)
@@ -250,6 +335,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert "team-notify-operator" in _node_ids(config.effects)
     assert "team-git-promote-review-branch" in _node_ids(config.effects)
     assert "team-promote-release-recovery-branch" in _node_ids(config.effects)
+    assert "team-verify-release-candidate" in _node_ids(config.effects)
 
     service = build_admin_runtime(tmp_path / "runtime")
     document = service.workflow_config_admin.read_workflow_editor_document()
@@ -271,6 +357,15 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert document.output_schemas["team-wake-due-agents"]["failed_project_repo_preparations"] == {
         "type": "array"
     }
+    assert document.output_schemas["team-wake-due-agents"]["transient_conflicts"] == {
+        "type": "array"
+    }
+    assert document.output_schemas["team-wake-due-agents"]["retry_event_ids"] == {
+        "type": "array"
+    }
+    assert document.output_schemas["team-wake-due-agents"]["retry_scheduled_count"] == {
+        "type": "integer"
+    }
     assert document.output_schemas["team-wake-due-agents"]["git_work_contexts"] == {
         "type": "array"
     }
@@ -289,6 +384,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert document.output_schemas["team-consolidate-feature-branches"]["commit_sha"] == {
         "type": ["string", "null"]
     }
+    assert document.output_schemas["team-verify-release-candidate"][
+        "verification_state"
+    ] == {"type": "string"}
     graphs = [
         graph.model_dump(mode="json") if hasattr(graph, "model_dump") else graph
         for graph in document.graphs
@@ -304,7 +402,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert "outputs" not in effects["team-record-review-promotion"]
     assert effects["team-record-review-promotion"]["result_outputs"] == {
         "review_branch": "${{team-git-promote-review-branch.review_branch ?? null}}",
-        "host_repo_path": "${{team-git-promote-review-branch.host_repo_path ?? null}}",
+        "managed_repo_id": "${{team-git-promote-review-branch.managed_repo_id ?? null}}",
         "message": "${{team-git-promote-review-branch.message ?? null}}",
     }
     validation = service.workflow_config_admin.validate_workflow_editor_document(
@@ -330,7 +428,11 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
 
 
 def _node_ids(nodes: object) -> list[str]:
-    return [str(getattr(node, "id")) for node in nodes]
+    return [
+        str(getattr(node, "id"))
+        for node in nodes
+        if not str(getattr(node, "id")).startswith("system.code_consultation.")
+    ]
 
 
 class FakeResumer:
@@ -415,21 +517,44 @@ class FakeFileCopier:
 
 
 class FakeRepoCloner:
-    def __init__(self, *, success: bool = True, message: str = "repo prepared") -> None:
+    def __init__(
+        self,
+        *,
+        success: bool = True,
+        message: str = "repo prepared",
+        on_clone: object | None = None,
+    ) -> None:
         self.calls: list[dict[str, object]] = []
         self.success = success
         self.message = message
+        self.on_clone = on_clone
 
     def clone_repo_into_vm(self, **kwargs: object) -> SimpleNamespace:
         self.calls.append(dict(kwargs))
+        if callable(self.on_clone):
+            self.on_clone()
         return SimpleNamespace(
             success=self.success,
             vm_name=str(kwargs.get("vm_name") or "vm-backend"),
             message=self.message,
             target_dir="/home/agent/Truman",
             guest_repo_name="Truman",
-            remote_url="ssh://evander-git-host/git-remotes/Truman.git",
         )
+
+
+class FakeVmExecutor:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def vm_exec(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(dict(kwargs))
+        return {
+            "success": True,
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "message": "task worktree prepared",
+        }
 
 
 class FakeArtifactReader:
@@ -1070,7 +1195,7 @@ def test_duplicate_release_package_feedback_points_to_existing_package(
         "existing or blocked package" in hint
         and "release_branch/error" in hint
         and "next_action_hint" in hint
-        and "failed release promotion" in hint
+        and "failed feature or release promotion" in hint
         and "do not reuse the same id" in hint
         for hint in feedback["correction_hints"]
     )
@@ -1169,7 +1294,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "override_routing_gap_reason" in guidance
     assert "Release requests stand alone" in guidance
     assert "git_refs.review_branch or git_refs.agent_branch" in guidance
-    assert "failed release promotion" in guidance
+    assert "failed feature or release promotion" in guidance
     assert "allowed agents/... ref" in guidance
     assert "supersedes_deliverable_id" in guidance
     assert "item_type operator_directive" in guidance
@@ -2078,6 +2203,73 @@ def test_wake_due_agents_provider_grants_reply_only_chat_tool_when_mutation_disa
     assert "ordinary Team MCP tools granted to this chat wake" not in prompt
 
 
+def test_wake_due_agents_leaves_reply_only_chat_queued_while_agent_prompt_is_active(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="alice@example.com",
+        operator_display_name="Alice",
+        expected_revision=repo.read().revision,
+    )
+    state, message = _team_chat_service(repo).record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please just reply when the current work is finished.",
+        created_by="operator:alice@example.com",
+        expected_revision=state.revision,
+    )
+
+    def _disable_mutation(state: TeamState) -> TeamState:
+        state.conversation_messages[message.id].metadata["allow_team_mutations"] = False
+        return state
+
+    repo.update(_disable_mutation)
+    dispatch_id = f"team-chat:{message.id}"
+    _team_chat_service(repo).queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=dispatch_id,
+    )
+    session_store = FakeSessionStore()
+    ordinary_tools = list(ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES)
+    session_store.sessions["session-backend"].allowed_tools = ordinary_tools
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            agent_id="backend",
+            limit=1,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            agent_prompt_activity=SimpleNamespace(has_active_enqueue_prompt=lambda **_kwargs: True),
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["chat_dispatches"] == []
+    assert result["leased_count"] == 0
+    assert result["leases"] == []
+    assert result["dispatches"] == []
+    assert resumer.calls == []
+    assert session_store.sessions["session-backend"].allowed_tools == ordinary_tools
+    reread = TeamStateRepository(tmp_path).read()
+    queued_message = reread.conversation_messages[message.id]
+    assert queued_message.status == "queued"
+    assert queued_message.dispatch_id == dispatch_id
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+
+
 def test_wake_due_agents_provider_limit_zero_dispatches_no_queued_chat(
     tmp_path: Path,
 ) -> None:
@@ -2417,6 +2609,41 @@ def test_build_prompt_includes_release_package_recovery_context(tmp_path: Path) 
         and "promotion target branch team/team/releases/rel-1" in row["next_action_hint"]
         for row in context["runtime_attention"]
     )
+
+
+def test_build_prompt_includes_typed_release_gate_retry_context(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _add_blocked_release(state: TeamState) -> TeamState:
+        state.release_packages["rel-retry"] = ReleasePackage(
+            id="rel-retry",
+            project_id="project",
+            candidate_commit_sha="candidate-sha",
+            state=TeamRecordState.BLOCKED,
+            error="verification worker disconnected",
+            gate_failure=ReleaseGateFailure(
+                stage="verification",
+                kind="infrastructure",
+                source_id="verification-attempt-1",
+                message="verification worker disconnected",
+            ),
+        )
+        return state
+
+    repo.update(_add_blocked_release)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "backend")
+
+    context = _team_context_from_prompt(_build_prompt(lease))
+
+    release = context["release_packages"]["rel-retry"]
+    assert release["candidate_commit_sha"] == "candidate-sha"
+    assert release["next_action"] == "retry_release_verification"
+    assert release["blocked_reason_code"] == "release_verification_infrastructure"
+    assert release["gate_failure"]["source_id"] == "verification-attempt-1"
+    assert "audited reason" in release["next_action_hint"]
 
 
 def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
@@ -2948,7 +3175,7 @@ def test_manager_fallback_creates_fresh_review_for_idle_profile_reviewer(
     )
 
 
-def test_review_handoff_duplicate_id_feedback_is_not_prompted(
+def test_review_handoff_duplicate_id_feedback_is_included_in_corrective_wake_prompt(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -2979,9 +3206,14 @@ def test_review_handoff_duplicate_id_feedback_is_not_prompted(
     )
     prompt = _build_prompt(next_lease)
 
-    assert "Most recent Team action feedback" not in prompt
-    assert "Do not repeat these mistakes" not in prompt
-    assert "review request review-manager already exists" not in prompt
+    context = _team_context_from_prompt(prompt)
+    assert context["action_feedback"][0]["error"] == (
+        "review request review-manager already exists"
+    )
+    assert any(
+        "Do not recreate existing ids" in hint
+        for hint in context["action_feedback"][0]["correction_hints"]
+    )
 
 
 def test_manager_fallback_prompt_caps_large_history(
@@ -3127,7 +3359,7 @@ def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
     ]
 
 
-def test_wake_due_agents_provider_does_not_prompt_latest_action_feedback(
+def test_wake_due_agents_provider_delivers_latest_action_feedback(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -3163,14 +3395,74 @@ def test_wake_due_agents_provider_does_not_prompt_latest_action_feedback(
 
     assert result["success"] is True
     prompt = str(resumer.calls[0]["prompt"])
-    assert "Most recent Team action feedback" not in prompt
-    assert "previous Team dispatch had validation errors" not in prompt
-    assert "action-feedback" not in prompt
-    assert "Only the task owner can create deliverables for that task." not in prompt
+    context = _team_context_from_prompt(prompt)
+    assert context["action_feedback"] == [
+        {
+            "action_record_id": "action-feedback",
+            "dispatch_id": failed_dispatch_id,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "error": "agent backend cannot deliver task other-task",
+            "action_fields": ["deliverables"],
+            "correction_hints": [
+                "Only the task owner can create deliverables for that task."
+            ],
+        }
+    ]
+    assert result["dispatches"][0]["delivered_action_feedback_dispatch_ids"] == [
+        failed_dispatch_id
+    ]
     reread = TeamStateRepository(tmp_path).read()
     record = reread.action_records["action-feedback"]
+    assert record.feedback_delivered_at is not None
+    assert record.feedback_delivered_by_dispatch_id == result["dispatches"][0]["dispatch_id"]
+
+
+def test_wake_due_agents_provider_keeps_action_feedback_undelivered_when_resume_fails(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_action_record(
+        repo,
+        action_id="action-feedback",
+        dispatch_id="failed-dispatch",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        success=False,
+        error="agent backend cannot deliver task other-task",
+    )
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer({"success": False, "message": "resume failed"}),
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    record = TeamStateRepository(tmp_path).read().action_records["action-feedback"]
     assert record.feedback_delivered_at is None
     assert record.feedback_delivered_by_dispatch_id is None
+
+
+def test_rejected_task_is_terminal_for_wake_leasing_and_runtime_status(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_task(task_id="task", state=TeamTaskState.REJECTED)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    state, leases = _team_runtime_service(repo).lease_due_agents(now=now)
+
+    assert "backend" not in _leased_agent_ids(leases)
+    assert _runtime_agent_payload(state, state.agents["backend"], now)["wake_due"] is False
 
 
 def test_wake_due_agents_provider_rotates_context_when_pending(
@@ -3587,8 +3879,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
 
     def _set_git(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             base_branch="main",
         )
         return state
@@ -3609,6 +3900,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             agent_resumer=resumer,
             vm_file_copier=FakeFileCopier(),
             vm_repo_cloner=repo_cloner,
+            vm_executor=FakeVmExecutor(),
             session_lookup=session_store,
             session_metadata_updater=session_store,
         ),
@@ -3621,7 +3913,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
         {
             "vm_name": "vm-backend",
             "session_id": "session-backend",
-            "repo_source": "/opt/repos/Truman",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
             "clone_branch": "main",
             "vm_user": "agent",
             "directory_path": "root",
@@ -3635,17 +3927,17 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert project_repo["target_dir"] == "/home/agent/Truman"
     assert project_repo["base_branch"] == "main"
     assert project_repo["branch_context_id"]
-    assert project_repo["agent_branch"] == "agents/session-backend/work-session-backend"
+    assert project_repo["agent_branch"] == "agents/session-backend/tasks/task-0ebb429f"
     git_context = project_repo["git_work_contexts"][0]
     assert git_context == {
         "id": project_repo["branch_context_id"],
         "branch_context_id": project_repo["branch_context_id"],
         "agent_id": "backend",
         "task_id": "task",
-        "agent_branch": "agents/session-backend/work-session-backend",
+        "agent_branch": "agents/session-backend/tasks/task-0ebb429f",
         "base_branch": "main",
         "dispatch_id": result["dispatches"][0]["dispatch_id"],
-        "worktree_path": "/home/agent/Truman",
+        "worktree_path": "/home/agent/worktrees/Truman/task-0ebb429f",
         "state": "active",
     }
     assert project_repo["branch_contexts_by_task_id"] == {"task": git_context}
@@ -3664,8 +3956,8 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     prompt = str(resumer.calls[0]["prompt"])
     assert '"project_repo"' in prompt
     assert project_repo["branch_context_id"] in prompt
-    assert "agents/session-backend/work-session-backend" in prompt
-    assert "/home/agent/Truman" in prompt
+    assert "agents/session-backend/tasks/task-0ebb429f" in prompt
+    assert "/home/agent/worktrees/Truman/task-0ebb429f" in prompt
     assert "The project host checkout is not mounted in the guest" in prompt
     assert "project_repo.git_work_contexts" in prompt
     assert session_store.calls[1]["metadata"]["team_addon"]["project_repo"] == project_repo
@@ -3677,6 +3969,217 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     )
 
 
+def test_wake_due_agents_refreshes_state_after_repo_clone_revision_change(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+    repo_cloner = FakeRepoCloner(on_clone=lambda: repo.update(lambda state: state))
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=repo_cloner,
+            vm_executor=FakeVmExecutor(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(result["dispatches"]) == 1
+    assert len(repo_cloner.calls) == 1
+    assert len(resumer.calls) == 1
+    assert result["transient_conflicts"] == []
+    assert len(repo.read().git_work_contexts) == 1
+
+
+def test_wake_due_agents_retries_git_context_commit_conflict_without_recloning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+    original = TeamAdminService.create_git_work_context_with_id
+    calls = 0
+
+    def _race_once(self: TeamAdminService, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            repo.update(lambda state: state)
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(TeamAdminService, "create_git_work_context_with_id", _race_once)
+    repo_cloner = FakeRepoCloner()
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=repo_cloner,
+            vm_executor=FakeVmExecutor(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(result["dispatches"]) == 1
+    assert calls == 2
+    assert len(repo_cloner.calls) == 1
+    assert len(repo.read().git_work_contexts) == 1
+    assert result["transient_conflicts"] == [
+        {
+            "agent_id": "backend",
+            "session_id": "session-backend",
+            "dispatch_id": result["dispatches"][0]["dispatch_id"],
+            "phase": "git_work_context_commit",
+            "attempt_count": 2,
+            "conflict_count": 1,
+            "resolved": True,
+            "retry_scheduled": False,
+        }
+    ]
+
+
+def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _set_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_set_git)
+
+    def _add_second_task(state: TeamState) -> TeamState:
+        state.tasks["task-second"] = state.tasks["task"].model_copy(
+            update={"id": "task-second", "title": "Build second backend slice"}
+        )
+        return state
+
+    repo.update(_add_second_task)
+    original = TeamAdminService.create_git_work_context_with_id
+    calls = 0
+
+    def _always_conflict(self: TeamAdminService, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original(self, **kwargs)
+        expected_revision = int(kwargs["expected_revision"])
+        raise TeamStateConflictError(
+            expected_revision=expected_revision,
+            current_revision=expected_revision + 1,
+        )
+
+    monkeypatch.setattr(
+        TeamAdminService,
+        "create_git_work_context_with_id",
+        _always_conflict,
+    )
+    resumer = FakeResumer()
+    session_store = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            vm_repo_cloner=FakeRepoCloner(),
+            vm_executor=FakeVmExecutor(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["dispatches"] == []
+    assert calls == 4
+    assert result["retry_scheduled_count"] == 1
+    assert len(result["retry_event_ids"]) == 1
+    assert result["transient_conflicts"][0]["resolved"] is False
+    assert result["transient_conflicts"][0]["retry_scheduled"] is True
+    assert result["transient_conflicts"][0]["retry_event_ids"] == result["retry_event_ids"]
+    assert result["failed_project_repo_preparations"] == []
+    assert resumer.calls == []
+    reread = repo.read()
+    runtime = reread.agent_runtimes["backend"]
+    assert runtime.active_dispatch_id is None
+    assert runtime.wake_leased_until is None
+    assert runtime.next_wake_at is None
+    assert runtime.no_progress_count == 0
+    assert reread.action_records == {}
+    assert len(reread.git_work_contexts) == 1
+    assert {
+        context.state for context in reread.git_work_contexts.values()
+    } == {GitWorkContextState.ABANDONED}
+    assert {
+        context.dispatch_id for context in reread.git_work_contexts.values()
+    } == {result["transient_conflicts"][0]["dispatch_id"]}
+    scheduled = json.loads(
+        scheduled_internal_event_store_path(tmp_path).read_text(encoding="utf-8")
+    )
+    retries = [
+        record
+        for record in scheduled.values()
+        if record["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and record["payload"]["agent_id"] == "backend"
+        and record["payload"]["reason"] == "state_conflict_retry"
+    ]
+    assert len(retries) == 1
+
+
 def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3685,9 +4188,7 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
 
     def _set_git(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
-            canonical_origin_url="https://example.test/org/Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             base_branch="main",
         )
         return state
@@ -3707,9 +4208,8 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
                 "session_id": "session-backend",
                 "target_dir": "/home/agent/Truman",
                 "guest_repo_name": "Truman",
-                "remote_url": "ssh://evander-git-host/git-remotes/Truman.git",
                 "pr_notes_ref": "refs/notes/agent-pr/test",
-                "execution_backend": "container_worker_vm",
+                "execution_backend": "libvirt_vm",
                 "vm_name": None,
             }
 
@@ -3730,6 +4230,7 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
             vm_file_copier=FakeFileCopier(),
             session_lookup=FakeSessionStore(),
             session_metadata_updater=FakeSessionStore(),
+            vm_executor=FakeVmExecutor(),
         ),
     )
 
@@ -3738,10 +4239,9 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
     assert result["success"] is True
     assert len(captured_effects) == 1
     clone_effect = captured_effects[0]
-    assert getattr(clone_effect, "repo_source") == "/opt/repos/Truman"
-    assert getattr(clone_effect, "canonical_origin_url") == "https://example.test/org/Truman.git"
-    assert getattr(clone_effect, "bare_repo_name") == "Truman.git"
-    assert getattr(clone_effect, "bare_repo_path") is None
+    assert getattr(clone_effect, "managed_repo_id") == "mr_0123456789abcdefabcd"
+    assert not hasattr(clone_effect, "repo_source")
+    assert not hasattr(clone_effect, "bare_repo_path")
 
 
 def test_wake_due_agents_provider_ignores_stale_action_contract_metadata(
@@ -4005,8 +4505,7 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
 
     def _set_git(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
-            host_repo_path="/opt/repos/Truman",
-            bare_repo_name="Truman.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
         )
         return state
 
@@ -4025,6 +4524,7 @@ def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails
             agent_resumer=resumer,
             vm_file_copier=FakeFileCopier(),
             vm_repo_cloner=FakeRepoCloner(success=False, message="repo missing"),
+            vm_executor=FakeVmExecutor(),
             session_lookup=session_store,
             session_metadata_updater=session_store,
         ),
@@ -5249,6 +5749,17 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     assert ("team-destroy-ephemeral-agent", "team-mark-ephemeral-cleaned-up") in edges
 
 
+def test_team_runtime_pack_flushes_outbox_after_persistent_dispatch() -> None:
+    pack = _team_runtime_sections()
+    edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
+
+    assert ("team-cron", "team-publish-outbox-events") in edges
+    assert (
+        "team-finalize-persistent-dispatch",
+        "team-publish-outbox-after-dispatch",
+    ) in edges
+
+
 def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None:
     pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
@@ -5352,9 +5863,17 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     promote = effects["team-git-promote-review-branch"]
     assert promote["type"] == "effect:team:publish-review-branch"
     assert promote["source_branch"] == (
-        "${{team-git-promotion-requested.payload.source_branch ?? null}}"
+        "${{team-git-promotion-requested.payload.source_branch}}"
     )
-    assert promote["commit_sha"] == "${{team-git-promotion-requested.payload.commit_sha ?? null}}"
+    assert promote["managed_repo_id"] == (
+        "${{team-git-promotion-requested.payload.managed_repo_id}}"
+    )
+    assert promote["directory_path"] == (
+        "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+    )
+    assert promote["expected_commit_sha"] == (
+        "${{team-git-promotion-requested.payload.expected_commit_sha}}"
+    )
     assert promote["target_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
     assert effects["team-record-review-promotion"]["type"] == "effect:team:record-git-promotion"
     assert effects["team-record-review-promotion"]["promotion_id"] == (
@@ -5373,11 +5892,14 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-consolidate-feature-branches"]["source_branches"] == (
         "${{team-git-promotion-requested.payload.source_branches}}"
     )
-    assert effects["team-consolidate-feature-branches"]["bare_repo_path"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    assert effects["team-consolidate-feature-branches"]["managed_repo_id"] == (
+        "${{team-git-promotion-requested.payload.managed_repo_id}}"
     )
-    assert effects["team-consolidate-feature-branches"]["bare_repo_name"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+    assert effects["team-consolidate-feature-branches"]["directory_path"] == (
+        "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+    )
+    assert effects["team-consolidate-feature-branches"]["expected_source_commits"] == (
+        "${{team-git-promotion-requested.payload.expected_source_commits}}"
     )
     assert effects["team-record-feature-promotion"]["type"] == ("effect:team:record-git-promotion")
     assert ("team-git-promotion-feature", "team-consolidate-feature-branches") in edges
@@ -5387,27 +5909,36 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-consolidate-release-branches"]["type"] == (
         "effect:team:consolidate-git-branches"
     )
-    assert effects["team-consolidate-release-branches"]["bare_repo_path"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_path ?? null}}"
+    assert effects["team-consolidate-release-branches"]["managed_repo_id"] == (
+        "${{team-git-promotion-requested.payload.managed_repo_id}}"
     )
-    assert effects["team-consolidate-release-branches"]["bare_repo_name"] == (
-        "${{team-git-promotion-requested.payload.bare_repo_name ?? null}}"
+    assert effects["team-consolidate-release-branches"]["directory_path"] == (
+        "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+    )
+    assert effects["team-consolidate-release-branches"]["expected_source_commits"] == (
+        "${{team-git-promotion-requested.payload.expected_source_commits}}"
     )
     assert effects["team-record-release-promotion"]["type"] == ("effect:team:record-git-promotion")
     assert ("team-git-promotion-release", "team-consolidate-release-branches") in edges
     assert ("team-consolidate-release-branches", "team-record-release-promotion") in edges
 
-    # release recovery -> promote agent ref -> record release promotion
+    # release recovery -> validate/consolidate the pinned ref -> record release promotion
     recovery_promote = effects["team-promote-release-recovery-branch"]
-    assert recovery_promote["type"] == "effect:git:promote-agent-branch"
-    assert recovery_promote["agent_branch"] == (
-        "${{team-git-release-recovery-requested.payload.agent_branch}}"
+    assert recovery_promote["type"] == "effect:team:consolidate-git-branches"
+    assert recovery_promote["source_branches"] == (
+        "${{team-git-release-recovery-requested.payload.source_branches}}"
     )
     assert recovery_promote["target_branch"] == (
         "${{team-git-release-recovery-requested.payload.target_branch}}"
     )
-    assert recovery_promote["expected_commit_sha"] == (
-        "${{team-git-release-recovery-requested.payload.expected_commit_sha ?? null}}"
+    assert recovery_promote["expected_source_commits"] == (
+        "${{team-git-release-recovery-requested.payload.expected_source_commits}}"
+    )
+    assert recovery_promote["allowed_changed_paths"] == (
+        "${{team-git-release-recovery-requested.payload.allowed_changed_paths}}"
+    )
+    assert recovery_promote["directory_path"] == (
+        "${{team-git-release-recovery-requested.payload.directory_path ?? null}}"
     )
     recovery_record = effects["team-record-release-recovery-promotion"]
     assert recovery_record["type"] == "effect:team:record-git-promotion"
@@ -5424,17 +5955,38 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     # canonical_push -> push-branch -> record-git-promotion -> mark-release-published
     push = effects["team-push-canonical-branch"]
     assert push["type"] == "effect:git:push-branch"
-    assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
-    assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    assert push["managed_repo_id"] == (
+        "${{team-git-promotion-requested.payload.managed_repo_id}}"
+    )
+    assert push["directory_path"] == (
+        "${{team-git-promotion-requested.payload.directory_path ?? null}}"
+    )
+    assert push["source_ref"] == "${{team-git-promotion-requested.payload.source_branch}}"
+    assert push["expected_commit_sha"] == (
+        "${{team-git-promotion-requested.payload.expected_commit_sha}}"
+    )
+    assert push["destination_branch"] == (
+        "${{team-git-promotion-requested.payload.target_branch}}"
+    )
     record_canonical = effects["team-record-canonical-promotion"]
     assert record_canonical["type"] == "effect:team:record-git-promotion"
     assert record_canonical["promotion_id"] == (
         "${{team-git-promotion-requested.payload.promotion_id}}"
     )
     assert record_canonical["success"] == "${{team-push-canonical-branch.success}}"
+    assert record_canonical["commit_sha"] == "${{team-push-canonical-branch.commit_sha ?? null}}"
+    assert record_canonical["result_outputs"]["error_code"] == (
+        "${{team-push-canonical-branch.reason ?? null}}"
+    )
     assert effects["team-mark-release-published"]["type"] == ("effect:team:mark-release-published")
     assert effects["team-mark-release-published"]["release_package_id"] == (
         "${{team-git-promotion-requested.payload.release_package_id}}"
+    )
+    assert effects["team-mark-release-published"]["published_commit_sha"] == (
+        "${{team-push-canonical-branch.commit_sha ?? null}}"
+    )
+    assert effects["team-mark-release-published"]["result_outputs"]["error_code"] == (
+        "${{team-push-canonical-branch.reason ?? null}}"
     )
     assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
     assert ("team-push-canonical-branch", "team-record-canonical-promotion") in edges
@@ -5444,6 +5996,14 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     ) in edges
 
 
+def test_team_consolidation_schema_advertises_failure_reason_code() -> None:
+    from evander_team_addon.provider_schemas import TEAM_OUTPUT_SCHEMAS
+
+    outputs = TEAM_OUTPUT_SCHEMAS["effect:team:consolidate-git-branches"]
+
+    assert outputs["error_code"] == {"type": ["string", "null"]}
+
+
 def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
     pack = _team_runtime_sections()
     push_nodes = [node for node in pack["effects"] if node["type"] == "effect:git:push-branch"]
@@ -5451,8 +6011,16 @@ def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
     # ephemeral/review/feature branches must never reach effect:git:push-branch.
     assert [node["id"] for node in push_nodes] == ["team-push-canonical-branch"]
     push = push_nodes[0]
-    assert push["local_branch"] == "${{team-git-promotion-requested.payload.source_branch}}"
-    assert push["origin_branch"] == "${{team-git-promotion-requested.payload.target_branch}}"
+    assert push["managed_repo_id"] == (
+        "${{team-git-promotion-requested.payload.managed_repo_id}}"
+    )
+    assert push["source_ref"] == "${{team-git-promotion-requested.payload.source_branch}}"
+    assert push["expected_commit_sha"] == (
+        "${{team-git-promotion-requested.payload.expected_commit_sha}}"
+    )
+    assert push["destination_branch"] == (
+        "${{team-git-promotion-requested.payload.target_branch}}"
+    )
 
     edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
     assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges

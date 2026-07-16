@@ -1,5 +1,8 @@
 # Post-Critique Team MCP Design Decisions
 
+> **Status:** Historical and implemented. This file records decisions made during the Team MCP
+> migration; it is not the current API reference. See [`../addons.md`](../addons.md).
+
 This document is the consolidated design overlay for the Team MCP action surface
 migration. It incorporates the critique decisions plus the later concurrency,
 refresh, and clean-cut cutover decisions.

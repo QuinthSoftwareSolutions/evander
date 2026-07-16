@@ -31,10 +31,10 @@ class InstalledGitAuthorizedKey:
 
 
 @dataclass(frozen=True)
-class InstalledGitReadPrefixAuthorizedKey:
+class InstalledGitReadAuthorizedKey:
     authorized_keys_path: Path
     public_key_body: str
-    authorized_repo_prefix: Path
+    authorized_repo_path: Path
     allowed_from: str
 
 
@@ -49,22 +49,29 @@ def authorized_keys_path_for_user(git_user: str) -> Path:
     return Path(home) / ".ssh" / "authorized_keys"
 
 
-def install_git_read_prefix_authorized_key(
+def install_git_read_authorized_key(
     *,
     public_key: str,
     git_root: str | Path,
+    authorized_repo_path: str | Path,
     allowed_from: str,
     wrapper_path: str | Path,
     authorized_keys_path: str | Path,
-) -> InstalledGitReadPrefixAuthorizedKey:
+) -> InstalledGitReadAuthorizedKey:
     public_key_line, public_key_body = _validated_public_key_line(public_key)
     git_root_real = Path(git_root).resolve(strict=False)
+    repo_real = Path(authorized_repo_path).resolve(strict=False)
+    try:
+        repo_real.relative_to(git_root_real)
+    except ValueError as exc:
+        raise ValueError(f"authorized repo must be under Git root: {git_root_real}") from exc
     wrapper_real = Path(wrapper_path).resolve(strict=False)
     if not wrapper_real.exists():
         raise ValueError(f"Git SSH wrapper does not exist: {wrapper_real}")
     allowed_from_value = _validate_authorized_keys_option_value(allowed_from, "allowed_from")
-    forced_command = _authorized_read_prefix_forced_command(
-        repo_prefix=git_root_real,
+    forced_command = _authorized_read_forced_command(
+        git_root=git_root_real,
+        repo_path=repo_real,
         wrapper_path=wrapper_real,
     )
     entry = (
@@ -74,10 +81,10 @@ def install_git_read_prefix_authorized_key(
     )
     path = Path(authorized_keys_path)
     _replace_authorized_key_entry(path, public_key_body, entry)
-    return InstalledGitReadPrefixAuthorizedKey(
+    return InstalledGitReadAuthorizedKey(
         authorized_keys_path=path,
         public_key_body=public_key_body,
-        authorized_repo_prefix=git_root_real,
+        authorized_repo_path=repo_real,
         allowed_from=allowed_from_value,
     )
 
@@ -106,6 +113,7 @@ def install_git_write_authorized_key(
         raise ValueError(f"Git SSH wrapper does not exist: {wrapper_real}")
     allowed_from_value = _validate_authorized_keys_option_value(allowed_from, "allowed_from")
     forced_command = _authorized_write_forced_command(
+        git_root=git_root_real,
         repo_path=repo_real,
         session_id=session_id,
         ref_prefix=ref_prefix,
@@ -149,6 +157,43 @@ def remove_git_authorized_key_by_public_key_body(
         return True
 
 
+def remove_git_authorized_keys_by_session_id(
+    *,
+    authorized_keys_path: str | Path,
+    session_id: str,
+) -> int:
+    """Remove exact Evander write-key entries for one session.
+
+    Libvirt guests generate their Git key inside the VM, so the host lifecycle
+    code does not retain the public key body. The forced command contains the
+    base64-encoded session id as an exact, secret-free capability marker that is
+    safe to use for revocation.
+    """
+
+    normalized_session_id = str(session_id or "").strip()
+    # Keep this validation aligned with authorized_ref_prefix_for_session().
+    if (
+        not normalized_session_id
+        or "/" in normalized_session_id
+        or normalized_session_id in {".", ".."}
+    ):
+        raise ValueError("session_id must be a single non-empty ref path component")
+    marker = (
+        "EVANDER_GIT_AUTH_SESSION_ID_B64="
+        f"{_one_line_base64(normalized_session_id)}"
+    )
+    path = Path(authorized_keys_path)
+    with _authorized_keys_update_lock(path):
+        if not path.exists():
+            return 0
+        lines = path.read_text(encoding="utf-8").splitlines()
+        filtered = [line for line in lines if marker not in line]
+        removed = len(lines) - len(filtered)
+        if removed:
+            _write_authorized_keys(path, filtered)
+        return removed
+
+
 def public_key_body_from_line(public_key: str) -> str:
     return _validated_public_key_line(public_key)[1]
 
@@ -177,6 +222,7 @@ def authorized_ref_prefix_for_session(session_id: str) -> str:
 
 def _authorized_write_forced_command(
     *,
+    git_root: Path,
     repo_path: Path,
     session_id: str,
     ref_prefix: str,
@@ -184,7 +230,8 @@ def _authorized_write_forced_command(
     wrapper_path: Path,
 ) -> str:
     return (
-        "EVANDER_GIT_AUTH_ACCESS=write"
+        f"EVANDER_GIT_ROOT_B64={_one_line_base64(str(git_root))}"
+        " EVANDER_GIT_AUTH_ACCESS=write"
         f" EVANDER_GIT_AUTH_REPO_B64={_one_line_base64(str(repo_path))}"
         f" EVANDER_GIT_AUTH_SESSION_ID_B64={_one_line_base64(session_id)}"
         f" EVANDER_GIT_AUTH_REF_PREFIX_B64={_one_line_base64(ref_prefix)}"
@@ -193,16 +240,16 @@ def _authorized_write_forced_command(
     )
 
 
-def _authorized_read_prefix_forced_command(
+def _authorized_read_forced_command(
     *,
-    repo_prefix: Path,
+    git_root: Path,
+    repo_path: Path,
     wrapper_path: Path,
 ) -> str:
-    repo_prefix_text = str(repo_prefix)
     return (
-        f"EVANDER_GIT_ROOT_B64={_one_line_base64(repo_prefix_text)}"
+        f"EVANDER_GIT_ROOT_B64={_one_line_base64(str(git_root))}"
         " EVANDER_GIT_AUTH_ACCESS=read-only"
-        f" EVANDER_GIT_AUTH_REPO_PREFIX_B64={_one_line_base64(repo_prefix_text)}"
+        f" EVANDER_GIT_AUTH_REPO_B64={_one_line_base64(str(repo_path))}"
         f" {wrapper_path}"
     )
 

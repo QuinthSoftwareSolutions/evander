@@ -23,6 +23,7 @@ _SERVICE_EXPORTS = {
     "IssueGitAdminDependencies": (".issue_git_service", "IssueGitAdminDependencies"),
     "IssueGitAdminService": (".issue_git_service", "IssueGitAdminService"),
     "IssueGitAdminSupport": (".issue_git_service", "IssueGitAdminSupport"),
+    "ManagedGitAdminService": (".managed_git_service", "ManagedGitAdminService"),
     "ModelUsageAdminDependencies": (".model_usage_service", "ModelUsageAdminDependencies"),
     "ModelUsageAdminService": (".model_usage_service", "ModelUsageAdminService"),
     "OperatorSteeringAdminDependencies": (

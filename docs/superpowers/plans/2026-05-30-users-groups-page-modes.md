@@ -1,5 +1,7 @@
 # Users & Groups Page Modes Implementation Plan
 
+> **Status:** Implemented. Retained as a historical implementation plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Split Admin Web Users & Groups into addressable Users and Groups modes so `/#users/groups` opens the group-management view directly.
@@ -580,7 +582,7 @@ group assignments, and direct workflow grants when Azure SSO is enabled. The pag
 **Users** and **Groups** modes. Open `/#users` for Users mode or `/#users/groups` to link directly
 to Groups mode.
 
-![Users](assets/admin-ui/manual-users.png)
+![Users](../../assets/admin-ui/manual-users.png)
 
 Common user tasks:
 

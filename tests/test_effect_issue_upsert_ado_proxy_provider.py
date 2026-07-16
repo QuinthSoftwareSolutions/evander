@@ -22,6 +22,27 @@ class _ResolverStub:
         )
 
 
+class _ManagedGitStub:
+    managed_repo_id = "mr_11111111111111111111"
+
+    def __init__(self) -> None:
+        self.bindings: list[tuple[str, str, str]] = []
+
+    def ensure_managed_git_repository(self, **kwargs: object) -> dict[str, str]:
+        assert kwargs == {"directory_path": "root/team-a", "repo_source": "/repo"}
+        return {"managed_repo_id": self.managed_repo_id}
+
+    def bind_managed_git_repository(
+        self, *, managed_repo_id: str, kind: str, binding_id: str
+    ) -> None:
+        self.bindings.append((managed_repo_id, kind, binding_id))
+
+    def unbind_all_managed_git_repositories(self, *, kind: str, binding_id: str) -> None:
+        self.bindings = [
+            item for item in self.bindings if not (item[1] == kind and item[2] == binding_id)
+        ]
+
+
 def test_issue_upsert_ado_proxy_effect_accepts_batch_items(tmp_path: Path) -> None:
     effect = IssueUpsertAdoProxyEffectDefinition(
         id="upsert-ado-proxy",
@@ -38,7 +59,11 @@ def test_issue_upsert_ado_proxy_effect_accepts_batch_items(tmp_path: Path) -> No
             }
         ],
     )
-    provider = EffectProviderFactory(provider_config_resolver=_ResolverStub(tmp_path)).build(
+    managed_git = _ManagedGitStub()
+    provider = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(tmp_path),
+        admin_service=managed_git,
+    ).build(
         effect,
         directory_path="root/team-a",
     )
@@ -49,7 +74,11 @@ def test_issue_upsert_ado_proxy_effect_accepts_batch_items(tmp_path: Path) -> No
     assert output["created"] == 1
     assert output["updated"] == 0
     assert output["count"] == 1
-    assert output["ticket"]["repo_source"] == "/repo"
+    assert output["ticket"]["managed_repo_id"] == managed_git.managed_repo_id
+    assert "repo_source" not in output["ticket"]
+    assert managed_git.bindings == [
+        (managed_git.managed_repo_id, "issues", output["ticket"]["issue_id"])
+    ]
     assert (tmp_path / "ado-work-items" / "work-item-101.yaml").exists()
     stored = JsonStore(tmp_path / "local-issues.json", LocalIssueRecord).read_all()
     assert len(stored) == 1

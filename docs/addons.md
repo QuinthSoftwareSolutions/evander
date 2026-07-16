@@ -1,7 +1,7 @@
-# Truman Add-ons
+# Evander Add-ons
 
-Add-ons are optional, opinionated layers that run on top of Truman's low-level
-orchestration primitives. Truman core remains responsible for sessions,
+Add-ons are optional, opinionated layers that run on top of Evander's low-level
+orchestration primitives. Evander core remains responsible for sessions,
 execution backends, workflow events, effects, artifacts, communication policy,
 and audit. Add-ons may consume those primitives, but must not make their domain
 concepts required by core.
@@ -72,6 +72,16 @@ entry-point discovery in advanced configuration. Saving add-on enablement does
 not hot-load or hot-unload add-on routes, workflow providers, or MCP tools;
 restart the listed services for changes to take effect.
 
+Open the page at `/#addons`. It shows discovered packages, enabled and loaded
+state, pending restart state, load errors, configuration mismatches, registered
+capabilities, runtime workflow-pack state, and the services affected by a
+change. Enablement is host-global, not scoped to the directory selected in the
+Admin Web header. When an enabled add-on registers a runtime workflow pack,
+the Add-ons save path materializes it through the revision-checked workflow
+configuration service. Use the page's **Refresh runtime pack** action (or the
+equivalent Admin API action) to refresh that materialized pack. Never write a
+live workflow-pack file directly.
+
 Disabling an add-on means it will not load after restart. It does not delete
 private state under `runtime/addons/<addon_id>/`.
 
@@ -123,7 +133,23 @@ store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 ```
 
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
-Removing `runtime/addons/<addon_id>/` must not corrupt Truman core state.
+Removing `runtime/addons/<addon_id>/` must not corrupt Evander core state.
+
+## Azure DevOps Activity Add-on Guidance
+
+The bundled `evander_ado_activity_addon` is a headless add-on: it intentionally
+does not register an Admin Web navigation tab. It provides host-side MCP tools
+and workflow providers for durable Azure DevOps activity indexing and queries.
+Its presence is therefore verified on the core **Add-ons** page by its loaded
+state and registered capabilities, not by looking for a separate navigation
+item.
+
+Enable `ado-activity-addon` through `/#addons` or the equivalent Admin API and
+restart the services listed there. Because the add-on registers MCP tools, that
+restart set includes `evander-gateway.service` as well as Admin Web and the
+trigger/effect orchestrators. This add-on complements, but does not replace,
+`evander-ado-worker`; PR feedback polling and completion pickup remain owned by
+that worker.
 
 ## MSSQL Seed Add-on Guidance
 
@@ -289,10 +315,10 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
 
 ## Team Module Guidance
 
-A hierarchical agent-team module should live as an add-on outside Truman core.
+A hierarchical agent-team module should live as an add-on outside Evander core.
 Team, manager, project lead, task, deliverable, review, and release-package
 schemas belong in that package. Only generic hooks that are useful to other
-add-ons should be proposed for Truman core.
+add-ons should be proposed for Evander core.
 
 The bundled `evander_team_addon` package provides the initial state-model layer
 for this pattern. It ships an `addon.json` manifest beside its `__init__.py`, so
@@ -303,16 +329,19 @@ or set `addon_loader.enabled_addon_ids: ["team-addon"]`. Explicit
 loading remain supported compatibility paths. Its canonical state lives in
 relational SQLite under `runtime/addons/team-addon/state.db`; a legacy
 `runtime/addons/team-addon/state.json` file is imported once when the database
-is first initialized. Truman session metadata remains a non-canonical
+is first initialized. Evander session metadata remains a non-canonical
 integration index.
 
 When the Team Add-on is enabled, Admin Web shows an optional `Teams` tab. The
 tab is served from the add-on's own `/addons/team-addon/` UI route and uses the
 add-on API under `/api/addons/team-addon/`; it does not add team-specific views
-or models to Truman core Admin Web pages. The bundled UI now includes a
-dedicated Review & Delivery workspace that groups deliverables, review
-requests, review profiles, release packages, and Git promotion state while
-keeping the existing setup forms available in the side panel.
+or models to Evander core Admin Web pages. The current UI has fourteen top-level
+views: **Workspace**, **Operations**, **Delivery**, **Memory**, **Projects**,
+**Task board**, **Cases**, **Teams**, **Chat**, **Mail**, **Governance**,
+**Planning**, **Timeline**, and **Org chart**. Review requests, review profiles,
+deliverables, release packages, and Git promotion state are grouped inside
+**Delivery**. Team setup, persistent agents, roles, and stand-down controls are
+grouped inside **Teams** rather than separate People or Roles tabs.
 
 The `Teams` tab includes an org-chart hierarchy view for each team. It renders
 the manager, subordinate agents, nested reporting lines, and unreachable or
@@ -331,12 +360,12 @@ wake, and ephemeral-capacity information when those records are available.
 Persistent agents may also have an optional Team Add-on avatar. Avatars are
 operator-facing UI metadata only: they are stored in Team Add-on state and
 add-on-private image files under `runtime/addons/team-addon/avatars/`, and are
-not mirrored into session metadata, prompts, wake context, or core Truman agent
+not mirrored into session metadata, prompts, wake context, or core Evander agent
 identity. Operators can upload PNG/JPEG/WebP images, which the add-on normalizes
 to square WebP assets, or generate an OpenAI-backed preview and explicitly
 accept it before it becomes the saved avatar.
 
-The People tab can start a direct browser voice call to the selected persistent
+The Teams view can start a direct browser voice call to the selected persistent
 agent. The add-on prepares an OpenAI Realtime browser session with the selected
 agent's current team, role, task, inbox, review, deliverable, runtime, and
 visible tool context; it does not use DIDWW, Asterisk, or SIP. Calls are
@@ -353,6 +382,13 @@ inspection; the UI labels that mode separately from "My chats" and blocks
 sending while inspecting. Team chat messages recorded by the Admin API carry
 human-operator metadata, and chat wake prompts tell the agent that the source is
 a human operator rather than another Team agent.
+
+The Mail view is the Agent Mail surface for agent-to-agent messages. It is
+separate from operator Chat: use Chat for a signed-in human's conversation with
+one persistent agent, and use Mail to inspect the sent and received projections
+over Team's single durable inbox collection, including handling state and
+message context. `team_chats.read_all` applies only to other operators' Chat
+histories; it does not grant broader Agent Mail access.
 
 ### Team Memory
 
@@ -393,7 +429,8 @@ Team roles are first-class state records under `TeamState.roles`. Agents store a
 `role_id` instead of a free-form role string, and role records carry the display
 name, optional project scope, default ephemeral policy, and permission list for
 that role. The Admin API exposes role CRUD at `/api/addons/team-addon/roles`,
-and the bundled UI includes a `Roles` view plus create/edit forms. Bundled
+and the bundled UI includes role create/edit forms inside the `Teams` view;
+there is no separate top-level `Roles` view. Bundled
 permissions include `create_root_task`, `prepare_bookkeeping_action`,
 `review_bookkeeping_action`, `request_payment_preparation`, and
 `request_release`; release authorization checks the agent's role permission
@@ -517,20 +554,16 @@ the team, project, and role labels.
 Optional inputs are:
 
 - `team.operator_communication_target_id`
-- `project.git.host_repo_path`
-- one of `project.git.bare_repo_name` or `project.git.bare_repo_path`
-- `project.git.base_branch`, `project.git.canonical_origin_url`,
-  `project.git.provider`, and `project.git.canonical_release_branch_prefix`
+- `project.git.managed_repo_id`
+- `project.git.base_branch` and `project.git.canonical_release_branch_prefix`
 
 The Team Add-on setup, project-create, and project-edit forms include an
-`Import Git repo` action beside the Git fields. It accepts the current host repo
-path or canonical origin URL as the repo source, creates or refreshes a
-control-plane bare mirror under the configured root `issue_setup.git_root`, and
-fills the form with the resolved `host_repo_path`, `bare_repo_name`, base
-branch, canonical origin URL, and provider when they can be inferred. The import
-does not refresh an existing mirror once it contains `refs/heads/agents/**`
-work; create a new bare repo name instead. It does not save Team state by
-itself; review the populated fields and submit the form normally.
+`Import Git repo` action beside the Git fields. It accepts a local checkout or
+canonical origin URL as transient `repo_source`, registers or refreshes the
+directory-scoped managed bare repository, and fills the form with its
+`managed_repo_id` and detected default branch. URL/provider identity remains in
+the central registry rather than Team state. Import does not save the project
+by itself; review the managed ID and branch policy, then submit normally.
 
 The template uses a fixed hierarchy:
 
@@ -550,7 +583,7 @@ materialized from the same template without colliding.
 Setup is atomic. The request must include `expected_revision`; stale revisions
 fail without changing state, and duplicate ids are rejected before any write.
 The resulting records live only in Team Add-on state. They do not create real
-Truman sessions, VMs, Git repositories, Bokio entries, payments, or tax filings.
+Evander sessions, VMs, Git repositories, Bokio entries, payments, or tax filings.
 
 Example Auto-Dev compatibility request shape:
 
@@ -638,7 +671,7 @@ When enabled, the Team Add-on also registers an optional runtime-loop provider
 set:
 
 - `effect:team:wake-due-agents` leases due persistent agents, prompts their
-  Truman sessions, and mirrors a compact `metadata.team_addon` index into the
+  Evander sessions, and mirrors a compact `metadata.team_addon` index into the
   session manifest. When the agent's project has `project.git` configured, the
   wake also prepares the project repo through `effect:agent:clone-repo` before
   the resume prompt and includes the prepared guest checkout path in the Team
@@ -657,7 +690,7 @@ set:
   `low_priority_wake_after_cycles` defaults to `4`; low-priority inbox items
   count Team wake evaluations and are batched until the threshold is reached
   unless another wake reason delivers them earlier.
-  High-signal wake requests, such as high/normal response-requested inbox,
+  High-signal wake requests, such as high/normal pending inbox,
   ready task handoffs, review requests, rework requests, and remaining work
   found when a dispatch finalizes, emit a debounced
   `team.agent.wake_requested` internal event. The default debounce is 10
@@ -693,7 +726,7 @@ set:
   This clears any delayed governance wake for that group so the manager receives
   a fresh governance prompt with the new member-team summaries on the next Team
   runtime evaluation.
-- `query:team:session-routing` classifies a completed Truman session as a
+- `query:team:session-routing` classifies a completed Evander session as a
   persistent team agent, ephemeral assignment, ignored non-Team dispatch, or
   unknown session before completion finalization. Persistent agents are finalized
   only when the completed dispatch id matches the active Team runtime lease, so
@@ -705,17 +738,18 @@ set:
 - `effect:team:mark-ephemeral-spawned`,
   `effect:team:accept-ephemeral-deliverable`, and
   `effect:team:mark-ephemeral-cleaned-up` track the ephemeral worker lifecycle
-  around normal Truman `effect:agent:create`, `effect:agent:prompt`, and
+  around normal Evander `effect:agent:create`, `effect:agent:prompt`, and
   `effect:agent:destroy` nodes.
 - `query:team:state` returns filtered add-on state for workflows or UI.
 
 These node types are add-on-owned. They are not present unless the add-on is
 loaded, and their workflow-editor catalog entries are registered by the add-on's
-provider registration rather than hard-coded into Truman core. The packaged
+provider registration rather than hard-coded into Evander core. The packaged
 `evander_team_addon.workflow_packs.TEAM_RUNTIME_V1` definition is a current-schema
-workflow pack for the intended cron plus agent-completion loop. Operators can
-write that definition into an operator-owned pack file when they want this
-opinionated runtime.
+workflow pack for the intended cron plus agent-completion loop. Enablement from
+the Add-ons page materializes this registered definition through the
+revision-checked workflow configuration service. Refresh it through the same
+page or its Admin API action; never replace a live pack file directly.
 
 ### Team MCP Action Surface
 
@@ -738,7 +772,6 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_request_status`
 - `team_ask_question`
 - `team_send_progress_report`
-- `team_reply_to_chat`
 - `team_send_operator_chat_message`
 - `team_escalate_operator`
 - `team_record_memory`
@@ -759,6 +792,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_update_feature_branch`
 - `team_request_release`
 - `team_recover_release`
+- `team_retry_release_gate`
 - `team_request_ephemeral_agent`
 - `team_request_ephemeral_agents`
 - `team_accept_ephemeral_result`
@@ -767,7 +801,7 @@ Ordinary persistent Team wakes may receive these tools:
 Tool visibility is scoped by wake class:
 
 - Normal persistent wakes get ordinary Team action tools.
-- Team Chat wakes get `team_reply_to_chat`, plus ordinary tools only when that
+- Team Chat wakes get the chat-class tool `team_reply_to_chat`, plus ordinary tools only when that
   chat dispatch may mutate Team state.
 - Governance wakes get governance tools only.
 - Ephemeral worker wakes get `team_report_ephemeral_result` only.
@@ -804,7 +838,10 @@ promote.
 
 Persistent agents may include `git_refs` on deliverables when the project has
 Git configured and the runtime has created a Git work context for that task
-worktree. Git deliverables must include the context's `branch_context_id`; the
+worktree. Persistent sessions receive one deterministic branch and physical Git
+worktree per task under `/home/agent/worktrees/<repo>/...`; later wakes reuse the
+same task branch without sharing a mutable checkout with another task. Git
+deliverables must include the context's `branch_context_id`; the
 server derives the accepted `git_refs.agent_branch` from that context and
 rejects mismatched agent-supplied branches. These refs are not published
 automatically; a supervising agent, project lead, or manager requests
@@ -814,6 +851,21 @@ Deliverables may also include `verification` with `status` set to `passed`,
 `failed`, `partial`, `not_run`, or `unknown`, plus an optional summary and
 evidence refs. Use `not_run` when test tooling, services, or credentials were
 unavailable.
+
+Review acceptance is policy-enforced. When a review has a profile, every
+required criterion must be present and `passed`; optional criteria may be
+omitted. Rejected or blocked review findings are stored on the deliverable and
+copied to its superseding rework deliverable. An accepted review can resolve
+only findings owned by the same review profile (or, for legacy unprofiled
+reviews, the same reviewer role), and a deliverable cannot become accepted
+while any carried finding remains open.
+
+Release requests enforce the verification record instead of treating it as
+informational. `failed` verification cannot be waived. `partial`, `not_run`,
+`unknown`, or missing verification requires a reasoned waiver from the project
+lead, top-level team manager, or an authenticated operator; ordinary roles with
+`request_release` cannot grant waivers. Each waiver records the deliverable,
+status, reason, actor kind, actor id, and timestamp on the release package.
 
 ### Communication And Escalation Rules
 
@@ -964,6 +1016,8 @@ wrong-dispatch, inactive, or mismatched branch contexts.
   `effect:team:record-git-promotion`.
 - `feature` — `team_update_feature_branch` can consolidate review branches into a
   task feature branch when the actor owns the task or supervises its owner.
+  Every source must match one accepted current deliverable, and the promotion
+  pins the exact commit accepted by that deliverable's review.
   Routes to `effect:team:consolidate-git-branches` then
   `effect:team:record-git-promotion`.
 - `release` and `canonical_push` — `team_request_release` creates a pending
@@ -981,20 +1035,68 @@ wrong-dispatch, inactive, or mismatched branch contexts.
   Pure artifact releases do not require project Git config and do not create
   release or canonical branches.
 
-Four add-on-owned effect providers complete these flows:
+New Git release packages use the current release policy; historical terminal
+records remain readable without being retroactively reopened, while legacy
+nonterminal packages are rejected with `legacy_unpinned_release` and must be
+recreated. Consolidation merges the pinned reviewed/feature commit rather than
+the current branch tip; it rejects a source only when that pinned commit is no
+longer contained by the source ref. The feature promotion records a reviewed manifest (base, tree, commits,
+and changed paths), and release consolidation rejects commits or paths outside
+the union of those manifests. Scope mismatches are hard blockers and cannot be
+waived.
+
+For Git releases, configure `Project.release_policy`. It selects the
+`container_worker_vm` verification backend, optional container image, ordered
+verification commands (`name`, `cwd`, `argv`, and timeout), and release review
+requirements (`reviewer_agent_id` plus `review_profile_id`). The consolidated
+release commit is pinned as the candidate, verification runs against that exact
+commit, and configured reviewers decide that same candidate. Canonical push is
+created only after verification, all release reviews, and scope validation pass.
+The candidate also receives a frozen typed manifest containing its deliverable
+verification, waiver audit records, accepted immutable reviews, reviewed change
+manifests, scope result, verification commands, and review requirements.
+
+A nonzero verification-command exit is a candidate failure: the release is
+terminally rejected and requires changed, reviewed content in a new release.
+Creating another release with the same deliverables and failed tree is refused.
+Only timeouts and infrastructure failures leave verification retryable, and only
+a review recorded as process-blocked may be replaced. Release-review decisions
+are immutable: use `rejected` for a candidate defect and reserve `blocked` for a
+non-candidate process or evidence-access blocker with a concrete finding.
+`team_retry_release_gate`
+and the Admin API/UI create a linked immutable successor attempt against the same
+pinned SHA and persist the audited reason and requesting agent/operator identity;
+they never rewrite the failed attempt.
+`team_recover_release` remains limited to failed Git feature/release promotions
+and is not a release-gate retry mechanism.
+
+Set `allow_ungated: true` only for an intentionally ungated project; a missing
+policy blocks a new Git release rather than silently publishing it. Admin Web
+project create/edit forms expose the policy as JSON and release rows show the
+pinned candidate, verification state, release-review state, approved SHA, and a
+retry action only for an eligible typed gate failure.
+
+Five add-on-owned effect providers complete these flows:
 `effect:team:publish-review-branch` (publish a source branch or commit from the
-project's bare repo into a durable `team/<team-id>/reviews/...` branch inside
-the project's `host_repo_path`),
+project's managed bare repository into a durable
+`team/<team-id>/reviews/...` ref),
 `effect:team:record-git-promotion` (mark a promotion succeeded/failed and attach
-branches to `git_refs`), `effect:team:mark-release-published` (publish or block a
-release package), and `effect:team:consolidate-git-branches` (deterministic merge
-of multiple source branches strictly inside the project's `host_repo_path`,
-aborting and failing on conflict — never auto-resolving). The core
-`effect:git:push-branch` effect is reused unchanged for canonical publication.
+branches to `git_refs`), `effect:team:verify-release-candidate` (create a
+disposable container-worker session, clone by `managed_repo_id`, check out the pinned candidate, run the
+ordered commands, and destroy the session),
+`effect:team:mark-release-published` (publish or block a release package), and
+`effect:team:consolidate-git-branches` (deterministic merge
+of explicitly pinned source SHAs in an operation-scoped detached worktree,
+aborting and failing on conflict — never auto-resolving). The central managed
+Git service applies the configured host commit identity, compare-and-swap
+updates the Team target ref, and removes the temporary worktree and operation
+ref on every exit. The core `effect:git:push-branch` effect performs an
+expected-commit and destination-lease preflight for canonical publication and
+refuses to publish anything except the approved candidate.
 
 **Publication boundary.** Internal branches (agent, review, feature, and release)
-never leave the project's `host_repo_path`. The **only** branch pushed to the
-canonical remote is the release branch, and only on the `canonical_push` route via
+remain only in the project's managed bare repository. The **only** branch pushed
+to the canonical remote is the release branch, and only on the `canonical_push` route via
 `effect:git:push-branch`. Deliverables that ship non-Git artifacts remain fully
 supported through `artifact_refs`, require no push at all, and can be packaged
 even when the project has no Git configuration. For Team-authored deliverables,
@@ -1021,29 +1123,17 @@ Use this checklist when enabling the bundled Team Add-on on a deployment:
 
 1. Confirm the installed package includes `evander_team_addon`, its
    `addon.json` manifest, and its `ui_static` files.
-2. Enable Admin Web routes/navigation in the host config or legacy gateway
-   config:
-
-   ```json
-   {
-     "addon_loader": {
-       "package_dirs": ["addons", "src"],
-       "enabled_entry_points": false,
-       "enabled_addon_ids": ["team-addon"]
-     }
-   }
-   ```
-
-3. Enable workflow providers in `config/trigger-orchestrator/config.json` with
-   the same `addon_loader` block. Trigger and effect workers both read this
-   worker config.
-4. If autonomous team wakeups are desired, write the current-schema payload from
-   `evander_team_addon.workflow_packs.team_runtime_v1()` into an operator-owned
-   workflow pack file under `config/workflow-packs/` and list that file in
-   `workflow_packs`. Do not edit checked-in example packs for live operator
-   state.
-5. Restart Admin Web and the trigger/effect orchestrator services.
-6. Verify `/api/admin/state` lists `team-addon`, `/api/addons/team-addon/templates`
+2. Open `/#addons`, select **Team Add-on**, and enable it. The revision-checked
+   save updates host and worker add-on configuration and materializes the
+   registered Team runtime workflow pack automatically.
+3. If the registered pack definition changes later, use **Refresh runtime
+   pack** on the Add-ons page or the equivalent Admin API action. Never write a
+   live pack file directly or replace it from a stale checkout.
+4. Restart every service listed by the page. For Team this includes
+   `evander-admin-web.service`, `evander-trigger-orchestrator.service`,
+   `evander-effect-orchestrator.service`, and `evander-gateway.service`; the
+   gateway restart is required for Team MCP registration.
+5. Verify `/api/admin/state` lists `team-addon`, `/api/addons/team-addon/templates`
    returns the built-in catalog, `/addons/team-addon/` serves the add-on UI,
    and `/api/workflow-editor/catalog` plus workflow validation recognize the
    `effect:team:*` and `query:team:*` node types only after the add-on is enabled.

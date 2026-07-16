@@ -1,4 +1,9 @@
-# Repository Layer Refactor Note
+# Repository Layer Refactor Note (Historical)
+
+> **Status:** Historical implementation note. This document records an earlier repository and
+> facade migration, so some class and module names below no longer exist. Use
+> [`architecture.md`](architecture.md) and `src/evander/admin/composition.py` for the current
+> runtime structure.
 
 ## Reshaped repositories
 

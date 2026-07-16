@@ -13,8 +13,10 @@ from evander.model_usage.models import (
 )
 from evander.model_usage.pricing import (
     MODEL_PRICING_PATH_ENV,
+    ModelPricingCatalog,
     ModelPricingRule,
     clear_model_pricing_catalog_cache,
+    default_model_pricing_catalog,
     default_model_pricing_catalog_path,
     load_model_pricing_catalog_payload,
     normalize_model_pricing_catalog_payload,
@@ -115,9 +117,12 @@ class ModelUsageAdminService:
     def read_model_pricing_catalog_status(self) -> dict[str, Any]:
         return self._read_model_pricing_catalog_status_unlocked()
 
+    def model_pricing_catalog(self) -> ModelPricingCatalog:
+        return default_model_pricing_catalog(runtime_dir=self._runtime_dir)
+
     def _read_model_pricing_catalog_status_unlocked(self) -> dict[str, Any]:
         configured_path = str(os.environ.get(MODEL_PRICING_PATH_ENV) or "").strip()
-        path = default_model_pricing_catalog_path()
+        path = default_model_pricing_catalog_path(runtime_dir=self._runtime_dir)
         path_source = "env" if configured_path else "default"
         base_payload: dict[str, Any] = {
             "status": "error",
@@ -172,7 +177,7 @@ class ModelUsageAdminService:
     def write_model_pricing_catalog(
         self, payload: dict[str, Any], *, expected_revision: str
     ) -> dict[str, Any]:
-        path = default_model_pricing_catalog_path()
+        path = default_model_pricing_catalog_path(runtime_dir=self._runtime_dir)
         if path is None:
             raise ValueError("No model pricing catalog path is configured.")
         normalized_payload = normalize_model_pricing_catalog_payload(payload)

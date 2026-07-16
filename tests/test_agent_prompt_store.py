@@ -168,7 +168,8 @@ def test_agent_prompt_store_consumes_token_once_across_store_instances(
     path = tmp_path / "agent-prompt-store.json"
     first_store = AgentPromptStore(path)
     second_store = AgentPromptStore(path)
-    created = datetime(2026, 4, 10, 0, 0, 1, tzinfo=timezone.utc)
+    consumed_at = datetime.now(timezone.utc).replace(microsecond=0)
+    created = consumed_at - timedelta(minutes=1)
     first_store.create_prompt_message(_prompt("m-1", created_at=created, token_hash="token-1"))
 
     original_write = JsonObjectStore._write_json_payload
@@ -181,7 +182,6 @@ def test_agent_prompt_store_consumes_token_once_across_store_instances(
 
     barrier = Barrier(3)
     results: dict[str, AgentPromptRecord | None] = {}
-    consumed_at = datetime(2026, 4, 10, 0, 1, 0, tzinfo=timezone.utc)
 
     def consume(store: AgentPromptStore, name: str) -> None:
         barrier.wait(timeout=5)
@@ -206,7 +206,9 @@ def test_agent_prompt_store_consumes_token_once_across_store_instances(
     assert sum(result is not None for result in results.values()) == 1
     assert sum(result is None for result in results.values()) == 1
     store = AgentPromptStore(path)
-    assert store.read_raw()["consumed_tokens"]["token-1"] == "2026-04-10T00:01:00Z"
+    assert store.read_raw()["consumed_tokens"]["token-1"] == consumed_at.isoformat().replace(
+        "+00:00", "Z"
+    )
 
 
 @pytest.mark.parametrize("payload_text", ["", "{not json"])

@@ -85,7 +85,6 @@ if not isinstance(payload, dict):
     raise SystemExit(0)
 
 fields = {
-    "EVANDER_GIT_ROOT": payload.get("git_root"),
     "EVANDER_GIT_HOST": payload.get("git_host"),
     "EVANDER_GIT_USER": payload.get("git_user"),
     "EVANDER_GIT_SSH_ALIAS": payload.get("git_ssh_alias"),

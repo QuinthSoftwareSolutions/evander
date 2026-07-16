@@ -1444,7 +1444,6 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(
         team.path,
         domain="issue_setup",
         payload={
-            "git_root": "/tmp/git",
             "git_host": "10.1.2.3",
             "git_user": "agent",
             "git_ssh_alias": "agent-git",
@@ -1456,12 +1455,74 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(
         "ado_repo_source": "/tmp/repo",
     }
     assert issue_payload == {
-        "git_root": "/tmp/git",
         "git_host": "10.1.2.3",
         "git_user": "agent",
         "git_ssh_alias": "agent-git",
         "default_model": "gpt-5.3-codex",
     }
+
+
+def test_directory_config_store_prunes_retired_ado_pr_fields_on_read(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+    team_directory = store.get(team.id)
+    assert team_directory is not None
+    store.put(
+        team_directory.model_copy(
+            update={"metadata": {"directory_config": {"domains": ["ado_worker"]}}}
+        )
+    )
+    worker_path = runtime_dir / "directory-config" / "root" / "team" / "ado-worker.json"
+    worker_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_path.write_text(
+        """
+{
+  "ado_repo_source": "/tmp/repo",
+  "create_prs_automatically": true,
+  "create_prs_as_draft": true
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert config_store.read(team.path, domain="ado_worker") == {
+        "ado_repo_source": "/tmp/repo"
+    }
+
+
+def test_managed_git_operation_timeout_is_host_and_directory_configurable(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+    team = service.create(parent="root", name="team")
+    host_config = GatewayConfig(managed_git_operation_timeout_seconds=45.0)
+
+    base_config = get_domain_base_config(host_config, "providers")
+    assert base_config["managed_git_operation_timeout_seconds"] == 45.0
+
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={"managed_git_operation_timeout_seconds": 90.0},
+    )
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=base_config,
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert written == {"managed_git_operation_timeout_seconds": 90.0}
+    assert resolution.effective_config["managed_git_operation_timeout_seconds"] == 90.0
 
 
 def test_directory_config_store_accepts_container_worker_git_allowed_from(
@@ -1631,12 +1692,15 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
         domain="ado_worker",
         payload={"ado_repo_source": "/tmp/team-repo"},
     )
-    config_store.write(child.path, domain="ado_worker", payload={"create_prs_as_draft": True})
+    config_store.write(
+        child.path,
+        domain="ado_worker",
+        payload={"ado_team_filters": ["Child Team"]},
+    )
     config_store.write(
         team.path,
         domain="issue_setup",
         payload={
-            "git_root": "/tmp/team-git",
             "git_host": "10.1.2.3",
             "git_user": "team-bot",
             "git_ssh_alias": "team",
@@ -1658,10 +1722,10 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
     )
 
     assert ado_resolution.effective_config["ado_repo_source"] == "/tmp/team-repo"
-    assert ado_resolution.effective_config["create_prs_as_draft"] is True
+    assert ado_resolution.effective_config["ado_team_filters"] == ["Child Team"]
     assert "ado_project_or_solution" not in ado_resolution.effective_config
     assert "ado_bootstrap_mssql" not in ado_resolution.effective_config
-    assert issue_resolution.effective_config["git_root"] == "/tmp/team-git"
+    assert "git_root" not in issue_resolution.effective_config
     assert issue_resolution.effective_config["git_user"] == "team-bot"
     assert issue_resolution.effective_config["enable_guest_heartbeat"] is True
 

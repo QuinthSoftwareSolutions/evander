@@ -49,6 +49,16 @@ LEGACY_DIRECTORY_DOMAIN_ALIASES = {
     "issue-setup": "issue_setup",
 }
 
+LEGACY_ADO_WORKER_BOOTSTRAP_FIELDS = frozenset(
+    {
+        "ado_project_or_solution",
+        "ado_bootstrap_mssql",
+        "ado_mssql_sa_password_env",
+        "create_prs_automatically",
+        "create_prs_as_draft",
+    }
+)
+
 DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
     "policy": frozenset(
         {
@@ -91,6 +101,10 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "container_worker_token_env",
             "container_worker_workspace_persistence",
             "container_worker_git_allowed_from",
+            "managed_git_commit_name",
+            "managed_git_commit_email",
+            "managed_git_operation_timeout_seconds",
+            "managed_git_worktree_stale_seconds",
             "container_worker_guest_openai_base_url",
             "container_worker_guest_anthropic_base_url",
             "container_worker_guest_gateway_url",
@@ -118,6 +132,11 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "agent_context_retry_enabled",
             "agent_context_retry_max_attempts",
             "agent_context_retry_target_chars",
+            "agent_consultation_profiles",
+            "agent_consultation_default_profile",
+            "agent_consultation_max_wait_seconds",
+            "agent_consultation_retention_days",
+            "agent_consultation_token_secret_env",
             "communication_artifact_link_secret_env",
             "communication_artifact_link_ttl_seconds",
             "communication_artifact_public_base_url",
@@ -230,13 +249,10 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "ado_area_filters",
             "ado_team_filters",
             "ado_repo_source",
-            "create_prs_automatically",
-            "create_prs_as_draft",
         }
     ),
     "issue_setup": frozenset(
         {
-            "git_root",
             "git_host",
             "git_user",
             "git_ssh_alias",
@@ -263,12 +279,9 @@ class AdoWorkerDirectoryConfig(BaseModel):
     ado_area_filters: list[str] = Field(default_factory=list)
     ado_team_filters: list[str] = Field(default_factory=list)
     ado_repo_source: str | None = None
-    create_prs_automatically: bool = True
-    create_prs_as_draft: bool = False
 
 
 class IssueSetupDirectoryConfig(BaseModel):
-    git_root: str | None = None
     git_host: str | None = None
     git_user: str | None = None
     git_ssh_alias: str | None = None
@@ -280,7 +293,6 @@ class IssueSetupDirectoryConfig(BaseModel):
 
 
 class EffectiveIssueSetupDirectoryConfig(BaseModel):
-    git_root: str
     git_host: str
     git_user: str
     git_ssh_alias: str
@@ -482,7 +494,6 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
         }
     if domain == "issue_setup":
         return {
-            "git_root": os.environ.get("EVANDER_GIT_ROOT", "").strip() or "git-remotes",
             "git_host": os.environ.get("EVANDER_GIT_HOST", "").strip() or "192.168.250.1",
             "git_user": os.environ.get("EVANDER_GIT_USER", "").strip()
             or os.environ.get("USER", "agent"),
@@ -668,13 +679,23 @@ class DirectoryConfigStore:
             raise ValueError(
                 f"directory config payload for domain {domain!r} must be a JSON object"
             )
+        if domain == "ado_worker":
+            # These retired settings may remain in pre-directory-config ado-worker
+            # files. They no longer influence worker behavior, but retaining them must
+            # not prevent the supported worker settings from loading.
+            payload = {
+                key: value
+                for key, value in payload.items()
+                if key not in LEGACY_ADO_WORKER_BOOTSTRAP_FIELDS
+            }
         allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]
-        if domain == "wake":
+        if domain != "providers":
             unknown_fields = sorted(set(payload) - allowed_fields)
             if unknown_fields:
                 raise ValueError(
                     f"directory config domain {domain!r} does not allow fields: {', '.join(unknown_fields)}"
                 )
+        if domain == "wake":
             validated = GatewayConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "providers":

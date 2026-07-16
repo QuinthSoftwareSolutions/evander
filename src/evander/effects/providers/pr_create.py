@@ -12,11 +12,18 @@ class PrCreateEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
 
-        host_repo_path = self._resolve_host_repo_path(resolved_config or {})
-        if not host_repo_path:
-            host_repo_path = self._resolve_host_repo_path(payload)
-        if not host_repo_path:
-            raise ValueError("effect:pr:create requires host_repo_path, repo_path, or target")
+        managed_repo_id = self._normalize_required_string(
+            payload.get("managed_repo_id"), "managed_repo_id"
+        )
+        source_ref = self._normalize_required_string(payload.get("source_ref"), "source_ref")
+        expected_commit_sha = self._normalize_required_string(
+            payload.get("expected_commit_sha"), "expected_commit_sha"
+        )
+        destination_branch = self._normalize_optional_string(payload.get("destination_branch"))
+        if destination_branch is None:
+            destination_branch = self._normalize_required_string(
+                payload.get("fallback_destination_branch"), "destination_branch"
+            )
 
         context = self._context()
         pr_create = getattr(context.pull_request_creator, "pr_create", None)
@@ -28,48 +35,42 @@ class PrCreateEffectProvider(EffectProviderBase):
             title = self._normalize_optional_string(payload.get("fallback_title"))
 
         result = pr_create(
-            host_repo_path=host_repo_path,
-            local_branch=self._normalize_optional_string(payload.get("local_branch")),
-            origin_branch=self._normalize_optional_string(payload.get("origin_branch")),
-            canonical_origin_url=self._normalize_optional_string(
-                payload.get("canonical_origin_url")
-            ),
-            provider=self._normalize_optional_string(payload.get("provider")) or "auto",
-            project=self._normalize_optional_string(payload.get("project")),
+            managed_repo_id=managed_repo_id,
+            source_ref=source_ref,
+            expected_commit_sha=expected_commit_sha,
+            destination_branch=destination_branch,
+            directory_path=str(context.metadata.get("directory_path") or "root"),
             base_branch=self._normalize_optional_string(payload.get("base_branch")),
             session_id=self._normalize_optional_string(payload.get("session_id")),
             work_item_id=self._normalize_optional_string(payload.get("work_item_id")),
             title=title,
             body=self._normalize_optional_string(payload.get("body")),
-            body_file=self._normalize_optional_string(payload.get("body_file")),
-            body_artifact_ids=self._normalize_string_list(payload.get("body_artifact_ids")),
             draft=self._as_optional_bool(payload.get("draft")),
             fill=self._resolve_fill(payload),
         )
         output = self._coerce_result(result)
         output.setdefault("success", False)
+        output.setdefault("managed_repo_id", managed_repo_id)
+        output.setdefault("source_ref", source_ref)
+        output.setdefault("expected_commit_sha", expected_commit_sha)
+        output.setdefault("destination_branch", destination_branch)
         return output
 
     def _effect_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         effect = self.effect_definition
         for field_name in (
-            "host_repo_path",
-            "repo_path",
-            "target",
-            "local_branch",
-            "origin_branch",
-            "canonical_origin_url",
-            "provider",
-            "project",
+            "managed_repo_id",
+            "source_ref",
+            "expected_commit_sha",
+            "destination_branch",
+            "fallback_destination_branch",
             "base_branch",
             "session_id",
             "work_item_id",
             "title",
             "fallback_title",
             "body",
-            "body_file",
-            "body_artifact_ids",
             "draft",
             "fill",
             "no_fill",
@@ -77,13 +78,6 @@ class PrCreateEffectProvider(EffectProviderBase):
             if effect is not None and hasattr(effect, field_name):
                 payload[field_name] = getattr(effect, field_name)
         return payload
-
-    def _resolve_host_repo_path(self, payload: Mapping[str, Any]) -> str | None:
-        for field_name in ("host_repo_path", "repo_path", "target"):
-            value = self._normalize_optional_string(payload.get(field_name))
-            if value:
-                return value
-        return None
 
     def _resolve_fill(self, payload: Mapping[str, Any]) -> bool:
         if "fill" in payload:
@@ -105,21 +99,11 @@ class PrCreateEffectProvider(EffectProviderBase):
         return text or None
 
     @classmethod
-    def _normalize_string_list(cls, value: Any) -> list[str] | None:
-        if value is None or value == "":
-            return None
-        if isinstance(value, (list, tuple)):
-            normalized = [
-                item
-                for item in (cls._normalize_optional_string(item) for item in value)
-                if item
-            ]
-            return normalized or None
-        text = cls._normalize_optional_string(value)
-        if text is None:
-            return None
-        normalized = [item.strip() for item in text.replace(";", ",").split(",") if item.strip()]
-        return normalized or None
+    def _normalize_required_string(cls, value: Any, field_name: str) -> str:
+        normalized = cls._normalize_optional_string(value)
+        if normalized is None:
+            raise ValueError(f"effect:pr:create requires {field_name}")
+        return normalized
 
     @classmethod
     def _as_bool(cls, value: Any, *, default: bool = False) -> bool:

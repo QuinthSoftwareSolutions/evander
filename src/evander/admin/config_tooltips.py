@@ -84,13 +84,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Optional Azure DevOps team filter list used by the ADO worker when selecting work items."
     ),
     "ado_repo_source": (
-        "Default host repo path or remote URL recorded on ADO proxy issue records."
-    ),
-    "create_prs_automatically": (
-        "When enabled, post-receive automation opens upstream pull requests for promoted agent branches."
-    ),
-    "create_prs_as_draft": (
-        "When enabled, new Azure DevOps pull requests opened for this directory are created as drafts."
+        "Transient Git URL or local checkout registered as a managed repository for ADO proxy issues."
     ),
     "azure_devops_project": (
         "Default Azure DevOps project name used by host-side PR feedback and reply integrations."
@@ -205,6 +199,33 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "github_token_env": (
         "Name of the host environment variable that holds the GitHub token for PR reply and feedback operations."
+    ),
+    "managed_git_commit_name": (
+        "Host-controlled author and committer name used for managed Git merges and release consolidation."
+    ),
+    "managed_git_commit_email": (
+        "Host-controlled author and committer email used for managed Git merges and release consolidation."
+    ),
+    "managed_git_operation_timeout_seconds": (
+        "Maximum runtime in seconds for each managed Git subprocess before it is terminated and cleaned up."
+    ),
+    "managed_git_worktree_stale_seconds": (
+        "Minimum age in seconds before an unlocked leftover managed worktree can be reconciled after an interrupted operation."
+    ),
+    "agent_consultation_profiles": (
+        "Named request-scoped container worker profiles for consult_codebase, including model, provider mode, image, timeout, and concurrency."
+    ),
+    "agent_consultation_default_profile": (
+        "Profile used by consult_codebase when the caller does not select one explicitly."
+    ),
+    "agent_consultation_max_wait_seconds": (
+        "Maximum time a gateway consultation call may wait before returning a pollable nonterminal result."
+    ),
+    "agent_consultation_retention_days": (
+        "Days to retain terminal codebase consultation records before request-time compaction."
+    ),
+    "agent_consultation_token_secret_env": (
+        "Host environment variable containing the signing secret for one-time consultation result tokens."
     ),
     "container_worker_guest_openai_base_url": (
         "Container-visible OpenAI relay base URL used inside runner sessions."
@@ -405,7 +426,6 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "pr_template_markdown": (
         "Markdown boilerplate prepended to automated PR descriptions for this directory."
     ),
-    "git_root": ("Host root directory that stores bare git remotes used during issue setup."),
     "git_host": ("Host address or name the guest uses to reach git remotes during issue setup."),
     "git_user": ("Host username used by guest SSH/git commands during issue setup."),
     "git_ssh_alias": ("SSH host alias configured in the guest for host git operations."),

@@ -115,6 +115,7 @@ class TriggerOrchestratorWorker:
         self.provider_config_resolver = resolved_wiring.provider_config_resolver
         self.event_queue = resolved_wiring.event_queue
         self.provider_factory = resolved_wiring.provider_factory
+        self._preflight_managed_git(self.provider_factory)
         self.cursor_repository: GateCursorRepository = resolved_wiring.gate_cursor_repository
         self._wal_checkpoint_maintenance = OrchestrationWalCheckpointMaintenance()
         self._wake_sleeper = HostWakeSleeper(
@@ -138,6 +139,14 @@ class TriggerOrchestratorWorker:
 
     def run_forever(self) -> None:
         self._kernel.run_forever()
+
+    @staticmethod
+    def _preflight_managed_git(provider_factory: Any) -> None:
+        admin_service = getattr(provider_factory, "admin_service", None)
+        managed_git = getattr(admin_service, "managed_git_admin", None)
+        preflight = getattr(managed_git, "preflight", None)
+        if callable(preflight):
+            preflight()
 
     def run_once_with_lock(self) -> TriggerOrchestratorCycleResult:
         return self._kernel.run_once_with_lock()
@@ -167,6 +176,7 @@ class TriggerOrchestratorWorker:
                     )
                     latest_config = previous_config
                 else:
+                    self._preflight_managed_git(runtime_wiring.provider_factory)
                     self.provider_config_resolver = runtime_wiring.provider_config_resolver
                     self.provider_factory = runtime_wiring.provider_factory
             if latest_config != previous_config:

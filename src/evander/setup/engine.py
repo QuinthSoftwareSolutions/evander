@@ -22,10 +22,6 @@ from evander.admin.web.frontend_assets import (
     missing_admin_frontend_assets,
 )
 from evander.bootstrap import load_runtime_gateway_config
-from evander.git_ssh_authorized_keys import (
-    authorized_keys_path_for_user,
-    install_git_read_prefix_authorized_key,
-)
 from evander.runtime import build_runtime
 
 UTC = timezone.utc
@@ -47,9 +43,36 @@ DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11435/v1"
 LOCAL_CONTAINER_WORKER_SERVICE = "evander-worker-daemon.service"
 LOCAL_CONTAINER_WORKER_ROOT = Path("/var/lib/agent-worker")
 LOCAL_CONTAINER_WORKER_RUNTIME_DIR = LOCAL_CONTAINER_WORKER_ROOT / "runtime"
+LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT = LOCAL_CONTAINER_WORKER_ROOT / "toolchain-cache"
 LOCAL_CONTAINER_WORKER_GIT_KEY_NAME = "evander-git"
 LOCAL_CONTAINER_WORKER_GIT_SSH_HOST = "127.0.0.1"
 LOCAL_CONTAINER_WORKER_GIT_ALLOWED_FROM = "127.0.0.1"
+LOCAL_CONTAINER_WORKER_READONLY_MOUNTS = (
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "dotnet",
+        "/opt/evander/toolchains/dotnet",
+    ),
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "dotnet-tools",
+        "/opt/evander/toolchains/dotnet-tools",
+    ),
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "node-v24.14.0",
+        "/opt/evander/toolchains/node-v24.14.0",
+    ),
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "playwright-runtime",
+        "/opt/evander/playwright-runtime",
+    ),
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "ms-playwright",
+        "/opt/evander/ms-playwright",
+    ),
+    (
+        LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT / "nuget-cache-ro",
+        "/opt/evander/nuget-cache-ro",
+    ),
+)
 
 PROVIDER_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
@@ -964,12 +987,10 @@ class SetupManager:
         self._ensure_container_worker_secret(state)
         run_user = _setup_run_user()
         run_group = _primary_group_for_user(run_user)
-        git_root = _local_worker_git_root(self.project_dir)
         git_ssh_alias = _local_worker_git_ssh_alias()
         git_ssh_source_dir = _local_worker_git_ssh_source_dir(run_user)
         self._ensure_local_container_worker_git_access(
             git_user=_setup_git_user(),
-            git_root=git_root,
             git_ssh_alias=git_ssh_alias,
             git_ssh_source_dir=git_ssh_source_dir,
         )
@@ -993,6 +1014,11 @@ class SetupManager:
                     "0750",
                     str(LOCAL_CONTAINER_WORKER_ROOT),
                     str(LOCAL_CONTAINER_WORKER_RUNTIME_DIR),
+                    str(LOCAL_CONTAINER_WORKER_TOOLCHAIN_CACHE_ROOT),
+                    *[
+                        str(host_path)
+                        for host_path, _container_path in LOCAL_CONTAINER_WORKER_READONLY_MOUNTS
+                    ],
                 ],
                 check=True,
             )
@@ -1019,11 +1045,10 @@ class SetupManager:
         self,
         *,
         git_user: str,
-        git_root: Path,
         git_ssh_alias: str,
         git_ssh_source_dir: Path,
     ) -> None:
-        public_key = self._ensure_local_container_worker_git_key(
+        self._ensure_local_container_worker_git_key(
             git_ssh_source_dir,
             key_name=LOCAL_CONTAINER_WORKER_GIT_KEY_NAME,
         )
@@ -1033,13 +1058,6 @@ class SetupManager:
             git_host=LOCAL_CONTAINER_WORKER_GIT_SSH_HOST,
             git_user=git_user,
             identity_file=f"~/.ssh/{LOCAL_CONTAINER_WORKER_GIT_KEY_NAME}",
-        )
-        install_git_read_prefix_authorized_key(
-            public_key=public_key,
-            git_root=git_root,
-            allowed_from=LOCAL_CONTAINER_WORKER_GIT_ALLOWED_FROM,
-            wrapper_path=self.project_dir / "scripts" / "git_ssh_command_wrapper.sh",
-            authorized_keys_path=authorized_keys_path_for_user(git_user),
         )
 
     def _ensure_local_container_worker_git_key(self, ssh_dir: Path, *, key_name: str) -> str:
@@ -1132,11 +1150,15 @@ class SetupManager:
     ) -> str:
         run_user = run_user or _setup_run_user()
         container_user = _container_user_for_run_user(run_user)
-        git_root = _local_worker_git_root(self.project_dir)
+        git_root = _local_worker_git_root(self.project_dir, self.runtime_dir)
         git_ssh_alias = _local_worker_git_ssh_alias()
         git_ssh_source_dir = _local_worker_git_ssh_source_dir(run_user)
         allowed_git_source_prefix = f"ssh://{git_ssh_alias}{git_root}/"
         worker_host, worker_port = _local_container_worker_bind(state)
+        readonly_mount_args = " ".join(
+            f"--readonly-mount {host_path}:{container_path}"
+            for host_path, container_path in LOCAL_CONTAINER_WORKER_READONLY_MOUNTS
+        )
         return "\n".join(
             [
                 "[Unit]",
@@ -1160,7 +1182,8 @@ class SetupManager:
                     "--sandbox-profile default "
                     f"--container-user {container_user} "
                     f"--allowed-git-source-prefix {allowed_git_source_prefix} "
-                    f"--git-ssh-source-dir {git_ssh_source_dir}"
+                    f"--git-ssh-source-dir {git_ssh_source_dir} "
+                    f"{readonly_mount_args}"
                 ),
                 "Restart=on-failure",
                 "RestartSec=5",
@@ -1360,12 +1383,11 @@ def _home_for_user(user: str) -> Path:
     return Path("/home") / user
 
 
-def _local_worker_git_root(project_dir: Path) -> Path:
-    configured = os.environ.get("EVANDER_GIT_ROOT", "").strip()
-    if configured:
-        path = Path(configured).expanduser()
-        return path if path.is_absolute() else (project_dir / path).resolve(strict=False)
-    return project_dir / "git-remotes"
+def _local_worker_git_root(project_dir: Path, runtime_dir: Path | None = None) -> Path:
+    resolved_runtime = Path(runtime_dir or "runtime").expanduser()
+    if not resolved_runtime.is_absolute():
+        resolved_runtime = project_dir / resolved_runtime
+    return resolved_runtime.resolve(strict=False) / "managed-git"
 
 
 def setup_doctor_payload(

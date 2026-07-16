@@ -1,5 +1,8 @@
 # Persistent Team Agent Instruction Replacements
 
+> **Status:** Historical migration design. These replacements were implemented as part of the
+> Team MCP migration; use [`../addons.md`](../addons.md) for current instructions.
+
 This document maps the normal persistent Team agent guidance from the current
 `team-action.json` world to the MCP tool world. It is design-only.
 

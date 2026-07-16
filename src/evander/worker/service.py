@@ -61,6 +61,8 @@ from .models import (
     WorkerSessionPaths,
     WorkerSessionRecord,
     WorkerSessionStorageTelemetry,
+    WorkerTaskWorktreeRecord,
+    WorkerTaskWorktreeRequest,
     WorkerTelemetryPayload,
     ensure_resolved_path_within,
     now_utc,
@@ -86,8 +88,13 @@ _CODEX_OUTCOME_STATUS_FAILED = "failed"
 _CODEX_OUTCOME_REASON_CONTEXT_LIMIT_SUSPECTED = "codex_context_limit_suspected"
 _CODEX_OUTCOME_REASON_NO_FINAL_MESSAGE = "codex_no_final_message"
 _CODEX_OUTCOME_REASON_TURN_FAILED = "codex_turn_failed"
+_CODEX_OUTCOME_REASON_UNSUPPORTED_TOOL_CALL = "codex_unsupported_tool_call"
 _CODEX_LOCAL_MODEL_PROVIDER_MODES = {"local_openai"}
 _CODEX_CONTEXT_LIMIT_WARNING_TOTAL_TOKENS = 60_000
+_CODEX_UNSUPPORTED_TOOL_CALL_PATTERN = re.compile(
+    r"codex_core::tools::router:\s+error=unsupported call:\s*(?P<tool>[^\r\n]+)",
+    re.IGNORECASE,
+)
 _SESSION_STORAGE_TELEMETRY_TTL_SECONDS = 60.0
 _SESSION_STORAGE_WARMING_MESSAGE = (
     "worker session storage scan is warming; use refresh=1 to wait for a full scan"
@@ -191,6 +198,7 @@ class WorkerDaemon:
             session_id=request.session_id,
             image=request.image,
             command=request.command,
+            working_directory=request.working_directory,
             container_name=container_name,
             status="starting",
             started_at=now_utc(),
@@ -233,10 +241,39 @@ class WorkerDaemon:
             return record
         status = str(info.get("status") or record.status)
         record.status = status
-        if status in {"exited", "stopped", "failed", "removed"} and record.finished_at is None:
+        metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
+        raw_exit_code = info.get("exit_code")
+        runtime_error = str(info.get("runtime_error") or "").strip()
+        oom_killed = bool(info.get("oom_killed"))
+        terminal = status in {"exited", "stopped", "failed", "removed"}
+        if terminal and (oom_killed or runtime_error):
+            metadata["worker_terminal_kind"] = "infrastructure"
+            record.error = (
+                runtime_error
+                or "container was terminated after exceeding its memory limit"
+            )
+        elif terminal and raw_exit_code is not None:
+            try:
+                metadata["exit_code"] = int(raw_exit_code)
+                metadata["worker_terminal_kind"] = "command_exit"
+            except (TypeError, ValueError):
+                metadata["worker_terminal_kind"] = "infrastructure"
+        record.metadata = sanitize_metadata(metadata)
+        if terminal and record.finished_at is None:
             record.finished_at = now_utc()
-        if status in {"exited", "stopped", "failed", "removed"}:
-            self._refresh_codex_job_outcome(record)
+        if terminal:
+            log_text: str | None = None
+            if _worker_job_uses_codex(record):
+                try:
+                    log_text = self._raw_logs(record)
+                except OSError as exc:
+                    logger.warning(
+                        "worker_job_terminal_log_refresh_failed job_id=%s exception_class=%s exception_message=%s",
+                        record.job_id,
+                        exc.__class__.__name__,
+                        str(exc),
+                    )
+            self._refresh_codex_job_outcome(record, log_text=log_text)
         self.store.put(record)
         return record
 
@@ -521,18 +558,25 @@ class WorkerDaemon:
             return None
         return "\n".join(lines) + "\n"
 
-    def _refresh_codex_job_outcome(self, record: WorkerJobRecord) -> None:
+    def _refresh_codex_job_outcome(
+        self,
+        record: WorkerJobRecord,
+        *,
+        log_text: str | None = None,
+    ) -> None:
         if not _worker_job_uses_codex(record):
             return
         if record.started_at is None and record.finished_at is None:
             return
-        text = ""
-        log_path = self._log_path(record)
-        if log_path.exists():
-            try:
-                text = log_path.read_text(encoding="utf-8")
-            except OSError:
-                text = ""
+        text = log_text
+        if text is None:
+            text = ""
+            log_path = self._log_path(record)
+            if log_path.exists():
+                try:
+                    text = log_path.read_text(encoding="utf-8")
+                except OSError:
+                    text = ""
         thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
         if not thread_ids:
             thread_ids = _recent_codex_session_ids(Path(record.agent_home_path), limit=1)
@@ -545,6 +589,7 @@ class WorkerDaemon:
                 started_at=record.started_at,
                 finished_at=record.finished_at,
                 metadata=record.metadata,
+                log_text=text,
             )
             if outcome is None:
                 continue
@@ -607,13 +652,15 @@ class WorkerDaemon:
                     continue
                 seen.add(message)
                 messages.append(message)
-        outcome = _codex_session_outcome(
-            agent_home,
-            thread_id,
-            started_at=started_at,
-            finished_at=finished_at,
-            metadata=metadata,
-        )
+        outcome = _failed_codex_outcome_from_metadata(metadata)
+        if outcome is None:
+            outcome = _codex_session_outcome(
+                agent_home,
+                thread_id,
+                started_at=started_at,
+                finished_at=finished_at,
+                metadata=metadata,
+            )
         if outcome is not None:
             message = _codex_outcome_log_line(outcome)
             if message and message not in seen:
@@ -677,6 +724,7 @@ class WorkerDaemon:
             repo_source=request.repo_source,
             clone_branch=request.clone_branch,
             repo_name=repo_name,
+            reconcile_existing_remote=request.reconcile_existing_remote,
         )
         return WorkerRepoCloneRecord(
             session_id=session_id,
@@ -684,6 +732,102 @@ class WorkerDaemon:
             guest_repo_name=repo_name,
             remote_url=request.repo_source,
             cloned=cloned,
+            commit_sha=self._git_commit_sha(_target_dir, paths.agent_home),
+        )
+
+    def prepare_task_worktree(
+        self,
+        session_id: str,
+        request: WorkerTaskWorktreeRequest,
+    ) -> WorkerTaskWorktreeRecord:
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        repo_dir = paths.repo_root / request.repo_name
+        ensure_resolved_path_within(
+            base=paths.repo_root,
+            candidate=repo_dir,
+            description="task worktree repository",
+        )
+        if not (repo_dir / ".git").exists():
+            raise ValueError(f"session repository does not exist: {request.repo_name}")
+        worktrees_root = paths.agent_home / "worktrees" / request.repo_name
+        target_dir = worktrees_root / request.worktree_name
+        ensure_resolved_path_within(
+            base=paths.agent_home,
+            candidate=target_dir,
+            description="task worktree target",
+        )
+        env = _git_subprocess_env(paths.agent_home)
+        self._validate_git_branch(repo_dir, request.branch, env=env)
+        created = False
+        if target_dir.exists():
+            current_branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if current_branch != request.branch:
+                raise ValueError(
+                    f"task worktree {request.worktree_name} uses branch "
+                    f"{current_branch!r}, expected {request.branch!r}"
+                )
+        else:
+            worktrees_root.mkdir(parents=True, exist_ok=True)
+            local_branch = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{request.branch}"],
+                cwd=repo_dir,
+                env=env,
+                check=False,
+            )
+            args = ["git", "worktree", "add"]
+            if local_branch.returncode == 0:
+                args.extend([str(target_dir), request.branch])
+            else:
+                args.extend(["-b", request.branch, str(target_dir), request.base_ref])
+            subprocess.run(
+                args,
+                cwd=repo_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            created = True
+        subprocess.run(
+            ["git", "config", "extensions.worktreeConfig", "true"],
+            cwd=repo_dir,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for key, value in (
+            ("evander.workBranch", request.branch),
+            ("evander.baseBranch", request.base_ref),
+        ):
+            subprocess.run(
+                ["git", "config", "--worktree", key, value],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        helper_source = repo_dir / ".evander"
+        helper_target = target_dir / ".evander"
+        if helper_source.is_dir() and not helper_target.exists():
+            shutil.copytree(helper_source, helper_target)
+        return WorkerTaskWorktreeRecord(
+            session_id=session_id,
+            repo_name=request.repo_name,
+            target_dir=(
+                f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"
+            ),
+            branch=request.branch,
+            commit_sha=self._git_commit_sha(target_dir, paths.agent_home),
+            created=created,
         )
 
     def provision_git_write_key(
@@ -719,9 +863,11 @@ class WorkerDaemon:
         )
 
         config_path = ssh_dir / "config"
+        write_git_ssh_alias = _git_write_ssh_alias(request.git_ssh_alias)
         self._write_git_write_ssh_config(
             config_path=config_path,
-            git_ssh_alias=request.git_ssh_alias,
+            read_git_ssh_alias=request.git_ssh_alias,
+            write_git_ssh_alias=write_git_ssh_alias,
             git_host=request.git_host,
             git_user=request.git_user,
             identity_file=f"~/.ssh/{request.key_name}",
@@ -731,7 +877,7 @@ class WorkerDaemon:
             "public_key_body": public_key_body_from_line(public_key),
             "key_path": str(key_path),
             "config_path": str(config_path),
-            "git_ssh_alias": request.git_ssh_alias,
+            "git_ssh_alias": write_git_ssh_alias,
             "updated_at": now_utc().isoformat(),
         }
         self._write_session_metadata(paths, metadata)
@@ -741,7 +887,7 @@ class WorkerDaemon:
             public_key_body=public_key_body_from_line(public_key),
             key_path=str(key_path),
             config_path=str(config_path),
-            git_ssh_alias=request.git_ssh_alias,
+            git_ssh_alias=write_git_ssh_alias,
         )
 
     def write_files(
@@ -1432,6 +1578,7 @@ class WorkerDaemon:
             repo_source=request.repo_source,
             clone_branch=request.clone_branch,
             repo_name=self._repo_name(request.repo_source),
+            reconcile_existing_remote=False,
         )
 
     def _clone_repo_into_repo_root(
@@ -1441,6 +1588,7 @@ class WorkerDaemon:
         repo_source: str,
         clone_branch: str | None,
         repo_name: str,
+        reconcile_existing_remote: bool = False,
     ) -> tuple[Path, bool]:
         self._ensure_allowed_git_source(repo_source)
         repo_name = str(validate_worker_component_id(repo_name, field_name="repo_name"))
@@ -1464,6 +1612,32 @@ class WorkerDaemon:
                 repo_source,
                 agent_home=paths.agent_home,
             ):
+                return target_dir, False
+            if reconcile_existing_remote and (target_dir / ".git").exists():
+                git_env = _git_subprocess_env(paths.agent_home)
+                has_origin = subprocess.run(
+                    ["git", "-C", str(target_dir), "remote", "get-url", "origin"],
+                    env=git_env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                remote_action = "set-url" if has_origin.returncode == 0 else "add"
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(target_dir),
+                        "remote",
+                        remote_action,
+                        "origin",
+                        repo_source,
+                    ],
+                    env=git_env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
                 return target_dir, False
             raise ValueError(
                 f"repo target already exists and is not a checkout for requested source: "
@@ -1499,12 +1673,50 @@ class WorkerDaemon:
                 f"allowed prefixes: {allowed}"
             )
 
+    @staticmethod
+    def _git_commit_sha(repo_dir: Path, agent_home: Path) -> str:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD^{commit}"],
+            cwd=repo_dir,
+            env=_git_subprocess_env(agent_home),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    @staticmethod
+    def _validate_git_branch(
+        repo_dir: Path,
+        branch: str,
+        *,
+        env: dict[str, str],
+    ) -> None:
+        result = subprocess.run(
+            ["git", "check-ref-format", "--branch", branch],
+            cwd=repo_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"invalid task branch: {branch!r}")
+
     def _sync_git_ssh_into_agent_home(
         self,
         paths: WorkerSessionPaths,
         *,
         required: bool,
     ) -> None:
+        target_dir = paths.agent_home / ".ssh"
+        if required and self._managed_regular_file_exists_no_follow(
+            target_dir / "config",
+            label="SSH config",
+        ) and any(
+            self._managed_regular_file_exists_no_follow(target_dir / key_name, label="Git key")
+            for key_name in ("evander-git-write", "evander-git")
+        ):
+            return
         if self.git_ssh_source_dir is None:
             if required:
                 raise ValueError("worker Git SSH source directory is not configured")
@@ -1519,7 +1731,6 @@ class WorkerDaemon:
                     + ", ".join(missing)
                 )
             return
-        target_dir = paths.agent_home / ".ssh"
         self._ensure_managed_ssh_dir(target_dir)
         for name in ("evander-git", "evander-git.pub", "config", "known_hosts"):
             if name == "config" and self._managed_regular_file_exists_no_follow(
@@ -1748,14 +1959,13 @@ class WorkerDaemon:
         cls,
         *,
         config_path: Path,
-        git_ssh_alias: str,
+        read_git_ssh_alias: str,
+        write_git_ssh_alias: str,
         git_host: str,
         git_user: str,
         identity_file: str,
     ) -> None:
         cls._ensure_managed_ssh_dir(config_path.parent)
-        begin = "# BEGIN evander git write host"
-        end = "# END evander git write host"
         text = (
             cls._read_managed_text_file_no_follow(config_path, label="SSH config")
             if cls._managed_regular_file_exists_no_follow(
@@ -1766,7 +1976,7 @@ class WorkerDaemon:
         )
         for marker_begin, marker_end in (
             ("# BEGIN evander git host", "# END evander git host"),
-            (begin, end),
+            ("# BEGIN evander git write host", "# END evander git write host"),
         ):
             while marker_begin in text and marker_end in text:
                 start = text.index(marker_begin)
@@ -1775,21 +1985,27 @@ class WorkerDaemon:
                 text = text[:start].rstrip() + "\n" + text[stop + len(suffix) :].lstrip("\n")
         block = "\n".join(
             [
-                begin,
-                f"Host {git_ssh_alias}",
+                "# BEGIN evander git host",
+                f"Host {read_git_ssh_alias}",
+                f"  HostName {git_host}",
+                f"  User {git_user}",
+                "  IdentityFile ~/.ssh/evander-git",
+                "  IdentitiesOnly yes",
+                "  StrictHostKeyChecking accept-new",
+                "# END evander git host",
+                "",
+                "# BEGIN evander git write host",
+                f"Host {write_git_ssh_alias}",
                 f"  HostName {git_host}",
                 f"  User {git_user}",
                 f"  IdentityFile {identity_file}",
                 "  IdentitiesOnly yes",
                 "  StrictHostKeyChecking accept-new",
-                end,
+                "# END evander git write host",
                 "",
             ]
         )
-        if text.strip():
-            text = text.rstrip() + "\n\n" + block
-        else:
-            text = block
+        text = block if not text.strip() else block + "\n" + text.strip() + "\n"
         cls._write_managed_text_file_no_follow(
             config_path,
             text,
@@ -2007,12 +2223,16 @@ def _repo_source_requires_git_ssh(repo_source: str | None) -> bool:
     return normalized.startswith("ssh://") or bool(re.match(r"^[^/@:\s]+@[^:\s]+:.+", normalized))
 
 
+def _git_write_ssh_alias(read_git_ssh_alias: str) -> str:
+    """Return the dedicated host alias for a session's restricted write key."""
+
+    return f"{read_git_ssh_alias}-write"
+
+
 def _git_subprocess_env(agent_home: Path) -> dict[str, str]:
     return os.environ | {
         "HOME": str(agent_home),
-        "GIT_SSH_COMMAND": (
-            f"ssh -F {agent_home / '.ssh' / 'config'} -i {agent_home / '.ssh' / 'evander-git'}"
-        ),
+        "GIT_SSH_COMMAND": f"ssh -F {agent_home / '.ssh' / 'config'}",
     }
 
 
@@ -2072,6 +2292,7 @@ def _codex_session_outcome(
     started_at: datetime | None = None,
     finished_at: datetime | None = None,
     metadata: dict[str, object] | None = None,
+    log_text: str | None = None,
 ) -> dict[str, object] | None:
     task_complete_without_final_message = False
     explicit_failure_message: str | None = None
@@ -2118,6 +2339,7 @@ def _codex_session_outcome(
         return None
 
     provider_kind = _codex_provider_kind(metadata)
+    unsupported_tool_calls = _codex_unsupported_tool_calls(log_text)
     outcome: dict[str, object] | None = None
     if explicit_failure_message:
         outcome = {
@@ -2128,29 +2350,36 @@ def _codex_session_outcome(
     elif (
         task_complete_without_final_message or finished_at is not None
     ) and not assistant_text_seen:
-        context_limit_suspected = _codex_context_limit_suspected(
-            provider_kind=provider_kind,
-            last_token_usage=last_token_usage,
-            model_context_window=model_context_window,
-        )
-        reason = (
-            _CODEX_OUTCOME_REASON_CONTEXT_LIMIT_SUSPECTED
-            if context_limit_suspected
-            else _CODEX_OUTCOME_REASON_NO_FINAL_MESSAGE
-        )
-        message = "Codex ended without a final agent message."
-        if context_limit_suspected:
-            total_tokens = last_token_usage.get("total_tokens") if last_token_usage else None
-            if total_tokens is not None:
-                message = (
-                    "Codex ended without a final agent message after local model token usage "
-                    f"reached {total_tokens} tokens."
-                )
-            else:
-                message = (
-                    "Codex ended without a final agent message after local model token usage "
-                    "reached the configured warning threshold."
-                )
+        if unsupported_tool_calls:
+            reason = _CODEX_OUTCOME_REASON_UNSUPPORTED_TOOL_CALL
+            message = (
+                "Codex ended without a final agent message after emitting unsupported tool "
+                f"calls: {', '.join(unsupported_tool_calls)}."
+            )
+        else:
+            context_limit_suspected = _codex_context_limit_suspected(
+                provider_kind=provider_kind,
+                last_token_usage=last_token_usage,
+                model_context_window=model_context_window,
+            )
+            reason = (
+                _CODEX_OUTCOME_REASON_CONTEXT_LIMIT_SUSPECTED
+                if context_limit_suspected
+                else _CODEX_OUTCOME_REASON_NO_FINAL_MESSAGE
+            )
+            message = "Codex ended without a final agent message."
+            if context_limit_suspected:
+                total_tokens = last_token_usage.get("total_tokens") if last_token_usage else None
+                if total_tokens is not None:
+                    message = (
+                        "Codex ended without a final agent message after local model token usage "
+                        f"reached {total_tokens} tokens."
+                    )
+                else:
+                    message = (
+                        "Codex ended without a final agent message after local model token usage "
+                        "reached the configured warning threshold."
+                    )
         outcome = {
             "status": _CODEX_OUTCOME_STATUS_FAILED,
             "reason": reason,
@@ -2165,7 +2394,36 @@ def _codex_session_outcome(
         outcome["last_token_usage"] = last_token_usage
     if model_context_window is not None:
         outcome["model_context_window"] = model_context_window
+    if unsupported_tool_calls:
+        outcome["unsupported_tool_calls"] = unsupported_tool_calls
     return sanitize_metadata(outcome)
+
+
+def _failed_codex_outcome_from_metadata(
+    metadata: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if not isinstance(metadata, dict):
+        return None
+    outcome = metadata.get(_CODEX_OUTCOME_METADATA_KEY)
+    if not isinstance(outcome, dict):
+        return None
+    if str(outcome.get("status") or "").strip().casefold() != _CODEX_OUTCOME_STATUS_FAILED:
+        return None
+    return outcome
+
+
+def _codex_unsupported_tool_calls(log_text: str | None) -> list[str]:
+    if not isinstance(log_text, str) or not log_text:
+        return []
+    calls: list[str] = []
+    seen: set[str] = set()
+    for match in _CODEX_UNSUPPORTED_TOOL_CALL_PATTERN.finditer(log_text):
+        tool = sanitize_text(match.group("tool")).strip()
+        if not tool or tool in seen:
+            continue
+        seen.add(tool)
+        calls.append(tool)
+    return calls
 
 
 def _iter_codex_session_events(
@@ -2314,6 +2572,8 @@ def _codex_outcome_log_line(outcome: dict[str, object]) -> str:
     message = str(outcome.get("message") or "").strip()
     if reason == _CODEX_OUTCOME_REASON_TURN_FAILED:
         return f"codex failed: {message or 'Codex reported a turn failure.'}"
+    if reason == _CODEX_OUTCOME_REASON_UNSUPPORTED_TOOL_CALL:
+        return f"codex failed: {message or 'Codex emitted an unsupported tool call.'}"
     usage = outcome.get("last_token_usage")
     total_tokens = None
     if isinstance(usage, dict):

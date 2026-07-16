@@ -29,6 +29,7 @@ from evander.admin.services import (
     IssueGitAdminDependencies,
     IssueGitAdminService,
     IssueGitAdminSupport,
+    ManagedGitAdminService,
     ModelUsageAdminDependencies,
     ModelUsageAdminService,
     OperatorSteeringAdminDependencies,
@@ -212,6 +213,7 @@ class AdminRuntimeComponents:
     issue_git_support: IssueGitAdminSupport
     vm_agent_support: VmAgentAdminSupport
     issue_git_admin: IssueGitAdminService
+    managed_git_admin: ManagedGitAdminService
     vm_agent_admin: VmAgentAdminService
     pr_integration_preflight_admin: PrIntegrationPreflightAdminService
     operations_admin: OperationsAdminService
@@ -380,11 +382,8 @@ def _build_admin_runtime_components(
         directory_store=runtime.directories,
         gateway_config=config,
     )
-    normalize_directory_reference = (
-        lambda reference: DirectoryService(runtime.directories).show(
-            reference or "root"
-        ).directory.path
-    )
+    def normalize_directory_reference(reference: str | None) -> str:
+        return DirectoryService(runtime.directories).show(reference or "root").directory.path
     directory_ownership = DirectoryOwnershipQueries(
         directories=directory_admin._directories,
         sessions=runtime.session_repository,
@@ -397,6 +396,11 @@ def _build_admin_runtime_components(
             directory_store=runtime.directories,
             session_store=runtime.session_repository,
         )
+    )
+    managed_git_admin = ManagedGitAdminService(
+        config=config,
+        runtime=runtime,
+        project_dir=project_dir,
     )
 
     issue_git_support = IssueGitAdminSupport(
@@ -420,6 +424,7 @@ def _build_admin_runtime_components(
             runtime=runtime,
             config=config,
             directory_ownership=directory_ownership_port,
+            managed_git_admin=managed_git_admin,
         )
     )
     wake_schedule_admin = WakeScheduleAdminService(
@@ -444,6 +449,7 @@ def _build_admin_runtime_components(
             normalize_directory_reference=normalize_directory_reference,
         )
     )
+    managed_git_admin.set_workflow_config_admin(workflow_config_admin)
     addon_admin = AddonAdminService(
         AddonAdminDependencies(
             config=config,
@@ -519,9 +525,7 @@ def _build_admin_runtime_components(
             refresh_proxy_cache_from_remote=issue_git_support.refresh_proxy_cache_from_remote,
             write_local_issue_yaml=issue_git_support.write_local_issue_yaml,
             directory_ownership=issue_git_support,
-            resolve_issue_setup=vm_agent_support.resolve_issue_setup,
-            resolve_repo_source=vm_agent_support.resolve_repo_source,
-            sync_repo_into_bare_remote=vm_agent_support.sync_repo_into_bare_remote,
+            managed_git_admin=managed_git_admin,
         )
     )
     vm_agent_admin = VmAgentAdminService(
@@ -541,16 +545,15 @@ def _build_admin_runtime_components(
             resolve_issue_setup=vm_agent_support.resolve_issue_setup,
             resolve_local_issue_record=local_issue_identity_resolver.resolve_record,
             resolve_local_issue_key=local_issue_identity_resolver.resolve_key,
-            resolve_repo_source=vm_agent_support.resolve_repo_source,
-            sync_repo_into_bare_remote=vm_agent_support.sync_repo_into_bare_remote,
             clone_repo_into_vm=vm_agent_support.clone_repo_into_vm,
+            managed_git_admin=managed_git_admin,
         )
     )
+    managed_git_admin.set_agent_inventory_admin(vm_agent_admin)
     pr_integration_preflight_admin = PrIntegrationPreflightAdminService(
         PrIntegrationPreflightAdminDependencies(
             runtime=runtime,
-            compute_directory_effective_config=host.compute_directory_effective_config,
-            resolve_repo_source=vm_agent_support.resolve_repo_source,
+            managed_git_admin=managed_git_admin,
         )
     )
     trigger_repository = WorkerConfigTriggerRepository(
@@ -702,6 +705,7 @@ def _build_admin_runtime_components(
         issue_git_support=issue_git_support,
         vm_agent_support=vm_agent_support,
         issue_git_admin=issue_git_admin,
+        managed_git_admin=managed_git_admin,
         vm_agent_admin=vm_agent_admin,
         pr_integration_preflight_admin=pr_integration_preflight_admin,
         operations_admin=operations_admin,

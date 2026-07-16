@@ -93,6 +93,7 @@ const teamViewIds = new Set([
   "cases",
   "people",
   "chat",
+  "mail",
   "governance",
   "planning",
   "timeline",
@@ -131,6 +132,10 @@ let runtimeFilterTouched = false;
 let templates = [];
 let timelineState = emptyTimelineState();
 let chatState = emptyChatState();
+let mailState = emptyMailState();
+let mailRequestId = 0;
+let selectedMailItemId = null;
+let selectedMailState = "";
 let chatRequestId = 0;
 let chatNewPickerOpen = false;
 let selectedChatConversationId = null;
@@ -211,6 +216,7 @@ const ephemeralWorkKinds = new Set([
 ]);
 const runtimeFilterLabels = Object.fromEntries(runtimeFilterChoices);
 const timelinePageSize = 10;
+const mailPageSize = 50;
 const projectRecordPageSize = 10;
 const chatMessagePageSize = 50;
 const chatTopLoadThresholdPx = 48;
@@ -260,6 +266,15 @@ const elements = {
   chatThreadView: document.querySelector("#chat-thread-view"),
   chatNewPicker: document.querySelector("#chat-new-picker"),
   chatOperatorView: document.querySelector("#chat-operator-view"),
+  mailTeamFilter: document.querySelector("#mail-team-filter"),
+  mailAgentFilter: document.querySelector("#mail-agent-filter"),
+  mailDirectionFilter: document.querySelector("#mail-direction-filter"),
+  mailTypeFilter: document.querySelector("#mail-type-filter"),
+  mailSearchInput: document.querySelector("#mail-search-input"),
+  mailStatus: document.querySelector("#mail-status"),
+  mailList: document.querySelector("#mail-list"),
+  mailPagination: document.querySelector("#mail-pagination"),
+  mailReader: document.querySelector("#mail-reader"),
   teamsCreateTeamPanel: document.querySelector("#teams-create-team-panel"),
   teamsCreateTeamForm: document.querySelector("#create-team-from-teams-form"),
   governanceCreateGroupPanel: document.querySelector("#governance-create-panel"),
@@ -465,11 +480,9 @@ const fieldTooltips = {
   "edit:review-profile:criterion_required": "Required criteria should be satisfied or explicitly failed in review decisions.",
   "edit:review-profile:archived": "Archived profiles stay in state but cannot be selected for new review requests.",
 
-  host_repo_path: "Host-local working repository path. The canonical remote URL alone is not enough; the host needs a local repository path.",
-  bare_repo: "Bare mirror name or absolute bare mirror path. Values starting with / are saved as paths; other values are saved as names.",
+  repo_source: "Transient Git URL or local checkout used to register a managed repository.",
+  managed_repo_id: "Stable Evander managed repository ID stored with the project.",
   base_branch: "Canonical base branch used for agent branches, reviews, and promotions.",
-  canonical_origin_url: "Trusted upstream Git URL used when opening or promoting work outside the sandbox mirror.",
-  provider: "Git hosting provider used by host-side PR and promotion helpers.",
   canonical_release_branch_prefix: "Prefix used when constructing canonical release branch names.",
 };
 
@@ -491,6 +504,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindArchivedVisibilityToggle();
   bindGovernanceAgendaVisibilityToggle();
   bindInboxPopoverPositioning();
+  bindMailControls();
   elements.templateSelect?.addEventListener("change", () => {
     renderTemplateSetupFields();
   });
@@ -586,8 +600,24 @@ function emptyChatState() {
   };
 }
 
+function emptyMailState() {
+  return {
+    revision: 0,
+    filters: {},
+    state_counts: { pending: 0, handled: 0 },
+    total_count: 0,
+    limit: 50,
+    offset: 0,
+    has_more: false,
+    items: [],
+    loading: false,
+    error: null,
+  };
+}
+
 const decisionStates = ["accepted", "rejected", "blocked"];
 const inboxItemLabels = {
+  operator_directive: "Operator directive",
   question: "Question",
   status_request: "Status request",
   progress_report: "Progress report",
@@ -1397,6 +1427,26 @@ function bindForms() {
       return;
     }
     void importGitRepoForForm(form, button);
+  });
+
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-release-gate-retry]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    if (!guardTeamMutation("retry release gates")) {
+      return;
+    }
+    const reason = window.prompt(
+      "Why is this unchanged-candidate gate retry safe?",
+      "Transient infrastructure or evidence blocker resolved.",
+    );
+    if (!text(reason)) {
+      setStatus("A retry reason is required.", "error");
+      return;
+    }
+    void retryReleaseGate(button, text(reason));
   });
 
   document.addEventListener("click", (event) => {
@@ -2864,6 +2914,9 @@ function mergeResourceTokens(existing, incoming) {
 }
 
 function scheduleAuxiliaryLoadsForView(view) {
+  if (view === "mail") {
+    void loadMail();
+  }
   if (view !== "chat") {
     void loadCosts();
   }
@@ -3519,7 +3572,6 @@ async function createOrFocusChat(agentId) {
       },
       body: JSON.stringify({
         agent_id: normalizedAgentId,
-        expected_revision: chatState.revision ?? state.revision,
       }),
     });
     if (!response.ok) {
@@ -3577,7 +3629,6 @@ async function submitChatMessage(form) {
       },
       body: JSON.stringify({
         body,
-        expected_revision: chatState.revision ?? state.revision,
       }),
     });
     if (!response.ok) {
@@ -3678,6 +3729,10 @@ function renderActiveView(view = activeTeamView) {
       renderChat();
       decorateActiveViewTooltips();
       break;
+    case "mail":
+      renderMail();
+      decorateActiveViewTooltips();
+      break;
     case "governance":
       renderGovernance();
       refreshActiveViewSelects();
@@ -3707,6 +3762,7 @@ function renderActiveViewLoading(view = activeTeamView) {
   const panel = document.querySelector(`[data-team-view-panel="${normalizedTeamView(view)}"]`);
   const target =
     panel?.querySelector("[data-chat-thread-view]") ||
+    panel?.querySelector("[data-mail-list]") ||
     panel?.querySelector("[data-agent-detail-view]") ||
     panel?.querySelector("[data-projects-focus-detail]") ||
     panel?.querySelector("[data-workspace-attention-column]") ||
@@ -4275,6 +4331,7 @@ function renderWorkspaceNavigationPanel() {
     ["task-board", "Task board", "Project work by lane"],
     ["cases", "Cases", "Intake and ticket context"],
     ["governance", "Governance", "Groups, agenda, and oversight"],
+    ["mail", "Agent Mail", "Internal messages and historical correspondence"],
     ["timeline", "Timeline", "Derived audit view"],
     ["org", "Org chart", "Team graph"],
   ];
@@ -6280,14 +6337,18 @@ function renderTeamInlineProjectForm(teamId) {
       <details class="team-inline-create-advanced">
         <summary>Git config</summary>
         <div class="team-inline-create-fields">
-          <label>Host repo path <input name="host_repo_path" /></label>
-          <label>Bare repo <input name="bare_repo" placeholder="repo.git or /srv/git/repo.git" /></label>
+          <label>Repository source <input name="repo_source" placeholder="Git URL or local checkout" /></label>
           ${gitImportControls()}
+          <label>Managed repository ID <input name="managed_repo_id" placeholder="mr_..." /></label>
+          <input type="hidden" name="managed_repo_directory_path" />
           <label>Base branch <input name="base_branch" placeholder="main" /></label>
-          <label>Canonical origin URL <input name="canonical_origin_url" /></label>
-          <label>Provider <select name="provider">${renderSelectOptions(gitProviders, { placeholder: "Default" })}</select></label>
           <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
         </div>
+      </details>
+      <details class="team-inline-create-advanced">
+        <summary>Release gates</summary>
+        <label>Release policy JSON<textarea name="release_policy_json" rows="10" placeholder='{"verification_commands": [...], "review_requirements": [...]}'></textarea></label>
+        <p class="field-help">Git releases fail closed until this policy defines disposable verification commands and/or release reviewers.</p>
       </details>
       ${renderTeamInlineCreateActions(teamId, "project", "Create project")}
     </form>
@@ -6856,6 +6917,7 @@ function renderTeamProjectDetail(project) {
       </div>
       ${renderProjectCostCounter(project.id)}
       ${renderProjectGit(project.git)}
+      ${renderProjectReleasePolicy(project.release_policy)}
       <section class="agent-detail-section">
         <h3>Goals</h3>
         ${renderGoals(project.goals || [], { compact: true })}
@@ -6970,6 +7032,456 @@ function agentsForRole(roleId) {
   return values(state.agents)
     .filter((agent) => text(agent.role_id) === normalizedRoleId && isVisibleAgent(agent))
     .sort(comparePeopleAgents);
+}
+
+function bindMailControls() {
+  document.addEventListener("change", (event) => {
+    const filter = event.target?.closest?.("[data-mail-filter]");
+    if (!filter) {
+      return;
+    }
+    if (filter.dataset.mailFilter === "team_id") {
+      const selectedTeamId = text(filter.value);
+      const selectedAgent = state.agents[text(elements.mailAgentFilter?.value)];
+      if (selectedAgent && text(selectedAgent.team_id) !== selectedTeamId) {
+        elements.mailAgentFilter.value = "";
+      }
+    }
+    if (filter.dataset.mailFilter === "agent_id" && !text(filter.value)) {
+      elements.mailDirectionFilter.value = "";
+    }
+    selectedMailItemId = null;
+    void loadMail({ offset: 0 });
+  });
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("[data-mail-search-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    selectedMailItemId = null;
+    void loadMail({ offset: 0 });
+  });
+
+  document.addEventListener("click", (event) => {
+    const refresh = event.target?.closest?.("[data-mail-refresh]");
+    if (refresh) {
+      event.preventDefault();
+      void loadMail({ offset: mailState.offset || 0 });
+      return;
+    }
+    const folder = event.target?.closest?.("[data-mail-state]");
+    if (folder) {
+      event.preventDefault();
+      selectedMailState = text(folder.dataset.mailState);
+      selectedMailItemId = null;
+      void loadMail({ offset: 0 });
+      return;
+    }
+    const message = event.target?.closest?.("[data-mail-item-id]");
+    if (message) {
+      event.preventDefault();
+      selectedMailItemId = text(message.dataset.mailItemId);
+      renderMail();
+      return;
+    }
+    const pageButton = event.target?.closest?.("[data-mail-page]");
+    if (pageButton) {
+      event.preventDefault();
+      const direction = text(pageButton.dataset.mailPage);
+      const delta = direction === "next" ? mailState.limit : -mailState.limit;
+      selectedMailItemId = null;
+      void loadMail({ offset: Math.max(0, Number(mailState.offset || 0) + delta) });
+    }
+  });
+}
+
+async function loadMail({ offset = 0 } = {}) {
+  const requestId = ++mailRequestId;
+  const query = mailSearchParams(offset);
+  mailState = { ...mailState, loading: true, error: null };
+  if (activeTeamView === "mail") {
+    renderMail();
+  }
+  try {
+    const response = await teamFetch(`${API_BASE}/inbox?${query.toString()}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const payload = await response.json();
+    if (requestId !== mailRequestId) {
+      return payload;
+    }
+    mailState = {
+      ...emptyMailState(),
+      ...payload,
+      state_counts: { ...emptyMailState().state_counts, ...(payload.state_counts || {}) },
+      items: Array.isArray(payload.items) ? payload.items : [],
+      loading: false,
+      error: null,
+    };
+    const selectedStillVisible = mailState.items.some((item) => item.id === selectedMailItemId);
+    if (!selectedStillVisible) {
+      selectedMailItemId = mailState.items[0]?.id || null;
+    }
+    if (activeTeamView === "mail") {
+      renderMail();
+    }
+    return payload;
+  } catch (error) {
+    if (requestId !== mailRequestId) {
+      return null;
+    }
+    mailState = {
+      ...mailState,
+      loading: false,
+      error: error instanceof Error ? error.message : "Agent mail failed to load.",
+    };
+    if (activeTeamView === "mail") {
+      renderMail();
+    }
+    return null;
+  }
+}
+
+function mailSearchParams(offset = 0) {
+  const params = new URLSearchParams({
+    limit: String(mailPageSize),
+    offset: String(Math.max(0, Number(offset) || 0)),
+  });
+  const agentId = text(elements.mailAgentFilter?.value);
+  const values = {
+    team_id: elements.mailTeamFilter?.value,
+    agent_id: agentId,
+    direction: agentId ? elements.mailDirectionFilter?.value : "",
+    item_type: elements.mailTypeFilter?.value,
+    state: selectedMailState,
+    q: elements.mailSearchInput?.value,
+  };
+  Object.entries(values).forEach(([key, value]) => {
+    const normalized = text(value);
+    if (normalized) {
+      params.set(key, normalized);
+    }
+  });
+  return params;
+}
+
+function renderMail() {
+  renderMailFilterOptions();
+  renderMailFolders();
+  renderMailStatus();
+  renderMailList();
+  renderMailPagination();
+  renderMailReader();
+}
+
+function renderMailFilterOptions() {
+  const selectedTeamId = text(elements.mailTeamFilter?.value);
+  const teamOptions = values(state.teams)
+    .sort((left, right) => agentLabel(left).localeCompare(agentLabel(right)) || byId(left, right))
+    .map((team) => [team.id, `${team.name || team.id} (${team.id})`]);
+  if (elements.mailTeamFilter) {
+    elements.mailTeamFilter.innerHTML = renderSelectOptions(teamOptions, {
+      selectedValue: selectedTeamId,
+      placeholder: "All teams",
+    });
+  }
+
+  const selectedAgentId = text(elements.mailAgentFilter?.value);
+  const agentOptions = values(state.agents)
+    .filter((agent) => !selectedTeamId || text(agent.team_id) === selectedTeamId)
+    .sort((left, right) => agentLabel(left).localeCompare(agentLabel(right)) || byId(left, right))
+    .map((agent) => [agent.id, `${agentLabel(agent)} (${agent.id})`]);
+  if (elements.mailAgentFilter) {
+    elements.mailAgentFilter.innerHTML = renderSelectOptions(agentOptions, {
+      selectedValue: selectedAgentId,
+      placeholder: "Everyone",
+    });
+  }
+  const hasAgent = Boolean(text(elements.mailAgentFilter?.value));
+  if (elements.mailDirectionFilter) {
+    elements.mailDirectionFilter.disabled = !hasAgent;
+    if (!hasAgent) {
+      elements.mailDirectionFilter.value = "";
+    }
+  }
+}
+
+function renderMailFolders() {
+  const pending = Number(mailState.state_counts?.pending || 0);
+  const handled = Number(mailState.state_counts?.handled || 0);
+  document.querySelectorAll("[data-mail-state]").forEach((button) => {
+    button.setAttribute(
+      "aria-pressed",
+      text(button.dataset.mailState) === selectedMailState ? "true" : "false",
+    );
+  });
+  const counts = { all: pending + handled, pending, handled };
+  document.querySelectorAll("[data-mail-folder-count]").forEach((element) => {
+    element.textContent = String(counts[element.dataset.mailFolderCount] || 0);
+  });
+}
+
+function renderMailStatus() {
+  if (!elements.mailStatus) {
+    return;
+  }
+  elements.mailStatus.className = `mail-status${mailState.error ? " error" : ""}`;
+  if (mailState.loading) {
+    elements.mailStatus.textContent = "Opening the mail archive...";
+    return;
+  }
+  if (mailState.error) {
+    elements.mailStatus.textContent = mailState.error;
+    return;
+  }
+  const noun = mailState.total_count === 1 ? "message" : "messages";
+  elements.mailStatus.textContent = `${mailState.total_count} ${noun} matched.`;
+}
+
+function renderMailList() {
+  if (!elements.mailList) {
+    return;
+  }
+  if (!mailState.items.length) {
+    elements.mailList.innerHTML = `<p class="empty-state">No correspondence matched these filters.</p>`;
+    return;
+  }
+  elements.mailList.innerHTML = mailState.items.map((item) => renderMailRow(item)).join("");
+}
+
+function renderMailRow(item) {
+  const selected = item.id === selectedMailItemId;
+  const correspondent = mailCorrespondent(item);
+  const party = mailRowParty(item);
+  const subject = mailSubject(item);
+  const preview = mailBody(item).replace(/\s+/g, " ").trim();
+  const priority = text(item.priority);
+  return `
+    <button
+      type="button"
+      class="mail-message-row${selected ? " is-selected" : ""}${item.state === "pending" ? " is-pending" : ""}"
+      data-mail-item-id="${escapeAttr(item.id)}"
+      aria-pressed="${selected ? "true" : "false"}"
+    >
+      ${renderAgentAvatar(correspondent, "mail-row-avatar")}
+      <span class="mail-row-main">
+        <span class="mail-row-line">
+          <span class="mail-row-party">${escapeHtml(party)}</span>
+          <time class="mail-row-time">${escapeHtml(formatMailRowTimestamp(item.created_at))}</time>
+        </span>
+        <span class="mail-row-subject">${escapeHtml(subject)}</span>
+        <span class="mail-row-preview">${escapeHtml(preview || humanizeToken(item.item_type))}</span>
+        <span class="mail-row-meta">${escapeHtml(humanizeToken(item.item_type))} · ${escapeHtml(item.state === "pending" ? "Awaiting action" : "Filed")}</span>
+      </span>
+      ${priority === "high" ? `<span class="mail-priority-mark" title="High priority">!</span>` : ""}
+    </button>
+  `;
+}
+
+function renderMailPagination() {
+  if (!elements.mailPagination) {
+    return;
+  }
+  const total = Number(mailState.total_count || 0);
+  const offset = Number(mailState.offset || 0);
+  const start = total ? offset + 1 : 0;
+  const end = Math.min(total, offset + mailState.items.length);
+  elements.mailPagination.innerHTML = `
+    <span>${escapeHtml(`${start}-${end} of ${total}`)}</span>
+    <span class="mail-pagination-actions">
+      <button type="button" data-mail-page="previous" ${offset <= 0 ? "disabled" : ""}>Previous</button>
+      <button type="button" data-mail-page="next" ${mailState.has_more ? "" : "disabled"}>Next</button>
+    </span>
+  `;
+}
+
+function renderMailReader() {
+  if (!elements.mailReader) {
+    return;
+  }
+  const item = mailState.items.find((candidate) => candidate.id === selectedMailItemId);
+  if (!item) {
+    elements.mailReader.innerHTML = `<p class="empty-state">Select a message to read it.</p>`;
+    return;
+  }
+  const sender = mailSender(item);
+  const recipient = item.recipient || { id: item.recipient_agent_id, display_name: item.recipient_agent_id };
+  const task = item.task;
+  const updated = text(item.updated_at) && text(item.updated_at) !== text(item.created_at)
+    ? `<span>Filed ${escapeHtml(formatMailTimestamp(item.updated_at))}</span>`
+    : "";
+  elements.mailReader.innerHTML = `
+    <header class="mail-reader-header">
+      <h3>${escapeHtml(mailSubject(item))}</h3>
+      <div class="mail-reader-identity">
+        ${renderAgentAvatar(sender, "mail-reader-avatar")}
+        <div class="mail-reader-addresses">
+          <strong>${escapeHtml(agentLabel(sender))}${sender.role_name ? ` · ${escapeHtml(sender.role_name)}` : ""}</strong>
+          <span>to ${escapeHtml(agentLabel(recipient))}${recipient.role_name ? ` · ${escapeHtml(recipient.role_name)}` : ""}</span>
+        </div>
+        <time class="mail-reader-date">${escapeHtml(formatMailTimestamp(item.created_at))}</time>
+      </div>
+      <div class="mail-reader-pills">
+        <span class="state-pill ${escapeAttr(item.state || "pending")}">${escapeHtml(item.state === "pending" ? "Awaiting action" : "Filed")}</span>
+        <span class="state-pill">${escapeHtml(inboxItemLabels[item.item_type] || humanizeToken(item.item_type))}</span>
+        <span class="state-pill">${escapeHtml(humanizeToken(item.priority || "normal"))} priority</span>
+        ${item.response_requested ? `<span class="state-pill warning">Reply requested</span>` : ""}
+      </div>
+    </header>
+    <div class="mail-reader-body">${escapeHtml(mailBody(item) || "No message body was recorded.")}</div>
+    <div class="mail-reader-context">
+      ${task ? `<span>Task: ${escapeHtml(task.title)} (${escapeHtml(task.id)}) · ${escapeHtml(humanizeToken(task.state))}</span>` : ""}
+      <span>Message ID: ${escapeHtml(item.id)}</span>
+      ${updated}
+    </div>
+    <details class="mail-reader-envelope">
+      <summary>Full message envelope</summary>
+      <dl class="mail-envelope-grid">${renderMailEnvelope(item)}</dl>
+    </details>
+  `;
+}
+
+function mailSender(item) {
+  if (item.sender) {
+    return item.sender;
+  }
+  const createdBy = text(item.payload?.created_by);
+  return {
+    id: createdBy || "operator-system",
+    display_name: createdBy || "Operator / system",
+    role_name: createdBy ? "External sender" : "System",
+  };
+}
+
+function mailCorrespondent(item) {
+  const focusAgentId = text(elements.mailAgentFilter?.value);
+  if (focusAgentId && text(item.sender_agent_id) === focusAgentId) {
+    return item.recipient || { id: item.recipient_agent_id, display_name: item.recipient_agent_id };
+  }
+  return mailSender(item);
+}
+
+function mailRowParty(item) {
+  const sender = mailSender(item);
+  const recipient = item.recipient || { id: item.recipient_agent_id, display_name: item.recipient_agent_id };
+  const focusAgentId = text(elements.mailAgentFilter?.value);
+  if (focusAgentId && text(item.sender_agent_id) === focusAgentId) {
+    return `To: ${agentLabel(recipient)}`;
+  }
+  if (focusAgentId) {
+    return `From: ${agentLabel(sender)}`;
+  }
+  return `${agentLabel(sender)} → ${agentLabel(recipient)}`;
+}
+
+function mailSubject(item) {
+  const payload = item.payload || {};
+  const candidates = [
+    payload.title,
+    payload.subject,
+    payload.summary,
+    payload.question,
+    payload.message,
+    payload.instructions,
+  ];
+  const subject = candidates.map(text).find(Boolean);
+  return subject || `${inboxItemLabels[item.item_type] || humanizeToken(item.item_type)} ${item.id}`;
+}
+
+function mailBody(item) {
+  const payload = item.payload || {};
+  const subject = mailSubject(item);
+  const candidates = [
+    payload.message,
+    payload.body,
+    payload.question,
+    payload.instructions,
+    payload.error,
+    payload.finding,
+    payload.reason,
+    payload.details,
+    payload.description,
+    payload.summary,
+  ];
+  const bodyValues = candidates.map(mailBodyValue).filter(Boolean);
+  const body = bodyValues.find((value) => value !== subject);
+  if (body) {
+    return body;
+  }
+  const fallbackEntries = Object.entries(payload)
+    .filter(([key]) => !["title", "subject", "summary"].includes(key))
+    .map(([key, value]) => [humanizeToken(key), mailBodyValue(value)])
+    .filter(([, value]) => Boolean(value));
+  if (fallbackEntries.length) {
+    return fallbackEntries.map(([key, value]) => `${key}: ${value}`).join("\n\n");
+  }
+  return bodyValues[0] || "";
+}
+
+function mailBodyValue(value) {
+  if (value && typeof value === "object") {
+    return JSON.stringify(value, null, 2);
+  }
+  return text(value);
+}
+
+function renderMailEnvelope(item) {
+  const entries = [
+    ["Message ID", item.id],
+    ["From", `${agentLabel(mailSender(item))} (${item.sender_agent_id || "external"})`],
+    ["To", `${agentLabel(item.recipient)} (${item.recipient_agent_id})`],
+    ["Created", formatMailTimestamp(item.created_at)],
+    ["Updated", formatMailTimestamp(item.updated_at)],
+    ["Type", item.item_type],
+    ["State", item.state],
+    ["Priority", item.priority],
+    ["Response requested", item.response_requested ? "Yes" : "No"],
+    ["Task", item.task_id || "None"],
+    ...Object.entries(item.payload || {}).map(([key, value]) => [humanizeToken(key), mailEnvelopeValue(value)]),
+  ];
+  return entries
+    .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`)
+    .join("");
+}
+
+function mailEnvelopeValue(value) {
+  if (value && typeof value === "object") {
+    return JSON.stringify(value, null, 2);
+  }
+  return text(value);
+}
+
+function formatMailTimestamp(value) {
+  const raw = text(value);
+  const parsed = new Date(raw);
+  if (!raw || Number.isNaN(parsed.getTime())) {
+    return raw || "Unknown time";
+  }
+  return parsed.toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatMailRowTimestamp(value) {
+  const raw = text(value);
+  const parsed = new Date(raw);
+  if (!raw || Number.isNaN(parsed.getTime())) {
+    return raw;
+  }
+  const now = new Date();
+  const sameYear = parsed.getFullYear() === now.getFullYear();
+  return parsed.toLocaleString([], sameYear
+    ? { month: "short", day: "numeric" }
+    : { year: "numeric", month: "short", day: "numeric" });
 }
 
 function renderChat() {
@@ -9117,6 +9629,7 @@ function renderProjects() {
                 <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
                 ${renderProjectCostCounter(project.id)}
                 ${renderProjectGit(project.git)}
+                ${renderProjectReleasePolicy(project.release_policy)}
               </div>
               <div class="record-actions">
                 <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
@@ -9255,6 +9768,7 @@ function renderProjectFocusDetail(project) {
     </div>
     ${renderProjectCostCounter(project.id)}
     ${renderProjectGit(project.git)}
+    ${renderProjectReleasePolicy(project.release_policy)}
     <div class="projects-detail-grid">
       <section>
         <h3>Goals</h3>
@@ -9979,6 +10493,7 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
               <div class="meta-line">${escapeHtml(project.id)} - lead ${escapeHtml(project.lead_agent_id)}</div>
               ${renderProjectCostCounter(project.id)}
               ${renderProjectGit(project.git)}
+              ${renderProjectReleasePolicy(project.release_policy)}
             </div>
             <div class="record-actions">
               <span class="state-pill ${escapeHtml(project.status)}">${escapeHtml(project.status)}</span>
@@ -10004,15 +10519,21 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
 }
 
 function renderProjectGit(git) {
-  if (!git || !git.host_repo_path) {
+  if (!git || !git.managed_repo_id) {
     return "";
   }
-  const bare = git.bare_repo_name || git.bare_repo_path || "";
-  const parts = [`host ${git.host_repo_path}`];
-  if (bare) parts.push(`bare ${bare}`);
+  const parts = [`managed ${git.managed_repo_id}`];
   if (git.base_branch) parts.push(`base ${git.base_branch}`);
-  if (git.provider) parts.push(`provider ${git.provider}`);
   return `<div class="meta-line">Git: ${escapeHtml(parts.join(" - "))}</div>`;
+}
+
+function renderProjectReleasePolicy(policy) {
+  if (!policy) {
+    return `<div class="meta-line">Release gates: not configured (Git releases are blocked)</div>`;
+  }
+  const commands = (policy.verification_commands || []).map((command) => command.name);
+  const reviewers = (policy.review_requirements || []).map((requirement) => requirement.reviewer_agent_id);
+  return `<div class="meta-line">Release gates: ${escapeHtml(commands.length ? `${commands.length} verification checks` : "no verification checks")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers")}${policy.allow_ungated ? " - ungated explicitly allowed" : ""}</div>`;
 }
 
 function renderGoals(goals, { compact = false } = {}) {
@@ -10228,6 +10749,10 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
           const profile = review.review_profile_id
             ? state.review_profiles[review.review_profile_id] || null
             : null;
+          const deliverable = state.deliverables[review.deliverable_id] || null;
+          const carriedFindings = (deliverable?.carried_findings || []).filter(
+            (finding) => finding.state === "open",
+          );
           return `
             <li class="record-item">
               <div class="record-line">
@@ -10238,7 +10763,8 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
               ${review.instructions ? `<div class="meta-line">Instructions: ${escapeHtml(review.instructions)}</div>` : ""}
               ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => escapeHtml(finding)).join("; ")}</div>` : ""}
               ${renderCriterionResults(review.criteria || [])}
-              ${interactive ? renderReviewDecisionForm(review, profile) : ""}
+              ${renderCarriedFindings(carriedFindings)}
+              ${interactive ? renderReviewDecisionForm(review, profile, carriedFindings) : ""}
             </li>
           `;
         })
@@ -10247,12 +10773,11 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
   `;
 }
 
-function renderReviewDecisionForm(review, profile) {
-  if (terminalRecordStates.has(review.state)) {
+function renderReviewDecisionForm(review, profile, carriedFindings = []) {
+  if (terminalRecordStates.has(review.state) || review.decision_at) {
     return "";
   }
   const selectedState = decisionStates.includes(review.state) ? review.state : "";
-  const criteriaPlaceholder = renderReviewCriteriaPlaceholder(profile?.criteria || []);
   const criteriaHelp = renderReviewCriteriaHelp(profile?.criteria || []);
   return `
     <form
@@ -10277,13 +10802,56 @@ function renderReviewDecisionForm(review, profile) {
         Findings
         <textarea name="findings" rows="2"></textarea>
       </label>
-      <label>
-        Criteria results
-        <textarea name="criteria" rows="3" placeholder="${escapeAttr(criteriaPlaceholder)}"></textarea>
-      </label>
+      ${renderReviewCriterionInputs(profile?.criteria || [])}
+      ${renderFindingResolutionInputs(carriedFindings)}
       ${criteriaHelp}
       <button type="submit">Submit decision</button>
     </form>
+  `;
+}
+
+function renderReviewCriterionInputs(criteria) {
+  if (!criteria.length) return "";
+  return `
+    <fieldset data-review-criterion-inputs>
+      <legend>Criteria results</legend>
+      ${criteria.map((criterion) => `
+        <div class="criteria-editor-row" data-review-criterion-id="${escapeAttr(criterion.id)}">
+          <label>${escapeHtml(criterion.label)}${criterion.required === false ? " (optional)" : " (required)"}
+            <select name="criterion_state__${escapeAttr(criterion.id)}"${criterion.required === false ? "" : " required"}>
+              <option value="">Select</option>
+              <option value="passed">Passed</option>
+              <option value="failed">Failed</option>
+              <option value="skipped">Skipped</option>
+            </select>
+          </label>
+          <label>Finding
+            <input name="criterion_finding__${escapeAttr(criterion.id)}" type="text" />
+          </label>
+        </div>
+      `).join("")}
+    </fieldset>
+  `;
+}
+
+function renderCarriedFindings(findings) {
+  if (!findings.length) return "";
+  return `<div class="meta-line"><strong>Open carried findings:</strong><ul>${findings
+    .map((finding) => `<li>${escapeHtml(finding.id)} - ${escapeHtml(finding.text)}</li>`)
+    .join("")}</ul></div>`;
+}
+
+function renderFindingResolutionInputs(findings) {
+  if (!findings.length) return "";
+  return `
+    <fieldset data-finding-resolution-inputs>
+      <legend>Carried-finding resolutions</legend>
+      ${findings.map((finding) => `
+        <label>${escapeHtml(finding.text)}
+          <input name="finding_resolution__${escapeAttr(finding.id)}" type="text" placeholder="Resolution and evidence" />
+        </label>
+      `).join("")}
+    </fieldset>
   `;
 }
 
@@ -10627,6 +11195,8 @@ function renderReleases() {
               ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
               ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
               ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+              ${renderReleasePolicyDetails(release)}
+              ${renderReleaseGateAction(release)}
             </li>
           `;
         })
@@ -10656,10 +11226,96 @@ function renderCompactRelease(release) {
           ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
           ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
           ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+          ${renderReleasePolicyDetails(release)}
+          ${renderReleaseGateAction(release)}
         </div>
       </details>
     </li>
   `;
+}
+
+function renderReleasePolicyDetails(release) {
+  const waivers = release.verification_waivers || [];
+  const scope = release.scope_validation || null;
+  const waiverMarkup = waivers.length
+    ? `<div class="meta-line"><strong>Verification waivers:</strong><ul>${waivers
+        .map((waiver) => `<li>${escapeHtml(waiver.deliverable_id)} (${escapeHtml(waiver.verification_status)}): ${escapeHtml(waiver.reason)} - ${escapeHtml(waiver.actor_kind)} ${escapeHtml(waiver.actor_id)}</li>`)
+        .join("")}</ul></div>`
+    : "";
+  const scopeMarkup = scope
+    ? `<div class="meta-line">Scope validation: ${escapeHtml(scope.state)}${(scope.unexpected_commit_shas || []).length ? ` - unexpected commits ${escapeHtml(scope.unexpected_commit_shas.join(", "))}` : ""}${(scope.unexpected_paths || []).length ? ` - unexpected paths ${escapeHtml(scope.unexpected_paths.join(", "))}` : ""}</div>`
+    : "";
+  return `${waiverMarkup}${scopeMarkup}`;
+}
+
+function renderReleaseGateAction(release) {
+  const failure = release.gate_failure || null;
+  const gateId = text(failure?.source_id);
+  const retryableVerification =
+    release.state === "blocked" &&
+    failure?.stage === "verification" &&
+    ["infrastructure", "timeout"].includes(failure?.kind);
+  const retryableReview =
+    release.state === "blocked" &&
+    failure?.stage === "review" &&
+    failure?.kind === "blocked";
+  if (!gateId || (!retryableVerification && !retryableReview)) {
+    return "";
+  }
+  const gateKind = retryableVerification ? "verification" : "review";
+  return `
+    <div class="record-actions">
+      <button
+        class="record-action"
+        type="button"
+        data-release-gate-retry
+        data-release-id="${escapeAttr(release.id)}"
+        data-gate-kind="${escapeAttr(gateKind)}"
+        data-gate-id="${escapeAttr(gateId)}"
+      >Retry ${escapeHtml(gateKind)} gate</button>
+    </div>
+  `;
+}
+
+async function retryReleaseGate(button, reason) {
+  const releaseId = text(button?.dataset?.releaseId);
+  const gateKind = text(button?.dataset?.gateKind);
+  const gateId = text(button?.dataset?.gateId);
+  if (!releaseId || !gateKind || !gateId) {
+    setStatus("Release gate retry context is incomplete.", "error");
+    return;
+  }
+  button.disabled = true;
+  setStatus(`Retrying ${gateKind} gate.`, "loading");
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/release-packages/${encodeURIComponent(releaseId)}/retry-gate`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Team-Addon-Response-Scope": "view",
+        },
+        body: JSON.stringify({
+          gate_kind: gateKind,
+          gate_id: gateId,
+          reason,
+          expected_revision: state.revision,
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const result = await response.json();
+    await applyMutationResultPayload(result);
+    setStatus(`Release ${releaseId} ${gateKind} retry recorded.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Release gate retry failed.", "error");
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function renderTemplateSetup() {
@@ -11558,6 +12214,8 @@ function renderReleaseSummary(releasePackages) {
             const artifactText = (release.artifact_refs || []).length
               ? release.artifact_refs.map((ref) => escapeHtml(ref)).join(", ")
               : "";
+            const verificationText = (release.verification_runs || []).map((run) => `${run.id}: ${run.state || "pending"}`).join(", ");
+            const releaseReviewText = (release.release_reviews || []).map((review) => `${review.id}: ${review.state || "pending"}`).join(", ");
             return `
               <li class="record-item">
                 <div class="record-line">
@@ -11567,11 +12225,16 @@ function renderReleaseSummary(releasePackages) {
                 <div class="meta-line">Project ${escapeHtml(release.project_id)}${deliverables ? ` - deliverables ${escapeHtml(deliverables)}` : ""}</div>
                 ${release.release_branch ? `<div class="meta-line">Release ${escapeHtml(release.release_branch)}</div>` : ""}
                 ${release.canonical_branch ? `<div class="meta-line">Canonical ${escapeHtml(release.canonical_branch)}</div>` : ""}
+                ${release.candidate_commit_sha ? `<div class="meta-line">Candidate ${escapeHtml(release.candidate_commit_sha)}</div>` : ""}
+                ${release.approved_commit_sha ? `<div class="meta-line">Approved ${escapeHtml(release.approved_commit_sha)}</div>` : ""}
                 ${release.published_commit_sha ? `<div class="meta-line">Commit ${escapeHtml(release.published_commit_sha)}</div>` : ""}
+                ${verificationText ? `<div class="meta-line">Verification: ${escapeHtml(verificationText)}</div>` : ""}
+                ${releaseReviewText ? `<div class="meta-line">Release reviews: ${escapeHtml(releaseReviewText)}</div>` : ""}
                 ${promotionText ? `<div class="meta-line">Git promotions: ${escapeHtml(promotionText)}</div>` : ""}
                 ${artifactText ? `<div class="meta-line">Artifact refs: ${artifactText}</div>` : ""}
                 ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
                 ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+                ${renderReleasePolicyDetails(release)}
               </li>
             `;
           })
@@ -12083,20 +12746,12 @@ async function importGitRepoForForm(form, button) {
     return false;
   }
   const data = formData(form);
-  const repoSource = text(data.host_repo_path) || text(data.canonical_origin_url);
+  const repoSource = text(data.repo_source);
   if (!repoSource) {
-    setStatus("Host repo path or canonical origin URL is required before import.", "error");
-    return false;
-  }
-  const bareRepo = text(data.bare_repo || data.bare_repo_name);
-  if (bareRepo && bareRepo.startsWith("/")) {
-    setStatus("Import creates a control-plane bare repo name; use a name, not an absolute path.", "error");
+    setStatus("Repository source is required before import.", "error");
     return false;
   }
   const payload = { repo_source: repoSource };
-  if (bareRepo) {
-    payload.bare_repo_name = bareRepo;
-  }
   const directoryPath = text(form.dataset.directoryPath);
   if (directoryPath) {
     payload.directory_path = directoryPath;
@@ -12121,7 +12776,7 @@ async function importGitRepoForForm(form, button) {
     const body = await response.json();
     applyImportedGitConfig(form, body.git || body.imported?.git || {});
     const imported = body.imported || {};
-    setGitImportStatus(statusTarget, imported.bare_repo_name || "Imported.");
+    setGitImportStatus(statusTarget, imported.managed_repo_id || "Imported.");
     setStatus("Imported Git repo. Review the populated Git fields, then save.", "ok");
     return true;
   } catch (error) {
@@ -12137,11 +12792,9 @@ async function importGitRepoForForm(form, button) {
 
 function applyImportedGitConfig(form, git) {
   const fields = {
-    host_repo_path: git.host_repo_path,
-    bare_repo: git.bare_repo_name || git.bare_repo_path,
+    managed_repo_id: git.managed_repo_id,
+    managed_repo_directory_path: git.directory_path,
     base_branch: git.base_branch,
-    canonical_origin_url: git.canonical_origin_url,
-    provider: git.provider,
     canonical_release_branch_prefix: git.canonical_release_branch_prefix,
   };
   Object.entries(fields).forEach(([name, value]) => {
@@ -13653,6 +14306,10 @@ function payloadForForm(form, data = formData(form)) {
     if (git) {
       payload.git = git;
     }
+    const releasePolicy = releasePolicyForForm(data);
+    if (releasePolicy) {
+      payload.release_policy = releasePolicy;
+    }
     return payload;
   }
   if (formId === "create-role-form") {
@@ -13786,25 +14443,17 @@ function payloadForForm(form, data = formData(form)) {
 }
 
 function gitConfigForForm(data) {
-  const hostRepoPath = text(data.host_repo_path);
-  if (!hostRepoPath) {
+  const managedRepoId = text(data.managed_repo_id);
+  if (!managedRepoId) {
     return null;
   }
-  const git = { host_repo_path: hostRepoPath };
-  const bareRepo = text(data.bare_repo);
-  if (bareRepo) {
-    if (bareRepo.startsWith("/")) {
-      git.bare_repo_path = bareRepo;
-    } else {
-      git.bare_repo_name = bareRepo;
-    }
+  const git = { managed_repo_id: managedRepoId };
+  const directoryPath = text(data.managed_repo_directory_path);
+  if (directoryPath) {
+    git.directory_path = directoryPath;
   }
   const optionalFields = [
-    "bare_repo_name",
-    "bare_repo_path",
     "base_branch",
-    "canonical_origin_url",
-    "provider",
     "canonical_release_branch_prefix",
   ];
   optionalFields.forEach((field) => {
@@ -13816,11 +14465,16 @@ function gitConfigForForm(data) {
   return git;
 }
 
-function gitToBareRepo(git) {
-  if (!git) {
-    return "";
+function releasePolicyForForm(data) {
+  const raw = text(data.release_policy_json);
+  if (!raw) {
+    return null;
   }
-  return text(git.bare_repo_path || git.bare_repo_name);
+  const policy = JSON.parse(raw);
+  if (!policy || Array.isArray(policy) || typeof policy !== "object") {
+    throw new Error("Release policy must be a JSON object.");
+  }
+  return policy;
 }
 
 async function submitReviewDecision(form) {
@@ -13841,7 +14495,8 @@ async function submitReviewDecision(form) {
   const payload = {
     state: stateValue,
     findings: splitList(data.findings),
-    criteria: parseCriterionResults(data.criteria),
+    criteria: reviewCriterionResultsFromForm(form),
+    finding_resolutions: findingResolutionsFromForm(form),
   };
   await submitMutation(
     form,
@@ -13850,6 +14505,35 @@ async function submitReviewDecision(form) {
     payload,
     { resetOnSuccess: false },
     );
+}
+
+function reviewCriterionResultsFromForm(form) {
+  return [...form.querySelectorAll("[data-review-criterion-id]")]
+    .map((row) => {
+      const criterionId = text(row.dataset.reviewCriterionId);
+      const stateValue = text(row.querySelector("select")?.value);
+      if (!stateValue) return null;
+      return {
+        criterion_id: criterionId,
+        state: stateValue,
+        finding: text(row.querySelector('input[type="text"]')?.value),
+      };
+    })
+    .filter(Boolean);
+}
+
+function findingResolutionsFromForm(form) {
+  return [...form.querySelectorAll('[name^="finding_resolution__"]')]
+    .map((input) => {
+      const resolution = text(input.value);
+      if (!resolution) return null;
+      return {
+        finding_id: input.name.slice("finding_resolution__".length),
+        resolution,
+        evidence_refs: [],
+      };
+    })
+    .filter(Boolean);
 }
 
 function openEditDialog(type, id) {
@@ -13981,15 +14665,21 @@ function renderEditFields(type, record) {
         placeholder: "id | description | state",
       })}
       <p class="subheading">Git config</p>
-      ${textField("Host repo path", "host_repo_path", record.git?.host_repo_path || "")}
-      ${textField("Bare repo", "bare_repo", gitToBareRepo(record.git), {
-        placeholder: "repo.git or /srv/git/repo.git",
+      ${textField("Repository source", "repo_source", "", {
+        placeholder: "Git URL or local checkout",
       })}
       ${gitImportControls()}
+      ${textField("Managed repository ID", "managed_repo_id", record.git?.managed_repo_id || "", {
+        placeholder: "mr_...",
+      })}
+      <input type="hidden" name="managed_repo_directory_path" value="${escapeAttr(record.git?.directory_path || "root")}" />
       ${textField("Base branch", "base_branch", record.git?.base_branch || "main")}
-      ${textField("Canonical origin URL", "canonical_origin_url", record.git?.canonical_origin_url || "")}
-      ${selectField("Provider", "provider", "git-providers", record.git?.provider || "", { placeholder: "Default" })}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
+      <p class="subheading">Release gates</p>
+      ${textareaField("Release policy JSON", "release_policy_json", record.release_policy ? JSON.stringify(record.release_policy, null, 2) : "", {
+        rows: 12,
+        placeholder: '{"verification_commands": [...], "review_requirements": [...]}',
+      })}
     `;
   }
   if (type === "agent") {
@@ -14145,6 +14835,7 @@ function editPayloadForForm(type, form) {
       status: text(data.status),
       goals: parseGoals(data.goals),
       git: gitConfigForForm(data),
+      release_policy: releasePolicyForForm(data),
     };
   }
   if (type === "agent") {

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import fcntl
+import os
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -31,6 +34,7 @@ from ..models import (
     PersistentAgent,
     Project,
     ProjectGitConfig,
+    ProjectReleasePolicy,
     ProjectGoal,
     ProjectStatus,
     ReviewCriterionResult,
@@ -54,6 +58,7 @@ from ..models import (
     _ensure_unique,
     _unique_text_list,
     agent_project_ids,
+    release_package_payload_with_derived,
 )
 from ..templates import get_template
 from .domain.agent_access import (
@@ -107,10 +112,14 @@ from .domain.governance import (
 )
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import _build_release_package
+from .domain.release_gates import retry_release_gate
 from .domain.review import (
+    _apply_finding_resolutions,
     _cascade_review_decision,
     _is_review_decision_state,
+    _record_open_review_findings,
     _reopen_accepted_deliverable_for_pending_review,
+    _review_decision_policy_error,
     _review_profile_for_request,
 )
 from .domain.work_due import _mark_agent_work_due
@@ -151,12 +160,170 @@ def _validate_admin_memory_scope(
 
 
 class TeamAdminService:
-    def __init__(self, repository: TeamStateRepository) -> None:
+    _PROJECT_REPOSITORY_BINDING_KIND = "team_projects"
+
+    def __init__(
+        self,
+        repository: TeamStateRepository,
+        *,
+        managed_git_admin: Any | None = None,
+    ) -> None:
         self._repository = repository
+        self._managed_git_admin = managed_git_admin
 
     @property
     def repository(self) -> TeamStateRepository:
         return self._repository
+
+    def _project_repository_binding_exists(
+        self,
+        managed_repo_id: str,
+        project_id: str,
+    ) -> bool:
+        managed_git = self._managed_git_admin
+        if managed_git is None:
+            return False
+        record = managed_git.get_repository(managed_repo_id)
+        return any(
+            isinstance(binding, Mapping)
+            and binding.get("kind") == self._PROJECT_REPOSITORY_BINDING_KIND
+            and binding.get("binding_id") == project_id
+            for binding in record.get("bindings") or []
+        )
+
+    def _set_project_repository_binding(
+        self,
+        managed_repo_id: str,
+        project_id: str,
+        *,
+        bound: bool,
+    ) -> None:
+        managed_git = self._managed_git_admin
+        if managed_git is None:
+            return
+        operation = managed_git.bind if bound else managed_git.unbind
+        operation(
+            managed_repo_id,
+            kind=self._PROJECT_REPOSITORY_BINDING_KIND,
+            binding_id=project_id,
+        )
+
+    @contextmanager
+    def _project_repository_binding_lock(self):
+        lock_path = self._repository.store.path.parent / "project-repository-bindings.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    def _update_with_project_repository_binding(
+        self,
+        mutate: Any,
+        *,
+        project_id: str,
+        next_managed_repo_id: str | None,
+        expected_revision: int | None,
+    ) -> TeamState:
+        managed_git = self._managed_git_admin
+        if managed_git is None:
+            return self._repository.update(mutate, expected_revision=expected_revision)
+
+        with self._project_repository_binding_lock():
+            current_project = self._repository.read().projects.get(project_id)
+            previous_managed_repo_id = (
+                current_project.git.managed_repo_id
+                if current_project is not None and current_project.git is not None
+                else None
+            )
+            return self._update_with_locked_project_repository_binding(
+                mutate,
+                project_id=project_id,
+                previous_managed_repo_id=previous_managed_repo_id,
+                next_managed_repo_id=next_managed_repo_id,
+                expected_revision=expected_revision,
+            )
+
+    def _update_with_locked_project_repository_binding(
+        self,
+        mutate: Any,
+        *,
+        project_id: str,
+        previous_managed_repo_id: str | None,
+        next_managed_repo_id: str | None,
+        expected_revision: int | None,
+    ) -> TeamState:
+        previous_was_bound = bool(
+            previous_managed_repo_id
+            and self._project_repository_binding_exists(
+                previous_managed_repo_id,
+                project_id,
+            )
+        )
+        next_was_bound = bool(
+            next_managed_repo_id
+            and (
+                (next_managed_repo_id == previous_managed_repo_id and previous_was_bound)
+                or self._project_repository_binding_exists(next_managed_repo_id, project_id)
+            )
+        )
+
+        def restore_original_bindings() -> None:
+            rollback_errors: list[BaseException] = []
+            if previous_managed_repo_id and previous_was_bound:
+                try:
+                    self._set_project_repository_binding(
+                        previous_managed_repo_id,
+                        project_id,
+                        bound=True,
+                    )
+                except BaseException as exc:
+                    rollback_errors.append(exc)
+            if next_managed_repo_id and not next_was_bound:
+                try:
+                    self._set_project_repository_binding(
+                        next_managed_repo_id,
+                        project_id,
+                        bound=False,
+                    )
+                except BaseException as exc:
+                    rollback_errors.append(exc)
+            if rollback_errors:
+                raise RuntimeError(
+                    "could not restore managed repository bindings after Team project failure"
+                ) from rollback_errors[0]
+
+        try:
+            if next_managed_repo_id and not next_was_bound:
+                self._set_project_repository_binding(
+                    next_managed_repo_id,
+                    project_id,
+                    bound=True,
+                )
+            if (
+                previous_managed_repo_id
+                and previous_managed_repo_id != next_managed_repo_id
+                and previous_was_bound
+            ):
+                self._set_project_repository_binding(
+                    previous_managed_repo_id,
+                    project_id,
+                    bound=False,
+                )
+        except BaseException:
+            restore_original_bindings()
+            raise
+
+        try:
+            return self._repository.update(mutate, expected_revision=expected_revision)
+        except BaseException:
+            restore_original_bindings()
+            raise
 
     def dismiss_action_record_attention(
         self,
@@ -818,6 +985,7 @@ class TeamAdminService:
         lead_display_name: str | None = None,
         goals: list[ProjectGoal | Mapping[str, Any]] | None = None,
         git: ProjectGitConfig | None = None,
+        release_policy: ProjectReleasePolicy | None = None,
         lead_role_id: str | None = None,
         lead_role_name: str | None = None,
         expected_revision: int | None = None,
@@ -831,14 +999,15 @@ class TeamAdminService:
         normalized_lead_role_id = _optional_text(lead_role_id)
         normalized_lead_role_name = _optional_text(lead_role_name) or "Project Lead"
         goal_inputs = list(goals or [])
+        current_state = self._repository.read()
+        effective_project_id = normalized_project_id or _generated_id(
+            prefix="project",
+            labels=[normalized_team_id, normalized_name],
+            existing_ids=current_state.projects,
+        )
 
         def _mutate(state: TeamState) -> TeamState:
             team = _require_present(state.teams, normalized_team_id, "team")
-            effective_project_id = normalized_project_id or _generated_id(
-                prefix="project",
-                labels=[normalized_team_id, normalized_name],
-                existing_ids=state.projects,
-            )
             _require_absent(state.projects, effective_project_id, "project")
             role_base_id = _default_role_id(
                 team_id=normalized_team_id,
@@ -926,6 +1095,7 @@ class TeamAdminService:
                 lead_agent_id=lead.id,
                 goals=project_goals,
                 git=git,
+                release_policy=release_policy,
                 created_at=now,
                 updated_at=now,
             )
@@ -933,7 +1103,14 @@ class TeamAdminService:
             team.updated_at = now
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        if git is None:
+            return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._update_with_project_repository_binding(
+            _mutate,
+            project_id=effective_project_id,
+            next_managed_repo_id=git.managed_repo_id,
+            expected_revision=expected_revision,
+        )
 
     def update_project(
         self,
@@ -942,16 +1119,24 @@ class TeamAdminService:
         name: str | None = None,
         git: ProjectGitConfig | None = None,
         set_git: bool = False,
+        release_policy: ProjectReleasePolicy | None = None,
+        set_release_policy: bool = False,
         goals: list[ProjectGoal] | None = None,
         status: ProjectStatus | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        next_managed_repo_id = (
+            git.managed_repo_id if set_git and git is not None else None
+        )
+
         def _mutate(state: TeamState) -> TeamState:
             project = _require_present(state.projects, project_id, "project")
             if name is not None:
                 project.name = name
             if set_git:
                 project.git = git
+            if set_release_policy:
+                project.release_policy = release_policy
             if goals is not None:
                 project.goals = goals
             if status is not None:
@@ -959,7 +1144,14 @@ class TeamAdminService:
             project.updated_at = utc_now()
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        if not set_git:
+            return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._update_with_project_repository_binding(
+            _mutate,
+            project_id=project_id,
+            next_managed_repo_id=next_managed_repo_id,
+            expected_revision=expected_revision,
+        )
 
     def create_git_work_context_with_id(
         self,
@@ -2080,6 +2272,15 @@ class TeamAdminService:
                 artifact_refs=artifact_refs or [],
                 state=state,
                 supersedes_deliverable_id=normalized_supersedes_deliverable_id,
+                carried_findings=(
+                    [
+                        finding.model_copy(deep=True)
+                        for finding in superseded_deliverable.carried_findings
+                        if finding.state == "open"
+                    ]
+                    if superseded_deliverable is not None
+                    else []
+                ),
             )
             state_model.deliverables[deliverable.id] = deliverable
             if superseded_deliverable is not None:
@@ -2490,7 +2691,15 @@ class TeamAdminService:
             result["created_agent_ids"] = dict(result["agent_ids"])
             return state
 
-        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        if git is None:
+            state = self._repository.update(_mutate, expected_revision=expected_revision)
+        else:
+            state = self._update_with_project_repository_binding(
+                _mutate,
+                project_id=project_id,
+                next_managed_repo_id=git.managed_repo_id,
+                expected_revision=expected_revision,
+            )
         result["revision"] = state.revision
         result["created_team_id"] = team_id
         result["created_project_id"] = project_id
@@ -2565,6 +2774,11 @@ class TeamAdminService:
                 findings=findings or [],
                 review_profile_id=effective_review_profile_id,
                 instructions=instructions,
+                reviewed_commit_sha=(
+                    deliverable.git_refs.reviewed_commit_sha
+                    or deliverable.git_refs.submitted_commit_sha
+                    or deliverable.git_refs.commit_sha
+                ),
                 created_at=now,
                 decision_at=decision_at,
             )
@@ -2596,6 +2810,7 @@ class TeamAdminService:
         state: TeamRecordState,
         findings: list[str] | None = None,
         criteria: list[ReviewCriterionResult] | None = None,
+        finding_resolutions: list[Mapping[str, Any]] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_id = _required_text(review_request_id, "review_request_id")
@@ -2609,11 +2824,39 @@ class TeamAdminService:
             if criteria is not None
             else None
         )
+        normalized_finding_resolutions = [
+            dict(item) for item in (finding_resolutions or [])
+        ]
 
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(state_model.review_requests, normalized_id, "review request")
+            effective_criteria = (
+                criterion_results if criterion_results is not None else list(review.criteria)
+            )
+            policy_error = _review_decision_policy_error(
+                state_model,
+                review=review,
+                decision_state=state,
+                criterion_results=effective_criteria,
+                finding_resolutions=normalized_finding_resolutions,
+            )
+            if policy_error is not None:
+                raise ValueError(policy_error)
             if criterion_results is not None:
                 review.criteria = criterion_results
+            _apply_finding_resolutions(
+                state_model,
+                review=review,
+                decision_state=state,
+                finding_resolutions=normalized_finding_resolutions,
+            )
+            _record_open_review_findings(
+                state_model,
+                review=review,
+                decision_state=state,
+                findings=findings_list,
+                criterion_results=effective_criteria,
+            )
             projects_to_recalc: set[str] = set()
             _cascade_review_decision(
                 state_model,
@@ -2641,6 +2884,8 @@ class TeamAdminService:
         release_id: str | None = None,
         release_branch: str | None = None,
         canonical_branch: str | None = None,
+        verification_waivers: list[Mapping[str, Any]] | None = None,
+        operator_actor_id: str = "operator",
         expected_revision: int | None = None,
     ) -> TeamState:
         state, _result = self.create_release_package_with_result(
@@ -2649,6 +2894,8 @@ class TeamAdminService:
             release_id=release_id,
             release_branch=release_branch,
             canonical_branch=canonical_branch,
+            verification_waivers=verification_waivers,
+            operator_actor_id=operator_actor_id,
             expected_revision=expected_revision,
         )
         return state
@@ -2661,6 +2908,8 @@ class TeamAdminService:
         release_id: str | None = None,
         release_branch: str | None = None,
         canonical_branch: str | None = None,
+        verification_waivers: list[Mapping[str, Any]] | None = None,
+        operator_actor_id: str = "operator",
         expected_revision: int | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_project_id = _required_text(project_id, "project_id")
@@ -2670,14 +2919,23 @@ class TeamAdminService:
             "deliverable_ids": list(deliverable_ids),
             "release_branch": _optional_text(release_branch),
             "canonical_branch": _optional_text(canonical_branch),
+            "verification_waivers": [
+                dict(item) for item in (verification_waivers or [])
+            ],
+            "waiver_actor_kind": "operator",
+            "waiver_actor_id": _required_text(operator_actor_id, "operator_actor_id"),
         }
         result: dict[str, Any] = {
             "success": False,
+            "created": False,
+            "duplicate": False,
+            "existing_release_package_id": None,
             "release_package_ids": [],
             "errors": [],
             "events": [],
             "git_promotion_event_ids": [],
             "created_deliverable_ids": [],
+            "next_action_hints": [],
         }
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -2703,4 +2961,56 @@ class TeamAdminService:
 
         state = self._repository.update(_mutate, expected_revision=expected_revision)
         result["revision"] = state.revision
+        return state, result
+
+    def retry_release_gate_with_result(
+        self,
+        *,
+        release_package_id: str,
+        gate_kind: str,
+        gate_id: str,
+        reason: str,
+        operator_actor_id: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_release_id = _required_text(
+            release_package_id,
+            "release_package_id",
+        )
+        normalized_actor_id = _required_text(operator_actor_id, "operator_actor_id")
+        result: dict[str, Any] = {
+            "success": False,
+            "release_package_id": normalized_release_id,
+            "events": [],
+            "created_inbox_item_ids": [],
+            "created_review_request_ids": [],
+            "release_verification_run_ids": [],
+            "operator_actor_id": normalized_actor_id,
+        }
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            release = _require_present(
+                state_model.release_packages,
+                normalized_release_id,
+                "release package",
+            )
+            retry_release_gate(
+                state_model,
+                release=release,
+                gate_kind=gate_kind,
+                gate_id=gate_id,
+                reason=reason,
+                requested_by=normalized_actor_id,
+                result=result,
+            )
+            _recalculate_project_status(state_model, release.project_id)
+            result["success"] = True
+            return state_model
+
+        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
+        result["release_package"] = release_package_payload_with_derived(
+            state,
+            state.release_packages[normalized_release_id],
+        )
         return state, result

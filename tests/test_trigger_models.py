@@ -788,8 +788,8 @@ def test_ci_run_completed_trigger_rejects_invalid_provider_conclusion_top_and_mi
         )
 
 
-def test_git_push_trigger_requires_repo_path_or_glob() -> None:
-    with pytest.raises(ValueError, match="path_to_repo or path_glob"):
+def test_git_push_trigger_requires_managed_repo_id_or_glob() -> None:
+    with pytest.raises(ValueError, match="managed_repo_id or managed_repo_id_glob"):
         GitPushTriggerDefinition.model_validate(
             {
                 "id": "t-3b",
@@ -799,15 +799,15 @@ def test_git_push_trigger_requires_repo_path_or_glob() -> None:
         )
 
 
-def test_git_push_trigger_rejects_both_repo_path_and_glob() -> None:
+def test_git_push_trigger_rejects_both_managed_repo_id_and_glob() -> None:
     with pytest.raises(ValueError, match="mutually exclusive"):
         GitPushTriggerDefinition.model_validate(
             {
                 "id": "t-3c",
                 "display_name": "Git push",
                 "type": "trigger:git:push",
-                "path_to_repo": "/tmp/repo.git",
-                "path_glob": "/tmp/*.git",
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "managed_repo_id_glob": "mr_012345*",
             }
         )
 
@@ -1386,28 +1386,37 @@ def test_vm_copy_files_effect_requires_exactly_one_source_kind() -> None:
         )
 
 
-def test_pr_create_effect_requires_host_repo_path() -> None:
+def test_pr_create_effect_requires_managed_repo_and_pinned_source() -> None:
     effect = PrCreateEffectDefinition.model_validate(
         {
             "id": "effect-pr",
             "display_name": "Create PR",
             "type": "effect:pr:create",
-            "host_repo_path": "/repo",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "source_ref": "refs/evander/operations/op-1/source",
+            "expected_commit_sha": "a" * 40,
+            "destination_branch": "feature/topic",
             "fallback_title": "Fallback",
         }
     )
 
-    assert effect.host_repo_path == "/repo"
+    assert effect.managed_repo_id == "mr_0123456789abcdefabcd"
+    assert effect.source_ref == "refs/evander/operations/op-1/source"
+    assert effect.expected_commit_sha == "a" * 40
+    assert effect.destination_branch == "feature/topic"
     assert effect.fallback_title == "Fallback"
 
-    with pytest.raises(ValueError, match="Field required"):
-        PrCreateEffectDefinition.model_validate(
-            {
-                "id": "effect-pr-missing-path",
-                "display_name": "Create PR",
-                "type": "effect:pr:create",
-            }
-        )
+    payload = effect.model_dump()
+    for required_field in (
+        "managed_repo_id",
+        "source_ref",
+        "expected_commit_sha",
+        "destination_branch",
+    ):
+        missing = dict(payload)
+        missing.pop(required_field)
+        with pytest.raises(ValueError, match=required_field):
+            PrCreateEffectDefinition.model_validate(missing)
 
 
 def test_notification_send_effect_requires_target_and_message() -> None:
@@ -1457,86 +1466,66 @@ def test_notification_send_effect_requires_target_and_message() -> None:
         )
 
 
-def test_git_promote_agent_branch_effect_requires_repo_and_branch_fields() -> None:
+def test_git_promote_agent_branch_effect_requires_managed_repo_and_pinned_fields() -> None:
     effect = GitPromoteAgentBranchEffectDefinition.model_validate(
         {
             "id": "effect-promote",
             "display_name": "Promote branch",
             "type": "effect:git:promote-agent-branch",
-            "host_repo_path": "/repo",
-            "bare_repo_path": "/git-remotes/repo.git",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
             "agent_branch": "agents/session-1/topic",
+            "target_branch": "review/session-1/topic",
+            "expected_commit_sha": "a" * 40,
         }
     )
 
-    assert effect.host_repo_path == "/repo"
+    assert effect.managed_repo_id == "mr_0123456789abcdefabcd"
     assert effect.agent_branch == "agents/session-1/topic"
+    assert effect.target_branch == "review/session-1/topic"
+    assert effect.expected_commit_sha == "a" * 40
 
-    with pytest.raises(ValueError, match="bare_repo_path or bare_repo_name"):
-        GitPromoteAgentBranchEffectDefinition.model_validate(
-            {
-                "id": "effect-promote-missing-bare",
-                "display_name": "Promote branch",
-                "type": "effect:git:promote-agent-branch",
-                "host_repo_path": "/repo",
-                "agent_branch": "agents/session-1/topic",
-            }
-        )
-
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        GitPromoteAgentBranchEffectDefinition.model_validate(
-            {
-                "id": "effect-promote-static-conflict",
-                "display_name": "Promote branch",
-                "type": "effect:git:promote-agent-branch",
-                "host_repo_path": "/repo",
-                "bare_repo_path": "/git-remotes/repo.git",
-                "bare_repo_name": "repo.git",
-                "agent_branch": "agents/session-1/topic",
-            }
-        )
-
-    dynamic_selector = GitPromoteAgentBranchEffectDefinition.model_validate(
-        {
-            "id": "effect-promote-dynamic-bare",
-            "display_name": "Promote branch",
-            "type": "effect:git:promote-agent-branch",
-            "host_repo_path": "/repo",
-            "bare_repo_path": "${{event.payload.bare_repo_path ?? null}}",
-            "bare_repo_name": "${{event.payload.bare_repo_name ?? null}}",
-            "agent_branch": "agents/session-1/topic",
-        }
-    )
-    assert dynamic_selector.bare_repo_path == "${{event.payload.bare_repo_path ?? null}}"
-    assert dynamic_selector.bare_repo_name == "${{event.payload.bare_repo_name ?? null}}"
+    payload = effect.model_dump()
+    for required_field in (
+        "managed_repo_id",
+        "agent_branch",
+        "target_branch",
+        "expected_commit_sha",
+    ):
+        missing = dict(payload)
+        missing.pop(required_field)
+        with pytest.raises(ValueError, match=required_field):
+            GitPromoteAgentBranchEffectDefinition.model_validate(missing)
 
 
-def test_git_push_branch_effect_requires_branch_fields() -> None:
+def test_git_push_branch_effect_requires_managed_repo_and_pinned_fields() -> None:
     effect = GitPushBranchEffectDefinition.model_validate(
         {
             "id": "effect-push",
             "display_name": "Push branch",
             "type": "effect:git:push-branch",
-            "host_repo_path": "/repo",
-            "local_branch": "review/session/work",
-            "origin_branch": "feature/topic",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "source_ref": "refs/evander/operations/op-1/source",
+            "expected_commit_sha": "a" * 40,
+            "destination_branch": "feature/topic",
         }
     )
 
-    assert effect.host_repo_path == "/repo"
-    assert effect.local_branch == "review/session/work"
-    assert effect.origin_branch == "feature/topic"
+    assert effect.managed_repo_id == "mr_0123456789abcdefabcd"
+    assert effect.source_ref == "refs/evander/operations/op-1/source"
+    assert effect.expected_commit_sha == "a" * 40
+    assert effect.destination_branch == "feature/topic"
 
-    with pytest.raises(ValueError, match="Field required"):
-        GitPushBranchEffectDefinition.model_validate(
-            {
-                "id": "effect-push-missing-origin",
-                "display_name": "Push branch",
-                "type": "effect:git:push-branch",
-                "host_repo_path": "/repo",
-                "local_branch": "review/session/work",
-            }
-        )
+    payload = effect.model_dump()
+    for required_field in (
+        "managed_repo_id",
+        "source_ref",
+        "expected_commit_sha",
+        "destination_branch",
+    ):
+        missing = dict(payload)
+        missing.pop(required_field)
+        with pytest.raises(ValueError, match=required_field):
+            GitPushBranchEffectDefinition.model_validate(missing)
 
 
 def test_session_update_metadata_effect_and_session_context_query_validate() -> None:

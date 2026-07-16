@@ -160,6 +160,21 @@ def bind_deliverable_git_refs_to_work_context(
     resolved_commit_sha = supplied_commit_sha or context.commit_sha
     if resolved_commit_sha is not None:
         git_refs["commit_sha"] = resolved_commit_sha
+        submitted_commit_sha = _optional_text(git_refs.get("submitted_commit_sha"))
+        if submitted_commit_sha not in {None, resolved_commit_sha}:
+            raise GitWorkContextValidationError(
+                code="submitted_commit_sha_mismatch",
+                message=(
+                    f"submitted_commit_sha {submitted_commit_sha!r} does not match "
+                    f"verified context commit {resolved_commit_sha!r}"
+                ),
+                correction_context={
+                    "branch_context_id": branch_context_id,
+                    "submitted_commit_sha": submitted_commit_sha,
+                    "expected_commit_sha": resolved_commit_sha,
+                },
+            )
+        git_refs["submitted_commit_sha"] = resolved_commit_sha
     deliverable["branch_context_id"] = context.id
     deliverable["git_refs"] = git_refs
 

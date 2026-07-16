@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .domain import common as _team_common
@@ -20,6 +20,7 @@ from ..models import (
     AgentStandDown,
     AgentStandDownSource,
     AgentStatus,
+    GitWorkContextState,
     GovernanceRuntime,
     TeamDispatchActivityStatus,
     TeamInboxPriority,
@@ -259,6 +260,7 @@ class TeamRuntimeService:
         project_id: str | None = None,
         agent_id: str | None = None,
         blocked_team_ids: set[str] | None = None,
+        session_is_busy: Callable[[str], bool] | None = None,
     ) -> tuple[TeamState, list[dict[str, Any]]]:
         effective_now = _ensure_utc(now or utc_now())
         normalized_team_id = _optional_text(team_id)
@@ -312,6 +314,8 @@ class TeamRuntimeService:
                 ):
                     continue
                 if normalized_agent_id is not None and agent.id != normalized_agent_id:
+                    continue
+                if session_is_busy is not None and session_is_busy(agent.session_id):
                     continue
                 runtime = state_model.agent_runtimes.setdefault(
                     agent.id,
@@ -476,6 +480,8 @@ class TeamRuntimeService:
                 ):
                     continue
                 if normalized_agent_id is not None and manager.id != normalized_agent_id:
+                    continue
+                if session_is_busy is not None and session_is_busy(manager.session_id):
                     continue
                 if (
                     manager.id in state_model.agent_runtimes
@@ -727,6 +733,39 @@ class TeamRuntimeService:
             return state
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
+
+    def release_agent_wake_lease_for_retry(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+    ) -> TeamState:
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            runtime = state.agent_runtimes.get(normalized_agent_id)
+            if runtime is None or runtime.active_dispatch_id != normalized_dispatch_id:
+                raise ValueError(
+                    f"dispatch {normalized_dispatch_id} no longer owns the wake lease "
+                    f"for agent {normalized_agent_id}"
+                )
+            runtime.active_dispatch_id = None
+            runtime.wake_leased_until = None
+            runtime.wake_reason = None
+            runtime.next_wake_at = None
+            runtime.updated_at = utc_now()
+            for context in state.git_work_contexts.values():
+                if (
+                    context.agent_id == normalized_agent_id
+                    and context.dispatch_id == normalized_dispatch_id
+                    and context.state == GitWorkContextState.ACTIVE
+                ):
+                    context.state = GitWorkContextState.ABANDONED
+                    context.updated_at = runtime.updated_at
+            return state
+
+        return self._repository.update(_mutate)
 
     def finalize_agent_dispatch_from_activity(
         self,

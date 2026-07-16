@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test": "node --test --test-concurrency=1 --experimental-strip-types test/**/*.test.mjs",
-    "test:smoke": "node --test --experimental-strip-types test/**/*.smoke.mjs",
+    "test:smoke": "node --test --test-concurrency=1 --experimental-strip-types test/**/*.smoke.mjs",
     "build:team-org-flow": "vite build --config vite.team-org-flow.config.ts",
     "build:team-agent-create": "vite build --config vite.team-agent-create.config.ts",
     "build": "tsc -b && vite build",

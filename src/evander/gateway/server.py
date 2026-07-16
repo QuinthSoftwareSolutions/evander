@@ -205,6 +205,7 @@ from evander.gateway.communication_tools import (
     CommunicationToolHelpers,
     register_communication_tools,
 )
+from evander.gateway.consultation_tools import register_consultation_tools
 from evander.gateway.email_draft_helpers import (
     EmailDraftHelpers,
     draft_recipients_from_payload,
@@ -545,6 +546,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
             "token_hash",
             "mcp_session_token",
             "evander_mcp_session_token",
+            "result_token",
+            "consultation_token",
         }
         if not session_id:
             return (
@@ -750,6 +753,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
         require_target_session_visible_within_directory=(
             visibility_helpers.require_target_session_visible_within_directory
         ),
+    )
+    register_consultation_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
     )
     register_issue_tools(
         server,

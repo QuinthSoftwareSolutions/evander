@@ -13,32 +13,14 @@ import subprocess
 from types import MethodType, SimpleNamespace
 from typing import Any, Mapping
 
-from types import SimpleNamespace
 from evander.admin import workflow_report_helpers
 from evander.admin.payloads import AdminRevisionConflict, WorkflowFailureClusterReportPayload
-from evander.admin.services import git_helpers, process_helpers, session_helpers, vm_helpers
+from evander.admin.services import process_helpers, session_helpers, vm_helpers
 from evander.admin.services.issue_setup_helpers import EffectiveIssueSetupConfig
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 import evander.admin.services.teams_service as admin_teams_service
 import evander.admin.services.worker_control_service as worker_control_service
-admin_service = SimpleNamespace(
-    _run_virsh=vm_helpers.run_virsh,
-    _probe_agent_state=vm_helpers.probe_agent_state,
-    _normalize_workflow_failure_signature=workflow_report_helpers._normalize_workflow_failure_signature,
-    WorkflowFailureClusterReportPayload=WorkflowFailureClusterReportPayload,
-    CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS=workflow_report_helpers.CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS,
-    subprocess=subprocess,
-    os=os,
-    sys=__import__("sys"),
-    _ssh_options=vm_helpers.ssh_options,
-    EffectiveIssueSetupConfig=EffectiveIssueSetupConfig,
-    _resolve_host_python_with_pip=process_helpers.resolve_host_python_with_pip,
-    _wait_for_vm_ip=vm_helpers.wait_for_vm_ip,
-    _require_valid_cron=session_helpers.require_valid_cron,
-    _mirror_remote_name_for_repo=git_helpers.mirror_remote_name_for_repo,
-)
 import evander.admin.services.workflow_reports_service as workflow_reports_service
-import httpx
 import pytest
 from evander.admin import operations_helpers, privileged_helper
 from evander.capacity_health import HealthState, TelemetryStatus
@@ -51,7 +33,6 @@ from evander.config import (
     TeamsIngestWorkerGlobalConfig,
 )
 from evander.effects.registry import EffectProviderFactory
-admin_service.EffectProviderFactory = EffectProviderFactory
 from evander.effects.providers.schemas import AgentCreateEffectDefinition
 from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
@@ -110,6 +91,28 @@ from evander.worker.models import (
     WorkerTelemetryPayload,
 )
 
+admin_service = SimpleNamespace(
+    _run_virsh=vm_helpers.run_virsh,
+    _probe_agent_state=vm_helpers.probe_agent_state,
+    _normalize_workflow_failure_signature=workflow_report_helpers._normalize_workflow_failure_signature,
+    WorkflowFailureClusterReportPayload=WorkflowFailureClusterReportPayload,
+    CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS=workflow_report_helpers.CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS,
+    subprocess=subprocess,
+    os=os,
+    sys=__import__("sys"),
+    _ssh_options=vm_helpers.ssh_options,
+    EffectiveIssueSetupConfig=EffectiveIssueSetupConfig,
+    _resolve_host_python_with_pip=process_helpers.resolve_host_python_with_pip,
+    _wait_for_vm_ip=vm_helpers.wait_for_vm_ip,
+    _require_valid_cron=session_helpers.require_valid_cron,
+    EffectProviderFactory=EffectProviderFactory,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_managed_git_authorized_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EVANDER_GIT_USER", "evander-admin-tests-no-such-user")
+
 UTC = timezone.utc
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -149,6 +152,20 @@ def _assert_cursor_seeded_during_operation(
 
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "managed-git-repositories.json").write_text(
+        json.dumps(
+            {
+                "schema": "evander.managed-git-repositories/v1",
+                "schema_version": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "repositories": {},
+                "migrations": {"test-fixture": {"status": "applied"}},
+            }
+        ),
+        encoding="utf-8",
+    )
     config_path = tmp_path / "gateway.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
@@ -229,9 +246,10 @@ def write_failure_cluster_config(
                             "id": "effect-push-branch",
                             "display_name": "Push branch",
                             "type": "effect:git:push-branch",
-                            "host_repo_path": "/repo",
-                            "local_branch": "review/session/work",
-                            "origin_branch": "refs/heads/feature/topic",
+                            "managed_repo_id": "mr_0123456789abcdefabcd",
+                            "source_ref": "refs/evander/operations/op-1/source",
+                            "expected_commit_sha": "a" * 40,
+                            "destination_branch": "feature/topic",
                         },
                     ],
                     "edges": [
@@ -356,13 +374,32 @@ def _write_run_detail_audit_log(path: Path, *, session_id: str, vm_id: str) -> N
     )
 
 
-def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
+def _create_issue_test_repo(path: Path, *, content: str) -> Path:
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-b", "main", str(path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.name", "Test User"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    (path / "README.md").write_text(content, encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-m", "initial"], check=True)
+    return path
+
+
+def test_create_local_issue_persists_yaml_and_managed_repo_binding(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
+    assert service.managed_git_admin._workflow_config_admin is service.workflow_config_admin
+    repo = _create_issue_test_repo(tmp_path / "source-repo", content="source\n")
 
     issue = service.issue_git_admin.create_local_issue(
         title="Fix VM dashboard",
         body="Build a desktop dashboard for VM state.",
-        repo_source="/src/repo",
+        repo_source=str(repo),
     )
 
     assert issue.issue_number == "1"
@@ -376,7 +413,11 @@ def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
 
     payload = json.loads((tmp_path / "runtime" / "local-issues.json").read_text(encoding="utf-8"))
     assert payload[issue.issue_id]["directory_path"] == "root"
-    assert payload[issue.issue_id]["repo_source"] == "/src/repo"
+    assert payload[issue.issue_id]["managed_repo_id"] == issue.managed_repo_id
+    assert "repo_source" not in payload[issue.issue_id]
+    managed = service.managed_git_admin.get_repository(issue.managed_repo_id or "")
+    assert managed["bindings"][0]["kind"] == "issues"
+    assert managed["bindings"][0]["binding_id"] == issue.issue_id
 
 
 def test_list_agents_includes_session_only_container_worker_targets(
@@ -4430,20 +4471,30 @@ def test_create_local_issue_imports_block_scalar_title(tmp_path: Path) -> None:
 
 def test_update_local_issue_updates_store_and_yaml(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    issue = service.issue_git_admin.create_local_issue(title="Old title", body="Old body", repo_source="/old/repo")
+    old_repo = _create_issue_test_repo(tmp_path / "old-repo", content="old\n")
+    new_repo = _create_issue_test_repo(tmp_path / "new-repo", content="new\n")
+    issue = service.issue_git_admin.create_local_issue(
+        title="Old title", body="Old body", repo_source=str(old_repo)
+    )
+    old_managed_repo_id = issue.managed_repo_id
 
     updated = service.issue_git_admin.update_local_issue(
         issue.issue_number,
         title="New title",
         body="New body",
         state="In Progress",
-        repo_source="/new/repo",
+        repo_source=str(new_repo),
     )
 
     assert updated.title == "New title"
     assert updated.body == "New body"
     assert updated.state == "In Progress"
-    assert updated.repo_source == "/new/repo"
+    assert updated.managed_repo_id is not None
+    assert updated.managed_repo_id != old_managed_repo_id
+    assert service.managed_git_admin.get_repository(old_managed_repo_id or "")["bindings"] == []
+    assert service.managed_git_admin.get_repository(updated.managed_repo_id)["bindings"][0][
+        "binding_id"
+    ] == issue.issue_id
     yaml_text = Path(updated.yaml_path).read_text(encoding="utf-8")
     assert "title: New title" in yaml_text
     assert "body: New body" in yaml_text
@@ -8554,6 +8605,94 @@ def test_workflow_pack_history_records_pack_document_saves_and_skips_conflicts(
     assert len(service.list_workflow_pack_history(workflow_pack="demo.v1.json").entries) == 1
 
 
+def test_workflow_pack_migration_raw_cas_rejects_stale_write_and_restores_exact_bytes(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_path = packs_dir / "legacy.v1.json"
+    before = (
+        b'{\n  "pack_id": "legacy", "pack_version": "v1",\n'
+        b'  "ir": {"version": "v1", "nodes": [{"id": "clone", '
+        b'"type": "effect:agent:clone-repo", "repo_source": "/tmp/source"}], '
+        b'"edges": []}\n}\n'
+    )
+    pack_path.write_bytes(before)
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "workflow_packs": ["legacy.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
+    document = service.read_workflow_pack_for_migration(
+        workflow_pack="legacy.v1.json"
+    )
+    after = json.dumps(
+        {
+            "pack_id": "legacy",
+            "pack_version": "v1",
+            "ir": {
+                "version": "v1",
+                "nodes": [
+                    {
+                        "id": "clone",
+                        "type": "effect:agent:clone-repo",
+                        "managed_repo_id": "mr_0123456789abcdef0123",
+                    }
+                ],
+                "edges": [],
+            },
+        },
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    actor = WorkflowPackChangeActor(
+        login="system",
+        display_name="Managed Git migration",
+    )
+
+    applied = service.rewrite_workflow_pack_for_migration(
+        workflow_pack="legacy.v1.json",
+        content=after,
+        expected_revision=document.revision,
+        operation="managed_git_migration_apply",
+        actor=actor,
+    )
+    assert pack_path.read_bytes() == after
+
+    with pytest.raises(AdminRevisionConflict) as exc_info:
+        service.rewrite_workflow_pack_for_migration(
+            workflow_pack="legacy.v1.json",
+            content=b"{}",
+            expected_revision=document.revision,
+            operation="managed_git_migration_apply",
+            actor=actor,
+        )
+    assert exc_info.value.details["current_revision"] == applied.revision
+    assert pack_path.read_bytes() == after
+
+    rolled_back = service.rewrite_workflow_pack_for_migration(
+        workflow_pack="legacy.v1.json",
+        content=before,
+        expected_revision=applied.revision,
+        operation="managed_git_migration_rollback",
+        actor=actor,
+    )
+    assert rolled_back.revision == document.revision
+    assert pack_path.read_bytes() == before
+    history = service.list_workflow_pack_history(workflow_pack="legacy.v1.json")
+    assert [entry.operation for entry in history.entries] == [
+        "managed_git_migration_rollback",
+        "managed_git_migration_apply",
+    ]
+
+
 def test_workflow_editor_rejects_omitted_pack_save_in_multi_pack_config(
     tmp_path: Path,
 ) -> None:
@@ -11356,7 +11495,6 @@ def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, m
         team_path,
         "issue_setup",
         {
-            "git_root": "/tmp/git-remotes",
             "git_host": "10.1.2.3",
             "git_user": "gitbot",
             "git_ssh_alias": "issue-git",
@@ -11383,7 +11521,7 @@ def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, m
     )
 
     assert result.success is True
-    assert captured_env["EVANDER_GIT_ROOT"] == "/tmp/git-remotes"
+    assert "EVANDER_GIT_ROOT" not in captured_env
     assert captured_env["EVANDER_GIT_HOST"] == "10.1.2.3"
     assert captured_env["EVANDER_GIT_USER"] == "gitbot"
     assert captured_env["EVANDER_GIT_SSH_ALIAS"] == "issue-git"
@@ -11402,7 +11540,6 @@ def test_create_issue_vm_uses_issue_setup_azure_pat_override(tmp_path: Path, mon
         team_path,
         "issue_setup",
         {
-            "git_root": "/tmp/git-remotes",
             "git_host": "10.1.2.3",
             "git_user": "gitbot",
             "git_ssh_alias": "issue-git",
@@ -11433,7 +11570,6 @@ def test_create_issue_vm_uses_issue_setup_azure_pat_override(tmp_path: Path, mon
 def test_create_issue_vm_uses_issue_setup_fallback_env_when_domain_missing(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("EVANDER_GIT_ROOT", "/tmp/from-env")
     monkeypatch.setenv("EVANDER_GIT_HOST", "10.55.0.1")
     monkeypatch.setenv("EVANDER_GIT_USER", "env-user")
     monkeypatch.setenv("EVANDER_GIT_SSH_ALIAS", "env-git")
@@ -11457,7 +11593,7 @@ def test_create_issue_vm_uses_issue_setup_fallback_env_when_domain_missing(
     )
 
     assert result.success is True
-    assert captured_env["EVANDER_GIT_ROOT"] == "/tmp/from-env"
+    assert "EVANDER_GIT_ROOT" not in captured_env
     assert captured_env["EVANDER_GIT_HOST"] == "10.55.0.1"
     assert captured_env["EVANDER_GIT_USER"] == "env-user"
     assert captured_env["EVANDER_GIT_SSH_ALIAS"] == "env-git"
@@ -14070,8 +14206,53 @@ def test_kill_agent_falls_back_to_legacy_agent_user(tmp_path: Path, monkeypatch)
     assert "agent@192.168.122.10" in captured["cmd"]
 
 
-def test_clone_repo_into_vm_clones_repo(tmp_path: Path, monkeypatch: Any) -> None:
+_MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
+
+
+def _stub_vm_managed_repository(service: Any, monkeypatch: Any) -> None:
+    managed_git = service.vm_agent_admin._deps.managed_git_admin
+    monkeypatch.setattr(
+        managed_git,
+        "clone_info",
+        lambda managed_repo_id, **kwargs: {
+            "managed_repo_id": managed_repo_id,
+            "display_name": "sample-repo",
+            "default_branch": "main",
+        },
+    )
+    monkeypatch.setattr(
+        managed_git,
+        "resolve_internal_repository",
+        lambda managed_repo_id, directory_path: (
+            Path(f"/managed-git/{managed_repo_id}.git"),
+            Path("/managed-git"),
+        ),
+    )
+    monkeypatch.setattr(managed_git, "bind", lambda *args, **kwargs: None)
+
+    def _run_with_managed_access_metadata(
+        cmd: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        completed = process_helpers.subprocess.run(cmd, **kwargs)
+        if cmd and cmd[0].endswith("bootstrap_git_vm.sh") and completed.returncode == 0:
+            return subprocess.CompletedProcess(
+                args=completed.args,
+                returncode=0,
+                stdout=(
+                    "EVANDER_GIT_PUBLIC_KEY_BODY=ssh-ed25519 AAAATestManagedKey\n"
+                    "EVANDER_GIT_AUTHORIZED_KEYS_PATH=/tmp/evander-test-authorized-keys\n"
+                    "EVANDER_GIT_AUTH_ACCESS=write\n"
+                ),
+                stderr=completed.stderr,
+            )
+        return completed
+
+    monkeypatch.setattr(process_helpers, "run_subprocess", _run_with_managed_access_metadata)
+
+
+def test_clone_repo_into_vm_clones_managed_repo(tmp_path: Path, monkeypatch: Any) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    _stub_vm_managed_repository(service, monkeypatch)
     captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
 
     monkeypatch.setattr(
@@ -14091,14 +14272,6 @@ def test_clone_repo_into_vm_clones_repo(tmp_path: Path, monkeypatch: Any) -> Non
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured_runs.append((cmd, kwargs.get("env")))
-        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="/src/repo\n", stderr=""
-            )
-        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="sample-repo\n", stderr=""
-            )
         if cmd == ["git", "-C", "/src/repo", "config", "--get", "branch.main.remote"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="origin\n", stderr="")
         if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
@@ -14118,24 +14291,12 @@ def test_clone_repo_into_vm_clones_repo(tmp_path: Path, monkeypatch: Any) -> Non
     result = service.vm_agent_admin.clone_repo_into_vm(
         vm_name="lab-vm",
         session_id="lab-session",
-        repo_source="/src/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
     )
 
     assert result.success is True
     captured_cmds = [cmd for cmd, _env in captured_runs]
-    assert any(
-        cmd[0].endswith("create_git_remote.sh") and cmd[1] == "sample-repo" for cmd in captured_cmds
-    )
-    assert any(
-        cmd[0] == "git" and cmd[1].endswith("/sample-repo.git") and cmd[2] == "fetch"
-        for cmd in captured_cmds
-    )
-    assert any(
-        cmd[0] == "git"
-        and cmd[1].endswith("/sample-repo.git")
-        and cmd[2:5] == ["symbolic-ref", "HEAD", "refs/heads/main"]
-        for cmd in captured_cmds
-    )
+    assert not any(cmd[0].endswith("create_git_remote.sh") for cmd in captured_cmds)
     assert any(
         cmd[0].endswith("bootstrap_git_vm.sh") and cmd[1:] == ["lab-vm", "agent"]
         for cmd in captured_cmds
@@ -14144,7 +14305,8 @@ def test_clone_repo_into_vm_clones_repo(tmp_path: Path, monkeypatch: Any) -> Non
         env for cmd, env in captured_runs if cmd[0].endswith("bootstrap_git_vm.sh")
     )
     assert bootstrap_env is not None
-    assert bootstrap_env["EVANDER_GIT_REPO"] == "sample-repo"
+    assert bootstrap_env["EVANDER_GIT_REPO"] == _MANAGED_REPO_ID
+    assert bootstrap_env["EVANDER_GIT_ROOT"] == "/managed-git"
     assert bootstrap_env["EVANDER_GIT_SESSION_ID"] == "lab-session"
     assert any(
         cmd[0] == "ssh" and cmd[-3:] == ["agent@192.168.250.10", "bash", "-s"]
@@ -14156,6 +14318,7 @@ def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    _stub_vm_managed_repository(service, monkeypatch)
     captured_ssh_input: list[str] = []
 
     monkeypatch.setattr(
@@ -14170,14 +14333,6 @@ def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="/src/repo\n", stderr=""
-            )
-        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="sample-repo\n", stderr=""
-            )
         if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
             return subprocess.CompletedProcess(
                 args=cmd, returncode=0, stdout="origin/main\n", stderr=""
@@ -14197,7 +14352,7 @@ def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     result = service.vm_agent_admin.clone_repo_into_vm(
         vm_name="lab-vm",
         session_id="issue-14724-lab-session",
-        repo_source="/src/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
     )
 
     assert result.success is True
@@ -14219,6 +14374,7 @@ def test_clone_repo_into_vm_generated_script_allows_existing_checkout(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    _stub_vm_managed_repository(service, monkeypatch)
     captured_ssh_input: list[str] = []
 
     monkeypatch.setattr(
@@ -14233,14 +14389,6 @@ def test_clone_repo_into_vm_generated_script_allows_existing_checkout(
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="/src/repo\n", stderr=""
-            )
-        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="sample-repo\n", stderr=""
-            )
         if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
             return subprocess.CompletedProcess(
                 args=cmd, returncode=0, stdout="origin/main\n", stderr=""
@@ -14260,7 +14408,7 @@ def test_clone_repo_into_vm_generated_script_allows_existing_checkout(
     result = service.vm_agent_admin.clone_repo_into_vm(
         vm_name="lab-vm",
         session_id="issue-14724-lab-session",
-        repo_source="/src/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
     )
 
     assert result.success is True
@@ -14277,6 +14425,7 @@ def test_clone_repo_into_vm_configures_separate_author_and_committer(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    _stub_vm_managed_repository(service, monkeypatch)
     captured_ssh_input: list[str] = []
 
     monkeypatch.setattr(
@@ -14291,14 +14440,6 @@ def test_clone_repo_into_vm_configures_separate_author_and_committer(
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="/src/repo\n", stderr=""
-            )
-        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="sample-repo\n", stderr=""
-            )
         if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
             return subprocess.CompletedProcess(
                 args=cmd, returncode=0, stdout="origin/main\n", stderr=""
@@ -14318,7 +14459,7 @@ def test_clone_repo_into_vm_configures_separate_author_and_committer(
     result = service.vm_agent_admin.clone_repo_into_vm(
         vm_name="lab-vm",
         session_id="issue-14724-lab-session",
-        repo_source="/src/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
         git_author_name="Ada Lovelace",
         git_author_email="ada@example.com",
         git_committer_name="Truman Bot",
@@ -14346,6 +14487,7 @@ def test_clone_repo_into_vm_honors_clone_branch_and_records_base_branch(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    _stub_vm_managed_repository(service, monkeypatch)
     captured_ssh_input: list[str] = []
 
     monkeypatch.setattr(
@@ -14360,14 +14502,6 @@ def test_clone_repo_into_vm_honors_clone_branch_and_records_base_branch(
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="/src/repo\n", stderr=""
-            )
-        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="sample-repo\n", stderr=""
-            )
         if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
             return subprocess.CompletedProcess(
                 args=cmd, returncode=0, stdout="origin/main\n", stderr=""
@@ -14387,7 +14521,7 @@ def test_clone_repo_into_vm_honors_clone_branch_and_records_base_branch(
     result = service.vm_agent_admin.clone_repo_into_vm(
         vm_name="lab-vm",
         session_id="issue-14724-lab-session",
-        repo_source="/src/repo",
+        managed_repo_id=_MANAGED_REPO_ID,
         clone_branch="release/1.2",
     )
 
@@ -14400,12 +14534,12 @@ def test_clone_repo_into_vm_honors_clone_branch_and_records_base_branch(
     assert 'git -C "${TARGET_DIR}" switch -c "${WORK_BRANCH}"' in remote_script
 
 
-def test_clone_repo_into_vm_preserves_canonical_remote_for_remote_sources(
+def test_clone_repo_into_vm_keeps_managed_clone_url_internal(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    _stub_vm_managed_repository(service, monkeypatch)
     captured_ssh_input: list[str] = []
-    remote_source = "git@ssh.dev.azure.com:v3/example/project/sample-repo"
 
     monkeypatch.setattr(
         "evander.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
@@ -14419,20 +14553,6 @@ def test_clone_repo_into_vm_preserves_canonical_remote_for_remote_sources(
     )
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="/src/repo-cache/sample-repo\n", stderr=""
-            )
-        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="sample-repo\n", stderr=""
-            )
-        if cmd[:5] == ["git", "-C", "/src/repo-cache/sample-repo", "symbolic-ref", "--quiet"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="origin/main\n", stderr=""
-            )
-        if cmd[:4] == ["git", "-C", "/src/repo-cache/sample-repo", "branch"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
         if cmd[0] == "ssh":
             captured_ssh_input.append(str(kwargs.get("input") or ""))
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
@@ -14446,18 +14566,16 @@ def test_clone_repo_into_vm_preserves_canonical_remote_for_remote_sources(
     result = service.vm_agent_admin.clone_repo_into_vm(
         vm_name="lab-vm",
         session_id="issue-14724-lab-session",
-        repo_source=remote_source,
+        managed_repo_id=_MANAGED_REPO_ID,
     )
 
     assert result.success is True
     remote_script = captured_ssh_input[-1]
-    assert f'CANONICAL_REMOTE_URL="{remote_source}"' in remote_script
-    assert 'git -C "${TARGET_DIR}" remote set-url origin "${CANONICAL_REMOTE_URL}"' in remote_script
+    assert 'CANONICAL_REMOTE_URL=""' in remote_script
     assert (
-        'git -C "${TARGET_DIR}" config "url.${REMOTE_URL}.insteadOf" "${CANONICAL_REMOTE_URL}"'
+        f'REMOTE_URL="ssh://evander-git-host/managed-git/{_MANAGED_REPO_ID}.git"'
         in remote_script
     )
-    assert 'git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"' in remote_script
 
 
 def test_bootstrap_python_in_vm_runs_python_bootstrap(tmp_path: Path, monkeypatch: Any) -> None:
@@ -15008,343 +15126,6 @@ def test_create_vm_waits_for_ssh_before_bootstrap(tmp_path: Path, monkeypatch: A
 
     assert result.success is True
     assert any(any(part.endswith("setup_vm.sh") for part in cmd) for cmd in captured_cmds)
-
-
-def test_sync_repo_into_bare_remote_sets_head_to_default_branch(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-    issue_setup = service.vm_agent_admin._resolve_issue_setup("root", root_dir=Path(__file__).resolve().parents[1])
-    captured_cmds: list[list[str]] = []
-    monkeypatch.setenv("EVANDER_SECRETS_ENV_FILE", "/etc/evander/local-secrets.env")
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured_cmds.append(cmd)
-        if cmd[0].endswith("create_git_remote.sh"):
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
-        if cmd[0] == "git" and "symbolic-ref" in cmd:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-        if cmd[0] == "git" and "fetch" in cmd:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="origin/main\n", stderr=""
-            )
-        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
-
-    service.vm_agent_admin._sync_repo_into_bare_remote(
-        "sample-repo", "/src/repo", issue_setup=issue_setup, repo_source="/src/repo"
-    )
-
-    assert any(
-        cmd[0] == "git"
-        and cmd[1].endswith("/sample-repo.git")
-        and cmd[2:5] == ["symbolic-ref", "HEAD", "refs/heads/main"]
-        for cmd in captured_cmds
-    )
-    assert any(
-        cmd
-        == [
-            "git",
-            f"--git-dir={issue_setup.git_root}/sample-repo.git",
-            "config",
-            "evander.trustedRepoPath",
-            "/src/repo",
-        ]
-        for cmd in captured_cmds
-    )
-    assert any(
-        cmd
-        == [
-            "git",
-            f"--git-dir={issue_setup.git_root}/sample-repo.git",
-            "config",
-            "evander.mirrorSource",
-            "/src/repo",
-        ]
-        for cmd in captured_cmds
-    )
-    assert any(
-        cmd
-        == [
-            "git",
-            f"--git-dir={issue_setup.git_root}/sample-repo.git",
-            "config",
-            "evander.mirrorRemoteName",
-            "origin",
-        ]
-        for cmd in captured_cmds
-    )
-    assert any(
-        cmd
-        == [
-            "git",
-            f"--git-dir={issue_setup.git_root}/sample-repo.git",
-            "config",
-            "evander.mirrorSyncRemote",
-            "1",
-        ]
-        for cmd in captured_cmds
-    )
-    assert any(
-        cmd
-        == [
-            "git",
-            f"--git-dir={issue_setup.git_root}/sample-repo.git",
-            "config",
-            "evander.secretsEnvFile",
-            "/etc/evander/local-secrets.env",
-        ]
-        for cmd in captured_cmds
-    )
-    assert any(
-        cmd
-        == [
-            "git",
-            f"--git-dir={issue_setup.git_root}/sample-repo.git",
-            "config",
-            "evander.baseBranch",
-            "main",
-        ]
-        for cmd in captured_cmds
-    )
-    assert any(
-        cmd == ["git", "-C", "/src/repo", "remote", "get-url", "origin"] for cmd in captured_cmds
-    )
-
-
-def test_sync_repo_into_bare_remote_preserves_detected_remote_name(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-    issue_setup = service.vm_agent_admin._resolve_issue_setup("root", root_dir=Path(__file__).resolve().parents[1])
-    captured_cmds: list[list[str]] = []
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured_cmds.append(cmd)
-        if cmd[0].endswith("create_git_remote.sh"):
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
-        if cmd[0] == "git" and "fetch" in cmd:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-        if cmd[:5] == ["git", "-C", "/src/repo", "branch", "--show-current"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
-        if cmd == ["git", "-C", "/src/repo", "config", "--get", "branch.main.remote"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="upstream\n", stderr=""
-            )
-        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet", "--short"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="upstream/main\n", stderr=""
-            )
-        if cmd == ["git", "-C", "/src/repo", "remote", "get-url", "upstream"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="https://example.com/org/repo.git\n", stderr=""
-            )
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
-
-    service.vm_agent_admin._sync_repo_into_bare_remote(
-        "sample-repo", "/src/repo", issue_setup=issue_setup, repo_source="/src/repo"
-    )
-
-    assert any(
-        cmd
-        == [
-            "git",
-            f"--git-dir={issue_setup.git_root}/sample-repo.git",
-            "config",
-            "evander.mirrorRemoteName",
-            "upstream",
-        ]
-        for cmd in captured_cmds
-    )
-    assert any(
-        cmd == ["git", "-C", "/src/repo", "remote", "get-url", "upstream"] for cmd in captured_cmds
-    )
-
-
-def test_sync_repo_into_bare_remote_records_canonical_origin_url_when_available(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-    issue_setup = service.vm_agent_admin._resolve_issue_setup("root", root_dir=Path(__file__).resolve().parents[1])
-    captured_cmds: list[list[str]] = []
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured_cmds.append(cmd)
-        if cmd[0].endswith("create_git_remote.sh"):
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
-        if cmd[0] == "git" and "fetch" in cmd:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="origin/main\n", stderr=""
-            )
-        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
-        if cmd == ["git", "-C", "/src/repo", "remote", "get-url", "origin"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="https://example.com/org/repo.git\n", stderr=""
-            )
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
-
-    service.vm_agent_admin._sync_repo_into_bare_remote(
-        "sample-repo", "/src/repo", issue_setup=issue_setup, repo_source="/src/repo"
-    )
-
-    assert any(
-        cmd
-        == [
-            "git",
-            f"--git-dir={issue_setup.git_root}/sample-repo.git",
-            "config",
-            "evander.canonicalOriginUrl",
-            "https://example.com/org/repo.git",
-        ]
-        for cmd in captured_cmds
-    )
-
-
-def test_sync_repo_into_bare_remote_unwraps_repo_cache_origin_url(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-    issue_setup = service.vm_agent_admin._resolve_issue_setup("root", root_dir=Path(__file__).resolve().parents[1])
-    captured_cmds: list[list[str]] = []
-    cached_origin = "/tmp/evander/runtime/repo-cache/example.git"
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured_cmds.append(cmd)
-        if cmd[0].endswith("create_git_remote.sh"):
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
-        if cmd[0] == "git" and "fetch" in cmd:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="origin/main\n", stderr=""
-            )
-        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
-        if cmd == ["git", "-C", "/src/repo", "remote", "get-url", "origin"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout=f"{cached_origin}\n", stderr=""
-            )
-        if cmd == ["git", f"--git-dir={cached_origin}", "remote", "get-url", "origin"]:
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="https://example.com/org/repo.git\n", stderr=""
-            )
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
-
-    service.vm_agent_admin._sync_repo_into_bare_remote(
-        "sample-repo", "/src/repo", issue_setup=issue_setup, repo_source="/src/repo"
-    )
-
-    assert any(
-        cmd
-        == [
-            "git",
-            f"--git-dir={issue_setup.git_root}/sample-repo.git",
-            "config",
-            "evander.canonicalOriginUrl",
-            "https://example.com/org/repo.git",
-        ]
-        for cmd in captured_cmds
-    )
-
-
-def test_sync_repo_into_bare_remote_preserves_agent_refs_while_pruning_stale_heads(
-    tmp_path: Path,
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-    service.vm_agent_admin._project_dir_provider = lambda: REPO_ROOT
-    git_root = tmp_path / "git-remotes"
-    issue_setup = admin_service.EffectiveIssueSetupConfig(
-        git_root=str(git_root),
-        git_host="192.168.250.1",
-        git_user="agent",
-        git_ssh_alias="evander-git-host",
-    )
-    source_repo = tmp_path / "source"
-    git_env = os.environ.copy()
-    git_env.update(
-        {
-            "GIT_AUTHOR_NAME": "Test User",
-            "GIT_AUTHOR_EMAIL": "test@example.com",
-            "GIT_COMMITTER_NAME": "Test User",
-            "GIT_COMMITTER_EMAIL": "test@example.com",
-        }
-    )
-
-    def _git(*args: str, cwd: Path | None = None) -> str:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            env=git_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return result.stdout.strip()
-
-    def _git_dir(git_dir: Path, *args: str) -> str:
-        return _git(f"--git-dir={git_dir}", *args)
-
-    _git("init", str(source_repo))
-    _git("checkout", "-b", "main", cwd=source_repo)
-    (source_repo / "README.md").write_text("initial\n", encoding="utf-8")
-    _git("add", "README.md", cwd=source_repo)
-    _git("commit", "-m", "Initial commit", cwd=source_repo)
-
-    service.vm_agent_admin._sync_repo_into_bare_remote(
-        "sample-repo",
-        str(source_repo),
-        issue_setup=issue_setup,
-        repo_source=str(source_repo),
-    )
-    bare_repo = Path(issue_setup.git_root) / "sample-repo.git"
-    base_commit = _git_dir(bare_repo, "rev-parse", "refs/heads/main")
-    _git_dir(bare_repo, "update-ref", "refs/heads/agents/session-1/work", base_commit)
-    _git_dir(bare_repo, "update-ref", "refs/heads/review/session-1/work", base_commit)
-    _git_dir(bare_repo, "update-ref", "refs/heads/stale-source-branch", base_commit)
-
-    (source_repo / "README.md").write_text("refreshed\n", encoding="utf-8")
-    _git("commit", "-am", "Refresh source", cwd=source_repo)
-    refreshed_commit = _git("rev-parse", "HEAD", cwd=source_repo)
-
-    service.vm_agent_admin._sync_repo_into_bare_remote(
-        "sample-repo",
-        str(source_repo),
-        issue_setup=issue_setup,
-        repo_source=str(source_repo),
-    )
-
-    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main") == refreshed_commit
-    assert _git_dir(bare_repo, "rev-parse", "refs/heads/agents/session-1/work") == base_commit
-    assert _git_dir(bare_repo, "rev-parse", "refs/heads/review/session-1/work") == base_commit
-    assert (
-        subprocess.run(
-            [
-                "git",
-                f"--git-dir={bare_repo}",
-                "rev-parse",
-                "--verify",
-                "refs/heads/stale-source-branch",
-            ],
-            env=git_env,
-            capture_output=True,
-            text=True,
-        ).returncode
-        != 0
-    )
 
 
 def test_resolve_host_python_with_pip_prefers_current_interpreter(monkeypatch: Any) -> None:
@@ -16010,122 +15791,83 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
+    managed_git = service.managed_git_admin
     captured: dict[str, Any] = {}
 
-    def fake_run_subprocess(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    monkeypatch.setattr(
+        managed_git,
+        "_require_record",
+        lambda managed_repo_id: {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": "root",
+            "provider": "github",
+            "canonical_repository_url": "https://github.com/example/repo.git",
+            "default_branch": "main",
+        },
+    )
+    monkeypatch.setattr(
+        managed_git,
+        "push_branch",
+        lambda *args, **kwargs: {"success": True, "commit_sha": "a" * 40},
+    )
+    monkeypatch.setattr(
+        managed_git,
+        "_provider_credentials",
+        lambda _record: ("token", "test-provider-token"),
+    )
+
+    def fake_run_git(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps(
+                    {
+                        "number": 14724,
+                        "url": "https://github.com/example/repo/pull/14724",
+                        "headRefOid": "a" * 40,
+                    }
+                ),
+                stderr="",
+            )
         captured["cmd"] = list(cmd)
-        captured["env"] = dict(kwargs.get("env") or {})
-        body_file = cmd[cmd.index("--body-file") + 1]
-        body_path = Path(body_file)
+        body_path = Path(cmd[cmd.index("--body-file") + 1])
         captured["body_file"] = body_path
         captured["body"] = body_path.read_text(encoding="utf-8")
         return subprocess.CompletedProcess(
             cmd,
             0,
-            stdout='AGENT_PR_RESULT {"pr_url":"https://example.test/pr/14724","pr_id":"14724"}\n',
+            stdout="https://github.com/example/repo/pull/14724\n",
             stderr="",
         )
 
-    monkeypatch.setattr(
-        "evander.admin.services.process_helpers.run_subprocess", fake_run_subprocess
-    )
+    monkeypatch.setattr(managed_git, "_run_git", fake_run_git)
 
-    result = service.issue_git_admin.pr_create(
-        host_repo_path="/tmp/repos/ExampleIndustryAPP",
-        local_branch="review/issue-14724",
-        canonical_origin_url="git@ssh.dev.azure.com:v3/example/project/repo",
-        project="Example Industry APP",
+    result = managed_git.pr_create(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        source_ref="refs/evander/operations/op-1/source",
+        expected_commit_sha="a" * 40,
+        destination_branch="feature/issue-14724",
+        directory_path="root",
         title="14724: Test Issue: Truman",
         body="Inline PR body",
-        body_artifact_ids=["comm_11111111111111111111111111111111"],
         draft=True,
     )
 
     cmd = captured["cmd"]
     body_path = captured["body_file"]
-    assert cmd[0].endswith("/scripts/open_agent_pr.sh")
-    assert "--create-pr" in cmd
+    assert cmd[:3] == ["gh", "pr", "create"]
     assert "--draft" in cmd
-    assert "--body-artifact-id" in cmd
-    assert "comm_11111111111111111111111111111111" in cmd
-    assert "--project" in cmd
-    assert "Example Industry APP" in cmd
-    assert (
-        captured["env"]["EVANDER_CANONICAL_ORIGIN_URL"]
-        == "git@ssh.dev.azure.com:v3/example/project/repo"
-    )
+    assert cmd.count("--body-file") == 1
     assert captured["body"] == "Inline PR body"
     assert not body_path.exists()
     assert result["success"] is True
-    assert result["pr_url"] == "https://example.test/pr/14724"
-    assert result["pr_id"] == "14724"
+    assert result["pr_url"] == "https://github.com/example/repo/pull/14724"
+    assert result["managed_repo_id"] == "mr_0123456789abcdefabcd"
 
 
-def test_mirror_remote_name_for_repo_uses_remote_name_from_detached_remote_head(
-    tmp_path: Path,
-) -> None:
-    upstream_bare = tmp_path / "upstream.git"
-    subprocess.run(
-        ["git", "init", "--bare", str(upstream_bare)], check=True, text=True, capture_output=True
-    )
-
-    source_repo = tmp_path / "source"
-    subprocess.run(
-        ["git", "clone", str(upstream_bare), str(source_repo)],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-    env = {
-        **os.environ,
-        "GIT_AUTHOR_NAME": "Test User",
-        "GIT_AUTHOR_EMAIL": "test@example.com",
-        "GIT_COMMITTER_NAME": "Test User",
-        "GIT_COMMITTER_EMAIL": "test@example.com",
-    }
-
-    subprocess.run(
-        ["git", "-C", str(source_repo), "checkout", "-b", "main"],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-    (source_repo / "README.md").write_text("v1\n", encoding="utf-8")
-    subprocess.run(
-        ["git", "-C", str(source_repo), "add", "README.md"],
-        check=True,
-        text=True,
-        capture_output=True,
-        env=env,
-    )
-    subprocess.run(
-        ["git", "-C", str(source_repo), "commit", "-m", "Initial commit"],
-        check=True,
-        text=True,
-        capture_output=True,
-        env=env,
-    )
-    subprocess.run(
-        ["git", "-C", str(source_repo), "push", "-u", "origin", "main"],
-        check=True,
-        text=True,
-        capture_output=True,
-        env=env,
-    )
-    subprocess.run(
-        ["git", f"--git-dir={upstream_bare}", "symbolic-ref", "HEAD", "refs/heads/main"],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(source_repo), "checkout", "HEAD^0"],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-
-    assert admin_service._mirror_remote_name_for_repo(str(source_repo)) == "origin"
 
 
 def _write_proxy_issue_yaml(

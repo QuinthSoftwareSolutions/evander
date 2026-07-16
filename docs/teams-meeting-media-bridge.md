@@ -12,6 +12,7 @@ teams_meeting_media_bridge_url: "https://your-bridge.example"
 teams_meeting_media_bridge_token_env: "TEAMS_MEETING_MEDIA_BRIDGE_TOKEN"
 teams_meeting_default_voice: "en-US-JennyNeural"
 teams_meeting_poll_interval_seconds: 5
+teams_meeting_request_timeout_seconds: 15
 teams_meeting_max_active_meetings: 1
 ```
 
@@ -43,6 +44,11 @@ The command creates a dedicated session with:
 
 The meeting ingest worker polls the bridge and stores finalized transcript and speech-status events in `runtime/teams-meetings.json`. When the meeting is linked to an originating session, transcript events are also mirrored into `runtime/voice-sessions-store.json`. The `trigger:teams-meeting:new-transcript` trigger emits one workflow event per finalized transcript event.
 
+The bridge client applies `teams_meeting_request_timeout_seconds` to join, event polling, speech,
+and leave requests; the default is 15 seconds. A `trigger:teams-meeting:new-transcript` definition
+may set `session_ids` to emit only meetings projected from those sessions. An empty list accepts
+transcripts from every stored meeting visible to that trigger.
+
 ## Media Bridge Contract
 
 - `POST /meetings/join`
@@ -61,7 +67,7 @@ Graph mode supports selectable speech backends:
 
 The join request may include `projection` and `realtime` objects. OpenAI Realtime mode uses those
 objects as the meeting session instructions/model overrides so a projected Teams session can speak
-as the originating Truman agent instead of an unrelated meeting-only hand-off.
+as the originating Evander agent instead of an unrelated meeting-only hand-off.
 
 ## Production Bridge Configuration
 

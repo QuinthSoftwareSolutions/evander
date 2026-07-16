@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from evander.config import GatewayConfig
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
 )
+from evander.events.provider_models import GitPromoteAgentBranchEffectDefinition
 
 
 class _AdminServiceStub:
@@ -17,171 +16,100 @@ class _AdminServiceStub:
         self.result = result
         self.calls: list[dict[str, object]] = []
 
-    def promote_agent_branch(self, **kwargs):
-        self.calls.append(kwargs)
+    def promote_agent_branch(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(dict(kwargs))
         if self.result is None:
             raise RuntimeError("result not configured")
         return dict(self.result)
 
 
-def _build_context(tmp_path: Path, admin_service: _AdminServiceStub) -> EffectRuntimeContext:
-    return EffectRuntimeContext(
-        resolved_config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
-        admin_service=admin_service,
-        env={},
-    )
+def _definition(**overrides: object) -> GitPromoteAgentBranchEffectDefinition:
+    payload: dict[str, object] = {
+        "id": "effect-promote",
+        "display_name": "Promote",
+        "type": "effect:git:promote-agent-branch",
+        "managed_repo_id": "mr_0123456789abcdefabcd",
+        "agent_branch": "agents/session-1/topic",
+        "target_branch": "review/session-1/topic",
+        "expected_commit_sha": "a" * 40,
+    }
+    payload.update(overrides)
+    return GitPromoteAgentBranchEffectDefinition.model_validate(payload)
 
 
-def test_git_promote_agent_branch_provider_calls_admin_service_with_normalized_arguments(
-    tmp_path: Path,
-) -> None:
+def test_git_promote_agent_branch_provider_calls_admin_service_with_pinned_contract() -> None:
     admin_service = _AdminServiceStub(
         result={
             "success": True,
-            "action": "git_promote_agent_branch",
-            "message": "Promoted branch",
-            "host_repo_path": "/trusted/repo",
-            "bare_repo_path": "/git-remotes/sample.git",
-            "agent_branch": "agents/session-1/topic",
-            "review_branch": "review/session-1/topic",
-            "target_branch": "review/session-1/topic",
-            "commit_sha": "cafef00d",
-            "remote_name": "agent-dropbox",
+            "commit_sha": "a" * 40,
         }
     )
     provider = GitPromoteAgentBranchEffectProvider()
     provider.initialize(
-        effect_definition=SimpleNamespace(
-            id="effect-promote",
-            display_name="Promote",
-            type="effect:git:promote-agent-branch",
-            host_repo_path=" /trusted/repo ",
-            bare_repo_name=" sample ",
+        _definition(
+            managed_repo_id=" mr_0123456789abcdefabcd ",
             agent_branch=" agents/session-1/topic ",
-            review_branch=None,
-            target_branch=None,
-            expected_commit_sha=None,
-            remote_name=" agent-dropbox-auto ",
+            target_branch=" review/session-1/topic ",
+            expected_commit_sha=f" {'a' * 40} ",
         ),
-        runtime_context=_build_context(tmp_path, admin_service),
-    )
-
-    result = provider.execute(resolved_config={"review_branch": " review/session-1/topic "})
-
-    assert admin_service.calls == [
-        {
-            "host_repo_path": "/trusted/repo",
-            "bare_repo_path": None,
-            "bare_repo_name": "sample",
-            "agent_branch": "agents/session-1/topic",
-            "review_branch": "review/session-1/topic",
-            "target_branch": None,
-            "expected_commit_sha": None,
-            "remote_name": "agent-dropbox-auto",
-        }
-    ]
-    assert result["success"] is True
-    assert result["review_branch"] == "review/session-1/topic"
-    assert result["commit_sha"] == "cafef00d"
-
-
-def test_git_promote_agent_branch_provider_passes_target_branch_and_checks_commit(
-    tmp_path: Path,
-) -> None:
-    admin_service = _AdminServiceStub(
-        result={
-            "success": True,
-            "action": "git_promote_agent_branch",
-            "message": "Promoted branch",
-            "host_repo_path": "/trusted/repo",
-            "bare_repo_path": "/git-remotes/sample.git",
-            "agent_branch": "agents/session-1/release",
-            "target_branch": "team/team/releases/release-1",
-            "review_branch": "team/team/releases/release-1",
-            "commit_sha": "708b1b89",
-            "remote_name": "agent-dropbox",
-        }
-    )
-    provider = GitPromoteAgentBranchEffectProvider()
-    provider.initialize(
-        effect_definition=SimpleNamespace(
-            id="effect-promote",
-            type="effect:git:promote-agent-branch",
-            host_repo_path="/trusted/repo",
-            bare_repo_path="/git-remotes/sample.git",
-            agent_branch="agents/session-1/release",
-            target_branch="team/team/releases/release-1",
-            expected_commit_sha="708b1b89",
-        ),
-        runtime_context=_build_context(tmp_path, admin_service),
+        EffectRuntimeContext(admin_service=admin_service, env={}),
     )
 
     result = provider.execute()
 
     assert admin_service.calls == [
         {
-            "host_repo_path": "/trusted/repo",
-            "bare_repo_path": "/git-remotes/sample.git",
-            "bare_repo_name": None,
-            "agent_branch": "agents/session-1/release",
-            "review_branch": None,
-            "target_branch": "team/team/releases/release-1",
-            "expected_commit_sha": "708b1b89",
-            "remote_name": None,
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "agent_branch": "agents/session-1/topic",
+            "target_branch": "review/session-1/topic",
+            "expected_commit_sha": "a" * 40,
+            "directory_path": "root",
         }
     ]
     assert result["success"] is True
-    assert result["target_branch"] == "team/team/releases/release-1"
+    assert result["managed_repo_id"] == "mr_0123456789abcdefabcd"
+    assert result["target_branch"] == "review/session-1/topic"
 
 
-def test_git_promote_agent_branch_provider_fails_expected_commit_mismatch(
-    tmp_path: Path,
-) -> None:
+def test_git_promote_agent_branch_provider_fails_returned_commit_mismatch() -> None:
     admin_service = _AdminServiceStub(
         result={
             "success": True,
-            "action": "git_promote_agent_branch",
-            "commit_sha": "badc0de",
+            "commit_sha": "b" * 40,
         }
     )
     provider = GitPromoteAgentBranchEffectProvider()
-    provider.initialize(
-        effect_definition=SimpleNamespace(
-            id="effect-promote",
-            type="effect:git:promote-agent-branch",
-            host_repo_path="/trusted/repo",
-            bare_repo_path="/git-remotes/sample.git",
-            agent_branch="agents/session-1/release",
-            target_branch="team/team/releases/release-1",
-            expected_commit_sha="708b1b89",
-        ),
-        runtime_context=_build_context(tmp_path, admin_service),
-    )
+    provider.initialize(_definition(), EffectRuntimeContext(admin_service=admin_service, env={}))
 
     result = provider.execute()
 
     assert result["success"] is False
-    assert result["error"] == "promoted commit badc0de did not match expected 708b1b89"
+    assert result["error"] == (f"promoted commit {'b' * 40} did not match expected {'a' * 40}")
 
 
-def test_git_promote_agent_branch_provider_requires_admin_service_method(tmp_path: Path) -> None:
+def test_git_promote_agent_branch_provider_preserves_source_ref_moved_result() -> None:
+    admin_service = _AdminServiceStub(
+        result={
+            "success": False,
+            "reason": "source_ref_moved",
+            "message": "Agent branch has moved since this event was queued.",
+        }
+    )
+    provider = GitPromoteAgentBranchEffectProvider()
+    provider.initialize(_definition(), EffectRuntimeContext(admin_service=admin_service, env={}))
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert result["reason"] == "source_ref_moved"
+
+
+def test_git_promote_agent_branch_provider_requires_admin_service_method() -> None:
     provider = GitPromoteAgentBranchEffectProvider()
     provider.initialize(
-        effect_definition=SimpleNamespace(
-            id="effect-promote", type="effect:git:promote-agent-branch"
-        ),
-        runtime_context=EffectRuntimeContext(
-            resolved_config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
-            admin_service=SimpleNamespace(),
-            env={},
-        ),
+        _definition(),
+        EffectRuntimeContext(admin_service=SimpleNamespace(), env={}),
     )
 
     with pytest.raises(RuntimeError, match="Admin runtime promote_agent_branch is not available"):
-        provider.execute(
-            resolved_config={
-                "host_repo_path": "/trusted/repo",
-                "bare_repo_path": "/git-remotes/sample.git",
-                "agent_branch": "agents/session-1/topic",
-            }
-        )
+        provider.execute()

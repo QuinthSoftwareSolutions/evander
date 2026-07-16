@@ -99,7 +99,9 @@ def test_worker_cli_requires_explicit_unsafe_flag_for_host_network(
     assert profile.allow_host_network is True
 
 
-def test_worker_cli_accepts_git_mirror_restriction_flags(monkeypatch, tmp_path: Path) -> None:
+def test_worker_cli_accepts_managed_git_source_restriction_flags(
+    monkeypatch, tmp_path: Path
+) -> None:
     ssh_dir = tmp_path / "ssh"
     captured = _run_cli(
         monkeypatch,
@@ -110,17 +112,17 @@ def test_worker_cli_accepts_git_mirror_restriction_flags(monkeypatch, tmp_path: 
             "--worker-root",
             str(tmp_path / "worker-root"),
             "--allowed-git-source-prefix",
-            "ssh://evander-git-host/opt/evander/git-remotes/",
+            "ssh://evander-git-host/opt/evander/runtime/managed-git/",
             "--allowed-git-source-prefix",
-            "file:///tmp/test-mirrors/",
+            "file:///opt/evander/runtime/managed-git/",
             "--git-ssh-source-dir",
             str(ssh_dir),
         ],
     )
 
     assert captured["create_app"]["allowed_git_source_prefixes"] == [
-        "ssh://evander-git-host/opt/evander/git-remotes/",
-        "file:///tmp/test-mirrors/",
+        "ssh://evander-git-host/opt/evander/runtime/managed-git/",
+        "file:///opt/evander/runtime/managed-git/",
     ]
     assert captured["create_app"]["git_ssh_source_dir"] == ssh_dir
 

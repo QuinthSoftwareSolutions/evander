@@ -51,6 +51,10 @@ class VmAgentContainerSessionActionMixin:
         worker_session_deleted, removed_mappings = self._delete_detached_worker_session_state(
             session_id
         )
+        managed_git = self._deps.managed_git_admin
+        if managed_git is not None:
+            managed_git.unbind_all("sessions", session_id)
+            managed_git.unbind_all("authorized_sessions", session_id)
         result = self.operations_admin.delete_session(session_id)
         removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
         removed_assistant_mappings = self._delete_chat_assistant_session_mappings({session_id})

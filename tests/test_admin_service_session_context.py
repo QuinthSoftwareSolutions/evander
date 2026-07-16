@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import build_admin_runtime
 from evander.models import SessionManifest, ToolName
 
 

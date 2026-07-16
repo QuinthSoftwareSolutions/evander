@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from evander.admin.services.vm_agent.common import (
     VmActionResult,
+    _revoke_managed_git_access_for_session,
     _source_project_dir,
     git_helpers,
     session_helpers,
@@ -42,9 +43,19 @@ class VmAgentDeleteMixin:
                 )
 
         session_repository = self._session_repository()
-        session_ids = {
-            session.session_id for session in session_repository.list_sessions_for_vm(vm_name)
-        }
+        sessions = session_repository.list_sessions_for_vm(vm_name)
+        session_ids = {session.session_id for session in sessions}
+        revoked_git_keys = sum(
+            int(_revoke_managed_git_access_for_session(session)) for session in sessions
+        )
+        unbound_repository_ids: set[str] = set()
+        managed_git = self._deps.managed_git_admin
+        if managed_git is not None:
+            for session_id in session_ids:
+                unbound_repository_ids.update(managed_git.unbind_all("sessions", session_id))
+                unbound_repository_ids.update(
+                    managed_git.unbind_all("authorized_sessions", session_id)
+                )
         for session_id in session_ids:
             session_repository.delete_session(session_id)
         removed_approvals = session_helpers.prune_approvals_for_sessions(
@@ -63,7 +74,8 @@ class VmAgentDeleteMixin:
             f"removed_pr_map_entries={removed_pr_map_entries} "
             f"removed_approvals={removed_approvals} "
             f"removed_feedback_cursors={removed_cursors} "
-            f"removed_feedback_items={removed_feedback}"
+            f"removed_feedback_items={removed_feedback} "
+            f"revoked_git_keys={revoked_git_keys}"
         )
         if message:
             summary = f"{message}\n{summary}"
@@ -85,10 +97,19 @@ class VmAgentDeleteMixin:
             )
 
         session_repository = self._session_repository()
-        session_ids = {
-            session.session_id
-            for session in session_repository.list_sessions_for_issue(issue_number)
-        }
+        sessions = session_repository.list_sessions_for_issue(issue_number)
+        session_ids = {session.session_id for session in sessions}
+        revoked_git_keys = sum(
+            int(_revoke_managed_git_access_for_session(session)) for session in sessions
+        )
+        unbound_repository_ids: set[str] = set()
+        managed_git = self._deps.managed_git_admin
+        if managed_git is not None:
+            for session_id in session_ids:
+                unbound_repository_ids.update(managed_git.unbind_all("sessions", session_id))
+                unbound_repository_ids.update(
+                    managed_git.unbind_all("authorized_sessions", session_id)
+                )
         for session_id in session_ids:
             session_repository.delete_session(session_id)
         removed_approvals = session_helpers.prune_approvals_for_sessions(
@@ -101,11 +122,6 @@ class VmAgentDeleteMixin:
             self._deps.config.runtime_dir / "pr-feedback-store.json",
             streams=removed_streams,
         )
-        bare_repo_removed, bare_repo_path = git_helpers.remove_issue_bare_repo(
-            issue_number,
-            root_dir=root_dir,
-            runtime_dir=self._deps.config.runtime_dir,
-        )
         summary = (
             f"Destroyed issue VM {vm_name}; "
             f"removed_sessions={len(session_ids)} "
@@ -113,8 +129,8 @@ class VmAgentDeleteMixin:
             f"removed_approvals={removed_approvals} "
             f"removed_feedback_cursors={removed_cursors} "
             f"removed_feedback_items={removed_feedback} "
-            f"bare_repo_removed={bare_repo_removed} "
-            f"bare_repo_path={bare_repo_path}"
+            f"revoked_git_keys={revoked_git_keys} "
+            f"unbound_managed_repositories={len(unbound_repository_ids)}"
         )
         if message:
             summary = f"{message}\n{summary}"

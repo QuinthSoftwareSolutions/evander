@@ -236,10 +236,12 @@ def _project_git_config(value: object) -> ProjectGitConfig | None:
     if value is None:
         return None
     git_payload = _mapping(value, "project.git")
-    host_repo_path = _optional_text(git_payload.get("host_repo_path"))
-    if host_repo_path is None:
+    managed_repo_id = _optional_text(git_payload.get("managed_repo_id"))
+    if managed_repo_id is None:
         return None
-    return ProjectGitConfig.model_validate({**git_payload, "host_repo_path": host_repo_path})
+    return ProjectGitConfig.model_validate(
+        {**git_payload, "managed_repo_id": managed_repo_id}
+    )
 
 def _materialized_template_record_id(project_id: str, template_record_id: str) -> str:
     return f"{project_id}-{template_record_id}"

@@ -11,14 +11,15 @@ class GitPrNoteQueryProvider(QueryProviderBase):
         payload = self._query_payload()
         if resolved_config:
             payload.update(dict(resolved_config))
-        host_repo_path = self._normalize_required_string(
-            payload.get("host_repo_path"), field_name="host_repo_path"
+        managed_repo_id = self._normalize_required_string(
+            payload.get("managed_repo_id"), field_name="managed_repo_id"
         )
-        local_branch = self._normalize_required_string(
-            payload.get("local_branch"), field_name="local_branch"
+        commit_sha = self._normalize_required_string(
+            payload.get("commit_sha"), field_name="commit_sha"
         )
-        remote_name = self._normalize_optional_string(payload.get("remote_name"))
-        notes_ref = self._normalize_optional_string(payload.get("notes_ref"))
+        notes_ref = self._normalize_required_string(
+            payload.get("notes_ref"), field_name="notes_ref"
+        )
 
         context = self._context()
         query_fn = getattr(context.git_pr_note_reader, "git_pr_note_query", None)
@@ -26,17 +27,17 @@ class GitPrNoteQueryProvider(QueryProviderBase):
             raise RuntimeError("Admin runtime git_pr_note_query is not available")
 
         result = query_fn(
-            host_repo_path=host_repo_path,
-            local_branch=local_branch,
-            remote_name=remote_name,
+            managed_repo_id=managed_repo_id,
+            commit_sha=commit_sha,
             notes_ref=notes_ref,
+            directory_path=str(context.metadata.get("directory_path") or "root"),
         )
         return self._coerce_result(result)
 
     def _query_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         query = self.query_definition
-        for field_name in ("host_repo_path", "local_branch", "remote_name", "notes_ref"):
+        for field_name in ("managed_repo_id", "commit_sha", "notes_ref"):
             if query is not None and hasattr(query, field_name):
                 payload[field_name] = getattr(query, field_name)
         return payload
@@ -56,7 +57,7 @@ class GitPrNoteQueryProvider(QueryProviderBase):
     @classmethod
     def _normalize_required_string(cls, value: Any, *, field_name: str) -> str:
         text = cls._normalize_optional_string(value)
-        if not text:
+        if text is None:
             raise ValueError(f"query:git:pr-note requires {field_name}")
         return text
 

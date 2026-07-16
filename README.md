@@ -1,6 +1,8 @@
 # Evander
 
-`evander` is a host-side control plane for running autonomous AI agents inside disposable libvirt VMs while exposing only narrow, audited capabilities through MCP.
+`evander` is a host-side control plane for running autonomous AI agents inside disposable libvirt
+VMs while exposing only narrow, audited host-owned surfaces: MCP plus explicitly allowlisted model,
+package, Git, and HTTP relays.
 
 ## What This Scaffold Includes
 
@@ -22,14 +24,15 @@
 - Additive directory ownership and directory-scoped configuration support with inherited overrides
 - Libvirt, cloud-init, and firewall scripts for an isolated VM network
 - Systemd service templates and an install script for persistent host services
-- Local bare Git remote tooling for getting code changes back out of VMs
+- Directory-scoped managed bare Git repositories with pinned promotion and ephemeral worktrees
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
 - A consolidated configuration parameter reference at `docs/configuration-reference.md`
 
 ## Core Security Model
 
 - Guests have no direct access to host secrets.
-- Guests reach only the MCP gateway over a private libvirt network.
+- Guests use a private libvirt network and can reach only the host ports explicitly allowed by the
+  firewall policy; those ports expose MCP and the configured host-owned relay surfaces.
 - Every tool call is checked against a session manifest.
 - Irreversible actions require a separate approval record and exact payload match.
 - State is append-only where possible and intentionally simple in v1.
@@ -109,7 +112,7 @@ Directory-scoped config is rooted at `root`:
    sudo ./scripts/apply_firewall.sh
    ```
 
-  The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, `8081`, and `3142` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, the NuGet relay on `11666`, the session-scoped HTTP target relay on `11777` for approved external web endpoints such as APP demo environments, the Nexus package cache on `8081` for PyPI/npm package restores, and the apt-cacher-ng relay on `3142` for worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is not exposed to guests.
+  The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, `11881`, `8081`, and `3142` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, the NuGet relay on `11666`, the session-scoped HTTP target relay on `11777` for approved external web endpoints such as APP demo environments, the npm audit facade on `11881`, the Nexus package cache on `8081` for PyPI/npm package restores, and the apt-cacher-ng relay on `3142` for worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is not exposed to guests.
 
 6. Start the host-side services:
 
@@ -129,7 +132,7 @@ Directory-scoped config is rooted at `root`:
    events and provisions fixed routes through the gateway using
    `VOICE_MEDIA_CONTROLLER_TOKEN`. After the inbound call reaches a terminal
    bridge state, it syncs the sanitized result back to the gateway so the
-   originating Truman session receives the normal voice-session reconciliation.
+   originating Evander session receives the normal voice-session reconciliation.
 
    Optional Teams meeting voice sessions require the Windows-hosted bridge in
    `integrations/teams-meeting-media-bridge`. Set `BRIDGE_ADAPTER_MODE=Graph`
@@ -293,6 +296,12 @@ panel surfaces explicit missing reasons instead of inferring or inventing releas
 For a task-oriented guide to every Admin UI section, see
 [`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).
 
+For the complete layered technical reference to core Evander and the Team Add-on, including
+architecture, runbooks, diagrams, glossary, and linked subject index, see the
+[`Evander Technical Manual`](docs/evander-user-manual.md). The same edition is published as
+[HTML](docs/evander-user-manual.html), [PDF](docs/evander-user-manual.pdf), and
+[DOCX](docs/evander-user-manual.docx).
+
 Dashboard-tagged read requests use a short-lived backend JSON cache so repeated opens do not
 re-run every systemd, VM inventory, workflow, approval, session, and audit read immediately. The
 detail tabs keep their normal live reads, and the dashboard Refresh button bypasses the cache.
@@ -368,7 +377,9 @@ Sign-out clears only the local admin session cookie. v1 does not force Microsoft
 
 ### Trigger orchestrator
 
-The scaffold includes `evander-trigger-orchestrator`, a host-side worker that:
+The scaffold includes the host-side trigger worker, launched interactively as
+`evander-cli trigger-orchestrator` or persistently as
+`evander-trigger-orchestrator.service`, that:
 
 - validates and loads trigger definitions from `config/trigger-orchestrator/config.json`
 - polls provider-specific trigger implementations (`cron`, `ticket`, `discord`, `email`, `pull-request`, `git`)
@@ -382,7 +393,7 @@ The scaffold includes `evander-trigger-orchestrator`, a host-side worker that:
 One-shot cycle execution is supported for ops/debugging:
 
 ```bash
-evander-trigger-orchestrator --runtime-dir runtime --once --log-level INFO
+evander-cli trigger-orchestrator --runtime-dir runtime --once --log-level INFO
 ```
 
 For continuous operation, run the systemd unit:
@@ -430,8 +441,8 @@ refreshes `runtime/local-issues.json` so ticket triggers and UI screens continue
 state.
 The ADO worker does not create sessions, create VMs, run issue setup scripts, bootstrap guest
 toolchains, or ingest Azure DevOps work items. Directory-scoped `ado_worker` config still controls
-PR automation flags and can provide `ado_repo_source` for workflows that choose to bind it into
-`effect:issue:upsert-ado-proxy.repo_source`.
+PR automation flags and may provide transient `ado_repo_source` registration input. The upsert
+effect resolves that source and persists only `managed_repo_id` on the proxy issue.
 
 ## Admin Web And CLI
 
@@ -555,193 +566,98 @@ signature = hmac.new(
 print(signature)
 ```
 
-## Local Git Remotes
+## Managed Git Repositories
 
-Issue VM creation is now separate from repo setup. Create the VM first:
-
-```bash
-MSSQL_SA_PASSWORD='your-strong-password' ./.venv/bin/evander-cli create-issue-vm 14084 --dotnet --nuget /path/to/project-or-solution.slnx --mssql --mssql-init-root /path/to/mssql-init --playwright
-```
-
-Then clone the repo and run any repo-specific bootstraps you need:
+Evander-managed agent Git uses one bare repository per canonical upstream and directory trust
+boundary. Register the source once, then pass only its `managed_repo_id` through VM, container,
+workflow, and Team surfaces:
 
 ```bash
-./.venv/bin/evander-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
-./.venv/bin/evander-cli bootstrap-python-in-vm vm-14084 --host-checkout /path/to/local/repo --target-dir /home/agent/$(basename /path/to/local/repo)
-./.venv/bin/evander-cli bootstrap-frontend-in-vm vm-14084 --host-checkout /path/to/local/repo --install-root /path/to/local/repo/Src/Clients
+REPO_JSON="$(
+  ./.venv/bin/evander-cli git-repos register \
+    --directory-path root \
+    --repo-source /path/to/local/repo
+)"
+printf '%s\n' "$REPO_JSON"
 ```
 
-When `session-id` is omitted, `create-issue-vm` generates one automatically in the form
-`issue-<issue-number>-<utc timestamp>-<pid>`. That keeps review branches distinct across multiple
-agents or reruns for the same issue.
+Equivalent GitHub/Azure DevOps SSH and HTTPS URLs deduplicate within the same directory subtree.
+Sibling directory boundaries remain isolated. A local registration uses its canonical origin when
+available and never changes the operator checkout.
 
-Toolchain bootstraps are opt-in and split by concern:
-
-- `create-issue-vm --dotnet` runs `bootstrap_dotnet_vm.sh`
-- `create-issue-vm --nuget PATH` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh`
-- `create-issue-vm --mssql` runs `bootstrap_mssql_vm.sh` and requires `MSSQL_SA_PASSWORD`
-- `create-issue-vm --playwright` runs `bootstrap_playwright_vm.sh`
-- `bootstrap-python-in-vm` runs `bootstrap_python_vm.sh` against a cloned repo
-- `bootstrap-frontend-in-vm` runs `bootstrap_frontend_deps_vm.sh` against a cloned repo
-
-For frontend bootstrapping, each install root must live under the selected host checkout and
-already contain `package.json` plus `node_modules`.
-
-The guest clone URL is also derived from configurable Git-root settings:
-
-- `EVANDER_GIT_ROOT` selects the host bare-remote root. Set it in the `root`
-  issue setup config or as a host environment variable, and make sure it already exists
-  before guest clone starts.
-- `EVANDER_GIT_SSH_ALIAS` controls the SSH alias used in the guest clone URL
-  (default: `evander-git-host`).
-
-That now also clones the mirrored repo into the guest user's home directory using
-the host repo basename, for example `/home/agent/AcmePlatform`. It also writes a short
-`/home/agent/AGENTS.md` note, copies the issue YAML into the repo root as
-`AGENT_TASK.yaml`, creates a local `work` branch from the configured base branch, configures
-repo-local `git sync-base` and `git push-agent` aliases, and starts a background agent run
-inside the guest by default. `sync-base` merges the latest configured base branch via `origin`,
-while `push-agent` verifies the destination and base branches before using the safe
-session-namespaced push pattern. The guest-side PID and state files live under
-`/home/agent/.evander/`; root-owned transcript logs live under `/var/log/evander/agent-runs/`.
-For container-worker sessions, the clone effect provisions a session-scoped Git SSH key for that
-push path by default; set `git_access_mode` to `read-only` when the session should only fetch.
-VM and container agents share `/artifacts` as the workflow-readable artifacts
-folder. Agents can call the `stage_artifact` MCP tool to copy a file or
-directory from `/home/agent` into this folder without leaving their working
-directory. Workflow query nodes can read UTF-8 text files from this folder by
-session id and relative path. Artifact workflow effects can stage files from
-`/home/agent` into this folder and publish the folder as an immutable keyed
-`tar.gz` archive in the host runtime artifact store.
-When `--python` is enabled, the guest repo also gets a repo-local `.venv`. Activate it with
-`. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
-the guest clone.
-After the initial provider command run exits, the helper now performs one
-provider-specific follow-up verification pass to verify checklist completion
-(tests, docs, and PR markdown note). Override that follow-up prompt text with
-`AGENT_POST_EXEC_VERIFICATION_PROMPT` in the `root` issue setup config or as a host
-environment variable.
-
-For operator visibility from the host, use:
+Create the issue VM separately, then clone the managed repository:
 
 ```bash
-evander-cli list-vms
-evander-cli list-vms --all
-evander-cli logs 14084 --lines 50
+./.venv/bin/evander-cli create-issue-vm 14084 --dotnet --playwright
+./.venv/bin/evander-cli clone-repo-into-vm vm-14084 \
+  --managed-repo-id mr_0123456789abcdef0123 \
+  --directory-path root \
+  --session-id issue-14084-session
 ```
 
-For a lower-level point-in-time VM inspection, `./scripts/check_issue_vm.sh 14084`
-is still available.
+The clone step writes guest guidance, adds `AGENT_TASK.yaml` when an issue task is available, and
+uses root-owned transcripts under `/var/log/evander/agent-runs/`. Inspect it from the host with
+`evander-cli list-vms`, `evander-cli logs 14084 --lines 50`, or the lower-level
+`./scripts/check_issue_vm.sh 14084` diagnostic.
 
-The script and CLI wrappers share the same timeout environment variables (defaults shown):
+VM lifecycle scripts and CLI wrappers share the same network-readiness timeout settings:
 
 - `VM_WAIT_IP_TIMEOUT_SECONDS` (default `180`)
 - `VM_WAIT_SSH_TIMEOUT_SECONDS` (default `180`)
 
-`list-vms` shows running VMs together with live guest agent status by default.
-Pass `--all` to include inactive VMs as well. `logs` prints the requested
-number of recent lines first, then follows the guest agent log live over SSH.
+The control plane resolves the restricted guest/worker clone URL internally. Writable sessions get
+a dedicated SSH key that can update only `refs/heads/agents/<session-id>/**` and the session notes
+ref. It cannot write host review/Team namespaces, tags, configuration, or hooks. Container-worker
+sessions use the same managed bare repository rather than creating a separate cache mirror; set
+`git_access_mode` to `read-only` when write access is unnecessary.
 
-Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:
+Guest repositories include `git sync-base`, `git push-agent`, and `git agent-pr-note`. Agent
+pushes enter the quarantined session namespace. The post-receive hook only enqueues a structured
+`trigger:git:push` event; upstream credentials and publication remain host-side.
 
-Set the `root` issue setup config values for `EVANDER_GIT_ROOT`,
-`EVANDER_GIT_HOST`, `EVANDER_GIT_USER`, and `EVANDER_GIT_SSH_ALIAS`
-through the admin UI or `evander-cli directories config-set`, then run:
+The queue-driven host workflow pins the trigger's exact commit SHA, promotes it with compare-and-swap
+semantics, reads a note attached to that exact commit, and publishes the same SHA with an explicit
+lease. A newer push cannot silently replace the reviewed commit. Managed workflow nodes use:
 
-```bash
-./scripts/setup_issue_git_vm.sh vm-real 14084
-```
+- `effect:git:ensure-managed-repo`: transient `directory_path` and `repo_source`;
+- clone effects: `managed_repo_id`;
+- promotion: ID, agent branch, target branch, and `expected_commit_sha`;
+- PR note query: ID, exact commit SHA, and notes ref;
+- push/PR effects: ID, source ref, expected SHA, and destination branch.
 
-If you want to mirror the default host repo into an issue-numbered bare remote first, use:
+Operations that need checked-out files create a unique detached worktree beneath
+`runtime/git-worktrees/<managed_repo_id>/<operation-id>`. Cleanup runs on every normal exit and
+maintenance reconciles old lock-free leftovers. These host worktrees are Git-operation scratch
+space, not a sandbox for agent-authored builds or tests.
 
-```bash
-./scripts/mirror_issue_repo.sh 14084
-```
-
-You can choose freshness behavior explicitly:
-
-```bash
-# Local working tree source (default: upstream fetch + divergence check)
-./scripts/mirror_issue_repo.sh --remote-name origin 14084 /path/to/local/repo
-
-# Opt out of upstream sync for local/offline-only flows
-./scripts/mirror_issue_repo.sh --no-sync-remote 14084 /path/to/local/repo
-
-# Remote URL source (always refreshed in runtime/repo-cache before mirroring)
-./scripts/mirror_issue_repo.sh 14084 https://example.com/org/repo.git
-
-# Pinned mirror behavior
-./scripts/mirror_issue_repo.sh --branch main 14084 /path/to/local/repo
-./scripts/mirror_issue_repo.sh --refspec refs/heads/main:refs/heads/main 14084 /path/to/local/repo
-```
-
-By default (or when `--sync-remote` is set) for a local source, the helper fetches
-`git fetch --prune <remote-name>` and fast-forwards the local default branch when
-the remote only has additive commits. It still stops with a divergence message
-when both sides have unique commits unless `--force-local` is supplied. Use
-`--no-sync-remote` to keep a strictly local/offline mirror update.
-Every mirror run logs the source mode (local vs remote), selected base branch, and source commit
-SHA for auditability.
-
-`setup_issue_git_vm.sh` is the shortest path: it bootstraps the guest Git key and creates or
-refreshes the issue-numbered host mirror in one command. The lower-level
-`bootstrap_git_vm.sh` helper installs a dedicated guest SSH key and a restricted host
-`authorized_keys` entry so guests can push Git branches without needing your host password or
-general shell access. Writable guest keys are bound to one bare repo and
-`refs/heads/agents/<session-id>/...` namespace plus the session PR notes ref. Read-only guest keys
-are still bound to one bare repo; if the helper cannot determine repo metadata, it refuses to
-install an unscoped key. Issue
-mirrors also carry a `post-receive`
-hook so host-side automation can promote pushed `agents/...` branches into the trusted clone, push
-the review branch to `origin`, and create the upstream PR automatically.
-Issue mirrors also remember their source settings, so later guest `git fetch` / `git pull`
-operations can trigger a host-side mirror refresh before the read is served.
-
-For fixed PR boilerplate, set `EVANDER_PR_FIXED_BODY_FILE` as a host environment variable
-pointing at a markdown file. For per-directory boilerplate, use the root `pr_template` directory config
-domain and migrate the legacy repo-level `config/pr-template.md` with
-`evander-cli migrate-pr-template-to-root --config config/gateway.yaml`.
-Automation assembles PR descriptions in this order: fixed boilerplate, `## Agent Summary`
-heading, then the git note content from the configured PR notes ref. New checkouts use
-`refs/notes/agent-pr/<session-hash>`, where `<session-hash>` is the first 12 hex characters of
-`sha256(session_id)`; older checkouts can still use `refs/notes/agent-pr`.
-
-Guest issue VMs install `git agent-pr-note`, `git sync-base`, and `git push-agent` helpers.
-Agents work on a local `work` branch even when the base branch is `main`, so `git merge main`
-does not accidentally merge the branch into itself. `git sync-base` fetches and merges the
-configured base branch through the guest-visible mirror. `git push-agent` fetches the configured
-destination and base branches before pushing, refuses when either has commits missing from `HEAD`,
-refreshes the cached summary onto the current `HEAD`, and pushes the configured PR notes ref
-automatically.
-
-Example assembled PR body:
-
-```markdown
-## Release Notes
-- reviewer-owned context
-
----
-
-## Agent Summary
-
-- agent-authored markdown summary
-```
-
-If no note is available, automation still proceeds with fixed boilerplate only (when configured) or
-falls back to default PR body behavior. Treat note text as untrusted markdown content only, and do
-not interpolate it into shell commands.
-
-See [git-remotes.md](docs/git-remotes.md) for the review flow and branch naming pattern.
-The host-side safe promotion flow is:
+Inspect and maintain long-lived repositories explicitly:
 
 ```bash
-./scripts/promote_agent_branch.sh /path/to/trusted-clone sample-repo agents/<session-id>/work-<agent-suffix>
-./scripts/open_agent_pr.sh --create-pr --base main /path/to/trusted-clone review/<session-id>/work-<agent-suffix>
+evander-cli git-repos list --directory-path root
+evander-cli git-repos show mr_0123456789abcdef0123
+evander-cli git-repos refresh mr_0123456789abcdef0123
+evander-cli git-repos maintenance --managed-repo-id mr_0123456789abcdef0123
 ```
 
-That keeps the VM-facing bare remote as a quarantine intake only; reviewed changes reach `origin`
-only from a normal trusted clone on the host.
-See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and provider-backed email verification workflow.
+Issue/session deletion removes bindings and SSH authorization but retains the shared repository and
+unpublished refs. `git-repos delete` refuses active bindings, authorized sessions, worktrees, and
+unresolved migration state; there is no force or automatic time-based deletion.
+
+Existing path-based mirror installations require an explicit stopped-service migration:
+
+```bash
+evander-cli git-repos migrate --dry-run
+evander-cli git-repos migrate --apply
+# After operator acceptance and end-to-end VM/container smoke tests:
+evander-cli git-repos migrate --finalize <migration-id>
+```
+
+Apply preserves old Evander-owned repositories/cache checkouts as read-only rollback artifacts and
+never changes a user checkout. Finalize deletes only verified artifacts named in the migration
+manifest.
+
+See [git-remotes.md](docs/git-remotes.md) for the complete security, workflow, maintenance, and
+migration contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider checks.
 
 ## Discord Adapter Configuration
 
@@ -777,9 +693,11 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
     `channel_id` values are permitted; operator user allowlists do not bypass destination checks.
   - Message reads do not apply automatic read reactions. Agents must call `add_message_reaction`
     when a reaction is intended.
-- There is currently no built-in Discord retry/backoff loop in the `bot_api` adapter. HTTP
-  failures (timeouts, 4xx/5xx, transport errors) surface back to the MCP caller. Policy denials
-  are written to `audit_log_path` (default runtime path `runtime/audit.jsonl`).
+- The `bot_api` adapter retries transient transport, rate-limit, and server failures according to
+  `discord_retry_count`, `discord_retry_base_backoff_seconds`, and
+  `discord_retry_max_backoff_seconds` (defaults: 3 retries, 0.5-second base, 5-second cap).
+  Terminal failures surface to the caller; policy denials are written to `audit_log_path`
+  (default runtime path `runtime/audit.jsonl`).
 - Operator least-privilege checklist:
   1. Keep the Discord bot token only on the host (environment or host env files), never in guest
      cloud-init, manifests, or guest shell profiles.
@@ -846,13 +764,13 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `{"target":"team-id/channel-id"}`
   - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Truman Bot"}}}`
   - optional `case_sensitive: true|false` (default `false`)
-- `trigger:communication:new-message` provides the provider-neutral inbound chat path for
+- `trigger:communication:new-message` provides the provider-neutral inbound message path for
   directory-scoped communication targets. It requires explicit `communication_target_ids`, defaults
   `directory_path` to `root`, supports optional `author_ids`, `content_contains`, and
-  `case_sensitive`, and listens only to read-capable Teams channel/chat or Discord channel targets.
-  The host-side Teams and Discord ingest workers observe those declared targets and feed the
-  host-owned inbox stores consumed by the trigger; trigger outputs do not expose communication
-  target auth profile references.
+  `case_sensitive`, and listens only to read-capable Teams channel/chat, Discord channel, or email
+  targets. The host-side Teams and Discord ingest workers feed their host-owned inbox stores; email
+  targets are read through the configured mailbox provider during trigger polling. Trigger outputs
+  do not expose communication target auth profile references.
 - Direct-message triggers use a separate sender allowlist:
   - `{"type":"trigger:teams:direct-message","sender_user_ids":["<graph-user-id-or-email>"]}`
   - optional `message_filter` with the same content or mention filter shape
@@ -1051,6 +969,41 @@ Response:
   - grant `respond_to_agent` only to sessions that need to answer prompts;
   - avoid broad cross-team sharing by keeping sessions in narrow `directory_path` scopes.
 
+## Request-Scoped Codebase Consultations
+
+`consult_codebase` is the low-latency delegation path for repository questions. It does not
+require a pre-created "junior" agent. Each request resolves an exact commit from a
+directory-visible managed repository, creates a fresh container-worker session, clones the
+repository with read-only Git credentials, checks out the pinned commit, prompts the selected
+model, accepts one structured response, and destroys the session.
+
+Configure named profiles in the root or directory `providers.json`:
+
+```yaml
+agent_consultation_profiles:
+  local-qwen-search:
+    execution_backend: container_worker_vm
+    agent_provider: codex
+    model: qwen3.6:27b
+    model_provider_mode: local_openai
+    container_image: default
+    timeout_seconds: 180
+    max_concurrency: 1
+agent_consultation_default_profile: local-qwen-search
+agent_consultation_max_wait_seconds: 60
+agent_consultation_retention_days: 30
+```
+
+Grant dispatching sessions `consult_codebase`, `get_codebase_consultation`, and optionally
+`cancel_codebase_consultation`. The disposable worker receives only
+`submit_codebase_consultation_result`; callers do not grant that tool themselves. A consultation
+can wait briefly in the initial call or return `queued`, `provisioning`, or `running` and be polled
+by ID. Results contain an answer, confidence, limitations, exact commit provenance, and evidence
+whose paths and line ranges are verified against the pinned commit. Per-profile concurrency,
+deadlines, cancellation, one-time result tokens, and the hidden system workflow bound resource
+use and guarantee cleanup. The feature is generic MCP/workflow infrastructure and has no Team
+Add-on dependency.
+
 ## Retell Phone Call Tools
 
 - `list_contacts` lists the directory contact ids and safe summaries visible to the session. It does
@@ -1080,7 +1033,10 @@ Response:
 
 ## Relay Environment Configuration
 
-- `OPENAI_API_KEY` is required on the host for `evander-openai-relay`.
+- In `openai_public` mode, the relay reads the env var named by `openai_api_key_env` (default
+  `OPENAI_API_KEY`). `azure_openai` uses `azure_openai_api_key_env` with the OpenAI env name as a
+  fallback, `anthropic` uses `anthropic_api_key_env`, and `local_openai` uses the configured
+  `local_openai_api_key`. Only the credential selected by the effective provider mode is required.
 - `AZURE_ARTIFACTS_PAT` is required on the host only when the NuGet relay must reach private
   Azure Artifacts feeds.
 - `config/npm-audit-facade.env` is optional and may remain empty; the npm audit facade reads its
@@ -1419,4 +1375,4 @@ future outbound-send enablement.
 - The gateway is ready for integration adapters, not production credentials by default.
 - Network/firewall scripts assume Ubuntu 24.04 and nftables-backed libvirt hosts.
 - VM disk and seed artifacts default to `/var/lib/libvirt/images/evander`, so VM lifecycle scripts should be run with `sudo` unless you deliberately provision an alternate libvirt-accessible storage path.
-- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint, `11666` for the host-side NuGet relay, `11777` for the HTTP target relay, `8081` for the host-side Nexus package cache, and `3142` for the host-side apt-cacher-ng relay.
+- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint, `11666` for the host-side NuGet relay, `11777` for the HTTP target relay, `11881` for the npm audit facade, `8081` for the host-side Nexus package cache, and `3142` for the host-side apt-cacher-ng relay.

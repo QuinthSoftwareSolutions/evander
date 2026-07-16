@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "fixture": "northstar",
+  "dark_mode": true,
+  "screenshots": [
+    {
+      "file": "admin-dashboard.png",
+      "title": "Admin operations dashboard",
+      "surface": "admin",
+      "route": "#dashboard",
+      "view": "dashboard"
+    },
+    {
+      "file": "admin-sessions.png",
+      "title": "Admin session detail",
+      "surface": "admin",
+      "route": "#sessions?session_id=session-imani-telemetry",
+      "view": "session-detail"
+    },
+    {
+      "file": "admin-approvals.png",
+      "title": "Admin approval detail",
+      "surface": "admin",
+      "route": "#approvals?request_id=approval-telemetry-retry",
+      "view": "approval-detail"
+    },
+    {
+      "file": "admin-workflow.png",
+      "title": "Admin workflow editor",
+      "surface": "admin",
+      "route": "#workflow",
+      "view": "workflow-editor"
+    },
+    {
+      "file": "team-workspace.png",
+      "title": "Team workspace",
+      "surface": "team",
+      "route": "/addons/team-addon/",
+      "view": "workspace"
+    },
+    {
+      "file": "team-task-board.png",
+      "title": "Team task board",
+      "surface": "team",
+      "route": "/addons/team-addon/",
+      "view": "task-board"
+    },
+    {
+      "file": "team-delivery.png",
+      "title": "Team delivery",
+      "surface": "team",
+      "route": "/addons/team-addon/",
+      "view": "delivery"
+    },
+    {
+      "file": "team-org-chart.png",
+      "title": "Team organization chart",
+      "surface": "team",
+      "route": "/addons/team-addon/",
+      "view": "org"
+    },
+    {
+      "file": "team-chat.png",
+      "title": "Team chat",
+      "surface": "team",
+      "route": "/addons/team-addon/",
+      "view": "chat"
+    }
+  ]
+}

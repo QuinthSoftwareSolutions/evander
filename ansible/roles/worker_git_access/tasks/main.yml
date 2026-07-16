@@ -91,7 +91,7 @@
   delegate_to: "{{ evander_control_plane_host }}"
   when: evander_worker_install_control_plane_git_authorized_key | bool
 
-- name: Authorize worker Git key on the control plane
+- name: Authorize worker deployment-mirror key on the control plane
   ansible.builtin.lineinfile:
     path: "{{ evander_control_plane_git_user_getent.stdout.split(':')[5] }}/.ssh/authorized_keys"
     create: true
@@ -100,7 +100,7 @@
     mode: "0600"
     regexp: "{{ evander_worker_git_public_key.split()[1] | regex_escape }}"
     line: >-
-      from="{{ evander_worker_git_allowed_from }}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="EVANDER_GIT_ROOT_B64={{ evander_git_root | b64encode }} EVANDER_GIT_AUTH_ACCESS=read-only EVANDER_GIT_AUTH_REPO_PREFIX_B64={{ evander_git_root | b64encode }} {{ evander_control_plane_deploy_path }}/scripts/git_ssh_command_wrapper.sh" {{ evander_worker_git_public_key }}
+      from="{{ evander_worker_git_allowed_from }}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="EVANDER_GIT_ROOT_B64={{ (evander_worker_repo_mirror_path | dirname) | b64encode }} EVANDER_GIT_AUTH_ACCESS=read-only EVANDER_GIT_AUTH_REPO_B64={{ evander_worker_repo_mirror_path | b64encode }} {{ evander_control_plane_deploy_path }}/scripts/git_ssh_command_wrapper.sh" {{ evander_worker_git_public_key }}
   delegate_to: "{{ evander_control_plane_host }}"
   when: evander_worker_install_control_plane_git_authorized_key | bool
 
@@ -138,7 +138,7 @@
       - "{{ evander_control_plane_deploy_path }}/scripts/create_git_remote.sh"
       - "{{ evander_worker_repo_mirror_name }}"
   environment:
-    EVANDER_GIT_ROOT: "{{ evander_git_root }}"
+    EVANDER_GIT_ROOT: "{{ evander_worker_repo_mirror_path | dirname }}"
     EVANDER_GIT_HOST: "{{ evander_git_host }}"
     EVANDER_GIT_USER: "{{ evander_git_user }}"
     EVANDER_GIT_SSH_ALIAS: "{{ evander_git_ssh_alias }}"

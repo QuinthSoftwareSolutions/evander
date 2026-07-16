@@ -12,23 +12,18 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
 
-        host_repo_path = self._normalize_optional_string(payload.get("host_repo_path"))
-        if not host_repo_path:
-            raise ValueError("effect:git:promote-agent-branch requires host_repo_path")
-        bare_repo_path = self._normalize_optional_string(payload.get("bare_repo_path"))
-        bare_repo_name = self._normalize_optional_string(payload.get("bare_repo_name"))
-        if not bare_repo_path and not bare_repo_name:
-            raise ValueError(
-                "effect:git:promote-agent-branch requires bare_repo_path or bare_repo_name"
-            )
-        if bare_repo_path and bare_repo_name:
-            raise ValueError(
-                "effect:git:promote-agent-branch bare_repo_path and bare_repo_name are mutually exclusive"
-            )
-
-        agent_branch = self._normalize_optional_string(payload.get("agent_branch"))
-        if not agent_branch:
-            raise ValueError("effect:git:promote-agent-branch requires agent_branch")
+        managed_repo_id = self._normalize_required_string(
+            payload.get("managed_repo_id"), field_name="managed_repo_id"
+        )
+        agent_branch = self._normalize_required_string(
+            payload.get("agent_branch"), field_name="agent_branch"
+        )
+        target_branch = self._normalize_required_string(
+            payload.get("target_branch"), field_name="target_branch"
+        )
+        expected_commit_sha = self._normalize_required_string(
+            payload.get("expected_commit_sha"), field_name="expected_commit_sha"
+        )
 
         context = self._context()
         promote = getattr(context.git_branch_promoter, "promote_agent_branch", None)
@@ -36,30 +31,30 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
             raise RuntimeError("Admin runtime promote_agent_branch is not available")
 
         result = promote(
-            host_repo_path=host_repo_path,
-            bare_repo_path=bare_repo_path,
-            bare_repo_name=bare_repo_name,
+            managed_repo_id=managed_repo_id,
             agent_branch=agent_branch,
-            review_branch=self._normalize_optional_string(payload.get("review_branch")),
-            target_branch=self._normalize_optional_string(payload.get("target_branch")),
-            expected_commit_sha=self._normalize_optional_string(
-                payload.get("expected_commit_sha")
-            ),
-            remote_name=self._normalize_optional_string(payload.get("remote_name")),
+            target_branch=target_branch,
+            expected_commit_sha=expected_commit_sha,
+            directory_path=str(context.metadata.get("directory_path") or "root"),
         )
         output = self._coerce_result(result)
         output.setdefault("success", False)
-        expected_commit = self._normalize_optional_string(payload.get("expected_commit_sha"))
-        promoted_commit = self._normalize_optional_string(output.get("commit_sha"))
+        output.setdefault("managed_repo_id", managed_repo_id)
+        output.setdefault("agent_branch", agent_branch)
+        output.setdefault("target_branch", target_branch)
+        output.setdefault("expected_commit_sha", expected_commit_sha)
+
+        promoted_commit = self._normalize_optional_string(
+            output.get("commit_sha") or output.get("promoted_commit_sha")
+        )
         if (
             output.get("success") is True
-            and expected_commit is not None
-            and promoted_commit != expected_commit
+            and promoted_commit is not None
+            and promoted_commit != expected_commit_sha
         ):
             output["success"] = False
             output["error"] = (
-                f"promoted commit {promoted_commit or 'unknown'} did not match "
-                f"expected {expected_commit}"
+                f"promoted commit {promoted_commit} did not match expected {expected_commit_sha}"
             )
         return output
 
@@ -67,14 +62,10 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
         payload: dict[str, Any] = {}
         effect = self.effect_definition
         for field_name in (
-            "host_repo_path",
-            "bare_repo_path",
-            "bare_repo_name",
+            "managed_repo_id",
             "agent_branch",
-            "review_branch",
             "target_branch",
             "expected_commit_sha",
-            "remote_name",
         ):
             if effect is not None and hasattr(effect, field_name):
                 payload[field_name] = getattr(effect, field_name)
@@ -91,6 +82,13 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
             return None
         text = str(value).strip()
         return text or None
+
+    @classmethod
+    def _normalize_required_string(cls, value: Any, *, field_name: str) -> str:
+        text = cls._normalize_optional_string(value)
+        if text is None:
+            raise ValueError(f"effect:git:promote-agent-branch requires {field_name}")
+        return text
 
     @staticmethod
     def _coerce_result(result: Any) -> dict[str, Any]:

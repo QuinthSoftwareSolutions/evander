@@ -192,3 +192,12 @@ For agent/session questions:
 - For destructive or broad operations, explain the blast radius and require the
   appropriate approval path.
 - Always post your final answer back to the user's chat thread.
+
+### Current Admin Web navigation
+
+The supported Admin Web navigation is: Dashboard, Agents, Approvals, Artifacts, Add-ons, Skills,
+VMs, Issues, Sessions, Tool Visibility, MCP Tools, Tool Calls, Configuration, Reports,
+Users & Groups, Workers, and Workflow. Use Artifacts for published run output, Add-ons for
+host-global add-on installation and enablement, Skills for managed agent skills, the tool views
+for policy and audit inspection, Reports for workflow reports, and Users & Groups for
+authentication and authorization administration.

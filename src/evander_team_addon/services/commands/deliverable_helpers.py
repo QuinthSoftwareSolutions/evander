@@ -122,6 +122,10 @@ def _normalize_review_decision_mapping(
 ) -> dict[str, Any]:
     payload = _mapping(item, field_name)
     criteria = _list_of_mappings(payload.get("criteria"), f"{field_name}.criteria")
+    finding_resolutions = _list_of_mappings(
+        payload.get("finding_resolutions"),
+        f"{field_name}.finding_resolutions",
+    )
     return {
         "review_request_id": _required_text(
             payload.get("review_request_id"),
@@ -136,6 +140,17 @@ def _normalize_review_decision_mapping(
                 "finding": _optional_text(criterion.get("finding")),
             }
             for criterion in criteria
+        ],
+        "finding_resolutions": [
+            {
+                "finding_id": _optional_text(resolution.get("finding_id")),
+                "resolution": _optional_text(resolution.get("resolution")),
+                "evidence_refs": _string_list(
+                    resolution.get("evidence_refs"),
+                    f"{field_name}.finding_resolutions.evidence_refs",
+                ),
+            }
+            for resolution in finding_resolutions
         ],
         "override_routing_gap_reason": _optional_text(payload.get("override_routing_gap_reason")),
     }
@@ -543,6 +558,15 @@ def _apply_command_deliverable_submission(
         verification=verification,
         state=TeamRecordState.PENDING,
         supersedes_deliverable_id=supersedes_deliverable_id,
+        carried_findings=(
+            [
+                finding.model_copy(deep=True)
+                for finding in superseded_deliverable.carried_findings
+                if finding.state == "open"
+            ]
+            if superseded_deliverable is not None
+            else []
+        ),
     )
     state.deliverables[new_deliverable.id] = new_deliverable
     if superseded_deliverable is not None:

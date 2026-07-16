@@ -102,6 +102,7 @@ from evander.messaging.targets import (
 from evander.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
+    seed_default_model_pricing_catalog,
 )
 from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.models import (
@@ -544,6 +545,33 @@ def _expected_webhook_idempotency_key(
     query_material = json.dumps(query, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     query_digest = hashlib.sha256(query_material.encode("utf-8")).hexdigest()
     return f"webhook:{trigger_id}:{slug}:{signature_key}:query-sha256:{query_digest}"
+
+
+def test_admin_web_shutdown_cleans_active_managed_worktrees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    cleanup_calls: list[dict[str, int]] = []
+
+    def cleanup_active_worktrees() -> dict[str, int]:
+        result = {"cleaned": 1, "failed": 0}
+        cleanup_calls.append(result)
+        return result
+
+    monkeypatch.setattr(
+        service.managed_git_admin,
+        "cleanup_active_worktrees",
+        cleanup_active_worktrees,
+    )
+    app = create_app(service)
+
+    assert cleanup_calls == []
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+        assert cleanup_calls == []
+
+    assert cleanup_calls == [{"cleaned": 1, "failed": 0}]
 
 
 def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
@@ -1896,15 +1924,13 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "target",
         "session_id",
         "vm_name",
-        "repo_source",
-        "canonical_origin_url",
-        "bare_repo_name",
-        "bare_repo_path",
+        "managed_repo_id",
         "clone_branch",
-        "vm_user",
-        "directory_path",
-        "git_access_mode",
-        "git_author_name",
+            "vm_user",
+            "git_access_mode",
+            "pinned_ref",
+            "pinned_commit_sha",
+            "git_author_name",
         "git_author_email",
         "git_committer_name",
         "git_committer_email",
@@ -1940,10 +1966,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "target",
         "session_id",
         "vm_name",
-        "repo_source",
+        "managed_repo_id",
         "clone_branch",
         "vm_user",
-        "directory_path",
     ]
     vm_bootstrap_python = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:bootstrap-python"
@@ -4818,7 +4843,7 @@ def _agent_create_clone_validation_payload(tmp_path: Path) -> dict[str, object]:
                     "display_name": "Clone repo",
                     "type": "effect:agent:clone-repo",
                     "target": "${{effect-agent-create-1.session_id}}",
-                    "repo_source": "git@example.invalid:repo.git",
+                    "managed_repo_id": "mr_0123456789abcdefabcd",
                 },
             ],
             "edges": [
@@ -5710,7 +5735,7 @@ def test_admin_web_validate_scopes_binding_diagnostics_to_workflow_graphs(
             "display_name": "Clone repo Copy",
             "type": "effect:agent:clone-repo",
             "target": "${{effect-agent-create-1.session_id}}",
-            "repo_source": "git@example.invalid:repo.git",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
         }
     )
     edges.append(
@@ -11445,7 +11470,6 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "GitHub",
         "ADO worker filters",
         "ADO worker repo metadata",
-        "ADO PR automation",
         "Git transport",
         "Issue setup Azure DevOps",
         "PR feedback approval",
@@ -11512,6 +11536,7 @@ def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
+    catalog_path = seed_default_model_pricing_catalog(tmp_path / "runtime")
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
     response = client.get("/api/configuration/model-pricing")
@@ -11519,6 +11544,7 @@ def test_admin_web_model_pricing_catalog_status_uses_default_catalog(
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
+    assert payload["path"] == str(catalog_path)
     assert payload["path_source"] == "default"
     assert isinstance(payload["version"], str)
     assert payload["version"]
@@ -11696,8 +11722,7 @@ def test_admin_web_model_pricing_catalog_write_uses_default_catalog_path(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
-    monkeypatch.chdir(tmp_path)
-    catalog_path = tmp_path / "config" / "model-pricing.openai.json"
+    catalog_path = tmp_path / "runtime" / "model-pricing.openai.json"
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     catalog_path.write_text(
         json.dumps(_pricing_catalog_payload(version="initial-pricing", model="initial-model")),

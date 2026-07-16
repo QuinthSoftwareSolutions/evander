@@ -139,7 +139,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`). Legacy one-item `directory_paths` values are accepted and emitted during the compatibility window, but each graph has exactly one canonical directory. `user_ids` are ownership/audit metadata, not a visibility boundary; Admin Web group assignments and direct workflow grants control graph visibility. Pack-backed workflows store the same metadata as `graphs` inside the pack file. |
 | `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names (for example `await_agent_completion`) applied after structural compile/validation. |
-| `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/evander/triggers/models.py`). |
+| `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator definition list; event envelopes live in `src/evander/events/models.py`, while trigger-specific schemas and implementations live under `src/evander/triggers/`. |
 | `gate_execution_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON gate execution log path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |
 | `gate_lock_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator single-instance lock file path. |
@@ -249,7 +249,7 @@ Type-specific keys:
 | `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `organization_url`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
 | `trigger:review:new-request` | — | — |
 | `trigger:approval:pending-created` | — | `directory_path`, `action_types`, `tool_names` |
-| `trigger:git:push` | `path_to_repo` | — |
+| `trigger:git:push` | exactly one of `managed_repo_id`, `managed_repo_id_glob` | — |
 
 `trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports
 ranges, stepped ranges, lists, and month/weekday names. When a cron trigger is overdue, the
@@ -349,6 +349,12 @@ provider loader:
 | `team.operator.escalation_requested` | Team automation requested operator escalation |
 | `team.git.promotion_requested` | Team Git branch promotion requested |
 | `team.git.release_recovery_requested` | Team release recovery promotion requested |
+| `team.release.verification_requested` | A pinned Team release candidate is ready for disposable CI verification |
+
+Each verification retry emits a new `team.release.verification_requested` event
+for a linked successor attempt against the same candidate SHA. Only a timed-out
+or infrastructure-failed attempt is retryable; a verification command's nonzero
+exit is a terminal candidate failure.
 
 For newly created Team deliverables, prefer the dedicated
 `trigger:team:deliverable-created` add-on trigger instead of matching raw internal events. Generated
@@ -452,7 +458,7 @@ Example:
       "id": "repo-main",
       "display_name": "Repo push",
       "type": "trigger:git:push",
-      "path_to_repo": "/var/lib/git/my-repo.git"
+      "managed_repo_id_glob": "mr_*"
     },
     {
       "id": "deploy-webhook",
@@ -572,13 +578,13 @@ Type-specific keys:
 | `type` | Required keys | Optional keys |
 |---|---|---|
 | `effect:vm:create` | _none beyond envelope_ | `vm_name`, `session_id`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `email_mailboxes`, `email_folders`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `outputs` |
-| `effect:vm:clone-repo` | `repo_source` | `target`, `session_id`, `vm_name`, `vm_user`, `directory_path`, `outputs` |
+| `effect:vm:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `outputs` |
 | `effect:vm:bootstrap-python` | `host_checkout`, `target_dir` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `communication_target_ids`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
-| `effect:agent:clone-repo` | `repo_source` | `target`, `session_id`, `vm_name`, `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
+| `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
@@ -601,7 +607,7 @@ Type-specific keys:
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `allowed_source_roots`, `outputs` |
 | `effect:event:schedule` | `event_type`, `payload`; exactly one of `run_at`, `delay_seconds` | `correlation_key`, `idempotency_key`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
-| `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `repo_source`, `yaml_output_dir`, `outputs` |
+| `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `managed_repo_id`, transient `repo_source`, `yaml_output_dir`, `outputs` |
 | `effect:ado:add-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:remove-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
@@ -614,8 +620,21 @@ Type-specific keys:
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
 | `effect:session:revoke-mcp-tool-approval-lease` | one of `mcp_tool_approval_lease_id` (preferred), `lease_id`; optional `session_id`, `workflow_run_id` | `outputs` |
 | `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `renew_if_expires_within`, `directory_path`, `outputs` |
-| `effect:git:push-branch` | `host_repo_path`, `local_branch`, `origin_branch` | `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `outputs` |
-| `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
+| `effect:git:ensure-managed-repo` | `directory_path`, `repo_source` | `outputs` |
+| `effect:git:promote-agent-branch` | `managed_repo_id`, `agent_branch`, `target_branch`, `expected_commit_sha` | `outputs` |
+| `effect:git:push-branch` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `outputs` |
+| `effect:pr:create` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `base_branch`, `session_id`, `work_item_id`, `title`, `fallback_title`, `body`, `draft`, `fill`, `outputs` |
+
+`effect:git:ensure-managed-repo` is the only managed workflow surface that accepts a transient
+repository source. It registers or refreshes that source inside `directory_path` and returns a
+`managed_repo_id`. Persist and bind that ID in later nodes. Clone, promotion, note, publication,
+and Team nodes do not accept host checkout or bare-repository paths and do not emit internal or
+temporary paths.
+
+Promotion and publication must receive the exact SHA from the triggering/reviewed event.
+`effect:git:promote-agent-branch` returns `source_ref_moved` when a later push has replaced the
+source ref before it could be pinned. `effect:git:push-branch` and `effect:pr:create` publish only
+`expected_commit_sha` and use an explicit destination lease.
 
 For `effect:agent:clone-repo`, set both `git_author_name` and
 `git_author_email` when a workflow should set a specific Git author. Set both
@@ -686,11 +705,12 @@ effect returns `success: false` with `reason: destination_branch_ahead` and does
 not push. Use a downstream `gate:filter` on `success == false` when an agent
 should be prompted to fetch and merge the destination branch.
 
-`effect:git:push-branch` performs only the trusted host checkout branch push
-portion of that PR automation path. It normalizes ref-prefixed branch names,
-rejects refspec-shaped branch values, uses the canonical origin URL when
-provided, preflights the destination branch, and returns the same
-`destination_branch_ahead` shape without creating or updating a pull request.
+`effect:git:push-branch` publishes an exact approved commit from a managed bare
+repository. It normalizes ref-prefixed branch names, rejects refspec-shaped
+branch values, resolves the canonical upstream from the managed repository
+registry, preflights the destination branch, and pushes with an explicit lease.
+It returns the same `destination_branch_ahead` shape without creating or
+updating a pull request.
 
 `effect:event:schedule` stores a one-shot pending scheduled internal event
 instead of publishing immediately. It validates the event type, keeps the
@@ -800,7 +820,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
 | `query:ado:activity` | `since` | `until`, `directory_path`, `actor`, `activity_kinds`, `project`, `repo`, `work_item_id`, `pr_id`, `top`, `cursor`, `include_raw`, `outputs` |
 | `query:remote-issues` | `provider` | `directory_path`, ADO: `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`; GitHub: `repo`, `state`, `labels_any`, `labels_all`, `assignee`, `author`, `mentioned`, `milestone`, `since`; common: `text_search`, `top`, `skip`, `outputs` |
-| `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
+| `query:git:pr-note` | `managed_repo_id`, `commit_sha`, `notes_ref` | `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
 | `query:issue:list` | _none beyond envelope_ | `directory_path`, `direct_only`, `states`, `exclude_states`, `source`, `source_type`, `tags_any`, `tags_all`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `limit`, `outputs` |
 | `query:pull-request:get` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `include_reviewers`, `include_commits`, `outputs` |
@@ -1228,36 +1248,43 @@ Busy container-worker wake requests are still treated as handled for one-shot co
 advancement after they queue a prompt, so the same schedule rules apply whether the session is
 resumed immediately or deferred by the prompt queue.
 
-## Root issue setup and git automation config
+## Root issue setup and managed Git configuration
 
-The retired git automation env file used to collect these values. They now come from
-root directory-scoped config and host environment:
+Managed repository storage is rooted at `runtime/managed-git/`; the registry is
+`runtime/managed-git-repositories.json` and operation worktrees live under
+`runtime/git-worktrees/`. These paths are control-plane internals and are not workflow or Team
+configuration fields.
+
+Directory-scoped provider configuration controls upstream credentials and host commit identity.
+Configuration stores environment-variable names, never secret values:
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `EVANDER_GIT_ROOT` | `runtime/directory-config/root/issue-setup.json` | `src/evander/cli.py` and git automation scripts (`create_git_remote.sh`, `git_ssh_command_wrapper.sh`, `promote_agent_branch.sh`). |
-| `EVANDER_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
-| `EVANDER_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
-| `EVANDER_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
-| `EVANDER_GIT_REPO` | host shell | `scripts/bootstrap_git_vm.sh` SSH key repository binding for read-only or writable access; accepts a bare repo path or name under `EVANDER_GIT_ROOT`. |
-| `EVANDER_GIT_SESSION_ID` | host shell or guest `/etc/evander/session.env` | `scripts/bootstrap_git_vm.sh` writable SSH key binding for `refs/heads/agents/<session-id>/...` and the session PR notes ref. |
-| `EVANDER_GIT_READ_ONLY` | host shell | `scripts/bootstrap_git_vm.sh` when forcing repo-scoped read-only Git SSH access. |
-| `EVANDER_GIT_REQUIRE_WRITE_METADATA` | host shell | `scripts/bootstrap_git_vm.sh` when missing repo/session metadata should fail instead of installing read-only access. |
-| `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat toggle). |
-| `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat prompt). |
-| `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (post-exec resume prompt metadata). |
-| `EVANDER_SECRETS_ENV_FILE` | host shell or service environment | Shared shell helpers (`scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, `scripts/git_ssh_command_wrapper.sh`, `scripts/handle_agent_push.sh`) when host secrets live outside repo-root `secrets.env`; mirror creation records this path as `evander.secretsEnvFile` so Git SSH forced commands can reload mirror-refresh secrets. |
-| `EVANDER_AZURE_DEVOPS_PR_PAT_ENV` | `runtime/directory-config/root/providers.json` or host shell | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` (alternate env var name for Azure DevOps PAT). |
-| `AZURE_DEVOPS_PR_PAT` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` when Azure DevOps remotes are accessed over HTTPS. |
-| `RETELL_API_KEY` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `src/evander/retell_phone.py` / `src/evander/gateway.py` when Retell phone-call tools use the default `retell_api_key_env`. |
-| `OPENAI_API_KEY` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `src/evander/voice_sessions.py` when Team Add-on browser direct agent calls use the default `openai_realtime_api_key_env` to mint ephemeral Realtime client secrets. |
-| `DIDWW_SIP_BRIDGE_TOKEN` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `src/evander/voice_sessions.py` when `phone_call_backend` is `openai_realtime_didww` and the default `didww_sip_bridge_token_env` is used. |
-| `VOICE_MEDIA_CONTROLLER_TOKEN` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `src/evander/gateway.py` voice media controller endpoints when Realtime bridges create delegated origin-agent queries. |
-| `ASTERISK_ARI_PASSWORD` | host shell, `secrets.env`, or configured `EVANDER_SECRETS_ENV_FILE` | `src/evander/didww_sip_bridge.py` for Asterisk ARI control of DIDWW outbound calls. |
-| `EVANDER_PR_NOTES_REF` | host shell | `scripts/handle_agent_push.sh` (PR notes ref). |
-| `EVANDER_PR_FIXED_BODY_FILE` | host shell | `scripts/handle_agent_push.sh` (host-wide override that prepends markdown to PR body). |
-| `EVANDER_PR_BODY_MAX_BYTES` | host shell | `scripts/handle_agent_push.sh` (body truncation limit). |
-| `EVANDER_NOTIFY_COMMAND` | host shell | `scripts/handle_agent_push.sh` (post-promotion host notification command). |
+| `github_token_env` | directory provider config | Managed Git refresh/publication; defaults to `GITHUB_TOKEN`, with `GH_TOKEN` accepted by the host integration. |
+| `azure_devops_pr_pat_env` / `azure_devops_pat_env` | directory provider config | Managed Git Azure DevOps refresh/publication; defaults to `AZURE_DEVOPS_PR_PAT`. |
+| `managed_git_commit_name` | directory provider config | Host-authored merge/consolidation commits; falls back to the configured Git committer identity and then the control-plane default. |
+| `managed_git_commit_email` | directory provider config | Host-authored merge/consolidation commits; follows the same fallback order. |
+| `managed_git_operation_timeout_seconds` | effective host/directory config | Per-process timeout for managed Git fetch, push, worktree, checkout, and merge commands; defaults to five minutes. |
+| `managed_git_worktree_stale_seconds` | effective host/directory config | Reconciliation threshold for lock-free abnormal-exit worktrees; defaults to one hour. |
+| `EVANDER_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | Guest restricted-SSH setup. |
+| `EVANDER_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | Guest restricted-SSH setup. |
+| `EVANDER_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` or host environment | Internal guest clone URL alias; defaults to `evander-git-host`. |
+| `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` guest heartbeat toggle. |
+| `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` guest heartbeat prompt. |
+| `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` post-exec resume prompt metadata. |
+| `EVANDER_SECRETS_ENV_FILE` | host shell or service environment | General host-only secret loading. Managed Git extracts only configured provider variables into the operation environment. |
+| `EVANDER_PR_FIXED_BODY_FILE` | host shell | Optional host-wide operator PR boilerplate; directory `pr_template` configuration is preferred. |
+| `EVANDER_PR_BODY_MAX_BYTES` | host shell | Host-wide PR body limit. |
+| `EVANDER_NOTIFY_COMMAND` | host shell | Optional host notification after queue-driven publication. |
+
+The fixed `scripts/managed_git_askpass.sh` helper reads operation-scoped username/password values
+from the process environment. Git runs with interactive prompts and persistent credential helpers
+disabled. Do not put a token in a repository URL, Git config, workflow pack, managed registry,
+migration manifest, or command argument.
+
+The legacy configurable Git root, mirror-source metadata, and path-based helper variables are
+migration input only. New workflows use `managed_repo_id`, and new registrations are performed by
+the managed Git service or `evander-cli git-repos register`.
 
 ## 2) Host bootstrap config (`runtime/host-config.json`)
 
@@ -1299,6 +1326,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `bind_network_cidr` | legacy gateway YAML | `src/evander/config.py` validation/normalization (policy-bound network constraints). |
 | `gateway_url` | legacy gateway YAML | `src/evander/cli.py` health checks / external endpoint references. |
 | `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
+| `agent_consultation_profiles`, `agent_consultation_default_profile`, `agent_consultation_max_wait_seconds`, `agent_consultation_retention_days`, `agent_consultation_token_secret_env` | root or directory `providers.json` | Request-scoped `consult_codebase` workers. Each named profile requires `model`, is restricted to `container_worker_vm`, and may set `agent_provider`, `model_provider_mode`, `container_image`, `timeout_seconds`, and `max_concurrency`. The gateway pins a managed-Git commit, persists the request, and returns after the bounded wait; the hidden system workflow creates and cleans up the worker. The token field names a host env var and defaults to `AGENT_PROMPT_TOKEN_SECRET`; it never contains the secret itself. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex/Claude model relays, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
 | `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `local_openai_api_base_url`, `local_openai_api_key`, `local_openai_provider_name`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/evander/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; local mode forwards OpenAI-compatible requests to a host-local endpoint such as Ollama and uses a placeholder configured key rather than a host secret env var. Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
@@ -1394,7 +1422,7 @@ invent fallback graph IDs for state nodes.
 | `didww_sip_bridge_url` | provider config overlays | Host-owned SIP bridge URL used by `openai_realtime_didww` calls. |
 | `didww_sip_bridge_token_env` | provider config overlays | Host env-var name for the DIDWW SIP bridge bearer token; default `DIDWW_SIP_BRIDGE_TOKEN`. |
 | `didww_from_number` | provider config overlays | Optional caller ID sent to the DIDWW SIP bridge. |
-| `inbound_phone_routes` | provider config overlays | Fixed inbound DID or called-number routes that bind a caller policy, directory scope, and Realtime projection prompt to an existing Truman session. |
+| `inbound_phone_routes` | provider config overlays | Fixed inbound DID or called-number routes that bind a caller policy, directory scope, and Realtime projection prompt to an existing Evander session. |
 
 ### Inbound phone route keys
 
@@ -1406,7 +1434,7 @@ Each `inbound_phone_routes` entry is a JSON object with these keys.
 | `did` | within each `inbound_phone_routes` entry | Normalized inbound DID match value; numbers are reduced to `+` and digits only. |
 | `called_number` | within each `inbound_phone_routes` entry | Optional normalized called-number match value; numbers are reduced to `+` and digits only. |
 | `directory_path` | within each `inbound_phone_routes` entry | Directory scope used to resolve provider overlays and route-specific context. |
-| `session_id` | within each `inbound_phone_routes` entry | Active Truman session used to project the inbound call and receive reconciliation wakes. |
+| `session_id` | within each `inbound_phone_routes` entry | Active Evander session used to project the inbound call and receive reconciliation wakes. |
 | `allowed_callers` | within each `inbound_phone_routes` entry | Allow-list of normalized caller numbers. |
 | `blocked_callers` | within each `inbound_phone_routes` entry | Optional deny-list of normalized caller numbers. |
 | `route_prompt` | within each `inbound_phone_routes` entry | Route prompt used to build the projected live voice session. |
@@ -1574,18 +1602,21 @@ Storage paths:
 | `runtime/directory-config/root/.../<domain>.json` | Raw per-domain overlay payloads for directories listed in `directories.json` metadata | `src/evander/directory_config.py` |
 | `runtime/assistant-settings.json` | Admin assistant and workflow generation settings | Admin Web Chat and Workflow generator |
 | `runtime/communication-targets.db` | SQLite-backed communication target overlays keyed by directory and target ID | `src/evander/messaging/targets.py`, Admin Web Configuration -> People & Communications, workflow notification/message effects |
+| `runtime/managed-git-repositories.json` | Managed repository schema marker, directory/upstream identities, internal bare paths, timestamps, commit identity, and active bindings | Managed Git service, CLI/Admin API, VM/container clone, workflows, Team runtime |
+| `runtime/managed-git-migrations/<migration-id>.json` | Secret-free migration mapping, rollback-artifact allowlist, ref verification data, and hashes | Explicit managed Git apply/finalize stages |
+| `runtime/git-worktrees/<managed_repo_id>/<operation-id>/` | Secret-free manifest, operation lock, and detached temporary checkout | Managed Git merge/PR preparation and stale-process reconciliation; never a workflow output |
 
 Supported directory config domains:
 
 | Domain file | Purpose | YAML fields allowed |
 |---|---|---|
 | `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `approval_notification_target_ids`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys`, `mcp_tool_policies`, `tool_argument_policies` |
-| `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker, Retell |
+| `providers.json` | Upstream/provider endpoints, credentials-by-reference, and managed Git host identity/cleanup settings | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker, managed Git, Retell |
 | `contacts.json` | Directory contact list and admin-user contact attachments | `contacts`, `user_contact_links` |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
 | `wake.json` | Directory-scoped wake prompt behavior | `pr_feedback_resume_prompt`, `discord_resume_prompt` |
-| `ado-worker.json` | Azure DevOps PR automation metadata and optional workflow repo metadata | `ado_area_filters`, `ado_team_filters`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft` |
-| `issue-setup.json` | VM issue setup/git hand-off defaults | `git_root`, `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env` |
+| `ado-worker.json` | Azure DevOps issue intake filters and transient managed-repository registration source | `ado_area_filters`, `ado_team_filters`, `ado_repo_source` |
+| `issue-setup.json` | VM issue setup and restricted-SSH hand-off defaults | `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env`; legacy `git_root` is migration input only |
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |
 | `vm.json` | Guest-facing relay/network defaults and libvirt VM template selection data | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port, HTTP target relay host/port, `libvirt_vm_default_template`, `libvirt_vm_templates` |
 | `communication_targets` (SQLite) | Directory-scoped communication targets inherited by target ID | `targets` entries with `id`, `provider`, `kind`, `address`, `policy.capabilities`, optional `policy.auth_profile_ref`, or `disabled: true` for inherited target removal |
@@ -1829,16 +1860,18 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `EVANDER_GIT_ROOT` | `src/evander/cli.py` | `evander` CLI git-remote helpers (`resolve_git_root`). |
+| `EVANDER_GIT_SSH_ALIAS` | root `issue_setup` config or host environment | Managed guest clone URL construction; defaults to `evander-git-host`. |
 | `MSSQL_SA_PASSWORD` | `src/evander/cli.py`, `scripts/setup_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
-| `EVANDER_MODEL_PRICING_PATH` | `src/evander/model_usage/pricing.py` and Admin Web Configuration | Optional override for the local model pricing catalog used by `query:model-usage:list` cost estimates. Defaults to `config/model-pricing.openai.json`; Admin Web displays and edits the active catalog after privileged unlock with revision checks. |
+| `EVANDER_MODEL_PRICING_PATH` | `src/evander/model_usage/pricing.py` and Admin Web Configuration | Optional override for the operator-owned model pricing catalog used by `query:model-usage:list` cost estimates. Defaults to `model-pricing.openai.json` under the configured runtime directory; `evander-cli init-state` seeds it from `config/model-pricing.openai.json.example`, and Admin Web displays and edits the active runtime catalog after privileged unlock with revision checks. The legacy tracked `config/model-pricing.openai.json` file is retained only for upgrade compatibility and is not active by default. |
 | `EVANDER_ADMIN_WEB_PAGE_TITLE`, `EVANDER_ADMIN_WEB_HEADER_TITLE`, `EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE`, `EVANDER_ADMIN_WEB_HEADER_LOGO_SIZE`, `EVANDER_ADMIN_WEB_*_LOGO_*`, `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` | `config/admin-web.env` | Optional Admin Web branding. The Python service exposes `/api/admin/branding` and `/api/admin/branding/assets/...`; the React shell uses them for the browser title, header title, header logo, product logo, sign-in company logo, and optional wordmark-style header presentation without rebuilding per environment. |
 | Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/evander/runtime.py`, `src/evander/email/gmail_provider.py`, `src/evander/email/graph_provider.py`. |
 | Teams delegated Graph token env name (`teams_graph_access_token_env`, default `GRAPH_TEAMS_ACCESS_TOKEN`) | Referenced indirectly in effective provider config under `teams_graph_access_token_env` | `src/evander/runtime.py`, `src/evander/services.py`. |
 
-For issue setup, `EVANDER_GIT_*`, `AGENT_DEFAULT_MODEL`, and `AGENT_POST_EXEC_VERIFICATION_PROMPT` are now
-read from the root `issue_setup` directory config when present, with host environment variables
-still acting as overrides. `EVANDER_AZURE_DEVOPS_PR_PAT_ENV` remains a provider-level setting.
+For issue setup, the Git SSH host/user/alias, `AGENT_DEFAULT_MODEL`, and
+`AGENT_POST_EXEC_VERIFICATION_PROMPT` are read from the root `issue_setup` directory config when
+present, with host environment variables still acting as overrides. A legacy Git-root override is
+migration input only; managed repository storage stays under the runtime directory.
+`EVANDER_AZURE_DEVOPS_PR_PAT_ENV` remains a provider-level setting.
 GitHub Copilot CLI host-mediated auth also uses the effective provider `github_token_env` on the
 host when the guest `gh` shim calls `/copilot-auth/token`.
 
@@ -1899,3 +1932,23 @@ The following environment variables are consumed directly by scripts as runtime 
 - Section 2 captures all `GatewayConfig`/`MailboxConfig` YAML keys.
 - Section 3 captures all cloud-init template placeholders currently substituted by VM launch.
 - Section 5 captures script-level env overrides used directly in shell scripts.
+
+## Workflow Completion Gate
+
+`gate:await-agent` pauses a workflow until the selected agent run completes. Configure at least one
+of `session_id` or `vm_name`; `completion_trigger_id` may select the completion trigger explicitly.
+Connect an agent prompt's `started` output to this gate when downstream work must wait for completion.
+
+## Communication Trigger Provider Coverage
+
+`trigger:communication:new-message` accepts declared, read-capable Teams channel/chat, Discord
+channel, and email communication targets. Teams and Discord use the host-owned ingest stores. Email
+targets resolve their mailbox from `auth_profile_ref` and are polled through the configured mailbox
+provider; unknown mailboxes and unsupported target providers fail validation.
+
+## Model Relay Credential Resolution
+
+Credential selection follows `model_provider_mode`: `openai_public` reads `openai_api_key_env`,
+`azure_openai` reads `azure_openai_api_key_env` with the OpenAI env name as fallback, `anthropic`
+reads `anthropic_api_key_env`, and `local_openai` uses `local_openai_api_key`. Guests retain only a
+placeholder API key and never receive these host credentials.

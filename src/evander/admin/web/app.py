@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import json
 import re
 from html import escape
@@ -32,6 +34,7 @@ from evander.admin.web.frontend_assets import (
     admin_frontend_assets_ready,
     admin_frontend_dist_dir,
 )
+from evander.admin.web.git_repositories import git_repository_routes
 from evander.admin.web.agents import agent_routes
 from evander.admin.web.addons import addon_routes
 from evander.admin.web.capacity import capacity_routes
@@ -85,7 +88,26 @@ class AdminWebAddonServiceAdapter:
         self.project_dir = components.project_dir
 
     def import_git_repo(self, **kwargs: Any) -> Any:
-        return self._components.issue_git_admin.import_git_repo(**kwargs)
+        record = self._components.managed_git_admin.register_repository(**kwargs)
+        if hasattr(record, "model_dump"):
+            payload = record.model_dump(mode="json")
+        elif isinstance(record, dict):
+            payload = dict(record)
+        else:
+            payload = dict(vars(record))
+        payload["git"] = {
+            "managed_repo_id": payload.get("managed_repo_id"),
+            "directory_path": (
+                payload.get("directory_path") or kwargs.get("directory_path") or "root"
+            ),
+            "base_branch": payload.get("default_branch"),
+        }
+        return payload
+
+    @property
+    def managed_git_admin(self) -> Any:
+        """Expose the managed-Git domain only to trusted in-process add-ons."""
+        return self._components.managed_git_admin
 
     def list_agents(self, **kwargs: Any) -> Any:
         return self._components.vm_agent_admin.list_agents(**kwargs)
@@ -599,6 +621,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(workflow_webhook_routes(service))
     routes.extend(operator_steering_routes(service, auth))
     routes.extend(artifact_routes(service, auth))
+    routes.extend(git_repository_routes(service, auth))
     addon_service = AdminWebAddonServiceAdapter(service)
     for addon in addon_catalog.registrations:
         context = AddonContext(
@@ -624,7 +647,14 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         routes.append(Route("/", index, methods=["GET"]))
         routes.append(Route("/index.html", index, methods=["GET"]))
 
-    app = Starlette(debug=False, routes=routes)
+    @asynccontextmanager
+    async def lifespan(_: Starlette) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            service.managed_git_admin.cleanup_active_worktrees()
+
+    app = Starlette(debug=False, routes=routes, lifespan=lifespan)
     app.state.auth = auth
     app.state.admin_user_store = admin_user_store
     app.state.dashboard_cache = dashboard_cache

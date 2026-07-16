@@ -20,6 +20,7 @@ const teamViewIds = [
   "cases",
   "people",
   "chat",
+  "mail",
   "governance",
   "planning",
   "timeline",
@@ -52,6 +53,11 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.doesNotMatch(script, /data-summary-grid/);
   assert.match(script, /data-review-delivery-view/);
   assert.match(script, /data-timeline-filter/);
+  assert.match(markup, /data-team-view="mail"/);
+  assert.match(markup, /id="team-mail-page"/);
+  assert.match(script, /\/inbox\?/);
+  assert.match(script, /renderMailReader/);
+  assert.match(stylesheet, /\.mail-layout/);
   assert.match(script, /data-planning-task-status/);
   assert.match(script, /data-task-board-team/);
   assert.match(script, /renderTaskBoard/);
@@ -79,6 +85,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /reviewProfileCriteriaFromForm/);
   assert.match(script, /rolePermissionTooltips/);
   assert.match(script, /Allows a same-project role holder to request Team release packages/);
+  assert.match(script, /data-release-gate-retry/);
+  assert.match(script, /\/retry-gate/);
   assert.match(script, /renderRolePermissionToken/);
   assert.match(script, /projectLeadAgentOptionsForTeam/);
   assert.match(stylesheet, /\.projects-workbench/);
@@ -388,25 +396,11 @@ function autoDevSquadTemplate() {
         example: "Reviewed Auto-Dev Delivery",
       },
       {
-        path: "project.git.host_repo_path",
-        label: "Git Host Repo Path",
-        description: "Optional host path for Git integration.",
+        path: "project.git.managed_repo_id",
+        label: "Managed Git Repository ID",
+        description: "Registered Evander managed repository.",
         required: false,
-        example: "/srv/repos/auto-dev-squad",
-      },
-      {
-        path: "project.git.bare_repo_name",
-        label: "Git Bare Repo Name",
-        description: "Optional bare repo name. Provide exactly one bare repo field if Git is enabled.",
-        required: false,
-        example: "auto-dev-squad.git",
-      },
-      {
-        path: "project.git.bare_repo_path",
-        label: "Git Bare Repo Path",
-        description: "Optional bare repo path. Provide exactly one bare repo field if Git is enabled.",
-        required: false,
-        example: "/srv/git/auto-dev-squad.git",
+        example: "mr_0123456789abcdef0123",
       },
       {
         path: "project.git.base_branch",
@@ -414,13 +408,6 @@ function autoDevSquadTemplate() {
         description: "Optional upstream branch to mirror.",
         required: false,
         example: "main",
-      },
-      {
-        path: "project.git.canonical_origin_url",
-        label: "Git Canonical Origin",
-        description: "Optional canonical origin URL.",
-        required: false,
-        example: "ssh://git.example/auto-dev-squad.git",
       },
       {
         path: "project.git.provider",
@@ -581,6 +568,113 @@ function buildTimelinePayload(state, url) {
     offset,
     has_more: offset + windowedEntries.length < totalCount,
     entries: windowedEntries,
+  };
+}
+
+function buildMailPayload(state, url) {
+  const filters = {
+    team_id: queryText(url.searchParams, "team_id"),
+    agent_id: queryText(url.searchParams, "agent_id"),
+    direction: queryText(url.searchParams, "direction"),
+    item_type: queryText(url.searchParams, "item_type"),
+    state: queryText(url.searchParams, "state"),
+    q: queryText(url.searchParams, "q"),
+  };
+  let items = Object.values(state.inbox || {});
+  if (filters.team_id) {
+    const teamAgentIds = new Set(
+      Object.values(state.agents || {})
+        .filter((agent) => agent.team_id === filters.team_id)
+        .map((agent) => agent.id),
+    );
+    items = items.filter(
+      (item) => teamAgentIds.has(item.sender_agent_id) || teamAgentIds.has(item.recipient_agent_id),
+    );
+  }
+  if (filters.agent_id) {
+    if (filters.direction === "received") {
+      items = items.filter((item) => item.recipient_agent_id === filters.agent_id);
+    } else if (filters.direction === "sent") {
+      items = items.filter((item) => item.sender_agent_id === filters.agent_id);
+    } else {
+      items = items.filter(
+        (item) => item.sender_agent_id === filters.agent_id || item.recipient_agent_id === filters.agent_id,
+      );
+    }
+  }
+  if (filters.item_type) {
+    items = items.filter((item) => item.item_type === filters.item_type);
+  }
+  if (filters.q) {
+    const needle = filters.q.toLowerCase();
+    items = items.filter((item) => JSON.stringify(item).toLowerCase().includes(needle));
+  }
+  const stateCounts = {
+    pending: items.filter((item) => (item.state || "pending") === "pending").length,
+    handled: items.filter((item) => item.state === "handled").length,
+  };
+  if (filters.state) {
+    items = items.filter((item) => (item.state || "pending") === filters.state);
+  }
+  items.sort((left, right) => {
+    return (
+      (Date.parse(right.created_at || "") || 0) - (Date.parse(left.created_at || "") || 0) ||
+      String(right.id || "").localeCompare(String(left.id || ""))
+    );
+  });
+  const totalCount = items.length;
+  const limit = Math.max(1, queryInt(url.searchParams, "limit", 50));
+  const offset = Math.max(0, queryInt(url.searchParams, "offset", 0));
+  const page = items.slice(offset, offset + limit).map((item) => {
+    const sender = mailAgentPayload(state, item.sender_agent_id);
+    const recipient = mailAgentPayload(state, item.recipient_agent_id);
+    const task = item.task_id ? state.tasks?.[item.task_id] : null;
+    return {
+      response_requested: true,
+      priority: "normal",
+      state: "pending",
+      ...item,
+      sender,
+      recipient,
+      task: task
+        ? { id: task.id, title: task.title, project_id: task.project_id, state: task.state }
+        : null,
+      direction:
+        filters.agent_id && item.sender_agent_id === filters.agent_id
+          ? "sent"
+          : filters.agent_id && item.recipient_agent_id === filters.agent_id
+            ? "received"
+            : item.sender_agent_id
+              ? "internal"
+              : "system",
+    };
+  });
+  return {
+    revision: state.revision,
+    generated_at: "2026-06-09T00:00:00Z",
+    filters: compactFilters(filters),
+    state_counts: stateCounts,
+    total_count: totalCount,
+    limit,
+    offset,
+    has_more: offset + page.length < totalCount,
+    items: page,
+  };
+}
+
+function mailAgentPayload(state, agentId) {
+  if (!agentId) return null;
+  const agent = state.agents?.[agentId];
+  if (!agent) return { id: agentId, display_name: agentId };
+  const role = agent.role_id ? state.roles?.[agent.role_id] : null;
+  const team = agent.team_id ? state.teams?.[agent.team_id] : null;
+  return {
+    id: agent.id,
+    display_name: agent.display_name || agent.id,
+    team_id: agent.team_id,
+    team_name: team?.name || null,
+    role_name: role?.name || null,
+    avatar: agent.avatar || null,
   };
 }
 
@@ -1402,6 +1496,11 @@ async function createTeamAddonServer(
         jsonResponse(response, bootstrapPayload(state));
         return;
       }
+      if (request.method === "GET" && pathname === "/api/addons/team-addon/inbox") {
+        requests.push({ method: request.method, pathname, search: url.search });
+        jsonResponse(response, buildMailPayload(state, url));
+        return;
+      }
       const viewMatch = pathname.match(/^\/api\/addons\/team-addon\/views\/([^/]+)$/);
       if (request.method === "GET" && viewMatch) {
         const view = decodeURIComponent(viewMatch[1]);
@@ -1502,14 +1601,9 @@ async function createTeamAddonServer(
           jsonResponse(response, { error: "repo_source is required" }, 400);
           return;
         }
-        const baseName = path.basename(repoSource).replace(/\.git$/, "") || "project";
-        const bareRepoName = String(payload.bare_repo_name || `${baseName}.git`).replace(/\.git$/, "");
         const git = {
-          host_repo_path: repoSource,
-          bare_repo_name: `${bareRepoName}.git`,
+          managed_repo_id: "mr_0123456789abcdef0123",
           base_branch: "main",
-          canonical_origin_url: "git@github.com:Example/imported-project.git",
-          provider: "github",
         };
         jsonResponse(
           response,
@@ -1517,12 +1611,8 @@ async function createTeamAddonServer(
             imported: {
               success: true,
               repo_source: repoSource,
-              host_repo_path: git.host_repo_path,
-              bare_repo_name: git.bare_repo_name,
-              bare_repo_path: `/srv/git-remotes/${git.bare_repo_name}`,
+              managed_repo_id: git.managed_repo_id,
               base_branch: git.base_branch,
-              canonical_origin_url: git.canonical_origin_url,
-              provider: git.provider,
               git,
             },
             git,
@@ -2134,6 +2224,20 @@ function applyTemplateMaterialization(state, payload, template) {
 
 function applyMutation(state, pathname, payload) {
   state.revision += 1;
+  const releaseGateRetryMatch = pathname.match(
+    /^\/api\/addons\/team-addon\/release-packages\/(.+)\/retry-gate$/,
+  );
+  if (releaseGateRetryMatch) {
+    const releaseId = decodeURIComponent(releaseGateRetryMatch[1]);
+    const release = state.release_packages[releaseId];
+    if (release) {
+      release.state = "pending";
+      release.error = null;
+      release.gate_failure = null;
+      release.updated_at = "2026-06-09T16:10:00Z";
+    }
+    return;
+  }
   const decisionMatch = pathname.match(
     /^\/api\/addons\/team-addon\/review-requests\/(.+)\/decision$/,
   );
@@ -2644,8 +2748,7 @@ test("team add-on UI imports Git repo config into project forms", async (t) => {
   const projectForm = page.locator("#create-project-from-projects-form");
   await projectForm.waitFor({ state: "visible" });
   await projectForm.locator("summary", { hasText: "Git config" }).click();
-  await projectForm.locator('[name="host_repo_path"]').fill("/srv/repos/imported-project");
-  await projectForm.locator('[name="bare_repo"]').fill("team-import.git");
+  await projectForm.locator('[name="repo_source"]').fill("/srv/repos/imported-project");
   await projectForm.getByRole("button", { name: "Import Git repo" }).click();
 
   await page
@@ -2653,14 +2756,12 @@ test("team add-on UI imports Git repo config into project forms", async (t) => {
       hasText: "Imported Git repo. Review the populated Git fields, then save.",
     })
     .waitFor({ state: "visible" });
-  assert.equal(await projectForm.locator('[name="host_repo_path"]').inputValue(), "/srv/repos/imported-project");
-  assert.equal(await projectForm.locator('[name="bare_repo"]').inputValue(), "team-import.git");
-  assert.equal(await projectForm.locator('[name="base_branch"]').inputValue(), "main");
+  assert.equal(await projectForm.locator('[name="repo_source"]').inputValue(), "/srv/repos/imported-project");
   assert.equal(
-    await projectForm.locator('[name="canonical_origin_url"]').inputValue(),
-    "git@github.com:Example/imported-project.git",
+    await projectForm.locator('[name="managed_repo_id"]').inputValue(),
+    "mr_0123456789abcdef0123",
   );
-  assert.equal(await projectForm.locator('[name="provider"]').inputValue(), "github");
+  assert.equal(await projectForm.locator('[name="base_branch"]').inputValue(), "main");
 
   const importRequest = requests.find(
     (request) =>
@@ -2670,7 +2771,6 @@ test("team add-on UI imports Git repo config into project forms", async (t) => {
   assert.ok(importRequest);
   assert.deepEqual(importRequest.payload, {
     repo_source: "/srv/repos/imported-project",
-    bare_repo_name: "team-import.git",
   });
 });
 
@@ -2884,6 +2984,78 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
   );
 });
 
+test("team add-on UI retries only a typed retryable release gate with an audited reason", async (t) => {
+  const initialState = seededGitState();
+  initialState.release_packages["release-transient"] = {
+    id: "release-transient",
+    project_id: "alpha-project",
+    deliverable_ids: ["deliverable-accepted"],
+    artifact_refs: [],
+    feature_branches: ["team/alpha/features/accepted"],
+    release_branch: "team/alpha/releases/transient",
+    canonical_branch: "releases/alpha/transient",
+    candidate_commit_sha: "candidate-sha",
+    state: "blocked",
+    error: "verification worker disconnected",
+    gate_failure: {
+      stage: "verification",
+      kind: "infrastructure",
+      source_id: "verification-attempt-1",
+      message: "verification worker disconnected",
+    },
+    created_at: "2026-06-09T16:00:00Z",
+    updated_at: "2026-06-09T16:05:00Z",
+  };
+  initialState.release_packages["release-code-failure"] = {
+    ...initialState.release_packages["release-transient"],
+    id: "release-code-failure",
+    state: "rejected",
+    error: "operator-client tests failed",
+    gate_failure: {
+      stage: "verification",
+      kind: "candidate",
+      source_id: "candidate-attempt-1",
+      message: "operator-client tests failed",
+    },
+    created_at: "2026-06-09T15:50:00Z",
+    updated_at: "2026-06-09T15:55:00Z",
+  };
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await openProjects(page);
+  const releases = page.locator(
+    '#team-projects-page details.project-record-section[data-project-section="releases"]',
+  ).first();
+  await releases.locator("summary.project-record-section-summary").click();
+  const transient = releases.locator(".record-item", { hasText: "release-transient" });
+  await transient.locator("summary.compact-record-summary").click();
+  const retry = transient.getByRole("button", { name: "Retry verification gate" });
+  await retry.waitFor({ state: "visible" });
+  assert.equal(
+    await releases.locator(".record-item", { hasText: "release-code-failure" })
+      .getByRole("button", { name: /Retry .* gate/ }).count(),
+    0,
+  );
+
+  page.once("dialog", (dialog) => dialog.accept("Worker host was repaired by release-admin."));
+  await retry.click();
+  await waitForRevision(page, 5);
+
+  const request = requests.find(
+    (item) => item.method === "POST" &&
+      item.pathname === "/api/addons/team-addon/release-packages/release-transient/retry-gate",
+  );
+  assert.ok(request, "expected a release gate retry request");
+  assert.deepEqual(request.payload, {
+    gate_kind: "verification",
+    gate_id: "verification-attempt-1",
+    reason: "Worker host was repaired by release-admin.",
+    expected_revision: 4,
+  });
+});
+
 test("team add-on focused tabs submit retained create forms with revisions", async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
@@ -2932,8 +3104,7 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   await projectForm.locator('[name="lead_agent_id"]').selectOption(managerId);
   await projectForm.locator('[name="goal_description"]').fill("Ship reviewed work");
   await projectForm.locator("summary", { hasText: "Git config" }).click();
-  await projectForm.locator('[name="host_repo_path"]').fill("/srv/git/project");
-  await projectForm.locator('[name="bare_repo"]').fill("project.git");
+  await projectForm.locator('[name="managed_repo_id"]').fill("mr_0123456789abcdef0123");
   await projectForm.locator('[name="base_branch"]').fill("main");
   await projectForm.getByRole("button", { name: "Create project" }).click();
   await waitForCondition(
@@ -2994,8 +3165,7 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   assert.equal(mutationRequests[1].payload.team_id, teamId);
   assert.equal(mutationRequests[1].payload.lead_agent_id, managerId);
   assert.deepEqual(mutationRequests[1].payload.git, {
-    host_repo_path: "/srv/git/project",
-    bare_repo_name: "project.git",
+    managed_repo_id: "mr_0123456789abcdef0123",
     base_branch: "main",
   });
   assert.equal(mutationRequests[2].payload.team_id, teamId);
@@ -3641,6 +3811,7 @@ test("team add-on Org chart context menu creates teams from the bare canvas", as
   await dialog.locator('[name="manager_display_name"]').fill("Context Manager");
   await dialog.getByRole("button", { name: "Create team" }).click();
 
+  await waitForStatusText(page, "Saved revision 9.", requests);
   await waitForRevision(page, 9);
   await dialog.waitFor({ state: "hidden" });
   const request = requests.find(
@@ -4165,8 +4336,7 @@ function seededGitState() {
         lead_agent_id: "alpha-lead",
         goals: [{ id: "alpha-goal", description: "Ship alpha work" }],
         git: {
-          host_repo_path: "/srv/git/alpha-project",
-          bare_repo_name: "alpha-project.git",
+          managed_repo_id: "mr_aaaaaaaaaaaaaaaaaaaa",
           base_branch: "main",
         },
         status: "active",
@@ -4178,8 +4348,7 @@ function seededGitState() {
         lead_agent_id: "beta-lead",
         goals: [{ id: "beta-goal", description: "Ship beta work" }],
         git: {
-          host_repo_path: "/srv/git/beta-project",
-          bare_repo_name: "beta-project.git",
+          managed_repo_id: "mr_bbbbbbbbbbbbbbbbbbbb",
           base_branch: "main",
         },
         status: "active",
@@ -4425,6 +4594,16 @@ function seededGitState() {
         summary: "Waiting for review.",
         state: "pending",
         review_request_ids: ["review-waiting"],
+        carried_findings: [
+          {
+            id: "finding-ui",
+            source_review_request_id: "review-prior",
+            source_deliverable_id: "deliverable-prior",
+            owner_review_profile_id: "profile-alpha",
+            text: "Remove the stale station-tool spec.",
+            state: "open",
+          },
+        ],
         git_refs: {
           agent_branch: "agents/alpha-lead/waiting",
           review_branch: "team/alpha/reviews/waiting",
@@ -4639,6 +4818,20 @@ function seededGitState() {
         release_branch: "team/alpha/releases/accepted",
         canonical_branch: "releases/alpha/accepted",
         published_commit_sha: "ccc333",
+        verification_waivers: [
+          {
+            deliverable_id: "deliverable-accepted",
+            verification_status: "partial",
+            reason: "Operator environment unavailable.",
+            actor_kind: "operator",
+            actor_id: "release-admin",
+          },
+        ],
+        scope_validation: {
+          state: "passed",
+          unexpected_commit_shas: [],
+          unexpected_paths: [],
+        },
         git_promotion_record_ids: ["promo-release"],
         state: "accepted",
         published_at: "2026-06-09T15:00:00Z",
@@ -4963,8 +5156,7 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   assert.equal(await inlineProjectForm.locator('[name="lead_agent_id"] option[value="beta-manager"]').count(), 1);
   await inlineProjectForm.locator("summary", { hasText: "Git config" }).click();
   assert.equal(await inlineProjectForm.getByRole("button", { name: "Import Git repo" }).count(), 1);
-  await inlineProjectForm.locator('[name="host_repo_path"]').fill("/srv/repos/second-project");
-  await inlineProjectForm.locator('[name="bare_repo"]').fill("second-project.git");
+  await inlineProjectForm.locator('[name="repo_source"]').fill("/srv/repos/second-project");
   await inlineProjectForm.getByRole("button", { name: "Import Git repo" }).click();
   await page
     .locator("#status-message", {
@@ -4973,10 +5165,9 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
     .waitFor({ state: "visible" });
   assert.equal(await inlineProjectForm.locator('[name="base_branch"]').inputValue(), "main");
   assert.equal(
-    await inlineProjectForm.locator('[name="canonical_origin_url"]').inputValue(),
-    "git@github.com:Example/imported-project.git",
+    await inlineProjectForm.locator('[name="managed_repo_id"]').inputValue(),
+    "mr_0123456789abcdef0123",
   );
-  assert.equal(await inlineProjectForm.locator('[name="provider"]').inputValue(), "github");
   await inlineProjectForm.locator('[name="name"]').fill("Second Project");
   await inlineProjectForm.locator('[name="lead_agent_id"]').selectOption("beta-manager");
   await inlineProjectForm.locator('[name="goal_description"]').fill("Ship beta follow-up");
@@ -5004,7 +5195,6 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   assert.ok(inlineImportRequest);
   assert.deepEqual(inlineImportRequest.payload, {
     repo_source: "/srv/repos/second-project",
-    bare_repo_name: "second-project.git",
   });
   assert.equal(mutationRequests[0].payload.team_id, "team-beta");
   assert.equal(mutationRequests[0].payload.display_name, "Beta Ops");
@@ -5015,11 +5205,8 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   assert.equal(mutationRequests[2].payload.lead_agent_id, "beta-manager");
   assert.deepEqual(mutationRequests[2].payload.goals, [{ description: "Ship beta follow-up" }]);
   assert.deepEqual(mutationRequests[2].payload.git, {
-    host_repo_path: "/srv/repos/second-project",
-    bare_repo_name: "second-project.git",
+    managed_repo_id: "mr_0123456789abcdef0123",
     base_branch: "main",
-    canonical_origin_url: "git@github.com:Example/imported-project.git",
-    provider: "github",
   });
 });
 
@@ -5468,6 +5655,13 @@ test("team add-on Chat remains usable while privileged operations are locked", a
       ),
     "expected locked-mode chat send to post through the built-in chat client",
   );
+  const sendRequest = requests.find(
+    (request) =>
+      request.method === "POST" &&
+      request.pathname === "/api/addons/team-addon/conversations/conversation-alpha-lead/messages" &&
+      request.payload?.body === body,
+  );
+  assert.equal(sendRequest?.payload?.expected_revision, undefined);
 });
 
 test("team add-on Chat notification sound is gated by focus and sender", async (t) => {
@@ -5674,8 +5868,7 @@ function seededOrgChartState() {
         lead_agent_id: "lead",
         goals: [],
         git: {
-          host_repo_path: "/srv/git/project",
-          bare_repo_name: "project.git",
+          managed_repo_id: "mr_0123456789abcdef0123",
           base_branch: "main",
         },
         status: "active",
@@ -5958,6 +6151,142 @@ function seededMalformedHierarchyState() {
   };
 }
 
+test("team add-on Mail reads historical agent correspondence", async (t) => {
+  const initialState = seededGitState();
+  initialState.agents["alpha-manager"].display_name = "Ada Manager";
+  initialState.agents["alpha-lead"].display_name = "Grace Lead";
+  initialState.inbox["inbox-history"] = {
+    id: "inbox-history",
+    recipient_agent_id: "alpha-lead",
+    sender_agent_id: "alpha-manager",
+    task_id: "task-waiting",
+    item_type: "progress_report",
+    response_requested: false,
+    priority: "low",
+    state: "handled",
+    payload: {
+      summary: "Quiet deployment update",
+      message: "The deployment is ready for a private follow-up.",
+    },
+    created_at: "2026-06-10T09:00:00Z",
+    updated_at: "2026-06-10T10:00:00Z",
+  };
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByRole("tab", { name: "Mail" }).click();
+  const mailPage = page.locator("#team-mail-page");
+  await mailPage.waitFor({ state: "visible" });
+  await mailPage.locator('[data-mail-item-id="inbox-history"]').waitFor({ state: "visible" });
+  await mailPage.getByRole("heading", { name: "Quiet deployment update" }).waitFor({
+    state: "visible",
+  });
+  await mailPage.locator(".mail-reader-body").getByText("The deployment is ready for a private follow-up.").waitFor({
+    state: "visible",
+  });
+  await mailPage.locator(".mail-reader-addresses strong").getByText("Ada Manager · Manager").waitFor({ state: "visible" });
+  await mailPage.locator(".mail-reader-addresses span").getByText("to Grace Lead · Project Lead").waitFor({ state: "visible" });
+
+  await mailPage.locator('[data-mail-state="pending"]').click();
+  await mailPage.locator('[data-mail-item-id="inbox-1"]').waitFor({ state: "visible" });
+  await mailPage.locator('[data-mail-item-id="inbox-history"]').waitFor({ state: "detached" });
+  await mailPage.getByRole("heading", { name: "What is the status?" }).waitFor({ state: "visible" });
+
+  await mailPage.locator('[data-mail-state="handled"]').click();
+  await mailPage.locator('[data-mail-item-id="inbox-history"]').waitFor({ state: "visible" });
+  await mailPage.locator("#mail-agent-filter").selectOption("alpha-manager");
+  await mailPage.locator("#mail-direction-filter").selectOption("sent");
+  await mailPage.getByText("To: Grace Lead").waitFor({ state: "visible" });
+  await mailPage.locator("#mail-search-input").fill("private follow-up");
+  await mailPage.getByRole("button", { name: "Search" }).click();
+  await mailPage.locator('[data-mail-item-id="inbox-history"]').waitFor({ state: "visible" });
+  await mailPage.locator(".mail-reader-envelope summary").click();
+  await mailPage.locator(".mail-envelope-grid").getByText("inbox-history").waitFor({
+    state: "visible",
+  });
+
+  assert.ok(
+    requests.some(
+      (request) =>
+        request.method === "GET" &&
+        request.pathname === "/api/addons/team-addon/inbox" &&
+        request.search.includes("direction=sent") &&
+        request.search.includes("q=private+follow-up"),
+    ),
+    "expected Mail filters to be sent to the history endpoint",
+  );
+});
+
+test("team add-on Mail renders body, error, and generic historical payloads", async (t) => {
+  const initialState = seededGitState();
+  initialState.inbox = {
+    "body-report": {
+      id: "body-report",
+      recipient_agent_id: "alpha-lead",
+      sender_agent_id: "alpha-manager",
+      item_type: "progress_report",
+      response_requested: false,
+      priority: "low",
+      state: "handled",
+      payload: {
+        summary: "Body-only historical report",
+        body: "This report stored its substantive update in payload.body.",
+      },
+      created_at: "2026-06-12T09:00:00Z",
+      updated_at: "2026-06-12T10:00:00Z",
+    },
+    "error-notice": {
+      id: "error-notice",
+      recipient_agent_id: "alpha-lead",
+      sender_agent_id: null,
+      item_type: "deliverable_notice",
+      response_requested: true,
+      priority: "high",
+      state: "handled",
+      payload: {
+        title: "Release promotion failed",
+        error: "fatal: Needed a single revision",
+      },
+      created_at: "2026-06-13T09:00:00Z",
+      updated_at: "2026-06-13T10:00:00Z",
+    },
+    "generic-notice": {
+      id: "generic-notice",
+      recipient_agent_id: "alpha-lead",
+      sender_agent_id: null,
+      item_type: "escalation",
+      response_requested: true,
+      priority: "normal",
+      state: "handled",
+      payload: {
+        title: "Structured diagnostic",
+        diagnostic: { code: "stale_ref", retryable: true },
+      },
+      created_at: "2026-06-11T09:00:00Z",
+      updated_at: "2026-06-11T10:00:00Z",
+    },
+  };
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await page.getByRole("tab", { name: "Mail" }).click();
+  const mailPage = page.locator("#team-mail-page");
+  await mailPage.locator('[data-mail-item-id="error-notice"]').waitFor({ state: "visible" });
+  await mailPage.locator(".mail-reader-body").getByText("fatal: Needed a single revision").waitFor({
+    state: "visible",
+  });
+
+  await mailPage.locator('[data-mail-item-id="body-report"]').click();
+  await mailPage.locator(".mail-reader-body").getByText("This report stored its substantive update in payload.body.").waitFor({
+    state: "visible",
+  });
+
+  await mailPage.locator('[data-mail-item-id="generic-notice"]').click();
+  const genericBody = await mailPage.locator(".mail-reader-body").innerText();
+  assert.match(genericBody, /Diagnostic:/);
+  assert.match(genericBody, /"code": "stale_ref"/);
+});
+
 test("team add-on UI exposes focused workspace tabs without duplicate hidden rows", async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
@@ -5979,6 +6308,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     "Delivery",
     "Task board",
     "Teams",
+    "Mail",
     "Governance",
     "Planning",
     "Timeline",
@@ -6211,7 +6541,10 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   assert.equal(await page.locator("#team-planning-page .planning-project-card details[open]").count(), 0);
   const alphaProjectCard = page.locator("#team-planning-page .planning-project-card", { hasText: "Alpha Project" });
   await alphaProjectCard.locator(":scope > details > summary").click();
-  await page.locator("#team-planning-page").getByText("Git: host /srv/git/alpha-project").waitFor({
+  await page
+    .locator("#team-planning-page")
+    .getByText("Git: managed mr_aaaaaaaaaaaaaaaaaaaa - base main")
+    .waitFor({
     state: "visible",
   });
   await page.locator("#team-planning-page").getByText("Draft pending delivery").waitFor({
@@ -6421,6 +6754,10 @@ test("team add-on UI renders git refs and releases and submits a review decision
     state: "visible",
   });
   await waitingRow.getByText("Profile criteria:").waitFor({ state: "visible" });
+  await waitingRow.getByText("Open carried findings:").waitFor({ state: "visible" });
+  await waitingRow.getByText("finding-ui - Remove the stale station-tool spec.").waitFor({
+    state: "visible",
+  });
 
   const acceptedRow = deliveryPage.locator('.delivery-row[data-deliverable-id="deliverable-accepted"]');
   await openDeliveryRow(acceptedRow);
@@ -6433,6 +6770,11 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await acceptedRow.getByText("Release team/alpha/releases/accepted", { exact: true }).first().waitFor({
     state: "visible",
   });
+  await acceptedRow.getByText("Verification waivers:").waitFor({ state: "visible" });
+  await acceptedRow.getByText(/deliverable-accepted \(partial\).*release-admin/).waitFor({
+    state: "visible",
+  });
+  await acceptedRow.getByText("Scope validation: passed").waitFor({ state: "visible" });
   await acceptedRow.getByText("tests: passed - Targeted tests passed").waitFor({
     state: "visible",
   });
@@ -6449,6 +6791,12 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await blockedRow.getByText("Promotions: promo-blocked review:failed").waitFor({
     state: "visible",
   });
+  assert.equal(
+    await blockedRow.locator(
+      'form[data-review-decision-form][data-review-request-id="review-blocked"]',
+    ).count(),
+    0,
+  );
 
   const deliveryFilter = (filter) => deliveryPage.locator(`.delivery-filter[data-filter="${filter}"]`);
 
@@ -6507,9 +6855,17 @@ test("team add-on UI renders git refs and releases and submits a review decision
   await workspaceDecisionForm.waitFor({ state: "visible" });
   await workspaceDecisionForm.locator('[name="state"]').selectOption("accepted");
   await workspaceDecisionForm.locator('[name="findings"]').fill("Looks good to me.");
+  await workspaceDecisionForm.locator('[name="criterion_state__tests"]').selectOption("passed");
   await workspaceDecisionForm
-    .locator('[name="criteria"]')
-    .fill("tests | passed | Added acceptance notes\ndocs | passed | README updated");
+    .locator('[name="criterion_finding__tests"]')
+    .fill("Added acceptance notes");
+  await workspaceDecisionForm.locator('[name="criterion_state__docs"]').selectOption("passed");
+  await workspaceDecisionForm
+    .locator('[name="criterion_finding__docs"]')
+    .fill("README updated");
+  await workspaceDecisionForm
+    .locator('[name="finding_resolution__finding-ui"]')
+    .fill("Removed and re-ran the OperatorClient test.");
   await workspaceDecisionForm.getByRole("button", { name: "Submit decision" }).click();
   await page.getByText("Saved revision 5.").waitFor({ state: "visible" });
   await waitForCondition(
@@ -6534,6 +6890,13 @@ test("team add-on UI renders git refs and releases and submits a review decision
       criterion_id: "docs",
       state: "passed",
       finding: "README updated",
+    },
+  ]);
+  assert.deepEqual(decisionRequest.payload.finding_resolutions, [
+    {
+      finding_id: "finding-ui",
+      resolution: "Removed and re-ran the OperatorClient test.",
+      evidence_refs: [],
     },
   ]);
   assert.equal(decisionRequest.payload.expected_revision, 4);

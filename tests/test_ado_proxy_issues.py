@@ -9,7 +9,7 @@ from evander.models import LocalIssueRecord
 from evander.storage import JsonStore
 
 
-def test_upsert_ado_proxy_issue_items_accepts_query_items_and_writes_legacy_yaml(
+def test_upsert_ado_proxy_issue_items_accepts_query_items_and_writes_managed_binding(
     tmp_path: Path,
 ) -> None:
     result = upsert_ado_proxy_issue_items(
@@ -17,7 +17,7 @@ def test_upsert_ado_proxy_issue_items_accepts_query_items_and_writes_legacy_yaml
         directory_path="root/team-a",
         organization_url="https://dev.azure.com/example",
         project="Project",
-        repo_source="/repo",
+        managed_repo_id="mr_11111111111111111111",
         items=[
             {
                 "id": "101",
@@ -41,7 +41,7 @@ def test_upsert_ado_proxy_issue_items_accepts_query_items_and_writes_legacy_yaml
     assert result.updated == 0
     ticket = result.tickets[0]
     assert ticket.issue_number == "101"
-    assert ticket.repo_source == "/repo"
+    assert ticket.managed_repo_id == "mr_11111111111111111111"
     assert ticket.source_type == "remote_proxy"
     assert ticket.remote_reference is not None
     assert ticket.remote_reference.work_item_id == "101"
@@ -52,7 +52,8 @@ def test_upsert_ado_proxy_issue_items_accepts_query_items_and_writes_legacy_yaml
     assert Path(ticket.yaml_path) == yaml_path
     payload = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
     assert payload["issue_number"] == 101
-    assert payload["repo_source"] == "/repo"
+    assert payload["managed_repo_id"] == "mr_11111111111111111111"
+    assert "repo_source" not in payload
     assert payload["updated_date"] == "2026-05-22T10:00:00Z"
 
     stored = JsonStore(tmp_path / "local-issues.json", LocalIssueRecord).read_all()

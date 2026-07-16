@@ -1,0 +1,76 @@
+{
+  "title": "Evander Technical Manual",
+  "subtitle": "Core Platform and Team Add-on",
+  "edition": "1.0",
+  "project_version": "0.3.1",
+  "publication_date": "2026-07-13",
+  "verified_commit": "518b15bafef1df20113d55de975f782a4cf7674e",
+  "language": "en",
+  "parts": [
+    {
+      "number": "I",
+      "title": "Orientation",
+      "summary": "Build a trustworthy mental model before introducing implementation detail.",
+      "chapters": [
+        "01-reading-paths.md",
+        "02-end-to-end-story.md",
+        "03-trust-model.md"
+      ]
+    },
+    {
+      "number": "II",
+      "title": "Core Evander Architecture",
+      "summary": "Trace configuration, policy, orchestration, execution, Git, integration, and operator surfaces through the host control plane.",
+      "chapters": [
+        "04-system-topology.md",
+        "05-runtime-configuration.md",
+        "06-identity-sessions-policy.md",
+        "07-mcp-approvals-audit.md",
+        "08-workflow-runtime.md",
+        "09-execution-backends.md",
+        "10-networking-relays-secrets.md",
+        "11-managed-git-artifacts-consultations.md",
+        "12-issues-provider-integrations.md",
+        "13-communications-and-wakes.md",
+        "14-semantic-model-usage-skills-addons.md",
+        "15-admin-operations-recovery.md"
+      ]
+    },
+    {
+      "number": "III",
+      "title": "Team Add-on",
+      "summary": "Move from the Team domain model through commands, wakes, collaboration, review, and exact-SHA release publication.",
+      "chapters": [
+        "16-team-boundary-domain.md",
+        "17-team-setup-ui.md",
+        "18-team-organization-work.md",
+        "19-team-command-transactions.md",
+        "20-team-wakes-context.md",
+        "21-team-communication.md",
+        "22-team-delivery-review.md",
+        "23-team-ephemeral-delegation.md",
+        "24-team-git-releases.md",
+        "25-team-governance-memory-cost-internals.md"
+      ]
+    },
+    {
+      "number": "IV",
+      "title": "Engineering and Evolution",
+      "summary": "Explain how to extend and verify Evander, then separate the historical decisions from the current contract.",
+      "chapters": [
+        "26-engineering-extension.md",
+        "27-design-history.md"
+      ]
+    },
+    {
+      "number": "V",
+      "title": "Reference",
+      "summary": "Provide compact maps, diagnostic tables, terminology, and the cross-format subject index.",
+      "chapters": [
+        "28-system-reference.md",
+        "29-troubleshooting-decision-tables.md",
+        "30-glossary.md"
+      ]
+    }
+  ]
+}

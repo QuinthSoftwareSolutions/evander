@@ -58,6 +58,15 @@ class VmAgentPromptMixin:
         else:
             raise ValueError(f"Unknown agent backend: {backend}")
 
+        if session is not None and session_id is not None:
+            session = self._reconcile_managed_git_remote_before_dispatch(
+                session_id=session_id,
+                session=session,
+                backend=backend,
+                vm_name=target_name if backend == "libvirt_vm" else None,
+                vm_user=vm_user,
+            )
+
         target = session_id or target_name
         effect_id = f"admin-agent-prompt:{backend}:{target}"
         effect = AgentEnqueuePromptEffectDefinition(

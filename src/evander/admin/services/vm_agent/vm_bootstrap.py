@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from evander.admin.services.vm_agent.common import (
     VmActionResult,
+    _revoke_managed_git_access_for_session,
     _source_project_dir,
     os,
     process_helpers,
@@ -15,7 +16,7 @@ class VmAgentBootstrapMixin:
         *,
         vm_name: str,
         session_id: str | None = None,
-        repo_source: str,
+        managed_repo_id: str,
         clone_branch: str | None = None,
         vm_user: str = "agent",
         directory_path: str = "root",
@@ -33,13 +34,13 @@ class VmAgentBootstrapMixin:
                 message="VM name is required.",
             )
 
-        normalized_repo_source = repo_source.strip()
-        if not normalized_repo_source:
+        normalized_managed_repo_id = managed_repo_id.strip()
+        if not normalized_managed_repo_id:
             return VmActionResult(
                 success=False,
                 vm_name=resolved_vm_name,
                 action="clone_repo_into_vm",
-                message="repo_source is required.",
+                message="managed_repo_id is required.",
             )
         normalized_clone_branch = clone_branch.strip() if clone_branch else ""
 
@@ -58,23 +59,36 @@ class VmAgentBootstrapMixin:
         issue_setup = self._deps.resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
         vm_ip = vm_helpers.resolve_vm_ip(resolved_vm_name)
 
+        managed_git = self._deps.managed_git_admin
         try:
-            resolved_repo_path, resolved_repo_name = self._deps.resolve_repo_source(
-                normalized_repo_source
+            if managed_git is None:
+                raise RuntimeError("managed Git service is not configured")
+            clone_info = managed_git.clone_info(
+                normalized_managed_repo_id,
+                directory_path=normalized_directory_path,
+                session_id=resolved_session_id,
             )
-            self._deps.sync_repo_into_bare_remote(
-                resolved_repo_name,
-                resolved_repo_path,
-                issue_setup=issue_setup,
-                repo_source=normalized_repo_source,
+            if hasattr(clone_info, "model_dump"):
+                clone_info = clone_info.model_dump(mode="python")
+            if not isinstance(clone_info, dict):
+                raise RuntimeError("managed Git clone lookup returned an invalid response")
+            resolved_repo_name = str(
+                clone_info.get("repo_name")
+                or clone_info.get("display_name")
+                or normalized_managed_repo_id
+            ).strip()
+            _bare_path, managed_git_root = managed_git.resolve_internal_repository(
+                normalized_managed_repo_id,
+                normalized_directory_path,
             )
             guest_repo_root = self._deps.clone_repo_into_vm(
                 vm_name=resolved_vm_name,
                 vm_user=vm_user,
                 session_id=resolved_session_id,
                 repo_name=resolved_repo_name,
+                remote_repo_name=normalized_managed_repo_id,
+                remote_git_root=str(managed_git_root),
                 issue_setup=issue_setup,
-                repo_source=normalized_repo_source,
                 clone_branch=normalized_clone_branch or None,
                 vm_ip=vm_ip,
                 git_author_name=git_author_name,
@@ -82,10 +96,40 @@ class VmAgentBootstrapMixin:
                 git_committer_name=git_committer_name,
                 git_committer_email=git_committer_email,
             )
-            guest_remote_url = (
-                f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{resolved_repo_name}.git"
+            refreshed_session = self._session_repository().get_session(resolved_session_id)
+            access_metadata = (
+                refreshed_session.metadata.get("managed_git_access")
+                if refreshed_session is not None
+                and isinstance(refreshed_session.metadata, dict)
+                else None
+            )
+            managed_git.unbind_all("authorized_sessions", resolved_session_id)
+            if (
+                isinstance(access_metadata, dict)
+                and access_metadata.get("managed_repo_id") == normalized_managed_repo_id
+                and access_metadata.get("access_mode") == "write"
+            ):
+                managed_git.bind(
+                    normalized_managed_repo_id,
+                    kind="authorized_sessions",
+                    binding_id=resolved_session_id,
+                )
+            managed_git.bind(
+                normalized_managed_repo_id,
+                kind="sessions",
+                binding_id=resolved_session_id,
             )
         except Exception as exc:
+            failed_session = self._session_repository().get_session(resolved_session_id)
+            _revoke_managed_git_access_for_session(failed_session)
+            if managed_git is not None:
+                managed_git.unbind_all("authorized_sessions", resolved_session_id)
+            if failed_session is not None and isinstance(failed_session.metadata, dict):
+                cleaned_metadata = dict(failed_session.metadata)
+                if cleaned_metadata.pop("managed_git_access", None) is not None:
+                    self._session_repository().upsert_session(
+                        failed_session.model_copy(update={"metadata": cleaned_metadata})
+                    )
             return VmActionResult(
                 success=False,
                 vm_name=resolved_vm_name,
@@ -100,7 +144,7 @@ class VmAgentBootstrapMixin:
             message=f"Cloned repo into {resolved_vm_name}",
             target_dir=guest_repo_root,
             guest_repo_name=resolved_repo_name,
-            remote_url=guest_remote_url,
+            remote_url=None,
         )
 
     def bootstrap_python_in_vm(

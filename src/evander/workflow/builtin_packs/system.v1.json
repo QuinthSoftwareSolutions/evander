@@ -46,6 +46,89 @@
             "vm_user": "agent"
           }
         }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.requested",
+          "display_name": "Code consultation requested",
+          "type": "trigger:event",
+          "config": {
+            "event_type": "agent.consultation.requested"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.prepare",
+          "display_name": "Prepare code consultation worker",
+          "type": "effect:agent:code-consultation",
+          "config": {
+            "consultation_id": "${{system.code_consultation.requested.payload.consultation_id}}",
+            "operation": "prepare"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.prompt",
+          "display_name": "Run code consultation",
+          "type": "effect:agent:prompt",
+          "config": {
+            "model": "${{system.code_consultation.prepare.model ?? null}}",
+            "prompt": "${{system.code_consultation.prepare.prompt}}",
+            "session_id": "${{system.code_consultation.prepare.session_id}}",
+            "target": "${{system.code_consultation.prepare.session_id}}",
+            "vm_user": "agent"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.finalize_completed",
+          "display_name": "Finalize completed code consultation",
+          "type": "effect:agent:code-consultation",
+          "config": {
+            "consultation_id": "${{system.code_consultation.prepare.consultation_id}}",
+            "operation": "finalize",
+            "outcome": "completed"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.finalize_error",
+          "display_name": "Finalize failed code consultation",
+          "type": "effect:agent:code-consultation",
+          "config": {
+            "consultation_id": "${{system.code_consultation.prepare.consultation_id}}",
+            "operation": "finalize",
+            "outcome": "error",
+            "reason": "${{system.code_consultation.prompt.failure_reason ?? system.code_consultation.prompt.error_message ?? 'consultation worker failed'}}"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.terminate_requested",
+          "display_name": "Code consultation termination requested",
+          "type": "trigger:event",
+          "config": {
+            "event_type": "agent.consultation.terminate"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.code_consultation.terminate",
+          "display_name": "Terminate code consultation worker",
+          "type": "effect:agent:code-consultation",
+          "config": {
+            "consultation_id": "${{system.code_consultation.terminate_requested.payload.consultation_id}}",
+            "operation": "terminate",
+            "reason": "${{system.code_consultation.terminate_requested.payload.reason}}",
+            "status": "${{system.code_consultation.terminate_requested.payload.status}}"
+          }
+        }
       }
     ],
     "edges": [
@@ -56,6 +139,28 @@
       {
         "source_id": "system.chat_assistant.ensure_session",
         "target_id": "system.chat_assistant.enqueue_prompt"
+      },
+      {
+        "source_id": "system.code_consultation.requested",
+        "target_id": "system.code_consultation.prepare"
+      },
+      {
+        "source_id": "system.code_consultation.prepare",
+        "target_id": "system.code_consultation.prompt"
+      },
+      {
+        "source_id": "system.code_consultation.prompt",
+        "source_port": "completed",
+        "target_id": "system.code_consultation.finalize_completed"
+      },
+      {
+        "source_id": "system.code_consultation.prompt",
+        "source_port": "error",
+        "target_id": "system.code_consultation.finalize_error"
+      },
+      {
+        "source_id": "system.code_consultation.terminate_requested",
+        "target_id": "system.code_consultation.terminate"
       }
     ]
   }

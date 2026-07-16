@@ -1,5 +1,8 @@
 # Team MCP Migration Implementation Plan
 
+> **Status:** Implemented. Retained as a historical record of the migration sequence. For current
+> behavior, use [`../addons.md`](../addons.md).
+
 This is the implementation plan for replacing the Team Add-on
 `/artifacts/team-action.json` action surface with Team-owned MCP tools.
 

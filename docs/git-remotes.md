@@ -1,359 +1,248 @@
-# Local Git Remotes
+# Managed Git Repositories
 
-## Goal
+Evander keeps one host-owned bare repository for each canonical upstream inside a directory trust
+boundary. Workflows, VM sessions, container-worker sessions, and Team projects address that
+repository by `managed_repo_id`; they do not store or exchange host checkout paths.
 
-Move code changes out of an agent VM without routing source code through MCP payloads.
+This is a quarantine and transport boundary, not an execution sandbox. Agent-authored code still
+runs only inside a VM or container. Host worktrees are used for narrow Git operations and must never
+be used to run untrusted builds or tests.
 
-## Recommended Shape
+## Repository identity and scope
 
-- Keep code transfer on Git, not MCP.
-- Host a bare repository on the host-only network.
-- Let the VM push only to that internal remote.
-- Review and merge from the host after the agent finishes.
+The registry lives at `runtime/managed-git-repositories.json`. It is protected by a file lock and
+updated with atomic replacement. Each record includes the owning directory, normalized canonical
+repository identity and URL, provider, display name, default branch, refresh source, host commit
+identity, internal bare-repository location, timestamps, and active bindings. It never contains
+credentials or temporary worktree paths.
 
-## Setup
+`managed_repo_id` is deterministic: `mr_` followed by 20 hexadecimal characters derived from the
+normalized owning directory and canonical upstream identity.
 
-Create a local bare remote on the host:
+Registration normalizes equivalent GitHub and Azure DevOps SSH/HTTPS URLs. Generic URLs have
+credentials, query strings, fragments, and a trailing `.git` removed for identity matching. A
+local source uses its canonical `origin` when one is available; otherwise its resolved absolute
+path is the identity. Registration never changes the operator's source checkout.
 
-```bash
-cd /path/to/evander
-evander-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"evander-git-host\"}"
-./scripts/create_git_remote.sh sample-repo
-```
+An owning directory makes the repository available to its descendants. A descendant registration
+of the same upstream reuses the ancestor-owned repository. Sibling directories are separate trust
+boundaries and receive separate IDs and bare repositories, even for the same upstream.
 
-This creates a bare repository under `EVANDER_GIT_ROOT` and prints the SSH remote URL for the VM.
-Before a guest can push without prompting for your host password, bootstrap guest Git SSH with the
-repo and session namespace that should be writable:
+## Register, inspect, and refresh
 
-```bash
-EVANDER_GIT_REPO=sample-repo EVANDER_GIT_SESSION_ID=<session-id> ./scripts/bootstrap_git_vm.sh vm-real
-```
-
-That creates a dedicated guest SSH key, installs a restricted forced-command entry in your host
-`authorized_keys`, and configures the guest to use the host alias `evander-git-host` by default.
-The key can only push to `refs/heads/agents/<session-id>/...` in that repo. If only repo metadata is
-available, the helper installs read-only access scoped to that repo. Without repo metadata, it
-refuses to install a key.
-
-If you want to mirror the default host repo into an issue-specific bare remote using the project
-naming convention, use:
+Register a local checkout or remote URL before a workflow or session clones it:
 
 ```bash
-./scripts/mirror_issue_repo.sh 14084
+evander-cli git-repos register \
+  --directory-path root/acme \
+  --repo-source /srv/repos/acme
+
+evander-cli git-repos register \
+  --directory-path root/acme \
+  --repo-source https://github.com/acme/platform.git \
+  --default-branch main
 ```
 
-Freshness controls:
-
-- local source path: defaults to upstream fetch, safe fast-forward, and divergence check
-- remote URL source: always refreshes latest refs in `runtime/repo-cache` first
-- `--sync-remote`: explicitly force that fetch/fast-forward/divergence-check behavior for local source
-- `--no-sync-remote`: skip upstream fetch for local/offline-only mirroring
-- `--force-local`: continue even if local and remote default branches diverged
-- optional pinning: `--branch <name>` or `--refspec <src:dst>`
-
-Examples:
+Registration is idempotent for the same directory/upstream pair and refreshes canonical refs by
+default. Use `--no-refresh` only when registration must be recorded before the source is reachable.
 
 ```bash
-./scripts/mirror_issue_repo.sh --remote-name origin 14084 /path/to/local/repo
-./scripts/mirror_issue_repo.sh --no-sync-remote 14084 /path/to/local/repo
-./scripts/mirror_issue_repo.sh 14084 https://example.com/org/repo.git
-./scripts/mirror_issue_repo.sh --branch main 14084 /path/to/local/repo
+evander-cli git-repos list --directory-path root/acme
+evander-cli git-repos show mr_0123456789abcdef0123 --directory-path root/acme/team-a
+evander-cli git-repos refresh mr_0123456789abcdef0123
 ```
 
-If you want the shortest host-side setup path for an issue VM, combine both steps:
+The equivalent privileged Admin API is:
+
+- `GET /api/admin/git-repositories`
+- `POST /api/admin/git-repositories`
+- `GET /api/admin/git-repositories/{managed_repo_id}`
+- `POST /api/admin/git-repositories/{managed_repo_id}/refresh`
+- `DELETE /api/admin/git-repositories/{managed_repo_id}`
+- `POST /api/admin/git-repositories/maintenance`
+- `POST /api/admin/git-repositories/migrate`
+
+Mutations require directory-scoped `admin.owner` permission and unlocked privileged operations.
+Registration JSON contains `directory_path`, `repo_source`, optional `default_branch`, and optional
+`refresh`. Maintenance accepts optional `managed_repo_id`. Migration accepts
+`{"stage":"dry-run"}`, `{"stage":"apply"}`, or
+`{"stage":"finalize","migration_id":"<id>"}`; stages cannot be combined.
+
+## Clone and guest push flow
+
+After registration, pass only the managed ID to VM and agent clone operations:
 
 ```bash
-./scripts/setup_issue_git_vm.sh vm-real 14084
+evander-cli clone-repo-into-vm vm-14084 \
+  --managed-repo-id mr_0123456789abcdef0123 \
+  --directory-path root/acme \
+  --session-id issue-14084-session
 ```
 
-`setup_issue_git_vm.sh` forwards the same freshness and pinning flags to
-`mirror_issue_repo.sh`. VM creation is now separate; after the VM is up, clone the mirrored repo
-with `evander-cli clone-repo-into-vm`.
+`effect:vm:clone-repo` and `effect:agent:clone-repo` use the same contract. The control plane
+resolves the internal restricted-SSH URL; neither the upstream URL nor the host bare path is sent
+through workflow outputs. Container-worker clones follow the same path and
+do not create a second cache mirror.
 
-That bootstraps guest Git SSH and refreshes the `14084_repo.git` host mirror in one command. The
-helper binds writable SSH access to `14084_repo.git` and uses the guest session env for the
-`agents/<session-id>/...` namespace when it is available.
+Writable sessions receive a dedicated SSH key. The forced command permits writes only to:
 
-That derives:
+- `refs/heads/agents/<session-id>/**`
+- that session's PR notes ref
 
-- bare repo: `14084_repo.git`
-- host working-tree remote: `14084-mirror`
+It rejects writes to other agents, ordinary branches, `review/**`, `team/**`, tags, configuration,
+or hooks. Read access remains repository- and directory-scoped. Set `git_access_mode` to
+`read-only` when a container session needs fetch access only.
 
-It uses the explicit second argument when provided, otherwise
-`EVANDER_DEFAULT_REPO_SOURCE`. Pass a repo path or remote URL that should be mirrored.
-
-Each bare repo also gets a `post-receive` hook. Once the bare repo has been associated with a
-trusted host clone by `mirror_issue_repo.sh`, that hook can automatically promote guest-pushed
-`agents/...` branches, push a review branch to `origin`, create or reuse the upstream PR, and emit
-a host-side notification.
-
-The same hook now also invokes `scripts/handle_git_push_trigger.sh`, which reads each
-`<old-sha> <new-sha> <ref-name>` update from `stdin`, resolves configured
-`trigger:git:push` entries whose `path_to_repo` matches that bare repository path, and enqueues
-trigger events to the trigger orchestrator queue. For each matching branch update, the helper
-publishes payload fields:
-
-- `branch_name` (derived from `refs/heads/<branch>`)
-- `commit_hash` (the new head SHA from post-receive input)
-
-### Installing the trigger helper manually
-
-If you manage a bare repo outside `create_git_remote.sh`, install a post-receive hook that pipes
-the same post-receive update stream into `handle_git_push_trigger.sh`:
+Guest checkouts provide `git sync-base`, `git push-agent`, and `git agent-pr-note`. A normal agent
+push is:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-cat | /path/to/evander/scripts/handle_git_push_trigger.sh /path/to/repo.git
+git push-agent
 ```
 
-Optional environment override:
+The helper verifies the base and destination ancestry, pushes the current commit into the exact
+session namespace, and publishes the configured notes ref. The bare repo's post-receive hook only
+enqueues a structured event; it never receives upstream credentials and never publishes upstream.
 
-- `EVANDER_TRIGGER_ORCHESTRATOR_CONFIG` points to a non-default trigger orchestrator config
-  JSON file (default: `config/trigger-orchestrator/config.json` under repo root).
+## Ref ownership and refresh
 
-### Security boundary for trigger hooks
+Namespaces have one owner:
 
-- The post-receive helper treats pushed refs as untrusted input and only emits structured queue
-  events (`branch_name`, `commit_hash`) for configured repositories.
-- Trigger routing is constrained to repo paths explicitly listed in
-  `config/trigger-orchestrator/config.json` (`trigger:git:push` + `path_to_repo`).
-- The hook does **not** execute code from the pushed branch; it only appends metadata to the local
-  host queue store for the orchestrator worker.
+- canonical refresh owns ordinary `refs/heads/*` and tags;
+- guests own their authorized `refs/heads/agents/**` namespace and session notes;
+- host workflows own `refs/heads/review/**`, `refs/heads/team/**`, and `refs/evander/**`.
 
-Mirror runs emit an audit summary including source mode, effective default/base branch, and source
-commit SHA used for the mirror update.
+Registration and refresh reject an upstream that already contains branches under the reserved
+`agents/`, `review/`, or `team/` prefixes.
 
-Issue mirrors persist their mirror-source settings in the bare repo config. Shared non-issue remotes
-created by the host VM setup flow now do the same. When a guest fetches or pulls from either kind of
-repo over the restricted SSH alias, the host refreshes that bare repo from its configured source
-immediately before serving `git-upload-pack`. In practice, `git pull` inside the guest can bring the
-host mirror up to date with the canonical repo and then pull those latest refs into the guest in one
-step. If the host-side refresh fails, the guest fetch/pull fails rather than silently serving stale
-refs.
+A refresh fetches into `refs/evander/refresh/<operation-id>/**`, then applies canonical ref changes
+with one `git update-ref --stdin` transaction. It never prunes guest, review, Team, notes, or
+operation refs. Git remotes are not added or rewritten during operations because linked worktrees
+share repository configuration.
 
-For an existing bare repo, configure the refresh metadata once on the host:
+## Pinned promotion, notes, and publication
+
+`trigger:git:push` selects a repository by exact ID or managed-ID glob. Its payload includes the
+managed ID, ref and branch, old and new commit hashes, session, notes ref, default branch, and
+review branch. Downstream nodes must carry the trigger's exact new commit SHA.
+
+The managed Git workflow contracts are:
+
+| Surface | Required repository contract |
+|---|---|
+| `effect:git:ensure-managed-repo` | `directory_path`, transient `repo_source`; returns `managed_repo_id` |
+| `effect:vm:clone-repo` / `effect:agent:clone-repo` | `managed_repo_id` plus a session/VM selector |
+| `effect:git:promote-agent-branch` | `managed_repo_id`, `agent_branch`, `target_branch`, `expected_commit_sha` |
+| `query:git:pr-note` | `managed_repo_id`, exact `commit_sha`, `notes_ref` |
+| `effect:git:push-branch` / `effect:pr:create` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` |
+
+Promotion verifies that the agent ref still equals `expected_commit_sha` and pins that object to a
+host-only operation ref in the same ref transaction. A later agent push therefore cannot replace
+the commit under review. A superseded event returns `source_ref_moved` instead of promoting the
+newer tip implicitly. Updates of review and Team refs use compare-and-swap semantics.
+
+PR-note lookup reads only the note attached to the pinned commit. It does not walk first parents.
+
+Publication fetches the upstream destination into an operation-local ref, requires that destination
+to be an ancestor of the approved SHA, and pushes the exact SHA with an explicit lease. Operations
+for the same destination serialize; unrelated destinations can proceed concurrently. PR creation
+reuses an existing PR for the same source/destination when possible.
+
+## Temporary worktrees
+
+Operations that need checked-out files, including merge consolidation and PR preparation, create a
+unique detached worktree beneath:
+
+```text
+runtime/git-worktrees/<managed_repo_id>/<operation-id>/checkout
+```
+
+The root is mode `0700`. The checkout starts from a pinned host-only operation ref, never a shared
+review or Team branch. Checkout hooks, LFS smudge, submodule initialization, inherited commit
+signing, and interactive prompts are disabled. A secret-free manifest and per-operation lock are
+stored beside it; no worktree path appears in workflow output or the managed-repository registry.
+
+Success, failure, cancellation, and normal termination remove the worktree, prune its registration,
+and compare-and-swap delete the operation ref. Worker startup and periodic maintenance reconcile
+SIGKILL leftovers; routine reconciliation is rate-limited to at most once every five minutes. Only
+lock-free managed worktrees older than the configured stale threshold are removed; the default
+threshold is one hour.
+
+## Credentials
+
+Upstream authentication uses Evander's fixed host-owned askpass path and credential environment.
+Tokens must not appear in repository URLs, Git config, command arguments, manifests, registry
+records, logs, or workflow outputs. Interactive credential prompts are disabled.
+
+Configure provider token environment names through directory provider configuration and expose the
+actual secret only to the control-plane/effect-worker process. GitHub publication may use the host
+`gh` credential integration; Azure DevOps publication sends the configured PAT in an HTTP
+authorization header.
+
+## Maintenance, retention, and deletion
+
+Long-lived managed repositories and unpublished refs are retained when issues, sessions, or Team
+projects are deleted. Those lifecycle operations remove only their bindings and SSH authorization.
+There is no time-based repository deletion.
+
+Run locked worktree reconciliation, worktree pruning, and Git maintenance explicitly:
 
 ```bash
-git --git-dir=/path/to/evander/git-remotes/ExampleIndustryAPP.git config evander.mirrorSource /path/to/ExampleIndustryAPP
-git --git-dir=/path/to/evander/git-remotes/ExampleIndustryAPP.git config evander.mirrorRemoteName origin
-git --git-dir=/path/to/evander/git-remotes/ExampleIndustryAPP.git config evander.mirrorSyncRemote 1
-git --git-dir=/path/to/evander/git-remotes/ExampleIndustryAPP.git config evander.mirrorForceLocal 0
+evander-cli git-repos maintenance
+evander-cli git-repos maintenance --managed-repo-id mr_0123456789abcdef0123
 ```
 
-After that, the next guest-side `git fetch` or `git pull` refreshes the host bare repo automatically.
-Shell helpers load repo-root `secrets.env` by default. If mirror refresh credentials live elsewhere,
-set `EVANDER_SECRETS_ENV_FILE` while creating or refreshing the bare mirror; Evander records that
-path as `evander.secretsEnvFile` in the bare repo config. The Git SSH wrapper reads that trusted
-repo config before refreshing the mirror, so existing authorized keys can use the new path after the
-mirror is stamped. The forced-command user must be able to read the configured file.
-
-## VM Workflow
-
-Inside the VM:
+Delete only after confirming the repository is no longer needed:
 
 ```bash
-git clone ssh://evander-git-host/path/to/evander/git-remotes/sample-repo.git
-cd sample-repo
-git remote add agent ssh://evander-git-host/path/to/evander/git-remotes/sample-repo.git
-git checkout -b work
-# agent edits, commits, tests
-git push agent HEAD:refs/heads/agents/<session-id>/work-<agent-suffix>
+evander-cli git-repos delete mr_0123456789abcdef0123
 ```
 
-For an issue-specific mirrored repo, the guest clone typically looks like:
+Deletion refuses a repository with active issue/project/session bindings, authorized sessions,
+active or unreconciled worktrees, or unresolved migration state. There is no force-delete path.
+
+## Breaking migration from legacy mirrors
+
+The managed registry schema marker is required. A runtime with legacy path-based managed-Git state
+fails preflight and directs the operator to the explicit migration. The new runtime does not
+dual-read old checkout or bare-repository path fields.
+
+Stop the trigger and effect workers before migration and ensure no Git operation or agent session is
+active. Then inventory without writing:
 
 ```bash
-git clone ssh://evander-git-host/path/to/evander/git-remotes/14084_repo.git
+evander-cli git-repos migrate --dry-run
 ```
 
-Recommended branch namespace:
+The report groups legacy repositories by normalized directory/upstream identity and inventories
+old bare repositories, cache mirrors and checkouts, Team projects, workflow packs, sessions, and
+authorized-key bindings. Missing canonical metadata and preserved-ref collisions block apply. A
+collision in agent, review, Team, note, or PR refs aborts that repository group; migration never
+chooses a winner.
 
-- `agents/<session-id>/<branch-name>-<agent-suffix>`
-
-## Review Flow
-
-On the host:
+After resolving every blocker, apply explicitly:
 
 ```bash
-./scripts/promote_agent_branch.sh /path/to/trusted-clone sample-repo agents/<session-id>/work-<agent-suffix>
+evander-cli git-repos migrate --apply
 ```
 
-That fetches `refs/heads/agents/<session-id>/work-<agent-suffix>` from the quarantine bare repo into the
-trusted working clone, creates a local review branch like `review/<session-id>/work-<agent-suffix>`, and leaves
-`origin` untouched until you decide the change is acceptable.
+Apply creates the registry and managed bare repositories, refreshes canonical refs, imports
+preserved refs, and rewrites Team/session/issue/key/workflow bindings to managed IDs. Workflow pack
+updates use the revision/lock service and abort on a concurrent edit. Stopped VM and container
+sessions are marked for Git-remote reconciliation before their next wake.
 
-Then review and validate in the trusted clone:
+Apply writes a manifest containing old/new mappings and verification hashes. Evander-owned old
+repositories and cache checkouts leave active routing but remain read-only rollback artifacts.
+User-owned source checkouts are never changed or deleted.
+
+After services have restarted, smoke-test both a VM and container-worker path: managed clone,
+restricted agent push, queued trigger, pinned promotion, exact note read, PR publication, and Team
+release consolidation. Finalization is a separate operator decision:
 
 ```bash
-cd /path/to/trusted-clone
-git status
-git log --oneline --decorate -n 5
-git diff origin/main...HEAD
+evander-cli git-repos migrate --finalize <migration-id>
 ```
 
-When the branch is ready for the canonical remote, push it from the trusted clone and optionally
-open the PR:
-
-```bash
-./scripts/open_agent_pr.sh /path/to/trusted-clone review/<session-id>/work
-./scripts/open_agent_pr.sh --create-pr --base main /path/to/trusted-clone review/<session-id>/work
-```
-
-This keeps the flow safe:
-
-- VM pushes only to the quarantine bare repo
-- the host promotes a specific agent branch into a review branch
-- only the reviewed branch is pushed to `origin`
-- PR creation is optional and happens only from the trusted clone
-
-## Automatic Promotion and PR Creation
-
-For issue-specific mirrors created through `setup_issue_git_vm.sh` or `mirror_issue_repo.sh`,
-guest pushes to `refs/heads/agents/<session-id>/<branch>` can trigger host-side automation:
-
-- fetch that agent branch into the trusted clone
-- update or create `review/<session-id>/<branch>`
-- push the review branch to `origin`
-- create or reuse the upstream PR
-- append an event to `runtime/agent-events.log`
-- attempt a desktop notification with `notify-send`
-
-Directory-scoped `ado-worker.json` controls this behavior per directory:
-
-- `create_prs_automatically` (default `true`) toggles whether the hook opens/updates upstream PRs.
-- `create_prs_as_draft` (default `false`) toggles Azure DevOps draft PR creation.
-
-You can also override both values per session via `runtime/sessions.json` metadata using either
-top-level keys (`create_prs_automatically`, `create_prs_as_draft`) or
-`metadata.pr_automation.{create_prs_automatically,create_prs_as_draft}`.
-
-### PR body assembly from Git notes
-
-Host-side PR automation reads agent-authored markdown summaries from the configured PR notes ref.
-New repo clones set `evander.prNotesRef` to
-`refs/notes/agent-pr/<session-hash>`, where `<session-hash>` is the first 12 hex characters of
-`sha256(session_id)`. Older checkouts that do not have that config still use the legacy
-`refs/notes/agent-pr` ref. The automation fetches the selected notes ref before it calls
-`open_agent_pr.sh`, then tries to read the note attached to the pushed commit SHA only.
-
-Guest VMs should treat that tip note as the canonical full PR summary snapshot for the current
-branch, not as a per-commit delta log. The repo-clone path creates a local `work` branch from the
-configured base branch and installs `git agent-pr-note`, `git sync-base`, and `git push-agent`
-helpers. `agent-pr-note` keeps a branch-local aggregate cache, rewrites the full note onto each new
-`HEAD`, and lets agents append later updates without losing earlier summary content. `sync-base`
-fetches and merges the configured base branch through the guest-visible mirror, so "merge main"
-becomes one unambiguous command even though the agent is on `work`. `push-agent` fetches the
-configured destination and base branches and refuses to push if either has commits missing from
-`HEAD`; that makes the agent merge human-updated branches before host-side promotion tries to update
-the canonical remote.
-
-When a PR body is assembled, merge order is deterministic:
-
-1. optional fixed operator-controlled body (configured by `EVANDER_PR_FIXED_BODY_FILE`)
-2. separator + heading (`---` and `## Agent Summary`)
-3. appended agent summary markdown from the commit note in the configured PR notes ref
-
-For per-directory PR boilerplate, use the directory-scoped `pr_template` domain and migrate the
-legacy repo-level `config/pr-template.md` into root config with
-`evander-cli migrate-pr-template-to-root --config config/gateway.yaml`.
-
-Fallback behavior when the note is missing:
-
-- If no note exists for the pushed commit, PR creation continues without the note content.
-- If a fixed body file is configured, that fixed body is used by itself.
-- If no fixed body is configured and no note is available, PR tooling falls back to its default body behavior.
-
-### Security / validation note
-
-Treat note content as **untrusted agent input**. The host flow passes it through as markdown text
-for PR descriptions only; operators should not shell-interpolate, eval, or execute note text.
-Keep usage to display/render contexts (for example, PR body markdown) rather than command contexts.
-
-For Azure DevOps remotes, set the PR PAT in the environment:
-
-```bash
-AZURE_DEVOPS_PR_PAT=...
-```
-
-`open_agent_pr.sh` detects Azure DevOps automatically from the trusted clone's `origin` URL and
-creates the PR there. The same PAT also lets mirror refreshes reach Azure DevOps over HTTPS when a
-guest-facing mirror is configured with an Azure canonical source. Pass `--provider azure_devops`
-if you need to override provider detection explicitly. The same helper still supports GitHub
-remotes through `gh`.
-
-## Notes
-
-- This assumes the VM can SSH to the host over the private libvirt network.
-- `bootstrap_git_vm.sh` avoids giving guests your host password and restricts the installed SSH key
-  to Git transport commands only. Writable keys are also bound to one bare repo and one
-  `refs/heads/agents/<session-id>/...` prefix. Read-only keys are still bound to one bare repo;
-  the bootstrap refuses to install an unscoped key when repo metadata is unavailable.
-- `promote_agent_branch.sh` intentionally refuses to overwrite an existing local review branch.
-- `open_agent_pr.sh` uses a normal push for non-review branches.
-- For `review/*` branches it uses `--force-with-lease` after first refreshing the exact remote-tracking ref on the push remote, so reused review branches stay safe without stale-lease failures.
-- For GitHub canonical remotes, automated `open_agent_pr.sh --create-pr` runs prefer HTTPS plus `gh auth git-credential` when `gh auth status` succeeds. This is more reliable for post-receive hooks than SSH because hook environments are often non-interactive and may not inherit a usable `ssh-agent` socket or your full SSH config.
-- Use a separate dropbox bare repo for agent output if you do not want VMs pushing directly to your main internal remote.
-- MCP remains useful for notifications, approval gates, and branch metadata, but not for bulk source transfer.
-
-## Feedback + Reply Integration Checklist (with Git promotion)
-
-When combining Git push automation with PR feedback handling:
-
-### Setup steps
-
-1. Complete Git remote setup (`bootstrap_git_vm.sh` + mirror/setup issue helper).
-2. For Azure DevOps PR feedback, ensure `evander-ado-worker` is running so feedback ingestion and trigger publication continue.
-3. Keep `evander-discord-wake.service` and `evander-scheduled-wake.service` running if you rely on Discord inbox wakeups or scheduled resumes.
-4. Ensure session policy allows feedback tools for the target provider/repo/PR stream.
-5. In agent logic, post replies with `post_pr_feedback_reply(..., idempotency_key=...)` before `git push-agent` when feedback requires code changes.
-
-### Expected timing behavior
-
-- Git push/promotion remains event-driven (on push hooks).
-- Azure DevOps feedback pickup is ADO-worker-driven based on its configured poll interval, so comments may take up to one worker cycle before updates begin.
-- The ingest worker only updates feedback state and trigger events; guest execution remains explicit and idempotent via MCP tool flow.
-- `bootstrap_codex_vm.sh` defaults `ENABLE_GUEST_HEARTBEAT=0`, so new guests keep
-  `agent-heartbeat.timer` disabled unless explicitly enabled for that agent.
-- If you enable the guest timer, set `GUEST_HEARTBEAT_PROMPT` when bootstrapping to control the
-  resume prompt used by `codex exec resume --last`.
-- Migration note for older guests: disable the legacy timer with
-  `systemctl --user disable --now agent-heartbeat.timer || true` to prevent double wakes.
-
-### Troubleshooting
-
-- **Wake lock contention:** inspect the ADO, Discord wake, and scheduled wake service status plus
-  the configured wake lock/cooldown paths if sessions are not being resumed.
-- **Provider reply API errors (GitHub/Azure DevOps):** keep the same `idempotency_key` on retry so successful-but-unconfirmed replies are deduped.
-- **Push worked but no host promotion/PR update:** inspect bare-repo hook output and `runtime/agent-events.log`.
-- **`AGENT_PR_NOTES fetch failed (non-fatal)` in `runtime/agent-events.log`:**
-  host could not fetch the selected PR notes ref from the bare remote during promotion.
-  Verify the guest push included `git config --get evander.prNotesRef` and the trusted
-  clone can fetch that ref. For older checkouts, verify the legacy `refs/notes/agent-pr` ref.
-- **`AGENT_PR_NOTES read failed (non-fatal)` in `runtime/agent-events.log`:**
-  notes ref was present but reading the note for the promoted commit failed.
-  Re-attach the cached summary to the exact tip commit with `git agent-pr-note ensure-head`, then
-  push again with `git push-agent`.
-- **`AGENT_PR_NOTES sha resolution failed (non-fatal)` in `runtime/agent-events.log`:**
-  promoted SHA could not be resolved to a commit in the trusted clone.
-  Check post-receive input/new SHA correctness and confirm the promote fetch succeeded for the pushed branch.
-- **`Configured PR fixed body file missing (non-fatal)` in `runtime/agent-events.log`:**
-  configured fixed boilerplate file path does not exist on the host.
-  Fix `EVANDER_PR_FIXED_BODY_FILE` or create the file, then push a new commit to retrigger automation.
-
-### Audit/log locations and healthy signals
-
-- Host Git automation log: `runtime/agent-events.log`.
-- Host feedback state: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`.
-- Auto-PR body composition flags are appended to each promotion event as key-value pairs:
-  - `used_fixed_body=0|1`
-  - `used_agent_note=0|1`
-  - `body_truncated=0|1`
-  - Example audit command:
-    ```bash
-    rg "Agent branch promoted.*used_fixed_body=.*used_agent_note=.*body_truncated=" runtime/agent-events.log
-    ```
-- Healthy pattern:
-  - feedback appears once in store,
-  - reply retries collapse to deduplicated result,
-  - resulting commit lands on `agents/<session-id>/<branch>` and is promoted to `review/<session-id>/<branch>`.
+Finalize re-verifies registry records, refs, bindings, active keys, and the absence of legacy
+configuration. It deletes only Evander-owned rollback artifacts named in that manifest. It never
+uses a retention timer or deletes a user checkout.

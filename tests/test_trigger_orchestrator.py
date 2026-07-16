@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.admin.services.managed_git_service import ManagedGitAdminService
 from evander.events.internal import InternalEventBus
 from evander.events.scheduled import ScheduledInternalEventStore
 from evander.orchestration.host_polling import HostFileLockManager
@@ -132,6 +133,53 @@ def test_build_trigger_orchestrator_worker_accepts_injected_services(tmp_path: P
     assert services.called_with is not None
     assert services.called_with.runtime_dir == runtime_dir
     assert worker.runtime is not None
+
+
+def test_build_trigger_orchestrator_worker_runs_managed_git_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PreflightReached(RuntimeError):
+        pass
+
+    def _fail_preflight(_service: ManagedGitAdminService) -> None:
+        raise _PreflightReached("managed Git preflight reached")
+
+    monkeypatch.setattr(ManagedGitAdminService, "preflight", _fail_preflight)
+
+    with pytest.raises(_PreflightReached, match="managed Git preflight reached"):
+        build_trigger_orchestrator_worker(
+            GatewayConfig(runtime_dir=tmp_path / "runtime"),
+            project_dir=tmp_path,
+        )
+
+
+def test_trigger_orchestrator_provider_reload_runs_managed_git_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = build_trigger_orchestrator_worker(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"),
+        project_dir=tmp_path,
+    )
+    updated_payload = worker.worker_config.model_dump(mode="python")
+    updated_payload["provider_loader"]["provider_profile"] = "profiles/core-minimal"
+    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(updated_payload)
+    worker._config_reloader = _StaticReloader(updated_config, changed=True)
+
+    class _ReloadPreflightReached(RuntimeError):
+        pass
+
+    def _fail_reload_preflight(_service: ManagedGitAdminService) -> None:
+        raise _ReloadPreflightReached("reloaded managed Git preflight reached")
+
+    monkeypatch.setattr(ManagedGitAdminService, "preflight", _fail_reload_preflight)
+
+    with pytest.raises(
+        _ReloadPreflightReached,
+        match="reloaded managed Git preflight reached",
+    ):
+        worker.run_once()
 
 
 def test_build_trigger_orchestrator_worker_uses_sqlite_default_from_loader(

@@ -2,11 +2,13 @@
 
 ## Components
 
+
+Guest and worker-container networking is default-deny. Reachability is limited to host ports explicitly allowlisted for the deployment, such as SSH/Git (`22`), MCP (`8000`), enabled model/package/HTTP relays and caches (`11434`, `11666`, `11777`, `11881`, `8081`, and `3142`), plus any deliberately configured provider-specific endpoint. MCP is the tool-capability boundary, not the sole host service on that allowlist.
 - Host orchestrator: creates session manifests, launches VMs, and destroys them at the end of a run.
-- MCP gateway: the only host service reachable from guests.
+- MCP gateway: the MCP capability boundary reachable from guests; it is not the only guest-reachable host service.
 - OpenAI relay: a separate host service that exposes an OpenAI-compatible `/v1` endpoint to guests while keeping the real API key on the host.
 - NuGet relay: a separate host service that exposes guest-reachable feed endpoints for nuget.org and private Azure Artifacts while keeping private feed credentials on the host.
-- Local bare Git remote: a host-side code transfer path that lets guests push commits back over the private network.
+- Managed Git service: directory-scoped bare repositories, capability-limited guest intake, pinned ref transactions, publication, and ephemeral worktree ownership.
 - Disposable guests: run agent code and call the MCP gateway over the isolated libvirt network.
 - Audit store: append-only JSONL log for every privileged tool attempt.
 
@@ -19,6 +21,34 @@
 - Git handles code transport; MCP remains the control and policy path.
 - Session manifests are the smallest useful policy primitive for v1.
 - Approval records let you keep autonomy for drafts and read operations while gating sends.
+
+## Managed Git Boundary
+
+`build_admin_runtime` assembles one managed-Git domain service for CLI, Admin API, VM/container
+clone, workflow, and Team consumers. Its registry at
+`runtime/managed-git-repositories.json` maps stable `managed_repo_id` values to host-owned bare
+repositories. An owning directory shares a repository with descendants, while sibling directories
+are separate trust boundaries.
+
+Canonical refresh, guests, and host workflows own disjoint ref namespaces. Refresh stages ordinary
+branches and tags under `refs/evander/refresh/<operation-id>/**` and commits changes in one ref
+transaction without pruning agent, review, Team, notes, or operation refs. Guest SSH capabilities
+permit writes only to the exact session's `refs/heads/agents/**` namespace and notes ref.
+
+Host workflows operate on pinned commits. Promotion verifies the source ref and creates a host-only
+operation ref atomically; review/Team targets use compare-and-swap, and upstream pushes use explicit
+leases for the exact approved SHA. A newer agent push cannot change the object being reviewed or
+published.
+
+Most managed Git work is bare-ref manipulation. Operations that need files receive a unique,
+detached worktree beneath `runtime/git-worktrees/<managed_repo_id>/<operation-id>`, which is removed
+on completion and reconciled after abnormal termination. The worktree is operational scratch
+space, never the isolation boundary for running agent-authored code.
+
+Upstream credentials stay in the process environment and fixed host credential integration; they
+do not appear in URLs, repository config, workflow payloads, logs, manifests, or the registry.
+Issue/session deletion removes bindings and SSH authorization but deliberately retains shared
+repositories and unpublished refs until explicit operator deletion.
 
 ## Unified Issue Abstraction
 
@@ -122,7 +152,7 @@ The trigger/effect runtime is designed as two layers with explicit ownership bou
 ## Optional Add-ons
 
 Add-ons are external, opt-in layers for opinionated product experiences on top
-of Truman. Core exposes generic loading, Admin Web mounting, workflow-provider
+of Evander. Core exposes generic loading, Admin Web mounting, workflow-provider
 bridging, and runtime storage namespacing; add-ons own their domain concepts.
 For example, a hierarchical agent-team module belongs in an add-on package, not
 in core session, workflow, or Admin Web models. See [add-ons](addons.md).
@@ -134,9 +164,10 @@ boundaries.
 
 ### Poll cadence and latency target
 
-- Recommended steady-state cadence: every **2-5 minutes** per active session.
+- Azure DevOps PR feedback is polled by `evander-ado-worker`; there is no current host-heartbeat service.
+- `config/ado-worker/config.json` controls cadence with `poll_interval_seconds`. The checked-in example uses `5` seconds, while the daemon fallback is `30` seconds.
+- Feedback visibility latency is configuration and workload dependent: approximately one polling interval plus provider and request processing time. A 2-5 minute interval is an optional scaling choice, not the runtime default.
 - Expected operator-to-guest feedback visibility: typically within one poll interval
-  (**~2-5 minutes**), plus MCP round-trip time (normally seconds).
 - Faster cadences are possible but increase gateway/provider load; slower cadences reduce load but
   increase human feedback latency.
 
@@ -198,7 +229,8 @@ This sequence minimizes payload volume when there is no new feedback and support
 Trigger ingestion is intentionally split so queue ownership stays centralized while provider-specific
 logic remains isolated:
 
-- `evander-trigger-orchestrator` owns:
+- The trigger worker (`evander-cli trigger-orchestrator`, or
+  `evander-trigger-orchestrator.service` under systemd) owns:
   - loading/validating global trigger config (`config/trigger-orchestrator/config.json`)
   - provider polling cadence + single-instance locking
   - durable event queue persistence (`trigger-orchestrator-events.json`)
@@ -257,6 +289,8 @@ Execution model:
 9. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
    independently as it arrives, while the gate records the latest payload seen from every upstream
    source for debugging and conflict inspection.
+
+The complete built-in gate catalog is `gate:filter`, `gate:map`, `gate:deserialize`, `gate:serialize`, `gate:dedupe`, `gate:switch`, `gate:merge`, `gate:debounce`, `gate:buffer`, `gate:aggregate`, `gate:await-agent`, `gate:for`, and `gate:while`.
 10. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
     upstream event payload.
 11. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
@@ -267,8 +301,10 @@ Safety/idempotency guarantees:
 - Each event/node pair uses a stable idempotency key (`<event_id>::<node_id>`), so retries do not
   re-run completed work.
 - Gate and effect execution records persist state plus resolved config and output snapshots.
-- Immediate cycles are rejected or skipped as `cycle_detected`, and deep chains are bounded by a
+- Unmarked cycles are rejected or skipped as `cycle_detected`, and deep chains are bounded by a
   max graph depth guard.
+- `gate:for` and `gate:while` implement bounded loops. Their loop-back paths must use edges
+  explicitly marked `allow_cycle`; that flag is not a general exemption for arbitrary graph cycles.
 - Filtered or failed nodes do not emit completion events, so downstream edges only activate after
   successful upstream execution.
 
@@ -342,7 +378,19 @@ examples use `config/trigger-orchestrator/config-example.json` and
 This keeps domain workflow evolution in configuration artifacts while the orchestrator engine
 remains generic.
 
-## Planned Next Integrations
+### Request-scoped agent consultations
+
+Codebase consultation is a generic control-plane primitive rather than a Team agent type. The MCP
+gateway authenticates the caller, resolves an exact directory-scoped managed-Git commit, persists
+the request, and publishes a durable internal event. The hidden system workflow then materializes
+a container session and repository workspace, invokes the configured model through the existing
+relay, and always tears the session down after a structured result, failure, cancellation, or
+deadline. The caller may wait briefly but does not hold a workflow worker or gateway transaction
+for the full model run. Per-profile queues provide admission control, and capacity is released only
+after cleanup. This keeps persistent agent identity, inboxes, and Team governance out of a
+short-lived read-only query path.
+
+## Current Provider Integrations And Trust Boundaries
 
 - Discord integration now uses a provider-backed bot API adapter (`discord_backend: bot_api`) while
   preserving the same MCP tool contract.

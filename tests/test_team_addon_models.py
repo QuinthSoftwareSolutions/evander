@@ -32,7 +32,9 @@ from evander_team_addon.models import (
     Project,
     ProjectGitConfig,
     ProjectGoal,
+    ProjectReleasePolicy,
     ReleasePackage,
+    ReleaseReviewRequirement,
     ReviewCriterionResult,
     ReviewProfile,
     ReviewProfileCriterion,
@@ -208,6 +210,46 @@ def _valid_state() -> TeamState:
             )
         },
     )
+
+
+def test_release_package_upgrades_legacy_candidate_manifest_shape() -> None:
+    release = ReleasePackage(
+        id="release",
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        candidate_commit_sha="candidate-sha",
+        release_branch="team/team/releases/release",
+        manifest={
+            "project_id": "project",
+            "release_package_id": "release",
+            "candidate_commit_sha": "candidate-sha",
+            "candidate_tree_hash": "candidate-tree",
+            "deliverable_ids": ["deliverable"],
+            "feature_branches": ["team/team/features/task-worker"],
+            "release_branch": "team/team/releases/release",
+            "verification_commands": [],
+            "review_requirements": [],
+        },
+    )
+
+    assert release.manifest is not None
+    assert release.manifest.evidence_status == "legacy_partial"
+    assert release.manifest.candidate_commit_sha == "candidate-sha"
+    assert release.manifest.deliverables[0].deliverable_id == "deliverable"
+    assert (
+        release.manifest.deliverables[0].feature_branch
+        == "team/team/features/task-worker"
+    )
+
+
+def test_release_policy_rejects_duplicate_reviewer_profile_pairs() -> None:
+    requirement = ReleaseReviewRequirement(
+        reviewer_agent_id="reviewer",
+        review_profile_id="release-profile",
+    )
+
+    with pytest.raises(ValidationError, match="unique reviewer/profile pairs"):
+        ProjectReleasePolicy(review_requirements=[requirement, requirement])
 
 
 def _state_with_runtime_operations() -> TeamState:
@@ -555,39 +597,47 @@ def test_session_manifest_has_no_team_addon_fields() -> None:
     assert "agent_id" not in SessionManifest.model_fields
 
 
-def test_project_git_config_requires_exactly_one_bare_repo() -> None:
-    config = ProjectGitConfig(host_repo_path="/srv/repo", bare_repo_name="repo.git")
-    assert config.bare_repo_name == "repo.git"
-    assert config.base_branch == "main"
+def test_project_git_config_requires_managed_repo_id() -> None:
+    config = ProjectGitConfig(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        directory_path=" root/team-a ",
+    )
+    assert config.managed_repo_id == "mr_0123456789abcdefabcd"
+    assert config.directory_path == "root/team-a"
+    assert config.base_branch is None
     assert config.canonical_release_branch_prefix == "releases/<project-id>/"
 
-    path_config = ProjectGitConfig(
-        host_repo_path="/srv/repo", bare_repo_path="/srv/bare/repo.git"
-    )
-    assert path_config.bare_repo_path == "/srv/bare/repo.git"
+    with pytest.raises(ValidationError, match="managed_repo_id"):
+        ProjectGitConfig.model_validate({})
 
-    with pytest.raises(ValidationError, match="exactly one of bare_repo_name"):
-        ProjectGitConfig(host_repo_path="/srv/repo")
+    with pytest.raises(ValidationError, match="must match mr_<20-hex>"):
+        ProjectGitConfig(managed_repo_id="legacy-repo")
 
-    with pytest.raises(ValidationError, match="exactly one of bare_repo_name"):
+    with pytest.raises(ValidationError, match="must begin with 'root'"):
         ProjectGitConfig(
-            host_repo_path="/srv/repo",
-            bare_repo_name="repo.git",
-            bare_repo_path="/srv/bare/repo.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="team-a",
+        )
+
+    with pytest.raises(ValidationError, match="repo_source"):
+        ProjectGitConfig.model_validate(
+            {
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "repo_source": "https://example.invalid/operator-checkout.git",
+            }
         )
 
 
 def test_project_accepts_git_config() -> None:
     state = _valid_state().model_dump(mode="python")
     state["projects"]["project"]["git"] = {
-        "host_repo_path": "/srv/repo",
-        "bare_repo_name": "repo.git",
+        "managed_repo_id": "mr_0123456789abcdefabcd",
     }
 
     validated = TeamState.model_validate(state)
 
     assert validated.projects["project"].git is not None
-    assert validated.projects["project"].git.host_repo_path == "/srv/repo"
+    assert validated.projects["project"].git.managed_repo_id == "mr_0123456789abcdefabcd"
 
 
 @pytest.mark.parametrize(
@@ -633,8 +683,7 @@ def test_canonical_release_branch_honors_project_prefix() -> None:
         name="Project",
         lead_agent_id="lead",
         git=ProjectGitConfig(
-            host_repo_path="/srv/repo",
-            bare_repo_name="repo.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             canonical_release_branch_prefix="ship/",
         ),
     )
@@ -648,8 +697,7 @@ def test_canonical_release_branch_prefix_normalizes_trailing_slash() -> None:
         name="Project",
         lead_agent_id="lead",
         git=ProjectGitConfig(
-            host_repo_path="/srv/repo",
-            bare_repo_name="repo.git",
+            managed_repo_id="mr_0123456789abcdefabcd",
             canonical_release_branch_prefix="release",
         ),
     )
@@ -1044,6 +1092,44 @@ def test_team_state_payload_includes_blocked_release_next_action_hint() -> None:
     assert "git_release_recoveries" in release["next_action_hint"]
     assert "team/team/releases/release" in release["next_action_hint"]
     assert "Resolve the merge conflict" in release["next_action_hint"]
+    assert release["blocked_reason_code"] == "merge_conflict"
+    assert release["failed_git_promotion_ids"] == ["promotion-1"]
+    assert release["promotion_attempt_count"] == 1
+
+
+def test_team_state_payload_classifies_stale_index_lock_release_blocker() -> None:
+    state = _valid_state()
+    state.release_packages["release"] = ReleasePackage(
+        id="release",
+        project_id="project",
+        deliverable_ids=["deliverable"],
+        release_branch="team/team/releases/release",
+        git_promotion_record_ids=["promotion-1"],
+        state=TeamRecordState.BLOCKED,
+        error=(
+            "fatal: Unable to create '/home/jonathan/true-app/.git/index.lock': "
+            "File exists."
+        ),
+    )
+    state.git_promotions["promotion-1"] = GitPromotionRecord(
+        id="promotion-1",
+        project_id="project",
+        release_package_id="release",
+        actor_agent_id="lead",
+        source_branch="team/team/features/task-ui",
+        target_branch="team/team/releases/release",
+        promotion_kind="release",
+        state="failed",
+        error="stale git index lock blocks release promotion",
+        outputs={"error_code": "stale_index_lock"},
+    )
+
+    payload = team_state_payload(state)
+
+    release = payload["release_packages"]["release"]
+    assert release["blocked_reason_code"] == "stale_index_lock"
+    assert release["failed_git_promotion_ids"] == ["promotion-1"]
+    assert release["promotion_attempt_count"] == 1
 
 
 def test_blocked_release_hint_uses_failed_feature_promotion_target() -> None:
@@ -1078,11 +1164,11 @@ def test_blocked_release_hint_uses_failed_feature_promotion_target() -> None:
     hint = payload["release_packages"]["release"]["next_action_hint"]
     assert "Failed feature promotion feature-promotion" in hint
     assert (
-        "Resolve and commit on failed promotion target branch "
+        "Resolve and commit on promotion target branch "
         "team/team/features/task-ui"
     ) in hint
-    assert "do not submit git_release_recoveries" in hint
-    assert "git_release_recoveries only applies to failed release promotions" in hint
+    assert "submit git_release_recoveries" in hint
+    assert "do not submit git_release_recoveries" not in hint
     assert "Continue from release branch" not in hint
 
 
@@ -1164,6 +1250,41 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert rows["failed_ephemeral_assignment"]["state"] == "failed"
     assert rows["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"
     assert rows["cleanup_pending_ephemeral_assignment"]["state"] == "cleanup_pending"
+
+
+def test_runtime_operations_ignores_failed_promotion_for_terminal_release() -> None:
+    state = _state_with_runtime_operations()
+    state.release_packages["release"].state = TeamRecordState.REJECTED
+    state.release_packages["release"].error = None
+
+    payload = runtime_operations_payload(
+        state,
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    attention_kinds = {row["kind"] for row in payload["attention"]}
+    assert "failed_git_promotion" not in attention_kinds
+    assert "blocked_release_package" not in attention_kinds
+
+
+def test_runtime_operations_ignores_failed_promotion_for_terminal_task() -> None:
+    state = _state_with_runtime_operations()
+    promotion = state.git_promotions["promotion-1"]
+    promotion.release_package_id = None
+    promotion.task_id = "blocked-task"
+    state.tasks["blocked-task"].state = TeamTaskState.ACCEPTED
+
+    payload = runtime_operations_payload(
+        state,
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    promotion_ids = {
+        row.get("promotion_id")
+        for row in payload["attention"]
+        if row["kind"] == "failed_git_promotion"
+    }
+    assert "promotion-1" not in promotion_ids
 
 
 def test_runtime_operations_do_not_mark_idle_null_next_wake_as_due() -> None:

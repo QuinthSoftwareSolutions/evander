@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from evander.admin.services.managed_git_service import ManagedGitAdminService
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.execution import ExecutionStatusKind
 from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
@@ -847,6 +848,25 @@ def test_build_effect_orchestrator_worker_accepts_injected_services(tmp_path: Pa
     assert services.called_with is not None
     assert services.called_with.runtime_dir == runtime_dir
     assert worker.runtime is not None
+
+
+def test_build_effect_orchestrator_worker_runs_managed_git_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PreflightReached(RuntimeError):
+        pass
+
+    def _fail_preflight(_service: ManagedGitAdminService) -> None:
+        raise _PreflightReached("managed Git preflight reached")
+
+    monkeypatch.setattr(ManagedGitAdminService, "preflight", _fail_preflight)
+
+    with pytest.raises(_PreflightReached, match="managed Git preflight reached"):
+        build_effect_orchestrator_worker(
+            GatewayConfig(runtime_dir=tmp_path / "runtime"),
+            project_dir=tmp_path,
+        )
 
 
 def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_path: Path) -> None:
@@ -3866,7 +3886,7 @@ def test_filter_gate_when_supports_string_branch_operators(tmp_path: Path) -> No
                     "id": "trigger-1",
                     "display_name": "Git push",
                     "type": "trigger:git:push",
-                    "path_glob": str(tmp_path / "*.git"),
+                    "managed_repo_id_glob": "mr_*",
                 }
             ],
             "gates": [
@@ -3876,22 +3896,21 @@ def test_filter_gate_when_supports_string_branch_operators(tmp_path: Path) -> No
                     "type": "gate:filter",
                     "outputs": {
                         "branch_name": {"type": "string"},
+                        "managed_repo_id": {"type": "string"},
                         "commit_hash": {"type": "string"},
+                        "new_commit_hash": {"type": "string"},
                         "old_commit_hash": {"type": "string"},
                         "ref_name": {"type": "string"},
-                        "repo_path": {"type": "string"},
-                        "repo_name": {"type": "string"},
                         "session_id": {"type": "string"},
                         "review_branch": {"type": "string"},
-                        "trusted_repo_path": {"type": "string"},
-                        "base_branch": {"type": "string"},
-                        "canonical_origin_url": {"type": "string"},
+                        "notes_ref": {"type": "string"},
+                        "default_branch": {"type": "string"},
                     },
                     "when": {
                         "all": [
                             {"left": "${{trigger-1.branch_name}}", "starts_with": "agents/"},
                             {"left": "${{trigger-1.branch_name}}", "contains": "/"},
-                            {"left": "${{trigger-1.repo_path}}", "ends_with": ".git"},
+                            {"left": "${{trigger-1.managed_repo_id}}", "starts_with": "mr_"},
                         ]
                     },
                 }
@@ -3922,8 +3941,12 @@ def test_filter_gate_when_supports_string_branch_operators(tmp_path: Path) -> No
             occurred_at=datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),
             payload={
                 "branch_name": "agents/session-1/topic",
+                "managed_repo_id": "mr_0123456789abcdefabcd",
                 "commit_hash": "a" * 40,
-                "repo_path": str(tmp_path / "sample.git"),
+                "new_commit_hash": "a" * 40,
+                "old_commit_hash": "0" * 40,
+                "ref_name": "refs/heads/agents/session-1/topic",
+                "default_branch": "main",
             },
             trace_id="trace-git-1",
         )

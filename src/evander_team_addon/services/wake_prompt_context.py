@@ -19,6 +19,7 @@ MAX_INBOX = 10
 MAX_CASES = 8
 MAX_RELEASE_PACKAGES = 8
 MAX_RUNTIME_ATTENTION = 10
+MAX_ACTION_FEEDBACK = 4
 MAX_SESSION_HEALTH = 12
 MAX_OPERATOR_CHAT_PARTICIPANTS = 12
 MAX_REVIEW_ARTIFACT_IMPORTS = 8
@@ -78,6 +79,22 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
         omitted_counts,
         "inbox",
     )
+
+    if _optional_text(lease.get("reason")) == "action_feedback":
+        action_feedback = sorted(
+            (
+                _compact_action_feedback(row)
+                for row in _mapping_rows(lease.get("recent_action_feedback"))
+            ),
+            key=_action_feedback_sort_key,
+        )
+        if action_feedback:
+            context["action_feedback"] = _limited_rows(
+                action_feedback,
+                MAX_ACTION_FEEDBACK,
+                omitted_counts,
+                "action_feedback",
+            )
 
     cases, non_current_case_count = _current_case_rows(lease.get("cases"))
     _add_omitted(omitted_counts, "cases_non_current", non_current_case_count)
@@ -344,7 +361,10 @@ def _compact_release_package(release: Mapping[str, Any]) -> dict[str, Any]:
             "release_branch",
             "canonical_branch",
             "published_commit_sha",
+            "candidate_commit_sha",
+            "approved_commit_sha",
             "next_action",
+            "blocked_reason_code",
             "created_at",
             "updated_at",
             "published_at",
@@ -367,6 +387,13 @@ def _compact_release_package(release: Mapping[str, Any]) -> dict[str, Any]:
     next_action_hint = _optional_text(release.get("next_action_hint"))
     if next_action_hint is not None:
         row["next_action_hint"] = _trim_text(next_action_hint, 640)
+    gate_failure = release.get("gate_failure")
+    if isinstance(gate_failure, Mapping):
+        row["gate_failure"] = {
+            key: gate_failure.get(key)
+            for key in ("stage", "kind", "source_id", "message", "occurred_at")
+            if gate_failure.get(key) is not None
+        }
     return row
 
 
@@ -413,6 +440,35 @@ def _compact_runtime_attention(row: Mapping[str, Any]) -> dict[str, Any]:
             compact[key] = values[:ID_LIST_LIMIT]
             if len(values) > ID_LIST_LIMIT:
                 compact[f"{key}_omitted_count"] = len(values) - ID_LIST_LIMIT
+    return compact
+
+
+def _compact_action_feedback(row: Mapping[str, Any]) -> dict[str, Any]:
+    compact = _compact_fields(
+        row,
+        (
+            "action_record_id",
+            "dispatch_id",
+            "created_at",
+        ),
+    )
+    error = _optional_text(row.get("error"))
+    if error is not None:
+        compact["error"] = _trim_text(error, 640)
+    action_fields = _string_items(row.get("action_fields"))
+    if action_fields:
+        compact["action_fields"] = action_fields[:ID_LIST_LIMIT]
+        if len(action_fields) > ID_LIST_LIMIT:
+            compact["action_fields_omitted_count"] = len(action_fields) - ID_LIST_LIMIT
+    correction_hints = [
+        _trim_text(hint, TEXT_LIMIT) for hint in _string_items(row.get("correction_hints"))
+    ]
+    if correction_hints:
+        compact["correction_hints"] = correction_hints[:ID_LIST_LIMIT]
+        if len(correction_hints) > ID_LIST_LIMIT:
+            compact["correction_hints_omitted_count"] = (
+                len(correction_hints) - ID_LIST_LIMIT
+            )
     return compact
 
 
@@ -1181,6 +1237,13 @@ def _runtime_attention_sort_key(row: Mapping[str, Any]) -> tuple[int, str, str]:
         _severity_rank(row.get("severity")),
         _sort_text(row.get("kind")),
         _sort_text(row.get("id")),
+    )
+
+
+def _action_feedback_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        _sort_text(row.get("created_at")),
+        _sort_text(row.get("action_record_id") or row.get("dispatch_id")),
     )
 
 

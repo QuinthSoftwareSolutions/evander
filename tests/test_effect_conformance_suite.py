@@ -152,7 +152,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "display_name": "Clone agent repo",
             "type": "effect:agent:clone-repo",
             "session_id": "session-1",
-            "repo_source": "/tmp/repo",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
         }
     )
     agent_frontend = adapter.validate_python(
@@ -188,6 +188,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "display_name": "Enqueue prompt",
             "type": "effect:agent:enqueue-prompt",
             "prompt": "Continue ${{effect_1.session_id}}",
+        }
+    )
+    code_consultation = adapter.validate_python(
+        {
+            "id": "effect-code-consultation",
+            "display_name": "Prepare code consultation",
+            "type": "effect:agent:code-consultation",
+            "consultation_id": "${{consultation-requested.payload.consultation_id}}",
+            "operation": "prepare",
         }
     )
     agent_exec = adapter.validate_python(
@@ -267,9 +276,10 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "id": "effect-promote",
             "display_name": "Promote branch",
             "type": "effect:git:promote-agent-branch",
-            "host_repo_path": "/repo",
-            "bare_repo_path": "/git-remotes/repo.git",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
             "agent_branch": "agents/session-1/topic",
+            "target_branch": "review/session-1/topic",
+            "expected_commit_sha": "a" * 40,
         }
     )
     push_branch = adapter.validate_python(
@@ -277,9 +287,10 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "id": "effect-push-branch",
             "display_name": "Push branch",
             "type": "effect:git:push-branch",
-            "host_repo_path": "/repo",
-            "local_branch": "review/session-1/topic",
-            "origin_branch": "feature/issue-1",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "source_ref": "refs/evander/operations/op-1/source",
+            "expected_commit_sha": "a" * 40,
+            "destination_branch": "feature/issue-1",
         }
     )
     pr_create = adapter.validate_python(
@@ -287,7 +298,10 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "id": "effect-pr",
             "display_name": "Create PR",
             "type": "effect:pr:create",
-            "host_repo_path": "/repo",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "source_ref": "refs/evander/operations/op-1/source",
+            "expected_commit_sha": "a" * 40,
+            "destination_branch": "feature/issue-1",
         }
     )
     communication = adapter.validate_python(
@@ -389,6 +403,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert agent_copy.type == "effect:agent:copy-files"
     assert prompt.type == "effect:agent:prompt"
     assert enqueue_prompt.type == "effect:agent:enqueue-prompt"
+    assert code_consultation.type == "effect:agent:code-consultation"
     assert agent_exec.type == "effect:agent:exec"
     assert http_request.type == "effect:http:request"
     assert http_request.allowed_url_patterns == ["https://example.test/*"]

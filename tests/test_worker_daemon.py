@@ -27,6 +27,7 @@ from evander.worker.models import (
     WorkerGitWriteKeyRequest,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
+    WorkerTaskWorktreeRequest,
 )
 from evander.worker_daemon import (
     WorkerDiskTelemetry,
@@ -47,6 +48,7 @@ class FakeContainerRuntime:
         self.stopped: list[str] = []
         self.removed: list[str] = []
         self.logs: dict[str, str] = {}
+        self.inspect_results: dict[str, dict[str, Any]] = {}
 
     def start_job(
         self,
@@ -58,7 +60,7 @@ class FakeContainerRuntime:
         return f"container-{record.job_id}"
 
     def inspect_job(self, record: WorkerJobRecord) -> dict[str, Any]:
-        return {"status": record.status}
+        return self.inspect_results.get(record.job_id, {"status": record.status})
 
     def stop_job(self, record: WorkerJobRecord) -> None:
         self.stopped.append(record.job_id)
@@ -596,7 +598,7 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
         worker_root=tmp_path / "worker-root",
         container_runtime=FakeContainerRuntime(),
         token="test-token",
-        allowed_git_source_prefixes=["ssh://evander-git-host/git-remotes/"],
+        allowed_git_source_prefixes=["ssh://evander-git-host/runtime/managed-git/"],
         git_ssh_source_dir=ssh_source,
     )
     calls: list[dict[str, object]] = []
@@ -610,7 +612,10 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     daemon.clone_repo(
         "session-1",
         WorkerRepoCloneRequest(
-            repo_source="ssh://evander-git-host/git-remotes/repo.git",
+            repo_source=(
+                "ssh://evander-git-host/runtime/managed-git/"
+                "mr_0123456789abcdefabcd.git"
+            ),
             clone_branch="main",
             repo_name="repo",
         ),
@@ -621,9 +626,107 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     clone_call = next(call for call in calls if call["args"][:2] == ["git", "clone"])
     assert clone_call["env"]["HOME"] == str(paths.agent_home)  # type: ignore[index]
     assert clone_call["env"]["GIT_SSH_COMMAND"] == (  # type: ignore[index]
-        f"ssh -F {paths.agent_home / '.ssh' / 'config'} "
-        f"-i {paths.agent_home / '.ssh' / 'evander-git'}"
+        f"ssh -F {paths.agent_home / '.ssh' / 'config'}"
     )
+
+
+def test_worker_reconciles_existing_checkout_remote_without_recloning(
+    tmp_path: Path,
+) -> None:
+    first_source = tmp_path / "legacy-source"
+    second_source = tmp_path / "managed-source"
+    for source, content in ((first_source, "legacy\n"), (second_source, "managed\n")):
+        source.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.invalid"],
+            cwd=source,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Worker Test"], cwd=source, check=True
+        )
+        (source / "README.md").write_text(content, encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=source, check=True)
+
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(first_source), repo_name="repo"),
+    )
+    checkout = WorkerSessionPaths.resolve(
+        daemon.worker_root, "session-1"
+    ).repo_root / "repo"
+    (checkout / "unpublished.txt").write_text("keep me\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a checkout for requested source"):
+        daemon.clone_repo(
+            "session-1",
+            WorkerRepoCloneRequest(repo_source=str(second_source), repo_name="repo"),
+        )
+
+    reconciled = daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(
+            repo_source=str(second_source),
+            repo_name="repo",
+            reconcile_existing_remote=True,
+        ),
+    )
+
+    assert reconciled.cloned is False
+    assert (checkout / "unpublished.txt").read_text(encoding="utf-8") == "keep me\n"
+    assert subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == str(second_source)
+
+
+def test_worker_prepares_and_reuses_task_scoped_worktree(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    clone = daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    assert clone.commit_sha
+
+    request = WorkerTaskWorktreeRequest(
+        repo_name="repo",
+        worktree_name="task-a-1234",
+        branch="agents/session-1/tasks/task-a-1234",
+        base_ref="main",
+    )
+    created = daemon.prepare_task_worktree("session-1", request)
+    reused = daemon.prepare_task_worktree("session-1", request)
+
+    assert created.created is True
+    assert reused.created is False
+    assert created.commit_sha == clone.commit_sha
+    assert reused.target_dir == "/home/agent/worktrees/repo/task-a-1234"
 
 
 def test_worker_provisions_session_git_write_key_and_preserves_config(
@@ -681,8 +784,15 @@ def test_worker_provisions_session_git_write_key_and_preserves_config(
     paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
     config_text = (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8")
     assert record.public_key_body == "AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerKey"
-    assert "# BEGIN evander git host" not in config_text
+    assert record.git_ssh_alias == "evander-git-host-write"
+    assert config_text.count("Host evander-git-host\n") == 1
+    assert config_text.count("Host evander-git-host-write\n") == 1
+    assert config_text.index("Host evander-git-host\n") < config_text.index(
+        "Host evander-git-host-write\n"
+    )
+    assert "# BEGIN evander git host" in config_text
     assert "# BEGIN evander git write host" in config_text
+    assert "IdentityFile ~/.ssh/evander-git" in config_text
     assert "IdentityFile ~/.ssh/evander-git-write" in config_text
 
     daemon.start_job(
@@ -798,9 +908,11 @@ def test_worker_api_provisions_session_git_write_key(
     assert response.status_code == 200
     payload = response.json()
     assert payload["public_key_body"] == "AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerApiKey"
+    assert payload["git_ssh_alias"] == "evander-git-host-write"
     paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
     config_text = (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8")
     assert "Host evander-git-host" in config_text
+    assert "Host evander-git-host-write" in config_text
     assert "IdentityFile ~/.ssh/evander-git-write" in config_text
 
 
@@ -844,6 +956,7 @@ def test_worker_provisions_dotted_git_write_key_name(
     assert record.public_key_body == "AAAAC3NzaC1lZDI1NTE5AAAAITestWorkerDottedKey"
     assert (ssh_dir / "foo.bar").read_text(encoding="utf-8") == "private key\n"
     assert (ssh_dir / "foo.bar.pub").is_file()
+    assert record.git_ssh_alias == "evander-git-host-write"
     assert "IdentityFile ~/.ssh/foo.bar" in (ssh_dir / "config").read_text(encoding="utf-8")
     assert not list(ssh_dir.glob(".foo.bar-*"))
 
@@ -1955,6 +2068,13 @@ def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
     assert inspected.status_code == 200
     assert inspected.json()["status"] == "running"
 
+    runtime.inspect_results["job-1"] = {"status": "failed", "exit_code": 7}
+    failed = client.get("/v1/jobs/job-1", headers=_auth())
+    assert failed.status_code == 200
+    assert failed.json()["status"] == "failed"
+    assert failed.json()["metadata"]["exit_code"] == 7
+    assert failed.json()["metadata"]["worker_terminal_kind"] == "command_exit"
+
     stopped = client.post("/v1/jobs/job-1/stop", headers=_auth())
     assert stopped.status_code == 200
     assert stopped.json()["status"] == "stopped"
@@ -1968,6 +2088,67 @@ def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
     assert deleted_again.status_code == 200
     assert deleted_again.json() == {"deleted": True, "job_id": "job-1"}
     assert runtime.removed == ["job-1"]
+
+
+def test_worker_inspection_records_objective_command_exit_metadata(tmp_path: Path) -> None:
+    runtime = FakeContainerRuntime()
+    runtime.inspect_results["job-1"] = {"status": "failed", "exit_code": 9}
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="runner:latest",
+        command=["dotnet", "test"],
+        container_name="agent-worker-job-1",
+        status="running",
+        agent_home_path="/worker/session-1/agent_home",
+        repo_root_path="/worker/session-1/agent_home/repos",
+        artifacts_path="/worker/session-1/artifacts",
+        logs_path="/worker/session-1/logs",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    assert inspected.status == "failed"
+    assert inspected.metadata["exit_code"] == 9
+    assert inspected.metadata["worker_terminal_kind"] == "command_exit"
+
+
+def test_worker_inspection_classifies_oom_exit_as_infrastructure(tmp_path: Path) -> None:
+    runtime = FakeContainerRuntime()
+    runtime.inspect_results["job-1"] = {
+        "status": "failed",
+        "exit_code": 137,
+        "oom_killed": True,
+    }
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="runner:latest",
+        command=["dotnet", "test"],
+        container_name="agent-worker-job-1",
+        status="running",
+        agent_home_path="/worker/session-1/agent_home",
+        repo_root_path="/worker/session-1/agent_home/repos",
+        artifacts_path="/worker/session-1/artifacts",
+        logs_path="/worker/session-1/logs",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    assert inspected.metadata["worker_terminal_kind"] == "infrastructure"
+    assert "memory limit" in (inspected.error or "")
 
 
 def test_logs_are_written_and_read_from_session_logs(tmp_path: Path) -> None:
@@ -2348,6 +2529,99 @@ def test_completed_codex_job_records_session_meta_only_as_failure(tmp_path: Path
         f"session id: {thread_id}\n"
         "codex failed: task_complete did not include a final agent message\n"
     )
+
+
+def test_completed_codex_job_prefers_unsupported_tool_failure_over_context_retry(
+    tmp_path: Path,
+) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    finished_at = started_at + timedelta(minutes=1)
+    raw_log = (
+        f"session id: {thread_id}\n"
+        "2026-05-05T08:19:10Z ERROR codex_core::tools::router: "
+        "error=unsupported call: evander:team_get_task\n"
+        "2026-05-05T08:19:11Z ERROR codex_core::tools::router: "
+        "error=unsupported call: evander:team_get_task\n"
+    )
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = raw_log
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["bash", "-lc", "codex exec --json prompt | evander_codex_json_to_log"],
+        container_name="agent-worker-job-1",
+        status="exited",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+        metadata={"agent_provider": "codex", "model_provider_mode": "local_openai"},
+    )
+    log_path = paths.logs / "job-1.log"
+    assert not log_path.exists()
+    session_dir = (
+        paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "05" / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": (started_at + timedelta(seconds=50)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "last_token_usage": {
+                            "input_tokens": 63657,
+                            "output_tokens": 343,
+                            "total_tokens": 64000,
+                        },
+                        "model_context_window": 258400,
+                    },
+                },
+                {
+                    "timestamp": (started_at + timedelta(seconds=55)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "last_agent_message": None},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    inspected = daemon.inspect_job(record)
+
+    assert log_path.read_text(encoding="utf-8") == raw_log
+    outcome = inspected.metadata["codex_outcome"]
+    assert outcome["status"] == "failed"
+    assert outcome["reason"] == "codex_unsupported_tool_call"
+    assert outcome["unsupported_tool_calls"] == ["evander:team_get_task"]
+    assert outcome["last_token_usage"]["total_tokens"] == 64000
+    assert inspected.error == (
+        "Codex ended without a final agent message after emitting unsupported tool calls: "
+        "evander:team_get_task."
+    )
+    execution_log = daemon.get_logs(inspected, mode="execution")
+    assert "codex_unsupported_tool_call" not in execution_log
+    assert "Codex ended without a final agent message after emitting unsupported tool calls" in (
+        execution_log
+    )
+    assert "context limit suspected" not in execution_log
 
 
 def test_completed_codex_job_allows_null_task_complete_after_assistant_text(
