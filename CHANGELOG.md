@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-16 - Expanded Architectural Design History
+
+- Expanded the illustrated manual's design-history chapter from a compressed chronology into a
+  source-backed account of the pressures, invariants, and compatibility consequences behind
+  directory ownership, typed workflows, execution backends, selective SQLite adoption, add-ons,
+  Team command transactions, focused Admin composition, proof-bearing authority, and managed Git.
+- Added plain-language turning-point sidebars, a preserved-invariants narrative, an exact
+  chronology, compatibility-direction and fail-closed tables, and a revised evolution diagram;
+  corrected incremental repository/backend claims and the current `runtime/pr-map.json` role.
+
 ## 2026-07-14 - Scoped Release And Relay Integrity Fixes
 
 - Failed closed when directory-scoped managed-Git credential configuration cannot be resolved,
