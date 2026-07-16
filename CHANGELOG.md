@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-16 - Directory-Scoped Agent Connectors
+
+- Added named, directory-scoped connectors with inherited configuration, exact per-session
+  operation grants, JSON Schema input validation, explicit approval gates, and connector-aware
+  audit records.
+- Added host-authenticated REST and confined filesystem drivers, including bounded responses,
+  redirect controls, artifact-backed file retrieval, static environment-secret profiles, and
+  cached OAuth 2 client-credentials tokens.
+- Added `list_connectors` and `call_connector` MCP tools plus Admin Web, Admin API, and CLI
+  surfaces for configuration, auth readiness, health checks, agent/session grants, and add-on
+  connector-driver registration.
+
 ## 2026-07-16 - Expanded Architectural Design History
 
 - Expanded the illustrated manual's design-history chapter from a compressed chronology into a

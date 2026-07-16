@@ -226,6 +226,21 @@ class SessionAdminService:
             payload,
             contacts_config=contacts_config,
         )
+        if "connector_grants" in update:
+            connector_config = self._deps.runtime.provider_config.resolve_connectors_for_directory(
+                manifest.directory_path
+            )
+            for connector_id, operation_names in update["connector_grants"].items():
+                connector = connector_config.connectors.get(connector_id)
+                if connector is None or connector.disabled:
+                    raise ValueError(f"unknown or disabled connector: {connector_id}")
+                for operation_name in operation_names:
+                    operation = connector.operations.get(operation_name)
+                    if operation is None or operation.disabled:
+                        raise ValueError(
+                            "unknown or disabled connector operation: "
+                            f"{connector_id}.{operation_name}"
+                        )
         if "approval_notification_target_ids" in update:
             update["approval_notification_target_ids"] = (
                 _resolve_session_approval_notification_target_ids(

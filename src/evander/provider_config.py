@@ -7,6 +7,7 @@ from pydantic import AliasChoices, BaseModel, Field
 
 from evander.config import GatewayConfig, load_config
 from evander.contact_allowlists import resolve_effective_contact_directory
+from evander.connectors.models import ConnectorDirectoryConfig
 from evander.directory_config import (
     ContactDirectoryConfig,
     DirectoryConfigResolver,
@@ -214,6 +215,20 @@ class ProviderConfigResolver:
             ),
         )
         return ContactDirectoryConfig.model_validate(resolution.effective_config)
+
+    def resolve_connectors_for_directory(
+        self, directory_path: str | None
+    ) -> ConnectorDirectoryConfig:
+        normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
+        resolution = self.resolver.resolve_domain(
+            normalized_path,
+            domain="connectors",
+            base_config=get_domain_base_config(self.config, "connectors"),
+            validator=lambda candidate: validate_effective_domain_payload(
+                "connectors", candidate
+            ),
+        )
+        return ConnectorDirectoryConfig.model_validate(resolution.effective_config)
 
     def resolve_for_session_id(self, session_id: str) -> GatewayConfig:
         session = self.session_store.get_session(session_id)

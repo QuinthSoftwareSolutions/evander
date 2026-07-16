@@ -19,6 +19,29 @@ from evander.admin.services.vm_agent.common import (
     resolve_libvirt_vm_template_selector,
 )
 from evander.session_auth import ensure_session_mcp_auth_token
+from evander.connectors.models import normalize_connector_grants
+
+
+def _connector_grants_for_admin_agent(
+    runtime: Any,
+    *,
+    session_id: str,
+    directory_path: str,
+    value: object,
+) -> dict[str, list[str]]:
+    grants = normalize_connector_grants(value)
+    config = runtime.provider_config.resolve_connectors_for_directory(directory_path)
+    for connector_id, operation_names in grants.items():
+        connector = config.connectors.get(connector_id)
+        if connector is None or connector.disabled:
+            raise ValueError(f"unknown or disabled connector: {connector_id}")
+        for operation_name in operation_names:
+            operation = connector.operations.get(operation_name)
+            if operation is None or operation.disabled:
+                raise ValueError(
+                    f"unknown or disabled connector operation: {connector_id}.{operation_name}"
+                )
+    return grants
 
 
 class VmAgentCreateRequestMixin:
@@ -82,6 +105,12 @@ class VmAgentCreateRequestMixin:
                 config=self.config,
                 directory_path=directory_path,
             )
+            connector_grants = _connector_grants_for_admin_agent(
+                self.runtime,
+                session_id=self._agent_optional_string(payload, "session_id") or vm_name,
+                directory_path=directory_path,
+                value=payload.get("connector_grants"),
+            )
             result = self._create_vm_for_admin_agent(
                 provider=self._agent_optional_string(payload, "provider"),
                 vm_name=vm_name,
@@ -92,6 +121,11 @@ class VmAgentCreateRequestMixin:
                 ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
                 allowed_tools=self._agent_string_list(payload, "allowed_tools"),
+                **(
+                    {"connector_grants": connector_grants}
+                    if "connector_grants" in payload
+                    else {}
+                ),
                 **(
                     {"tool_argument_policies": payload["tool_argument_policies"]}
                     if "tool_argument_policies" in payload
@@ -246,6 +280,12 @@ class VmAgentCreateRequestMixin:
             ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
             ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
             extra_allowed_tools=self._agent_string_list(payload, "allowed_tools"),
+            connector_grants=_connector_grants_for_admin_agent(
+                self.runtime,
+                session_id=session_id,
+                directory_path=directory_path,
+                value=payload.get("connector_grants"),
+            ),
             **(
                 {"tool_argument_policies": payload["tool_argument_policies"]}
                 if "tool_argument_policies" in payload
@@ -386,6 +426,29 @@ class VmAgentCreateRequestMixin:
             {"alias": alias, "image_ref": image_ref}
             for alias, image_ref in sorted(provider_config.container_worker_images.items())
         ]
+        connector_config = self.runtime.provider_config.resolve_connectors_for_directory(
+            normalized_directory
+        )
+        connectors = [
+            {
+                "connector_id": connector_id,
+                "display_name": connector.display_name,
+                "description": connector.description,
+                "operations": [
+                    {
+                        "name": operation_name,
+                        "description": operation.description,
+                        "access": operation.access,
+                        "requires_approval": operation.requires_approval,
+                        "result_mode": operation.result_mode,
+                    }
+                    for operation_name, operation in sorted(connector.operations.items())
+                    if not operation.disabled
+                ],
+            }
+            for connector_id, connector in sorted(connector_config.connectors.items())
+            if not connector.disabled
+        ]
         return {
             "directory_path": normalized_directory,
             "backends": ["libvirt_vm", "container_worker_vm"],
@@ -415,6 +478,7 @@ class VmAgentCreateRequestMixin:
                 option.model_dump(mode="json")
                 for option in self._agent_communication_target_options(normalized_directory)
             ],
+            "connectors": connectors,
             "libvirt": {
                 "default_template": vm_defaults.libvirt_vm_default_template,
                 "templates": libvirt_templates,

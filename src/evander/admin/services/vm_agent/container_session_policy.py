@@ -21,6 +21,10 @@ class VmAgentContainerSessionPolicyMixin:
             "model": session.model,
             "expires_at": session.expires_at,
             "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
+            "connector_grants": {
+                connector_id: list(operations)
+                for connector_id, operations in session.connector_grants.items()
+            },
             "approval_required_tools": [
                 tool_name_value(tool) for tool in session.approval_required_tools
             ],

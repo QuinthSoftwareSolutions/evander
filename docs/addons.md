@@ -18,6 +18,8 @@ Add-ons may register generic integration points:
 - Host-side MCP tools registered through the add-on MCP registrar and governed
   by the same session, directory policy, approval, and audit machinery as core
   tools
+- Connector drivers registered by type name and invoked only through the core connector service,
+  preserving directory resolution, exact session grants, approvals, auth handling, and audit
 - Private runtime state under `runtime/addons/<addon_id>/`
 
 Add-ons must not add domain-specific fields to core models such as
@@ -118,8 +120,18 @@ def register_addon():
                 },
             ],
         },
+        "connector_drivers": {
+            "example_service": ExampleServiceConnectorDriver(),
+        },
     }
 ```
+
+Connector-driver extensions implement the small async driver protocol documented in
+[Agent Connectors](connectors.md). Add-ons should use a driver only when the built-in declarative
+REST or filesystem drivers cannot express the integration. A custom driver never receives a
+session's unrestricted environment or arbitrary agent headers; the core resolves configured auth
+and validates the operation before invoking it. Adding or removing a connector driver requires a
+gateway restart.
 
 ## Storage
 

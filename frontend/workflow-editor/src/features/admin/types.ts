@@ -2,6 +2,7 @@ export type AdminView =
   | "workflow"
   | "agents"
   | "addons"
+  | "connectors"
   | "skills"
   | "vms"
   | "issues"
@@ -45,6 +46,7 @@ export type AdminAddonStatus = {
   has_admin_ui: boolean;
   has_admin_api: boolean;
   has_mcp_tools: boolean;
+  has_connector_drivers: boolean;
   has_workflow_providers: boolean;
   workflow_node_types: string[];
   referenced_workflow_node_types: string[];
@@ -228,6 +230,7 @@ export type AgentCreateRequest = {
   labels?: Record<string, string>;
   web_search_enabled?: boolean;
   allowed_tools?: string[];
+  connector_grants?: Record<string, unknown>;
   allowed_script_names?: string[];
   communication_target_ids?: string[];
   discord_channels?: string[];
@@ -300,12 +303,26 @@ export type AgentCreateCommunicationTargetOption = {
   metadata?: Record<string, unknown>;
 };
 
+export type AgentCreateConnectorOption = {
+  connector_id: string;
+  display_name: string;
+  description: string;
+  operations: Array<{
+    name: string;
+    description: string;
+    access: "read" | "write";
+    requires_approval: boolean;
+    result_mode: "json" | "text" | "artifact";
+  }>;
+};
+
 export type AgentCreateOptionsResponse = {
   directory_path: string;
   backends: AgentBackend[];
   agent_providers: AgentCreateProviderOption[];
   model_provider_modes: AgentCreateModelProviderModeOption[];
   communication_targets: AgentCreateCommunicationTargetOption[];
+  connectors: AgentCreateConnectorOption[];
   libvirt: {
     default_template: string | null;
     templates: AgentCreateImageOption[];
@@ -322,6 +339,7 @@ export type AgentPolicyUpdateRequest = {
   labels?: Record<string, string>;
   web_search_enabled?: boolean;
   allowed_tools?: string[];
+  connector_grants?: Record<string, unknown>;
   approval_required_tools?: string[];
   approval_notification_target_ids?: string[];
   allowed_script_names?: string[];
@@ -338,6 +356,7 @@ export type AgentSessionPolicy = {
   model: string | null;
   expires_at: string | null;
   allowed_tools: string[];
+  connector_grants: Record<string, string[]>;
   approval_required_tools?: string[];
   approval_notification_target_ids: string[];
   approval_notification_target_options: Array<{ value: string; label: string }>;

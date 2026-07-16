@@ -1739,6 +1739,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Additional MCP tools to allow for the created session.",
             ),
             _field(
+                "connector_grants",
+                "Connector grants",
+                "json",
+                bindable=True,
+                description="Connector-id to operation-name lists granted to the created session.",
+                json_value_type="object",
+                default_value={},
+            ),
+            _field(
                 "tool_argument_policies",
                 "Tool argument policy",
                 "json",
@@ -1973,6 +1982,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Allowed tools",
                 "string_list",
                 description="MCP tools the created session may invoke through the host gateway.",
+            ),
+            _field(
+                "connector_grants",
+                "Connector grants",
+                "json",
+                bindable=True,
+                description="Connector-id to operation-name lists granted to the created session.",
+                json_value_type="object",
+                default_value={},
             ),
             _field(
                 "tool_argument_policies",

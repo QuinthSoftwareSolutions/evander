@@ -33,6 +33,7 @@ export type AgentInitialPolicyFormState = {
   labels: Record<string, string>;
   webSearchEnabled: boolean;
   allowedTools: string[];
+  connectorGrants: Record<string, string[]>;
   allowedScriptNames: string[];
   communicationTargetIds: string[];
 };
@@ -70,6 +71,7 @@ export function emptyInitialPolicyForm(): AgentInitialPolicyFormState {
     labels: {},
     webSearchEnabled: false,
     allowedTools: [],
+    connectorGrants: {},
     allowedScriptNames: [],
     communicationTargetIds: [],
   };
@@ -173,6 +175,9 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   }
   const allowedTools = dedupeStrings(initialPolicy.allowedTools);
   if (allowedTools.length > 0) payload.allowed_tools = allowedTools;
+  if (Object.keys(initialPolicy.connectorGrants).length > 0) {
+    payload.connector_grants = initialPolicy.connectorGrants;
+  }
   const allowedScriptNames = dedupeStrings(initialPolicy.allowedScriptNames);
   if (allowedScriptNames.length > 0) payload.allowed_script_names = allowedScriptNames;
   const communicationTargetIds = dedupeStrings(initialPolicy.communicationTargetIds);

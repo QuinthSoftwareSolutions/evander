@@ -859,6 +859,7 @@ def test_vm_create_provider_returns_required_outputs() -> None:
     }
     assert admin_service.create_vm_calls[0]["model_provider_mode"] == "local_openai"
     assert admin_service.create_vm_calls[0]["dotnet"] is True
+    assert admin_service.create_vm_calls[0]["connector_grants"] is None
 
 
 def test_vm_create_provider_passes_codex_skills() -> None:
@@ -933,6 +934,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
     assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
+    assert admin_service.create_vm_calls[0]["connector_grants"] is None
     assert admin_service.create_vm_calls[0]["metadata"]["model_provider_mode"] == "local_openai"
 
 

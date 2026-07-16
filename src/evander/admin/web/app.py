@@ -40,6 +40,7 @@ from evander.admin.web.addons import addon_routes
 from evander.admin.web.capacity import capacity_routes
 from evander.admin.web.artifacts import artifact_routes
 from evander.admin.web.chat import chat_routes
+from evander.admin.web.connectors import connector_routes
 from evander.admin.web.operator_steering import operator_steering_routes
 from evander.admin.web.sessions_approvals import session_approval_routes
 from evander.admin.web.shared import (
@@ -604,6 +605,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(workflow_routes(service, auth, dashboard_cache))
     routes.extend(agent_routes(service, auth, dashboard_cache))
     routes.extend(addon_routes(service, auth))
+    routes.extend(connector_routes(service, auth))
     routes.extend(capacity_routes(service, auth, dashboard_cache))
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))

@@ -428,6 +428,8 @@ class WorkflowRunApprovalLinkPayload(BaseModel):
     session_id: str | None = None
     action_type: str
     tool_name: str | None = None
+    connector_id: str | None = None
+    connector_operation: str | None = None
     directory_path: str
     payload_digest: str
     status: str
@@ -658,6 +660,8 @@ class ToolCallAuditEntryPayload(BaseModel):
     agent_role: str | None = None
     actor_user_id: str | None = None
     tool_name: str | None = None
+    connector_id: str | None = None
+    connector_operation: str | None = None
     request_id: str | None = None
     correlation_id: str | None = None
     approval_request_id: str | None = None

@@ -5,6 +5,7 @@ import { Tooltip } from "../admin/Tooltip";
 import { StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
 import type {
   AgentBackend,
+  AgentCreateConnectorOption,
   AgentCreateCommunicationTargetOption,
   AgentCreateOptionsResponse,
   AgentCreateRequest,
@@ -183,6 +184,67 @@ function CommunicationTargetCheckboxTable({
         </div>
       ) : null}
       {normalizedValues.length === 0 ? <div className="empty-state">{emptyState}</div> : null}
+    </div>
+  );
+}
+
+function ConnectorGrantSelector({
+  values,
+  options,
+  onChange,
+}: {
+  values: Readonly<Record<string, string[]>>;
+  options: readonly AgentCreateConnectorOption[];
+  onChange: (nextValues: Record<string, string[]>) => void;
+}) {
+  function setOperation(connectorId: string, operationName: string, checked: boolean) {
+    const current = values[connectorId] ?? [];
+    const nextOperations = checked
+      ? dedupeStrings([...current, operationName])
+      : current.filter((name) => name !== operationName);
+    const next = { ...values };
+    if (nextOperations.length) next[connectorId] = nextOperations;
+    else delete next[connectorId];
+    onChange(next);
+  }
+
+  if (!options.length) {
+    return <div className="empty-state">No connectors are configured for this directory.</div>;
+  }
+  return (
+    <div className="detail-stack">
+      {options.map((connector) => (
+        <details key={connector.connector_id} className="compact-disclosure">
+          <summary className="compact-disclosure-summary">
+            <span>{connector.display_name}</span>
+            <span className="panel-meta">{values[connector.connector_id]?.length ?? 0} granted</span>
+          </summary>
+          <p className="muted-text">{connector.description}</p>
+          <div className="feature-list compact-list">
+            {connector.operations.map((operation) => (
+              <label className="session-tool-row" key={operation.name}>
+                <span className="session-tool-row-main">
+                  <input
+                    type="checkbox"
+                    checked={(values[connector.connector_id] ?? []).includes(operation.name)}
+                    onChange={(event) =>
+                      setOperation(connector.connector_id, operation.name, event.target.checked)
+                    }
+                  />
+                  <span>
+                    <strong>{operation.name}</strong>
+                    <span className="muted-text"> {operation.description}</span>
+                  </span>
+                </span>
+                <span className="session-tool-row-meta">
+                  <span className="status-pill state-idle">{operation.access}</span>
+                  {operation.requires_approval ? <span className="status-pill state-waiting">Approval</span> : null}
+                </span>
+              </label>
+            ))}
+          </div>
+        </details>
+      ))}
     </div>
   );
 }
@@ -656,6 +718,27 @@ export function AgentCreateDialog({
                 itemLabel="Tool"
                 placeholder="run_script"
                 emptyState="No tools are allowed explicitly."
+              />
+            </div>
+            <div className="field-stack wide-field">
+              <CreateFieldLabel tooltip="Named connector operations granted to the session. Selecting an operation also enables the generic connector discovery and call MCP tools.">
+                Connector grants
+              </CreateFieldLabel>
+              <ConnectorGrantSelector
+                values={createForm.initialPolicy.connectorGrants}
+                options={createOptions?.connectors ?? []}
+                onChange={(nextValues) =>
+                  setCreateForm((current) => ({
+                    ...current,
+                    initialPolicy: {
+                      ...current.initialPolicy,
+                      connectorGrants: nextValues,
+                      allowedTools: Object.keys(nextValues).length
+                        ? dedupeStrings([...current.initialPolicy.allowedTools, "list_connectors", "call_connector"])
+                        : current.initialPolicy.allowedTools,
+                    },
+                  }))
+                }
               />
             </div>
             <div className="field-stack">

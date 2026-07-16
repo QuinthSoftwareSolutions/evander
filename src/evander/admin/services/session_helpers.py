@@ -14,6 +14,7 @@ from evander.approval_notification_targets import (
     normalize_approval_notification_target_ids,
 )
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
+from evander.connectors.models import normalize_connector_grants
 from evander.models import (
     ApprovalGrantSettings,
     McpToolName,
@@ -298,6 +299,7 @@ def build_issue_session_manifest(
     ttl_hours: int | None,
     ttl_seconds: int | None = None,
     extra_allowed_tools: list[str | ToolName] | None = None,
+    connector_grants: dict[str, list[str]] | None = None,
     tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
     allowed_contact_ids: list[str] | None = None,
@@ -373,6 +375,7 @@ def build_issue_session_manifest(
         allowed_tools=normalize_allowed_tools(
             [tool_name_value(tool) for tool in resolved_allowed_tools]
         ),
+        connector_grants=connector_grants or {},
         approval_required_tools=list(policy.approval_required_tools),
         tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=normalize_allowed_script_names(allowed_script_names or []),
@@ -547,6 +550,7 @@ def session_policy_update_from_payload(
         "approval_tool_settings",
         "approval_notification_target_ids",
         "tool_argument_policies",
+        "connector_grants",
         "allowed_script_names",
         "allowed_contact_ids",
         "discord_channel_allowlist",
@@ -605,6 +609,10 @@ def session_policy_update_from_payload(
         update["tool_argument_policies"] = session_tool_argument_policies_from_payload(
             session,
             payload.get("tool_argument_policies"),
+        )
+    if "connector_grants" in payload:
+        update["connector_grants"] = normalize_connector_grants(
+            payload.get("connector_grants")
         )
 
     discord_field = (

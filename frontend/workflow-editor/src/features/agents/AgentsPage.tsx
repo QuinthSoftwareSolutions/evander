@@ -17,7 +17,7 @@ import {
 } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
-import { StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
+import { JsonObjectKeyValueEditor, StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
 import { AgentCreateDialog } from "./AgentCreateDialog";
 import {
   createOperationIsActive,
@@ -121,6 +121,7 @@ type AgentPolicyFormState = {
   labels: Record<string, string>;
   webSearchEnabled: boolean;
   allowedTools: string;
+  connectorGrants: Record<string, unknown>;
   allowedScriptNames: string;
   approvalNotificationTargetIds: string[];
   discordChannels: string;
@@ -180,6 +181,7 @@ function emptyPolicyForm(): AgentPolicyFormState {
     labels: {},
     webSearchEnabled: false,
     allowedTools: "",
+    connectorGrants: {},
     allowedScriptNames: "",
     approvalNotificationTargetIds: [],
     discordChannels: "",
@@ -673,6 +675,12 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     model: hostString(rawPolicy, "model"),
     expires_at: hostString(rawPolicy, "expires_at"),
     allowed_tools: hostStringList(rawPolicy, "allowed_tools"),
+    connector_grants: Object.fromEntries(
+      Object.entries(hostRecord(rawPolicy, "connector_grants") ?? {}).filter(
+        (entry): entry is [string, string[]] =>
+          Array.isArray(entry[1]) && entry[1].every((item) => typeof item === "string"),
+      ),
+    ),
     approval_notification_target_ids: hostStringList(rawPolicy, "approval_notification_target_ids"),
     approval_notification_target_options: Array.isArray(rawPolicy.approval_notification_target_options)
       ? rawPolicy.approval_notification_target_options.filter(
@@ -711,6 +719,7 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     labels,
     webSearchEnabled: Boolean(policy?.web_search_enabled),
     allowedTools: formatList(policy?.allowed_tools),
+    connectorGrants: { ...(policy?.connector_grants ?? {}) },
     allowedScriptNames: formatList(policy?.allowed_script_names),
     approvalNotificationTargetIds: dedupeStrings(policy?.approval_notification_target_ids ?? []),
     discordChannels: formatList(policy?.discord_channel_allowlist.length ? policy.discord_channel_allowlist : policy?.discord_channels),
@@ -726,6 +735,7 @@ function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateReques
     labels: form.labels,
     web_search_enabled: form.webSearchEnabled,
     allowed_tools: parseList(form.allowedTools),
+    connector_grants: form.connectorGrants,
     allowed_script_names: parseList(form.allowedScriptNames),
     approval_notification_target_ids: dedupeStrings(form.approvalNotificationTargetIds),
     discord_channels: parseList(form.discordChannels),
@@ -825,6 +835,7 @@ export function AgentsPage() {
   );
   const [inlineValidation, setInlineValidation] = useState("");
   const [labelsValidationError, setLabelsValidationError] = useState<string | null>(null);
+  const [connectorGrantsValidationError, setConnectorGrantsValidationError] = useState<string | null>(null);
   const [selectionHydrated, setSelectionHydrated] = useState(false);
   const logViewRef = useRef<HTMLPreElement | null>(null);
   const logSticksToBottomRef = useRef(true);
@@ -1543,6 +1554,7 @@ export function AgentsPage() {
       return;
     }
     setEditForm(policyFormFromAgent(selectedAgent));
+    setConnectorGrantsValidationError(null);
     setShowEditForm(true);
     setShowPromptForm(false);
     setShowSkillInstallForm(false);
@@ -1617,6 +1629,10 @@ export function AgentsPage() {
     }
     if (labelsValidationError) {
       setInlineValidation(labelsValidationError);
+      return;
+    }
+    if (connectorGrantsValidationError) {
+      setInlineValidation(connectorGrantsValidationError);
       return;
     }
     setBusyAction("edit-agent");
@@ -2156,6 +2172,21 @@ export function AgentsPage() {
                       itemLabel="Tool"
                       placeholder="run_script"
                       emptyState="No tools are allowed explicitly."
+                    />
+                  </div>
+                  <div className="field-stack wide-field">
+                    <span>Connector grants</span>
+                    <p className="field-description">
+                      Map connector IDs to JSON arrays of operation names. Enable list_connectors and call_connector
+                      in Allowed tools for the agent to use these grants.
+                    </p>
+                    <JsonObjectKeyValueEditor
+                      value={editForm.connectorGrants}
+                      onChange={(nextValue) => setEditForm((current) => ({ ...current, connectorGrants: nextValue }))}
+                      onValidationChange={setConnectorGrantsValidationError}
+                      fieldLabel="Connector grants"
+                      emptyState="No connector operations are granted."
+                      addLabel="Add connector grant"
                     />
                   </div>
                   <label className="checkbox-row agent-checkbox-row">

@@ -3272,11 +3272,19 @@ class WorkflowReportsAdminService:
         node_session_ids_by_node: dict[str, set[str]] = {}
 
         def build_approval_link(request: ApprovalRequest) -> WorkflowRunApprovalLinkPayload:
+            arguments = request.payload.get("arguments")
+            connector_arguments = arguments if isinstance(arguments, dict) else {}
             return WorkflowRunApprovalLinkPayload(
                 request_id=request.request_id,
                 session_id=request.session_id,
                 action_type=request.action_type,
                 tool_name=request.tool_name,
+                connector_id=_coerce_optional_string(
+                    connector_arguments.get("connector_id")
+                ),
+                connector_operation=_coerce_optional_string(
+                    connector_arguments.get("operation")
+                ),
                 directory_path=request.directory_path,
                 payload_digest=request.payload_digest,
                 status=request.status.value,

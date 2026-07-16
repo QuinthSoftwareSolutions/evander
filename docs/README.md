@@ -17,6 +17,8 @@ documentation. The classifications below are part of the maintenance contract.
   [`HTML`](evander-user-manual.html), [`PDF`](evander-user-manual.pdf), and
   [`DOCX`](evander-user-manual.docx)
 - [`addons.md`](addons.md): add-on lifecycle, bundled add-ons, and Team action reference
+- [`connectors.md`](connectors.md): named file/REST capabilities, authentication, grants, and
+  custom connector drivers
 - [`execution-backends.md`](execution-backends.md): backend selection and shared contracts
 - [`container-worker-backend.md`](container-worker-backend.md): worker VM/container deployment
 - [`git-remotes.md`](git-remotes.md): managed repository and restricted Git flow

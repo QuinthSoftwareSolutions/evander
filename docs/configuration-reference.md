@@ -1619,6 +1619,7 @@ Supported directory config domains:
 | `issue-setup.json` | VM issue setup and restricted-SSH hand-off defaults | `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env`; legacy `git_root` is migration input only |
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |
 | `vm.json` | Guest-facing relay/network defaults and libvirt VM template selection data | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port, HTTP target relay host/port, `libvirt_vm_default_template`, `libvirt_vm_templates` |
+| `connectors.json` | Named host-side REST/filesystem integrations available through the generic connector MCP tools | `auth_profiles`, `connectors`; child overlays deep-merge entries by id and may set `disabled: true` to disable inherited connectors |
 | `communication_targets` (SQLite) | Directory-scoped communication targets inherited by target ID | `targets` entries with `id`, `provider`, `kind`, `address`, `policy.capabilities`, optional `policy.auth_profile_ref`, or `disabled: true` for inherited target removal |
 
 Assistant settings fields:
@@ -1637,6 +1638,13 @@ Merge behavior in `src/evander/directory_config.py`:
 - nullable fields: explicit `null` clears inherited value when validation permits it
 
 The VM template catalog in `vm.json` follows the same map merge rule, so child directories inherit parent `libvirt_vm_templates` aliases and can override individual aliases without redefining the whole catalog. The catalog values are cloud-init-compatible qcow2 image refs, not Docker images. `effect:agent:create.vm_image` resolves against this catalog, `libvirt_vm_default_template` may resolve either an approved alias or a direct non-empty image ref for new sessions, while explicit selectors resolve only approved aliases. Existing-session upserts preserve the recorded template metadata when `vm_image` is omitted. Use `container_image` for `container_worker_vm`. This configuration is validated and resolved before any VM launch path, and the selected image is passed through to `scripts/launch_agent_vm.sh` via `LIBVIRT_BASE_IMAGE` with `BASE_IMAGE` as a manual override fallback.
+
+Connector definitions are resolved and validated before listing or invocation. REST operations fix
+the method, relative path, response mode, and safe headers in host configuration; agent input is
+limited to each operation's JSON Schema. Filesystem connectors resolve files beneath an approved
+host root and return them through the artifact store. Authentication profiles contain environment
+variable references rather than secret values. See [Agent Connectors](connectors.md) for the full
+schema, security contract, examples, and extension interface.
 
 For operator prep, smoke validation, and failure diagnosis, see [libvirt-vm-template-operations.md](libvirt-vm-template-operations.md).
 

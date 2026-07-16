@@ -20,6 +20,7 @@ import { AddonsPage } from "./features/addons/AddonsPage";
 import { AgentsPage } from "./features/agents/AgentsPage";
 import { ArtifactsPage } from "./features/artifacts/ArtifactsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
+import { ConnectorsPage } from "./features/connectors/ConnectorsPage";
 import { IssuesPage } from "./features/issues/IssuesPage";
 import { ApprovalsScreen } from "./features/approvals/ApprovalsScreen";
 import { OperationsDashboard } from "./features/dashboard/OperationsDashboard";
@@ -2142,6 +2143,11 @@ export default function AdminRoot() {
               <IssuesPage />
             ) : renderedTab === "configuration" ? (
               <ConfigurationScreen />
+            ) : renderedTab === "connectors" ? (
+              <ConnectorsPage
+                selectedDirectoryPath={selectedDirectoryPath}
+                privilegedUnlocked={privilegeUnlocked}
+              />
             ) : renderedTab === "reports" ? (
               <ReportsPage />
             ) : renderedTab === "users" ? (

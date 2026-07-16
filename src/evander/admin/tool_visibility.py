@@ -244,6 +244,8 @@ _FEEDBACK_TOOLS = {
     ToolName.LIST_ALL_FEEDBACK,
 }
 
+_CONNECTOR_TOOLS = {ToolName.LIST_CONNECTORS, ToolName.CALL_CONNECTOR}
+
 _HIDDEN_BY_POLICY_SOURCES = {
     "directory.mcp_tool_policies",
     "session.allowed_tools",
@@ -289,6 +291,8 @@ def _tool_category(tool_name: McpToolName) -> str:
         return "Email"
     if tool_name in _FEEDBACK_TOOLS:
         return "Feedback"
+    if tool_name in _CONNECTOR_TOOLS:
+        return "Connectors"
     return "Other"
 
 
@@ -321,6 +325,8 @@ def _tool_provider(tool_name: McpToolName, category: str) -> str | None:
         return "email"
     if tool_name in _FEEDBACK_TOOLS:
         return "feedback"
+    if tool_name in _CONNECTOR_TOOLS:
+        return "connectors"
     if tool_name in _ISSUE_TOOLS:
         return "issue"
     return category.lower().replace(" ", "_") if category != "Other" else None

@@ -38,6 +38,11 @@ from evander.communication_artifacts import (
     normalize_safe_filename,
     validate_artifact_id,
 )
+from evander.connectors.service import (
+    ConnectorPolicyError,
+    ConnectorService,
+    connector_registry_from_addons,
+)
 from evander.communication_artifact_links import (
     CommunicationArtifactLinkError,
     communication_artifact_link_secret_env,
@@ -205,6 +210,7 @@ from evander.gateway.communication_tools import (
     CommunicationToolHelpers,
     register_communication_tools,
 )
+from evander.gateway.connector_tools import register_connector_tools
 from evander.gateway.consultation_tools import register_consultation_tools
 from evander.gateway.email_draft_helpers import (
     EmailDraftHelpers,
@@ -513,6 +519,15 @@ def create_server(context: RuntimeContext) -> FastMCP:
     attachment_helpers = CommunicationAttachmentHelpers(context, artifact_helpers)
     email_helpers = EmailDraftHelpers(context)
     visibility_helpers = VisibilityHelpers(context, deps.admin_runtime_factory)
+    connector_service = ConnectorService(
+        runtime_dir=context.config.runtime_dir,
+        provider_config=context.provider_config,
+        artifact_store_factory=deps.communication_artifact_store_factory,
+        registry=connector_registry_from_addons(
+            context.config.addon_loader,
+            base_dir=context.config.runtime_dir.parent,
+        ),
+    )
 
     def _record_visible_tools(
         *,
@@ -809,6 +824,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             visibility_helpers.require_vm_visible_in_session_directory
         ),
     )
+    register_connector_tools(server, context, connector_service)
 
     register_communication_tools(
         server,
@@ -1094,7 +1110,22 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
         except PolicyError:
             return None
-        if not context.policy.approval_required_for_tool(session, tool_name):
+        connector_requires_approval = False
+        if tool_value == ToolName.CALL_CONNECTOR.value:
+            try:
+                _, _, connector_operation = connector_service.require_operation(
+                    session,
+                    str(sanitized_arguments.get("connector_id") or ""),
+                    str(sanitized_arguments.get("operation") or ""),
+                    dict(sanitized_arguments.get("arguments") or {}),
+                )
+            except (ValueError, ConnectorPolicyError) as exc:
+                raise ToolError(str(exc)) from exc
+            connector_requires_approval = bool(connector_operation.requires_approval)
+        if not (
+            connector_requires_approval
+            or context.policy.approval_required_for_tool(session, tool_name)
+        ):
             return None
         redacted_keys = redacted_keys_for_session_id(session_id)
 

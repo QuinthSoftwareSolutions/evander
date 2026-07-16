@@ -81,6 +81,7 @@ class AddonAdminService:
             pending_enable = enabled and not loaded
             pending_disable = loaded and not enabled
             has_mcp_tools = bool(registration and registration.mcp_tools is not None)
+            has_connector_drivers = bool(registration and registration.connector_drivers)
             addons.append(
                 {
                     "candidate_key": candidate.source,
@@ -98,6 +99,7 @@ class AddonAdminService:
                     "has_admin_ui": bool(registration and registration.admin_ui_routes),
                     "has_admin_api": bool(registration and registration.admin_api_routes),
                     "has_mcp_tools": has_mcp_tools,
+                    "has_connector_drivers": has_connector_drivers,
                     "has_workflow_providers": bool(registration and registration.workflow_providers),
                     "workflow_node_types": sorted(node_types),
                     "referenced_workflow_node_types": referenced_node_types,
@@ -111,7 +113,9 @@ class AddonAdminService:
                     ),
                     "load_error": candidate.error,
                     "required_restart_services": list(
-                        self._required_restart_services(has_mcp_tools=has_mcp_tools)
+                        self._required_restart_services(
+                            has_mcp_tools=has_mcp_tools or has_connector_drivers
+                        )
                     ),
                 }
             )
@@ -140,6 +144,7 @@ class AddonAdminService:
                     "has_admin_ui": False,
                     "has_admin_api": False,
                     "has_mcp_tools": False,
+                    "has_connector_drivers": False,
                     "has_workflow_providers": False,
                     "workflow_node_types": [],
                     "referenced_workflow_node_types": [],
@@ -152,8 +157,10 @@ class AddonAdminService:
             )
 
         restart_required = any(item["restart_required"] for item in addons)
-        has_mcp_change = any(
-            item["restart_required"] and item["has_mcp_tools"] for item in addons
+        has_gateway_change = any(
+            item["restart_required"]
+            and (item["has_mcp_tools"] or item["has_connector_drivers"])
+            for item in addons
         )
         return {
             "addon_loader": host_loader.model_dump(mode="json"),
@@ -164,7 +171,7 @@ class AddonAdminService:
             "revision": self._revision(host_loader, worker_loader),
             "restart_required": restart_required,
             "required_restart_services": list(
-                self._required_restart_services(has_mcp_tools=has_mcp_change)
+                self._required_restart_services(has_mcp_tools=has_gateway_change)
             )
             if restart_required
             else [],

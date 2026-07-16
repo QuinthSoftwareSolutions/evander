@@ -152,6 +152,7 @@ Admin Web is the supported operator GUI. Its core areas answer different questio
 | Sessions | Which agent sessions are active, paused, terminal, or awaiting intervention? |
 | Tool Visibility | Which tools does a session actually see, and what binding or denial explains that result? |
 | MCP Tools | Which directory policy controls approval and denial for each tool? |
+| Connectors | Which named host-side integrations and operations are available in this directory? |
 | Tool Calls | What was invoked, allowed, denied, or failed? |
 | Configuration | Which host and directory-scoped values resolve here? |
 | Reports | What happened during orchestration and operations, including effects and gates? |

@@ -40,6 +40,12 @@ from evander.policy import mandatory_approval_required_for_tool
 
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
+    ToolName.LIST_CONNECTORS: (
+        "List connector operations explicitly granted to the current agent session."
+    ),
+    ToolName.CALL_CONNECTOR: (
+        "Invoke one schema-validated operation on a connector granted to the current session."
+    ),
     ToolName.ASSISTANT_READ_STATUS: (
         "Read high-level control-plane status for the assistant Admin chat surface."
     ),
