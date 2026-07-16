@@ -196,7 +196,10 @@ Set `BOKIO_COMPANY_ID` and `BOKIO_INTEGRATION_TOKEN` in the host service
 environment; optional
 `provider_state.bokio.company_id_env` and
 `provider_state.bokio.integration_token_env` can point the add-on at different
-environment variable names without storing the token value in config.
+environment variable names without storing the token value in config. Configure
+receipt dropboxes and vendor cost endpoints as directory-scoped connectors, and
+use the existing directory-scoped email integration for a dedicated billing
+mailbox; neither configuration exposes a credential to the Bokio add-on or agent.
 
 For the bundled ADO Activity Add-on, enabling `ado-activity-addon` exposes the
 `sync_ado_activity_index` and `query_ado_activity_index` MCP tools, and makes

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-16 - Bokio Connector Evidence Association
+
+- Added durable, content-deduplicated Bokio evidence records imported from
+  session-owned connector or communication artifacts, preserving source provenance
+  without exposing host paths or credentials.
+- Added agent tools to inspect, stage, and attach retained receipt/invoice
+  evidence to existing Bokio journal entries, or create a journal entry and
+  attach evidence in one tracked operation.
+
 ## 2026-07-16 - Directory-Scoped Agent Connectors
 
 - Added named, directory-scoped connectors with inherited configuration, exact per-session

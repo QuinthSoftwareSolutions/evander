@@ -10,12 +10,14 @@ from mcp.server.fastmcp.exceptions import ToolError
 import pytest
 
 from evander.addons import AddonContext
+from evander.communication_artifacts import CommunicationArtifactStore
 from evander.config import GatewayConfig
 from evander.models import ApprovalRequest, SessionManifest
 from evander.policy import PolicyEngine
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.storage import JsonStore
 from evander_bokio_addon.client import BokioApiError, BokioClient, BokioConfigError, settings_from_context
+from evander_bokio_addon.evidence import BokioEvidenceError, BokioEvidenceStore
 from evander_bokio_addon.mcp import MCP_TOOL_NAMES, register_mcp_tools
 from evander_bokio_addon.providers import BokioCompanyQueryProvider
 from evander_bokio_addon.state import PreparedActionStore, upload_staging_dir
@@ -130,6 +132,266 @@ def test_bokio_upload_staging_separates_session_and_reserved_scopes(tmp_path) ->
         tmp_path / "addons" / "bokio-addon" / "uploads" / "sessions" / "workflows"
     )
     assert len({admin_scope, workflow_scope, admin_session, workflow_session}) == 4
+
+
+def test_bokio_evidence_store_deduplicates_content_and_retains_provenance(tmp_path: Path) -> None:
+    store = BokioEvidenceStore(tmp_path)
+    first, first_created = store.ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="anthropic-receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_first",
+        source_metadata={"provider": "gmail", "message_id": "message-1"},
+        mime_type="application/pdf",
+    )
+    second, second_created = store.ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="duplicate.pdf",
+        source_type="communication_artifact",
+        source_key="comm_second",
+        source_metadata={"provider": "connector:billing-dropbox"},
+        mime_type="application/pdf",
+    )
+
+    assert first_created is True
+    assert second_created is False
+    assert second["evidence_id"] == first["evidence_id"]
+    assert [source["source_key"] for source in second["sources"]] == [
+        "comm_first",
+        "comm_second",
+    ]
+    assert store.get_file(first["evidence_id"]).blob_path.read_bytes() == b"%PDF-1.7\nreceipt"
+    with pytest.raises(BokioEvidenceError, match="does not match"):
+        store.ingest_bytes(
+            content=b"not a PDF",
+            filename="malformed.pdf",
+            source_type="communication_artifact",
+            source_key="comm_bad",
+        )
+
+
+def test_bokio_mcp_imports_only_the_callers_connector_or_email_artifact(tmp_path: Path) -> None:
+    artifacts = CommunicationArtifactStore(tmp_path)
+    imported = artifacts.stage(
+        provider="connector:billing-dropbox",
+        session_id="session-1",
+        content=b"%PDF-1.7\nreceipt",
+        original_filename="openai-receipt.pdf",
+        mime_type="application/pdf",
+        metadata={"connector_id": "billing-dropbox", "operation": "get_receipt"},
+    )
+    other_session = artifacts.stage(
+        provider="gmail",
+        session_id="session-other",
+        content=b"%PDF-1.7\nother",
+        original_filename="other-receipt.pdf",
+        mime_type="application/pdf",
+    )
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_import_evidence_artifact"],
+    )
+
+    result = server.tools["bokio_import_evidence_artifact"](
+        artifact_id=imported.artifact_id,
+        session_id="session-1",
+    )
+
+    assert result["created"] is True
+    source = result["evidence"]["sources"][0]
+    assert source["source_type"] == "communication_artifact"
+    assert source["source_key"] == imported.artifact_id
+    assert source["metadata"]["provider"] == "connector:billing-dropbox"
+    with pytest.raises(ToolError, match="owned by this session"):
+        server.tools["bokio_import_evidence_artifact"](
+            artifact_id=other_session.artifact_id,
+            session_id="session-1",
+        )
+
+
+def test_bokio_mcp_attaches_managed_evidence_once(tmp_path: Path, monkeypatch) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    evidence, _created = BokioEvidenceStore(tmp_path).ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    server = _register_bokio_mcp(tmp_path, allowed_tools=["bokio_attach_evidence"])
+
+    first = server.tools["bokio_attach_evidence"](
+        evidence_id=evidence["evidence_id"],
+        journal_entry_id="journal-entry-1",
+        session_id="session-1",
+    )
+    second = server.tools["bokio_attach_evidence"](
+        evidence_id=evidence["evidence_id"],
+        journal_entry_id="journal-entry-1",
+        session_id="session-1",
+    )
+
+    assert first["association"]["status"] == "attached"
+    assert second["association"]["idempotent"] is True
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://api.bokio.se/v1/companies/company-1/uploads"
+    assert b'journalEntryId"\r\n\r\njournal-entry-1' in requests[0].content
+
+
+def test_bokio_mcp_retries_a_failed_attachment_only_when_requested(
+    tmp_path: Path, monkeypatch
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(503, json={"message": "temporarily unavailable"})
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    evidence, _created = BokioEvidenceStore(tmp_path).ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    server = _register_bokio_mcp(tmp_path, allowed_tools=["bokio_attach_evidence"])
+
+    with pytest.raises(BokioApiError, match="temporarily unavailable"):
+        server.tools["bokio_attach_evidence"](
+            evidence_id=evidence["evidence_id"],
+            journal_entry_id="journal-entry-1",
+            session_id="session-1",
+        )
+    with pytest.raises(BokioEvidenceError, match="retry_if_failed"):
+        server.tools["bokio_attach_evidence"](
+            evidence_id=evidence["evidence_id"],
+            journal_entry_id="journal-entry-1",
+            session_id="session-1",
+        )
+
+    result = server.tools["bokio_attach_evidence"](
+        evidence_id=evidence["evidence_id"],
+        journal_entry_id="journal-entry-1",
+        retry_if_failed=True,
+        session_id="session-1",
+    )
+
+    assert result["association"]["status"] == "attached"
+    assert len(requests) == 2
+
+
+def test_bokio_mcp_creates_entry_and_attaches_evidence_idempotently(
+    tmp_path: Path, monkeypatch
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/journal-entries"):
+            return httpx.Response(200, json={"id": "journal-entry-1"})
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    evidence, _created = BokioEvidenceStore(tmp_path).ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_journal_entry_with_evidence"],
+    )
+
+    first = server.tools["bokio_create_journal_entry_with_evidence"](
+        payload={"title": "OpenAI receipt", "items": []},
+        evidence_ids=[evidence["evidence_id"]],
+        operation_key="openai-july-receipt",
+        session_id="session-1",
+    )
+    second = server.tools["bokio_create_journal_entry_with_evidence"](
+        payload={"title": "OpenAI receipt", "items": []},
+        evidence_ids=[evidence["evidence_id"]],
+        operation_key="openai-july-receipt",
+        session_id="session-1",
+    )
+
+    assert first["operation"]["status"] == "completed"
+    assert first["operation"]["journal_entry_id"] == "journal-entry-1"
+    assert first["operation"]["associations"][0]["status"] == "attached"
+    assert second["operation"]["idempotent"] is True
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "journal-entries",
+        "uploads",
+    ]
+
+
+def test_bokio_mcp_resumes_evidence_after_entry_create_without_recreating_entry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/journal-entries"):
+            return httpx.Response(200, json={"id": "journal-entry-1"})
+        if sum(item.url.path.endswith("/uploads") for item in requests) == 1:
+            return httpx.Response(503, json={"message": "temporarily unavailable"})
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    evidence, _created = BokioEvidenceStore(tmp_path).ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_journal_entry_with_evidence"],
+    )
+    arguments = {
+        "payload": {"title": "OpenAI receipt", "items": []},
+        "evidence_ids": [evidence["evidence_id"]],
+        "operation_key": "openai-july-receipt",
+        "session_id": "session-1",
+    }
+
+    with pytest.raises(BokioApiError, match="temporarily unavailable"):
+        server.tools["bokio_create_journal_entry_with_evidence"](**arguments)
+    with pytest.raises(BokioEvidenceError, match="retry_if_failed"):
+        server.tools["bokio_create_journal_entry_with_evidence"](**arguments)
+
+    result = server.tools["bokio_create_journal_entry_with_evidence"](
+        **arguments,
+        retry_if_failed=True,
+    )
+
+    assert result["operation"]["status"] == "completed"
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "journal-entries",
+        "uploads",
+        "uploads",
+    ]
 
 
 def test_bokio_mcp_read_tool_requires_session_tool_permission(
