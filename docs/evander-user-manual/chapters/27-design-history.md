@@ -1,10 +1,18 @@
 # 27. Design History and Compatibility Boundaries
 
-> **At a glance.** This chapter is non-normative. It explains why current Evander has its present boundaries and identifies a few deliberate upgrade shims. For current commands and behavior, use the preceding chapters and the current source trail. A historical name, worker, file, or flow appearing here is not evidence that it remains supported.
+> **At a glance.** This chapter tells the story of how Evander reached its current shape. It is non-normative—background, not instruction—and can help explain why a boundary exists or why an older name still appears during an upgrade. Whenever history and the preceding technical chapters seem to disagree, the current implementation and its source trail win.
 
 ## How to read this history
 
 Evander grew from a small host gateway around disposable VMs into a directory-scoped control plane with provider-neutral workflows, a second execution backend, packaged add-ons, and managed Git. Most architectural changes followed the same pressure: replace an implicit shared resource with an explicit identity and owner.
+
+For an operator, three lessons matter more than the dates:
+
+1. **An old name can explain a leftover file without making that file current.** Confirm which service and store the running revision actually uses.
+2. **A migration bridge is not a second source of truth.** Once current state has moved, changing the old representation should not be expected to change the system.
+3. **Newer boundaries usually exist because the older shortcut became ambiguous or unsafe.** Work through the current API or service instead of restoring the shortcut.
+
+The table below gives the technical version of that pattern. It is useful when an old runbook mentions a host path, heartbeat, JSON queue, or large Admin facade that no longer owns the work.
 
 | Earlier pressure | Current design response |
 |---|---|
@@ -77,6 +85,8 @@ This was a breaking migration, not an indefinite dual read. The same commit-iden
 
 Compatibility is intentionally narrow. Treat these as migration bridges, not design examples.
 
+If an operator encounters one of these names, the safest first step is to record where it appeared and which live Evander revision is running. Do not copy data from the older surface into the newer one until an administrator has identified the migration contract and current authority.
+
 | Surface | Current status | New work should use |
 |---|---|---|
 | Legacy gateway YAML | Import/migration input only | `runtime/host-config.json` plus directory config |
@@ -113,7 +123,13 @@ Upgrade shims stop when continuing would hide ambiguity. Examples include:
 
 The remedy is an explicit migrator or operator decision, not a guess. A fail-closed upgrade can be inconvenient, but it preserves the identity or evidence the newer invariant was introduced to protect.
 
-## Upgrade archaeology runbook
+## Troubleshooting and operator handoff
+
+When a screen, log, or local instruction refers to an older design, record the exact name, path, command, or error together with the affected directory and time. Also capture the running version shown by the installation, if available. An operator does not need to decide which historical store is authoritative before asking for help.
+
+Avoid “trying both” old and new commands, enabling a retired service, or editing both candidate stores. Those actions can create the dual authority that the migration was designed to remove.
+
+## Administrator runbook: upgrade archaeology
 
 When a deployment behaves as if an older design is still active:
 

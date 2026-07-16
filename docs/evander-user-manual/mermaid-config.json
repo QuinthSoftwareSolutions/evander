@@ -1,6 +1,7 @@
 {
   "theme": "neutral",
   "fontFamily": "Inter, Segoe UI, Arial, sans-serif",
+  "handDrawnSeed": 4242,
   "flowchart": {
     "curve": "basis",
     "htmlLabels": true,

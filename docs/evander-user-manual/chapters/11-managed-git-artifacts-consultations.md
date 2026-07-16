@@ -1,10 +1,16 @@
 # 11. Managed Git, Artifacts, and Code Consultations
 
-> **At a glance.** Evander moves code with Git, moves result files through artifact stores, and answers bounded repository questions with disposable consultations. These are three different data planes. Managed Git preserves commit identity and controls ref publication. Published artifacts preserve immutable file bundles. A code consultation pins one managed commit, gives a short-lived worker read-only access to it, accepts one structured answer, and then removes the worker. Host paths are private implementation details in all three flows.
+> **At a glance.** Source code, produced files, and a quick question about a repository are different kinds of things, so Evander moves them in different ways. Git carries exact versions of code; artifact storage carries durable result files; a consultation gives a temporary reader one bounded question. Choosing the right route keeps the result traceable without exposing arbitrary folders on the host.
 
-## The mental model: source, output, and inquiry
+## Three kinds of movement
 
-Use the narrowest transport that matches the thing being moved:
+It helps to begin with the thing being moved:
+
+- **Source code** belongs in managed Git. Git gives Evander an exact commit to review and publish.
+- **Reports, bundles, and other produced files** belong in artifact storage. Publishing makes one immutable archive; an artifact space can organize versions without rewriting old archives.
+- **A bounded question about code** belongs in a code consultation. Evander pins one repository snapshot, gives a temporary worker read-only access, accepts one structured answer, and cleans the worker up.
+
+The matching identities are:
 
 | Need | Correct surface | Durable identity |
 |---|---|---|
@@ -15,11 +21,71 @@ Use the narrowest transport that matches the thing being moved:
 
 A host checkout path is not a public repository identity. `/artifacts` is not a Git remote. An artifact key is not a mutable “latest” file. A consultation is not a persistent Team member. Keeping those distinctions sharp prevents a large class of provenance and cleanup errors.
 
+These are three separate data planes, and host paths remain private implementation details in all three flows.
+
 ![Managed Git carries a session-owned agent ref through an exact-SHA host pin, review, and lease-protected upstream publication.](../../assets/evander-user-manual/diagrams/08-managed-git.svg)
+
+Read the diagram from left to right: the agent can propose a commit in its own area, but the host separately pins the exact version, reviews it, and publishes it under a fresh check of the destination.
 
 <p class="figure-caption">Figure 11.1 — Ref ownership and exact-SHA pinning keep guest work, host review, and canonical publication as separate authority transitions.</p>
 
-## Managed repository identity and trust scope
+## One change, three routes
+
+For the Northstar Platform telemetry-retry change:
+
+1. The implementation session clones `mission-control` through its `managed_repo_id` and pushes only to the branch area assigned to that session.
+2. The workflow records and pins the exact commit produced by that push. Review and release use that commit, not merely the latest version under a movable branch name.
+3. The session may stage a test report under `/artifacts`. Publishing it under a key such as the following creates one immutable archive:
+
+   ```text
+   northstar-platform/mission-control/telemetry-retry/dispatch-8/test-report
+   ```
+
+4. If another agent needs one answer about that exact source snapshot, a code consultation can read the pinned commit without becoming a permanent Team role or receiving write access.
+
+A newer report gets a new artifact key. A later code change gets a new commit. Keeping those identities distinct makes it possible to say precisely what was reviewed, what file bundle was retained, and which snapshot supported an answer.
+
+## What an operator may notice
+
+| What you see | What it usually tells you | Useful information to capture |
+|---|---|---|
+| A branch has moved, but review still shows an earlier commit | Evander pinned the exact submitted SHA instead of silently following the branch. | Managed repository, session, agent ref, and expected/reviewed SHA |
+| Publication stops after the destination changes | The destination lease prevented stale automation from overwriting newer upstream work. | Managed repository, destination ref, approved SHA, and visible lease error |
+| Publishing the same artifact key fails | Published keys are immutable; the original archive remains unchanged. | Artifact key, source session, intended new key, and error |
+| An artifact space edit reports a conflict | Another writer changed the space revision first. | Space path, logical artifact ID, expected/current revision, and intended change |
+| A consultation remains queued | The directory/profile may be at capacity, or the request may be waiting within its deadline. | Consultation ID, directory/profile, status, deadline, and source session |
+| A consultation ends but cleanup is incomplete | Evander retains the terminal record and does not release capacity prematurely. | Consultation ID, worker session/job, cleanup status, and cleanup error |
+
+## Reading common failures
+
+The safe outcome is often a refusal rather than an automatic recovery. That refusal preserves the exact source, archive, or snapshot the workflow intended to use.
+
+| Failure | Safe outcome |
+|---|---|
+| Managed source ref moves before promotion | Promotion returns `source_ref_moved`; no newer SHA is substituted. |
+| Upstream destination changes before publication | The explicit lease fails; no blind overwrite occurs. |
+| Merge conflict in an operation worktree | The operation fails and cleans up; Evander does not auto-resolve agent code. |
+| Guest pushes outside its namespace | The forced SSH command rejects the update. |
+| Duplicate published artifact key | Publication fails; the existing artifact remains unchanged. |
+| Unsafe artifact path, symlink, or archive member | Read/stage/import rejects it instead of escaping the artifact root. |
+| Artifact-space revision is stale | Mutation returns a revision conflict; reload and reapply intentionally. |
+| Consultation exceeds capacity | It remains queued until capacity is released or its deadline expires. |
+| Consultation result cites invalid lines/path | Result submission fails validation; the snapshot remains authoritative. |
+| Consultation worker cleanup fails | The terminal record is retained and capacity is not released prematurely. |
+
+## Troubleshooting: what to hand to an administrator
+
+Begin with the kind of object involved and its durable identity:
+
+1. For source code, record the directory, `managed_repo_id`, session ID, relevant ref, and exact commit SHA.
+2. For a published file bundle, record the artifact key, source session, publication status, and archive SHA-256 if shown. For an artifact-space conflict, also record the space path and revision.
+3. For a code consultation, record the consultation ID, source session, pinned commit, status, deadline, and cleanup state.
+4. Copy the exact refusal or error and note the last successful stage.
+5. Give those details to an Evander administrator. Do not move branch labels to “match,” overwrite an artifact, delete a retained cleanup record, or manually release a consultation snapshot or capacity slot.
+
+The remainder of this chapter is managed-Git, artifact, consultation, and administrator reference material.
+
+## Administrator reference: managed repository identity and trust scope
 
 Evander keeps one host-owned bare repository for each canonical upstream *within an owning directory trust boundary*. The registry is `runtime/managed-git-repositories.json`; bare repositories live below `runtime/managed-git/`. Consumers address a repository by a deterministic ID shaped as `mr_` plus 20 hexadecimal characters.
 
@@ -34,7 +100,7 @@ Directory inheritance matters:
 
 The registry contains canonical identity, provider, display name, default branch, refresh source, host commit identity, internal repository location, timestamps, and active bindings. It must not contain provider credentials or temporary worktree paths.
 
-## Ref ownership: one namespace, one writer
+## Administrator reference: ref ownership
 
 The bare repository is a controlled exchange, not a shared free-for-all.
 
@@ -58,13 +124,13 @@ Guest clones include three helpers:
 
 The bare repository's post-receive hook only enqueues a structured trigger event. It never receives an upstream token and never publishes to the canonical remote.
 
-## Pinned promotion and publication
+## Administrator reference: pinned promotion and publication
 
 A `trigger:git:push` event names the managed repository, changed ref, old and new SHA, session, notes ref, default branch, and derived review branch. Downstream logic must carry the event's exact new SHA.
 
 Promotion checks that the source agent ref still equals `expected_commit_sha`, then pins that object under a host-only operation ref in the same transaction. If the agent has pushed again, the event becomes `source_ref_moved`; Evander does not silently review the newer commit. Review and Team target updates use compare-and-swap.
 
-Publication is equally strict. When Northstar Platform's release agent Riley publishes the reviewed change:
+Publication is equally strict. When Northstar Platform's release agent publishes the reviewed change:
 
 1. Fetch the upstream destination into an operation-local ref.
 2. Verify that destination is an ancestor of the approved SHA.
@@ -85,7 +151,7 @@ It starts from a pinned host-only ref. Hooks, LFS smudge, submodule initializati
 
 The worktree is scratch space, not an agent sandbox. Never execute agent-authored builds or tests there. Success, failure, cancellation, and normal termination remove the worktree, prune its registration, and compare-and-swap delete its operation ref. Startup and periodic maintenance reconcile abandoned worktrees only when their lock is free and they are older than the configured stale threshold, one hour by default.
 
-## Artifact lifecycle
+## Administrator reference: artifact lifecycle
 
 ### Session artifacts
 
@@ -99,7 +165,7 @@ Session artifacts are working output. They are not durable publication until a w
 
 Metadata includes the key, storage ID, archive filename and format, byte count, SHA-256, publication time, source session, execution backend, source file count/bytes, and caller metadata. The storage ID is derived from the key, while the recorded SHA-256 verifies the actual archive bytes. Import copies the stored archive into a target session and extracts only safe archive members below its artifact root.
 
-For Imani's telemetry retry work, Northstar Platform might publish:
+For the telemetry retry work, Northstar Platform might publish:
 
 ```text
 northstar-platform/mission-control/telemetry-retry/dispatch-8/test-report
@@ -115,7 +181,7 @@ Space state in `runtime/artifact-spaces.json` carries a revision. Mutations can 
 
 The split is intentional: the artifact blob remains immutable, while the space can answer “what is the latest accepted `mission-control` release report?” without changing any old archive.
 
-## Request-scoped codebase consultations
+## Administrator reference: request-scoped codebase consultations
 
 Use `consult_codebase` when an agent needs a bounded answer about a repository snapshot but does not need to assign work to a persistent Team agent. The caller supplies a `managed_repo_id`, a question, and either a source ref, exact SHA, or a repository with a default branch. Evander resolves and records one exact commit before queueing the work.
 
@@ -134,22 +200,7 @@ Queue time counts against the consultation deadline. `max_concurrency` is per di
 
 The result token is bound to the worker session, stored only as a hash in the database, and consumed once. The signing secret comes from the host environment named by `agent_consultation_token_secret_env`. Never place the secret value in provider configuration.
 
-## Failure behavior
-
-| Failure | Safe outcome |
-|---|---|
-| Managed source ref moves before promotion | Promotion returns `source_ref_moved`; no newer SHA is substituted. |
-| Upstream destination changes before publication | The explicit lease fails; no blind overwrite occurs. |
-| Merge conflict in an operation worktree | The operation fails and cleans up; Evander does not auto-resolve agent code. |
-| Guest pushes outside its namespace | The forced SSH command rejects the update. |
-| Duplicate published artifact key | Publication fails; the existing artifact remains unchanged. |
-| Unsafe artifact path, symlink, or archive member | Read/stage/import rejects it instead of escaping the artifact root. |
-| Artifact-space revision is stale | Mutation returns a revision conflict; reload and reapply intentionally. |
-| Consultation exceeds capacity | It remains queued until capacity is released or its deadline expires. |
-| Consultation result cites invalid lines/path | Result submission fails validation; the snapshot remains authoritative. |
-| Consultation worker cleanup fails | The terminal record is retained and capacity is not released prematurely. |
-
-## Practical runbook
+## Administrator runbook
 
 Register and inspect the Northstar Platform `mission-control` repository:
 

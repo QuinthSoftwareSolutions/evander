@@ -1,6 +1,23 @@
 # 30. Glossary
 
-> **At a glance.** Evander uses ordinary words—session, event, team, release—with precise technical meanings. This glossary defines those meanings for the current system and points out distinctions that prevent operational mistakes.
+> **At a glance.** Evander gives familiar words such as “session,” “event,” “team,” and “release” specific meanings. Use this glossary whenever a term feels more precise than ordinary conversation or when two nearby concepts seem easy to confuse. Each definition describes the current system rather than a historical or generic software meaning.
+
+## How to use this glossary
+
+Look up the word exactly as it appears in Admin Web, a status message, a workflow, or an administrator's explanation. A definition often says both what the thing **is** and what nearby thing it **is not**; that distinction is part of the meaning, not a qualification to skip.
+
+Several common chains are easier to remember together:
+
+| If these terms seem similar… | Keep this distinction in mind |
+|---|---|
+| event, trigger, workflow, run | An event is a saved fact; a trigger decides whether it enters a workflow; the workflow is the prepared process; a run is one recorded use of that process. |
+| session, sandbox, agent | A session is the bounded job identity; the sandbox is its temporary execution environment; the agent is the execution identity doing the work. |
+| task, dispatch, lease | A task describes planned Team work; a dispatch asks for execution; a lease records who currently owns that execution. |
+| capability, network route, approval | Permission, reachability, and a person's decision are separate checks. Having one does not imply the others. |
+| branch, commit SHA, release | A branch is a movable label; a commit SHA identifies one exact code version; a release publishes the approved version under controlled rules. |
+| canonical state, projection | Canonical state is the authoritative saved record; a projection is a useful view derived from it. |
+
+For a broad explanation, use the Subject Index to find the relevant chapter. The **Source trail** below also points to the chapter ranges and implementation references behind these definitions.
 
 ## A
 
@@ -21,6 +38,9 @@ Evander's supported operator GUI for health, execution, approvals, audit, workfl
 
 **Agent**<br>
 An execution identity capable of working inside an isolated session. In Team, an agent also has membership, responsibilities, model selection, availability, and potentially a reporting position.
+
+**Agent harness**<br>
+The program that coordinates an agent's work by sending prompts and context to the configured model, presenting tools, and applying model responses in the working session.
 
 **Agent Mail**<br>
 The Team UI's sent and received projections over the durable Team inbox collection. It is not a second independent mail transport or a pair of unrelated databases.
@@ -82,6 +102,12 @@ Durable provider progress used to avoid rereading or replaying external events. 
 
 ## D
 
+**Default-deny egress**<br>
+A network posture in which outbound traffic is blocked unless a specific route or destination has been allowed.
+
+**Defense in depth**<br>
+The use of several independent controls so that bypassing or misconfiguring one does not remove the others.
+
 **Deliverable**<br>
 A Team submission representing completed work, usually tied to a task and containing a Git candidate or published artifact references plus a summary.
 
@@ -117,6 +143,11 @@ The rule that Git publication must use the precise commit that passed review and
 **Execution backend**<br>
 The abstraction that creates, resumes, inspects, and terminates isolated execution. Current choices are `libvirt_vm` and the additive `container_worker_vm`.
 
+## F
+
+**Fail closed**<br>
+To deny an action when a check encounters an error or cannot reach a safe decision, rather than treating uncertainty as permission.
+
 ## G
 
 **Gate**<br>
@@ -144,6 +175,9 @@ A session-scoped relay for explicit external HTTP targets. It forwards guest-man
 
 ## I
 
+**Idempotency**<br>
+The property that repeating an operation has the same intended effect as performing it once. It depends on stable identity and an implementation that honors the retry contract.
+
 **Idempotency key**<br>
 A stable identity used to recognize that an event/effect/command has already been applied. It permits safe retry only when the operation's contract actually honors it.
 
@@ -160,6 +194,9 @@ A host-local typed event used to connect commands, schedules, Team transitions, 
 
 **Lease**<br>
 A time- or ownership-bounded claim that prevents conflicting workers or actors from safely performing the same mutable operation. Team work and Git release publication both use lease concepts, at different layers.
+
+**Least privilege**<br>
+The rule that each job receives only the access needed for its current purpose and duration.
 
 **libvirt VM backend**<br>
 The default execution backend using disposable overlays and libvirt domains on the control-plane host.
@@ -212,6 +249,9 @@ A read-oriented representation derived from canonical state, such as the Team Wo
 **Project**<br>
 A Team scope organizing goals, members, leads, tasks, plans, deliverables, and release activity.
 
+**Provenance**<br>
+Evidence of a result's origin and history, including the event, session, code version, decisions, and actions that produced it.
+
 **Provider**<br>
 A registered implementation that supplies triggers, gates, queries, effects, schemas, editor metadata, or other runtime behavior to the orchestration catalog.
 
@@ -248,6 +288,9 @@ A durable workflow evaluation/execution instance tied to an event and pack revis
 
 ## S
 
+**Sandbox**<br>
+The bounded execution environment used for an agent session: a disposable VM or a container on a worker VM, not an unrestricted host workspace.
+
 **Scheduled wake**<br>
 A durable request to resume an eligible session at/after a time. The dedicated wake worker also respects disabled-agent and terminal-session state.
 
@@ -279,6 +322,9 @@ An organizational domain object containing agents, responsibilities, roles, lead
 
 **Team Add-on**<br>
 The `evander_team_addon` package whose manifest ID is `team-addon` (its Python entry-point name is `team`). It contributes Team state, commands, providers, MCP tools, and an Admin Web area while preserving the core/add-on boundary.
+
+**TOCTOU race**<br>
+A time-of-check/time-of-use race: state validated during one step changes before a later action uses it.
 
 **Tool class**<br>
 A Team MCP exposure class. Current classes are ordinary, chat, ephemeral-worker, governance, and read; the active wake/session receives only the classes appropriate to its role and dispatch.

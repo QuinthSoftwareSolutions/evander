@@ -1,16 +1,31 @@
 # 17. Enabling and Operating the Team Add-on
 
-> **At a glance.** Enable the bundled Team Add-on from Admin Web's Add-ons page, allow Evander to materialize its registered runtime pack, restart the listed services, and verify the UI, API, MCP, and workflow catalogs. Day-to-day Team operation happens in fourteen add-on-owned views. Ordinary domain edits are revision-checked, so an operator must resolve concurrent changes rather than overwrite them; append-only Chat uses a specialized current-conversation contract.
+> **At a glance.** The Team Add-on is enabled from Admin Web and becomes part of the same Evander installation after its services are restarted. Once enabled, its views let operators inspect teams, projects, tasks, conversations, reviews, releases, and governance in one place. This chapter covers both the initial readiness check and the everyday habits that prevent one operator from overwriting another's recent change.
+
+## What enabling Team changes
+
+Enabling Team adds a coordinated set of screens and background capabilities to the existing Evander installation. After the required services restart, operators can create the organization, connect persistent agents to existing Evander sessions, follow work, and handle reviews and releases. The add-on does not create those sessions, repositories, or execution environments on its own.
+
+There are two useful readiness questions:
+
+1. **Can people open and use the Team views?** This checks the add-on UI and API.
+2. **Can Team work actually run?** This also needs the gateway, workflows, sessions, and whichever integrations the chosen process uses.
+
+A working screen with stalled background work is therefore possible and diagnosable. It does not mean the enablement setting was ignored.
 
 ## Before enabling it
 
-The bundled Python package must include <code>evander_team_addon</code>, its <code>addon.json</code>, and the packaged UI assets. The deployment also needs the core capabilities used by the workflows you intend to run:
+An operator should know which Team features the installation intends to use and who can restart the affected Evander services. Features such as managed Git, semantic memory, or external communication can be added when needed; they are not prerequisites for every Team.
 
-- persistent Evander sessions for registered Team agents;
-- a working gateway for Team MCP tools;
-- trigger and effect orchestrators for wakes and asynchronous effects;
-- a configured execution backend for persistent and ephemeral work;
-- managed Git, artifact publication, communications, model relays, and Qdrant only where the chosen Team features need them.
+> <span class="sidebar-kicker">For administrators</span> **Package and service prerequisites**
+>
+> The bundled Python package must include <code>evander_team_addon</code>, its <code>addon.json</code>, and the packaged UI assets. The deployment also needs the core capabilities used by the workflows you intend to run:
+>
+> - persistent Evander sessions for registered Team agents;
+> - a working gateway for Team MCP tools;
+> - trigger and effect orchestrators for wakes and asynchronous effects;
+> - a configured execution backend for persistent and ephemeral work;
+> - managed Git, artifact publication, communications, model relays, and Qdrant only where the chosen Team features need them.
 
 The add-on is disabled by default. Enabling it is a host configuration change, not merely a browser preference.
 
@@ -24,11 +39,15 @@ The supported operator path is:
 4. Let the Add-ons service materialize the registered <code>team-runtime.v1</code> definition into operator-owned workflow configuration.
 5. Restart every service listed by the page, normally including Admin Web, the trigger orchestrator, the effect orchestrator, and the gateway.
 
-Equivalent configuration sets <code>addon_loader.enabled_addon_ids</code> to include <code>team-addon</code>. Explicit module and Python entry-point loading remain compatibility mechanisms, but the Add-ons page is the normal operational surface because it coordinates host and worker configuration and reports the restart boundary.
+If the operator cannot restart host services, record the saved configuration revision and the restart list shown by Admin Web, then hand those to an administrator. Do not expect the new screens, tools, and workflow providers to appear consistently until that restart boundary has been completed.
 
-When the packaged runtime definition changes, use **Refresh runtime pack** on the same page or its equivalent revision-checked Admin API action. A live workflow pack is operator state. Never copy over its JSON file, rewrite it from a checkout, or race another editor with a stale document.
+> <span class="sidebar-kicker">Deeper detail</span> **Configuration and runtime-pack ownership**
+>
+> Equivalent configuration sets <code>addon_loader.enabled_addon_ids</code> to include <code>team-addon</code>. Explicit module and Python entry-point loading remain compatibility mechanisms, but the Add-ons page is the normal operational surface because it coordinates host and worker configuration and reports the restart boundary.
+>
+> When the packaged runtime definition changes, use **Refresh runtime pack** on the same page or its equivalent revision-checked Admin API action. A live workflow pack is operator state. Never copy over its JSON file, rewrite it from a checkout, or race another editor with a stale document.
 
-## Verify the complete registration
+## Administrator check: verify the complete registration
 
 After restart, verify all four planes:
 
@@ -42,6 +61,8 @@ After restart, verify all four planes:
 A <code>404</code> from all Team routes usually indicates loading or restart state. An empty Team view with working routes usually indicates valid but empty Team state. Those are different failures.
 
 ## The fourteen operator views
+
+An operator does not need to learn all fourteen views at once. **Workspace** is the broad starting point; **Operations** answers “why is an agent waiting?”; **Delivery** follows evidence, reviews, and releases; and **Teams**, **Projects**, **Task board**, and **Cases** hold the main organizational and work records. The remaining views support communication, memory, governance, planning, history, and reporting structure.
 
 The add-on UI currently has these top-level views:
 
@@ -89,27 +110,39 @@ After materialization:
 4. Inspect Imani's task in **Task board** and any intake case in **Cases**.
 5. Leave release policy and managed Git unset until the corresponding core resources and verification design are ready.
 
-## Optimistic writes and scoped reads
+## When two changes happen at once
 
-The canonical Team state has a monotonically advancing revision. Ordinary domain edit routes require <code>expected_revision</code>:
+Suppose one operator changes Imani's task while another changes the same Team from a different screen. Team does not silently let the last browser overwrite the first operator's work. It detects that the state has advanced and asks the later editor to reload, compare, and deliberately apply the intended change to the current record.
 
-- missing or null revision returns <code>400</code>;
-- a stale revision returns <code>409</code>;
-- a valid mutation commits the complete validated state and advances the revision.
+The practical response is straightforward:
 
-The UI does not need to reload the full state after every successful write. Endpoints return scoped views and revision invalidations. A state stream can announce that a newer revision exists without embedding all changed records.
+1. Preserve the intended edit.
+2. Reload the affected record.
+3. Compare what changed while it was open.
+4. Merge or reapply the intent deliberately.
+5. Save again and verify the result.
 
-Some edit flows support a narrowly defined conflict policy, <code>target_unchanged</code>, with a base resource token. That allows a mutation to rebase only when the particular target still matches what the operator read; creation can rebase only when the explicit ID is still absent. It is not a general “last writer wins” switch.
-
-Append-only Chat send is the important exception. It validates the current conversation and agent and deliberately does not reject a message merely because an unrelated global Team revision advanced. Conversation ownership, signed-in operator identity, agent eligibility, and the asynchronous dispatch rules still apply.
-
-When a <code>409</code> occurs:
-
-1. Preserve the operator's intended change.
-2. Reload the affected record and current revision.
-3. Compare the concurrent change field by field.
-4. Reapply or deliberately merge the intent.
-5. Submit against the new revision and verify the returned view.
+> <span class="sidebar-kicker">Deeper detail</span> **Revisions, scoped reads, and conflict policy**
+>
+> The canonical Team state has a monotonically advancing revision. Ordinary domain edit routes require <code>expected_revision</code>:
+>
+> - missing or null revision returns <code>400</code>;
+> - a stale revision returns <code>409</code>;
+> - a valid mutation commits the complete validated state and advances the revision.
+>
+> The UI does not need to reload the full state after every successful write. Endpoints return scoped views and revision invalidations. A state stream can announce that a newer revision exists without embedding all changed records.
+>
+> Some edit flows support a narrowly defined conflict policy, <code>target_unchanged</code>, with a base resource token. That allows a mutation to rebase only when the particular target still matches what the operator read; creation can rebase only when the explicit ID is still absent. It is not a general “last writer wins” switch.
+>
+> Append-only Chat send is the important exception. It validates the current conversation and agent and deliberately does not reject a message merely because an unrelated global Team revision advanced. Conversation ownership, signed-in operator identity, agent eligibility, and the asynchronous dispatch rules still apply.
+>
+> When a <code>409</code> occurs:
+>
+> 1. Preserve the operator's intended change.
+> 2. Reload the affected record and current revision.
+> 3. Compare the concurrent change field by field.
+> 4. Reapply or deliberately merge the intent.
+> 5. Submit against the new revision and verify the returned view.
 
 Never solve a conflict by directly replacing a live pack file or Team database.
 
@@ -121,7 +154,9 @@ Optional avatars are UI metadata. Uploaded PNG, JPEG, or WebP images are normali
 
 Browser voice calls use OpenAI Realtime with a projection of the selected agent's Team context. They are not DIDWW, Asterisk, or SIP calls. Core voice-session records live outside the Team database; a call started from Chat can be projected back into that conversation as a system message.
 
-## Common setup failures
+## Troubleshooting
+
+Use the symptom to distinguish registration from empty state and foreground UI from background runtime. Capture the enabled configuration revision, the selected Team or project, the failing page or action, and any visible run or session ID before asking for host-level help.
 
 | Symptom | Cause to test first | Recovery |
 |---|---|---|
@@ -132,7 +167,11 @@ Browser voice calls use OpenAI Realtime with a projection of the selected agent'
 | Repeated <code>409</code> writes | Another operator or runtime command is advancing Team state. | Reload narrowly, merge intentionally, and retry once with the new revision. |
 | An enabled add-on has no runtime behavior | The registered pack is disabled, invalid, or its orchestrators are stopped. | Inspect the live workflow document, validation report, run history, and service state. |
 
-## Practical runbook
+## Operator checklist
+
+After enablement, an operator can confirm that **Workspace** loads, create or preview a Team, inspect its reporting structure, and make one harmless revision-checked edit. If agents should run, also confirm that a wake appears in **Operations** and that the expected Team tools and workflow nodes are available. A failure in that second group is useful evidence for an administrator even when the UI itself works.
+
+## Administrator runbook
 
 ### Enable
 

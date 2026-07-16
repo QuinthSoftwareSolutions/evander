@@ -25,8 +25,12 @@ flowchart TB
     services --> systems
     vm -->|allowlisted host ports only| services
     container -->|allowlisted host ports only| services
-    vm -. no general internet .-> outside
-    container -. no general internet .-> outside
+    blocked{{"✕<br/>General internet blocked"}}
+    vm --- blocked
+    container --- blocked
+    blocked ~~~ outside
 
-    classDef deny stroke:#a33d3d,stroke-width:2px,stroke-dasharray:5 5;
-    class vm,container deny;
+    classDef execution stroke:#a33d3d,stroke-width:2px,stroke-dasharray:5 5;
+    classDef blocked fill:#fff3f3,stroke:#a33d3d,color:#7f1d1d,stroke-width:3px;
+    class vm,container execution;
+    class blocked blocked;

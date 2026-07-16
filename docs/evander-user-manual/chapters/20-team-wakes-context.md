@@ -1,24 +1,40 @@
 # 20. Wakes, Leases, Context Rotation, and Stand-down
 
-> **At a glance.** A Team wake is a leased dispatch of already-eligible work to one persistent agent session. Eligibility, immediacy, and safety are separate decisions: normal/high inbox can wake even without a requested reply; low-priority mail becomes its own wake reason only when it requests a response, and is then batched; active leases, busy sessions, stand-downs, cost caps, and no-progress controls still prevent unsafe or wasteful dispatch. Completion is finalized from durable command activity.
+> **At a glance.** A wake is Evander's decision to bring a persistent agent back to ready work; it is not the automatic consequence of every message or scheduled check. Before waking an agent, Team considers whether the work is eligible, whether another session is already busy with it, and whether safety or cost limits say to wait. This chapter explains that decision and what happens when an agent should pause, rotate context, or stand down.
 
-## The wake loop
+## What an operator needs to know
 
-The registered Team runtime pack runs a periodic evaluation, by default every fifteen minutes. Its wake effect asks the Team runtime to lease due agents. The current service defaults are:
+Most wake questions reduce to three checks:
 
-| Setting | Default |
-|---|---|
-| Maximum leases per evaluation | 10 |
-| Dispatch lease | 900 seconds |
-| Normal wake interval | 900 seconds |
-| No-progress threshold | 3 |
-| Low-priority batch threshold | 4 evaluation cycles |
+1. **Is there work for this agent that can advance now?** An open task may still be waiting on a dependency or reviewer, while a normal-priority message may be ready immediately.
+2. **Is the agent allowed and available to resume?** A live lease, busy session, stand-down, cost cap, or repeated no-progress cycle can delay otherwise ready work.
+3. **What should happen to conversational context?** The agent may continue its current context, rotate after becoming idle, or start an eligible wake with a fresh context according to policy.
 
-These are provider parameters and may be configured in the live workflow pack. Treat that revision-checked live pack as operational truth.
+A wake is therefore a scheduling decision, not a message receipt. The Operations view brings the reasons and blockers together; the exact timing and lease mechanics below explain what that view reports.
 
-The wake effect prepares the persistent session, optionally prepares the project's managed repository checkout, constructs a dynamic Team context, and resumes the agent. Static Team guidance is maintained in a managed section of the guest's <code>AGENTS.md</code>; repeated wakes do not need to restate every rule.
+## When Team wakes an agent
+
+Team periodically looks for eligible persistent agents, and important events can request a targeted evaluation sooner. When an agent is selected, Team prepares the session, relevant repository, and a current summary of the work before resuming it.
+
+> <span class="sidebar-kicker">Technical sidebar</span> **The wake loop and live defaults**
+>
+> The registered Team runtime pack runs a periodic evaluation, by default every fifteen minutes. Its wake effect asks the Team runtime to lease due agents. The current service defaults are:
+>
+> | Setting | Default |
+> |---|---|
+> | Maximum leases per evaluation | 10 |
+> | Dispatch lease | 900 seconds |
+> | Normal wake interval | 900 seconds |
+> | No-progress threshold | 3 |
+> | Low-priority batch threshold | 4 evaluation cycles |
+>
+> These are provider parameters and may be configured in the live workflow pack. Treat that revision-checked live pack as operational truth.
+>
+> The wake effect prepares the persistent session, optionally prepares the project's managed repository checkout, constructs a dynamic Team context, and resumes the agent. Static Team guidance is maintained in a managed section of the guest's <code>AGENTS.md</code>; repeated wakes do not need to restate every rule.
 
 ## Eligibility is not just “has an open task”
+
+For example, Imani should not wake merely to stare at a deliverable that Rowan is reviewing. Rowan may be the person whose work can advance. If the review is rejected, the resulting rework notice and task state can make Imani eligible again.
 
 An active persistent agent can be eligible because it has:
 
@@ -43,6 +59,8 @@ The manager fallback is last, not first. If a Team has open work but no member o
 
 ![Team agent wake decision flow](../../assets/evander-user-manual/diagrams/13-team-wake-decision.svg)
 
+The narrowing path is intentional: having something pending is only the first test, and each later check can safely defer the wake.
+
 <p class="figure-caption">Figure 20.1 — Eligibility is filtered through readiness, priority, batching, and runtime safety guards.</p>
 
 ## Inbox wake semantics
@@ -66,7 +84,9 @@ Normal/high inbox creation emits a debounced <code>team.agent.wake_requested</co
 
 Low-priority items accumulate evaluation cycles and are batched after the configured threshold unless another reason wakes the agent earlier. The resulting context includes the pending inbox, so a low/no-reply progress report can be read during useful work without causing a conversational ping-pong.
 
-## Leases and dispatch identity
+## Deeper detail: leases and dispatch identity
+
+A lease is Team's temporary claim that one dispatch is responsible for this persistent agent's current work. It prevents a second scheduler pass from starting another Team dispatch at the same time, and it gives later commands and completion events an exact job identity to match.
 
 Leasing assigns:
 
@@ -123,7 +143,7 @@ Use stand-down for a real operational reason: incident containment, unsafe outpu
 7. If Rowan rejects it, the normal-priority, response-requested rework notice wakes Imani for a successor deliverable.
 8. If an operator stands down Imani during investigation, new commands fail and no new lease is granted until authorized revocation.
 
-## Runtime and workflow surfaces
+## Deeper detail: runtime and workflow surfaces
 
 The bundled pack coordinates:
 
@@ -137,7 +157,9 @@ The primary runtime provider is <code>effect:team:wake-due-agents</code>. Operat
 
 The Operations view and Team runtime-attention reads expose wake due state, leases, stand-down, context policy, no-progress counters, and downstream failures. Core session logs remain necessary for startup and provider failures.
 
-## Failure patterns
+## Troubleshooting
+
+Begin in **Operations** with the agent's wake reason, runtime attention, active lease, stand-down, and context policy. Then compare the task, review, inbox, or action feedback that should have made the agent eligible. The table below helps distinguish expected scheduling from a stuck workflow.
 
 | Symptom | What to check |
 |---|---|
@@ -150,7 +172,13 @@ The Operations view and Team runtime-attention reads expose wake due state, leas
 | Revocation appears ineffective | Another operator or inherited superior hold may remain active. Inspect the effective stand-down list. |
 | Manager wakes without owned tasks | Manager fallback found open Team work with no member lease; inspect the supplied routing summary. |
 
-## Practical runbook
+## Operator handoff
+
+Capture the Team, agent, core session, last wake reason and time, current task or review, visible inbox priority and reply intent, effective stand-down, and any dispatch or workflow-run ID. For “did not wake,” state the specific work you expected to be eligible. For “woke unexpectedly,” record the reason shown in Operations rather than inferring it from the latest message alone.
+
+Do not clear a lease, no-progress counter, or stand-down directly. If the visible records do not explain the decision, give those identifiers and the last known Team revision to an administrator.
+
+## Administrator runbook
 
 For “why did this agent wake?”:
 

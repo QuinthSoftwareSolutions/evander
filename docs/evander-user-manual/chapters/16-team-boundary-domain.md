@@ -1,10 +1,20 @@
 # 16. Team Add-on Boundary and Domain Model
 
-> **At a glance.** The Team Add-on is an optional Evander domain module for durable organizations, projects, work, communication, review, release, governance, and memory. Evander core still owns sessions, execution backends, workflows, managed Git, communications, artifacts, policy, and model usage. The add-on composes those capabilities through registered APIs, MCP tools, providers, and a workflow pack; its canonical business state lives in <code>runtime/addons/team-addon/state.db</code>.
+> **At a glance.** Core Evander knows how to run bounded agent work safely. The Team Add-on adds the organizational story around that work: who belongs to a team, what a project is trying to achieve, who owns a task, who reviews it, and how a release is governed. This chapter draws the line between those responsibilities so Team coordination does not become a second, competing execution system.
 
-## A second control plane, not a second product
+## What Team adds—and what it leaves alone
 
-Evander core answers questions such as “which isolated session should run?”, “which tools may it use?”, and “which pinned commit may be published?” The Team Add-on answers a different set:
+Core Evander is responsible for running work safely. The Team Add-on is responsible for organizing that work. Keeping those jobs separate means an operator can change who owns a task without accidentally changing sandbox policy, and can change an execution backend without rewriting the Team's reporting structure.
+
+Team is optional: it is a second control plane inside Evander, not a second product or a competing execution system. Core continues to own sessions, execution backends, workflows, managed Git, communications, artifacts, policy, and model usage.
+
+For the Northstar example, the distinction looks like this:
+
+- Team can say that Imani owns the telemetry-retry task; core Evander decides which isolated session may perform it.
+- Team can say that Rowan must review the result; core Evander records and checks the exact commit Rowan reviewed.
+- Team can say that Riley has release authority; core Evander still enforces the Git lease and publication checks.
+
+Evander core therefore answers questions such as “which isolated session should run?”, “which tools may it use?”, and “which pinned commit may be published?” The Team Add-on answers a different set:
 
 - Which persistent agent is the manager, lead, implementer, or reviewer?
 - Which project, case, task, deliverable, review, or release does an action belong to?
@@ -13,15 +23,17 @@ Evander core answers questions such as “which isolated session should run?”,
 
 The distinction matters operationally. A Team agent refers to a core Evander session, but it is not the session. A Team project may refer to a core managed repository, but it does not own the upstream repository definition. A Team release requests core Git effects, but it does not bypass their leases and compare-and-swap checks.
 
-The add-on is loaded through Evander's generic add-on mechanism. It contributes:
-
-- a self-contained Admin UI at <code>/addons/team-addon/</code>;
-- an Admin API below <code>/api/addons/team-addon/</code>;
-- Team-owned MCP read and command tools;
-- trigger, query, and effect providers;
-- the registered <code>team-runtime.v1</code> workflow-pack definition.
-
-No Team-specific model has to be embedded in core Admin Web or the core gateway. Disabling the add-on removes those registered surfaces; it does not turn Team records into core records.
+> <span class="sidebar-kicker">Technical sidebar</span> **How the add-on joins Evander**
+>
+> The add-on is loaded through Evander's generic add-on mechanism. It contributes:
+>
+> - a self-contained Admin UI at <code>/addons/team-addon/</code>;
+> - an Admin API below <code>/api/addons/team-addon/</code>;
+> - Team-owned MCP read and command tools;
+> - trigger, query, and effect providers;
+> - the registered <code>team-runtime.v1</code> workflow-pack definition.
+>
+> No Team-specific model has to be embedded in core Admin Web or the core gateway. Disabling the add-on removes those registered surfaces; it does not turn Team records into core records.
 
 ![Responsibility boundary between Evander core and the Team Add-on](../../assets/evander-user-manual/diagrams/10-team-boundary.svg)
 
@@ -29,13 +41,19 @@ No Team-specific model has to be embedded in core Admin Web or the core gateway.
 
 ## Canonical and derived state
 
-The canonical Team database is relational SQLite:
+When Team information disagrees between two screens or services, begin with the record that owns the fact. Team roles, projects, tasks, reviews, and releases belong to Team state. Sessions, repositories, workflow runs, artifacts, and model usage remain core Evander records that Team refers to by stable ID.
 
-<code>runtime/addons/team-addon/state.db</code>
+Some convenient views are copies or summaries. They can be refreshed or rebuilt; changing one of them does not change the underlying Team record.
 
-It contains the validated Team domain plus command-support tables for dispatch activity, idempotency, and the durable outbox. The store uses foreign-key enforcement, a busy timeout, write-ahead logging, and serialized write transactions. On the first database initialization only, an old <code>state.json</code> may be imported. That JSON file is migration input, not a live fallback.
+> <span class="sidebar-kicker">Technical sidebar</span> **The canonical Team store**
+>
+> The canonical Team database is relational SQLite:
+>
+> <code>runtime/addons/team-addon/state.db</code>
+>
+> It contains the validated Team domain plus command-support tables for dispatch activity, idempotency, and the durable outbox. The store uses foreign-key enforcement, a busy timeout, write-ahead logging, and serialized write transactions. On the first database initialization only, an old <code>state.json</code> may be imported. That JSON file is migration input, not a live fallback.
 
-Several useful projections are deliberately non-canonical:
+The following useful projections are deliberately non-canonical:
 
 | Projection | Purpose | Rebuild or recovery rule |
 |---|---|---|
@@ -49,7 +67,15 @@ This boundary prevents a common debugging error: changing a session manifest, a 
 
 ## The domain from the outside in
 
-The durable hierarchy is easiest to understand in layers.
+The durable model follows the same questions an operator asks while work moves through a Team:
+
+1. **Who is responsible?** Teams, roles, agents, and reporting lines describe the organization.
+2. **What are they trying to accomplish?** Projects and goals describe the intended outcome.
+3. **What work exists now?** Cases and tasks hold intake and assignable work.
+4. **What proves the work is ready?** Deliverables, reviews, and releases hold evidence and decisions.
+5. **What must survive the next conversation?** Runtime, communication, and memory records preserve continuity.
+
+The exact record types below are useful when reading the UI, API, or later chapters.
 
 ### Organization
 
@@ -96,9 +122,9 @@ Mira is the Team manager and organizational root. Priya leads <code>mission-cont
 
 This example demonstrates why the records stay separate. Mira's Team role, Priya's project leadership, Imani's task ownership, Rowan's assigned review, and Riley's release permission are five independent authorization facts. A friendly title such as “senior engineer” would not safely encode them.
 
-## Model invariants that protect the graph
+## Deeper detail: invariants that protect the graph
 
-The repository validates the complete next state before committing it. Important invariants include:
+An operator normally encounters these rules as a rejected edit with a useful explanation: for example, a task cannot depend on itself through a cycle, and a reviewer cannot be silently borrowed from another project. Underneath that behavior, the repository validates the complete next state before committing it. Important invariants include:
 
 - referenced Teams, projects, roles, agents, tasks, cases, deliverables, and reviews must exist and have compatible scope;
 - an agent attached to a Team has a valid role and reporting relationship; a teamless agent cannot retain Team reporting metadata;
@@ -113,7 +139,7 @@ Task states are <code>pending</code>, <code>in_progress</code>, <code>blocked</c
 
 The project status is recalculated from its goals and work. A project becomes complete only when its goals are accepted and no active work remains. Blocking work can make it blocked; otherwise it remains active. It is not an operator-maintained cosmetic flag.
 
-## Where mutations enter
+## Deeper detail: how writes enter Team state
 
 Three supported write paths share the repository rules:
 
@@ -125,7 +151,9 @@ Templates are a fourth convenience surface, but they materialize the same Team r
 
 Reads are grouped rather than duplicated across every chapter. Operators use the scoped Team UI views and Admin API. Agents use Team list/get tools such as tasks, inbox, cases, deliverables, reviews, releases, projects, agents, runtime attention, identity, and memory search. Workflows use <code>query:team:state</code>, <code>query:team:memory</code>, and <code>query:team:session-routing</code>.
 
-## Failure patterns
+## Troubleshooting
+
+Begin with the owning record and its stable ID. If the Team UI and a core Evander view disagree, do not choose one at random and edit it; decide whether the disputed fact is Team-owned or core-owned, reload the relevant view, and follow the reference between them.
 
 | Symptom | Likely boundary mistake | Correct first move |
 |---|---|---|
@@ -136,7 +164,13 @@ Reads are grouped rather than duplicated across every chapter. Operators use the
 | Legacy JSON changes are ignored | SQLite has already been initialized. | Treat <code>state.db</code> as authoritative; do not replay JSON over it. |
 | A Timeline row is missing an old intermediate value | Timeline was mistaken for an audit ledger. | Use command activity, workflow runs, Git promotion records, and external audit stores appropriate to the event. |
 
-## Practical runbook
+## What to hand to an administrator
+
+From the Team UI, capture the selected Team and project, the affected agent or work-record ID, the current Team revision, and the visible symptom. If the issue crosses into core Evander, also capture the referenced session, managed repository, workflow run, artifact, communication target, or model-usage ID. Say which screen or action produced the discrepancy and whether reloading changed it.
+
+Do not repair a mismatch by editing session metadata, a Qdrant point, generated UI data, or SQLite. Those changes either target a projection or bypass the model rules that keep the records consistent.
+
+## Administrator runbook
 
 For a live deployment:
 

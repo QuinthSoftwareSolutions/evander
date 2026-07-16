@@ -1,10 +1,12 @@
 # 15. Admin Operations, Observability, Backup, and Recovery
 
-> **At a glance.** Admin Web is the supported operator console over the same runtime stores, service managers, workflow registries, and policy engine used by Evander's CLI and gateway. Read views help reconstruct state; mutations remain protected by authentication, directory-scoped permissions, privileged unlock, approvals, and optimistic revision checks. Recovery starts from durable runtime truth—not from what the browser last rendered.
+> **At a glance.** Admin Web is the main place for an operator to understand what Evander is doing and to make supported changes. Its pages are views onto the same live system used by the command line and background services, not a separate copy. When something goes wrong, this chapter shows how to begin with durable evidence, make the smallest safe intervention, and preserve enough context to recover.
 
 ## The mental model: one runtime, several views
 
-Admin Web is not a second control plane. `build_admin_runtime` assembles focused services for sessions, issues/Git, VMs, workers, workflows, reports, approvals/audit, artifacts, configuration, add-ons, skills, capacity, and model usage around one `RuntimeContext`.
+Admin Web, the command line, and the background services are different ways of looking at or acting on the same Evander runtime. A browser page does not contain a separate copy of the truth. If the page and a saved record disagree, the discrepancy is evidence to investigate—not a reason to edit whichever file is easiest to reach.
+
+Think of Admin Web as the supported front desk. It gives an operator a coherent view and safe controls; the durable records, service status, and external provider remain behind it. A green summary means that one check succeeded, not that every later part of a workflow is healthy.
 
 | Surface | Best use | Authority |
 |---|---|---|
@@ -14,11 +16,15 @@ Admin Web is not a second control plane. `build_admin_runtime` assembles focused
 | runtime files/databases | Durable application state | Repository-specific source of truth |
 | provider APIs | External issues, PRs, messages, calls | External provider |
 
-A green dashboard card is a summarized observation. It does not replace the underlying session manifest, workflow run, effect attempt, service journal, or provider object.
+> <span class="sidebar-kicker">Technical sidebar</span> **How the shared Admin runtime is assembled**
+>
+> Admin Web is not a second control plane. `build_admin_runtime` assembles focused services for sessions, issues/Git, VMs, workers, workflows, reports, approvals/audit, artifacts, configuration, add-ons, skills, capacity, and model usage around one `RuntimeContext`.
+>
+> A green dashboard card is a summarized observation. It does not replace the underlying session manifest, workflow run, effect attempt, service journal, or provider object.
 
 ![Evander Admin operations dashboard in dark mode for the synthetic Northstar directory](../../assets/evander-user-manual/screenshots/admin-dashboard.png)
 
-<p class="figure-caption">Figure 15.2 — The dashboard is an orientation layer over live detail APIs, not a replacement source of truth. Sanitized Northstar fixture.</p>
+<p class="figure-caption">Figure 15.1 — The dashboard is an orientation layer over live detail APIs, not a replacement source of truth. Sanitized Northstar fixture.</p>
 
 ## Operator surfaces
 
@@ -36,11 +42,15 @@ Use the selected directory as part of every diagnosis. Directory inheritance cha
 
 ## Authentication, authorization, and privileged unlock
 
-Admin users and groups are stored in `runtime/admin-web.db`. Built-in groups include owner, operator, workflow maintainer, workflow viewer, auditor, and viewer. Permissions are directory-scoped and inherited downward. Direct workflow write implies workflow read; ownership expands to the full permission catalog.
+Signing in, being permitted to change a project, and temporarily unlocking a sensitive host operation are three separate decisions. A user may be able to see a page without being able to change it, or be able to change ordinary project settings without being able to perform a sensitive host action.
 
 Authentication answers *who*. RBAC answers *whether that identity can act in this directory*. Privileged unlock is an additional per-login-session guard for sensitive host mutations. It does not add a missing RBAC permission and should not be treated as a permanent administrator mode.
 
 Approval gates are separate again. A privileged owner can configure policy but an agent's gated tool invocation still needs its matching, unexpired approval. The approved tool, session, and payload digest must match at execution time.
+
+> <span class="sidebar-kicker">Deeper detail</span> **Admin identity and inherited permissions**
+>
+> Admin users and groups are stored in `runtime/admin-web.db`. Built-in groups include owner, operator, workflow maintainer, workflow viewer, auditor, and viewer. Permissions are directory-scoped and inherited downward. Direct workflow write implies workflow read; ownership expands to the full permission catalog.
 
 ## Revision-checked changes
 
@@ -57,7 +67,9 @@ Never work around a revision conflict by writing the live JSON file directly. Wo
 
 ## Observability and evidence
 
-### Health and capacity
+Start in Admin Web with the selected directory, then open the record closest to the symptom: a run, session, approval, tool call, worker, artifact, or Team item. Record the exact status and identifiers before refreshing or retrying. Those details let an administrator move from the interface to the matching service and durable record.
+
+### Administrator detail: health and capacity
 
 Start broad:
 
@@ -68,7 +80,7 @@ systemctl --failed
 
 The capacity endpoint, `/api/admin/capacity-health`, reports control-plane disk, known storage roots, session samples, and unavailable/permission-denied telemetry explicitly. Built-in disk thresholds warn below 15% free and become critical below 5% unless configured otherwise. “Unknown” is not healthy.
 
-### Journals and structured runtime records
+### Administrator detail: journals and structured runtime records
 
 Use service journals for process startup, reload, provider transport, and worker-loop failures:
 
@@ -90,13 +102,15 @@ evander-cli rebuild-audit-index --config runtime
 
 Audit redaction intentionally removes configured sensitive fields. Absence of a secret from an audit row is expected, not evidence that no credential was used.
 
-## Durable state inventory
+The remainder of the backup and restore material is administrator reference. An operator reporting a problem should preserve the visible records and identifiers; they should not copy, replace, or delete runtime databases.
+
+## Administrator reference: durable state inventory
 
 Before backup or repair, inventory the configured paths. Common current stores include:
 
 ![Configuration, JSON registries, SQLite stores, audit evidence, managed Git, and artifact blobs converge at a consistent backup boundary; derived indexes are rebuilt after restore.](../../assets/evander-user-manual/diagrams/09-runtime-stores.svg)
 
-<p class="figure-caption">Figure 15.1 — A recoverable snapshot preserves every canonical store at one consistency boundary and rebuilds derived state only after restore.</p>
+<p class="figure-caption">Figure 15.2 — A recoverable snapshot preserves every canonical store at one consistency boundary and rebuilds derived state only after restore.</p>
 
 | Data | Typical location | Recovery role |
 |---|---|---|
@@ -115,7 +129,7 @@ Ephemeral Git worktrees under `runtime/git-worktrees/` are reconstructible scrat
 
 Secrets and local service configuration—`config/*.env`, provider JSON, `secrets.env`, systemd environment, certificates—may live outside `runtime/`. Back them up separately with stricter permissions. Never place them in published artifacts or documentation captures.
 
-## Consistent backup
+## Administrator procedure: consistent backup
 
 There is no single “copy this directory while everything runs” guarantee across JSON, SQLite WAL, bare Git, add-on databases, VM disks, and external providers. Choose a consistency boundary.
 
@@ -132,7 +146,7 @@ For a control-plane backup:
 
 External provider state is not captured by this backup. Record outstanding PRs, messages, and call IDs when an incident or migration requires end-to-end reconciliation.
 
-## Restore and recovery
+## Administrator procedure: restore and recovery
 
 Restore to a compatible checkout/package revision first. Keep services stopped while placing runtime and secrets. Restore file ownership and modes, then initialize only missing state—do not run `init-state` over a restored runtime without reviewing what it will seed.
 
@@ -158,6 +172,8 @@ For a partially failed operation, prefer domain reconciliation over rollback by 
 
 ## Failure behavior
 
+An operator can use the first and third columns to describe what they see and which evidence an administrator should collect next.
+
 | Symptom | Interpretation | Next evidence |
 |---|---|---|
 | Admin Web is unavailable | UI process/config/auth may be down; runtime can still be intact | service status/journal, then CLI and files |
@@ -168,7 +184,13 @@ For a partially failed operation, prefer domain reconciliation over rollback by 
 | Restored worker repeats effects | Store/provider boundary was captured inconsistently | inspect effect idempotency key and provider state before enabling workers |
 | Team/Add-on data is missing after restore | Private add-on directory was omitted or wrong add-on not loaded | restored add-on state, enablement, restart, API read |
 
-## Practical incident runbook
+## Troubleshooting and operator handoff
+
+In Admin Web, select the affected directory and record the expected outcome, the last completed step, and the exact visible error. Capture the session, workflow run or trace, source event, approval, effect, task, or release ID that is relevant; capture only the identifiers that exist for this incident.
+
+If repeated work could change an external system, do not keep retrying while the result is uncertain. Tell the administrator what has already been attempted and whether an external issue, message, Git ref, or release may have changed. Do not delete audit rows, SQLite side files, workflow packs, leases, or worktrees to make the interface look clean.
+
+## Administrator incident runbook
 
 1. **Stabilize.** Stop only the component causing unsafe repeated mutations; preserve journals and state files before repair.
 2. **Declare scope and time.** Record directory, session/workflow/effect/provider IDs, commit SHA, and first observed failure.

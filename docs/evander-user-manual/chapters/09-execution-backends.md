@@ -1,14 +1,95 @@
 # 9. Execution Backends
 
-> **At a glance.** Evander separates the decision to run an agent from the machinery that runs it. The supported default, `libvirt_vm`, gives a session a disposable virtual machine. The additive `container_worker_vm` backend sends narrowly described jobs to one configured worker VM, where Docker containers are disposable but selected session state is durable. Both paths share session, workflow, policy, relay, Git, and observability contracts; they do not offer identical isolation or lifecycle semantics.
+> **At a glance.** Once Evander decides that an agent may work, it still needs a safe place for that work to happen. The usual choice is a temporary virtual machine; another supported choice runs temporary containers on a dedicated worker machine. This chapter compares those environments while keeping the more important promise in view: changing where the agent runs does not change who grants permission or where durable evidence belongs.
 
-## The mental model: a control plane and an execution plane
+## Where the agent's work happens
 
-The host control plane decides *what* may happen. It owns the session manifest, effective directory configuration, tool policy, credentials, managed Git identity, workflow state, and audit trail. An execution backend decides *where and how* a permitted operation runs. This distinction is one of Evander's most useful design seams: a workflow can use portable `effect:agent:*` nodes without embedding `virsh`, Docker, host paths, or worker credentials in its graph.
+Evander separates two responsibilities. The control plane decides what the job is allowed to do and keeps the durable record. The **execution backend** provides the temporary workspace in which the permitted work runs.
+
+An installation currently has two choices:
+
+| Workspace choice | What the agent receives | What remains outside it |
+|---|---|---|
+| Temporary virtual machine (`libvirt_vm`) | A disposable VM with its own disk and selected toolchains | Session policy, real credentials, workflow state, managed Git, and audit evidence remain host-owned. |
+| Worker container (`container_worker_vm`) | A disposable Docker job on one configured worker VM, with selected session state kept between jobs | The control plane still owns permission, credentials, workflow state, Git identity, and durable evidence. |
+
+To an operator, the shared promises matter more than the infrastructure names:
+
+- the session and directory rules are chosen before the workspace starts;
+- the agent uses the same controlled model, tool, package, HTTP, and Git routes in either kind of workspace;
+- the exact code version and the work's evidence remain traceable after temporary compute is removed;
+- selecting a different backend does not grant broader authority.
+
+The two backends share session, workflow, policy, relay, Git, and observability contracts, but they do not have identical isolation or lifecycle semantics. The later reference sections explain those differences.
 
 ![The Evander control plane dispatches the same portable agent lifecycle to either a libvirt VM or the authenticated container worker.](../../assets/evander-user-manual/diagrams/07-execution-backends.svg)
 
+The diagram's main point is that Evander can change the kind of temporary workspace without moving its policy, credentials, Git authority, or durable records into that workspace.
+
 <p class="figure-caption">Figure 9.1 — Backend selection changes the execution mechanism, not the host-owned session, policy, relay, Git, or evidence contracts.</p>
+
+## What an operator may notice
+
+The workspace is only one stage in a run. These observations help distinguish an execution problem from an earlier workflow or later publication problem.
+
+| What you see | What it usually tells you | Useful information to capture |
+|---|---|---|
+| A session exists, but no VM or worker job appears | Evander reached session creation, but backend preparation or startup may have failed. | Session ID, selected backend, execution or VM ID if shown, last status, and visible error |
+| The workspace starts with the wrong image or missing tools | The recorded template/image selection or an optional bootstrap/cache may not match the job. | Session ID, backend, image or template shown, and the missing command or tool |
+| A prompt never starts | The workspace may exist even though queue persistence or dispatch failed before the agent harness began. | Session ID, execution ID, prompt status, and time of the last change |
+| The agent works, but model, tool, package, HTTP, or Git access fails | Compute is running; the relevant controlled connection or job permission needs inspection. | Exact error, requested capability, session ID, and whether the failure repeats |
+| Cleanup reports `cleanup_failed` | Evander could not prove that every worker-owned resource was removed. The record is evidence, not clutter. | Session ID, execution ID, worker job ID if shown, and the cleanup error |
+
+## A Northstar Platform run from assignment to cleanup
+
+Suppose the project lead for Northstar Platform's `mission-control` project assigns an implementation agent the work item “add telemetry retry behavior.” The operator-visible journey is the same with either backend:
+
+1. Evander selects the project directory, creates or reuses a session, and chooses the configured workspace type.
+2. It prepares a VM or a worker session and records which backend and image or template were selected.
+3. It gives the session controlled access to `mission-control` through the repository's managed identity, not through an arbitrary host path.
+4. Setup and agent work run inside the temporary workspace. Model calls, Evander tools, packages, and Git continue through their controlled routes.
+5. Evander records the result and logs. A container job may disappear at this point while its session evidence remains.
+6. The workflow can promote only the exact Git commit received from the managed Git event. The workspace type does not change that publication rule.
+7. Cleanup removes the disposable compute while host records remain available to explain the run and its cleanup outcome.
+
+> <span class="sidebar-kicker">Deeper detail</span> **The same journey in backend terms**
+>
+> Effective provider configuration selects `libvirt_vm` unless the session or directory explicitly selects `container_worker_vm`. `effect:agent:create` emits `metric_agent_create_backend_path`; the VM path launches or associates a VM, while the container path prepares the worker session and records the selected image. `effect:agent:clone-repo` receives only `mission-control`'s `managed_repo_id`; the control plane resolves an internal, restricted SSH source and grants the implementation session read-only or session-scoped write access.
+>
+> Bootstrap and prompt effects then use the host model relay, MCP gateway, and package relays or mounted caches. For a container job, `runtime/container-worker-executions.db` maps Evander's execution/session identity to the worker job ID. Destruction removes disposable compute but retains host session and cleanup records long enough to explain what happened.
+>
+> This is the central invariant: *backend portability does not weaken provenance*. A worker job may be short lived, but the session, Git SHA, workflow run, dispatch, policy decision, and model-usage correlation remain host-owned.
+
+## Reading backend failures
+
+An operator can use the first column to describe the symptom. The remaining columns guide an administrator toward the relevant backend layer.
+
+| Symptom | What it means | First checks |
+|---|---|---|
+| `unknown` for a VM | No matching VM summary or session-to-VM mapping was found. | Inspect the session manifest, `vm_id`, and `virsh list --all`. |
+| Container backend construction fails | `container_worker_base_url` is missing or invalid. | Inspect effective directory provider configuration, not only root defaults. |
+| Worker returns unauthorized/unreachable | Bearer token, URL, routing, service, or firewall is wrong. | Check the daemon unit, `/healthz`, token env name/value, and control-plane-to-worker reachability. |
+| Prompt never starts | Queue persistence or worker dispatch failed before the agent harness started. | Find `metric_prompt_enqueue_failed`, then inspect the prompt store and worker session state. |
+| Wrong image or toolchain | The session recorded a different image alias/ref, or the worker cache is incomplete. | Inspect session metadata and the worker image catalog; do not change the catalog and assume an existing session changed. |
+| `cleanup_failed` | Worker deletion did not complete. | Preserve the record, inspect its cleanup error, retry after fixing reachability or worker state. |
+| Model unavailable | The provider rejected the configured model before useful work. | Inspect sanitized wake/job failure metadata and the directory/session model override. |
+| VM starts but guest tools are stale | Optional bootstrap state no longer matches the host. | Re-run the relevant idempotent bootstrap script. |
+
+## Troubleshooting: what to hand to an administrator
+
+Start in Admin Web and capture what is available:
+
+1. Record the directory, run or trace ID, session ID, and last status.
+2. Record the selected backend and any VM, execution, worker, or worker-job identity shown.
+3. Copy the exact error and note the last successful stage—for example, “the session exists, but no workspace was created” or “the workspace runs, but model access fails.”
+4. If cleanup is involved, preserve the `cleanup_failed` record and its error. Do not delete it to tidy the dashboard.
+5. Give those details to an Evander administrator. Do not repeatedly create replacement sessions unless the workflow's recovery procedure calls for it.
+
+The remainder of this chapter is implementation and administrator reference material.
+
+## Administrator reference: control plane and execution plane
+
+The host control plane decides *what* may happen. It owns the session manifest, effective directory configuration, tool policy, credentials, managed Git identity, workflow state, and audit trail. An execution backend decides *where and how* a permitted operation runs. This distinction is one of Evander's most useful design seams: a workflow can use portable `effect:agent:*` nodes without embedding `virsh`, Docker, host paths, or worker credentials in its graph.
 
 The shared backend protocol has six operations:
 
@@ -25,7 +106,7 @@ Normalized status values are `unknown`, `preparing`, `starting`, `running`, `sto
 
 `ExecutionSpec` carries execution-defining fields explicitly: backend, session and target identity, directory, command, image, resolved clone source and branch, working directory, resource limits, persistence mode, and workspace mode. The free-form `metadata` field is sanitized context. It is not an escape hatch for commands, credentials, host repository paths, or other execution inputs.
 
-## The two current backends
+## Administrator reference: the two current backends
 
 ### `libvirt_vm`: the default
 
@@ -56,7 +137,7 @@ The portable agent effects map as follows:
 | `effect:agent:clone-repo` | Resolve a `managed_repo_id` on the control plane and clone into `/home/agent/repos/<repo-name>`. |
 | `effect:agent:copy-files` | Write validated paths below the durable `/home/agent`. |
 | `effect:agent:exec` | Run a deterministic setup command in a transient job. |
-| `effect:agent:prompt` | Start the provider harness in a disposable job, retain outcome/log evidence, then remove the job. |
+| `effect:agent:prompt` | Start the configured agent harness in a disposable job, retain outcome/log evidence, then remove the job. |
 | `effect:agent:destroy` | Delete worker jobs and session files while retaining host cleanup evidence. |
 
 The selected container image comes from the directory-scoped `container_worker_images` alias map. `container_worker_default_image` is the fallback for older or unspecified sessions. Once an alias is resolved, the exact image reference is stored with the session and reused; a later catalog change does not silently change an existing agent's runtime. Claude sessions normally select an appropriate Claude runner image and `model_provider_mode: "anthropic"`.
@@ -67,21 +148,7 @@ The default security posture is no general container network. A non-`none` Docke
 
 SQL Server is also intentionally separate. `effect:agent:create` rejects the VM-style `mssql=true` and `mssql_init_root` options for container sessions. Container agents use the worker-host SQL Server through the scoped MCP provisioning operations `mssql_provision_database`, `mssql_list_databases`, and `mssql_drop_database`.
 
-## A Northstar Platform run from intent to cleanup
-
-Suppose Priya, project lead for Northstar Platform's `mission-control` project, assigns Imani the work item “add telemetry retry behavior.”
-
-1. The trigger selects a directory and creates or reuses a session manifest. Effective provider configuration selects `libvirt_vm` unless the session or directory explicitly selects `container_worker_vm`.
-2. `effect:agent:create` emits `metric_agent_create_backend_path` and prepares the backend. A VM path launches or associates a VM. A container path prepares the worker session and records the selected image.
-3. `effect:agent:clone-repo` receives only `mission-control`'s `managed_repo_id`. The control plane resolves an internal, restricted SSH source and grants Imani's session either read-only or session-scoped write access.
-4. Bootstrap and prompt effects run. Model calls go to the host relay; MCP calls go to the gateway; package restores go to package relays or mounted caches.
-5. The prompt result and logs are recorded. For a container job, the execution mapping in `runtime/container-worker-executions.db` connects Evander's execution/session identity to the worker job ID.
-6. The workflow promotes only the pinned Git commit it received from the managed Git event. Backend identity does not change that publication rule.
-7. Destruction removes the disposable compute. Host session and cleanup records remain long enough to explain what happened.
-
-This flow illustrates an important invariant: *backend portability does not weaken provenance*. A worker job may be short lived, but the session, Git SHA, workflow run, dispatch, policy decision, and model-usage correlation remain host-owned.
-
-## Persistence and cleanup semantics
+## Administrator reference: persistence and cleanup
 
 Stopping and destroying are intentionally different. Stopping a VM leaves its disk. Stopping a worker job leaves the durable session home. Destroying a VM removes the linked VM through the VM service. Destroying a container session asks the worker to remove jobs, files, Git keys, and session-owned databases, then retains the host session manifest and execution mapping as a cleanup tombstone.
 
@@ -89,20 +156,7 @@ Do not erase a `cleanup_failed` record to make a dashboard look tidy. It is the 
 
 Chat Assistant mappings are also backend-aware. Libvirt uses one global assistant VM/session with distinct per-user agent thread IDs. Container execution uses a distinct assistant session per user. The durable mapping in `runtime/chat-assistant-session-mappings.json` makes concurrent “open chat” and “first message” initialization converge instead of creating duplicates.
 
-## Failure behavior
-
-| Symptom | What it means | First checks |
-|---|---|---|
-| `unknown` for a VM | No matching VM summary or session-to-VM mapping was found. | Inspect the session manifest, `vm_id`, and `virsh list --all`. |
-| Container backend construction fails | `container_worker_base_url` is missing or invalid. | Inspect effective directory provider configuration, not only root defaults. |
-| Worker returns unauthorized/unreachable | Bearer token, URL, routing, service, or firewall is wrong. | Check the daemon unit, `/healthz`, token env name/value, and control-plane-to-worker reachability. |
-| Prompt never starts | Queue persistence or worker dispatch failed before the harness ran. | Find `metric_prompt_enqueue_failed`, then inspect the prompt store and worker session state. |
-| Wrong image or toolchain | The session recorded a different image alias/ref, or the worker cache is incomplete. | Inspect session metadata and the worker image catalog; do not change the catalog and assume an existing session changed. |
-| `cleanup_failed` | Worker deletion did not complete. | Preserve the record, inspect its cleanup error, retry after fixing reachability or worker state. |
-| Model unavailable | The provider rejected the configured model before useful work. | Inspect sanitized wake/job failure metadata and the directory/session model override. |
-| VM starts but guest tools are stale | Optional bootstrap state no longer matches the host. | Re-run the relevant idempotent bootstrap script. |
-
-## Practical runbook
+## Administrator runbook
 
 Start with the broad control-plane view:
 

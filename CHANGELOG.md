@@ -36,6 +36,20 @@
 - Added publication-integrity checks tied to the implemented service, firewall, Admin navigation,
   Team navigation, current CLI, screenshot, and diagram inventories, and corrected stale trigger,
   Team role, Agent Mail, chat-tool, and wake-eligibility documentation found during source review.
+- Recast every chapter's At a glance passage as a plain-language introduction and layered the
+  end-to-end chapter with optional technical and administrator sidebars, keeping the complete
+  implementation detail without forcing it into the first-read narrative. Core chapters now use
+  functional agent labels, reserving the named Northstar cast for Team Add-on relationships where
+  stable identities carry useful meaning.
+- Reframed the trust-model chapter around three operator-facing security promises, everyday
+  examples, and a practical incident handoff, while retaining protocol, network, session, Git,
+  worker, approval, and host-response mechanics in clearly labeled reference sidebars. Concise
+  distributed-systems and security terms now replace repeated paraphrases where useful, with
+  brief footnotes plus matching glossary and subject-index entries.
+- Extended that layered reading model through the remaining core, Team, engineering, history,
+  reference, and troubleshooting chapters: plain orientation and concrete examples now lead into
+  optional deeper detail, operator handoffs, and clearly labeled administrator runbooks, while
+  preserving the full commands, invariants, failure behavior, storage contracts, and source trails.
 
 ## 2026-07-13 - Documentation Accuracy And Drift Checks
 

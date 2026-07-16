@@ -1,6 +1,6 @@
 # 1. How to Read This Manual
 
-> **At a glance.** This manual is both a guided tour and a technical reference. Read Chapters 1–3 for the governing ideas, follow the numbered chapters for a complete system model, or jump from a symptom to the runbook and source trail in the relevant chapter. Examples use one fictional organization throughout so that the machinery remains concrete without being mistaken for a built-in deployment.
+> **At a glance.** You do not have to read this manual at one speed or from cover to cover. If Evander is new to you, begin with the story and the security ideas; if you are solving a particular problem, jump directly to the relevant explanation or runbook. One fictional organization appears throughout so that unfamiliar machinery can be learned through people and work rather than as a list of disconnected features.
 
 ## The two useful speeds
 
@@ -15,7 +15,9 @@ At overview speed, keep four ideas in mind:
 
 At reference speed, use the mechanics, invariants, failure tables, commands, and source trails in each chapter. A claim such as “a directory policy is inherited” is only the overview. The reference account also says which values merge, which replace, which restrictions cannot be relaxed by a child, where the files live, and what happens when validation fails.
 
-The opening **At a glance** paragraph and the first section of every chapter are written for overview speed. The remainder is designed to survive close technical use.
+The opening **At a glance** passage and the first section of every chapter are written for overview speed. They introduce the problem and the mental model in ordinary language; they are not compressed substitutes for the technical chapter. The remainder is designed to survive close technical use.
+
+Indented boxes labelled **Deeper detail**, **Technical sidebar**, **For administrators**, or **Administrator runbook** let a chapter explain an important mechanism without interrupting its main story. Skip them on a first read. Return when you need the implementation detail, exact record, or host-level procedure.
 
 ## Choose a reading path
 
@@ -34,9 +36,9 @@ For a broad understanding, read the story in Chapter 2 before studying individua
 
 ## The continuous Northstar example
 
-The manual follows a synthetic team named `northstar-platform` and its `mission-control` project. A work item asks the team to add telemetry retry behavior. Mira manages the team, Priya leads the project, Imani implements the change, Rowan reviews it, and Riley handles the release. These five named characters are AI Team agents throughout the manual. Human actions are attributed generically to **an operator** or, for interactive chat and voice, **a signed-in user**.
+The manual follows a synthetic team named `northstar-platform` and its `mission-control` project. A work item asks the team to add telemetry retry behavior. In Chapters 1–15, agents are described by what they do: the implementation agent makes the change, the review agent examines it, and the release agent handles publication. The Team Add-on chapters introduce a small named cast only when persistent identities and organizational relationships become useful. Human actions are attributed generically to **an operator** or, for interactive chat and voice, **a signed-in user**.
 
-Core chapters use this example without assuming the Team Add-on is installed. For example, “Imani's session” means an ordinary core session associated with the work. Team chapters then explain how the add-on records Imani's role, assigns the task, schedules wakeups, governs review, and coordinates Riley's release action.
+Core chapters use this example without assuming the Team Add-on is installed. For example, “the implementation session” means an ordinary core session associated with the work. Team chapters then explain how the add-on records named identities and roles, assigns tasks, schedules wakeups, governs review, and coordinates release work.
 
 Unless a passage explicitly says otherwise, Northstar names and payloads are illustrative. They are not default accounts, reserved identifiers, a shipped workflow, or a promise that every installation has Azure DevOps, Teams, or a container worker configured. The example's directory path is:
 

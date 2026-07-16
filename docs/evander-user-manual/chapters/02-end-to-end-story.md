@@ -1,165 +1,209 @@
 # 2. One Work Item, End to End
 
-> **At a glance.** A useful Evander run is a chain of durable, bounded decisions: an external or internal trigger becomes an event; a compiled workflow routes it; effects create an expiring session and isolated execution target; the agent reaches models, tools, packages, and Git only through host-controlled surfaces; reviews and publication operate on pinned commits; and the host retains enough workflow, approval, audit, and cleanup evidence to explain the outcome.
+> **At a glance.** Imagine a piece of work passing through a well-run workshop. Evander notices the work, decides which prepared process applies, gives an agent a temporary workspace and only the permissions needed for that job, pauses when a person must approve something sensitive, and records exactly what was reviewed and released.
+>
+> This chapter follows one work item through that journey. You do not need to understand every service or record on the first read. The important idea is that each handoff is saved, limited, and traceable, so a stopped process can be resumed and a finished one can be explained.
 
 ## A representative mission
 
-Northstar's `mission-control` project receives a work item: **add retry behavior to telemetry delivery**. An operator has defined a workflow for this class of work. Imani will implement it, Rowan will review it, and Riley will handle release. The Team Add-on can coordinate those agent roles, but the machinery in this chapter is core Evander.
+Northstar's `mission-control` project receives a work item: **add retry behavior to telemetry delivery**. An operator has prepared the route that this kind of work should follow. An implementation agent will make the change, a review agent will examine it, and a release agent will handle publication. The Team Add-on can coordinate those roles, but the journey in this chapter uses Evander's core safety and execution machinery.
 
-No single built-in workflow is implied. The repository includes providers and example packs that can compose this path—ticket triggers, filters, deduplication, agent creation, managed-repository cloning, prompts, Git promotion, and pull-request creation. An operator selects the providers and exact graph appropriate to the installation.
+That prepared route is called a **workflow**. A **provider** is the connector that lets Evander observe or act in another system, such as Azure DevOps. A workflow **pack** is a saved collection of workflow definitions, and the visual arrangement of steps and connections is often called a **graph**. These terms become precise later; for now, think *connector, reusable process, and process map*.
 
-The simplest mental model is a relay race. Each stage hands the next stage a durable identifier instead of a vague assertion that work happened:
+Evander does not ship one universal process for every organization. An operator chooses the connectors and workflow that match the local tools, review rules, and release practices. The Northstar story is therefore a realistic example, not a hidden default.
+
+The simplest mental model is a relay race. Each stage hands the next stage a durable identifier—a saved reference to what happened—instead of a vague assertion that work happened:
 
 ```text
-work item -> trigger event -> workflow run -> session -> execution
-          -> tool/audit records -> Git SHA -> review -> publication -> cleanup evidence
+work item -> saved event -> workflow run -> agent session
+          -> temporary workspace -> work and approvals
+          -> exact code version -> review -> release -> cleanup
 ```
 
-The identifiers are what make the run recoverable and explainable.
+Those identifiers are what make the run recoverable and explainable.
 
 ![Evander system context from operator intent through the host control plane to isolated execution and external services](../../assets/evander-user-manual/diagrams/01-system-context.svg)
 
+Put simply, Evander is the guarded coordinator; the agent is a temporary worker with limited access. The arrows show approved routes through the coordinator, not general access from the worker to the host or internet.
+
 <p class="figure-caption">Figure 2.1 — The end-to-end path crosses explicit host boundaries; no arrow represents general guest access.</p>
 
-## Before the event: define the boundary
+## Before the work arrives: agree on the boundary
 
-Northstar's project lives at `root/northstar-platform/mission-control`. The operator has already:
+Before the first run, an administrator connects the source repository and any external work system, chooses the project settings, prepares the workflow, and decides which tools may require human approval. An ordinary operator does not need to memorize that wiring to follow a run; they need to know which project is selected and which prepared process is expected to handle the item.
 
-- registered the source repository as an Evander-managed repository and obtained a `managed_repo_id`;
-- configured provider, policy, VM or worker, and automation settings at root or along the project directory ancestry;
-- created or selected a workflow graph whose directory is the Northstar project;
-- configured any external trigger credential as a host secret, referenced by environment-variable name rather than copied into the workflow;
-- selected the tools, argument constraints, communication targets, and approval behavior appropriate to an implementation session.
+The setup answers three plain questions before any temporary workspace is created:
 
-This setup answers three questions before compute is created: *whose work is this, which configuration applies, and what authority may the future session receive?*
+1. **Whose work is this?** The selected directory identifies the organization and project.
+2. **Which rules apply?** The directory determines the effective provider, workflow, security, and execution settings.
+3. **What may the agent do?** The future session receives only the tools, code access, contacts, and limits chosen for this job.
 
-## Stage 1: a trigger becomes a durable event
+> <span class="sidebar-kicker">For administrators</span> **What was prepared in advance**
+>
+> The repository was registered with Evander and assigned a `managed_repo_id`. Provider, policy, execution-backend, and automation settings were configured at `root` or along `root/northstar-platform/mission-control`. A workflow graph was selected for that directory. External credentials stayed in host secret storage, and the session's tools, argument constraints, communication targets, and approval behavior were chosen before dispatch.
 
-Suppose an Azure DevOps or ticket provider observes the telemetry-retry work item. The trigger orchestrator polls enabled trigger definitions, resolves the graph's directory-scoped provider settings, and asks the provider for candidate events. A provider event carries a stable event identity, source identity, and payload; the queue deduplicates that event ID and also supports an explicit idempotency key where the publisher supplies one.
+## Stage 1: a new item becomes a saved event
 
-Only after durable publication does the trigger worker call the provider's acknowledgement hook and advance its cursor. This order prevents an ordinary crash between “seen” and “queued” from silently discarding the work. It does not mean a provider can never redeliver; stable event identity, optional queue idempotency keys, and downstream node execution keys make redelivery converge at the orchestration boundary.
+Suppose the Azure DevOps connector notices the telemetry-retry work item. Evander first turns that observation into an **event**: a saved statement that something happened and may need a response. Saving the event separates the work from the connector that noticed it. If that connector restarts a moment later, the work does not disappear with it.
 
-A successful publish wakes the effect orchestrator. The default store is SQLite at `runtime/orchestration.db`; a legacy JSON backend remains available as a rollback path. The event now exists independently of either worker process.
+Evander saves the event before telling Azure DevOps that it has been received. If a crash happens at an awkward moment, the connector may offer the same item again. Stable identifiers make that redelivery **idempotent**[^idempotency]: Evander continues from the existing record instead of quietly losing the item or beginning unrelated duplicate work.
 
-## Stage 2: the graph narrows intent
+Once the event is safely stored, Evander wakes the part of the system that advances workflows.
 
-The compiled graph routes the event along edges from its source node. A realistic Northstar path may use:
+> <span class="sidebar-kicker">Deeper detail</span> **Durable publication and redelivery**
+>
+> The trigger orchestrator polls enabled trigger definitions, resolves directory-scoped provider settings, and asks each provider for candidate events. A provider supplies a stable event identity, source identity and type, and payload; it may also supply an idempotency key. The queue deduplicates the event ID and, when present, the idempotency key. Only after durable publication does the worker call the provider's acknowledgement hook and advance its cursor.
+>
+> The default event and execution store is SQLite at `runtime/orchestration.db`. A legacy JSON backend remains available as a rollback path. These storage choices matter to administrators and recovery tooling, but they do not change the operator-level promise: acknowledgement follows durable publication.
 
-- `gate:filter` to accept only the relevant project, type, state, or label;
-- `gate:dedupe` to collapse a repeated start request;
-- a query such as `query:session:list` to discover an existing active session;
-- `effect:agent:create` only when no suitable session exists.
+## Stage 2: the workflow decides what should happen
 
-Queries read and return data to later nodes. Gates transform, branch, delay, iterate, merge, serialize, or reject flow. Effects change the world. Each node receives resolved configuration and a graph-aware input payload. Expressions such as `${{node.output}}` are validated and resolved against upstream outputs rather than being arbitrary host code.
+The workflow is the prepared checklist and route for this kind of event. In Northstar's case it might ask:
 
-The graph is compiled and validated before it becomes the current runtime configuration. Missing endpoints, duplicate node IDs, invalid provider schemas, unsafe cycles, and invalid bindings are rejected. If a later hot reload is invalid, the workers retain their last-known-good configuration and log the failure.
+1. Is this item for the `mission-control` project and in a state we handle?
+2. Have we already started this exact request?
+3. Is there a suitable active agent session?
+4. If not, should Evander create one?
 
-## Stage 3: create an expiring session
+Evander calls these kinds of steps **gates**, **queries**, and **effects**. A gate makes a decision about the route, like a checkpoint. A query looks something up without changing it. An effect changes the world, such as creating a session or posting a message. The everyday example above is the concept; the technical names are useful when reading or editing the visual workflow.
 
-`effect:agent:create` creates a session manifest and prepares the selected execution backend. The manifest is Imani's agent capability envelope for this run. It includes:
+Evander checks a workflow before making it active. If a later edit is invalid, the running services keep the last known good version and report the failed update. A bad edit therefore does not silently replace a working process.
 
-- a unique session ID and expiry;
-- `root/northstar-platform/mission-control` as its directory;
-- a VM or worker binding and selected model, where applicable;
-- the MCP tools it may request and which require per-invocation approval;
-- allowlists for contacts, scripts, channels, mailboxes, files, and search where enabled;
-- argument-policy and quota settings;
-- metadata that correlates the session with the workflow run, work item, agent role, and Git intent.
+> <span class="sidebar-kicker">Deeper detail</span> **What “compiled workflow” means**
+>
+> A workflow graph is compiled into validated nodes and edges. A realistic path may use `gate:filter`, `gate:dedupe`, `query:session:list`, and `effect:agent:create`. Queries return data to later nodes; gates can branch, delay, iterate, merge, serialize, or reject flow; effects perform state changes. References such as `${{node.output}}` are checked against upstream outputs rather than executed as arbitrary host code.
+>
+> Compilation rejects missing endpoints, duplicate node IDs, invalid provider settings, unsafe cycles, and broken bindings. A failed hot reload leaves the previous compiled graph in service.
 
-The manifest contains authority descriptions, not general host credentials. Provider keys remain on the host. An expired or unknown session is denied even if an old client still knows its ID.
+## Stage 3: give the agent a temporary, limited job
 
-The backend then creates compute. With `libvirt_vm`, that is normally a disposable VM overlay. With `container_worker_vm`, the control plane asks the authenticated worker daemon to prepare durable session directories and later run disposable Docker jobs. Chapter 9 compares their precise lifecycle and isolation semantics.
+When the workflow decides that implementation should begin, Evander creates a **session**. The session is both a job identity and a temporary permission card. It says which project the job belongs to, when the permission expires, which tools and resources the agent may use, and how later records should be connected back to this work item.
 
-## Stage 4: transport code without smuggling authority
+The session does not contain the host's general credentials. Those stay with Evander. Knowing an old session ID is also not enough to keep working after it expires.
 
-The workflow passes `managed_repo_id`, not an arbitrary host checkout path, to the clone effect. The managed Git service resolves the registered bare repository and provisions scoped SSH access for the session. The guest or worker container clones into its own workspace.
+Evander then starts a **sandbox**[^sandbox]: a temporary, isolated work environment. Depending on the installation, this may be a disposable virtual machine or a disposable container running on a dedicated worker machine. To an operator, both mean the same thing at this point in the story: the implementation agent gets a bounded place to work, while the host keeps control of policy and secrets. Chapter 9 explains the infrastructure differences.
 
-Imani's execution environment can read the repository and, when explicitly granted, push only through the restricted Git path and permitted agent namespace. The supported flow separates:
+> <span class="sidebar-kicker">Technical sidebar</span> **What the session manifest records**
+>
+> The manifest contains a unique session ID and expiry; the directory `root/northstar-platform/mission-control`; the selected model and VM or worker binding where applicable; visible and approval-required MCP tools; allowlists for contacts, scripts, channels, mailboxes, files, and search; argument and quota rules; and metadata linking the session to the workflow run, source item, agent role, and intended Git operation.
+>
+> With `libvirt_vm`, the environment is normally a disposable VM overlay. With `container_worker_vm`, the control plane asks an authenticated worker daemon to prepare session directories and run disposable Docker jobs.
 
-1. a session's work branch;
-2. the exact commit SHA produced by that session;
-3. a workflow decision to pin and promote that SHA;
-4. a later push or pull-request effect guarded by an explicit lease.
+## Stage 4: give the agent controlled access to the code
 
-Branch names are convenient labels; the commit SHA is the evidence. The host never has to serialize a source tree through MCP, and the agent never needs the host operator's unrestricted Git identity.
+Evander gives the implementation agent access through a registered repository rather than exposing an arbitrary folder on the host. The agent clones the code into its own workspace and, if explicitly allowed, pushes changes only through a restricted Git route and an agent-specific branch area.
 
-## Stage 5: the agent works through narrow host surfaces
+The key safety idea is simple: Evander records exactly which version was produced, reviewed, and released. Git calls that unique version identifier a **commit SHA** (usually shortened here to **SHA**). A branch name is a movable label; a SHA identifies one exact snapshot of the code.
 
-Inside its VM or container, Imani's agent sees an ordinary development environment, but its useful external paths are mediated:
+This distinction prevents a subtle but serious mistake: approving one version and later publishing a different version merely because the same branch name moved.
 
-- model requests go to the OpenAI-compatible host relay;
-- MCP calls go to the gateway at `/mcp` and are bound to the session;
-- NuGet, npm audit, PyPI/npm cache, or apt cache paths use the configured package surfaces;
-- allowlisted external HTTP environments use the session-scoped HTTP target relay;
-- source changes move through restricted Git over SSH.
+> <span class="sidebar-kicker">Deeper detail</span> **The managed-Git handoff**
+>
+> The workflow passes a `managed_repo_id`, not a trusted host checkout path, to the clone effect. The managed-Git service resolves the host-owned bare repository and provisions scoped SSH access. The supported sequence separates the agent's work branch, the exact SHA produced by that session, the workflow decision that pins and promotes that SHA, and the later push or pull-request effect protected by an explicit lease. Source code moves with Git, not inside MCP messages.
 
-General guest or container internet access is not the default. The host retains real model and provider secrets. The HTTP target relay is deliberately different from a secret-injecting proxy: it constrains the target, while forwarding authentication headers or cookies supplied by the guest session; it does not place a host credential into the request.
+## Stage 5: let the agent use only the services it needs
 
-For MCP, the session ID is only the start. The connection must present the session proof token, its MCP transport becomes bound to the session, `tools/list` is filtered, and every invocation is checked against effective directory policy, session grants, argument rules, approval state, and workflow-scoped leases.
+Inside the sandbox, the implementation agent sees familiar development tools. What is different is the route outward. Evander provides a few controlled doors for model requests, approved tools, packages, code, and explicitly allowed test systems. General internet access is not the default, and the host's model or provider credentials are not copied into the workspace.
+
+Every tool request is checked against this job's permissions. A reachable service does not automatically give the agent permission to use every tool, contact, repository, or destination behind it.
+
+> <span class="sidebar-kicker">Technical sidebar</span> **The controlled doors**
+>
+> Model requests use the OpenAI-compatible host relay. MCP tool calls use the gateway at `/mcp`. Package traffic may use the NuGet relay, npm-audit facade, PyPI/npm cache, or apt cache. Restricted Git uses SSH. An allowlisted external environment uses the session-scoped HTTP target relay.
+>
+> The HTTP relay constrains the destination but does not inject a host credential; it forwards authentication supplied by the guest. For MCP, a proof token binds the transport to the session, `tools/list` is filtered, and each invocation is checked against directory policy, session grants, argument rules, approval state, and any workflow lease.
 
 ## Stage 6: pause safely for human approval
 
-Assume the implementation needs one tool call that Northstar policy marks approval-required. The first exact invocation does not execute. It creates or reuses a pending approval request containing a digest of the unredacted payload, a redacted review payload, a human summary, the session, directory, tool, intended effect, expiry, and grant settings.
+Suppose the implementation agent requests a sensitive tool action. Evander does not perform it immediately. It creates a pending approval that tells an authorized operator which job is asking, which tool it wants to use, what the action is expected to do, when the request expires, and a safe-to-display summary of the requested input.
 
-An authorized operator reviews it. A decision records the approver and a reason. If approved, Imani retries with the returned request ID and the same payload. The gateway rejects a changed payload under the default exact-payload mode, a request for another session or tool, an expired or denied request, and a grant whose use count is exhausted. Consumption is atomic.
+If the operator approves, the agent retries that same action using the approval request ID. Approval applies to the bounded request; it is not a general promotion to greater power. The session must still be active, the tool must still be allowed, and the input must still satisfy policy.
 
-Approval is not a blanket elevation. The directory may still deny the tool, argument policy may still reject a value, and the session must still be active. Conversely, approval is not required for every mutation by an immutable global rule: operators configure it per policy and session, while the two built-in destructive tools `delete_ado_backlog_item` and `semantic_delete_points` are always exact-payload, one-use approval operations.
+> <span class="sidebar-kicker">Deeper detail</span> **Why the agent retries the exact request**
+>
+> The durable request stores a digest of the original payload, a redacted review payload, a human summary, session and directory identity, tool and intended effect, expiry, and grant settings. Under the default exact-payload mode, changing the payload, session, or tool invalidates the approval. Expired, denied, or exhausted grants are rejected, and use consumption is atomic.
+>
+> Approval requirements are configurable, but the built-in destructive tools `delete_ado_backlog_item` and `semantic_delete_points` always require one-use, exact-payload approval. Chapter 7 is the full protocol reference.
 
-## Stage 7: complete, review, and publish a pinned result
+## Stage 7: complete, review, and publish the exact result
 
-When the prompt effect finishes, its completion event carries structured outputs back into the graph. A workflow can inspect the session context, copy artifacts, update issue state, await a Git push event, or enqueue another prompt. It can then pin the pushed SHA, promote an agent branch, create a pull request, and route new review feedback back to the same session.
+When the implementation agent finishes, Evander records the result and advances the prepared process. It can collect artifacts, update the work item, wait for the Git push, open a pull request, and route feedback back to the same job.
 
-Rowan reviews the commit that the workflow identified—not merely “whatever is now at the branch tip.” If changes are requested, another durable event can enqueue a bounded follow-up prompt. Once review and configured gates pass, Riley's publication path receives the approved SHA and a lease that describes what may be pushed or released.
+The review agent examines the exact commit identified by the workflow—not merely whatever happens to be at the tip of a branch later. If changes are requested, Evander can start a bounded follow-up while keeping the earlier attempt visible. Once review and release checks pass, the release path receives that approved SHA and the limited authority needed to publish it.
 
-The Team Add-on adds a richer organizational record around this sequence: Mira's team, Priya's project, Imani's task, Rowan's review assignment, Riley's release authority, one durable agent-inbox collection, command outbox events, wake scheduling, and governance checks. It does not replace the core session, workflow, policy, execution, approval, or managed-Git controls described here.
+The Team Add-on adds the organizational story around these core controls: a team manager, a project lead, a task owner, an assigned reviewer, a release authority, Agent Mail, wake scheduling, and governance. It coordinates *who should do what*; core Evander still owns the session, workflow, policy, execution, approval, and controlled Git paths.
 
-## Stage 8: retain evidence and clean up compute
+> <span class="sidebar-kicker">Technical sidebar</span> **How completion re-enters the workflow**
+>
+> A completed prompt publishes structured output as another event. Later nodes can inspect session context, copy artifacts, update issue state, wait for Git evidence, enqueue a follow-up prompt, pin and promote the pushed SHA, create a pull request, or route review feedback. These transitions remain journalled under the same trace and workflow revision.
 
-The effect orchestrator journals node executions with event, trace, node, type, status, resolved configuration hash, inputs, outputs, errors, binding trace, and configuration revision. MCP calls produce append-only JSONL audit events and a queryable SQLite index. Approval decisions and uses remain linked by request ID. Session and execution records preserve the selected backend and cleanup result.
+## Stage 8: keep the evidence and remove the sandbox
 
-Destroying disposable compute is not the same as erasing the evidence. A VM disk or worker session directory may be removed while the host retains the session, workflow, Git, audit, and cleanup records according to retention policy. A `cleanup_failed` result should remain visible until the leaked resource is actually reconciled.
+After the work finishes, Evander can remove the sandbox without erasing the job's **provenance**[^provenance]. The host retains the session, workflow decisions, approvals, tool-call history, exact code version, review result, release evidence, and cleanup outcome according to its retention policy.
 
-## End-to-end invariants
+Removing compute and removing evidence are different actions. If cleanup fails, the failure remains visible until an operator or automated recovery process cleans up the leaked resource through a follow-up action.
 
-The story depends on a handful of rules that hold across subsystems:
+> <span class="sidebar-kicker">Technical sidebar</span> **The retained records**
+>
+> Workflow node executions retain event, trace, node, type, status, configuration hash and revision, inputs, outputs, errors, and binding trace. MCP calls produce append-only JSONL audit events with a queryable SQLite index. Approval decisions and uses remain linked by request ID. Session and backend records retain the selected execution target and cleanup result.
 
-- Directory context is chosen before provider, policy, and execution settings are resolved.
-- External observation is acknowledged only after durable event publication.
-- Session identity, transport proof, tool visibility, argument policy, and approval are separate checks.
-- A network-open port does not confer a tool, target, repository, or secret.
-- Workflow node idempotency prevents a completed node from being casually rerun, but external effects must still tolerate at-least-once recovery around crashes.
-- Code provenance is a managed repository plus an exact commit, not an MCP payload or a mutable branch label.
-- Disposable compute may disappear; durable host evidence must still explain the run.
+## What should always be true
 
-## Failure behavior
+The full system is easier to trust when its promises are stated plainly:
 
-| Where the story stops | Likely durable evidence | Meaning |
+- Evander decides which project and rules apply before it creates the job.
+- It saves observed work before telling the external system that the work was received.
+- A session ID, a network connection, a visible tool, and an approval are separate checks; none grants all the others.
+- The agent receives controlled routes to useful services, not the host's general network access or credentials.
+- Repeated delivery or a restarted worker should converge on the existing saved work rather than quietly lose it.
+- The exact code version—not a movable branch label—is the evidence used for review and release.
+- The sandbox may disappear; enough host-side evidence remains to explain what happened.
+
+## Troubleshooting
+
+Start with what an operator can observe, then ask an administrator for the deeper store or service evidence only when needed.
+
+| What you see | First place to look | What it usually means |
 |---|---|---|
-| Trigger sees nothing | Provider cursor and trigger logs | Provider credentials, filter, directory settings, or polling are wrong. |
-| Event exists but graph does not advance | Queue and workflow journal | The graph has no matching edge, a gate dropped the item, or execution failed. |
-| Agent is not created | Effect execution record | Backend configuration, capacity, image/template, or provider validation failed. |
-| Clone is denied | Session, managed-repo registry, Git authorization log | The repository ID, session scope, key, or allowed ref is wrong. |
-| Tool is absent | Session manifest and visibility explanation | It is not granted, is directory-denied, or lacks required structural context. |
-| Tool returns an approval request | Approval store and tool-call audit | This is a controlled pause, not a gateway outage. |
-| Prompt completed but downstream is quiet | Effect record with completion state | Completion publication may be pending or its port has no edge. |
-| Review targets the wrong code | Git event, pinned SHA, promotion record | A mutable ref was used where the exact trigger SHA was required. |
-| Compute remains after completion | Backend cleanup record | Cleanup is incomplete; preserve and reconcile the failure evidence. |
+| The work item never appears | Provider status and trigger history | The external connection, filter, project settings, or polling may be wrong. |
+| The item appears but does not advance | Workflow run and event history | No route matched, a checkpoint rejected it, or a workflow step failed. |
+| The agent never starts | Session and execution details | Capacity, the selected environment, or its configuration failed. |
+| The code cannot be cloned | Repository and session authorization details | The repository, session scope, key, or allowed branch is wrong. |
+| An expected tool is missing | Session permission explanation | The tool was not granted, was denied by project policy, or lacks required context. |
+| A tool reports that approval is required | Approvals and tool-call audit | This is a controlled pause, not a gateway outage. |
+| The agent finished but nothing follows | Workflow run after the completion step | Completion may still be publishing, or the process has no next route. |
+| Review appears to target the wrong code | Reviewed SHA and promotion/release record | A movable branch label may have been used instead of the pinned version. |
+| The sandbox remains | Session cleanup status | Cleanup is incomplete; preserve the evidence and follow the supported recovery path. |
 
-## Practical runbook
+> <span class="sidebar-kicker">For administrators</span> **Authoritative evidence behind the table**
+>
+> The corresponding implementation records are the provider cursor and trigger logs; orchestration queue and node-execution journal; backend effect execution; managed-repository registry and Git authorization log; session manifest and visibility explanation; approval store and append-only tool audit; completion event; pinned-SHA promotion record; and backend cleanup record.
 
-Start with the broad stores, then follow IDs rather than timestamps alone:
+## A practical operator handoff
 
-```bash
-evander-cli status --runtime-dir runtime --json
-evander-cli list-sessions --runtime-dir runtime --all
-evander-cli list-approvals --runtime-dir runtime
-systemctl status evander-trigger-orchestrator.service
-systemctl status evander-effect-orchestrator.service
-```
+In Admin Web, select the affected directory first. Capture the source work-item ID, workflow run or trace ID, session ID, any approval request ID, and the exact commit SHA if code was produced. Those few identifiers usually let an administrator or support engineer trace the same run across the detailed records.
 
-For the Northstar run, record these values together: directory path, source item ID, trigger event ID, trace ID, workflow run ID, configuration revision, session ID, backend execution or VM ID, approval request IDs, managed repository ID, pushed SHA, and cleanup result.
+Do not delete queue, journal, approval, or session files to “unstick” a run. First establish whether it is waiting, running, waiting for completion, failed, skipped, exhausted, expired, or already completed. Use the supported Admin Web or CLI action after that diagnosis.
 
-Do not “unstick” a run by deleting queue, journal, approval, or session files. First determine whether the item is pending, running, completion-pending, failed, skipped, exhausted, expired, or already completed under the same idempotency key. Use the supported Admin Web controls or CLI after that diagnosis.
+> <span class="sidebar-kicker">Administrator runbook</span> **Host-level checks**
+>
+> Start with broad status and then follow identifiers rather than timestamps alone:
+>
+> ```bash
+> evander-cli status --runtime-dir runtime --json
+> evander-cli list-sessions --runtime-dir runtime --all
+> evander-cli list-approvals --runtime-dir runtime
+> systemctl status evander-trigger-orchestrator.service
+> systemctl status evander-effect-orchestrator.service
+> ```
+>
+> For a deep support handoff, add the directory path, configuration revision, backend execution or VM ID, managed repository ID, cleanup result, and any relevant node-execution IDs. Run bootstrap-aware commands against the intended runtime and back up an unfamiliar runtime first.
+
+[^idempotency]: Idempotency means that repeating the same operation has the same intended effect as performing it once. Here, redelivery returns to the saved event and run instead of starting unrelated work.
+
+[^sandbox]: In this manual, a sandbox is the bounded execution environment used for one session—a disposable VM or a container on a worker VM—not an unrestricted host workspace.
+
+[^provenance]: Provenance is evidence of a result's origin and history: the event, session, code version, decisions, and actions that produced it.
 
 ## Source trail
 
