@@ -793,7 +793,7 @@ def test_worker_provisions_session_git_write_key_and_preserves_config(
     assert "# BEGIN evander git host" in config_text
     assert "# BEGIN evander git write host" in config_text
     assert "IdentityFile ~/.ssh/evander-git" in config_text
-    assert "IdentityFile ~/.ssh/evander-git-write" in config_text
+    assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in config_text
 
     daemon.start_job(
         WorkerJobRequest(
@@ -913,7 +913,9 @@ def test_worker_api_provisions_session_git_write_key(
     config_text = (paths.agent_home / ".ssh" / "config").read_text(encoding="utf-8")
     assert "Host evander-git-host" in config_text
     assert "Host evander-git-host-write" in config_text
-    assert "IdentityFile ~/.ssh/evander-git-write" in config_text
+    assert (
+        f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in config_text
+    )
 
 
 def test_worker_provisions_dotted_git_write_key_name(
@@ -957,7 +959,9 @@ def test_worker_provisions_dotted_git_write_key_name(
     assert (ssh_dir / "foo.bar").read_text(encoding="utf-8") == "private key\n"
     assert (ssh_dir / "foo.bar.pub").is_file()
     assert record.git_ssh_alias == "evander-git-host-write"
-    assert "IdentityFile ~/.ssh/foo.bar" in (ssh_dir / "config").read_text(encoding="utf-8")
+    assert f"IdentityFile {ssh_dir / 'foo.bar'}" in (ssh_dir / "config").read_text(
+        encoding="utf-8"
+    )
     assert not list(ssh_dir.glob(".foo.bar-*"))
 
 

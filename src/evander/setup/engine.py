@@ -1154,6 +1154,7 @@ class SetupManager:
         git_ssh_alias = _local_worker_git_ssh_alias()
         git_ssh_source_dir = _local_worker_git_ssh_source_dir(run_user)
         allowed_git_source_prefix = f"ssh://{git_ssh_alias}{git_root}/"
+        allowed_git_write_source_prefix = f"ssh://{git_ssh_alias}-write{git_root}/"
         worker_host, worker_port = _local_container_worker_bind(state)
         readonly_mount_args = " ".join(
             f"--readonly-mount {host_path}:{container_path}"
@@ -1182,6 +1183,7 @@ class SetupManager:
                     "--sandbox-profile default "
                     f"--container-user {container_user} "
                     f"--allowed-git-source-prefix {allowed_git_source_prefix} "
+                    f"--allowed-git-source-prefix {allowed_git_write_source_prefix} "
                     f"--git-ssh-source-dir {git_ssh_source_dir} "
                     f"{readonly_mount_args}"
                 ),

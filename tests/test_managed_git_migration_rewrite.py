@@ -188,7 +188,12 @@ def test_apply_rewrites_all_legacy_state_and_records_bindings(tmp_path: Path) ->
                         "canonical_release_branch_prefix": "releases/<project-id>/",
                     },
                 }
-            }
+            },
+            "git_promotions": {
+                "promotion-7": {
+                    "outputs": {"host_repo_path": str(source)},
+                }
+            },
         },
     )
     _write_json(
@@ -227,6 +232,7 @@ def test_apply_rewrites_all_legacy_state_and_records_bindings(tmp_path: Path) ->
     assert "repo_source" not in issue
     session = json.loads((runtime / "sessions.json").read_text())["session-7"]
     metadata = session["metadata"]
+    assert metadata["managed_repo_id"] == repo_id
     assert metadata["managed_git_remote_reconciliation_required"] is True
     assert metadata["container_git_write_access"]["managed_repo_id"] == repo_id
     assert "bare_repo_path" not in metadata["container_git_write_access"]
@@ -239,6 +245,10 @@ def test_apply_rewrites_all_legacy_state_and_records_bindings(tmp_path: Path) ->
         "canonical_release_branch_prefix": "releases/<project-id>/",
         "managed_repo_id": repo_id,
     }
+    promotion_output = json.loads(
+        (runtime / "addons" / "team-addon" / "state.json").read_text()
+    )["git_promotions"]["promotion-7"]["outputs"]
+    assert promotion_output == {"host_repo_path": str(source)}
     workflow_node = json.loads(
         (runtime / "workflow-packs" / "legacy.json").read_text()
     )["nodes"][0]

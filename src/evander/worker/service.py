@@ -870,7 +870,7 @@ class WorkerDaemon:
             write_git_ssh_alias=write_git_ssh_alias,
             git_host=request.git_host,
             git_user=request.git_user,
-            identity_file=f"~/.ssh/{request.key_name}",
+            identity_file=str(key_path),
         )
         metadata = self._read_session_metadata(paths)
         metadata["git_write_key"] = {

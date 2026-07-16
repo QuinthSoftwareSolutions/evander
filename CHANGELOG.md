@@ -40,6 +40,14 @@
   and container execution timeouts as timed-out release verification runs.
 - Preserved upgrades from ADO worker configurations containing retired automatic-PR settings and
   made the managed-Git operation timeout configurable through host and directory provider config.
+- Scoped Team-state migration verification to active project Git configurations, so historical
+  promotion output may retain audit-only legacy path fields without blocking migration finalization.
+- Fixed container-worker managed-Git write aliases to reference their session-local SSH key by
+  absolute path, allowing post-migration Team-agent reconciliation to authenticate correctly.
+- Kept the local container-worker setup unit’s Git source allowlist aligned with the restricted
+  write alias used during managed-Git reconciliation.
+- Recorded a uniquely resolved managed repository on migrated session metadata, allowing
+  reconciliation to dispatch Team agents instead of leaving their repository identity nested.
 
 ## 2026-07-13 - Managed PR And Immutable Recovery Hardening
 

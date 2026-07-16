@@ -371,6 +371,10 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
         "--allowed-git-source-prefix "
         f"ssh://evander-git-host{tmp_path / 'runtime' / 'managed-git'}/"
     ) in unit
+    assert (
+        "--allowed-git-source-prefix "
+        f"ssh://evander-git-host-write{tmp_path / 'runtime' / 'managed-git'}/"
+    ) in unit
     assert "--git-ssh-source-dir /home/operator/.ssh" in unit
     assert (
         "--readonly-mount "
