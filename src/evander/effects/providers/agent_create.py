@@ -395,6 +395,17 @@ class AgentCreateEffectProvider(EffectProviderBase):
             config=config,
             directory_path=directory_path,
         )
+        connector_grants = _validated_connector_grants(
+            context,
+            directory_path=directory_path,
+            session_id=session_id,
+            value=payload.get("connector_grants"),
+        )
+        if connector_grants is None and existing_session is not None:
+            connector_grants = {
+                connector_id: list(operation_names)
+                for connector_id, operation_names in existing_session.connector_grants.items()
+            }
         manifest = build_container_session_manifest(
             config=effective_config_for_directory(context, directory_path),
             session_id=session_id,
@@ -402,12 +413,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             model=model,
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=resolved_allowed_tools,
-            connector_grants=_validated_connector_grants(
-                context,
-                directory_path=directory_path,
-                session_id=session_id,
-                value=payload.get("connector_grants"),
-            ),
+            connector_grants=connector_grants,
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             allowed_contact_ids=resolved_contact_ids,

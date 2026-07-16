@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -147,6 +149,25 @@ def test_connector_definition_rejects_reserved_headers_and_requires_explicit_app
     ]
     with pytest.raises(ValidationError, match="requires_approval"):
         ConnectorDirectoryConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("headers", "error"),
+    [
+        ({"Bad Header": "value"}, "valid HTTP field name"),
+        ({"X-Invalid": "first\nsecond"}, "invalid HTTP characters"),
+    ],
+)
+def test_connector_definition_rejects_invalid_fixed_header_syntax(
+    headers: dict[str, str], error: str
+) -> None:
+    payload = _config().model_dump(mode="json")
+    payload["connectors"]["documents"]["config"]["headers"] = headers  # type: ignore[index]
+    config = ConnectorDirectoryConfig.model_validate(payload)
+    service = _service(Path("/tmp/unused-connectors-test"), config)
+
+    with pytest.raises(ValueError, match=error):
+        service.validate_config(config)
 
 
 def test_connector_overlay_accepts_partial_child_override_and_normalizes_names() -> None:
@@ -345,7 +366,9 @@ def test_rest_connector_redacts_transport_failure_details(tmp_path: Path) -> Non
     assert str(raised.value) == "connector upstream request failed"
 
 
-def test_filesystem_connector_stages_artifact_and_blocks_escape(tmp_path: Path) -> None:
+def test_filesystem_connector_stages_artifact_and_blocks_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "approved"
     root.mkdir()
     (root / "report.txt").write_text("approved report", encoding="utf-8")
@@ -404,6 +427,36 @@ def test_filesystem_connector_stages_artifact_and_blocks_escape(tmp_path: Path) 
             )
         )
 
+    report = root / "report.txt"
+    original_open = os.open
+
+    def swap_file_to_symlink_before_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == "report.txt" and not report.is_symlink():
+            report.unlink()
+            report.symlink_to(outside)
+        if dir_fd is None:
+            return original_open(path, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swap_file_to_symlink_before_open)
+
+    with pytest.raises(ConnectorInvocationError, match="approved root"):
+        asyncio.run(
+            service.invoke(
+                session=session,
+                connector_id="reports",
+                operation_name="get_report",
+                arguments={"name": "report.txt"},
+            )
+        )
+    assert outside.read_text(encoding="utf-8") == "outside"
+
 
 def test_oauth_token_fetch_is_coalesced_for_concurrent_calls(tmp_path: Path) -> None:
     token_calls = 0
@@ -457,6 +510,56 @@ def test_oauth_token_fetch_is_coalesced_for_concurrent_calls(tmp_path: Path) -> 
     assert token_calls == 1
 
 
+def test_oauth_write_401_evicts_token_without_automatic_retry(tmp_path: Path) -> None:
+    token_calls = 0
+    authorization_headers: list[str] = []
+
+    def auth_handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal token_calls
+        token_calls += 1
+        return httpx.Response(
+            200,
+            json={"access_token": f"oauth-token-{token_calls}", "expires_in": 3600},
+        )
+
+    def rest_handler(request: httpx.Request) -> httpx.Response:
+        authorization_headers.append(request.headers["authorization"])
+        return httpx.Response(401, json={"message": "rejected"})
+
+    config = _config(access="write", method="POST")
+    config.auth_profiles["oauth"] = ConnectorAuthProfile.model_validate(
+        {
+            "type": "oauth2_client_credentials",
+            "token_url": "https://identity.example.test/oauth/token",
+            "client_id_env": "CLIENT_ID",
+            "client_secret_env": "CLIENT_SECRET",
+        }
+    )
+    config.connectors["documents"].auth_profile = "oauth"
+    service = _service(
+        tmp_path,
+        config,
+        rest_transport=httpx.MockTransport(rest_handler),
+        auth_transport=httpx.MockTransport(auth_handler),
+        environ={"CLIENT_ID": "id", "CLIENT_SECRET": "secret"},
+    )
+
+    async def invoke_twice_sequentially() -> None:
+        for _attempt in range(2):
+            with pytest.raises(ConnectorInvocationError, match="rejected authentication"):
+                await service.invoke(
+                    session=_session(),
+                    connector_id="documents",
+                    operation_name="get_document",
+                    arguments={"id": "one"},
+                )
+
+    asyncio.run(invoke_twice_sequentially())
+
+    assert token_calls == 2
+    assert authorization_headers == ["Bearer oauth-token-1", "Bearer oauth-token-2"]
+
+
 def test_gateway_registers_tools_and_operation_approval_precedes_network(tmp_path: Path) -> None:
     context = build_runtime(
         GatewayConfig(
@@ -501,7 +604,7 @@ def test_gateway_registers_tools_and_operation_approval_precedes_network(tmp_pat
 
 
 def test_admin_connector_api_is_revisioned_privileged_and_validates_before_write(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = build_admin_runtime(_gateway_config_path(tmp_path))
     configured = _config().model_dump(mode="json", exclude_none=True)
@@ -539,11 +642,45 @@ def test_admin_connector_api_is_revisioned_privileged_and_validates_before_write
     assert readback["revision"] == state["revision"]
     assert readback["connectors"][0]["display_name"] == "Documents"
 
+    lock_held = False
+    lock_entries = 0
+
+    @contextmanager
+    def tracked_mutation_lock():
+        nonlocal lock_held, lock_entries
+        assert lock_held is False
+        lock_held = True
+        lock_entries += 1
+        try:
+            yield
+        finally:
+            lock_held = False
+
+    monkeypatch.setattr(
+        service.operations_admin,
+        "admin_config_mutation_lock",
+        tracked_mutation_lock,
+    )
+    for method_name in (
+        "read_directory_domain_config",
+        "compute_directory_effective_config",
+        "write_directory_domain_config",
+    ):
+        original = getattr(service.operations_admin, method_name)
+
+        def guarded_call(*args: object, _original=original, **kwargs: object):
+            assert lock_held is True
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(service.operations_admin, method_name, guarded_call)
+
     saved = client.put(
         "/api/admin/connectors?directory_path=root",
         json={"expected_revision": state["revision"], "config": configured},
     )
     assert saved.status_code == 200
+    assert lock_entries == 1
+    assert lock_held is False
 
 
 def test_tool_call_audit_surfaces_connector_identity() -> None:

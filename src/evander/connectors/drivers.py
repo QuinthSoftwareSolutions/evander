@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 from pathlib import Path
 import re
 from time import monotonic
@@ -19,6 +20,7 @@ from evander.connectors.models import (
     ConnectorOperationDefinition,
 )
 from evander.connectors.registry import ConnectorCallContext
+from evander.session_artifacts import open_relative_regular_file_no_follow
 
 
 PROTECTED_CONNECTOR_HEADERS = frozenset(
@@ -36,6 +38,7 @@ PROTECTED_CONNECTOR_HEADERS = frozenset(
     }
 )
 _PATH_TEMPLATE_FIELD = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+_HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 
 class ConnectorInvocationError(RuntimeError):
@@ -88,11 +91,30 @@ class RestConnectorDriver:
         if not isinstance(fixed_headers, dict):
             raise ValueError("REST connector config.headers must be an object")
         for name, value in fixed_headers.items():
-            normalized = str(name or "").strip().lower()
+            header_name = str(name or "")
+            normalized = header_name.strip().lower()
             if not normalized or normalized in PROTECTED_CONNECTOR_HEADERS:
                 raise ValueError(f"REST connector header {name!r} is reserved")
+            if not _HTTP_HEADER_NAME.fullmatch(header_name):
+                raise ValueError(
+                    f"REST connector header {name!r} must be a valid HTTP field name"
+                )
             if not isinstance(value, str):
                 raise ValueError("REST connector fixed header values must be strings")
+            try:
+                encoded_value = value.encode("ascii")
+            except UnicodeEncodeError as exc:
+                raise ValueError(
+                    f"REST connector header {name!r} value must contain only ASCII characters"
+                ) from exc
+            if (
+                value[:1] in {" ", "\t"}
+                or value[-1:] in {" ", "\t"}
+                or any(byte == 127 or (byte < 32 and byte != 9) for byte in encoded_value)
+            ):
+                raise ValueError(
+                    f"REST connector header {name!r} value contains invalid HTTP characters"
+                )
         for operation_name, operation in definition.operations.items():
             if operation.disabled:
                 continue
@@ -306,29 +328,41 @@ class FilesystemConnectorDriver:
         except OSError as exc:
             raise ConnectorInvocationError("configured connector root is unavailable") from exc
         rendered = _render_path_template(str(operation.config["path"]), arguments)
-        relative = Path(rendered)
+        relative = Path(rendered.replace("\\", "/"))
         if relative.is_absolute() or ".." in relative.parts:
             raise ConnectorInvocationError("connector file path must remain relative")
         try:
-            candidate = (root / relative).resolve(strict=True)
-            candidate.relative_to(root)
+            fd = open_relative_regular_file_no_follow(
+                root,
+                relative.as_posix(),
+                flags=os.O_RDONLY,
+                path_label="connector file path",
+                unsafe_path_message=(
+                    "connector file path must not contain symlinks or leave the approved root"
+                ),
+            )
         except (OSError, ValueError) as exc:
             raise ConnectorInvocationError("connector file is outside the approved root") from exc
-        if not candidate.is_file():
+        if fd is None:
             raise ConnectorInvocationError("connector file must be a regular file")
-        size = candidate.stat().st_size
         max_bytes = int(operation.max_response_bytes or 0)
-        if size > max_bytes:
-            raise ConnectorInvocationError(
-                f"connector file exceeded max_response_bytes: {size} > {max_bytes}"
-            )
-        content = candidate.read_bytes()
+        with os.fdopen(fd, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            if size > max_bytes:
+                raise ConnectorInvocationError(
+                    f"connector file exceeded max_response_bytes: {size} > {max_bytes}"
+                )
+            content = handle.read(max_bytes + 1)
+            if len(content) > max_bytes:
+                raise ConnectorInvocationError(
+                    f"connector file exceeded max_response_bytes: > {max_bytes}"
+                )
         metadata = context.artifact_store.stage(
             provider=f"connector:{connector_id}",
             session_id=context.session_id,
             content=content,
-            original_filename=candidate.name,
-            mime_type=mimetypes.guess_type(candidate.name)[0],
+            original_filename=relative.name,
+            mime_type=mimetypes.guess_type(relative.name)[0],
             metadata={"connector_id": connector_id, "operation": operation_name},
         )
         return ConnectorInvocationResult(

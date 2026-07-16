@@ -870,6 +870,16 @@ class WorkerDaemon:
             write_git_ssh_alias=write_git_ssh_alias,
             git_host=request.git_host,
             git_user=request.git_user,
+            read_identity_file="~/.ssh/evander-git",
+            identity_file=f"~/.ssh/{request.key_name}",
+        )
+        self._write_git_write_ssh_config(
+            config_path=_host_git_ssh_config_path(paths.agent_home),
+            read_git_ssh_alias=request.git_ssh_alias,
+            write_git_ssh_alias=write_git_ssh_alias,
+            git_host=request.git_host,
+            git_user=request.git_user,
+            read_identity_file=str(ssh_dir / "evander-git"),
             identity_file=str(key_path),
         )
         metadata = self._read_session_metadata(paths)
@@ -1963,6 +1973,7 @@ class WorkerDaemon:
         write_git_ssh_alias: str,
         git_host: str,
         git_user: str,
+        read_identity_file: str,
         identity_file: str,
     ) -> None:
         cls._ensure_managed_ssh_dir(config_path.parent)
@@ -1989,7 +2000,7 @@ class WorkerDaemon:
                 f"Host {read_git_ssh_alias}",
                 f"  HostName {git_host}",
                 f"  User {git_user}",
-                "  IdentityFile ~/.ssh/evander-git",
+                f"  IdentityFile {read_identity_file}",
                 "  IdentitiesOnly yes",
                 "  StrictHostKeyChecking accept-new",
                 "# END evander git host",
@@ -2230,10 +2241,23 @@ def _git_write_ssh_alias(read_git_ssh_alias: str) -> str:
 
 
 def _git_subprocess_env(agent_home: Path) -> dict[str, str]:
+    host_config_path = _host_git_ssh_config_path(agent_home)
+    try:
+        host_config_stat = host_config_path.lstat()
+    except FileNotFoundError:
+        config_path = agent_home / ".ssh" / "config"
+    else:
+        if not stat.S_ISREG(host_config_stat.st_mode):
+            raise ValueError("Host Git SSH config must be a regular file")
+        config_path = host_config_path
     return os.environ | {
         "HOME": str(agent_home),
-        "GIT_SSH_COMMAND": f"ssh -F {agent_home / '.ssh' / 'config'}",
+        "GIT_SSH_COMMAND": f"ssh -F {config_path}",
     }
+
+
+def _host_git_ssh_config_path(agent_home: Path) -> Path:
+    return agent_home.parent / "host-ssh" / "config"
 
 
 def _worker_job_uses_claude(record: WorkerJobRecord) -> bool:

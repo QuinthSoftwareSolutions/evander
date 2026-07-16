@@ -5621,6 +5621,7 @@ def test_agent_create_container_upserts_when_session_exists(
             vm_provider="container_worker_vm",
             model="gpt-5.4",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
+            connector_grants={"manually-assigned": ["read"]},
             web_search_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={
@@ -5689,6 +5690,7 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated is not None
     assert updated.model == "gpt-5.5"
     assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN, ToolName.STAGE_ARTIFACT]
+    assert updated.connector_grants == {"manually-assigned": ["read"]}
     assert updated.web_search_enabled is True
     assert updated.metadata["execution_backend"] == "container_worker_vm"
     assert updated.metadata["agent_provider"] == "claude"
@@ -5713,6 +5715,22 @@ def test_agent_create_container_upserts_when_session_exists(
         in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-clear-connectors",
+            display_name="Clear connectors",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            existing_agent_behavior="upsert",
+            connector_grants={},
+        )
+    ).execute()
+
+    cleared = session_repository.get_session("session-1")
+    assert cleared is not None
+    assert cleared.connector_grants == {}
 
 
 def test_agent_create_container_upsert_preserves_omitted_allowed_contacts(

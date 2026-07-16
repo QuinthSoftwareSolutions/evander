@@ -485,21 +485,39 @@ def _create_journal_entry_with_evidence(
             retry_if_failed=retry_if_failed,
         )
     if operation["status"] == "pending_create":
-        try:
-            created = _client(context).create_journal_entry(payload)
-            journal_entry_id = str(created.get("id") or "").strip()
-            if not journal_entry_id:
-                raise BokioEvidenceError("Bokio journal-entry create response did not include an ID")
-            operation = store.mark_journal_entry_created(
-                operation_key=operation["operation_key"],
-                journal_entry_id=journal_entry_id,
-                result=created,
-            )
-        except Exception as exc:
-            store.mark_journal_entry_operation_needs_attention(
-                operation_key=operation["operation_key"], error=exc
-            )
-            raise
+        operation, claimed = store.claim_journal_entry_creation(
+            operation_key=operation["operation_key"]
+        )
+        if claimed:
+            try:
+                created = _client(context).create_journal_entry(payload)
+                journal_entry_id = str(created.get("id") or "").strip()
+                if not journal_entry_id:
+                    raise BokioEvidenceError(
+                        "Bokio journal-entry create response did not include an ID"
+                    )
+                operation = store.mark_journal_entry_created(
+                    operation_key=operation["operation_key"],
+                    journal_entry_id=journal_entry_id,
+                    result=created,
+                )
+            except Exception as exc:
+                store.mark_journal_entry_operation_needs_attention(
+                    operation_key=operation["operation_key"], error=exc
+                )
+                raise
+    if operation["status"] == "completed":
+        return {**operation, "idempotent": True}
+    if operation["status"] == "creating":
+        raise BokioEvidenceError(
+            "Bokio journal-entry creation is already in flight or its outcome is unknown; "
+            "inspect Bokio before retrying"
+        )
+    if operation["status"] == "needs_attention":
+        operation = store.resume_journal_entry_operation(
+            operation_key=operation["operation_key"],
+            retry_if_failed=retry_if_failed,
+        )
     journal_entry_id = str(operation.get("journal_entry_id") or "").strip()
     if not journal_entry_id:
         raise BokioEvidenceError("Bokio journal-entry operation is missing its created entry ID")

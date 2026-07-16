@@ -141,39 +141,46 @@ def connector_routes(
         if not expected_revision:
             return json_error("expected_revision is required", status_code=428)
         try:
-            current = _payload(directory_path)
-            if current["revision"] != expected_revision:
-                return json_error(
-                    "Connector configuration changed before save. Reload before saving again.",
-                    status_code=409,
+            with service.operations_admin.admin_config_mutation_lock():
+                current = _payload(directory_path)
+                if current["revision"] != expected_revision:
+                    return json_error(
+                        "Connector configuration changed before save. Reload before saving again.",
+                        status_code=409,
+                    )
+                config_payload = payload.get("config")
+                if not isinstance(config_payload, dict):
+                    raise ValueError("config must be a JSON object")
+                current_resolution_result = (
+                    service.operations_admin.compute_directory_effective_config(
+                        directory_path, "connectors"
+                    )
                 )
-            config_payload = payload.get("config")
-            if not isinstance(config_payload, dict):
-                raise ValueError("config must be a JSON object")
-            current_resolution_result = service.operations_admin.compute_directory_effective_config(
-                directory_path, "connectors"
-            )
-            if not current_resolution_result.ok or current_resolution_result.data is None:
-                raise ValueError("Unable to resolve parent connector configuration")
-            parent_effective: dict[str, Any] = {
-                "auth_profiles": {},
-                "connectors": {},
-            }
-            for layer in current_resolution_result.data.resolution.applied_layers:
-                if layer.directory_path == directory_path:
-                    continue
-                parent_effective = _deep_merge(parent_effective, layer.overlay)
-            candidate = ConnectorDirectoryConfig.model_validate(
-                _deep_merge(parent_effective, config_payload)
-            )
-            connector_service.validate_config(candidate)
-            result = service.operations_admin.write_directory_domain_config(
-                directory_path, "connectors", config_payload
-            )
-            if not result.ok:
-                message = result.errors[0].message if result.errors else "Unable to save connectors"
-                raise ValueError(message)
-            return JSONResponse(_payload(directory_path))
+                if not current_resolution_result.ok or current_resolution_result.data is None:
+                    raise ValueError("Unable to resolve parent connector configuration")
+                parent_effective: dict[str, Any] = {
+                    "auth_profiles": {},
+                    "connectors": {},
+                }
+                for layer in current_resolution_result.data.resolution.applied_layers:
+                    if layer.directory_path == directory_path:
+                        continue
+                    parent_effective = _deep_merge(parent_effective, layer.overlay)
+                candidate = ConnectorDirectoryConfig.model_validate(
+                    _deep_merge(parent_effective, config_payload)
+                )
+                connector_service.validate_config(candidate)
+                result = service.operations_admin.write_directory_domain_config(
+                    directory_path, "connectors", config_payload
+                )
+                if not result.ok:
+                    message = (
+                        result.errors[0].message
+                        if result.errors
+                        else "Unable to save connectors"
+                    )
+                    raise ValueError(message)
+                return JSONResponse(_payload(directory_path))
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
 

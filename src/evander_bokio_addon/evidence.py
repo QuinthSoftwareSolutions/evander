@@ -298,11 +298,21 @@ class BokioEvidenceStore:
             raise BokioEvidenceError("evidence_ids must contain at least one evidence ID")
         normalized_payload = _safe_json_object(payload)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM journal_entry_operations WHERE operation_key = ?", (normalized_key,)
             ).fetchone()
             if row is not None:
-                return _operation_from_row(row)
+                operation = _operation_from_row(row)
+                if (
+                    operation["payload"] != normalized_payload
+                    or operation["evidence_ids"] != normalized_evidence_ids
+                ):
+                    raise BokioEvidenceError(
+                        "operation_key is already associated with a different "
+                        "journal-entry request"
+                    )
+                return operation
             for evidence_id in normalized_evidence_ids:
                 self._get_with_connection(connection, evidence_id)
             now = _storage_datetime(datetime.now(UTC))
@@ -323,16 +333,40 @@ class BokioEvidenceStore:
             )
             return self._operation_with_connection(connection, normalized_key)
 
+    def claim_journal_entry_creation(
+        self, *, operation_key: str
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically claim the one allowed attempt to create a journal entry."""
+
+        normalized_key = _required_text(operation_key, "operation_key")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            claimed = connection.execute(
+                """
+                UPDATE journal_entry_operations
+                SET status = ?, updated_at = ?
+                WHERE operation_key = ? AND status = ?
+                """,
+                (
+                    "creating",
+                    _storage_datetime(datetime.now(UTC)),
+                    normalized_key,
+                    "pending_create",
+                ),
+            ).rowcount
+            operation = self._operation_with_connection(connection, normalized_key)
+            return operation, claimed == 1
+
     def mark_journal_entry_created(
         self, *, operation_key: str, journal_entry_id: str, result: Any
     ) -> dict[str, Any]:
         normalized_key = _required_text(operation_key, "operation_key")
         with self._connect() as connection:
-            connection.execute(
+            updated = connection.execute(
                 """
                 UPDATE journal_entry_operations
                 SET status = ?, journal_entry_id = ?, result_json = ?, updated_at = ?
-                WHERE operation_key = ?
+                WHERE operation_key = ? AND status = ?
                 """,
                 (
                     "pending_evidence",
@@ -340,8 +374,13 @@ class BokioEvidenceStore:
                     json.dumps(_safe_json_value(result), sort_keys=True),
                     _storage_datetime(datetime.now(UTC)),
                     normalized_key,
+                    "creating",
                 ),
-            )
+            ).rowcount
+            if updated != 1:
+                raise BokioEvidenceError(
+                    "Bokio journal-entry creation was not claimed by this operation"
+                )
             return self._operation_with_connection(connection, normalized_key)
 
     def mark_journal_entry_operation_completed(self, *, operation_key: str) -> dict[str, Any]:

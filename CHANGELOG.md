@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-07-16 - Connector, Managed-Git, And Bokio Review Hardening
+
+- Atomically claimed Bokio journal-entry creation before the external request, retained unknown
+  outcomes for manual inspection, and rejected idempotency keys reused with a different payload or
+  evidence set.
+- Kept container-worker Git write identities container-visible while using a separate host-only SSH
+  configuration for worker-side clone and reconciliation commands.
+- Preserved existing connector grants when container-agent upserts omit the field, while retaining
+  an explicit empty grant object as the supported way to clear access.
+- Read filesystem connector artifacts through one symlink-safe, bounded file descriptor; serialized
+  connector revision checks with configuration writes; evicted OAuth tokens rejected on writes
+  without retrying the write; and rejected malformed fixed REST headers during configuration.
+
 ## 2026-07-16 - Bokio Connector Evidence Association
 
 - Added durable, content-deduplicated Bokio evidence records imported from
@@ -42,8 +55,8 @@
   made the managed-Git operation timeout configurable through host and directory provider config.
 - Scoped Team-state migration verification to active project Git configurations, so historical
   promotion output may retain audit-only legacy path fields without blocking migration finalization.
-- Fixed container-worker managed-Git write aliases to reference their session-local SSH key by
-  absolute path, allowing post-migration Team-agent reconciliation to authenticate correctly.
+- Fixed host-side container-worker managed-Git reconciliation to use a host-only SSH configuration
+  with absolute session-key paths.
 - Kept the local container-worker setup unit’s Git source allowlist aligned with the restricted
   write alias used during managed-Git reconciliation.
 - Recorded a uniquely resolved managed repository on migrated session metadata, allowing

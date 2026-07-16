@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import httpx
@@ -168,6 +170,88 @@ def test_bokio_evidence_store_deduplicates_content_and_retains_provenance(tmp_pa
             source_type="communication_artifact",
             source_key="comm_bad",
         )
+
+
+def test_bokio_journal_operation_rejects_idempotency_key_reuse_for_a_different_request(
+    tmp_path: Path,
+) -> None:
+    store = BokioEvidenceStore(tmp_path)
+    first_evidence, _created = store.ingest_bytes(
+        content=b"%PDF-1.7\nfirst receipt",
+        filename="first.pdf",
+        source_type="communication_artifact",
+        source_key="comm_first",
+        mime_type="application/pdf",
+    )
+    second_evidence, _created = store.ingest_bytes(
+        content=b"%PDF-1.7\nsecond receipt",
+        filename="second.pdf",
+        source_type="communication_artifact",
+        source_key="comm_second",
+        mime_type="application/pdf",
+    )
+    original = store.begin_journal_entry_operation(
+        operation_key="receipt-operation",
+        payload={"title": "First", "items": []},
+        evidence_ids=[first_evidence["evidence_id"]],
+    )
+
+    repeated = store.begin_journal_entry_operation(
+        operation_key="receipt-operation",
+        payload={"items": [], "title": "First"},
+        evidence_ids=[first_evidence["evidence_id"]],
+    )
+
+    assert repeated == original
+    with pytest.raises(BokioEvidenceError, match="different journal-entry request"):
+        store.begin_journal_entry_operation(
+            operation_key="receipt-operation",
+            payload={"title": "Changed", "items": []},
+            evidence_ids=[first_evidence["evidence_id"]],
+        )
+    with pytest.raises(BokioEvidenceError, match="different journal-entry request"):
+        store.begin_journal_entry_operation(
+            operation_key="receipt-operation",
+            payload={"title": "First", "items": []},
+            evidence_ids=[second_evidence["evidence_id"]],
+        )
+
+
+def test_bokio_journal_creation_claim_survives_restart_without_being_reclaimed(
+    tmp_path: Path,
+) -> None:
+    store = BokioEvidenceStore(tmp_path)
+    evidence, _created = store.ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    store.begin_journal_entry_operation(
+        operation_key="receipt-operation",
+        payload={"title": "Receipt", "items": []},
+        evidence_ids=[evidence["evidence_id"]],
+    )
+
+    claimed_operation, claimed = store.claim_journal_entry_creation(
+        operation_key="receipt-operation"
+    )
+    reopened_store = BokioEvidenceStore(tmp_path)
+    reopened_operation = reopened_store.begin_journal_entry_operation(
+        operation_key="receipt-operation",
+        payload={"title": "Receipt", "items": []},
+        evidence_ids=[evidence["evidence_id"]],
+    )
+    retry_operation, reclaimed = reopened_store.claim_journal_entry_creation(
+        operation_key="receipt-operation"
+    )
+
+    assert claimed is True
+    assert claimed_operation["status"] == "creating"
+    assert reopened_operation["status"] == "creating"
+    assert reclaimed is False
+    assert retry_operation["status"] == "creating"
 
 
 def test_bokio_mcp_imports_only_the_callers_connector_or_email_artifact(tmp_path: Path) -> None:
@@ -340,6 +424,65 @@ def test_bokio_mcp_creates_entry_and_attaches_evidence_idempotently(
         "journal-entries",
         "uploads",
     ]
+
+
+def test_bokio_mcp_claims_journal_entry_creation_before_calling_bokio(
+    tmp_path: Path, monkeypatch
+) -> None:
+    create_started = threading.Event()
+    release_create = threading.Event()
+    request_lock = threading.Lock()
+    create_requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal create_requests
+        if request.url.path.endswith("/journal-entries"):
+            with request_lock:
+                create_requests += 1
+            create_started.set()
+            if not release_create.wait(timeout=5):
+                raise AssertionError("timed out waiting to release Bokio create request")
+            return httpx.Response(200, json={"id": "journal-entry-1"})
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    evidence, _created = BokioEvidenceStore(tmp_path).ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_journal_entry_with_evidence"],
+    )
+    arguments = {
+        "payload": {"title": "OpenAI receipt", "items": []},
+        "evidence_ids": [evidence["evidence_id"]],
+        "operation_key": "openai-july-receipt",
+        "session_id": "session-1",
+    }
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            server.tools["bokio_create_journal_entry_with_evidence"], **arguments
+        )
+        assert create_started.wait(timeout=5)
+        second = executor.submit(
+            server.tools["bokio_create_journal_entry_with_evidence"], **arguments
+        )
+        try:
+            with pytest.raises(BokioEvidenceError, match="in flight or its outcome is unknown"):
+                second.result(timeout=5)
+        finally:
+            release_create.set()
+        first_result = first.result(timeout=5)
+
+    assert first_result["operation"]["status"] == "completed"
+    assert create_requests == 1
 
 
 def test_bokio_mcp_resumes_evidence_after_entry_create_without_recreating_entry(

@@ -243,12 +243,17 @@ class ConnectorService:
                 arguments=arguments,
             )
         except ConnectorUpstreamAuthenticationError:
-            if not connector.auth_profile or operation.access != "read":
+            if not connector.auth_profile:
                 raise
-            profile = config.auth_profiles[connector.auth_profile]
+            profile = config.auth_profiles.get(connector.auth_profile)
+            if profile is None:
+                raise
             if profile.type != "oauth2_client_credentials":
                 raise
-            self._oauth_tokens.pop((session.directory_path, connector.auth_profile), None)
+            token_key = (session.directory_path, connector.auth_profile)
+            self._oauth_tokens.pop(token_key, None)
+            if operation.access != "read":
+                raise
             try:
                 retry_context = ConnectorCallContext(
                     session_id=session.session_id,
@@ -269,6 +274,9 @@ class ConnectorService:
                     operation=operation,
                     arguments=arguments,
                 )
+            except ConnectorUpstreamAuthenticationError:
+                self._oauth_tokens.pop(token_key, None)
+                raise
             except httpx.HTTPError as exc:
                 raise ConnectorInvocationError("connector upstream request failed") from exc
         except httpx.HTTPError as exc:
