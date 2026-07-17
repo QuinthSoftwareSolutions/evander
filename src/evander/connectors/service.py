@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from dataclasses import dataclass
+from hashlib import sha256
 from inspect import isclass
 import json
 import os
@@ -41,6 +42,8 @@ _MAX_OAUTH_TOKEN_RESPONSE_BYTES = 64 * 1024
 class _OAuthToken:
     value: str
     expires_at_monotonic: float
+    refresh_at_monotonic: float
+    profile_fingerprint: str
 
 
 def default_connector_registry(
@@ -334,18 +337,31 @@ class ConnectorService:
         profile: ConnectorAuthProfile,
     ) -> str:
         key = (directory_path, profile_id)
+        client_id = self._secret(profile.client_id_env)
+        client_secret = self._secret(profile.client_secret_env)
+        profile_fingerprint = self._oauth_profile_fingerprint(
+            profile,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
         cached = self._oauth_tokens.get(key)
         now = monotonic()
-        if cached is not None and cached.expires_at_monotonic > now + 30:
+        if (
+            cached is not None
+            and cached.profile_fingerprint == profile_fingerprint
+            and cached.refresh_at_monotonic > now
+        ):
             return cached.value
         lock = self._oauth_locks.setdefault(key, asyncio.Lock())
         async with lock:
             cached = self._oauth_tokens.get(key)
             now = monotonic()
-            if cached is not None and cached.expires_at_monotonic > now + 30:
+            if (
+                cached is not None
+                and cached.profile_fingerprint == profile_fingerprint
+                and cached.refresh_at_monotonic > now
+            ):
                 return cached.value
-            client_id = self._secret(profile.client_id_env)
-            client_secret = self._secret(profile.client_secret_env)
             data: dict[str, str] = {"grant_type": "client_credentials"}
             if profile.scopes:
                 data["scope"] = " ".join(profile.scopes)
@@ -370,9 +386,7 @@ class ConnectorService:
                     async for chunk in response.aiter_bytes():
                         content.extend(chunk)
                         if len(content) > _MAX_OAUTH_TOKEN_RESPONSE_BYTES:
-                            raise ConnectorPolicyError(
-                                "connector authentication is unavailable"
-                            )
+                            raise ConnectorPolicyError("connector authentication is unavailable")
             try:
                 payload = json.loads(content)
             except (UnicodeDecodeError, ValueError) as exc:
@@ -382,12 +396,36 @@ class ConnectorService:
             token = str(payload.get("access_token") or "").strip()
             if not token:
                 raise ConnectorPolicyError("connector authentication is unavailable")
-            try:
-                expires_in = max(60, int(payload.get("expires_in", 3600)))
-            except (TypeError, ValueError):
+            advertised_expiry = payload.get("expires_in")
+            if advertised_expiry is None:
                 expires_in = 3600
-            self._oauth_tokens[key] = _OAuthToken(token, now + expires_in)
+            else:
+                try:
+                    expires_in = max(0, int(advertised_expiry))
+                except (TypeError, ValueError):
+                    expires_in = 0
+            expires_at = now + expires_in
+            refresh_at = expires_at - min(30.0, expires_in * 0.1)
+            self._oauth_tokens[key] = _OAuthToken(
+                value=token,
+                expires_at_monotonic=expires_at,
+                refresh_at_monotonic=refresh_at,
+                profile_fingerprint=profile_fingerprint,
+            )
             return token
+
+    @staticmethod
+    def _oauth_profile_fingerprint(
+        profile: ConnectorAuthProfile,
+        *,
+        client_id: str,
+        client_secret: str,
+    ) -> str:
+        payload = profile.model_dump(mode="json")
+        payload["resolved_client_id"] = client_id
+        payload["resolved_client_secret"] = client_secret
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return sha256(encoded).hexdigest()
 
     def _secret(self, env_name: str | None) -> str:
         normalized = str(env_name or "").strip()

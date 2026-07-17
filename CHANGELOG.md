@@ -2,6 +2,12 @@
 
 ## 2026-07-16 - Connector, Managed-Git, And Bokio Review Hardening
 
+- Followed REST `303 See Other` responses with bodyless GET requests, rejected protected API-key
+  headers, refreshed OAuth tokens when effective profiles or credentials change, and preserved
+  provider-advertised short token lifetimes.
+- Prevented stale Admin connector responses and mutations from crossing directory selections.
+- Serialized content-deduplicated Bokio evidence ingestion, atomically claimed explicit failed
+  upload retries, and kept evidence visible for attention while any association remains failed.
 - Atomically claimed Bokio journal-entry creation before the external request, retained unknown
   outcomes for manual inspection, and rejected idempotency keys reused with a different payload or
   evidence set.

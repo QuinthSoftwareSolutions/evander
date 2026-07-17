@@ -18,25 +18,12 @@ from evander.connectors.models import (
     ConnectorDefinition,
     ConnectorInvocationResult,
     ConnectorOperationDefinition,
+    PROTECTED_CONNECTOR_HEADERS,
 )
 from evander.connectors.registry import ConnectorCallContext
 from evander.session_artifacts import open_relative_regular_file_no_follow
 
 
-PROTECTED_CONNECTOR_HEADERS = frozenset(
-    {
-        "authorization",
-        "cookie",
-        "host",
-        "connection",
-        "content-length",
-        "transfer-encoding",
-        "proxy-authorization",
-        "mcp-session-id",
-        "x-evander-mcp-session-token",
-        "evander-mcp-session-token",
-    }
-)
 _PATH_TEMPLATE_FIELD = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 _HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
@@ -86,7 +73,9 @@ class RestConnectorDriver:
         if parts.scheme not in {"http", "https"} or not parts.netloc:
             raise ValueError("REST connector config.base_url must be an absolute http(s) URL")
         if parts.username or parts.password or parts.fragment or parts.query:
-            raise ValueError("REST connector base_url must not contain credentials, query, or fragment")
+            raise ValueError(
+                "REST connector base_url must not contain credentials, query, or fragment"
+            )
         fixed_headers = definition.config.get("headers", {})
         if not isinstance(fixed_headers, dict):
             raise ValueError("REST connector config.headers must be an object")
@@ -96,9 +85,7 @@ class RestConnectorDriver:
             if not normalized or normalized in PROTECTED_CONNECTOR_HEADERS:
                 raise ValueError(f"REST connector header {name!r} is reserved")
             if not _HTTP_HEADER_NAME.fullmatch(header_name):
-                raise ValueError(
-                    f"REST connector header {name!r} must be a valid HTTP field name"
-                )
+                raise ValueError(f"REST connector header {name!r} must be a valid HTTP field name")
             if not isinstance(value, str):
                 raise ValueError("REST connector fixed header values must be strings")
             try:
@@ -187,12 +174,14 @@ class RestConnectorDriver:
             follow_redirects=False,
         ) as client:
             current_url = url
+            current_method = method
+            current_json_body = json_body
             for redirect_count in range(4):
                 async with client.stream(
-                    method,
+                    current_method,
                     current_url,
                     headers=headers,
-                    json=json_body,
+                    json=current_json_body,
                 ) as streamed_response:
                     if streamed_response.is_redirect and bool(
                         config.get("follow_same_origin_redirects", False)
@@ -202,7 +191,7 @@ class RestConnectorDriver:
                             response = httpx.Response(
                                 streamed_response.status_code,
                                 headers=streamed_response.headers,
-                                request=httpx.Request(method, current_url),
+                                request=httpx.Request(current_method, current_url),
                             )
                             break
                         next_url = urljoin(str(streamed_response.url), location)
@@ -211,6 +200,9 @@ class RestConnectorDriver:
                                 "connector redirect left the configured origin"
                             )
                         current_url = next_url
+                        if streamed_response.status_code == 303 and current_method != "HEAD":
+                            current_method = "GET"
+                            current_json_body = None
                         continue
                     declared_length = streamed_response.headers.get("content-length")
                     if declared_length:
@@ -232,7 +224,7 @@ class RestConnectorDriver:
                         streamed_response.status_code,
                         headers=streamed_response.headers,
                         content=bytes(content),
-                        request=httpx.Request(method, str(streamed_response.url)),
+                        request=httpx.Request(current_method, str(streamed_response.url)),
                     )
                     break
         if response is None:
@@ -303,9 +295,7 @@ class FilesystemConnectorDriver:
                 continue
             path = str(operation.config.get("path") or "").strip()
             if not path or path.startswith("/"):
-                raise ValueError(
-                    f"filesystem operation {operation_name!r} path must be relative"
-                )
+                raise ValueError(f"filesystem operation {operation_name!r} path must be relative")
             if operation.result_mode != "artifact":
                 raise ValueError("filesystem operations must use result_mode='artifact'")
             if operation.access != "read":

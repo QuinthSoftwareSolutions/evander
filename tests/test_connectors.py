@@ -86,9 +86,7 @@ def _session(*, grants: dict[str, list[str]] | None = None) -> SessionManifest:
         session_id="session-connectors",
         directory_path="root/team",
         allowed_tools=[ToolName.LIST_CONNECTORS, ToolName.CALL_CONNECTOR],
-        connector_grants=(
-            {"documents": ["get_document"]} if grants is None else grants
-        ),
+        connector_grants=({"documents": ["get_document"]} if grants is None else grants),
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
 
@@ -141,7 +139,9 @@ def test_connector_definition_rejects_reserved_headers_and_requires_explicit_app
         "Authorization": "not-allowed"
     }
     with pytest.raises(ValueError, match="reserved"):
-        service = _service(Path("/tmp/unused-connectors-test"), ConnectorDirectoryConfig.model_validate(payload))
+        service = _service(
+            Path("/tmp/unused-connectors-test"), ConnectorDirectoryConfig.model_validate(payload)
+        )
         service.validate_config(service.provider_config.resolve_connectors_for_directory("root"))
 
     del payload["connectors"]["documents"]["operations"]["get_document"][  # type: ignore[index]
@@ -168,6 +168,27 @@ def test_connector_definition_rejects_invalid_fixed_header_syntax(
 
     with pytest.raises(ValueError, match=error):
         service.validate_config(config)
+
+
+@pytest.mark.parametrize(
+    "header_name",
+    [
+        "Connection",
+        "Content-Length",
+        "Transfer-Encoding",
+        "Proxy-Authorization",
+        "evander-mcp-session-token",
+    ],
+)
+def test_api_key_auth_profile_rejects_protected_headers(header_name: str) -> None:
+    with pytest.raises(ValidationError, match="header_name is reserved"):
+        ConnectorAuthProfile.model_validate(
+            {
+                "type": "api_key_header_env",
+                "token_env": "DOCUMENTS_API_KEY",
+                "header_name": header_name,
+            }
+        )
 
 
 def test_connector_overlay_accepts_partial_child_override_and_normalizes_names() -> None:
@@ -200,7 +221,9 @@ def test_connector_overlay_accepts_partial_child_override_and_normalizes_names()
     }
 
 
-def test_addon_connector_driver_is_registered(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_addon_connector_driver_is_registered(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     class ExampleDriver:
         def validate_definition(self, _definition: object) -> None:
             return None
@@ -223,9 +246,7 @@ def test_addon_connector_driver_is_registered(monkeypatch: pytest.MonkeyPatch, t
     registry = connector_registry_from_addons({}, base_dir=tmp_path)
 
     assert registry.driver_names == ("example_service", "filesystem", "rest")
-    registry.require("example_service").validate_definition(
-        _config().connectors["documents"]
-    )
+    registry.require("example_service").validate_definition(_config().connectors["documents"])
 
 
 def test_vm_create_connector_grants_preserve_absence_and_validate_operations() -> None:
@@ -236,12 +257,15 @@ def test_vm_create_connector_grants_preserve_absence_and_validate_operations() -
         )
     )
 
-    assert validate_vm_connector_grants(
-        context,
-        directory_path="root/team",
-        session_id="session-connectors",
-        value=None,
-    ) is None
+    assert (
+        validate_vm_connector_grants(
+            context,
+            directory_path="root/team",
+            session_id="session-connectors",
+            value=None,
+        )
+        is None
+    )
     assert validate_vm_connector_grants(
         context,
         directory_path="root/team",
@@ -273,9 +297,9 @@ def test_list_only_returns_operations_granted_to_the_session(tmp_path: Path) -> 
                 {
                     "name": "get_document",
                     "description": "Fetch one document",
-                    "input_schema": config.connectors["documents"].operations[
-                        "get_document"
-                    ].input_schema,
+                    "input_schema": config.connectors["documents"]
+                    .operations["get_document"]
+                    .input_schema,
                     "access": "read",
                     "requires_approval": False,
                     "result_mode": "json",
@@ -316,9 +340,57 @@ def test_rest_connector_injects_host_auth_and_validates_arguments(tmp_path: Path
     with pytest.raises(ConnectorPolicyError, match="do not match schema"):
         service.require_operation(_session(), "documents", "get_document", {})
     with pytest.raises(ConnectorPolicyError, match="not granted"):
-        service.require_operation(
-            _session(grants={}), "documents", "get_document", {"id": "alpha"}
+        service.require_operation(_session(grants={}), "documents", "get_document", {"id": "alpha"})
+
+
+def test_rest_connector_follows_303_with_get_and_without_the_mutation_body(
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(303, headers={"Location": "/documents/result"})
+        return httpx.Response(200, json={"ok": True})
+
+    config = _config(access="write", method="POST")
+    operation = config.connectors["documents"].operations["get_document"]
+    operation.input_schema = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "payload": {"type": "object"},
+        },
+        "required": ["id", "payload"],
+        "additionalProperties": False,
+    }
+    operation.config.update(
+        {
+            "follow_same_origin_redirects": True,
+            "json_body_argument": "payload",
+        }
+    )
+    service = _service(
+        tmp_path,
+        config,
+        rest_transport=httpx.MockTransport(handler),
+    )
+
+    result = asyncio.run(
+        service.invoke(
+            session=_session(),
+            connector_id="documents",
+            operation_name="get_document",
+            arguments={"id": "alpha", "payload": {"name": "updated"}},
         )
+    )
+
+    assert result.value == {"ok": True}
+    assert [request.method for request in requests] == ["POST", "GET"]
+    assert requests[0].content == b'{"name":"updated"}'
+    assert requests[1].url == httpx.URL("https://files.example.test/documents/result")
+    assert requests[1].content == b""
 
 
 def test_rest_connector_rejects_response_beyond_configured_limit(tmp_path: Path) -> None:
@@ -508,6 +580,158 @@ def test_oauth_token_fetch_is_coalesced_for_concurrent_calls(tmp_path: Path) -> 
 
     asyncio.run(invoke_twice())
     assert token_calls == 1
+
+
+def test_oauth_cache_refreshes_when_the_resolved_profile_changes(tmp_path: Path) -> None:
+    auth_requests: list[httpx.Request] = []
+    authorization_headers: list[str] = []
+
+    def auth_handler(request: httpx.Request) -> httpx.Response:
+        auth_requests.append(request)
+        return httpx.Response(
+            200,
+            json={"access_token": f"oauth-token-{len(auth_requests)}", "expires_in": 3600},
+        )
+
+    def rest_handler(request: httpx.Request) -> httpx.Response:
+        authorization_headers.append(request.headers["authorization"])
+        return httpx.Response(200, json={"ok": True})
+
+    config = _config()
+    config.auth_profiles["oauth"] = ConnectorAuthProfile.model_validate(
+        {
+            "type": "oauth2_client_credentials",
+            "token_url": "https://identity.example.test/oauth/token",
+            "client_id_env": "CLIENT_ID",
+            "client_secret_env": "CLIENT_SECRET",
+            "scopes": ["documents.read"],
+        }
+    )
+    config.connectors["documents"].auth_profile = "oauth"
+    environment = {
+        "CLIENT_ID": "old-client",
+        "CLIENT_SECRET": "old-secret",
+        "NEW_CLIENT_ID": "new-client",
+        "NEW_CLIENT_SECRET": "new-secret",
+    }
+    service = _service(
+        tmp_path,
+        config,
+        rest_transport=httpx.MockTransport(rest_handler),
+        auth_transport=httpx.MockTransport(auth_handler),
+        environ=environment,
+    )
+
+    asyncio.run(
+        service.invoke(
+            session=_session(),
+            connector_id="documents",
+            operation_name="get_document",
+            arguments={"id": "one"},
+        )
+    )
+    config.auth_profiles["oauth"] = ConnectorAuthProfile.model_validate(
+        {
+            "type": "oauth2_client_credentials",
+            "token_url": "https://login.example.test/v2/token",
+            "client_id_env": "NEW_CLIENT_ID",
+            "client_secret_env": "NEW_CLIENT_SECRET",
+            "scopes": ["documents.read", "documents.metadata"],
+            "audience": "documents-api",
+        }
+    )
+    asyncio.run(
+        service.invoke(
+            session=_session(),
+            connector_id="documents",
+            operation_name="get_document",
+            arguments={"id": "two"},
+        )
+    )
+    environment["NEW_CLIENT_ID"] = "rotated-client"
+    asyncio.run(
+        service.invoke(
+            session=_session(),
+            connector_id="documents",
+            operation_name="get_document",
+            arguments={"id": "three"},
+        )
+    )
+
+    assert [request.url for request in auth_requests] == [
+        httpx.URL("https://identity.example.test/oauth/token"),
+        httpx.URL("https://login.example.test/v2/token"),
+        httpx.URL("https://login.example.test/v2/token"),
+    ]
+    assert authorization_headers == [
+        "Bearer oauth-token-1",
+        "Bearer oauth-token-2",
+        "Bearer oauth-token-3",
+    ]
+
+
+def test_oauth_cache_does_not_extend_short_provider_lifetimes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token_calls = 0
+    clock = [1000.0]
+
+    def auth_handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal token_calls
+        token_calls += 1
+        return httpx.Response(
+            200,
+            json={"access_token": f"short-token-{token_calls}", "expires_in": 10},
+        )
+
+    config = _config()
+    config.auth_profiles["oauth"] = ConnectorAuthProfile.model_validate(
+        {
+            "type": "oauth2_client_credentials",
+            "token_url": "https://identity.example.test/oauth/token",
+            "client_id_env": "CLIENT_ID",
+            "client_secret_env": "CLIENT_SECRET",
+        }
+    )
+    config.connectors["documents"].auth_profile = "oauth"
+    service = _service(
+        tmp_path,
+        config,
+        rest_transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"ok": True})),
+        auth_transport=httpx.MockTransport(auth_handler),
+        environ={"CLIENT_ID": "id", "CLIENT_SECRET": "secret"},
+    )
+    monkeypatch.setattr("evander.connectors.service.monotonic", lambda: clock[0])
+
+    asyncio.run(
+        service.invoke(
+            session=_session(),
+            connector_id="documents",
+            operation_name="get_document",
+            arguments={"id": "one"},
+        )
+    )
+    clock[0] += 1
+    asyncio.run(
+        service.invoke(
+            session=_session(),
+            connector_id="documents",
+            operation_name="get_document",
+            arguments={"id": "two"},
+        )
+    )
+    clock[0] += 10
+    asyncio.run(
+        service.invoke(
+            session=_session(),
+            connector_id="documents",
+            operation_name="get_document",
+            arguments={"id": "three"},
+        )
+    )
+
+    assert token_calls == 2
 
 
 def test_oauth_write_401_evicts_token_without_automatic_retry(tmp_path: Path) -> None:

@@ -85,6 +85,7 @@ class BokioEvidenceStore:
         source_payload = _safe_json_object(source_metadata)
 
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             source_row = connection.execute(
                 "SELECT evidence_id FROM evidence_sources WHERE source_type = ? AND source_key = ?",
                 (normalized_source_type, normalized_source_key),
@@ -178,6 +179,7 @@ class BokioEvidenceStore:
         evidence_id = validate_evidence_id(evidence_id)
         journal_entry_id = _required_text(journal_entry_id, "journal_entry_id")
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             self._get_with_connection(connection, evidence_id)
             row = connection.execute(
                 """
@@ -199,19 +201,30 @@ class BokioEvidenceStore:
                         "Bokio evidence association previously failed; set retry_if_failed after "
                         "checking whether Bokio received the upload"
                     )
-                connection.execute(
+                claimed = connection.execute(
                     """
                     UPDATE evidence_associations
                     SET status = ?, error = NULL, updated_at = ?
-                    WHERE evidence_id = ? AND journal_entry_id = ?
+                    WHERE evidence_id = ? AND journal_entry_id = ? AND status = ?
                     """,
                     (
                         "pending",
                         _storage_datetime(datetime.now(UTC)),
                         evidence_id,
                         journal_entry_id,
+                        "failed",
                     ),
-                )
+                ).rowcount
+                if claimed != 1:
+                    current = self._association_with_connection(
+                        connection, evidence_id, journal_entry_id
+                    )
+                    if current["status"] == "attached":
+                        return current
+                    raise BokioEvidenceError(
+                        "Bokio evidence association is already pending; inspect Bokio before retrying"
+                    )
+                self._refresh_evidence_status(connection, evidence_id)
                 return self._association_with_connection(connection, evidence_id, journal_entry_id)
             now = _storage_datetime(datetime.now(UTC))
             connection.execute(
@@ -249,10 +262,7 @@ class BokioEvidenceStore:
                     journal_entry_id,
                 ),
             )
-            connection.execute(
-                "UPDATE evidence SET status = ? WHERE evidence_id = ?",
-                ("attached", evidence_id),
-            )
+            self._refresh_evidence_status(connection, evidence_id)
             return self._association_with_connection(connection, evidence_id, journal_entry_id)
 
     def mark_association_failed(
@@ -279,10 +289,7 @@ class BokioEvidenceStore:
                     journal_entry_id,
                 ),
             )
-            connection.execute(
-                "UPDATE evidence SET status = ? WHERE evidence_id = ?",
-                ("needs_attention", evidence_id),
-            )
+            self._refresh_evidence_status(connection, evidence_id)
             return self._association_with_connection(connection, evidence_id, journal_entry_id)
 
     def begin_journal_entry_operation(
@@ -309,8 +316,7 @@ class BokioEvidenceStore:
                     or operation["evidence_ids"] != normalized_evidence_ids
                 ):
                     raise BokioEvidenceError(
-                        "operation_key is already associated with a different "
-                        "journal-entry request"
+                        "operation_key is already associated with a different journal-entry request"
                     )
                 return operation
             for evidence_id in normalized_evidence_ids:
@@ -333,9 +339,7 @@ class BokioEvidenceStore:
             )
             return self._operation_with_connection(connection, normalized_key)
 
-    def claim_journal_entry_creation(
-        self, *, operation_key: str
-    ) -> tuple[dict[str, Any], bool]:
+    def claim_journal_entry_creation(self, *, operation_key: str) -> tuple[dict[str, Any], bool]:
         """Atomically claim the one allowed attempt to create a journal entry."""
 
         normalized_key = _required_text(operation_key, "operation_key")
@@ -487,13 +491,16 @@ class BokioEvidenceStore:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
+        connection = sqlite3.connect(self.database_path, timeout=30.0)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 30000")
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
         return connection
 
-    def _get_with_connection(self, connection: sqlite3.Connection, evidence_id: str) -> dict[str, Any]:
+    def _get_with_connection(
+        self, connection: sqlite3.Connection, evidence_id: str
+    ) -> dict[str, Any]:
         normalized_id = validate_evidence_id(evidence_id)
         row = connection.execute(
             "SELECT * FROM evidence WHERE evidence_id = ?", (normalized_id,)
@@ -549,13 +556,35 @@ class BokioEvidenceStore:
             raise BokioEvidenceError("Bokio evidence association was not recorded")
         return _association_from_row(row)
 
-    def _operation_with_connection(self, connection: sqlite3.Connection, operation_key: str) -> dict[str, Any]:
+    def _operation_with_connection(
+        self, connection: sqlite3.Connection, operation_key: str
+    ) -> dict[str, Any]:
         row = connection.execute(
             "SELECT * FROM journal_entry_operations WHERE operation_key = ?", (operation_key,)
         ).fetchone()
         if row is None:
             raise BokioEvidenceError("Bokio journal-entry operation was not recorded")
         return _operation_from_row(row)
+
+    @staticmethod
+    def _refresh_evidence_status(connection: sqlite3.Connection, evidence_id: str) -> None:
+        statuses = {
+            str(row["status"])
+            for row in connection.execute(
+                "SELECT status FROM evidence_associations WHERE evidence_id = ?",
+                (evidence_id,),
+            ).fetchall()
+        }
+        if "failed" in statuses:
+            status = "needs_attention"
+        elif "attached" in statuses:
+            status = "attached"
+        else:
+            status = "unmatched"
+        connection.execute(
+            "UPDATE evidence SET status = ? WHERE evidence_id = ?",
+            (status, evidence_id),
+        )
 
     def _blob_path(self, digest: str, content_type: str) -> Path:
         suffix = _SUFFIX_BY_CONTENT_TYPE[content_type]

@@ -17,6 +17,20 @@ CONNECTOR_MAX_TIMEOUT_SECONDS = 300.0
 CONNECTOR_DEFAULT_ARTIFACT_BYTES = 10 * 1024 * 1024
 CONNECTOR_MAX_ARTIFACT_BYTES = 100 * 1024 * 1024
 CONNECTOR_MAX_INLINE_BYTES = 1024 * 1024
+PROTECTED_CONNECTOR_HEADERS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "host",
+        "connection",
+        "content-length",
+        "transfer-encoding",
+        "proxy-authorization",
+        "mcp-session-id",
+        "x-evander-mcp-session-token",
+        "evander-mcp-session-token",
+    }
+)
 
 
 def normalize_connector_id(value: object, *, field_name: str = "connector_id") -> str:
@@ -28,9 +42,7 @@ def normalize_connector_id(value: object, *, field_name: str = "connector_id") -
     return normalized
 
 
-def normalize_connector_operation(
-    value: object, *, field_name: str = "operation"
-) -> str:
+def normalize_connector_operation(value: object, *, field_name: str = "operation") -> str:
     normalized = str(value or "").strip().lower()
     if not CONNECTOR_OPERATION_PATTERN.fullmatch(normalized):
         raise ValueError(
@@ -69,9 +81,7 @@ class ConnectorAuthProfile(BaseModel):
     client_secret_env: str | None = None
     scopes: list[str] = Field(default_factory=list)
     audience: str | None = None
-    client_auth_method: Literal["client_secret_basic", "client_secret_post"] = (
-        "client_secret_basic"
-    )
+    client_auth_method: Literal["client_secret_basic", "client_secret_post"] = "client_secret_basic"
 
     @field_validator(
         "token_env",
@@ -121,18 +131,10 @@ class ConnectorAuthProfile(BaseModel):
         }
         missing = [name for name in required.get(self.type, ()) if not getattr(self, name)]
         if missing:
-            raise ValueError(
-                f"auth profile type {self.type!r} requires: {', '.join(missing)}"
-            )
+            raise ValueError(f"auth profile type {self.type!r} requires: {', '.join(missing)}")
         if self.header_name is not None:
             name = self.header_name.lower()
-            if name in {
-                "authorization",
-                "cookie",
-                "host",
-                "mcp-session-id",
-                "x-evander-mcp-session-token",
-            }:
+            if name in PROTECTED_CONNECTOR_HEADERS:
                 raise ValueError("api_key_header_env header_name is reserved")
             if not re.fullmatch(r"[A-Za-z0-9!#$%&'*+.^_`|~-]+", self.header_name):
                 raise ValueError("header_name is not a valid HTTP header name")
@@ -229,10 +231,7 @@ class ConnectorDefinition(BaseModel):
             return {}
         if not isinstance(value, dict):
             raise ValueError("operations must be an object")
-        return {
-            normalize_connector_operation(name): operation
-            for name, operation in value.items()
-        }
+        return {normalize_connector_operation(name): operation for name, operation in value.items()}
 
     @field_validator("health_operation", mode="before")
     @classmethod
@@ -348,10 +347,8 @@ def validate_connector_directory_overlay(payload: dict[str, Any]) -> dict[str, A
                     normalized_connector["driver"]
                 )
             if "auth_profile" in normalized_connector:
-                normalized_connector["auth_profile"] = (
-                    ConnectorDefinition.normalize_auth_profile(
-                        normalized_connector["auth_profile"]
-                    )
+                normalized_connector["auth_profile"] = ConnectorDefinition.normalize_auth_profile(
+                    normalized_connector["auth_profile"]
                 )
             if "health_operation" in normalized_connector:
                 normalized_connector["health_operation"] = (
@@ -363,9 +360,7 @@ def validate_connector_directory_overlay(payload: dict[str, Any]) -> dict[str, A
                 if object_field in normalized_connector and not isinstance(
                     normalized_connector[object_field], dict
                 ):
-                    raise ValueError(
-                        f"connector {connector_id!r} {object_field} must be an object"
-                    )
+                    raise ValueError(f"connector {connector_id!r} {object_field} must be an object")
             if "disabled" in normalized_connector and not isinstance(
                 normalized_connector["disabled"], bool
             ):
@@ -390,9 +385,7 @@ def _validate_operation_overlay(
     connector_id: str, operation_name: str, payload: object
 ) -> dict[str, Any]:
     if not isinstance(payload, dict):
-        raise ValueError(
-            f"connector operation {connector_id}.{operation_name} must be an object"
-        )
+        raise ValueError(f"connector operation {connector_id}.{operation_name} must be an object")
     allowed_fields = set(ConnectorOperationDefinition.model_fields)
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:

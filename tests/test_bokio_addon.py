@@ -18,7 +18,12 @@ from evander.models import ApprovalRequest, SessionManifest
 from evander.policy import PolicyEngine
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.storage import JsonStore
-from evander_bokio_addon.client import BokioApiError, BokioClient, BokioConfigError, settings_from_context
+from evander_bokio_addon.client import (
+    BokioApiError,
+    BokioClient,
+    BokioConfigError,
+    settings_from_context,
+)
 from evander_bokio_addon.evidence import BokioEvidenceError, BokioEvidenceStore
 from evander_bokio_addon.mcp import MCP_TOOL_NAMES, register_mcp_tools
 from evander_bokio_addon.providers import BokioCompanyQueryProvider
@@ -127,9 +132,7 @@ def test_bokio_upload_staging_separates_session_and_reserved_scopes(tmp_path) ->
     assert workflow_scope == (
         tmp_path / "addons" / "bokio-addon" / "uploads" / "scopes" / "workflows"
     )
-    assert admin_session == (
-        tmp_path / "addons" / "bokio-addon" / "uploads" / "sessions" / "admin"
-    )
+    assert admin_session == (tmp_path / "addons" / "bokio-addon" / "uploads" / "sessions" / "admin")
     assert workflow_session == (
         tmp_path / "addons" / "bokio-addon" / "uploads" / "sessions" / "workflows"
     )
@@ -170,6 +173,35 @@ def test_bokio_evidence_store_deduplicates_content_and_retains_provenance(tmp_pa
             source_type="communication_artifact",
             source_key="comm_bad",
         )
+
+
+def test_bokio_evidence_store_serializes_concurrent_content_deduplication(
+    tmp_path: Path,
+) -> None:
+    store = BokioEvidenceStore(tmp_path)
+    worker_count = 8
+    start = threading.Barrier(worker_count)
+
+    def ingest(index: int) -> tuple[dict[str, object], bool]:
+        start.wait(timeout=5)
+        return store.ingest_bytes(
+            content=b"%PDF-1.7\nshared receipt",
+            filename=f"receipt-{index}.pdf",
+            source_type="communication_artifact",
+            source_key=f"comm_{index}",
+            mime_type="application/pdf",
+        )
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        results = list(executor.map(ingest, range(worker_count)))
+
+    evidence_ids = {record["evidence_id"] for record, _created in results}
+    assert len(evidence_ids) == 1
+    assert sum(created for _record, created in results) == 1
+    evidence = store.get(str(next(iter(evidence_ids))))
+    assert {source["source_key"] for source in evidence["sources"]} == {
+        f"comm_{index}" for index in range(worker_count)
+    }
 
 
 def test_bokio_journal_operation_rejects_idempotency_key_reuse_for_a_different_request(
@@ -375,6 +407,101 @@ def test_bokio_mcp_retries_a_failed_attachment_only_when_requested(
 
     assert result["association"]["status"] == "attached"
     assert len(requests) == 2
+
+
+def test_bokio_evidence_store_atomically_claims_one_failed_association_retry(
+    tmp_path: Path,
+) -> None:
+    store = BokioEvidenceStore(tmp_path)
+    evidence, _created = store.ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    evidence_id = evidence["evidence_id"]
+    store.begin_association(
+        evidence_id=evidence_id,
+        journal_entry_id="journal-entry-1",
+    )
+    store.mark_association_failed(
+        evidence_id=evidence_id,
+        journal_entry_id="journal-entry-1",
+        error="uncertain upload outcome",
+    )
+    worker_count = 8
+    start = threading.Barrier(worker_count)
+
+    def claim_retry(_index: int) -> str:
+        start.wait(timeout=5)
+        try:
+            association = store.begin_association(
+                evidence_id=evidence_id,
+                journal_entry_id="journal-entry-1",
+                retry_if_failed=True,
+            )
+        except BokioEvidenceError as exc:
+            return str(exc)
+        return str(association["status"])
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        outcomes = list(executor.map(claim_retry, range(worker_count)))
+
+    assert outcomes.count("pending") == 1
+    assert all(outcome == "pending" or "already pending" in outcome for outcome in outcomes)
+
+
+def test_bokio_evidence_status_keeps_any_failed_association_visible(
+    tmp_path: Path,
+) -> None:
+    store = BokioEvidenceStore(tmp_path)
+    evidence, _created = store.ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    evidence_id = evidence["evidence_id"]
+    store.begin_association(
+        evidence_id=evidence_id,
+        journal_entry_id="journal-entry-failed",
+    )
+    store.mark_association_failed(
+        evidence_id=evidence_id,
+        journal_entry_id="journal-entry-failed",
+        error="uncertain upload outcome",
+    )
+    store.begin_association(
+        evidence_id=evidence_id,
+        journal_entry_id="journal-entry-attached",
+    )
+    store.mark_association_attached(
+        evidence_id=evidence_id,
+        journal_entry_id="journal-entry-attached",
+        bokio_result={"uploadId": "upload-2"},
+    )
+
+    unresolved = store.get(evidence_id)
+    assert unresolved["status"] == "needs_attention"
+    assert [record["evidence_id"] for record in store.list(status="needs_attention")] == [
+        evidence_id
+    ]
+
+    store.begin_association(
+        evidence_id=evidence_id,
+        journal_entry_id="journal-entry-failed",
+        retry_if_failed=True,
+    )
+    store.mark_association_attached(
+        evidence_id=evidence_id,
+        journal_entry_id="journal-entry-failed",
+        bokio_result={"uploadId": "upload-1"},
+    )
+
+    assert store.get(evidence_id)["status"] == "attached"
+    assert store.list(status="needs_attention") == []
 
 
 def test_bokio_mcp_creates_entry_and_attaches_evidence_idempotently(
@@ -742,9 +869,9 @@ def test_prepared_action_store_transitions_without_secrets(tmp_path) -> None:
     assert approved["status"] == "approved"
     assert executed["status"] == "executed"
     assert executed["result"] == {"id": "entry-1"}
-    state_text = (
-        tmp_path / "addons" / "bokio-addon" / "prepared-actions.json"
-    ).read_text(encoding="utf-8")
+    state_text = (tmp_path / "addons" / "bokio-addon" / "prepared-actions.json").read_text(
+        encoding="utf-8"
+    )
     assert "secret-token" not in state_text
     assert json.loads(state_text)["actions"][action["action_id"]]["payload"]["title"] == "Receipt"
 

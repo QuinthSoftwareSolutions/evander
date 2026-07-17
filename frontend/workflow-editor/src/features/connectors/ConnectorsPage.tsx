@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson } from "../admin/api";
 
@@ -71,10 +71,23 @@ export function ConnectorsPage({
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const activeDirectoryPathRef = useRef(selectedDirectoryPath);
+  const refreshRequestIdRef = useRef(0);
+  const saveRequestIdRef = useRef(0);
+  const testRequestIdRef = useRef(0);
+  activeDirectoryPathRef.current = selectedDirectoryPath;
 
-  const directoryQuery = `directory_path=${encodeURIComponent(selectedDirectoryPath)}`;
+  function queryForDirectory(directoryPath: string): string {
+    return `directory_path=${encodeURIComponent(directoryPath)}`;
+  }
 
-  function applyState(payload: ConnectorState) {
+  function applyState(payload: ConnectorState, requestedDirectoryPath: string): boolean {
+    if (
+      requestedDirectoryPath !== activeDirectoryPathRef.current ||
+      payload.directory_path !== requestedDirectoryPath
+    ) {
+      return false;
+    }
     setState(payload);
     setDraft(configText(payload.config));
     setSelectedId((current) => {
@@ -83,40 +96,78 @@ export function ConnectorsPage({
       }
       return payload.connectors[0]?.connector_id ?? null;
     });
+    return true;
   }
 
-  async function refresh() {
+  async function refresh(
+    requestedDirectoryPath = selectedDirectoryPath,
+    signal?: AbortSignal,
+  ) {
+    const requestId = ++refreshRequestIdRef.current;
     setLoading(true);
     setError(null);
     try {
-      applyState(await fetchJson<ConnectorState>(`/api/admin/connectors?${directoryQuery}`));
+      const payload = await fetchJson<ConnectorState>(
+        `/api/admin/connectors?${queryForDirectory(requestedDirectoryPath)}`,
+        { signal },
+      );
+      if (requestId !== refreshRequestIdRef.current) return;
+      applyState(payload, requestedDirectoryPath);
     } catch (reason: unknown) {
+      if (
+        requestId !== refreshRequestIdRef.current ||
+        requestedDirectoryPath !== activeDirectoryPathRef.current
+      ) {
+        return;
+      }
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setLoading(false);
+      if (
+        requestId === refreshRequestIdRef.current &&
+        requestedDirectoryPath === activeDirectoryPathRef.current
+      ) {
+        setLoading(false);
+      }
     }
   }
 
   useEffect(() => {
-    void refresh();
+    const controller = new AbortController();
+    saveRequestIdRef.current += 1;
+    testRequestIdRef.current += 1;
+    setState(null);
+    setDraft("{}");
+    setSelectedId(null);
+    setSaving(false);
+    setTesting(false);
+    setStatus(null);
+    void refresh(selectedDirectoryPath, controller.signal);
+    return () => {
+      controller.abort();
+      refreshRequestIdRef.current += 1;
+    };
   }, [selectedDirectoryPath]);
 
-  const dirty = Boolean(state && draft !== configText(state.config));
+  const activeState = state?.directory_path === selectedDirectoryPath ? state : null;
+  const dirty = Boolean(activeState && draft !== configText(activeState.config));
   const visibleConnectors = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return state?.connectors ?? [];
-    return (state?.connectors ?? []).filter((connector) =>
+    if (!normalized) return activeState?.connectors ?? [];
+    return (activeState?.connectors ?? []).filter((connector) =>
       [connector.connector_id, connector.display_name, connector.description, connector.driver]
         .join(" ")
         .toLowerCase()
         .includes(normalized),
     );
-  }, [query, state]);
+  }, [query, activeState]);
   const selected =
-    state?.connectors.find((connector) => connector.connector_id === selectedId) ?? null;
+    activeState?.connectors.find((connector) => connector.connector_id === selectedId) ?? null;
 
   async function save() {
-    if (!state || !dirty) return;
+    if (!activeState || !dirty) return;
+    const requestId = ++saveRequestIdRef.current;
+    const requestedDirectoryPath = selectedDirectoryPath;
+    const baseState = activeState;
     setSaving(true);
     setError(null);
     setStatus(null);
@@ -125,41 +176,77 @@ export function ConnectorsPage({
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error("Connector configuration must be a JSON object.");
       }
-      const payload = await fetchJson<ConnectorState>(`/api/admin/connectors?${directoryQuery}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          expected_revision: state.revision,
-          config: parsed,
-        }),
-      });
-      applyState(payload);
-      setStatus("Connector configuration saved and validated.");
+      const payload = await fetchJson<ConnectorState>(
+        `/api/admin/connectors?${queryForDirectory(requestedDirectoryPath)}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            expected_revision: baseState.revision,
+            config: parsed,
+          }),
+        },
+      );
+      if (requestId !== saveRequestIdRef.current) return;
+      if (applyState(payload, requestedDirectoryPath)) {
+        setStatus("Connector configuration saved and validated.");
+      }
     } catch (reason: unknown) {
+      if (
+        requestId !== saveRequestIdRef.current ||
+        requestedDirectoryPath !== activeDirectoryPathRef.current
+      ) {
+        return;
+      }
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setSaving(false);
+      if (
+        requestId === saveRequestIdRef.current &&
+        requestedDirectoryPath === activeDirectoryPathRef.current
+      ) {
+        setSaving(false);
+      }
     }
   }
 
   async function testConnector() {
     if (!selected) return;
+    const requestId = ++testRequestIdRef.current;
+    const requestedDirectoryPath = selectedDirectoryPath;
+    const connectorId = selected.connector_id;
     setTesting(true);
     setError(null);
     setStatus(null);
     try {
       const payload = await fetchJson<ConnectorTestResult>(
-        `/api/admin/connectors/${encodeURIComponent(selected.connector_id)}/test?${directoryQuery}`,
+        `/api/admin/connectors/${encodeURIComponent(connectorId)}/test?${queryForDirectory(requestedDirectoryPath)}`,
         { method: "POST", body: "{}" },
       );
+      if (
+        requestId !== testRequestIdRef.current ||
+        requestedDirectoryPath !== activeDirectoryPathRef.current
+      ) {
+        return;
+      }
       const upstream = payload.result.upstream_status
         ? ` HTTP ${payload.result.upstream_status}`
         : "";
       const duration = payload.result.duration_ms == null ? "" : ` in ${payload.result.duration_ms} ms`;
       setStatus(`Health operation ${payload.operation} succeeded${upstream}${duration}.`);
     } catch (reason: unknown) {
+      if (
+        requestId !== testRequestIdRef.current ||
+        requestedDirectoryPath !== activeDirectoryPathRef.current
+      ) {
+        return;
+      }
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setTesting(false);
+      if (
+        requestId === testRequestIdRef.current &&
+        requestedDirectoryPath === activeDirectoryPathRef.current
+      ) {
+        setTesting(false);
+      }
     }
   }
 
@@ -217,7 +304,7 @@ export function ConnectorsPage({
           <div className="feature-toolbar-actions">
             <button
               type="button"
-              onClick={() => state && setDraft(configText(state.config))}
+              onClick={() => activeState && setDraft(configText(activeState.config))}
               disabled={!dirty || saving}
             >
               Reset
@@ -233,7 +320,7 @@ export function ConnectorsPage({
               type="button"
               className="primary"
               onClick={() => void save()}
-              disabled={!dirty || saving || !state || !privilegedUnlocked}
+              disabled={!dirty || saving || !activeState || !privilegedUnlocked}
             >
               {saving ? "Saving..." : "Save configuration"}
             </button>
@@ -300,7 +387,7 @@ export function ConnectorsPage({
           <div className="panel-header">
             <div>
               <h3>Directory override JSON</h3>
-              <p className="muted-text">Available drivers: {state?.driver_names.join(", ") || "loading"}</p>
+              <p className="muted-text">Available drivers: {activeState?.driver_names.join(", ") || "loading"}</p>
             </div>
             {dirty ? <span className="status-pill state-pending">Unsaved</span> : <span className="status-pill state-idle">Current</span>}
           </div>
