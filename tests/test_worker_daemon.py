@@ -22,7 +22,7 @@ from evander.capacity_health import (
     SessionStorageSample,
     TelemetryStatus,
 )
-from evander.worker.service import WorkerDaemon
+from evander.worker.service import WorkerDaemon, _git_subprocess_env
 from evander.worker.models import (
     WorkerGitWriteKeyRequest,
     WorkerRepoCloneRequest,
@@ -612,10 +612,7 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     daemon.clone_repo(
         "session-1",
         WorkerRepoCloneRequest(
-            repo_source=(
-                "ssh://evander-git-host/runtime/managed-git/"
-                "mr_0123456789abcdefabcd.git"
-            ),
+            repo_source=("ssh://evander-git-host/runtime/managed-git/mr_0123456789abcdefabcd.git"),
             clone_branch="main",
             repo_name="repo",
         ),
@@ -643,9 +640,7 @@ def test_worker_reconciles_existing_checkout_remote_without_recloning(
             cwd=source,
             check=True,
         )
-        subprocess.run(
-            ["git", "config", "user.name", "Worker Test"], cwd=source, check=True
-        )
+        subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
         (source / "README.md").write_text(content, encoding="utf-8")
         subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=source, check=True)
@@ -661,9 +656,7 @@ def test_worker_reconciles_existing_checkout_remote_without_recloning(
         "session-1",
         WorkerRepoCloneRequest(repo_source=str(first_source), repo_name="repo"),
     )
-    checkout = WorkerSessionPaths.resolve(
-        daemon.worker_root, "session-1"
-    ).repo_root / "repo"
+    checkout = WorkerSessionPaths.resolve(daemon.worker_root, "session-1").repo_root / "repo"
     (checkout / "unpublished.txt").write_text("keep me\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="not a checkout for requested source"):
@@ -794,6 +787,12 @@ def test_worker_provisions_session_git_write_key_and_preserves_config(
     assert "# BEGIN evander git write host" in config_text
     assert "IdentityFile ~/.ssh/evander-git" in config_text
     assert "IdentityFile ~/.ssh/evander-git-write" in config_text
+    host_config_text = (paths.root / "host-ssh" / "config").read_text(encoding="utf-8")
+    assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git'}" in host_config_text
+    assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in host_config_text
+    assert _git_subprocess_env(paths.agent_home)["GIT_SSH_COMMAND"] == (
+        f"ssh -F {paths.root / 'host-ssh' / 'config'}"
+    )
 
     daemon.start_job(
         WorkerJobRequest(
@@ -914,6 +913,8 @@ def test_worker_api_provisions_session_git_write_key(
     assert "Host evander-git-host" in config_text
     assert "Host evander-git-host-write" in config_text
     assert "IdentityFile ~/.ssh/evander-git-write" in config_text
+    host_config_text = (paths.root / "host-ssh" / "config").read_text(encoding="utf-8")
+    assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in host_config_text
 
 
 def test_worker_provisions_dotted_git_write_key_name(
@@ -958,6 +959,9 @@ def test_worker_provisions_dotted_git_write_key_name(
     assert (ssh_dir / "foo.bar.pub").is_file()
     assert record.git_ssh_alias == "evander-git-host-write"
     assert "IdentityFile ~/.ssh/foo.bar" in (ssh_dir / "config").read_text(encoding="utf-8")
+    assert f"IdentityFile {ssh_dir / 'foo.bar'}" in (paths.root / "host-ssh" / "config").read_text(
+        encoding="utf-8"
+    )
     assert not list(ssh_dir.glob(".foo.bar-*"))
 
 

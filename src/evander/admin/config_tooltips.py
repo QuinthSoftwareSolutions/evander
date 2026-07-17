@@ -324,9 +324,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "azure_openai_model_deployments": (
         "JSON object mapping logical model names to Azure deployment names used by the relay."
     ),
-    "openai_realtime_model": (
-        "OpenAI Realtime model used for projected live voice sessions."
-    ),
+    "openai_realtime_model": ("OpenAI Realtime model used for projected live voice sessions."),
     "openai_realtime_api_key_env": (
         "Host environment variable used to mint browser Realtime client secrets for Team "
         "Add-on direct agent calls. SIP and meeting bridges still use bridge-local key "
@@ -371,9 +369,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Optional override for Retell API requests made by the host gateway. "
         "Leave the default for the public Retell API."
     ),
-    "retell_api_key_env": (
-        "Name of the host environment variable that holds the Retell API key."
-    ),
+    "retell_api_key_env": ("Name of the host environment variable that holds the Retell API key."),
     "retell_from_number": (
         "Retell-owned outbound caller number used by make_phone_call. Stored host-side only."
     ),
@@ -387,9 +383,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "phone_call_backend": (
         "Phone backend used by make_phone_call: existing Retell calls or OpenAI Realtime via DIDWW bridge."
     ),
-    "didww_sip_bridge_url": (
-        "Host-owned DIDWW SIP bridge URL for OpenAI Realtime phone calls."
-    ),
+    "didww_sip_bridge_url": ("Host-owned DIDWW SIP bridge URL for OpenAI Realtime phone calls."),
     "didww_sip_bridge_token_env": (
         "Name of the host environment variable containing the DIDWW SIP bridge bearer token."
     ),
@@ -405,15 +399,11 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Directory-scoped contact entries keyed by stable contact id. Entries include name, "
         "description, email_addresses, and phone_numbers with one optional primary phone number."
     ),
-    "user_contact_links": (
-        "Directory-scoped mapping from admin user login to one contact id."
-    ),
+    "user_contact_links": ("Directory-scoped mapping from admin user login to one contact id."),
     "http_target_relay_timeout_seconds": (
         "Upstream request timeout in seconds for the generic HTTP target relay."
     ),
-    "provider_state": (
-        "Advanced provider-specific JSON state consumed by integration providers."
-    ),
+    "provider_state": ("Advanced provider-specific JSON state consumed by integration providers."),
     "issue_setup_azure_devops_pr_pat_env": (
         "Optional override for the Azure DevOps PR PAT env-var name used by issue setup and PR scripts."
     ),
@@ -448,9 +438,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "wake_jitter_seconds": (
         "Random delay added to each wake polling sleep interval to avoid perfectly synchronized polling."
     ),
-    "wake_poll_interval_seconds": (
-        "Base polling interval in seconds for host-side wake workers."
-    ),
+    "wake_poll_interval_seconds": ("Base polling interval in seconds for host-side wake workers."),
     "pr_feedback_resume_prompt": (
         "Prompt text passed to the resume script when waking an agent session for unread PR comments."
     ),
@@ -469,9 +457,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "discord_resume_prompt": (
         "Prompt text passed to the Discord wake worker when waking an agent session for unread Discord messages."
     ),
-    "wake_resume_timeout_seconds": (
-        "Timeout in seconds for the host resume script invocation."
-    ),
+    "wake_resume_timeout_seconds": ("Timeout in seconds for the host resume script invocation."),
     "wake_session_cooldown_path": (
         "JSON state file path where wake workers track per-session cooldowns."
     ),
@@ -487,9 +473,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "wake_schedule_min_interval_seconds": (
         "Optional guardrail: minimum allowed interval, in seconds, between scheduled runs for recurring wakes."
     ),
-    "wake_vm_user": (
-        "Guest username passed to the resume script when reconnecting to a VM."
-    ),
+    "wake_vm_user": ("Guest username passed to the resume script when reconnecting to a VM."),
     "wake_dispatch_state_path": (
         "Host-side JSON state file written by the resume script to track recent wake attempts."
     ),

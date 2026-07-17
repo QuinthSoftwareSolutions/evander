@@ -52,9 +52,8 @@ class ScheduledWakeWorker:
         self.config = config
         self.worker_config = worker_config
         self._base_config = base_config or config
-        self._config_reloader = (
-            config_reloader
-            or FixedScheduledWakeWorkerGlobalConfigReloader(self.worker_config)
+        self._config_reloader = config_reloader or FixedScheduledWakeWorkerGlobalConfigReloader(
+            self.worker_config
         )
         self.runtime = runtime
         self.dispatcher = self._build_dispatcher()
@@ -709,8 +708,6 @@ def _defer_one_time_wake_confirmation(
     if request.auto_retry_started_at is None:
         request.auto_retry_started_at = request.last_dispatched_at or now_utc
     request.updated_at = now_utc
-    request.next_run_at = now_utc + timedelta(
-        seconds=max(0.0, float(confirmation_timeout_seconds))
-    )
+    request.next_run_at = now_utc + timedelta(seconds=max(0.0, float(confirmation_timeout_seconds)))
     request.auto_retry_exhausted_at = None
     wake_store.upsert_request(request)

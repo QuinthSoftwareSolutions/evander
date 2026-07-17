@@ -1071,9 +1071,7 @@ def test_teams_ingest_worker_ignores_graph_echo_of_agent_status_post(
                             "id": "msg-status",
                             "createdDateTime": "2026-03-30T11:02:00Z",
                             "body": {"content": "status", "contentType": "text"},
-                            "from": {
-                                "application": {"id": "bot-app", "displayName": "Evander"}
-                            },
+                            "from": {"application": {"id": "bot-app", "displayName": "Evander"}},
                         }
                     ]
                 },

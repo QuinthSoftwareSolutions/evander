@@ -210,7 +210,9 @@ class JsonSessionToolApprovalLeaseRepository:
 
         return bool(self._store.update_all(_revoke))
 
-    def delete_expired(self, *, now: datetime | None = None, grace_period: timedelta | None = None) -> int:
+    def delete_expired(
+        self, *, now: datetime | None = None, grace_period: timedelta | None = None
+    ) -> int:
         effective_now = now or datetime.now(UTC)
         cutoff = effective_now - (grace_period or timedelta())
 

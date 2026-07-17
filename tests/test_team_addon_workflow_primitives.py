@@ -144,8 +144,7 @@ def test_team_workflow_provider_registration_includes_review_primitives() -> Non
         is TeamCreateReviewRequestEffectProvider
     )
     assert (
-        registration.effect_providers["effect:team:index-memory"]
-        is TeamIndexMemoryEffectProvider
+        registration.effect_providers["effect:team:index-memory"] is TeamIndexMemoryEffectProvider
     )
     assert (
         registration.effect_providers["effect:team:reindex-memory"]

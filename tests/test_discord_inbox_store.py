@@ -85,9 +85,7 @@ def test_discord_message_envelope_preserves_raw_metadata() -> None:
         ),
     ],
 )
-def test_discord_inbox_db_path(
-    tmp_path: Path, input_path: str, expected_path: str
-) -> None:
+def test_discord_inbox_db_path(tmp_path: Path, input_path: str, expected_path: str) -> None:
     path = tmp_path / input_path
 
     assert discord_inbox_db_path(path) == tmp_path / expected_path
@@ -124,7 +122,9 @@ def test_discord_inbox_store_batches_multiple_messages(tmp_path: Path) -> None:
 
     assert store.add_messages_if_new([first, second]) == 2
     assert store.add_messages_if_new([first, second]) == 0
-    assert [message.message_id for message in store.list_all_messages(channel_ids=["chan-1"]).messages] == [
+    assert [
+        message.message_id for message in store.list_all_messages(channel_ids=["chan-1"]).messages
+    ] == [
         "msg-1",
         "msg-2",
     ]
@@ -178,12 +178,15 @@ def test_discord_inbox_store_fast_forwards_session_cursor_to_latest_message(
 ) -> None:
     store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
     latest_message_at = datetime.now(timezone.utc) - timedelta(days=1)
-    assert store.add_messages_if_new(
-        [
-            _message("msg-1", created_at=latest_message_at - timedelta(days=1)),
-            _message("msg-2", created_at=latest_message_at),
-        ]
-    ) == 2
+    assert (
+        store.add_messages_if_new(
+            [
+                _message("msg-1", created_at=latest_message_at - timedelta(days=1)),
+                _message("msg-2", created_at=latest_message_at),
+            ]
+        )
+        == 2
+    )
 
     before = datetime.now(timezone.utc)
     advanced = store.fast_forward_session_cursors_to_latest("session-1", ["chan-1"])
@@ -211,14 +214,10 @@ def test_discord_inbox_store_fast_forwards_session_cursor_without_cached_message
     assert before <= parsed_cursor <= after
     assert store.get_session_cursor("session-1", "chan-1") == cursor
 
-    assert store.add_message_if_new(
-        _message("old-msg", created_at=before - timedelta(seconds=1))
-    )
+    assert store.add_message_if_new(_message("old-msg", created_at=before - timedelta(seconds=1)))
     assert store.has_unread_messages(session_id="session-1", channel_ids=["chan-1"]) is False
 
-    assert store.add_message_if_new(
-        _message("new-msg", created_at=after + timedelta(seconds=1))
-    )
+    assert store.add_message_if_new(_message("new-msg", created_at=after + timedelta(seconds=1)))
     assert store.has_unread_messages(session_id="session-1", channel_ids=["chan-1"]) is True
 
 
@@ -424,9 +423,9 @@ def test_discord_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
     assert path.exists()
     assert store.path.exists()
     assert store.get_cursor("chan-1") == cursor
-    assert [message.message_id for message in store.list_all_messages(channel_ids=["chan-1"]).messages] == [
-        "msg-1"
-    ]
+    assert [
+        message.message_id for message in store.list_all_messages(channel_ids=["chan-1"]).messages
+    ] == ["msg-1"]
     assert store.get_session_cursor("session-1", "chan-1") == cursor
     assert store.read_raw() == {
         "cursors": {"chan-1": cursor},

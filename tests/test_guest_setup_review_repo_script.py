@@ -102,8 +102,7 @@ def test_guest_setup_review_repo_uses_explicit_base_and_head_refs(tmp_path: Path
         == target_sha
     )
     assert (
-        _git(prep_repo, "rev-parse", "refs/evander/review/head", env=env).stdout.strip()
-        == head_sha
+        _git(prep_repo, "rev-parse", "refs/evander/review/head", env=env).stdout.strip() == head_sha
     )
 
     context = context_file.read_text(encoding="utf-8")
@@ -228,12 +227,10 @@ def test_guest_setup_review_repo_fetches_missing_explicit_commits(tmp_path: Path
     assert f"REVIEW_DIFF_BASE_COMMIT={base_sha}" in result.stdout
     assert _git(prep_repo, "rev-parse", "HEAD", env=env).stdout.strip() == head_sha
     assert (
-        _git(prep_repo, "rev-parse", "refs/evander/review/base", env=env).stdout.strip()
-        == base_sha
+        _git(prep_repo, "rev-parse", "refs/evander/review/base", env=env).stdout.strip() == base_sha
     )
     assert (
-        _git(prep_repo, "rev-parse", "refs/evander/review/head", env=env).stdout.strip()
-        == head_sha
+        _git(prep_repo, "rev-parse", "refs/evander/review/head", env=env).stdout.strip() == head_sha
     )
 
 

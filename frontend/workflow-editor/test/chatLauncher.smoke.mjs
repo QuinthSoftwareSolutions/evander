@@ -138,6 +138,7 @@ async function withChatLauncherHarness(run) {
 test("chat launcher shows preparing then ready without blocking the pill", { timeout: 30000 }, async () => {
   await withChatLauncherHarness(async ({ page, baseUrl }) => {
     let releaseReadyStatus = () => {};
+    let assistantStatus = "preparing";
     const readyStatusAllowed = new Promise((resolve) => {
       releaseReadyStatus = resolve;
     });
@@ -156,10 +157,11 @@ test("chat launcher shows preparing then ready without blocking the pill", { tim
       );
     });
     await page.route("**/api/chat/transcript/thread-1**", async (route) => {
-      await route.fulfill(jsonResponse(transcriptPayload("preparing")));
+      await route.fulfill(jsonResponse(transcriptPayload(assistantStatus)));
     });
     await page.route("**/api/chat/stream/thread-1**", async (route) => {
       await readyStatusAllowed;
+      assistantStatus = "ready";
       await route.fulfill({
         status: 200,
         contentType: "text/event-stream",

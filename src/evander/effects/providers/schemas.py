@@ -114,6 +114,7 @@ class VmCreateEffectDefinition(EffectDefinition):
     vm_user: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None
     allowed_tools: list[str] | None = None
+    connector_grants: ConfigValue | None = None
     tool_argument_policies: ConfigValue | None = None
     allowed_script_names: list[str] | None = None
     allowed_contact_ids: list[str] | None = None
@@ -204,6 +205,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     ttl_hours: ConfigValue | None = None
     capability_profile: ConfigValue | None = None
     allowed_tools: list[str] | None = None
+    connector_grants: ConfigValue | None = None
     tool_argument_policies: ConfigValue | None = None
     allowed_script_names: list[str] | None = None
     allowed_contact_ids: list[str] | None = None
@@ -239,9 +241,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
 
     @field_validator("npm_registry_url", mode="before")
     @classmethod
-    def validate_npm_registry_url(
-        cls, value: ConfigValue | None
-    ) -> ConfigValue | None:
+    def validate_npm_registry_url(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None:
             return None
         if isinstance(value, str) and "${{" in value:
@@ -696,9 +696,7 @@ def _validate_allowed_source_roots(
         raise ValueError(f"{effect_type} allowed_source_roots must be a string list or binding")
     for item in value:
         if not isinstance(item, str) or not item.strip():
-            raise ValueError(
-                f"{effect_type} allowed_source_roots must be a string list or binding"
-            )
+            raise ValueError(f"{effect_type} allowed_source_roots must be a string list or binding")
     return value
 
 
@@ -1083,9 +1081,7 @@ class SessionRenewIfExpiredEffectDefinition(EffectDefinition):
 
     @field_validator("renew_if_expires_within")
     @classmethod
-    def validate_renew_if_expires_within(
-        cls, value: ConfigValue | None
-    ) -> ConfigValue | None:
+    def validate_renew_if_expires_within(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None:
             return None
         if isinstance(value, str) and "${{" in value:

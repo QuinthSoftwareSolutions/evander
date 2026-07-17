@@ -23,6 +23,8 @@ type ToolCallStatus = "success" | "denied" | "error" | "pending_approval";
 
 type ToolCallItem = {
   tool_name: string;
+  connector_id?: string | null;
+  connector_operation?: string | null;
   created_at: string;
   session_id?: string | null;
   directory_path?: string | null;
@@ -721,6 +723,8 @@ function toolCallSelectionMatchesQuery(item: ToolCallItem, query: string): boole
     stringField(item, "trace_id"),
     stringField(item, "session_id"),
     stringField(item, "tool_name"),
+    stringField(item, "connector_id"),
+    stringField(item, "connector_operation"),
     stringField(item, "directory_path"),
     stringField(item, "agent_id", "agent_session_id"),
     stringField(item, "vm_id", "vm_name"),
@@ -1162,6 +1166,14 @@ export function ToolCallsPage() {
                     <span>Tool</span>
                     <strong>{selectedCall.tool_name}</strong>
                   </div>
+                  {stringField(selectedCall, "connector_id") ? (
+                    <div>
+                      <span>Connector</span>
+                      <strong>
+                        {stringField(selectedCall, "connector_id")}.{stringField(selectedCall, "connector_operation") ?? "unknown"}
+                      </strong>
+                    </div>
+                  ) : null}
                   <div>
                     <span>Request id</span>
                     <strong>{stringField(selectedCall, "request_id") ?? "None"}</strong>
@@ -1215,6 +1227,8 @@ export function ToolCallsPage() {
                         directory_path: stringField(selectedCall, "directory_path") ?? selectedDirectoryPath,
                         duration_ms: selectedCall.duration_ms ?? null,
                         tool_name: selectedCall.tool_name,
+                        connector_id: stringField(selectedCall, "connector_id"),
+                        connector_operation: stringField(selectedCall, "connector_operation"),
                         request_id: stringField(selectedCall, "request_id"),
                         correlation_id: stringField(selectedCall, "correlation_id"),
                         approval_request_id: stringField(selectedCall, "approval_request_id"),

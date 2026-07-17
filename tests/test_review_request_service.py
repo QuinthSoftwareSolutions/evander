@@ -49,10 +49,7 @@ def test_enqueue_request_uses_session_repository_directory_when_directory_not_pr
     )
 
     assert response.directory_path == "root/team-a"
-    assert (
-        response.canonical_url
-        == "https://example.test/QuinthSoftwareSolutions/evander/pull/42"
-    )
+    assert response.canonical_url == "https://example.test/QuinthSoftwareSolutions/evander/pull/42"
     stored = ReviewRequestStore(Path(tmp_path / "review-request-store.json")).get_request(
         response.request_id
     )

@@ -172,7 +172,8 @@ def _build_provider_kwargs(
     except (TypeError, ValueError):
         return {}
     accepts_var_kwargs = any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
     )
     kwargs: dict[str, Any] = {}
     if directory_path is not None and (
@@ -186,7 +187,9 @@ def _build_provider_kwargs(
 
 def _is_unexpected_keyword_type_error(error: TypeError) -> bool:
     message = str(error)
-    return "unexpected keyword argument" in message or "got an unexpected keyword argument" in message
+    return (
+        "unexpected keyword argument" in message or "got an unexpected keyword argument" in message
+    )
 
 
 def _normalize_text(value: object) -> str | None:

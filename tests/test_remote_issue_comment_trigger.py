@@ -96,9 +96,7 @@ def test_remote_issue_comment_trigger_baselines_existing_comments(
     assert provider.poll() == []
     assert _IssueServiceStub.calls[0]["labels_any"] == ["triage"]
     cursor_payload = json.loads(
-        (tmp_path / "trigger-cursors-remote-issue-comments.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "trigger-cursors-remote-issue-comments.json").read_text(encoding="utf-8")
     )
     stream_state = cursor_payload["remote-comment"]["streams"]["github|root/github|owner/repo|42"]
     assert stream_state["recent_comment_keys"] == ["c1"]

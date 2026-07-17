@@ -149,9 +149,7 @@ def test_run_pr_integration_preflight_uses_temporary_managed_worktree(
                 "lastMergeSourceCommit": {"commitId": feature_commit},
                 "lastMergeTargetCommit": {"commitId": main_commit},
                 "_links": {
-                    "web": {
-                        "href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
-                    }
+                    "web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}
                 },
             },
         )

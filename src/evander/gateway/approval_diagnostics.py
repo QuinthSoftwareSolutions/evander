@@ -32,8 +32,7 @@ def _approval_gate_human_summary(tool_name: str, session_id: str) -> str:
 
 def _approval_gate_intended_effect(tool_name: str, session_id: str) -> str:
     return (
-        f"Execute the exact approved MCP tool invocation {tool_name!r} "
-        f"for session {session_id!r}."
+        f"Execute the exact approved MCP tool invocation {tool_name!r} for session {session_id!r}."
     )
 
 

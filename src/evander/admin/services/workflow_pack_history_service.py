@@ -7,7 +7,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 from evander.admin.payloads import (
@@ -185,8 +184,12 @@ class WorkflowPackHistoryService:
             after_files = self._read_snapshot_files(normalized_change_id, "after")
             return WorkflowPackHistoryDetailPayload(
                 entry=self._entry_payload(record),
-                before_files=[WorkflowPackHistoryFilePayload.model_validate(item) for item in before_files],
-                after_files=[WorkflowPackHistoryFilePayload.model_validate(item) for item in after_files],
+                before_files=[
+                    WorkflowPackHistoryFilePayload.model_validate(item) for item in before_files
+                ],
+                after_files=[
+                    WorkflowPackHistoryFilePayload.model_validate(item) for item in after_files
+                ],
                 diffs=self._diffs(before_files=before_files, after_files=after_files),
             )
         raise ValueError(f"Unknown workflow pack history change: {normalized_change_id}")

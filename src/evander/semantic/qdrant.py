@@ -420,8 +420,7 @@ def _raise_points_error(
         raise QdrantError(f"Qdrant collection {collection_name!r} does not exist")
     if response.status_code >= 400:
         raise QdrantError(
-            f"Qdrant {action} failed with HTTP {response.status_code}: "
-            f"{response.text.strip()}"
+            f"Qdrant {action} failed with HTTP {response.status_code}: {response.text.strip()}"
         )
 
 

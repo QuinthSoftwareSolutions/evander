@@ -86,7 +86,11 @@ def _graph_directory_paths(graphs: object) -> tuple[str, ...]:
             legacy_directory_paths = graph.get("directory_paths")
             if isinstance(legacy_directory_paths, list):
                 directory_path = next(
-                    (str(candidate or "").strip() for candidate in legacy_directory_paths if str(candidate or "").strip()),
+                    (
+                        str(candidate or "").strip()
+                        for candidate in legacy_directory_paths
+                        if str(candidate or "").strip()
+                    ),
                     "",
                 )
             elif isinstance(legacy_directory_paths, str):
@@ -361,7 +365,8 @@ def _filter_workflow_document_payload(
                     str(graph.get("id") or "").strip() in readable_graph_ids
                     or (
                         not str(graph.get("id") or "").strip()
-                        and str(graph.get("directory_path") or "").strip() in {
+                        and str(graph.get("directory_path") or "").strip()
+                        in {
                             str(candidate.get("directory_path") or "").strip()
                             for candidate in readable_graphs
                             if isinstance(candidate, dict)
@@ -394,8 +399,7 @@ def _filter_workflow_document_payload(
         payload["graphs"] = [
             graph
             for graph in graphs_payload
-            if isinstance(graph, dict)
-            and str(graph.get("id") or "").strip() in readable_graph_ids
+            if isinstance(graph, dict) and str(graph.get("id") or "").strip() in readable_graph_ids
         ]
     return payload
 
@@ -416,9 +420,7 @@ def _graph_directories_from_payload(
     )
     if directories:
         return directories
-    if graphs_payload is None or (
-        isinstance(graphs_payload, list) and len(graphs_payload) == 0
-    ):
+    if graphs_payload is None or (isinstance(graphs_payload, list) and len(graphs_payload) == 0):
         fallback = fallback_graphs or []
         fallback_directories = _graph_directory_paths(
             [
@@ -468,8 +470,7 @@ async def workflow_run_events(
                                 run.model_dump(mode="json")
                                 for run in snapshot.runs
                                 if any(
-                                    node.node_id in readable_node_ids
-                                    for node in run.active_nodes
+                                    node.node_id in readable_node_ids for node in run.active_nodes
                                 )
                             ],
                             "node_activity": {
@@ -550,9 +551,7 @@ def workflow_routes(
                     if candidate.graphs:
                         if not candidate_readable_graphs:
                             continue
-                    elif not auth.can(
-                        request, WORKFLOWS_READ_PERMISSION, directory_path="root"
-                    ):
+                    elif not auth.can(request, WORKFLOWS_READ_PERMISSION, directory_path="root"):
                         continue
                     document = candidate
                     readable_graphs = candidate_readable_graphs
@@ -588,7 +587,9 @@ def workflow_routes(
             directory_path = service.teams_admin.normalize_directory_reference(
                 request.query_params.get("directory_path") or "root"
             )
-            auth.require_permission(request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path)
+            auth.require_permission(
+                request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path
+            )
             catalog = service.workflow_config_admin.read_workflow_editor_catalog(
                 directory_path=directory_path
             )
@@ -603,15 +604,15 @@ def workflow_routes(
             document = service.workflow_config_admin.read_composed_workflow_editor_document()
             snapshot = service.workflow_config_admin.read_workflow_run_snapshot()
             if not document.graphs:
-                auth.require_permission(request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root")
+                auth.require_permission(
+                    request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root"
+                )
                 return JSONResponse(snapshot.model_dump(mode="json"))
             readable_graphs, readable_node_ids = _require_workflow_run_read_access(
                 auth=auth, request=request, graphs=document.graphs
             )
             return JSONResponse(
-                _filter_workflow_run_snapshot_payload(
-                    snapshot, readable_node_ids=readable_node_ids
-                )
+                _filter_workflow_run_snapshot_payload(snapshot, readable_node_ids=readable_node_ids)
             )
         except ValueError as exc:
             return json_error(str(exc))
@@ -766,7 +767,9 @@ def workflow_routes(
         try:
             document = service.workflow_config_admin.read_composed_workflow_editor_document()
             if document.graphs:
-                _require_workflow_run_read_access(auth=auth, request=request, graphs=document.graphs)
+                _require_workflow_run_read_access(
+                    auth=auth, request=request, graphs=document.graphs
+                )
             else:
                 auth.require_permission(
                     request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root"
@@ -815,7 +818,7 @@ def workflow_routes(
         except ValueError as exc:
             return json_error(str(exc))
         except PermissionError as exc:
-                return json_error(str(exc), status_code=403)
+            return json_error(str(exc), status_code=403)
         return JSONResponse(validation.model_dump(mode="json"))
 
     async def create_workflow_pack(request: Request) -> JSONResponse:
@@ -1022,7 +1025,11 @@ def workflow_routes(
         ),
         Route("/api/workflow-editor/run-search", get_run_search, methods=["GET"]),
         Route("/api/workflow-editor/run-detail", get_run_detail, methods=["GET"]),
-        Route("/api/workflow-editor/node-failures/{node_id:path}", dismiss_node_failures, methods=["DELETE"]),
+        Route(
+            "/api/workflow-editor/node-failures/{node_id:path}",
+            dismiss_node_failures,
+            methods=["DELETE"],
+        ),
         Route("/api/workflow-editor/runs/{event_id:path}", clear_run, methods=["DELETE"]),
         Route("/api/workflow-editor/runs/{event_id:path}/resume", resume_run, methods=["POST"]),
         Route("/api/workflow-editor/runs/stream", stream_runs, methods=["GET"]),

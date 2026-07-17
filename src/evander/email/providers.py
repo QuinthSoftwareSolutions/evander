@@ -123,9 +123,7 @@ class MultiMailboxEmailProvider:
         provider = self._provider_for_mailbox(mailbox_id)
         return provider.get_message(mailbox_id=mailbox_id, message_id=message_id)
 
-    def list_attachments(
-        self, mailbox_id: str, message_id: str
-    ) -> list[EmailAttachmentMetadata]:
+    def list_attachments(self, mailbox_id: str, message_id: str) -> list[EmailAttachmentMetadata]:
         provider = self._provider_for_mailbox(mailbox_id)
         return provider.list_attachments(mailbox_id=mailbox_id, message_id=message_id)
 
@@ -187,9 +185,7 @@ class JsonEmailProvider:
             raise KeyError(f"Unknown message for mailbox {mailbox_id}: {message_id}")
         return self._to_detail(message)
 
-    def list_attachments(
-        self, mailbox_id: str, message_id: str
-    ) -> list[EmailAttachmentMetadata]:
+    def list_attachments(self, mailbox_id: str, message_id: str) -> list[EmailAttachmentMetadata]:
         message = self.email_store.get(message_id)
         if message is None or message.mailbox_id != mailbox_id:
             raise KeyError(f"Unknown message for mailbox {mailbox_id}: {message_id}")

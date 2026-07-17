@@ -25,6 +25,7 @@ from .governance import _governance_groups_for_team
 
 OPERATOR_ESCALATION_EVENT_TYPE = "team.operator.escalation_requested"
 
+
 def _apply_operator_escalation(
     state: TeamState,
     *,
@@ -122,6 +123,7 @@ def _apply_operator_escalation(
         group_runtime.updated_at = now
         result.setdefault("created_governance_agenda_item_ids", []).append(agenda_id)
     return True
+
 
 __all__ = [
     "OPERATOR_ESCALATION_EVENT_TYPE",

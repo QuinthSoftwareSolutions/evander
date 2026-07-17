@@ -15,14 +15,13 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field as PydanticField
 
 from evander.email.http_utils import ProviderRequestError
-from evander.email.providers import EmailDraft, EmailDraftAttachment
+from evander.email.providers import EmailDraftAttachment
 from evander.gateway.dependencies import _compat_gateway_attr
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.models import (
     CommunicationAttachmentRef,
     CommunicationCopyArtifactToWorkspaceResponse,
     CommunicationDownloadAttachmentResponse,
-    CommunicationFileArtifact,
     CommunicationListAttachmentsResponse,
     CommunicationCopyArtifactToWorkspaceRequest,
     CommunicationDownloadAttachmentRequest,
@@ -1047,11 +1046,14 @@ def register_communication_tools(
                 voice=resolved_voice,
                 interrupt=bool(interrupt),
             )
-            operation_id = str(
-                bridge_result.get("operation_id")
-                or bridge_result.get("speech_operation_id")
-                or ""
-            ).strip() or None
+            operation_id = (
+                str(
+                    bridge_result.get("operation_id")
+                    or bridge_result.get("speech_operation_id")
+                    or ""
+                ).strip()
+                or None
+            )
             speech_status = str(bridge_result.get("status") or "queued").strip() or "queued"
             event = context.teams_meeting_store.append_local_event(
                 meeting_id=binding.meeting_id,
@@ -1138,9 +1140,7 @@ def register_communication_tools(
             if binding is None:
                 raise ToolError(f"Unknown Teams meeting session: {session_id}")
             meeting_id_for_error = binding.meeting_id
-            bridge_result = context.teams_meeting_bridge_client.leave(
-                meeting_id=binding.meeting_id
-            )
+            bridge_result = context.teams_meeting_bridge_client.leave(meeting_id=binding.meeting_id)
             context.teams_meeting_store.close_binding(binding.meeting_id, status="stopped")
             event = context.teams_meeting_store.append_local_event(
                 meeting_id=binding.meeting_id,
@@ -1382,7 +1382,6 @@ def register_communication_tools(
             )
             raise
 
-
     @server.tool()
     def list_inline_media(
         session_id: str,
@@ -1421,9 +1420,7 @@ def register_communication_tools(
                 "provider": response.provider,
                 "resource_id": resource_id,
                 "count": len(media),
-                "comment_ids": sorted(
-                    {item.comment_id for item in media if item.comment_id}
-                ),
+                "comment_ids": sorted({item.comment_id for item in media if item.comment_id}),
                 "mime_types": sorted({item.mime_type for item in media if item.mime_type}),
                 "byte_count": sum(item.byte_count or 0 for item in media),
             }
@@ -1632,7 +1629,6 @@ def register_communication_tools(
                 error_class="unexpected_error",
             )
             raise
-
 
     @server.tool()
     def communication_list_attachments(
@@ -2315,11 +2311,7 @@ def register_communication_tools(
                 body=body,
                 artifact_ids=artifact_ids,
             )
-            result = (
-                draft.model_dump(mode="json")
-                if hasattr(draft, "model_dump")
-                else dict(draft)
-            )
+            result = draft.model_dump(mode="json") if hasattr(draft, "model_dump") else dict(draft)
             result["artifact_ids"] = artifact_ids
             audit_success(
                 session_id,
@@ -2336,9 +2328,7 @@ def register_communication_tools(
             )
             return result
         except PolicyError as exc:
-            audit_failure(
-                session_id, ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS, args, str(exc)
-            )
+            audit_failure(session_id, ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS, args, str(exc))
             raise
         except (httpx.HTTPError, ProviderRequestError) as exc:
             audit_failure(
@@ -2580,9 +2570,7 @@ def register_communication_tools(
                         provider="email",
                         mailbox_id=str(payload.get("mailbox_id", "")),
                         approval_request_id=request_id,
-                        approval_decision=(
-                            approval.status.value
-                        ),
+                        approval_decision=(approval.status.value),
                     ),
                     "artifacts": _artifact_audit_summaries(artifact_ids),
                     **result,
@@ -2590,9 +2578,7 @@ def register_communication_tools(
             )
             return result
         except PolicyError as exc:
-            audit_failure(
-                session_id, ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS, args, str(exc)
-            )
+            audit_failure(session_id, ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS, args, str(exc))
             raise
         except (httpx.HTTPError, ProviderRequestError) as exc:
             audit_failure(

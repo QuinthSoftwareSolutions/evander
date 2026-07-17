@@ -1451,9 +1451,7 @@ def _work_item_needs_ingest_or_refresh(
     )
     if not should_refresh:
         issue_id = existing_record.issue_id if existing_record is not None else ""
-        logging.info(
-            "work_item=%s skipped=already_processed issue_id=%s", work_item_id, issue_id
-        )
+        logging.info("work_item=%s skipped=already_processed issue_id=%s", work_item_id, issue_id)
     return should_refresh
 
 
@@ -1672,9 +1670,10 @@ def _trigger_effective_directory_path(
     trigger: PullRequestNewFeedbackTriggerDefinition | PullRequestCompletedTriggerDefinition,
     current_directory_path: str,
 ) -> str:
-    return _normalize_optional_text(trigger.directory_path) or DirectoryPath(
-        segments=current_directory_path
-    ).as_posix()
+    return (
+        _normalize_optional_text(trigger.directory_path)
+        or DirectoryPath(segments=current_directory_path).as_posix()
+    )
 
 
 def _list_explicit_ado_trigger_pull_requests(
@@ -1765,9 +1764,9 @@ def _list_explicit_ado_trigger_pull_requests(
             cursor=trigger.cursor,
         )
         for pull_request in response.pull_requests:
-            pull_requests_by_key[
-                (pull_request.provider, pull_request.repo, pull_request.pr_id)
-            ] = pull_request
+            pull_requests_by_key[(pull_request.provider, pull_request.repo, pull_request.pr_id)] = (
+                pull_request
+            )
     return _ExplicitAdoPrCandidates(
         organization_url=organization_url or "",
         project=project or "",
@@ -1902,9 +1901,7 @@ def _publish_directory_pr_feedback_events(
 
     cursor_store = TriggerCursorStore(config.runtime_dir / "trigger-cursors-pr-feedback.json")
     trigger_worker_config = _load_trigger_orchestrator_worker_config(config)
-    event_queue = _build_trigger_event_queue_for_worker_config(
-        config, trigger_worker_config
-    )
+    event_queue = _build_trigger_event_queue_for_worker_config(config, trigger_worker_config)
     effect_wake_lock_path = _effect_lock_path_for_worker_config(config, trigger_worker_config)
     feedback_store = PrFeedbackStore(config.runtime_dir / "pr-feedback-store.json")
     audit_logger = AuditLogger(runtime_gateway_config.audit_log_path)
@@ -2106,9 +2103,7 @@ def _publish_directory_pr_completion_events(
         return 0
 
     trigger_worker_config = _load_trigger_orchestrator_worker_config(config)
-    event_queue = _build_trigger_event_queue_for_worker_config(
-        config, trigger_worker_config
-    )
+    event_queue = _build_trigger_event_queue_for_worker_config(config, trigger_worker_config)
     effect_wake_lock_path = _effect_lock_path_for_worker_config(config, trigger_worker_config)
     pr_map_store = PrMapStore(runtime_gateway_config.pr_map_path)
     audit_logger = AuditLogger(runtime_gateway_config.audit_log_path)
@@ -2124,9 +2119,7 @@ def _publish_directory_pr_completion_events(
         completed_streams: dict[str, Any] = {}
         if explicit_pr_criteria and completion_cursor_store is not None:
             state = completion_cursor_store.get(trigger.id)
-            cursor_streams = (
-                state.get("completed_streams", {}) if isinstance(state, dict) else {}
-            )
+            cursor_streams = state.get("completed_streams", {}) if isinstance(state, dict) else {}
             if isinstance(cursor_streams, dict):
                 completed_streams = dict(cursor_streams)
 

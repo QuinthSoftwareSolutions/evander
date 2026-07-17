@@ -99,8 +99,7 @@ class VmAgentBootstrapMixin:
             refreshed_session = self._session_repository().get_session(resolved_session_id)
             access_metadata = (
                 refreshed_session.metadata.get("managed_git_access")
-                if refreshed_session is not None
-                and isinstance(refreshed_session.metadata, dict)
+                if refreshed_session is not None and isinstance(refreshed_session.metadata, dict)
                 else None
             )
             managed_git.unbind_all("authorized_sessions", resolved_session_id)

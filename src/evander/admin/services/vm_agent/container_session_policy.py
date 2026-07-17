@@ -21,6 +21,10 @@ class VmAgentContainerSessionPolicyMixin:
             "model": session.model,
             "expires_at": session.expires_at,
             "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
+            "connector_grants": {
+                connector_id: list(operations)
+                for connector_id, operations in session.connector_grants.items()
+            },
             "approval_required_tools": [
                 tool_name_value(tool) for tool in session.approval_required_tools
             ],
@@ -87,8 +91,8 @@ class VmAgentContainerSessionPolicyMixin:
     ) -> dict[str, Any] | None:
         if session is None:
             return None
-        effective_policy = effective_policy or self.runtime.policy_config.resolve_for_session_manifest(
-            session
+        effective_policy = (
+            effective_policy or self.runtime.policy_config.resolve_for_session_manifest(session)
         )
         if tool_summary is None:
             tool_summary = self.runtime.policy.allowed_tool_summary_for_session(

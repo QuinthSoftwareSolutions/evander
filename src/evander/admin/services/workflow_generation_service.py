@@ -133,9 +133,7 @@ class WorkflowGenerationAdminService:
                 f"Host environment variable {provider_config.openai_api_key_env} is not set."
             )
 
-        catalog = self._workflow_config_admin._read_workflow_editor_catalog(
-            normalized_directory
-        )
+        catalog = self._workflow_config_admin._read_workflow_editor_catalog(normalized_directory)
         request_payload = self._workflow_generation_request_payload(
             description=normalized_description,
             directory_path=normalized_directory,

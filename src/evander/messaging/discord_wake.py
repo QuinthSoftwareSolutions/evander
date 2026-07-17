@@ -60,9 +60,7 @@ class DiscordWakeWorker:
                 jitter_seconds=self.worker_config.jitter_seconds,
                 lock_path=self.worker_config.lock_path,
             ),
-            lock_manager=HostFileLockManager(
-                busy_error_text="Discord wake worker already running"
-            ),
+            lock_manager=HostFileLockManager(busy_error_text="Discord wake worker already running"),
             sleeper=HostSleeper(),
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,

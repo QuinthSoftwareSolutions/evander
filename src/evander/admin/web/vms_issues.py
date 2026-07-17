@@ -518,9 +518,7 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
                 issue = service.issue_git_admin.create_local_issue(
                     title=str(payload.get("title") or ""),
                     body=str(payload.get("body") or ""),
-                    managed_repo_id=(
-                        str(payload.get("managed_repo_id") or "").strip() or None
-                    ),
+                    managed_repo_id=(str(payload.get("managed_repo_id") or "").strip() or None),
                     repo_source=str(payload.get("repo_source") or "").strip() or None,
                     yaml_path=str(payload.get("yaml_path") or "").strip() or None,
                     directory_path=directory_path,
@@ -561,9 +559,7 @@ def vm_issue_routes(service: AdminRuntimeComponents, _auth: AdminWebAuth) -> lis
                 return error_response
             payload = await _json_body(request)
             repo_source = str(payload.get("repo_source") or "").strip() or None
-            requested_managed_repo_id = (
-                str(payload.get("managed_repo_id") or "").strip() or None
-            )
+            requested_managed_repo_id = str(payload.get("managed_repo_id") or "").strip() or None
             if "managed_repo_id" not in payload and "repo_source" not in payload:
                 requested_managed_repo_id = existing_issue.managed_repo_id
             issue = service.issue_git_admin.update_local_issue(

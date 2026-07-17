@@ -131,9 +131,7 @@ class DebounceGateProvider(GateProviderBase):
         quiet_period = parse_iso8601_duration(
             resolved_config.get("quiet_period"), field_name="quiet_period"
         )
-        max_delay = parse_iso8601_duration(
-            resolved_config.get("max_delay"), field_name="max_delay"
-        )
+        max_delay = parse_iso8601_duration(resolved_config.get("max_delay"), field_name="max_delay")
         if max_delay < quiet_period:
             raise GateRuntimeError(
                 "gate:debounce max_delay must be greater than or equal to quiet_period"

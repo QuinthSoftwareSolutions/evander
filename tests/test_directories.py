@@ -108,9 +108,7 @@ def test_directory_service_supports_create_show_rename_move_and_delete(tmp_path:
     assert deleted == {"deleted_count": 1, "deleted_ids": [moved.id]}
 
 
-def test_directory_service_mutations_use_transactional_updates(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_directory_service_mutations_use_transactional_updates(tmp_path: Path, monkeypatch) -> None:
     store = DirectoryStore(tmp_path / "directories.json")
     service = DirectoryService(store)
 

@@ -119,6 +119,11 @@ test("admin shell routes to approvals and renders an empty queue", async (t) => 
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
 
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
+
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse(sessionResponse));
       return;

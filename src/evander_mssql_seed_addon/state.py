@@ -52,7 +52,9 @@ class MssqlSeedSidecarConfig(BaseModel):
         if not text:
             raise ValueError("token_env is required")
         if not SAFE_ID_PATTERN.fullmatch(text):
-            raise ValueError("token_env must contain only letters, numbers, dots, underscores, or dashes")
+            raise ValueError(
+                "token_env must contain only letters, numbers, dots, underscores, or dashes"
+            )
         return text
 
     @field_validator("restore_timeout_seconds", mode="before")

@@ -38,7 +38,9 @@ AUDIT_ENDPOINTS = {
 
 
 class NpmAuditFacade:
-    def __init__(self, config: GatewayConfig, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(
+        self, config: GatewayConfig, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
         self.config = config
         self.transport = transport
 

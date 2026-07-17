@@ -46,6 +46,7 @@ _MANAGER_FALLBACK_ROUTING_GAP_LIMIT = 20
 
 _MANAGER_FALLBACK_TEXT_LIMIT = 240
 
+
 def _manager_fallback_task_visible_for_work(
     state: TeamState,
     task: AgentTask,
@@ -54,6 +55,7 @@ def _manager_fallback_task_visible_for_work(
     return task.project_id in project_ids and (
         task.state in _NON_TERMINAL_TASK_STATES or _task_has_active_deliverable_work(state, task.id)
     )
+
 
 def _manager_fallback_summary_payload(
     state: TeamState,
@@ -256,8 +258,10 @@ def _manager_fallback_summary_payload(
         "omitted_counts": omitted_counts,
     }
 
+
 def _manager_fallback_time(value: datetime | None) -> str | None:
     return _ensure_utc(value).isoformat() if value is not None else None
+
 
 def _manager_fallback_short_text(
     value: object,
@@ -269,16 +273,19 @@ def _manager_fallback_short_text(
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
 
+
 def _manager_fallback_limited_rows(
     rows: list[dict[str, Any]],
     limit: int,
 ) -> tuple[list[dict[str, Any]], int]:
     return rows[:limit], max(0, len(rows) - limit)
 
+
 def _manager_fallback_omitted_counts(
     counts: Mapping[str, int],
 ) -> dict[str, int]:
     return {key: value for key, value in counts.items() if value > 0}
+
 
 def _manager_fallback_review_state_counts(
     reviews: list[ReviewRequest],
@@ -287,6 +294,7 @@ def _manager_fallback_review_state_counts(
     for review in reviews:
         counts[review.state.value] = counts.get(review.state.value, 0) + 1
     return dict(sorted(counts.items()))
+
 
 def _manager_fallback_task_row(
     state: TeamState,
@@ -313,6 +321,7 @@ def _manager_fallback_task_row(
         "review_state_counts": _manager_fallback_review_state_counts(reviews),
     }
 
+
 def _manager_fallback_deliverable_row(
     *,
     deliverable: Deliverable,
@@ -337,6 +346,7 @@ def _manager_fallback_deliverable_row(
         row["git_refs"] = _manager_fallback_git_refs_row(deliverable)
     return row
 
+
 def _manager_fallback_git_refs_row(deliverable: Deliverable) -> dict[str, Any]:
     refs = deliverable.git_refs
     row: dict[str, Any] = {}
@@ -354,6 +364,7 @@ def _manager_fallback_git_refs_row(deliverable: Deliverable) -> dict[str, Any]:
     if refs.promotion_record_ids:
         row["promotion_record_ids"] = list(refs.promotion_record_ids)
     return row
+
 
 def _manager_fallback_review_row(review: ReviewRequest) -> dict[str, Any]:
     criteria_counts: dict[str, int] = {}
@@ -373,6 +384,7 @@ def _manager_fallback_review_row(review: ReviewRequest) -> dict[str, Any]:
         "criteria_state_counts": dict(sorted(criteria_counts.items())),
     }
 
+
 def _manager_fallback_inbox_row(item: AgentInboxItem) -> dict[str, Any]:
     return {
         "id": item.id,
@@ -385,6 +397,7 @@ def _manager_fallback_inbox_row(item: AgentInboxItem) -> dict[str, Any]:
         "created_at": _manager_fallback_time(item.created_at),
         "summary": _manager_fallback_inbox_summary(item),
     }
+
 
 def _manager_fallback_inbox_summary(item: AgentInboxItem) -> str:
     for key in (
@@ -401,6 +414,7 @@ def _manager_fallback_inbox_summary(item: AgentInboxItem) -> str:
             return summary
     return ""
 
+
 def _manager_fallback_failed_action_row(record: AgentActionRecord) -> dict[str, Any]:
     return {
         "id": record.id,
@@ -409,6 +423,7 @@ def _manager_fallback_failed_action_row(record: AgentActionRecord) -> dict[str, 
         "created_at": _manager_fallback_time(record.created_at),
         "error": _manager_fallback_short_text(record.error),
     }
+
 
 def _manager_fallback_agent_row(
     state: TeamState,
@@ -457,6 +472,7 @@ def _manager_fallback_agent_row(
         "active_stand_down_count": len(stand_downs),
     }
 
+
 def _manager_fallback_reviewer_candidates(
     state: TeamState,
     *,
@@ -483,6 +499,7 @@ def _manager_fallback_reviewer_candidates(
             candidates.append(agent)
     return candidates
 
+
 def _manager_fallback_reviewer_is_wakeable_for_routing(
     state: TeamState,
     *,
@@ -499,6 +516,7 @@ def _manager_fallback_reviewer_is_wakeable_for_routing(
         and runtime.wake_leased_until is not None
         and _ensure_utc(runtime.wake_leased_until) > _ensure_utc(now)
     )
+
 
 def _manager_fallback_reviewer_eligible_project_ids(
     state: TeamState,
@@ -528,6 +546,7 @@ def _manager_fallback_reviewer_eligible_project_ids(
         & profile_project_ids
     )
 
+
 def _manager_fallback_candidate_project_ids(
     state: TeamState,
     *,
@@ -539,6 +558,7 @@ def _manager_fallback_candidate_project_ids(
     if role is not None and role.project_id in project_ids:
         candidate_project_ids.add(role.project_id)
     return candidate_project_ids
+
 
 def _manager_fallback_routing_gaps(
     state: TeamState,
@@ -636,6 +656,7 @@ def _manager_fallback_routing_gaps(
             }
         )
     return gaps
+
 
 def _manager_fallback_review_decision_guard_error(
     state: TeamState,
@@ -743,6 +764,7 @@ def _manager_fallback_review_decision_guard_error(
         "as manager"
     )
 
+
 def _manager_fallback_deliverable_needs_review(
     deliverable: Deliverable,
     *,
@@ -755,6 +777,7 @@ def _manager_fallback_deliverable_needs_review(
         TeamRecordState.IN_PROGRESS,
         TeamRecordState.BLOCKED,
     }
+
 
 __all__ = [
     "_MANAGER_FALLBACK_OPEN_WORK_LIMIT",

@@ -113,6 +113,7 @@ class AddonRegistration:
     admin_ui_routes: Sequence[Any] | AddonRouteFactory = field(default_factory=tuple)
     mcp_tools: AddonMcpToolFactory | None = None
     workflow_providers: Any | None = None
+    connector_drivers: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -130,6 +131,7 @@ class AddonRegistration:
                 AddonAdminNavigation.model_validate(self.admin_navigation),
             )
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
+        object.__setattr__(self, "connector_drivers", dict(self.connector_drivers or {}))
 
 
 @dataclass(frozen=True)
@@ -193,7 +195,9 @@ def addon_storage_path(runtime_dir: str | Path, addon_id: str, *parts: str | Pat
     try:
         resolved_path.relative_to(resolved_root)
     except ValueError as exc:
-        raise ValueError("add-on storage path must remain within the add-on runtime directory") from exc
+        raise ValueError(
+            "add-on storage path must remain within the add-on runtime directory"
+        ) from exc
     return path
 
 
@@ -514,9 +518,7 @@ def _display_package_dir(package_dir: Path, *, base_path: Path | None) -> str:
     return package_dir.as_posix()
 
 
-def _addon_package_might_be_enabled(
-    spec: _AddonRegistrationSpec, enabled_filter: set[str]
-) -> bool:
+def _addon_package_might_be_enabled(spec: _AddonRegistrationSpec, enabled_filter: set[str]) -> bool:
     if spec.manifest_path is None:
         return True
     try:
@@ -679,9 +681,7 @@ def _addon_package_module_location(
 
 
 def _addon_package_import_root(package_dir: Path) -> str:
-    digest = hashlib.sha256(
-        str(package_dir.resolve(strict=False)).encode("utf-8")
-    ).hexdigest()[:16]
+    digest = hashlib.sha256(str(package_dir.resolve(strict=False)).encode("utf-8")).hexdigest()[:16]
     return f"_evander_addon_package_{digest}"
 
 
@@ -747,6 +747,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
             admin_ui_routes=value.get("admin_ui_routes") or (),
             mcp_tools=value.get("mcp_tools"),
             workflow_providers=value.get("workflow_providers"),
+            connector_drivers=value.get("connector_drivers") or {},
             metadata=_coerce_metadata(value.get("metadata"), source=source),
         )
 
@@ -759,6 +760,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
         admin_ui_routes=getattr(value, "admin_ui_routes", ()),
         mcp_tools=getattr(value, "mcp_tools", None),
         workflow_providers=getattr(value, "workflow_providers", None),
+        connector_drivers=getattr(value, "connector_drivers", {}),
         metadata=_coerce_metadata(getattr(value, "metadata", None), source=source),
     )
 

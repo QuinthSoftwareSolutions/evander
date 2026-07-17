@@ -2103,8 +2103,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             offset=_query_non_negative_int(request, "offset", default=0),
         )
         records = [
-            memory_record_payload(memory, include_body=False)
-            for memory in result.pop("records")
+            memory_record_payload(memory, include_body=False) for memory in result.pop("records")
         ]
         return JSONResponse({"revision": state.revision, "memories": records, **result})
 
@@ -2137,9 +2136,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             source_refs=_optional_string_list(payload, "source_refs") or [],
             artifact_refs=_memory_artifact_refs(payload),
             confidence=(
-                float(payload["confidence"])
-                if payload.get("confidence") is not None
-                else None
+                float(payload["confidence"]) if payload.get("confidence") is not None else None
             ),
             supersedes_memory_id=_optional(payload, "supersedes_memory_id"),
             created_by=_operator_identity_from_request(context.auth, request)["actor"],
@@ -2490,9 +2487,7 @@ def _with_privileged_operations(context: AddonContext, handler):
     return _wrapped
 
 
-def _request_has_unlocked_privileged_operations(
-    context: AddonContext, request: Request
-) -> bool:
+def _request_has_unlocked_privileged_operations(context: AddonContext, request: Request) -> bool:
     auth = getattr(context, "auth", None)
     if auth is None:
         return False
@@ -2862,14 +2857,11 @@ def _inbox_history_payload_for_request(request: Request, state: TeamState) -> di
 
     rows = list(state.inbox.values())
     if team_id:
-        team_agent_ids = {
-            agent.id for agent in state.agents.values() if agent.team_id == team_id
-        }
+        team_agent_ids = {agent.id for agent in state.agents.values() if agent.team_id == team_id}
         rows = [
             item
             for item in rows
-            if item.recipient_agent_id in team_agent_ids
-            or item.sender_agent_id in team_agent_ids
+            if item.recipient_agent_id in team_agent_ids or item.sender_agent_id in team_agent_ids
         ]
     if agent_id:
         if direction == "received":
@@ -2889,8 +2881,7 @@ def _inbox_history_payload_for_request(request: Request, state: TeamState) -> di
         rows = [item for item in rows if needle in _inbox_history_search_text(state, item)]
 
     state_counts = {
-        value.value: sum(1 for item in rows if item.state == value)
-        for value in TeamInboxItemState
+        value.value: sum(1 for item in rows if item.state == value) for value in TeamInboxItemState
     }
     if item_state:
         rows = [item for item in rows if item.state.value == item_state]
@@ -2920,8 +2911,7 @@ def _inbox_history_payload_for_request(request: Request, state: TeamState) -> di
         "offset": offset,
         "has_more": offset + len(page) < total_count,
         "items": [
-            _inbox_history_item_payload(state, item, focus_agent_id=agent_id)
-            for item in page
+            _inbox_history_item_payload(state, item, focus_agent_id=agent_id) for item in page
         ],
     }
 

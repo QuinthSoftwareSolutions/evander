@@ -1002,6 +1002,21 @@ def tool_call_audit_entry_from_payload(
         if text:
             tool_name = text
             break
+    connector_id = None
+    for candidate in (payload.get("connector_id"), raw_args.get("connector_id")):
+        text = str(candidate or "").strip()
+        if text:
+            connector_id = text
+            break
+    connector_operation = None
+    operation_candidates = [payload.get("connector_operation")]
+    if tool_name == "call_connector" or connector_id is not None:
+        operation_candidates.append(raw_args.get("operation"))
+    for candidate in operation_candidates:
+        text = str(candidate or "").strip()
+        if text:
+            connector_operation = text
+            break
     session_id = None
     for candidate in (
         payload.get("session_id"),
@@ -1075,6 +1090,8 @@ def tool_call_audit_entry_from_payload(
         agent_role=agent_role,
         actor_user_id=actor_user_id,
         tool_name=tool_name,
+        connector_id=connector_id,
+        connector_operation=connector_operation,
         request_id=request_id,
         correlation_id=correlation_id,
         approval_request_id=approval_request_id,

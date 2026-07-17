@@ -55,14 +55,10 @@ def remove_managed_sections(existing: str, *, section_ids: Iterable[str]) -> str
     return existing_text
 
 
-def merge_managed_section_after_removals(
-    existing: str, *, section_id: str, content: str
-) -> str:
+def merge_managed_section_after_removals(existing: str, *, section_id: str, content: str) -> str:
     begin_marker, end_marker = managed_section_markers(section_id)
     section = render_managed_section(section_id, content)
-    pattern = re.compile(
-        rf"(?ms)^{re.escape(begin_marker)}\n.*?^{re.escape(end_marker)}\n?"
-    )
+    pattern = re.compile(rf"(?ms)^{re.escape(begin_marker)}\n.*?^{re.escape(end_marker)}\n?")
     existing_text = str(existing or "")
     if pattern.search(existing_text):
         return pattern.sub(section, existing_text, count=1)

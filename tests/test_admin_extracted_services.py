@@ -82,9 +82,7 @@ def test_extracted_capacity_and_model_usage_services_use_explicit_dependencies()
 
 def test_admin_extracted_services_do_not_keep_raw_admin_service_hosts() -> None:
     scanned_files = [
-        path
-        for path in ADMIN_SERVICES_DIR.glob("*.py")
-        if path.name not in {"__init__.py"}
+        path for path in ADMIN_SERVICES_DIR.glob("*.py") if path.name not in {"__init__.py"}
     ]
     offenders: dict[str, list[str]] = {}
     for path in scanned_files:
@@ -100,7 +98,10 @@ def test_admin_extracted_services_do_not_keep_raw_admin_service_hosts() -> None:
 
 
 def test_admin_refactor_does_not_add_legacy_dumping_ground() -> None:
-    paths = [*ADMIN_SRC_DIR.rglob("*.py"), *(Path(__file__).resolve().parents[1] / "tests").glob("test_*.py")]
+    paths = [
+        *ADMIN_SRC_DIR.rglob("*.py"),
+        *(Path(__file__).resolve().parents[1] / "tests").glob("test_*.py"),
+    ]
     forbidden_tokens = (
         "service_" + "legacy",
         "Legacy" + "AdminRuntimeComponents",
@@ -288,9 +289,7 @@ def test_workflow_reports_service_delegates_report_operations() -> None:
     service._run_conformance_report = host._run_conformance_report
 
     assert service.read_workflow_graph_activity_report(limit=3) == "activity"
-    assert (
-        service.read_workflow_failure_clusters_report(recent_threshold_seconds=60) == "failures"
-    )
+    assert service.read_workflow_failure_clusters_report(recent_threshold_seconds=60) == "failures"
     assert service.read_conformance_reports() == "conformance"
     assert service.run_conformance_report("trigger") == "run"
 

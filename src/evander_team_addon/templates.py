@@ -83,7 +83,9 @@ class TemplateTask(TemplateModel):
     parent_task_id: str | None = None
     dependency_task_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("id", "title", "description", "owner_role_key", "created_by_role_key", mode="before")
+    @field_validator(
+        "id", "title", "description", "owner_role_key", "created_by_role_key", mode="before"
+    )
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
@@ -203,13 +205,17 @@ class TeamTemplate(TemplateModel):
         task_ids = {task.id for task in self.tasks}
         for task in self.tasks:
             if task.owner_role_key not in role_map:
-                raise ValueError(f"task {task.id} references missing owner role {task.owner_role_key}")
+                raise ValueError(
+                    f"task {task.id} references missing owner role {task.owner_role_key}"
+                )
             if task.created_by_role_key not in role_map:
                 raise ValueError(
                     f"task {task.id} references missing creator role {task.created_by_role_key}"
                 )
             if task.parent_task_id is not None and task.parent_task_id not in task_ids:
-                raise ValueError(f"task {task.id} references missing parent task {task.parent_task_id}")
+                raise ValueError(
+                    f"task {task.id} references missing parent task {task.parent_task_id}"
+                )
             for dependency_id in task.dependency_task_ids:
                 if dependency_id not in task_ids:
                     raise ValueError(

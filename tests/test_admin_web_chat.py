@@ -360,9 +360,7 @@ def test_chat_new_session_clears_widget_thread_and_resets_assistant_context(
 
     old_transcript = alice.get(f"/api/chat/transcript/{first_session['thread_id']}").json()
     new_transcript = alice.get(f"/api/chat/transcript/{new_session['thread_id']}").json()
-    assert [message["content"] for message in old_transcript["messages"]] == [
-        "keep this separate"
-    ]
+    assert [message["content"] for message in old_transcript["messages"]] == ["keep this separate"]
     assert new_transcript["messages"] == []
 
 
@@ -399,8 +397,7 @@ def test_chat_session_dedupes_active_prewarm_for_same_thread(tmp_path: Path) -> 
 
     service.vm_agent_admin.resolve_continue.set()
     _wait_for(
-        lambda: _assistant_session(alice, first_response.json()["thread_id"])["status"]
-        == "ready"
+        lambda: _assistant_session(alice, first_response.json()["thread_id"])["status"] == "ready"
     )
     assert len(service.vm_agent_admin.resolve_calls) == 1
 

@@ -169,7 +169,9 @@ def pr_integration_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -
         return JSONResponse(_response_payload(request_payload=payload, report=report))
 
     return [
-        Route("/api/admin/pr-integration-preflight", run_pr_integration_preflight, methods=["POST"]),
+        Route(
+            "/api/admin/pr-integration-preflight", run_pr_integration_preflight, methods=["POST"]
+        ),
     ]
 
 

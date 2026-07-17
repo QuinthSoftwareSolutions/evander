@@ -324,9 +324,7 @@ def test_teams_trigger_uses_targeted_inbox_query(tmp_path: Path, monkeypatch) ->
     provider = TeamsNewMessageTriggerProvider()
     provider.initialize(_trigger_definition(), context)
 
-    assert [event.event_id for event in provider.poll()] == [
-        "teams-trigger:team-a/channel-1/msg-1"
-    ]
+    assert [event.event_id for event in provider.poll()] == ["teams-trigger:team-a/channel-1/msg-1"]
     assert calls == [
         {
             "channel_targets": ["team-a/channel-1"],

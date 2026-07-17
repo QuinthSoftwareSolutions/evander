@@ -195,8 +195,7 @@ class DockerContainerRuntime:
         group_path = identity_dir / "group"
         _write_container_identity_file(
             passwd_path,
-            f"root:x:0:0:root:/root:/bin/bash\n"
-            f"agent:x:{uid}:{gid}:Evander:/home/agent:/bin/bash\n",
+            f"root:x:0:0:root:/root:/bin/bash\nagent:x:{uid}:{gid}:Evander:/home/agent:/bin/bash\n",
         )
         _write_container_identity_file(
             group_path,

@@ -135,7 +135,11 @@ def _read_version(project_dir: Path) -> tuple[str | None, str | None, str | None
 
     pyproject_path = project_dir / "pyproject.toml"
     if not pyproject_path.exists():
-        return None, None, f"Version not found in importlib.metadata:evander or {pyproject_path.name}."
+        return (
+            None,
+            None,
+            f"Version not found in importlib.metadata:evander or {pyproject_path.name}.",
+        )
     try:
         pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):

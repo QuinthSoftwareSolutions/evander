@@ -17,6 +17,7 @@ def _non_empty_action_fields(action: Mapping[str, Any]) -> list[str]:
         if key not in ignored_fields and value not in (None, "", [], {})
     )
 
+
 def _correction_hints(error: str) -> list[str]:
     normalized = error.casefold()
     hints: list[str] = []
@@ -82,6 +83,7 @@ def _correction_hints(error: str) -> list[str]:
         )
     return hints
 
+
 def _latest_action_feedback_for_agent(
     state: TeamState,
     agent_id: str,
@@ -112,6 +114,7 @@ def _latest_action_feedback_for_agent(
         )
     ]
 
+
 def _action_feedback_payload(record: AgentActionRecord) -> dict[str, Any]:
     error = record.error or "action failed validation"
     return {
@@ -122,6 +125,7 @@ def _action_feedback_payload(record: AgentActionRecord) -> dict[str, Any]:
         "action_fields": _non_empty_action_fields(record.action),
         "correction_hints": _correction_hints(error),
     }
+
 
 __all__ = [
     "_non_empty_action_fields",

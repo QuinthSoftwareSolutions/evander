@@ -203,6 +203,4 @@ def test_sync_base_merges_configured_base_branch_into_work_branch(tmp_path: Path
     _git(agent, "sync-base")
 
     assert _git(agent, "branch", "--show-current").stdout.strip() == WORK_BRANCH
-    assert (
-        _git(agent, "merge-base", "--is-ancestor", "origin/main", "HEAD").returncode == 0
-    )
+    assert _git(agent, "merge-base", "--is-ancestor", "origin/main", "HEAD").returncode == 0

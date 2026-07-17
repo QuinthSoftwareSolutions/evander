@@ -37,7 +37,11 @@ def _build_provider(
     tmp_path: Path,
     effect: SessionRevokeMcpToolApprovalLeaseEffectDefinition,
     lease_store: _LeaseStoreProxy | None = None,
-) -> tuple[SessionRevokeMcpToolApprovalLeaseEffectProvider, JsonSessionToolApprovalLeaseRepository, _LeaseStoreProxy]:
+) -> tuple[
+    SessionRevokeMcpToolApprovalLeaseEffectProvider,
+    JsonSessionToolApprovalLeaseRepository,
+    _LeaseStoreProxy,
+]:
     config = GatewayConfig(runtime_dir=tmp_path)
     repository = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
     lease_store = lease_store or _LeaseStoreProxy(repository)

@@ -70,7 +70,9 @@ def _managed_codex_skills_root(deps: Any, skill_names: list[str] | None) -> Path
     return None
 
 
-def _libvirt_base_image_from_manifest_metadata(manifest: SessionManifest | Any | None) -> str | None:
+def _libvirt_base_image_from_manifest_metadata(
+    manifest: SessionManifest | Any | None,
+) -> str | None:
     metadata = getattr(manifest, "metadata", None)
     if not isinstance(metadata, Mapping):
         return None
@@ -378,9 +380,7 @@ class LibvirtVmProvider(VmProvider):
             provider_state = vm_helpers.dominfo_field(vm_name, "State") or "unknown"
             power_state = normalize_power_state(provider_state)
             host_control_status = deps.agent_control_store.status_for_vm(vm_name)
-            ip_address = (
-                vm_helpers.resolve_vm_ip(vm_name) if power_state == "running" else None
-            )
+            ip_address = vm_helpers.resolve_vm_ip(vm_name) if power_state == "running" else None
             if power_state != "running":
                 agent_state = "disabled" if host_control_status == "disabled" else "inactive_vm"
                 agent_pid = None
@@ -864,6 +864,7 @@ def _libvirt_create_vm(
     ttl_seconds: int | None = None,
     ttl_hours: int | None = None,
     allowed_tools: list[str | Any] | None = None,
+    connector_grants: dict[str, list[str]] | None = None,
     tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
     allowed_contact_ids: list[str] | None = None,
@@ -932,6 +933,10 @@ def _libvirt_create_vm(
 
     if existing_session is not None:
         policy_update: dict[str, Any] = {}
+        if connector_grants is not None:
+            policy_update["connector_grants"] = connector_grants
+        elif existing_session.directory_path != normalized_directory_path:
+            policy_update["connector_grants"] = {}
         if tool_argument_policies is not None:
             policy_update["tool_argument_policies"] = (
                 session_helpers.session_tool_argument_policies_from_payload(
@@ -962,6 +967,7 @@ def _libvirt_create_vm(
             ttl_hours=ttl_hours,
             ttl_seconds=ttl_seconds,
             extra_allowed_tools=allowed_tools,
+            connector_grants=connector_grants,
             tool_argument_policies=tool_argument_policies,
             allowed_script_names=allowed_script_names,
             allowed_contact_ids=allowed_contact_ids,
@@ -1010,9 +1016,7 @@ def _libvirt_create_vm(
             manifest.model = None
     manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
     session_repository.upsert_session(manifest)
-    sync_added_discord_session_cursors = getattr(
-        deps, "sync_added_discord_session_cursors", None
-    )
+    sync_added_discord_session_cursors = getattr(deps, "sync_added_discord_session_cursors", None)
     if callable(sync_added_discord_session_cursors):
         sync_added_discord_session_cursors(
             previous_session=existing_session,
@@ -1100,9 +1104,7 @@ def _libvirt_create_vm(
             completed = process_helpers.run_subprocess(
                 launch_step, capture_output=True, text=True, env=run_env
             )
-            message = process_helpers.combined_process_message(
-                completed.stdout, completed.stderr
-            )
+            message = process_helpers.combined_process_message(completed.stdout, completed.stderr)
             if completed.returncode != 0 and process_helpers.can_prompt_for_privileges():
                 launch_step = process_helpers.pkexec_env_command(
                     [str(setup_script), *setup_args], run_env, allowed_env_keys
@@ -1367,9 +1369,7 @@ def _libvirt_vm_copy_files(
             raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
         merge_strategy = _normalize_copy_merge_strategy(file_spec.get("merge_strategy"))
         section_id = str(file_spec.get("section_id") or "").strip()
-        remove_section_ids = _normalize_copy_remove_section_ids(
-            file_spec.get("remove_section_ids")
-        )
+        remove_section_ids = _normalize_copy_remove_section_ids(file_spec.get("remove_section_ids"))
         if merge_strategy == "managed_section":
             if source_path_raw:
                 raise ValueError(f"files[{index}] managed_section requires inline content")
@@ -1677,9 +1677,7 @@ def _ssh_copy_files(
             raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
         merge_strategy = _normalize_copy_merge_strategy(file_spec.get("merge_strategy"))
         section_id = str(file_spec.get("section_id") or "").strip()
-        remove_section_ids = _normalize_copy_remove_section_ids(
-            file_spec.get("remove_section_ids")
-        )
+        remove_section_ids = _normalize_copy_remove_section_ids(file_spec.get("remove_section_ids"))
         if merge_strategy == "managed_section":
             if source_path_raw:
                 raise ValueError(f"files[{index}] managed_section requires inline content")

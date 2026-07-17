@@ -178,10 +178,7 @@ def remove_git_authorized_keys_by_session_id(
         or normalized_session_id in {".", ".."}
     ):
         raise ValueError("session_id must be a single non-empty ref path component")
-    marker = (
-        "EVANDER_GIT_AUTH_SESSION_ID_B64="
-        f"{_one_line_base64(normalized_session_id)}"
-    )
+    marker = f"EVANDER_GIT_AUTH_SESSION_ID_B64={_one_line_base64(normalized_session_id)}"
     path = Path(authorized_keys_path)
     with _authorized_keys_update_lock(path):
         if not path.exists():

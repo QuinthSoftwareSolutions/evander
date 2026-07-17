@@ -96,9 +96,7 @@ def test_approval_notification_target_resolution_requires_notify_capability(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     directory_store = DirectoryStore(runtime_dir / "directories.json")
-    repository = SqliteCommunicationTargetsRepository(
-        communication_targets_db_path(runtime_dir)
-    )
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
     repository.write_overlay(
         "root",
         {
@@ -175,9 +173,7 @@ def test_communication_targets_resolve_directory_inheritance_and_disabled_overri
     directory_service = DirectoryService(directory_store)
     team = directory_service.create(parent="root", name="team")
     child = directory_service.create(parent=team.id, name="child")
-    repository = SqliteCommunicationTargetsRepository(
-        communication_targets_db_path(runtime_dir)
-    )
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
     resolver = CommunicationTargetsDirectoryResolver(
         directory_store,
         repository=repository,
@@ -235,9 +231,7 @@ def test_communication_trigger_target_validation_accepts_read_capable_targets(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     directory_store = DirectoryStore(runtime_dir / "directories.json")
-    repository = SqliteCommunicationTargetsRepository(
-        communication_targets_db_path(runtime_dir)
-    )
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
     repository.write_overlay(
         "root",
         {
@@ -281,9 +275,7 @@ def test_communication_trigger_target_validation_rejects_teams_user_targets(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     directory_store = DirectoryStore(runtime_dir / "directories.json")
-    repository = SqliteCommunicationTargetsRepository(
-        communication_targets_db_path(runtime_dir)
-    )
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
     repository.write_overlay(
         "root",
         {

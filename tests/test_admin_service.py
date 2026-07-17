@@ -113,6 +113,7 @@ admin_service = SimpleNamespace(
 def _isolate_managed_git_authorized_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EVANDER_GIT_USER", "evander-admin-tests-no-such-user")
 
+
 UTC = timezone.utc
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -859,9 +860,7 @@ def test_read_session_artifact_text_routes_vm_sessions_to_vm_exec(
     )
 
     assert calls[0]["target"] == "vm-session"
-    assert calls[0]["environment"] == {
-        "EVANDER_ARTIFACT_RELATIVE_PATH": "reports/summary.txt"
-    }
+    assert calls[0]["environment"] == {"EVANDER_ARTIFACT_RELATIVE_PATH": "reports/summary.txt"}
     assert "/artifacts" in str(calls[0]["command"])
     assert result["content"] == "vm summary\n"
     assert result["execution_backend"] == "libvirt_vm"
@@ -939,7 +938,9 @@ def test_list_agents_groups_container_executions_under_session(
         "exec-current",
         "exec-old",
     ]
-    sessions = {item.session_id: item for item in service.vm_agent_admin.list_sessions(include_expired=True)}
+    sessions = {
+        item.session_id: item for item in service.vm_agent_admin.list_sessions(include_expired=True)
+    }
     lifecycle = sessions["container-session"].container_lifecycle
     assert lifecycle is not None
     assert lifecycle.state == ContainerSessionLifecycleState.RUNNING
@@ -1231,7 +1232,9 @@ def test_list_agents_ignores_execution_cleanup_success_for_session_status(
     )
 
     assert [(agent.agent_id, agent.status) for agent in agents] == [("container-session", "idle")]
-    sessions = {item.session_id: item for item in service.vm_agent_admin.list_sessions(include_expired=True)}
+    sessions = {
+        item.session_id: item for item in service.vm_agent_admin.list_sessions(include_expired=True)
+    }
     lifecycle = sessions["container-session"].container_lifecycle
     assert lifecycle is not None
     assert lifecycle.state == ContainerSessionLifecycleState.STOPPED
@@ -1348,9 +1351,7 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
     assert created.ok is True and created.data is not None
     team_path = created.data.details.directory.path
     now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(
-        "evander.admin.services.capacity_health_service._utc_now", lambda: now
-    )
+    monkeypatch.setattr("evander.admin.services.capacity_health_service._utc_now", lambda: now)
 
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -2634,7 +2635,9 @@ def test_submit_admin_agent_create_operations_run_concurrently(
     lock = threading.Lock()
     started_session_ids: list[str] = []
 
-    def create_admin_agent(self: AdminRuntimeComponents, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def create_admin_agent(
+        self: AdminRuntimeComponents, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
         del self
         session_id = str(payload["session_id"])
         with lock:
@@ -2694,7 +2697,9 @@ def test_submit_admin_agent_create_operation_records_failures(
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
 
-    def create_admin_agent(self: AdminRuntimeComponents, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def create_admin_agent(
+        self: AdminRuntimeComponents, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
         del self, payload
         raise ValueError("Session already exists: container-session")
 
@@ -2724,7 +2729,9 @@ def test_submit_admin_agent_create_operation_does_not_persist_raw_payload(
     service = build_admin_runtime(write_config(tmp_path))
     captured_payloads: list[dict[str, Any]] = []
 
-    def create_admin_agent(self: AdminRuntimeComponents, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def create_admin_agent(
+        self: AdminRuntimeComponents, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
         del self
         captured_payloads.append(dict(payload))
         return {
@@ -2790,7 +2797,9 @@ def test_admin_service_constructor_does_not_fail_live_agent_create_operations(
 
     unrelated_service = build_admin_runtime(config_path)
 
-    operation = unrelated_service.vm_agent_admin.get_admin_agent_create_operation("operation-running")
+    operation = unrelated_service.vm_agent_admin.get_admin_agent_create_operation(
+        "operation-running"
+    )
     assert operation.status == "running"
     assert operation.error is None
     assert operation.finished_at is None
@@ -3031,7 +3040,9 @@ def test_install_admin_agent_skills_copies_managed_skill_to_vm_codex_home(
     )
     copied: list[tuple[str, list[dict[str, object]], str]] = []
 
-    def fake_vm_exec(self: AdminRuntimeComponents, target: str, **kwargs: object) -> dict[str, object]:
+    def fake_vm_exec(
+        self: AdminRuntimeComponents, target: str, **kwargs: object
+    ) -> dict[str, object]:
         assert target == "lab-session"
         assert kwargs["command"] == 'printf "%s" "${CODEX_HOME:-$HOME/.config/evander/codex}"'
         return {"success": True, "stdout": "/custom/codex\n"}
@@ -3298,9 +3309,7 @@ def test_run_admin_agent_action_prompt_agent_queues_when_prompt_lock_held(
             service.vm_agent_admin,
         ),
     )
-    lock_store = AgentPromptLockStore(
-        service.config.runtime_dir / "agent-prompt-locks.json"
-    )
+    lock_store = AgentPromptLockStore(service.config.runtime_dir / "agent-prompt-locks.json")
     lock_store.claim(
         lock_key=agent_prompt_lock_key(
             target="receptionist-session",
@@ -4387,12 +4396,16 @@ def test_create_local_issue_reuses_scoped_id_within_directory(tmp_path: Path) ->
     source_path.write_text(
         "issue_number: 7\ntitle: Team issue\nbody: First body\n", encoding="utf-8"
     )
-    first = service.issue_git_admin.create_local_issue(yaml_path=str(source_path), directory_path=team_path)
+    first = service.issue_git_admin.create_local_issue(
+        yaml_path=str(source_path), directory_path=team_path
+    )
 
     source_path.write_text(
         "issue_number: 7\ntitle: Team issue\nbody: Updated body\n", encoding="utf-8"
     )
-    second = service.issue_git_admin.create_local_issue(yaml_path=str(source_path), directory_path=team_path)
+    second = service.issue_git_admin.create_local_issue(
+        yaml_path=str(source_path), directory_path=team_path
+    )
 
     assert first.issue_id == "root/team::local::7"
     assert second.issue_id == first.issue_id
@@ -4492,9 +4505,12 @@ def test_update_local_issue_updates_store_and_yaml(tmp_path: Path) -> None:
     assert updated.managed_repo_id is not None
     assert updated.managed_repo_id != old_managed_repo_id
     assert service.managed_git_admin.get_repository(old_managed_repo_id or "")["bindings"] == []
-    assert service.managed_git_admin.get_repository(updated.managed_repo_id)["bindings"][0][
-        "binding_id"
-    ] == issue.issue_id
+    assert (
+        service.managed_git_admin.get_repository(updated.managed_repo_id)["bindings"][0][
+            "binding_id"
+        ]
+        == issue.issue_id
+    )
     yaml_text = Path(updated.yaml_path).read_text(encoding="utf-8")
     assert "title: New title" in yaml_text
     assert "body: New body" in yaml_text
@@ -4503,7 +4519,9 @@ def test_update_local_issue_updates_store_and_yaml(tmp_path: Path) -> None:
 
 def test_update_local_issue_rejects_proxy_issue(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    issue = service.issue_git_admin.create_local_issue(yaml_path=str(_write_proxy_issue_yaml(tmp_path)))
+    issue = service.issue_git_admin.create_local_issue(
+        yaml_path=str(_write_proxy_issue_yaml(tmp_path))
+    )
 
     with pytest.raises(ValueError, match="Only local manual issues"):
         service.issue_git_admin.update_local_issue(
@@ -4562,9 +4580,7 @@ def test_list_vms_marks_inactive_vm_disabled_from_host_control_state(
         vm_name="vm-999", status="disabled", phase="operator-disable"
     )
 
-    monkeypatch.setattr(
-        "evander.admin.services.vm_helpers.virsh_lines", lambda args: ["vm-999"]
-    )
+    monkeypatch.setattr("evander.admin.services.vm_helpers.virsh_lines", lambda args: ["vm-999"])
     monkeypatch.setattr(
         "evander.admin.services.vm_helpers.dominfo_field",
         lambda vm_name, field_name: "shut off",
@@ -5261,7 +5277,9 @@ def test_get_agent_log_snapshot_falls_back_to_legacy_agent_user(
         "evander.admin.services.process_helpers.run_subprocess", _fake_run_subprocess
     )
 
-    output = service.vm_agent_admin.get_agent_log_snapshot("bug-finder-vm", repo_name="ExampleIndustryAPP")
+    output = service.vm_agent_admin.get_agent_log_snapshot(
+        "bug-finder-vm", repo_name="ExampleIndustryAPP"
+    )
 
     assert "legacy line" in output
     assert any("agent-admin@192.168.122.11" in cmd for cmd in calls)
@@ -5294,7 +5312,9 @@ def test_get_agent_log_snapshot_returns_unavailable_when_ssh_times_out(
         "evander.admin.services.process_helpers.run_subprocess", _fake_run_subprocess
     )
 
-    output = service.vm_agent_admin.get_agent_log_snapshot("bug-finder-vm", repo_name="codex-heartbeat")
+    output = service.vm_agent_admin.get_agent_log_snapshot(
+        "bug-finder-vm", repo_name="codex-heartbeat"
+    )
 
     assert output == (
         "Agent log unavailable: agent@192.168.122.11: log read timed out after 20 seconds"
@@ -6411,7 +6431,9 @@ def test_list_sessions_computes_container_lifecycle_payload(
             ),
         )
 
-    summaries = {item.session_id: item for item in service.vm_agent_admin.list_sessions(include_expired=True)}
+    summaries = {
+        item.session_id: item for item in service.vm_agent_admin.list_sessions(include_expired=True)
+    }
     lifecycle = summaries[session_id].container_lifecycle
     assert lifecycle is not None
     assert lifecycle.state == expected_state
@@ -6467,7 +6489,9 @@ def test_directory_filtered_lists_use_direct_owned_items_only(tmp_path: Path, mo
         ),
     )
     service.issue_git_admin.create_local_issue(title="Root issue", body="a", directory_path="root")
-    service.issue_git_admin.create_local_issue(title="Team issue", body="b", directory_path=team_path)
+    service.issue_git_admin.create_local_issue(
+        title="Team issue", body="b", directory_path=team_path
+    )
 
     monkeypatch.setattr(
         "evander.admin.services.vm_helpers.virsh_lines",
@@ -6481,9 +6505,15 @@ def test_directory_filtered_lists_use_direct_owned_items_only(tmp_path: Path, mo
     team_sessions = service.vm_agent_admin.list_sessions(
         include_expired=True, directory_path=team_path, direct_only=True
     )
-    team_issues = service.issue_git_admin.list_local_issues(directory_path=team_path, direct_only=True)
-    team_vms = service.vm_agent_admin.list_vms(include_inactive=True, directory_path=team_path, direct_only=True)
-    root_vms = service.vm_agent_admin.list_vms(include_inactive=True, directory_path="root", direct_only=True)
+    team_issues = service.issue_git_admin.list_local_issues(
+        directory_path=team_path, direct_only=True
+    )
+    team_vms = service.vm_agent_admin.list_vms(
+        include_inactive=True, directory_path=team_path, direct_only=True
+    )
+    root_vms = service.vm_agent_admin.list_vms(
+        include_inactive=True, directory_path="root", direct_only=True
+    )
 
     assert [summary.session_id for summary in team_sessions] == ["team-session"]
     assert [issue.title for issue in team_issues] == ["Team issue"]
@@ -6593,7 +6623,9 @@ def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Pat
         direct_only=True,
         tool_name="email_send_approved",
     )
-    health = service.approval_audit_admin.approval_queue_health(directory_path=team_path, direct_only=True)
+    health = service.approval_audit_admin.approval_queue_health(
+        directory_path=team_path, direct_only=True
+    )
     root_descendants = service.approval_audit_admin.list_approval_requests(
         directory_path="root",
         direct_only=False,
@@ -6933,7 +6965,9 @@ def test_admin_service_exposes_directory_config_for_selected_directory(tmp_path:
     assert read_result.data is not None
     assert read_result.data.config == {"default_session_ttl_seconds": 120}
 
-    effective_result = service.operations_admin.compute_directory_effective_config(team_path, "policy")
+    effective_result = service.operations_admin.compute_directory_effective_config(
+        team_path, "policy"
+    )
     assert effective_result.ok is True
     assert effective_result.data is not None
     assert effective_result.data.resolution.effective_config["default_session_ttl_seconds"] == 120
@@ -7686,7 +7720,9 @@ def test_workflow_editor_revision_changes_for_graph_metadata_only_edit(
         "effects": [],
         "edges": [],
     }
-    first = service.workflow_config_admin.save_workflow_editor_document(config=config, layout={"nodes": {}})
+    first = service.workflow_config_admin.save_workflow_editor_document(
+        config=config, layout={"nodes": {}}
+    )
     edited_graphs = [graph.model_dump(mode="json") for graph in first.graphs]
     edited_graphs[0]["name"] = "Renamed graph"
 
@@ -7735,7 +7771,9 @@ def test_worker_global_config_revision_changes_for_config_edit(tmp_path: Path) -
     config = dict(first.config)
     config["poll_interval_seconds"] = int(config.get("poll_interval_seconds") or 5) + 1
 
-    second = service.workflow_config_admin.write_worker_global_config("trigger-orchestrator", config)
+    second = service.workflow_config_admin.write_worker_global_config(
+        "trigger-orchestrator", config
+    )
 
     assert second.revision != first.revision
 
@@ -7833,7 +7871,9 @@ def test_workflow_editor_document_composes_workflow_pack_config(tmp_path: Path) 
         encoding="utf-8",
     )
 
-    document = build_admin_runtime(write_config(tmp_path)).workflow_config_admin.read_workflow_editor_document()
+    document = build_admin_runtime(
+        write_config(tmp_path)
+    ).workflow_config_admin.read_workflow_editor_document()
 
     assert document.config["workflow_packs"] == ["demo.v1.json"]
     assert [trigger["id"] for trigger in document.config["triggers"]] == ["cron-15m"]
@@ -8019,8 +8059,12 @@ def test_workflow_editor_reads_selected_pack_from_multi_pack_config(tmp_path: Pa
     service = build_admin_runtime(write_config(tmp_path))
 
     default_document = service.workflow_config_admin.read_workflow_editor_document()
-    pack_a_document = service.workflow_config_admin.read_workflow_editor_document(workflow_pack="pack-a.v1")
-    pack_b_document = service.workflow_config_admin.read_workflow_editor_document(workflow_pack="pack-b.v1")
+    pack_a_document = service.workflow_config_admin.read_workflow_editor_document(
+        workflow_pack="pack-a.v1"
+    )
+    pack_b_document = service.workflow_config_admin.read_workflow_editor_document(
+        workflow_pack="pack-b.v1"
+    )
     composed_document = service.workflow_config_admin.read_composed_workflow_editor_document()
 
     assert default_document.document_scope == "composed"
@@ -8116,7 +8160,9 @@ def test_workflow_editor_save_updates_selected_pack_in_multi_pack_config(tmp_pat
     }
     config_path.write_text(json.dumps(wrapper_payload), encoding="utf-8")
     service = build_admin_runtime(write_config(tmp_path))
-    document = service.workflow_config_admin.read_workflow_editor_document(workflow_pack="pack-b.v1.json")
+    document = service.workflow_config_admin.read_workflow_editor_document(
+        workflow_pack="pack-b.v1.json"
+    )
     edited_config = dict(document.config)
     edited_effects = [dict(effect) for effect in edited_config["effects"]]
     edited_effects[0]["display_name"] = "Emit updated event"
@@ -8174,7 +8220,9 @@ def test_workflow_editor_create_workflow_pack_appends_blank_pack(tmp_path: Path)
     config_root.mkdir(parents=True, exist_ok=True)
     config_path = config_root / "config.json"
     config_path.write_text(
-        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        json.dumps(
+            {"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}
+        ),
         encoding="utf-8",
     )
     service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
@@ -8226,7 +8274,9 @@ def test_workflow_editor_create_workflow_pack_rejects_duplicate_or_inline_config
     config_root.mkdir(parents=True, exist_ok=True)
     config_path = config_root / "config.json"
     config_path.write_text(
-        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        json.dumps(
+            {"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}
+        ),
         encoding="utf-8",
     )
     service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
@@ -8304,7 +8354,10 @@ def test_workflow_editor_update_workflow_pack_metadata_preserves_reference_and_g
     config_root = tmp_path / "config" / "trigger-orchestrator"
     config_root.mkdir(parents=True, exist_ok=True)
     config_path = config_root / "config.json"
-    wrapper_payload = {"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}
+    wrapper_payload = {
+        "runtime_dir": str(tmp_path / "runtime"),
+        "workflow_packs": ["pack-a.v1.json"],
+    }
     config_path.write_text(json.dumps(wrapper_payload), encoding="utf-8")
     service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
     document = service.read_workflow_editor_document(workflow_pack="pack-a.v1.json")
@@ -8339,7 +8392,9 @@ def test_workflow_editor_update_workflow_pack_metadata_preserves_reference_and_g
         )
 
 
-def test_workflow_editor_remove_workflow_pack_unlists_without_deleting_files(tmp_path: Path) -> None:
+def test_workflow_editor_remove_workflow_pack_unlists_without_deleting_files(
+    tmp_path: Path,
+) -> None:
     packs_dir = tmp_path / "config" / "workflow-packs"
     packs_dir.mkdir(parents=True, exist_ok=True)
     for pack_name in ("pack-a.v1.json", "pack-b.v1.json"):
@@ -8471,7 +8526,9 @@ def test_workflow_pack_history_records_pack_management_changes(tmp_path: Path) -
     config_root.mkdir(parents=True, exist_ok=True)
     config_path = config_root / "config.json"
     config_path.write_text(
-        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}),
+        json.dumps(
+            {"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["pack-a.v1.json"]}
+        ),
         encoding="utf-8",
     )
     service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
@@ -8630,9 +8687,7 @@ def test_workflow_pack_migration_raw_cas_rejects_stale_write_and_restores_exact_
         encoding="utf-8",
     )
     service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
-    document = service.read_workflow_pack_for_migration(
-        workflow_pack="legacy.v1.json"
-    )
+    document = service.read_workflow_pack_for_migration(workflow_pack="legacy.v1.json")
     after = json.dumps(
         {
             "pack_id": "legacy",
@@ -8804,7 +8859,9 @@ def test_workflow_editor_validate_selected_pack_checks_sibling_pack_ids(
         encoding="utf-8",
     )
     service = build_admin_runtime(write_config(tmp_path))
-    document = service.workflow_config_admin.read_workflow_editor_document(workflow_pack="pack-b.v1.json")
+    document = service.workflow_config_admin.read_workflow_editor_document(
+        workflow_pack="pack-b.v1.json"
+    )
     edited_config = dict(document.config)
     edited_effects = [dict(effect) for effect in edited_config["effects"]]
     edited_effects[0]["id"] = "shared-id"
@@ -9789,7 +9846,9 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     )
 
     detail = service.workflow_config_admin.read_workflow_run_detail(event_id="evt-sqlite")
-    detail_by_trace = service.workflow_config_admin.read_workflow_run_detail(trace_id="trace-sqlite")
+    detail_by_trace = service.workflow_config_admin.read_workflow_run_detail(
+        trace_id="trace-sqlite"
+    )
 
     assert detail.event_id == "evt-sqlite"
     assert detail_by_trace.event_id == "evt-sqlite"
@@ -10187,7 +10246,9 @@ def test_admin_service_read_workflow_run_search_uses_sqlite_event_slice(
         lambda self: pytest.fail("run search should not scan every gate execution"),
     )
 
-    search = service.workflow_config_admin.read_workflow_run_search(node_id="effect-search", limit=1)
+    search = service.workflow_config_admin.read_workflow_run_search(
+        node_id="effect-search", limit=1
+    )
 
     assert search.matched == 2
     assert search.returned == 1
@@ -10295,7 +10356,9 @@ def test_admin_service_read_workflow_run_search_without_session_reaches_past_sql
         lambda self: pytest.fail("run search should not scan every gate execution"),
     )
 
-    search = service.workflow_config_admin.read_workflow_run_search(node_id="effect-search", without_session=True)
+    search = service.workflow_config_admin.read_workflow_run_search(
+        node_id="effect-search", without_session=True
+    )
 
     assert search.matched == 1
     assert search.returned == 1
@@ -10726,7 +10789,10 @@ def test_conformance_reports_return_invalid_for_malformed_and_unsupported_shapes
     )
     service = build_admin_runtime(config_path)
 
-    reports = {report.kind: report for report in service.workflow_reports_admin.read_conformance_reports().reports}
+    reports = {
+        report.kind: report
+        for report in service.workflow_reports_admin.read_conformance_reports().reports
+    }
 
     assert reports["trigger"].state == "invalid"
     assert "not valid JSON" in (reports["trigger"].error or "")
@@ -10753,7 +10819,10 @@ def test_conformance_reports_marks_old_valid_artifacts_stale(tmp_path: Path) -> 
         )
     service = build_admin_runtime(config_path)
 
-    reports = {report.kind: report for report in service.workflow_reports_admin.read_conformance_reports().reports}
+    reports = {
+        report.kind: report
+        for report in service.workflow_reports_admin.read_conformance_reports().reports
+    }
 
     assert reports["trigger"].state == "stale"
     assert reports["trigger"].status == "pass"
@@ -11357,7 +11426,9 @@ def test_create_issue_vm_uses_issue_directory_when_called_with_yaml_path(
         },
     )
     assert write_result.ok is True
-    issue = service.issue_git_admin.create_local_issue(title="Team issue", body="body", directory_path=team_path)
+    issue = service.issue_git_admin.create_local_issue(
+        title="Team issue", body="body", directory_path=team_path
+    )
 
     captured_env: dict[str, str] = {}
 
@@ -11603,7 +11674,9 @@ def test_create_issue_vm_uses_issue_setup_fallback_env_when_domain_missing(
 
 def test_resolve_agent_model_prefers_session_model_over_issue_setup_default(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.operations_admin.write_directory_domain_config("root", "issue_setup", {"default_model": "gpt-5.2-codex"})
+    service.operations_admin.write_directory_domain_config(
+        "root", "issue_setup", {"default_model": "gpt-5.2-codex"}
+    )
     manifest = SessionManifest(
         session_id="session-1",
         vm_id="vm-123",
@@ -11623,7 +11696,9 @@ def test_resolve_agent_model_uses_issue_setup_default_when_session_model_missing
     tmp_path: Path,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
-    service.operations_admin.write_directory_domain_config("root", "issue_setup", {"default_model": "gpt-5.2-codex"})
+    service.operations_admin.write_directory_domain_config(
+        "root", "issue_setup", {"default_model": "gpt-5.2-codex"}
+    )
     manifest = SessionManifest(
         session_id="session-1",
         vm_id="vm-123",
@@ -12003,7 +12078,9 @@ def test_cleanup_container_session_records_cleaned_up_tombstone(
     assert updated.metadata["container_lifecycle"]["state"] == "cleaned_up"
     assert updated.metadata["container_lifecycle"]["cleanup_status"] == "cleanup_succeeded"
     assert updated.expires_at <= now
-    summaries = {item.session_id: item for item in service.vm_agent_admin.list_sessions(include_expired=True)}
+    summaries = {
+        item.session_id: item for item in service.vm_agent_admin.list_sessions(include_expired=True)
+    }
     lifecycle = summaries["container-session"].container_lifecycle
     assert lifecycle is not None
     assert lifecycle.state == ContainerSessionLifecycleState.CLEANED_UP
@@ -12089,7 +12166,9 @@ def test_cleanup_container_session_records_failure_and_keeps_context(
     assert updated.metadata["container_lifecycle"]["state"] == "cleanup_failed"
     assert updated.metadata["container_lifecycle"]["cleanup_status"] == "cleanup_failed"
     assert "cleanup exploded" in updated.metadata["container_lifecycle"]["cleanup_error"]
-    summaries = {item.session_id: item for item in service.vm_agent_admin.list_sessions(include_expired=True)}
+    summaries = {
+        item.session_id: item for item in service.vm_agent_admin.list_sessions(include_expired=True)
+    }
     lifecycle = summaries["container-session"].container_lifecycle
     assert lifecycle is not None
     assert lifecycle.state == ContainerSessionLifecycleState.CLEANUP_FAILED
@@ -12244,7 +12323,9 @@ def test_delete_admin_agent_deletes_container_session_and_prunes_context(
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
-    result = service.vm_agent_admin.delete_admin_agent("container-session", backend="container_worker_vm")
+    result = service.vm_agent_admin.delete_admin_agent(
+        "container-session", backend="container_worker_vm"
+    )
 
     assert result["success"] is True
     assert result["status"] == "deleted"
@@ -12303,7 +12384,9 @@ def test_delete_admin_agent_deletes_prepared_container_session(
         MethodType(lambda self, **_kwargs: fake_backend, service.vm_agent_admin),
     )
 
-    result = service.vm_agent_admin.delete_admin_agent("container-session", backend="container_worker_vm")
+    result = service.vm_agent_admin.delete_admin_agent(
+        "container-session", backend="container_worker_vm"
+    )
 
     assert result["success"] is True
     assert result["status"] == "deleted"
@@ -13258,7 +13341,9 @@ def test_set_issue_plan_clears_existing_summary_when_omitted(tmp_path: Path) -> 
     service = build_admin_runtime(write_config(tmp_path))
     issue = service.issue_git_admin.create_local_issue(title="Planned", body="only local")
 
-    service.issue_git_admin.set_issue_plan(issue.issue_number, ["Analyze repo"], summary="Original summary")
+    service.issue_git_admin.set_issue_plan(
+        issue.issue_number, ["Analyze repo"], summary="Original summary"
+    )
     result = service.issue_git_admin.set_issue_plan(issue.issue_number, ["Implement fix"])
     read_result = service.issue_git_admin.read_issue(issue.issue_number)
     yaml_text = Path(issue.yaml_path).read_text(encoding="utf-8")
@@ -13281,7 +13366,9 @@ def test_workflow_operations_are_not_exposed_on_worker_control_boundaries(
 def test_get_issue_returns_full_local_record_for_closed_issue(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     issue = service.issue_git_admin.create_local_issue(title="Closed task", body="only local")
-    service.issue_git_admin.update_issue(issue.issue_number, state="Closed", fields={"Reason": "Out of scope"})
+    service.issue_git_admin.update_issue(
+        issue.issue_number, state="Closed", fields={"Reason": "Out of scope"}
+    )
 
     result = service.issue_git_admin.get_issue(issue.issue_number)
 
@@ -13317,7 +13404,9 @@ def test_update_issue_accepts_approved_state(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     issue = service.issue_git_admin.create_local_issue(title="Local", body="only local")
 
-    result = service.issue_git_admin.update_issue(issue.issue_number, state="Approved", fields={"Priority": "P1"})
+    result = service.issue_git_admin.update_issue(
+        issue.issue_number, state="Approved", fields={"Priority": "P1"}
+    )
 
     stored = service.local_issue_store.get(issue.issue_id)
     assert result["source_type"] == "local"
@@ -13331,7 +13420,9 @@ def test_update_issue_updates_local_yaml_file(tmp_path: Path) -> None:
     issue = service.issue_git_admin.create_local_issue(title="Task", body="only local")
     original_yaml = Path(issue.yaml_path).read_text(encoding="utf-8")
 
-    result = service.issue_git_admin.update_issue(issue.issue_number, state="Committed", fields={"Priority": "P1"})
+    result = service.issue_git_admin.update_issue(
+        issue.issue_number, state="Committed", fields={"Priority": "P1"}
+    )
 
     updated_yaml = Path(issue.yaml_path).read_text(encoding="utf-8")
     assert result["source_type"] == "local"
@@ -13351,8 +13442,12 @@ def test_issue_actions_reject_ambiguous_bare_number_across_directories(tmp_path:
     team_yaml = tmp_path / "team-issue.yaml"
     team_yaml.write_text("issue_number: 7\ntitle: Team issue\nbody: Team body\n", encoding="utf-8")
 
-    root_issue = service.issue_git_admin.create_local_issue(yaml_path=str(root_yaml), directory_path="root")
-    team_issue = service.issue_git_admin.create_local_issue(yaml_path=str(team_yaml), directory_path=team_path)
+    root_issue = service.issue_git_admin.create_local_issue(
+        yaml_path=str(root_yaml), directory_path="root"
+    )
+    team_issue = service.issue_git_admin.create_local_issue(
+        yaml_path=str(team_yaml), directory_path=team_path
+    )
 
     with pytest.raises(ValueError, match=r"Ambiguous local issue identifier: 7\."):
         service.issue_git_admin.read_issue("7")
@@ -13437,8 +13532,12 @@ def test_claim_next_issue_prefers_highest_priority_committed_issue(tmp_path: Pat
     service = build_admin_runtime(write_config(tmp_path))
     low = service.issue_git_admin.create_local_issue(title="Low", body="x")
     high = service.issue_git_admin.create_local_issue(title="High", body="x")
-    service.issue_git_admin.update_issue(low.issue_number, state="Committed", fields={"Priority": "P2"})
-    service.issue_git_admin.update_issue(high.issue_number, state="Committed", fields={"Priority": "P0"})
+    service.issue_git_admin.update_issue(
+        low.issue_number, state="Committed", fields={"Priority": "P2"}
+    )
+    service.issue_git_admin.update_issue(
+        high.issue_number, state="Committed", fields={"Priority": "P0"}
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="worker-session",
@@ -13461,7 +13560,9 @@ def test_claim_next_issue_prefers_highest_priority_committed_issue(tmp_path: Pat
 def test_complete_issue_marks_claimed_issue_completed(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     issue = service.issue_git_admin.create_local_issue(title="Task", body="x")
-    service.issue_git_admin.update_issue(issue.issue_number, state="Committed", fields={"Priority": "P1"})
+    service.issue_git_admin.update_issue(
+        issue.issue_number, state="Committed", fields={"Priority": "P1"}
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="worker-session",
@@ -13752,7 +13853,9 @@ def test_create_issue_vm_from_local_issue_accepts_unified_proxy_identifier(
 
     monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
 
-    result = service.vm_agent_admin.create_issue_vm_from_local_issue("proxy:ado/77", model="gpt-5.2-codex")
+    result = service.vm_agent_admin.create_issue_vm_from_local_issue(
+        "proxy:ado/77", model="gpt-5.2-codex"
+    )
 
     assert result.success is True
     assert any(str(part).endswith("setup_vm.sh") for part in captured["cmd"])
@@ -14099,9 +14202,7 @@ def test_list_vms_surfaces_shared_session_labels(tmp_path: Path, monkeypatch: An
         ),
     )
 
-    monkeypatch.setattr(
-        "evander.admin.services.vm_helpers.virsh_lines", lambda args: ["lab-vm"]
-    )
+    monkeypatch.setattr("evander.admin.services.vm_helpers.virsh_lines", lambda args: ["lab-vm"])
     monkeypatch.setattr(
         "evander.admin.services.vm_helpers.dominfo_field",
         lambda vm_name, field_name: "running",
@@ -14573,8 +14674,7 @@ def test_clone_repo_into_vm_keeps_managed_clone_url_internal(
     remote_script = captured_ssh_input[-1]
     assert 'CANONICAL_REMOTE_URL=""' in remote_script
     assert (
-        f'REMOTE_URL="ssh://evander-git-host/managed-git/{_MANAGED_REPO_ID}.git"'
-        in remote_script
+        f'REMOTE_URL="ssh://evander-git-host/managed-git/{_MANAGED_REPO_ID}.git"' in remote_script
     )
 
 
@@ -14830,6 +14930,49 @@ def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
     manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
     assert manifest.web_search_enabled is False
+
+
+def test_create_vm_upsert_clears_omitted_connector_grants_when_directory_changes(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="team-a")
+    service.directory_admin.create_child(parent="root", name="team-b")
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.CALL_CONNECTOR],
+            connector_grants={"documents": ["get_document"]},
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.process_helpers.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    result = service.vm_agent_admin.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        directory_path="root/team-b",
+        allow_existing_session=True,
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.directory_path == "root/team-b"
+    assert manifest.connector_grants == {}
 
 
 def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(
@@ -15097,7 +15240,9 @@ def test_create_vm_failure_preserves_stdout_and_stderr(tmp_path: Path, monkeypat
 
     monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
 
-    result = service.vm_agent_admin.create_vm(vm_name="idea-generator-vm", session_id="idea-generator")
+    result = service.vm_agent_admin.create_vm(
+        vm_name="idea-generator-vm", session_id="idea-generator"
+    )
 
     assert result.success is False
     assert "Bootstrapping Codex into agent@192.168.250.204" in result.message
@@ -15122,7 +15267,9 @@ def test_create_vm_waits_for_ssh_before_bootstrap(tmp_path: Path, monkeypatch: A
         ),
     )
 
-    result = service.vm_agent_admin.create_vm(vm_name="idea-generator-vm", session_id="idea-generator")
+    result = service.vm_agent_admin.create_vm(
+        vm_name="idea-generator-vm", session_id="idea-generator"
+    )
 
     assert result.success is True
     assert any(any(part.endswith("setup_vm.sh") for part in cmd) for cmd in captured_cmds)
@@ -15194,9 +15341,7 @@ def test_wait_for_vm_ip_uses_pkexec_when_requested(monkeypatch) -> None:
         return "192.168.250.10"
 
     monkeypatch.setattr("evander.admin.services.vm_helpers.resolve_vm_ip", _fake_plain)
-    monkeypatch.setattr(
-        "evander.admin.services.vm_helpers.resolve_vm_ip_with_pkexec", _fake_pkexec
-    )
+    monkeypatch.setattr("evander.admin.services.vm_helpers.resolve_vm_ip_with_pkexec", _fake_pkexec)
     monkeypatch.setattr("evander.admin.services.vm_helpers.time.sleep", lambda _seconds: None)
 
     ip = admin_service._wait_for_vm_ip(
@@ -15230,7 +15375,9 @@ def test_unlock_privileged_operations_starts_helper(monkeypatch, tmp_path: Path)
     monkeypatch.setattr("evander.admin.composition.PrivilegedHelperSession", FakeHelper)
 
     assert service.operations_admin.privileged_helper_required() is True
-    assert service.operations_admin.unlock_privileged_operations() == "Privileged operations unlocked."
+    assert (
+        service.operations_admin.unlock_privileged_operations() == "Privileged operations unlocked."
+    )
     assert service.operations_admin.privileged_operations_unlocked() is True
     assert service.privileged_helper is not None
     service.operations_admin.lock_privileged_operations()
@@ -15612,7 +15759,9 @@ def test_list_wake_schedules_filters_disabled_entries(tmp_path: Path) -> None:
     )
     service.operations_admin.edit_wake_schedule(created.request_id, enabled=False)
 
-    schedules = service.operations_admin.list_wake_schedules(session_id="issue-1-session", include_disabled=False)
+    schedules = service.operations_admin.list_wake_schedules(
+        session_id="issue-1-session", include_disabled=False
+    )
 
     assert schedules == []
 
@@ -15866,8 +16015,6 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
     assert result["success"] is True
     assert result["pr_url"] == "https://github.com/example/repo/pull/14724"
     assert result["managed_repo_id"] == "mr_0123456789abcdefabcd"
-
-
 
 
 def _write_proxy_issue_yaml(

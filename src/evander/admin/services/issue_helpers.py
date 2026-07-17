@@ -24,9 +24,7 @@ _APPROVAL_STATUS_ORDER: dict[ApprovalStatus, int] = {
 }
 
 
-def normalize_local_issue_state(
-    state: str | None, *, allow_empty: bool = False
-) -> str | None:
+def normalize_local_issue_state(state: str | None, *, allow_empty: bool = False) -> str | None:
     normalized = str(state or "").strip()
     if not normalized:
         return None if allow_empty else "New"

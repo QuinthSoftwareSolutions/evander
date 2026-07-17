@@ -35,11 +35,14 @@ class SemanticUpsertEffectProvider(EffectProviderBase):
         collection_name = required_string(
             payload.get("collection_name"), node_type=NODE_TYPE, field_name="collection_name"
         )
-        point_id = required_point_id(payload.get("point_id"), node_type=NODE_TYPE, field_name="point_id")
+        point_id = required_point_id(
+            payload.get("point_id"), node_type=NODE_TYPE, field_name="point_id"
+        )
         text = required_string(payload.get("text"), node_type=NODE_TYPE, field_name="text")
-        caller_payload = optional_mapping(
-            payload.get("payload"), node_type=NODE_TYPE, field_name="payload"
-        ) or {}
+        caller_payload = (
+            optional_mapping(payload.get("payload"), node_type=NODE_TYPE, field_name="payload")
+            or {}
+        )
         if SEMANTIC_TEXT_PAYLOAD_KEY in caller_payload:
             raise ValueError(
                 f"{NODE_TYPE} payload may not contain reserved key {SEMANTIC_TEXT_PAYLOAD_KEY!r}"

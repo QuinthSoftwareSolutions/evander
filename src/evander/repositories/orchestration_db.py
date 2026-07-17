@@ -261,9 +261,7 @@ def maybe_checkpoint_orchestration_wal(
     checkpoint_mode = SQLITE_WAL_CHECKPOINT_MODES.get(normalized_mode)
     if checkpoint_mode is None:
         valid_modes = ", ".join([*SQLITE_WAL_CHECKPOINT_MODES, "disabled"])
-        raise ValueError(
-            f"Unsupported WAL checkpoint mode {mode!r}; expected one of {valid_modes}"
-        )
+        raise ValueError(f"Unsupported WAL checkpoint mode {mode!r}; expected one of {valid_modes}")
     if min_bytes < 0:
         raise ValueError("min_bytes must be non-negative")
     if interval_seconds < 0:

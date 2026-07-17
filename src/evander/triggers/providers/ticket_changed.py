@@ -44,7 +44,11 @@ class TicketChangedTriggerProvider(TriggerProviderBase):
             occurred_at = issue.updated_at.astimezone(UTC)
             if cursor is not None and occurred_at < cursor:
                 continue
-            if cursor is not None and occurred_at == cursor and issue.issue_id in recent_issue_id_set:
+            if (
+                cursor is not None
+                and occurred_at == cursor
+                and issue.issue_id in recent_issue_id_set
+            ):
                 continue
             events.append(
                 TriggerEvent(

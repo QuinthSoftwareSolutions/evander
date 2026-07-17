@@ -45,6 +45,7 @@ type SessionRecord = {
   model: string | null;
   directory_path: string;
   allowed_tools?: string[];
+  connector_grants?: Record<string, string[]>;
   approval_required_tools?: string[];
   approval_tool_settings?: Record<string, ApprovalGrantSettings>;
   approval_notification_target_ids?: string[];
@@ -188,6 +189,7 @@ type ToolOption = SessionCatalogResponse["tool_options"][number];
 type TabKey = "active" | "expired";
 type SessionPolicyDraft = {
   allowedScriptNames: string[];
+  connectorGrants: Record<string, unknown>;
   approvalRequiredTools: string[];
   approvalToolSettings: Record<string, ApprovalGrantSettings>;
   approvalNotificationTargetIds: string[];
@@ -356,6 +358,7 @@ function normalizeApprovalToolSettings(
 function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
   return {
     allowedScriptNames: dedupeStrings(session.allowed_script_names ?? []),
+    connectorGrants: { ...(session.connector_grants ?? {}) },
     approvalRequiredTools: sortTools(session.approval_required_tools ?? []),
     approvalToolSettings: normalizeApprovalToolSettings(session.approval_tool_settings),
     approvalNotificationTargetIds: dedupeStrings(session.approval_notification_target_ids ?? []),
@@ -1126,6 +1129,7 @@ export function SessionsScreen() {
   const [toolsBoundSessionId, setToolsBoundSessionId] = useState("");
   const [policyDraft, setPolicyDraft] = useState<SessionPolicyDraft>({
     allowedScriptNames: [],
+    connectorGrants: {},
     approvalRequiredTools: [],
     approvalToolSettings: {},
     approvalNotificationTargetIds: [],
@@ -1144,6 +1148,7 @@ export function SessionsScreen() {
   const [policyDirty, setPolicyDirty] = useState(false);
   const [policyBoundSessionId, setPolicyBoundSessionId] = useState("");
   const [policyMetadataError, setPolicyMetadataError] = useState<string | null>(null);
+  const [connectorGrantsError, setConnectorGrantsError] = useState<string | null>(null);
   const [wakePrompt, setWakePrompt] = useState("");
   const [wakeCron, setWakeCron] = useState("");
   const [wakeResumeAt, setWakeResumeAt] = useState("");
@@ -1321,10 +1326,12 @@ export function SessionsScreen() {
           setPolicyDraft(policyDraftFromSession(payload.session));
           setPolicyDirty(false);
           setPolicyMetadataError(null);
+          setConnectorGrantsError(null);
           setPolicyBoundSessionId(sessionId);
         } else if (!policyDirty) {
           setPolicyDraft(policyDraftFromSession(payload.session));
           setPolicyMetadataError(null);
+          setConnectorGrantsError(null);
         }
         const visibleSchedules = filterVisibleWakeSchedules(payload.wake_schedules, {
           showPastOneTime: showPastOneTimeWakeSchedules,
@@ -1596,7 +1603,8 @@ export function SessionsScreen() {
   }
 
   function sessionPolicyValidationError(): string | null {
-    return policyMetadataError
+    return connectorGrantsError
+      ?? policyMetadataError
       ?? validateLeadingDotExtensions(policyDraft.communicationFileAllowedExtensions, "Allowed extensions")
       ?? validateLeadingDotExtensions(policyDraft.communicationFileBlockedExtensions, "Blocked extensions");
   }
@@ -1816,12 +1824,14 @@ export function SessionsScreen() {
               web_search_enabled: policyDraft.webSearchEnabled,
               approval_required_tools: sortTools(policyDraft.approvalRequiredTools),
               approval_tool_settings: policyApprovalToolSettingsPayload(),
+              connector_grants: policyDraft.connectorGrants,
               metadata: policyDraft.metadata,
             }),
           },
         );
         setPolicyDirty(false);
         setPolicyMetadataError(null);
+        setConnectorGrantsError(null);
         setPolicyBoundSessionId(selectedSession.session_id);
         savedSections.push("policy");
       }
@@ -2281,6 +2291,28 @@ export function SessionsScreen() {
                       itemLabel="Script name"
                       addLabel="Add script"
                       placeholder="Enter a script name"
+                    />
+                  </div>
+                  <div className="field-stack">
+                    <span>Connector grants</span>
+                    <p className="field-description">
+                      Map each connector ID to a JSON array of operation names. The session must also allow the
+                      list_connectors and call_connector MCP tools before the agent can discover or invoke grants.
+                    </p>
+                    <JsonObjectKeyValueEditor
+                      value={policyDraft.connectorGrants}
+                      onChange={(nextValue) => updatePolicyDraft({ connectorGrants: nextValue })}
+                      onValidationChange={(validationError) => {
+                        setConnectorGrantsError(validationError);
+                        if (validationError) {
+                          setPolicyDirty(true);
+                          setStatus(null);
+                        }
+                      }}
+                      fieldLabel="Connector grants"
+                      disabled={mutationLocked}
+                      addLabel="Add connector grant"
+                      emptyState="No connector operations are granted to this session."
                     />
                   </div>
                   <div className="field-stack">

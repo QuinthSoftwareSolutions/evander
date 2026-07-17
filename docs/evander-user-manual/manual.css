@@ -116,6 +116,33 @@ blockquote > :last-child {
   margin-bottom: 0;
 }
 
+.sidebar-kicker {
+  display: inline-block;
+  margin: 0 0.45rem 0.3rem 0;
+  color: var(--warm);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+blockquote:has(.sidebar-kicker) {
+  margin: 2rem 0 2.2rem clamp(0rem, 4vw, 3.5rem);
+  border-color: color-mix(in srgb, var(--warm) 35%, var(--line));
+  border-left-color: var(--warm);
+  background: var(--warm-soft);
+  box-shadow: 0 8px 24px rgba(70, 53, 20, 0.06);
+}
+
+blockquote:has(.sidebar-kicker) code {
+  background: color-mix(in srgb, var(--warm-soft) 75%, var(--paper));
+}
+
+blockquote:has(.sidebar-kicker) pre code {
+  background: transparent;
+  color: inherit;
+}
+
 code {
   padding: 0.12em 0.34em;
   border-radius: 0.28rem;

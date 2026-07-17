@@ -126,9 +126,7 @@ class MappingModelUsageExtractor:
             total_tokens=total_tokens,
             request_status=request.request_status,
             duration_ms=request.duration_ms,
-            normalized_usage_status=(
-                "available" if usage_payload else "usage_unavailable"
-            ),
+            normalized_usage_status=("available" if usage_payload else "usage_unavailable"),
             raw_usage_metadata={
                 "provider_response_kind": response_payload.get("type"),
                 "usage": usage_payload,

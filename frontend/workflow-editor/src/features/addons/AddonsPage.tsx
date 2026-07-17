@@ -39,6 +39,7 @@ function capabilityLabels(addon: AdminAddonStatus): string[] {
   if (addon.has_admin_api) labels.push("Admin API");
   if (addon.has_workflow_providers) labels.push("Workflow nodes");
   if (addon.has_mcp_tools) labels.push("MCP tools");
+  if (addon.has_connector_drivers) labels.push("Connector drivers");
   return labels.length ? labels : ["Metadata only"];
 }
 
@@ -101,7 +102,7 @@ export function AddonsPage() {
       for (const service of addon.required_restart_services.length ? addon.required_restart_services : state.required_restart_services) {
         services.add(service);
       }
-      if (addon.has_mcp_tools) services.add("evander-gateway");
+      if (addon.has_mcp_tools || addon.has_connector_drivers) services.add("evander-gateway");
     }
     return [...services];
   }, [draftEnabledSet, state]);

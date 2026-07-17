@@ -1537,7 +1537,9 @@ def normalize_teams_user_or_target_refs(value: list[str] | None) -> list[str]:
         text = str(raw_target).strip()
         if not text:
             continue
-        target = normalize_teams_user_target(text) if text.startswith("user:") or "@" in text else text
+        target = (
+            normalize_teams_user_target(text) if text.startswith("user:") or "@" in text else text
+        )
         if target in seen:
             continue
         seen.add(target)
@@ -1730,7 +1732,7 @@ class StubTeamsService:
         target = parse_teams_target(channel_target)
         if target.kind == "user":
             raise ValueError("Teams user targets must be resolved before posting.")
-        normalized_mentions = normalize_teams_mention_refs(mentions)
+        normalize_teams_mention_refs(mentions)
         normalized_thread_id = str(thread_id or "").strip() or None
         result: dict[str, Any] = {
             "status": "stubbed",
@@ -2003,9 +2005,7 @@ class GraphTeamsService:
             f"{self.api_base_url}/users",
             params={
                 **params,
-                "$filter": (
-                    f"mail eq '{escaped_ref}' or userPrincipalName eq '{escaped_ref}'"
-                ),
+                "$filter": (f"mail eq '{escaped_ref}' or userPrincipalName eq '{escaped_ref}'"),
                 "$top": 1,
             },
         )
@@ -2052,9 +2052,7 @@ class GraphTeamsService:
             f"{self.api_base_url}/users",
             params={
                 **params,
-                "$filter": (
-                    f"mail eq '{escaped_ref}' or userPrincipalName eq '{escaped_ref}'"
-                ),
+                "$filter": (f"mail eq '{escaped_ref}' or userPrincipalName eq '{escaped_ref}'"),
                 "$top": 1,
             },
         )
@@ -2853,11 +2851,7 @@ class GraphTeamsService:
         for filename, download_url in download_links:
             escaped_filename = html.escape(filename, quote=False)
             body_html += (
-                '<p><a href="'
-                f"{html.escape(download_url, quote=True)}"
-                '">'
-                f"{escaped_filename}"
-                "</a></p>"
+                f'<p><a href="{html.escape(download_url, quote=True)}">{escaped_filename}</a></p>'
             )
         payload: dict[str, Any] = {
             "body": {"content": body_html, "contentType": "html"},
@@ -2899,9 +2893,7 @@ class GraphTeamsService:
         graph_mentions: list[dict[str, Any]] = []
         for index, mention in enumerate(mentions):
             mention_text = mention.mention_text
-            mention_tags.append(
-                f'<at id="{index}">{html.escape(mention_text, quote=False)}</at>'
-            )
+            mention_tags.append(f'<at id="{index}">{html.escape(mention_text, quote=False)}</at>')
             graph_mentions.append(
                 {
                     "id": index,
@@ -3994,7 +3986,9 @@ class AzureDevOpsPrQueryProvider:
                 for commit in raw_commits if isinstance(raw_commits, list) else []:
                     if not isinstance(commit, dict):
                         continue
-                    commit_author = commit.get("author") if isinstance(commit.get("author"), dict) else {}
+                    commit_author = (
+                        commit.get("author") if isinstance(commit.get("author"), dict) else {}
+                    )
                     committer = (
                         commit.get("committer") if isinstance(commit.get("committer"), dict) else {}
                     )
@@ -4037,17 +4031,17 @@ class AzureDevOpsPrQueryProvider:
                         }
                     )
         commits.sort(
-            key=lambda item: item.get("authored_at")
-            or item.get("committed_at")
-            or datetime.min.replace(tzinfo=UTC),
+            key=lambda item: (
+                item.get("authored_at")
+                or item.get("committed_at")
+                or datetime.min.replace(tzinfo=UTC)
+            ),
             reverse=True,
         )
         total_activity_count = len(commits)
         paged_commits = commits[skip : skip + top]
         next_skip = (
-            skip + len(paged_commits)
-            if skip + len(paged_commits) < total_activity_count
-            else None
+            skip + len(paged_commits) if skip + len(paged_commits) < total_activity_count else None
         )
         has_more = next_skip is not None or not candidate_scan_complete
         return AdoPrCommitActivityResponse(
@@ -5158,9 +5152,7 @@ class PrQueryService:
         status_values = _expand_pull_request_statuses(status=status, statuses=statuses)
         merged_page = len(status_values) > 1
         merged_skip = max(0, int(skip or 0)) if merged_page else skip
-        merged_fetch_top = (
-            (merged_skip or 0) + top if merged_page and top is not None else top
-        )
+        merged_fetch_top = (merged_skip or 0) + top if merged_page and top is not None else top
         responses = [
             self.providers[provider_name].list_pull_requests(
                 repo=repo,
@@ -5196,18 +5188,15 @@ class PrQueryService:
                 merged[(item.provider, item.repo, item.pr_id)] = item
         items = list(merged.values())
         items.sort(
-            key=lambda item: item.updated_at
-            or item.created_at
-            or datetime.min.replace(tzinfo=UTC),
+            key=lambda item: item.updated_at or item.created_at or datetime.min.replace(tzinfo=UTC),
             reverse=True,
         )
         total_merged_count = len(items)
         page_start = int(merged_skip or 0)
         page_end = page_start + top if top is not None else None
         limited_items = items[page_start:page_end]
-        has_more = (
-            (page_end is not None and total_merged_count > page_end)
-            or any(bool(response.paging.get("has_more")) for response in responses)
+        has_more = (page_end is not None and total_merged_count > page_end) or any(
+            bool(response.paging.get("has_more")) for response in responses
         )
         next_skip = (
             page_start + len(limited_items)
@@ -5239,10 +5228,14 @@ class PrQueryService:
     ) -> ResolveAdoIdentityResponse:
         provider_name = "azure_devops"
         if provider_name not in self.providers:
-            raise ValueError("PR query provider 'azure_devops' is not configured for this gateway instance")
+            raise ValueError(
+                "PR query provider 'azure_devops' is not configured for this gateway instance"
+            )
         resolve_identity = getattr(self.providers[provider_name], "resolve_identity", None)
         if not callable(resolve_identity):
-            raise ValueError("PR query provider 'azure_devops' does not support identity resolution")
+            raise ValueError(
+                "PR query provider 'azure_devops' does not support identity resolution"
+            )
         return resolve_identity(query=query, project=project)
 
     def list_ado_pr_comment_activity(
@@ -5262,10 +5255,14 @@ class PrQueryService:
     ) -> AdoPrCommentActivityResponse:
         provider_name = "azure_devops"
         if provider_name not in self.providers:
-            raise ValueError("PR query provider 'azure_devops' is not configured for this gateway instance")
+            raise ValueError(
+                "PR query provider 'azure_devops' is not configured for this gateway instance"
+            )
         list_activity = getattr(self.providers[provider_name], "list_pr_comment_activity", None)
         if not callable(list_activity):
-            raise ValueError("PR query provider 'azure_devops' does not support PR comment activity")
+            raise ValueError(
+                "PR query provider 'azure_devops' does not support PR comment activity"
+            )
         return list_activity(
             repo=repo,
             author=author,
@@ -5296,7 +5293,9 @@ class PrQueryService:
     ) -> AdoPrCommitActivityResponse:
         provider_name = "azure_devops"
         if provider_name not in self.providers:
-            raise ValueError("PR query provider 'azure_devops' is not configured for this gateway instance")
+            raise ValueError(
+                "PR query provider 'azure_devops' is not configured for this gateway instance"
+            )
         list_activity = getattr(self.providers[provider_name], "list_pr_commit_activity", None)
         if not callable(list_activity):
             raise ValueError("PR query provider 'azure_devops' does not support PR commit activity")
@@ -5853,9 +5852,7 @@ class AzureDevOpsPrPublishProvider:
                 pat=self.pat,
                 mention_refs=mentions,
             )
-            summary_resolved_mentions = _ado_resolved_mention_payloads(
-                resolved_summary_mentions
-            )
+            summary_resolved_mentions = _ado_resolved_mention_payloads(resolved_summary_mentions)
             iteration_context = (
                 _azure_devops_pr_iteration_context(
                     client=client,
@@ -5945,9 +5942,7 @@ class AzureDevOpsPrPublishProvider:
                 if comment_result["comment_url"]:
                     inline_comment_urls.append(comment_result["comment_url"])
                 inline_published_feedback_ids.extend(comment_result["published_feedback_ids"])
-                inline_resolved_mentions.append(
-                    list(comment_result.get("resolved_mentions") or [])
-                )
+                inline_resolved_mentions.append(list(comment_result.get("resolved_mentions") or []))
                 uploaded_attachments.extend(comment_result.get("uploaded_attachments") or [])
 
             if normalized_body:

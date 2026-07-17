@@ -80,7 +80,7 @@ Every Admin UI section uses the same shell:
 - Privileged operations are locked by default in the UI. Unlock before creating, deleting,
   starting, stopping, approving, denying, saving policy, or editing workflow state.
 - Deep links use hash routes, for example `/#workflow`, `/#sessions`, `/#tool-calls`,
-  `/#configuration`, and the host-global `/#addons` page.
+  `/#connectors`, `/#configuration`, and the host-global `/#addons` page.
 - A deployment banner appears when the host reports an active or stale deployment/update status.
 - The assistant launcher appears in the lower corner when the assistant integration is configured.
 
@@ -99,7 +99,8 @@ or environment scope.
 5. Empty non-root directories can be deleted with the delete button when privileges are unlocked.
 
 Changing directory affects pages that filter or edit directory-owned state, including Agents,
-Approvals, VMs, Issues, Sessions, MCP Tools, Tool Calls, Configuration, Users, Workflow, and dashboard panels.
+Approvals, VMs, Issues, Sessions, MCP Tools, Tool Calls, Connectors, Configuration, Users,
+Workflow, and dashboard panels.
 
 ### Unlock Privileged Operations
 
@@ -385,10 +386,12 @@ Common tasks:
 12. Edit allowed scripts and communication allowlists.
 13. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
     metadata.
-14. Save settings.
-15. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
+14. Edit connector grants as a connector-to-operation map. A grant exposes only the named
+    operations; it does not expose connector endpoints or authentication material.
+15. Save settings.
+16. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
     prompts.
-16. Review recent scheduled wake ledger entries for the selected session, filter by delivery
+17. Review recent scheduled wake ledger entries for the selected session, filter by delivery
     status, and retry failed or missed/late wakes without reading host logs.
 
 Changing allowed tools can also remove approval requirements for tools that are no longer allowed.
@@ -409,6 +412,31 @@ Common tasks:
 
 Inherited disallow rules remain effective in child directories. A child directory or session cannot
 re-enable a tool that an ancestor directory has denied.
+
+## Connectors
+
+The Connectors tab manages named host-side REST and filesystem integrations for the selected
+directory. Agents see only connector names, descriptions, granted operations, and operation input
+schemas; endpoints and authentication details remain on the host.
+
+Common tasks:
+
+1. Open **Connectors** and choose the directory.
+2. Select a connector to inspect its effective operations, driver, availability, and authentication
+   readiness without revealing secret values.
+3. Unlock privileges and use **Test health** to invoke a configured unapproved read operation.
+4. Edit the local `connectors.json` overlay in the JSON editor. Root should contain a complete
+   definition; child directories may override only the fields that differ from their parent.
+5. Save with the displayed revision. If another operator changed the overlay, reload and reapply
+   the intended edit instead of overwriting it.
+6. Grant operations to agents from the agent create form or the selected session's connector-grant
+   map. Also allow `list_connectors` and `call_connector` for sessions that need connector access.
+7. Review connector calls in **Tool Calls**, where the connector and operation are indexed beside
+   the generic MCP tool name.
+
+Connector health checks and agent invocations use the same validation, host authentication,
+response limits, and audit path. Health checks cannot select arbitrary methods, paths, headers, or
+credentials.
 
 ## Tool Calls
 

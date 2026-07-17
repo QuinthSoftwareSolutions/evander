@@ -9,8 +9,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
-
 from evander.admin.services.vm_helpers import (
     resolve_vm_ssh_access as _resolve_vm_ssh_access,
     ssh_options as _ssh_options,
@@ -144,7 +142,9 @@ def default_migration_backup_root(runtime_dir: Path) -> Path:
 
 def resolve_worker_session_paths(worker_root: Path, session_id: str) -> WorkerSessionPathPlan:
     if not SAFE_ID_PATTERN.fullmatch(session_id):
-        raise ValueError("session_id must contain only letters, numbers, dots, underscores, or dashes")
+        raise ValueError(
+            "session_id must contain only letters, numbers, dots, underscores, or dashes"
+        )
     root = Path(worker_root) / "sessions" / session_id
     agent_home = root / "agent_home"
     return WorkerSessionPathPlan(
@@ -185,8 +185,7 @@ def ensure_worker_session_paths(worker_root: Path, session_id: str) -> WorkerSes
 def session_current_backend(session: SessionManifest) -> str:
     provider = _optional_string(session.vm_provider)
     metadata_provider = _optional_string(
-        session.metadata.get("execution_backend")
-        or session.metadata.get("vm_provider")
+        session.metadata.get("execution_backend") or session.metadata.get("vm_provider")
         if isinstance(session.metadata, Mapping)
         else None
     )
@@ -300,7 +299,10 @@ def create_migration_backup(
     selected = {session.session_id: all_sessions[session.session_id] for session in sessions}
     _write_json(
         backup_path / "sessions.json",
-        {session_id: manifest.model_dump(mode="json") for session_id, manifest in all_sessions.items()},
+        {
+            session_id: manifest.model_dump(mode="json")
+            for session_id, manifest in all_sessions.items()
+        },
     )
     _write_json(
         backup_path / "selected-sessions.json",
@@ -344,9 +346,7 @@ def restore_selected_manifests_from_backup(
     return restored
 
 
-def verify_worker_session_state(
-    *, worker_root: Path, session_id: str
-) -> WorkerSessionVerification:
+def verify_worker_session_state(*, worker_root: Path, session_id: str) -> WorkerSessionVerification:
     paths = resolve_worker_session_paths(worker_root, session_id)
     errors: list[str] = []
     warnings: list[str] = []
@@ -406,7 +406,9 @@ def copy_vm_session_state(
         worker_root=worker_root,
     )
     try:
-        vm_ip, key_path = _resolve_vm_ssh_access(vm_name, vm_user, timeout_seconds=ssh_timeout_seconds)
+        vm_ip, key_path = _resolve_vm_ssh_access(
+            vm_name, vm_user, timeout_seconds=ssh_timeout_seconds
+        )
     except Exception as exc:
         result.errors.append(f"could not resolve SSH access for {vm_name}: {exc}")
         return result
@@ -516,7 +518,9 @@ def refresh_container_session_files(
             str(record["destination_path"]), agent_home=agent_home
         )
         if destination is None:
-            warnings.append(f"skipped unsupported container file destination {record['destination_path']}")
+            warnings.append(
+                f"skipped unsupported container file destination {record['destination_path']}"
+            )
             continue
         content = str(record.get("content") or "")
         mode = int(str(record.get("mode") or "0644"), 8)
@@ -554,13 +558,11 @@ def select_sessions_for_migration(
     all_sessions: bool = False,
 ) -> list[SessionManifest]:
     if all_sessions:
-        selected = [
-            session
-            for session in sessions.values()
-            if is_libvirt_backed_session(session)
-        ]
+        selected = [session for session in sessions.values() if is_libvirt_backed_session(session)]
         return sorted(selected, key=lambda session: session.session_id)
-    requested = [str(session_id).strip() for session_id in (session_ids or []) if str(session_id).strip()]
+    requested = [
+        str(session_id).strip() for session_id in (session_ids or []) if str(session_id).strip()
+    ]
     if not requested:
         raise ValueError("specify --all or at least one --session-id")
     selected: list[SessionManifest] = []

@@ -85,9 +85,7 @@ def test_migration_requires_explicit_legacy_directory_ownership(tmp_path: Path) 
 
     assert dry_run["can_apply"] is False
     assert "owning-directory metadata" in " ".join(dry_run["blockers"])
-    assert dry_run["inventory"]["bare_repositories"][0][
-        "has_directory_metadata"
-    ] is False
+    assert dry_run["inventory"]["bare_repositories"][0]["has_directory_metadata"] is False
 
 
 def test_preflight_does_not_scan_new_issue_setup_git_user_as_legacy(
@@ -136,19 +134,20 @@ def test_migration_refreshes_from_trusted_checkout_but_keeps_canonical_identity(
     applied = service.migrate("apply")
     repository = service.get_repository(applied["managed_repo_ids"][0])
     internal = json.loads(
-        (service.runtime_dir / "managed-git-repositories.json").read_text(
-            encoding="utf-8"
-        )
+        (service.runtime_dir / "managed-git-repositories.json").read_text(encoding="utf-8")
     )["repositories"][repository["managed_repo_id"]]
 
     assert repository["canonical_repository_url"] == str(upstream)
     assert internal["refresh_source"] == str(source)
-    assert _run(
-        "git",
-        f"--git-dir={internal['internal_bare_path']}",
-        "rev-parse",
-        "refs/heads/main",
-    ) == trusted_commit
+    assert (
+        _run(
+            "git",
+            f"--git-dir={internal['internal_bare_path']}",
+            "rev-parse",
+            "refs/heads/main",
+        )
+        == trusted_commit
+    )
 
 
 def test_migration_blocks_running_but_not_stopped_unexpired_sessions(
@@ -212,7 +211,9 @@ def test_migration_manifest_never_persists_credentialed_legacy_alias(
     tmp_path: Path,
 ) -> None:
     _source, _upstream, legacy = _legacy_repository(tmp_path)
-    credentialed = "https://legacy-user:super-secret@example.invalid/org/repo.git?token=hidden#fragment"
+    credentialed = (
+        "https://legacy-user:super-secret@example.invalid/org/repo.git?token=hidden#fragment"
+    )
     _run(
         "git",
         f"--git-dir={legacy}",
@@ -224,9 +225,7 @@ def test_migration_manifest_never_persists_credentialed_legacy_alias(
 
     applied = service.migrate("apply")
     manifest = (
-        service.runtime_dir
-        / "managed-git-migrations"
-        / f"{applied['migration_id']}.json"
+        service.runtime_dir / "managed-git-migrations" / f"{applied['migration_id']}.json"
     ).read_text(encoding="utf-8")
 
     assert "super-secret" not in manifest
@@ -262,8 +261,7 @@ def test_migration_does_not_fallback_from_unmatched_explicit_repository(
 def test_migration_conflict_details_strip_url_credentials_and_query(tmp_path: Path) -> None:
     service = _service(tmp_path)
     credentialed = (
-        "https://legacy-user:super-secret@example.invalid/org/repo.git"
-        "?token=hidden#fragment"
+        "https://legacy-user:super-secret@example.invalid/org/repo.git?token=hidden#fragment"
     )
     records = [
         {
@@ -336,9 +334,7 @@ def test_migration_does_not_mark_applied_when_read_only_enforcement_fails(
         patch.setattr(
             service,
             "_make_tree_read_only",
-            lambda _path: (_ for _ in ()).throw(
-                ManagedGitConflictError("simulated chmod failure")
-            ),
+            lambda _path: (_ for _ in ()).throw(ManagedGitConflictError("simulated chmod failure")),
         )
         with pytest.raises(ManagedGitConflictError, match="simulated chmod failure"):
             service.migrate("apply")
@@ -394,12 +390,15 @@ def test_migration_matches_exact_suffixless_legacy_repository_name_and_glob(
         [{"legacy_repository": str(legacy_path), "managed_repo_id": repo_id}],
     )
 
-    assert service._resolve_migration_repository(
-        ["project"],
-        directory_path="root",
-        mapping_records=records,
-        field_context="test binding",
-    ) == repo_id
+    assert (
+        service._resolve_migration_repository(
+            ["project"],
+            directory_path="root",
+            mapping_records=records,
+            field_context="test binding",
+        )
+        == repo_id
+    )
     assert (
         service._managed_id_for_legacy_glob(
             "project",

@@ -20,9 +20,7 @@ def normalize_vector_distance(value: object) -> SemanticVectorDistance:
     }
     normalized = aliases.get(text.casefold())
     if normalized is None:
-        raise ValueError(
-            "semantic_vector_distance must be one of: Cosine, Dot, Euclid, Manhattan"
-        )
+        raise ValueError("semantic_vector_distance must be one of: Cosine, Dot, Euclid, Manhattan")
     return normalized  # type: ignore[return-value]
 
 

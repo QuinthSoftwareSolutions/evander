@@ -23,6 +23,7 @@ def _append_action_item_error(
 ) -> None:
     result["errors"].append(f"{field_name}[{index}]: {error}")
 
+
 def _response_requested_from_item(
     item: Mapping[str, Any],
     *,
@@ -34,6 +35,7 @@ def _response_requested_from_item(
     if isinstance(value, bool):
         return value
     raise ValueError("response_requested must be a boolean")
+
 
 def _priority_from_item(
     item: Mapping[str, Any],
@@ -47,6 +49,7 @@ def _priority_from_item(
     except ValueError:
         allowed = ", ".join(priority.value for priority in TeamInboxPriority)
         raise ValueError(f"priority must be one of: {allowed}") from None
+
 
 def _git_release_sequence_error(action: Mapping[str, Any]) -> str | None:
     feature_updates = action.get("git_feature_updates")
@@ -65,6 +68,7 @@ def _git_release_sequence_error(action: Mapping[str, Any]) -> str | None:
             "agent branches before continuing."
         )
     return None
+
 
 def _mark_action_failure(
     state: TeamState,
@@ -100,6 +104,7 @@ def _mark_action_failure(
             completed_dispatch_id=dispatch_id,
             result=result,
         )
+
 
 __all__ = [
     "_append_action_item_error",

@@ -365,9 +365,7 @@ def _build_admin_runtime_components(
 
     skill_library = SkillLibraryRepository(config.runtime_dir)
     agent_control_store = AgentControlStore(config.host_agent_control_state_path)
-    local_issue_store = JsonStore(
-        config.runtime_dir / "local-issues.json", LocalIssueRecord
-    )
+    local_issue_store = JsonStore(config.runtime_dir / "local-issues.json", LocalIssueRecord)
     local_issue_identity_resolver = LocalIssueIdentityResolver(
         local_issue_store=local_issue_store,
         read_issue_number_from_yaml=session_helpers.read_issue_number_from_yaml,
@@ -382,8 +380,10 @@ def _build_admin_runtime_components(
         directory_store=runtime.directories,
         gateway_config=config,
     )
+
     def normalize_directory_reference(reference: str | None) -> str:
         return DirectoryService(runtime.directories).show(reference or "root").directory.path
+
     directory_ownership = DirectoryOwnershipQueries(
         directories=directory_admin._directories,
         sessions=runtime.session_repository,
@@ -489,9 +489,7 @@ def _build_admin_runtime_components(
             directory_path=directory_ownership_port,
         )
     )
-    artifact_admin = ArtifactAdminService(
-        ArtifactAdminDependencies(runtime_dir=config.runtime_dir)
-    )
+    artifact_admin = ArtifactAdminService(ArtifactAdminDependencies(runtime_dir=config.runtime_dir))
 
     vm_agent_support = VmAgentAdminSupport(
         config=config,

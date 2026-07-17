@@ -52,6 +52,7 @@ def _maybe_mark_idle_context_rotation_due(
         request_note=None,
     )
 
+
 def _has_activity_since_last_context_rotation(
     state: TeamState,
     *,
@@ -92,6 +93,7 @@ def _has_activity_since_last_context_rotation(
             return True
     return False
 
+
 def _is_agent_truly_idle(
     state: TeamState,
     *,
@@ -116,6 +118,7 @@ def _is_agent_truly_idle(
     if _pending_ephemeral_acceptances_for_agent(state, agent.id):
         return False
     return True
+
 
 def _mark_context_rotation_pending(
     state: TeamState,
@@ -144,6 +147,7 @@ def _mark_context_rotation_pending(
     )
     runtime.updated_at = requested_at
 
+
 def _resolved_context_clearing_policy(
     *,
     context_clearing_policy: AgentContextClearingPolicy | str | None,
@@ -161,6 +165,7 @@ def _resolved_context_clearing_policy(
         )
     return None
 
+
 def _context_clearing_policy_from_value(
     value: AgentContextClearingPolicy | str | None,
 ) -> AgentContextClearingPolicy:
@@ -176,6 +181,7 @@ def _context_clearing_policy_from_value(
     except ValueError:
         allowed = ", ".join(policy.value for policy in AgentContextClearingPolicy)
         raise ValueError(f"context_clearing_policy must be one of: {allowed}") from None
+
 
 def _set_context_clearing_policy(
     state: TeamState,
@@ -194,6 +200,7 @@ def _set_context_clearing_policy(
     if policy == AgentContextClearingPolicy.IDLE:
         _maybe_mark_idle_context_rotation_due(state, agent_id=agent.id, now=now)
 
+
 def _clear_pending_auto_context_rotation(runtime: AgentRuntime) -> None:
     if not runtime.context_rotation_pending or runtime.context_rotation_reason not in {
         "idle",
@@ -207,6 +214,7 @@ def _clear_pending_auto_context_rotation(runtime: AgentRuntime) -> None:
     runtime.context_rotation_request_note = None
     runtime.next_wake_at = None
     runtime.last_handoff_summary = None
+
 
 def _build_context_handoff_summary(
     state: TeamState,
@@ -306,6 +314,7 @@ def _build_context_handoff_summary(
         lines.append("Recent action records: none.")
 
     return "\n".join(lines)
+
 
 __all__ = [
     "_maybe_mark_idle_context_rotation_due",

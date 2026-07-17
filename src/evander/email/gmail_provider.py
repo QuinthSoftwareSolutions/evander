@@ -140,7 +140,9 @@ class GmailEmailProvider:
 
         sent_at = datetime.now(UTC)
         message_id = str(data.get("id") or data.get("message", {}).get("id") or "") or None
-        thread_id = str(data.get("threadId") or data.get("message", {}).get("threadId") or "") or None
+        thread_id = (
+            str(data.get("threadId") or data.get("message", {}).get("threadId") or "") or None
+        )
         return EmailSendResult(
             status="sent",
             draft_id=draft_id,
@@ -154,9 +156,7 @@ class GmailEmailProvider:
             },
         )
 
-    def list_attachments(
-        self, mailbox_id: str, message_id: str
-    ) -> list[EmailAttachmentMetadata]:
+    def list_attachments(self, mailbox_id: str, message_id: str) -> list[EmailAttachmentMetadata]:
         with httpx.Client(timeout=self.timeout_seconds) as client:
             payload = self._fetch_message(client, message_id=message_id, format_name="full")
         return self._extract_attachments(payload.get("payload", {}))

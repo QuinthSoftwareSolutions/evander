@@ -14,6 +14,7 @@ from ...models import TeamState
 from ..domain.common import _optional_text
 from ...sqlite_store import TeamIdempotencyConflictError
 
+
 def _command_success_response(
     *,
     state: TeamState,
@@ -39,6 +40,7 @@ def _command_success_response(
     )
     return response
 
+
 def _command_idempotency_conflict_response(
     *,
     state: TeamState,
@@ -61,6 +63,7 @@ def _command_idempotency_conflict_response(
         ],
     }
 
+
 def _command_correction_context_summary(
     correction_context: Mapping[str, Any],
 ) -> str | None:
@@ -71,8 +74,9 @@ def _command_correction_context_summary(
     )
     return summary[:240] if summary else None
 
+
 __all__ = [
-    '_command_success_response',
-    '_command_idempotency_conflict_response',
-    '_command_correction_context_summary',
+    "_command_success_response",
+    "_command_idempotency_conflict_response",
+    "_command_correction_context_summary",
 ]

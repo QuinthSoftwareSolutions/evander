@@ -1,10 +1,9 @@
-import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { FormEvent, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import companyLogoDark from "../branding/qss-dark.png";
 import companyLogoLight from "../branding/qss-light.png";
 import logoDark from "../branding/evander-logo-dark.png";
 import logoLight from "../branding/evander-logo-light.png";
-import WorkflowEditorApp from "./App";
 import {
   EMPTY_ADMIN_BRANDING,
   initialAdminBranding,
@@ -16,22 +15,6 @@ import { fetchJson } from "./features/admin/api";
 import { AdminUiContext } from "./features/admin/AdminContext";
 import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminContext";
 import { useDocumentVisible } from "./features/admin/visibility";
-import { AddonsPage } from "./features/addons/AddonsPage";
-import { AgentsPage } from "./features/agents/AgentsPage";
-import { ArtifactsPage } from "./features/artifacts/ArtifactsPage";
-import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
-import { IssuesPage } from "./features/issues/IssuesPage";
-import { ApprovalsScreen } from "./features/approvals/ApprovalsScreen";
-import { OperationsDashboard } from "./features/dashboard/OperationsDashboard";
-import { McpToolsPage } from "./features/mcpTools/McpToolsPage";
-import { ReportsPage } from "./features/reports/ReportsPage";
-import { SessionsScreen } from "./features/sessions/SessionsScreen";
-import { ToolVisibilityPage } from "./features/toolVisibility/ToolVisibilityPage";
-import { ToolCallsPage } from "./features/toolCalls/ToolCallsPage";
-import { SkillsPage } from "./features/skills/SkillsPage";
-import { UsersPage } from "./features/users/UsersPage";
-import { VmsPage } from "./features/vms/VmsPage";
-import { WorkersScreen } from "./features/workers/WorkersScreen";
 import { ChatLauncher } from "./features/chat/ChatLauncher";
 import { DirectoryAddIcon, DirectoryDeleteIcon, NotificationBellIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
@@ -45,6 +28,90 @@ import {
   type AdminTab,
   type AdminTabDefinition,
 } from "./adminRouting";
+
+const STALE_CHUNK_RELOAD_STORAGE_KEY = "admin-web:stale-chunk-reload";
+let staleChunkReloadRequested = false;
+
+function recoverFromStaleViteChunk(event: Event) {
+  event.preventDefault();
+  if (staleChunkReloadRequested) return;
+  staleChunkReloadRequested = true;
+  try {
+    if (window.sessionStorage.getItem(STALE_CHUNK_RELOAD_STORAGE_KEY) === "true") return;
+    window.sessionStorage.setItem(STALE_CHUNK_RELOAD_STORAGE_KEY, "true");
+  } catch {
+    // Reload recovery still works when browser storage is unavailable.
+  }
+  window.location.reload();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("vite:preloadError", recoverFromStaleViteChunk);
+  window.addEventListener(
+    "load",
+    () => {
+      try {
+        window.sessionStorage.removeItem(STALE_CHUNK_RELOAD_STORAGE_KEY);
+      } catch {
+        // Browser storage is optional for the one-time reload guard.
+      }
+    },
+    { once: true },
+  );
+}
+
+const WorkflowEditorApp = lazy(() => import("./App"));
+const AddonsPage = lazy(() =>
+  import("./features/addons/AddonsPage").then(({ AddonsPage }) => ({ default: AddonsPage })),
+);
+const AgentsPage = lazy(() =>
+  import("./features/agents/AgentsPage").then(({ AgentsPage }) => ({ default: AgentsPage })),
+);
+const ApprovalsScreen = lazy(() =>
+  import("./features/approvals/ApprovalsScreen").then(({ ApprovalsScreen }) => ({ default: ApprovalsScreen })),
+);
+const ArtifactsPage = lazy(() =>
+  import("./features/artifacts/ArtifactsPage").then(({ ArtifactsPage }) => ({ default: ArtifactsPage })),
+);
+const ConfigurationScreen = lazy(() =>
+  import("./features/configuration/ConfigurationScreen").then(({ ConfigurationScreen }) => ({ default: ConfigurationScreen })),
+);
+const ConnectorsPage = lazy(() =>
+  import("./features/connectors/ConnectorsPage").then(({ ConnectorsPage }) => ({ default: ConnectorsPage })),
+);
+const OperationsDashboard = lazy(() =>
+  import("./features/dashboard/OperationsDashboard").then(({ OperationsDashboard }) => ({ default: OperationsDashboard })),
+);
+const IssuesPage = lazy(() =>
+  import("./features/issues/IssuesPage").then(({ IssuesPage }) => ({ default: IssuesPage })),
+);
+const McpToolsPage = lazy(() =>
+  import("./features/mcpTools/McpToolsPage").then(({ McpToolsPage }) => ({ default: McpToolsPage })),
+);
+const ReportsPage = lazy(() =>
+  import("./features/reports/ReportsPage").then(({ ReportsPage }) => ({ default: ReportsPage })),
+);
+const SessionsScreen = lazy(() =>
+  import("./features/sessions/SessionsScreen").then(({ SessionsScreen }) => ({ default: SessionsScreen })),
+);
+const SkillsPage = lazy(() =>
+  import("./features/skills/SkillsPage").then(({ SkillsPage }) => ({ default: SkillsPage })),
+);
+const ToolCallsPage = lazy(() =>
+  import("./features/toolCalls/ToolCallsPage").then(({ ToolCallsPage }) => ({ default: ToolCallsPage })),
+);
+const ToolVisibilityPage = lazy(() =>
+  import("./features/toolVisibility/ToolVisibilityPage").then(({ ToolVisibilityPage }) => ({ default: ToolVisibilityPage })),
+);
+const UsersPage = lazy(() =>
+  import("./features/users/UsersPage").then(({ UsersPage }) => ({ default: UsersPage })),
+);
+const VmsPage = lazy(() =>
+  import("./features/vms/VmsPage").then(({ VmsPage }) => ({ default: VmsPage })),
+);
+const WorkersScreen = lazy(() =>
+  import("./features/workers/WorkersScreen").then(({ WorkersScreen }) => ({ default: WorkersScreen })),
+);
 
 type AdminSession = {
   auth_mode: "none" | "local_password" | "azure_sso";
@@ -2126,54 +2193,67 @@ export default function AdminRoot() {
           <main className="admin-shell-main">
             <DeploymentStatusBanner status={deploymentStatus} />
             {sessionError ? <div className="admin-shell-alert">{sessionError}</div> : null}
-            {renderedTab === "dashboard" ? (
-              <OperationsDashboard />
-            ) : renderedTab === "workflow" ? (
-              <div className="admin-workflow-panel">
-                <WorkflowEditorApp />
-              </div>
-            ) : renderedTab === "vms" ? (
-              <VmsPage />
-            ) : renderedTab === "agents" ? (
-              <AgentsPage />
-            ) : renderedTab === "skills" ? (
-              <SkillsPage />
-            ) : renderedTab === "issues" ? (
-              <IssuesPage />
-            ) : renderedTab === "configuration" ? (
-              <ConfigurationScreen />
-            ) : renderedTab === "reports" ? (
-              <ReportsPage />
-            ) : renderedTab === "users" ? (
-              <UsersPage />
-            ) : renderedTab === "workers" ? (
-              <WorkersScreen />
-            ) : renderedTab === "sessions" ? (
-              <SessionsScreen />
-            ) : renderedTab === "tool-visibility" ? (
-              <ToolVisibilityPage />
-            ) : renderedTab === "mcp-tools" ? (
-              <McpToolsPage />
-            ) : renderedTab === "approvals" ? (
-              <ApprovalsScreen />
-            ) : renderedTab === "artifacts" ? (
-              <ArtifactsPage />
-            ) : renderedTab === "addons" ? (
-              <AddonsPage />
-            ) : renderedTab === "tool-calls" ? (
-              <ToolCallsPage />
-            ) : activeTab.key.startsWith("addon:") ? (
-              <AddonView
-                tab={activeTab}
-                selectedDirectoryPath={selectedDirectoryPath}
-                privilegedUnlocked={privilegeUnlocked}
-                onFrameLoad={() => {
-                  void refreshAuthSession();
-                }}
-              />
-            ) : (
-              <PlaceholderView title={activeTab.label} description={activeTab.description} />
-            )}
+            <Suspense
+              fallback={
+                <div className="empty-state" role="status" aria-live="polite">
+                  Loading {activeTab.label}…
+                </div>
+              }
+            >
+              {renderedTab === "dashboard" ? (
+                <OperationsDashboard />
+              ) : renderedTab === "workflow" ? (
+                <div className="admin-workflow-panel">
+                  <WorkflowEditorApp />
+                </div>
+              ) : renderedTab === "vms" ? (
+                <VmsPage />
+              ) : renderedTab === "agents" ? (
+                <AgentsPage />
+              ) : renderedTab === "skills" ? (
+                <SkillsPage />
+              ) : renderedTab === "issues" ? (
+                <IssuesPage />
+              ) : renderedTab === "configuration" ? (
+                <ConfigurationScreen />
+              ) : renderedTab === "connectors" ? (
+                <ConnectorsPage
+                  selectedDirectoryPath={selectedDirectoryPath}
+                  privilegedUnlocked={privilegeUnlocked}
+                />
+              ) : renderedTab === "reports" ? (
+                <ReportsPage />
+              ) : renderedTab === "users" ? (
+                <UsersPage />
+              ) : renderedTab === "workers" ? (
+                <WorkersScreen />
+              ) : renderedTab === "sessions" ? (
+                <SessionsScreen />
+              ) : renderedTab === "tool-visibility" ? (
+                <ToolVisibilityPage />
+              ) : renderedTab === "mcp-tools" ? (
+                <McpToolsPage />
+              ) : renderedTab === "approvals" ? (
+                <ApprovalsScreen />
+              ) : renderedTab === "artifacts" ? (
+                <ArtifactsPage />
+              ) : renderedTab === "addons" ? (
+                <AddonsPage />
+              ) : renderedTab === "tool-calls" ? (
+                <ToolCallsPage />
+              ) : activeTab.key.startsWith("addon:") ? (
+                <AddonView
+                  tab={activeTab}
+                  selectedDirectoryPath={selectedDirectoryPath}
+                  privilegedUnlocked={privilegeUnlocked}
+                  onFrameLoad={() => {
+                    void refreshAuthSession();
+                  }}
+                />
+              ) : (
+                <PlaceholderView title={activeTab.label} description={activeTab.description} />
+              )}
+            </Suspense>
           </main>
         </div>
       </div>

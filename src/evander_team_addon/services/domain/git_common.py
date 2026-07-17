@@ -10,6 +10,7 @@ from .common import _required_text
 
 GIT_PROMOTION_EVENT_TYPE = "team.git.promotion_requested"
 
+
 def _project_git_or_error(
     project: Project,
     result: dict[str, Any],
@@ -42,6 +43,7 @@ def _emit_git_promotion_event(
         }
     )
 
+
 def _normalize_agent_branch_ref(value: object) -> str:
     text = _required_text(value, "agent_branch")
     prefix = "refs/heads/"
@@ -51,6 +53,7 @@ def _normalize_agent_branch_ref(value: object) -> str:
     if not branch.startswith("agents/"):
         raise ValueError("agent_branch must be under agents/")
     return branch
+
 
 __all__ = [
     "GIT_PROMOTION_EVENT_TYPE",

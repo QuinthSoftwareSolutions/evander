@@ -237,9 +237,7 @@ def test_record_release_promotion_success_publishes_canonical_push(
     _seed_release(repo)
 
     def _mutate(state):
-        state.projects["project"].release_policy = ProjectReleasePolicy(
-            allow_ungated=True
-        )
+        state.projects["project"].release_policy = ProjectReleasePolicy(allow_ungated=True)
         state.projects["project"].git.directory_path = "root/team-a"
         state.git_promotions["release-promotion"] = GitPromotionRecord(
             id="release-promotion",
@@ -843,7 +841,9 @@ class _ManagedGitAdminStub:
 
 
 class _AdminRuntimeStub:
-    def __init__(self, *, promotion_result: dict[str, object], consolidation_result: dict[str, object]) -> None:
+    def __init__(
+        self, *, promotion_result: dict[str, object], consolidation_result: dict[str, object]
+    ) -> None:
         self.promotion_result = promotion_result
         self.promotion_calls: list[dict[str, object]] = []
         self.managed_git_admin = _ManagedGitAdminStub(consolidation_result)

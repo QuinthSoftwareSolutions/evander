@@ -500,6 +500,7 @@ class ProjectGitConfig(TeamModel):
     def _canonical_release_branch_prefix(cls, value: object) -> str:
         return normalize_canonical_release_branch_prefix(value)
 
+
 class ReleaseVerificationCommand(TeamModel):
     name: str
     cwd: str = "."
@@ -544,9 +545,7 @@ class ProjectReleasePolicy(TeamModel):
 
     @model_validator(mode="after")
     def _require_gate(self) -> "ProjectReleasePolicy":
-        if not self.allow_ungated and not (
-            self.verification_commands or self.review_requirements
-        ):
+        if not self.allow_ungated and not (self.verification_commands or self.review_requirements):
             raise ValueError(
                 "release policy requires verification_commands or review_requirements "
                 "unless allow_ungated is true"
@@ -658,7 +657,6 @@ class PersistentAgent(TeamModel):
         elif self.role_id is None:
             raise ValueError("team-bound agent must have a role")
         return self
-
 
 
 class AgentRuntime(TeamModel):
@@ -1156,9 +1154,7 @@ class ReviewRequest(TeamModel):
 
     @model_validator(mode="after")
     def _validate_target(self) -> "ReviewRequest":
-        targets = int(self.deliverable_id is not None) + int(
-            self.release_package_id is not None
-        )
+        targets = int(self.deliverable_id is not None) + int(self.release_package_id is not None)
         if targets != 1:
             raise ValueError(
                 "review request requires exactly one of deliverable_id or release_package_id"
@@ -1280,10 +1276,7 @@ class TeamMemoryRecord(TeamModel):
     @field_validator("tags", mode="before")
     @classmethod
     def _tags(cls, value: object) -> list[str]:
-        return [
-            tag.casefold()
-            for tag in _unique_text_list(value or [], "tags")
-        ]
+        return [tag.casefold() for tag in _unique_text_list(value or [], "tags")]
 
     @field_validator("source_refs", "artifact_refs", mode="before")
     @classmethod
@@ -1672,8 +1665,7 @@ class ReleaseVerificationRun(TeamModel):
             self.retry_reason is None or self.retry_requested_by is None
         ):
             raise ValueError(
-                "superseding release verification requires retry_reason and "
-                "retry_requested_by"
+                "superseding release verification requires retry_reason and retry_requested_by"
             )
         return self
 
@@ -1710,9 +1702,7 @@ class ReleaseCandidateReviewEvidence(TeamModel):
     reviewed_commit_sha: str
     criteria: list[ReviewCriterionResult] = Field(default_factory=list)
 
-    @field_validator(
-        "review_request_id", "reviewer_agent_id", "reviewed_commit_sha", mode="before"
-    )
+    @field_validator("review_request_id", "reviewer_agent_id", "reviewed_commit_sha", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
@@ -1869,9 +1859,7 @@ class ReleasePackage(TeamModel):
                 "deliverables": [
                     {
                         "deliverable_id": deliverable_id,
-                        "feature_branch": (
-                            paired_branches[index] if paired_branches else None
-                        ),
+                        "feature_branch": (paired_branches[index] if paired_branches else None),
                     }
                     for index, deliverable_id in enumerate(deliverable_ids)
                 ],
@@ -2097,11 +2085,17 @@ class TeamState(TeamModel):
                     current_kind = assignment_kind_value(assignment.get("kind"))
                 else:
                     continue
-                if current_project_id == project_id and current_agent_id == agent_id and (kind is None or current_kind == kind):
+                if (
+                    current_project_id == project_id
+                    and current_agent_id == agent_id
+                    and (kind is None or current_kind == kind)
+                ):
                     return True
             return False
 
-        def put_assignment(*, project_id: str, agent_id: str, team_id: str, role_id: str | None, kind: str) -> None:
+        def put_assignment(
+            *, project_id: str, agent_id: str, team_id: str, role_id: str | None, kind: str
+        ) -> None:
             if has_assignment(project_id, agent_id, kind):
                 return
             key = assignment_id(project_id, agent_id, kind)
@@ -2119,7 +2113,11 @@ class TeamState(TeamModel):
             }
 
         for project_id, raw_project in projects.items():
-            project = raw_project.model_dump(mode="python") if isinstance(raw_project, TeamModel) else raw_project
+            project = (
+                raw_project.model_dump(mode="python")
+                if isinstance(raw_project, TeamModel)
+                else raw_project
+            )
             if not isinstance(project, dict):
                 continue
             lead_agent_id = _optional_text(project.get("lead_agent_id"))
@@ -2127,7 +2125,11 @@ class TeamState(TeamModel):
             if lead_agent_id is None or team_id is None:
                 continue
             raw_agent = agents.get(lead_agent_id)
-            agent = raw_agent.model_dump(mode="python") if isinstance(raw_agent, TeamModel) else raw_agent
+            agent = (
+                raw_agent.model_dump(mode="python")
+                if isinstance(raw_agent, TeamModel)
+                else raw_agent
+            )
             role_id = _optional_text(agent.get("role_id")) if isinstance(agent, dict) else None
             if role_project_id(role_id) != str(project_id):
                 role_id = next(
@@ -2135,8 +2137,13 @@ class TeamState(TeamModel):
                         role_key
                         for role_key, raw_role in roles.items()
                         if (
-                            raw_role.project_id if isinstance(raw_role, TeamRole) else _optional_text(raw_role.get("project_id")) if isinstance(raw_role, dict) else None
-                        ) == str(project_id)
+                            raw_role.project_id
+                            if isinstance(raw_role, TeamRole)
+                            else _optional_text(raw_role.get("project_id"))
+                            if isinstance(raw_role, dict)
+                            else None
+                        )
+                        == str(project_id)
                     ),
                     role_id,
                 )
@@ -2149,7 +2156,13 @@ class TeamState(TeamModel):
             )
 
         for agent_id, raw_agent in list(agents.items()):
-            agent = raw_agent.model_dump(mode="python") if isinstance(raw_agent, TeamModel) else dict(raw_agent) if isinstance(raw_agent, dict) else raw_agent
+            agent = (
+                raw_agent.model_dump(mode="python")
+                if isinstance(raw_agent, TeamModel)
+                else dict(raw_agent)
+                if isinstance(raw_agent, dict)
+                else raw_agent
+            )
             if not isinstance(agent, dict):
                 continue
             team_id = _optional_text(agent.get("team_id"))
@@ -2157,8 +2170,10 @@ class TeamState(TeamModel):
             role_id = _optional_text(agent.get("role_id"))
             role_project = role_project_id(role_id)
             project_id = legacy_project_id or role_project
-            if team_id is not None and project_id is not None and not has_assignment(
-                project_id, str(agent_id)
+            if (
+                team_id is not None
+                and project_id is not None
+                and not has_assignment(project_id, str(agent_id))
             ):
                 put_assignment(
                     project_id=project_id,
@@ -2254,12 +2269,19 @@ class TeamState(TeamModel):
         now = utc_now()
         for project in self.projects.values():
             if project.lead_agent_id in self.agents and not _agent_has_project_assignment(
-                self, project.lead_agent_id, project.id, kind=AgentProjectAssignmentKind.PROJECT_LEAD
+                self,
+                project.lead_agent_id,
+                project.id,
+                kind=AgentProjectAssignmentKind.PROJECT_LEAD,
             ):
                 lead = self.agents[project.lead_agent_id]
                 role = self.roles.get(lead.role_id) if lead.role_id is not None else None
-                role_id = lead.role_id if role is not None and role.project_id == project.id else None
-                assignment_id = _project_assignment_id(project.id, lead.id, AgentProjectAssignmentKind.PROJECT_LEAD)
+                role_id = (
+                    lead.role_id if role is not None and role.project_id == project.id else None
+                )
+                assignment_id = _project_assignment_id(
+                    project.id, lead.id, AgentProjectAssignmentKind.PROJECT_LEAD
+                )
                 self.project_assignments[assignment_id] = AgentProjectAssignment(
                     id=assignment_id,
                     team_id=project.team_id,
@@ -2276,7 +2298,9 @@ class TeamState(TeamModel):
                 continue
             if _agent_has_project_assignment(self, agent.id, role.project_id):
                 continue
-            assignment_id = _project_assignment_id(role.project_id, agent.id, AgentProjectAssignmentKind.PROJECT_MEMBER)
+            assignment_id = _project_assignment_id(
+                role.project_id, agent.id, AgentProjectAssignmentKind.PROJECT_MEMBER
+            )
             self.project_assignments[assignment_id] = AgentProjectAssignment(
                 id=assignment_id,
                 team_id=agent.team_id,
@@ -2295,7 +2319,10 @@ class TeamState(TeamModel):
             if role is not None and RolePermission.CREATE_ROOT_TASK not in role.permissions:
                 role.permissions.append(RolePermission.CREATE_ROOT_TASK)
         for assignment in self.project_assignments.values():
-            if assignment.kind != AgentProjectAssignmentKind.PROJECT_LEAD or assignment.role_id is None:
+            if (
+                assignment.kind != AgentProjectAssignmentKind.PROJECT_LEAD
+                or assignment.role_id is None
+            ):
                 continue
             role = self.roles.get(assignment.role_id)
             if role is not None and RolePermission.CREATE_ROOT_TASK not in role.permissions:
@@ -2307,13 +2334,17 @@ class TeamState(TeamModel):
             if manager is None:
                 errors.append(f"team {team.id} references missing manager {team.manager_agent_id}")
             elif manager.team_id != team.id:
-                errors.append(f"team {team.id} manager {manager.id} belongs to team {manager.team_id}")
+                errors.append(
+                    f"team {team.id} manager {manager.id} belongs to team {manager.team_id}"
+                )
             for project_id in team.project_ids:
                 project = self.projects.get(project_id)
                 if project is None:
                     errors.append(f"team {team.id} references missing project {project_id}")
                 elif project.team_id != team.id:
-                    errors.append(f"team {team.id} project {project_id} belongs to team {project.team_id}")
+                    errors.append(
+                        f"team {team.id} project {project_id} belongs to team {project.team_id}"
+                    )
 
     def _validate_governance_groups(self, errors: list[str]) -> None:
         for group in self.governance_groups.values():
@@ -2407,7 +2438,9 @@ class TeamState(TeamModel):
             lead_id = project_lead_agent_id(self, project.id) or project.lead_agent_id
             lead = self.agents.get(lead_id) if lead_id is not None else None
             if lead is None:
-                errors.append(f"project {project.id} references missing lead {lead_id or project.lead_agent_id}")
+                errors.append(
+                    f"project {project.id} references missing lead {lead_id or project.lead_agent_id}"
+                )
             elif lead.team_id != project.team_id:
                 errors.append(f"project {project.id} lead {lead.id} belongs to team {lead.team_id}")
 
@@ -2433,7 +2466,11 @@ class TeamState(TeamModel):
                 errors.append(f"agent {agent.id} references missing role {agent.role_id}")
             elif role is not None and role.team_id != agent.team_id:
                 errors.append(f"agent {agent.id} role {role.id} belongs to team {role.team_id}")
-            elif role is not None and role.project_id is not None and not _agent_has_project_assignment(self, agent.id, role.project_id):
+            elif (
+                role is not None
+                and role.project_id is not None
+                and not _agent_has_project_assignment(self, agent.id, role.project_id)
+            ):
                 errors.append(
                     f"agent {agent.id} role {role.id} belongs to project {role.project_id}"
                 )
@@ -2489,7 +2526,9 @@ class TeamState(TeamModel):
                 )
             seen_agent_project_kind.add(key)
             if assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD:
-                lead_assignments_by_project.setdefault(assignment.project_id, []).append(assignment.agent_id)
+                lead_assignments_by_project.setdefault(assignment.project_id, []).append(
+                    assignment.agent_id
+                )
         for project in self.projects.values():
             lead_agent_ids = lead_assignments_by_project.get(project.id, [])
             if len(lead_agent_ids) != 1:
@@ -2501,9 +2540,13 @@ class TeamState(TeamModel):
             for subordinate_id in agent.subordinate_agent_ids:
                 subordinate = self.agents.get(subordinate_id)
                 if subordinate is None:
-                    errors.append(f"agent {agent.id} references missing subordinate {subordinate_id}")
+                    errors.append(
+                        f"agent {agent.id} references missing subordinate {subordinate_id}"
+                    )
                 elif subordinate.reports_to_agent_id != agent.id:
-                    errors.append(f"agent {agent.id} subordinate {subordinate_id} does not report back")
+                    errors.append(
+                        f"agent {agent.id} subordinate {subordinate_id} does not report back"
+                    )
         for agent_id in self.agents:
             self._validate_no_reporting_cycle(agent_id, errors)
 
@@ -2533,20 +2576,15 @@ class TeamState(TeamModel):
             if case.project_id is not None:
                 project = self.projects.get(case.project_id)
                 if project is None:
-                    errors.append(
-                        f"case {case.id} references missing project {case.project_id}"
-                    )
+                    errors.append(f"case {case.id} references missing project {case.project_id}")
                 elif project.team_id != case.team_id:
                     errors.append(
-                        f"case {case.id} project {project.id} belongs to team "
-                        f"{project.team_id}"
+                        f"case {case.id} project {project.id} belongs to team {project.team_id}"
                     )
             if case.owner_agent_id is not None:
                 owner = self.agents.get(case.owner_agent_id)
                 if owner is None:
-                    errors.append(
-                        f"case {case.id} references missing owner {case.owner_agent_id}"
-                    )
+                    errors.append(f"case {case.id} references missing owner {case.owner_agent_id}")
                 elif owner.team_id != case.team_id:
                     errors.append(
                         f"case {case.id} owner {owner.id} belongs to team {owner.team_id}"
@@ -2565,8 +2603,7 @@ class TeamState(TeamModel):
                     )
                 if case.project_id is not None and task.project_id != case.project_id:
                     errors.append(
-                        f"case {case.id} task {task.id} belongs to project "
-                        f"{task.project_id}"
+                        f"case {case.id} task {task.id} belongs to project {task.project_id}"
                     )
 
     def _validate_tasks(self, errors: list[str]) -> None:
@@ -2583,11 +2620,7 @@ class TeamState(TeamModel):
             project = self.projects.get(task.project_id)
             if project is None:
                 errors.append(f"task {task.id} references missing project {task.project_id}")
-            elif (
-                not task_is_terminal
-                and owner is not None
-                and owner.team_id != project.team_id
-            ):
+            elif not task_is_terminal and owner is not None and owner.team_id != project.team_id:
                 errors.append(f"task {task.id} owner {owner.id} is outside project team")
             if task.case_id is not None:
                 case = self.cases.get(task.case_id)
@@ -2596,47 +2629,41 @@ class TeamState(TeamModel):
                 elif project is not None:
                     if case.team_id != project.team_id:
                         errors.append(
-                            f"task {task.id} case {case.id} belongs to team "
-                            f"{case.team_id}"
+                            f"task {task.id} case {case.id} belongs to team {case.team_id}"
                         )
                     if case.project_id is not None and case.project_id != task.project_id:
                         errors.append(
-                            f"task {task.id} case {case.id} belongs to project "
-                            f"{case.project_id}"
+                            f"task {task.id} case {case.id} belongs to project {case.project_id}"
                         )
                     if task.id not in case.task_ids:
                         errors.append(f"task {task.id} case {case.id} does not link back")
-            if (
-                task.created_by_agent_id is not None
-                and task.created_by_agent_id not in self.agents
-            ):
-                errors.append(f"task {task.id} references missing creator {task.created_by_agent_id}")
+            if task.created_by_agent_id is not None and task.created_by_agent_id not in self.agents:
+                errors.append(
+                    f"task {task.id} references missing creator {task.created_by_agent_id}"
+                )
             for deliverable_id in task.deliverable_ids:
                 deliverable = self.deliverables.get(deliverable_id)
                 if deliverable is None:
                     errors.append(f"task {task.id} references missing deliverable {deliverable_id}")
                 elif deliverable.task_id != task.id:
-                    errors.append(f"task {task.id} deliverable {deliverable_id} does not point back")
+                    errors.append(
+                        f"task {task.id} deliverable {deliverable_id} does not point back"
+                    )
 
     def _validate_task_graph(self, errors: list[str]) -> None:
         for task in self.tasks.values():
             if task.parent_task_id is not None:
                 parent = self.tasks.get(task.parent_task_id)
                 if parent is None:
-                    errors.append(
-                        f"task {task.id} references missing parent {task.parent_task_id}"
-                    )
+                    errors.append(f"task {task.id} references missing parent {task.parent_task_id}")
                 elif parent.project_id != task.project_id:
                     errors.append(
-                        f"task {task.id} parent {parent.id} belongs to project "
-                        f"{parent.project_id}"
+                        f"task {task.id} parent {parent.id} belongs to project {parent.project_id}"
                     )
             for dependency_id in task.dependency_task_ids:
                 dependency = self.tasks.get(dependency_id)
                 if dependency is None:
-                    errors.append(
-                        f"task {task.id} references missing dependency {dependency_id}"
-                    )
+                    errors.append(f"task {task.id} references missing dependency {dependency_id}")
                 elif dependency.project_id != task.project_id:
                     errors.append(
                         f"task {task.id} dependency {dependency_id} belongs to project "
@@ -2678,9 +2705,7 @@ class TeamState(TeamModel):
                         continue
                     if dependency_id in visiting:
                         if not reported:
-                            errors.append(
-                                f"task dependency cycle includes {dependency_id}"
-                            )
+                            errors.append(f"task dependency cycle includes {dependency_id}")
                             reported = True
                         continue
                     stack.append(dependency_id)
@@ -2692,24 +2717,17 @@ class TeamState(TeamModel):
                     stack.pop()
 
     def child_task_ids(self, task_id: str) -> list[str]:
-        return sorted(
-            task.id
-            for task in self.tasks.values()
-            if task.parent_task_id == task_id
-        )
+        return sorted(task.id for task in self.tasks.values() if task.parent_task_id == task_id)
 
     def dependency_status(self, task_id: str) -> str:
         task = self.tasks.get(task_id)
         if task is None or not task.dependency_task_ids:
             return "satisfied"
         dependency_states = [
-            self.tasks[dep_id].state
-            for dep_id in task.dependency_task_ids
-            if dep_id in self.tasks
+            self.tasks[dep_id].state for dep_id in task.dependency_task_ids if dep_id in self.tasks
         ]
         if any(
-            state in {TeamTaskState.BLOCKED, TeamTaskState.REJECTED}
-            for state in dependency_states
+            state in {TeamTaskState.BLOCKED, TeamTaskState.REJECTED} for state in dependency_states
         ):
             return "blocked"
         if any(
@@ -2754,7 +2772,9 @@ class TeamState(TeamModel):
     def _validate_deliverables(self, errors: list[str]) -> None:
         for deliverable in self.deliverables.values():
             if deliverable.task_id not in self.tasks:
-                errors.append(f"deliverable {deliverable.id} references missing task {deliverable.task_id}")
+                errors.append(
+                    f"deliverable {deliverable.id} references missing task {deliverable.task_id}"
+                )
             if deliverable.producer_agent_id not in self.agents:
                 errors.append(
                     f"deliverable {deliverable.id} references missing producer "
@@ -2866,13 +2886,10 @@ class TeamState(TeamModel):
             for role_id in profile.applicable_role_ids:
                 role = self.roles.get(role_id)
                 if role is None:
-                    errors.append(
-                        f"review profile {profile.id} references missing role {role_id}"
-                    )
+                    errors.append(f"review profile {profile.id} references missing role {role_id}")
                 elif role.team_id != profile.team_id:
                     errors.append(
-                        f"review profile {profile.id} role {role.id} belongs to team "
-                        f"{role.team_id}"
+                        f"review profile {profile.id} role {role.id} belongs to team {role.team_id}"
                     )
                 elif role.project_id is not None and role.project_id != profile.project_id:
                     errors.append(
@@ -2882,10 +2899,7 @@ class TeamState(TeamModel):
 
     def _validate_reviews(self, errors: list[str]) -> None:
         for review in self.review_requests.values():
-            if (
-                review.deliverable_id is not None
-                and review.deliverable_id not in self.deliverables
-            ):
+            if review.deliverable_id is not None and review.deliverable_id not in self.deliverables:
                 errors.append(
                     f"review request {review.id} references missing deliverable "
                     f"{review.deliverable_id}"
@@ -2921,7 +2935,9 @@ class TeamState(TeamModel):
             criterion_definitions = (
                 review.criteria_snapshot
                 if review.criteria_snapshot is not None
-                else profile.criteria if profile is not None else []
+                else profile.criteria
+                if profile is not None
+                else []
             )
             valid_criterion_ids = {criterion.id for criterion in criterion_definitions}
             seen: set[str] = set()
@@ -2975,9 +2991,7 @@ class TeamState(TeamModel):
             if memory.agent_id is not None:
                 agent = self.agents.get(memory.agent_id)
                 if agent is None:
-                    errors.append(
-                        f"memory {memory.id} references missing agent {memory.agent_id}"
-                    )
+                    errors.append(f"memory {memory.id} references missing agent {memory.agent_id}")
                 elif agent.team_id != memory.team_id:
                     errors.append(
                         f"memory {memory.id} agent {agent.id} belongs to team {agent.team_id}"
@@ -2991,16 +3005,14 @@ class TeamState(TeamModel):
                     )
                 elif creator.team_id != memory.team_id:
                     errors.append(
-                        f"memory {memory.id} creator {creator.id} belongs to team "
-                        f"{creator.team_id}"
+                        f"memory {memory.id} creator {creator.id} belongs to team {creator.team_id}"
                     )
             if (
                 memory.supersedes_memory_id is not None
                 and memory.supersedes_memory_id not in self.memories
             ):
                 errors.append(
-                    f"memory {memory.id} supersedes missing memory "
-                    f"{memory.supersedes_memory_id}"
+                    f"memory {memory.id} supersedes missing memory {memory.supersedes_memory_id}"
                 )
             if (
                 memory.superseded_by_memory_id is not None
@@ -3047,16 +3059,22 @@ class TeamState(TeamModel):
         for release in self.release_packages.values():
             project = self.projects.get(release.project_id)
             if project is None:
-                errors.append(f"release {release.id} references missing project {release.project_id}")
+                errors.append(
+                    f"release {release.id} references missing project {release.project_id}"
+                )
                 continue
             for deliverable_id in release.deliverable_ids:
                 deliverable = self.deliverables.get(deliverable_id)
                 if deliverable is None:
-                    errors.append(f"release {release.id} references missing deliverable {deliverable_id}")
+                    errors.append(
+                        f"release {release.id} references missing deliverable {deliverable_id}"
+                    )
                     continue
                 task = self.tasks.get(deliverable.task_id)
                 if task is not None and task.project_id != project.id:
-                    errors.append(f"release {release.id} includes deliverable {deliverable_id} outside project")
+                    errors.append(
+                        f"release {release.id} includes deliverable {deliverable_id} outside project"
+                    )
             waiver_deliverable_ids: set[str] = set()
             for waiver in release.verification_waivers:
                 if waiver.deliverable_id not in release.deliverable_ids:
@@ -3066,8 +3084,7 @@ class TeamState(TeamModel):
                     )
                 if waiver.deliverable_id in waiver_deliverable_ids:
                     errors.append(
-                        f"release {release.id} has duplicate waiver for "
-                        f"{waiver.deliverable_id}"
+                        f"release {release.id} has duplicate waiver for {waiver.deliverable_id}"
                     )
                 waiver_deliverable_ids.add(waiver.deliverable_id)
             for run_id in release.verification_run_ids:
@@ -3108,9 +3125,7 @@ class TeamState(TeamModel):
                         run.superseded_by_verification_run_id
                     )
                     if successor is None or successor.release_package_id != release.id:
-                        errors.append(
-                            f"release verification run {run.id} has an invalid successor"
-                        )
+                        errors.append(f"release verification run {run.id} has an invalid successor")
                     elif successor.supersedes_verification_run_id != run.id:
                         errors.append(
                             f"release verification run {run.id} has non-reciprocal lineage"
@@ -3128,20 +3143,11 @@ class TeamState(TeamModel):
                     )
                     continue
                 if review.supersedes_review_request_id is not None:
-                    previous_review = self.review_requests.get(
-                        review.supersedes_review_request_id
-                    )
-                    if (
-                        previous_review is None
-                        or previous_review.release_package_id != release.id
-                    ):
-                        errors.append(
-                            f"release review {review.id} supersedes an invalid review"
-                        )
+                    previous_review = self.review_requests.get(review.supersedes_review_request_id)
+                    if previous_review is None or previous_review.release_package_id != release.id:
+                        errors.append(f"release review {review.id} supersedes an invalid review")
                     elif previous_review.superseded_by_review_request_id != review.id:
-                        errors.append(
-                            f"release review {review.id} has non-reciprocal lineage"
-                        )
+                        errors.append(f"release review {review.id} has non-reciprocal lineage")
                 if review.superseded_by_review_request_id is not None:
                     successor_review = self.review_requests.get(
                         review.superseded_by_review_request_id
@@ -3152,9 +3158,7 @@ class TeamState(TeamModel):
                     ):
                         errors.append(f"release review {review.id} has an invalid successor")
                     elif successor_review.supersedes_review_request_id != review.id:
-                        errors.append(
-                            f"release review {review.id} has non-reciprocal lineage"
-                        )
+                        errors.append(f"release review {review.id} has non-reciprocal lineage")
                 if (
                     release.candidate_commit_sha is not None
                     and review.candidate_commit_sha != release.candidate_commit_sha
@@ -3168,10 +3172,7 @@ class TeamState(TeamModel):
                 self.release_verification_runs[run_id]
                 for run_id in release.verification_run_ids
                 if run_id in self.release_verification_runs
-                and self.release_verification_runs[
-                    run_id
-                ].superseded_by_verification_run_id
-                is None
+                and self.release_verification_runs[run_id].superseded_by_verification_run_id is None
             ]
             if len(current_runs) > 1:
                 errors.append(f"release {release.id} has multiple current verification runs")
@@ -3207,8 +3208,7 @@ class TeamState(TeamModel):
                     }
                     if (
                         accepted_shas
-                        and evidence.review_manifest.reviewed_commit_sha
-                        not in accepted_shas
+                        and evidence.review_manifest.reviewed_commit_sha not in accepted_shas
                     ):
                         errors.append(
                             f"release {release.id} deliverable {evidence.deliverable_id} "
@@ -3330,7 +3330,9 @@ def _ensure_unique(values: list[str], field_name: str) -> None:
             continue
         seen.add(value)
     if duplicates:
-        raise ValueError(f"{field_name} contains duplicate ids: {', '.join(sorted(set(duplicates)))}")
+        raise ValueError(
+            f"{field_name} contains duplicate ids: {', '.join(sorted(set(duplicates)))}"
+        )
 
 
 def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, Any]:
@@ -3379,8 +3381,7 @@ def project_assignments_for_project(
         [
             assignment
             for assignment in state.project_assignments.values()
-            if assignment.project_id == project_id
-            and (kind is None or assignment.kind == kind)
+            if assignment.project_id == project_id and (kind is None or assignment.kind == kind)
         ],
         key=lambda item: (item.kind.value, item.agent_id, item.id),
     )
@@ -3416,7 +3417,9 @@ def project_lead_agent_id(state: TeamState, project_id: str) -> str | None:
 
 
 def agent_project_ids(state: TeamState, agent_id: str) -> list[str]:
-    return sorted({assignment.project_id for assignment in project_assignments_for_agent(state, agent_id)})
+    return sorted(
+        {assignment.project_id for assignment in project_assignments_for_agent(state, agent_id)}
+    )
 
 
 def agent_lead_project_ids(state: TeamState, agent_id: str) -> list[str]:
@@ -3439,11 +3442,12 @@ def agent_project_assignment_payloads(state: TeamState, agent_id: str) -> list[d
         role = state.roles.get(assignment.role_id) if assignment.role_id is not None else None
         payload["role_name"] = role.name if role is not None else None
         payload["role_permissions"] = (
-            [permission.value for permission in role.permissions]
-            if role is not None
-            else []
+            [permission.value for permission in role.permissions] if role is not None else []
         )
-        if assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD and RolePermission.CREATE_ROOT_TASK.value not in payload["role_permissions"]:
+        if (
+            assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD
+            and RolePermission.CREATE_ROOT_TASK.value not in payload["role_permissions"]
+        ):
             payload["role_permissions"].append(RolePermission.CREATE_ROOT_TASK.value)
         rows.append(payload)
     return rows
@@ -3463,10 +3467,14 @@ def effective_role_permissions(
                 permissions.append(item)
 
     role = state.roles.get(agent.role_id) if agent.role_id is not None else None
-    if role is not None and (role.project_id is None or project_id is None or role.project_id == project_id):
+    if role is not None and (
+        role.project_id is None or project_id is None or role.project_id == project_id
+    ):
         add(role.permissions)
     for assignment in project_assignments_for_agent(state, agent.id, project_id=project_id):
-        assignment_role = state.roles.get(assignment.role_id) if assignment.role_id is not None else None
+        assignment_role = (
+            state.roles.get(assignment.role_id) if assignment.role_id is not None else None
+        )
         if assignment_role is not None:
             add(assignment_role.permissions)
         if assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD:
@@ -3521,7 +3529,11 @@ def _agent_activity_summary_payload(
     current_task = _activity_current_task(state, open_tasks)
     blocked_task = next((task for task in open_tasks if _activity_task_blocked(state, task)), None)
     waiting_task = next(
-        (task for task in open_tasks if not _activity_task_blocked(state, task) and _activity_task_waiting(state, task)),
+        (
+            task
+            for task in open_tasks
+            if not _activity_task_blocked(state, task) and _activity_task_waiting(state, task)
+        ),
         None,
     )
 
@@ -3573,7 +3585,9 @@ def _agent_activity_summary_payload(
             return _activity_summary(
                 headline=f"Working on {_activity_task_label(current_task)}",
                 working_on=_activity_task_label(current_task),
-                waiting_for=_activity_waiting_for_task(state, current_task) if _activity_task_waiting_or_blocked(state, current_task) else "Clear",
+                waiting_for=_activity_waiting_for_task(state, current_task)
+                if _activity_task_waiting_or_blocked(state, current_task)
+                else "Clear",
                 tone="working",
                 refs=refs,
                 generated_at=generated_at,
@@ -3655,7 +3669,9 @@ def _agent_activity_summary_payload(
 
     if attention_rows:
         row = attention_rows[0]
-        title = _activity_first_text(row.get("title"), row.get("detail"), row.get("kind"), "runtime attention")
+        title = _activity_first_text(
+            row.get("title"), row.get("detail"), row.get("kind"), "runtime attention"
+        )
         kind = _activity_text(row.get("kind"))
         return _activity_summary(
             headline=f"Needs attention: {title}",
@@ -3710,7 +3726,9 @@ def _activity_open_tasks(state: TeamState, agent_id: str) -> list[AgentTask]:
 
 
 def _activity_current_task(state: TeamState, tasks: Sequence[AgentTask]) -> AgentTask | None:
-    return next((task for task in tasks if not _activity_task_waiting_or_blocked(state, task)), None) or (tasks[0] if tasks else None)
+    return next(
+        (task for task in tasks if not _activity_task_waiting_or_blocked(state, task)), None
+    ) or (tasks[0] if tasks else None)
 
 
 def _activity_pending_inbox_items(state: TeamState, agent_id: str) -> list[AgentInboxItem]:
@@ -3793,7 +3811,9 @@ def _activity_session_issue(
     rows = [row for row in (runtime_row, session_health_row) if row is not None]
     if any(bool(row.get("session_is_expired") or row.get("is_expired")) for row in rows):
         return "Session expired"
-    if any(_activity_text(row.get("status") or row.get("session_status")) == "expired" for row in rows):
+    if any(
+        _activity_text(row.get("status") or row.get("session_status")) == "expired" for row in rows
+    ):
         return "Session expired"
     if any(row.get("session_present") is False for row in rows):
         return f"Session {agent.session_id} not found"
@@ -3942,16 +3962,14 @@ def team_state_payload(
         for agent_id, agent in state.agents.items()
     }
     payload["tasks"] = {
-        task_id: task_payload_with_derived(state, task)
-        for task_id, task in state.tasks.items()
+        task_id: task_payload_with_derived(state, task) for task_id, task in state.tasks.items()
     }
     payload["release_packages"] = {
         release_id: release_package_payload_with_derived(state, release)
         for release_id, release in state.release_packages.items()
     }
     payload["memories"] = {
-        memory_id: _compact_memory_payload(memory)
-        for memory_id, memory in state.memories.items()
+        memory_id: _compact_memory_payload(memory) for memory_id, memory in state.memories.items()
     }
     payload["runtime_operations"] = runtime_operations_payload(
         state,
@@ -4073,8 +4091,7 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
                 "git_release_recoveries for this package with the resolved commit_sha."
             )
             parts.append(
-                f"Resolve and commit on promotion target branch "
-                f"{failed_promotion.target_branch}."
+                f"Resolve and commit on promotion target branch {failed_promotion.target_branch}."
             )
         else:
             parts.append(
@@ -4178,10 +4195,7 @@ def _release_blocking_promotion(
         promotion
         for promotion in state.git_promotions.values()
         if promotion.state == "failed"
-        and (
-            promotion.id in release_promotion_ids
-            or promotion.release_package_id == release.id
-        )
+        and (promotion.id in release_promotion_ids or promotion.release_package_id == release.id)
     ]
     if not failed_promotions:
         return None
@@ -4213,7 +4227,9 @@ def _agent_payload_with_role(
     effective_permissions = effective_role_permissions(state, agent)
     payload["role_name"] = role.name if role is not None else None
     payload["role_permissions"] = [permission.value for permission in effective_permissions]
-    payload["effective_role_permissions"] = [permission.value for permission in effective_permissions]
+    payload["effective_role_permissions"] = [
+        permission.value for permission in effective_permissions
+    ]
     payload["project_assignments"] = agent_project_assignment_payloads(state, agent.id)
     payload["project_ids"] = agent_project_ids(state, agent.id)
     payload["lead_project_ids"] = agent_lead_project_ids(state, agent.id)
@@ -4304,8 +4320,7 @@ def _runtime_agent_payload(
     wake_leased_until = runtime.wake_leased_until if runtime is not None else None
     next_wake_at = runtime.next_wake_at if runtime is not None else None
     lease_active = runtime is not None and (
-        runtime.wake_leased_until is not None
-        and _ensure_utc(runtime.wake_leased_until) > now
+        runtime.wake_leased_until is not None and _ensure_utc(runtime.wake_leased_until) > now
     )
     effective_stand_downs = _effective_stand_down_payloads(state, agent.id)
     wake_due = _runtime_agent_wake_due(
@@ -4350,8 +4365,12 @@ def _runtime_agent_payload(
         "project_assignments": agent_project_assignment_payloads(state, agent.id),
         "role_id": agent.role_id,
         "role_name": role.name if role is not None else None,
-        "role_permissions": [permission.value for permission in effective_role_permissions(state, agent)],
-        "effective_role_permissions": [permission.value for permission in effective_role_permissions(state, agent)],
+        "role_permissions": [
+            permission.value for permission in effective_role_permissions(state, agent)
+        ],
+        "effective_role_permissions": [
+            permission.value for permission in effective_role_permissions(state, agent)
+        ],
         "session_id": agent.session_id,
         "session_present": (
             session_health.get("session_present") if session_health is not None else None
@@ -4362,9 +4381,7 @@ def _runtime_agent_payload(
         "session_expires_at": (
             session_health.get("expires_at") if session_health is not None else None
         ),
-        "session_status": (
-            session_health.get("status") if session_health is not None else None
-        ),
+        "session_status": (session_health.get("status") if session_health is not None else None),
         "status": agent.status.value,
         "stand_down_active": bool(effective_stand_downs),
         "effective_stand_downs": effective_stand_downs,
@@ -4403,9 +4420,7 @@ def _runtime_agent_payload(
         "context_rotation_requested_at": _json_datetime(
             runtime.context_rotation_requested_at if runtime is not None else None
         ),
-        "last_handoff_summary": (
-            runtime.last_handoff_summary if runtime is not None else None
-        ),
+        "last_handoff_summary": (runtime.last_handoff_summary if runtime is not None else None),
         "last_context_rotated_at": _json_datetime(
             runtime.last_context_rotated_at if runtime is not None else None
         ),
@@ -4443,9 +4458,7 @@ def _runtime_agent_wake_due(
     task_work_ready = any(
         state.dependency_status(task.id) == "satisfied" for task in active_tasks
     ) or any(state.subtask_counts(task.id)["open"] > 0 for task in active_tasks)
-    wake_eligible = (
-        rotation_pending or bool(wake_inbox) or bool(action_feedback) or task_work_ready
-    )
+    wake_eligible = rotation_pending or bool(wake_inbox) or bool(action_feedback) or task_work_ready
     if not wake_eligible:
         return False
     due_by_time = runtime.next_wake_at is None or _ensure_utc(runtime.next_wake_at) <= now
@@ -4587,9 +4600,7 @@ def team_session_health_payload(
             else None
         )
         execution_host = (
-            getattr(execution_record, "host", {})
-            if execution_record is not None
-            else {}
+            getattr(execution_record, "host", {}) if execution_record is not None else {}
         )
         if not isinstance(execution_host, Mapping):
             execution_host = {}
@@ -4607,9 +4618,7 @@ def team_session_health_payload(
         container_lifecycle_state = _optional_text(container_lifecycle.get("state"))
         expires_at_value = getattr(session, "expires_at", None) if session is not None else None
         expires_at = (
-            _ensure_utc(expires_at_value)
-            if isinstance(expires_at_value, datetime)
-            else None
+            _ensure_utc(expires_at_value) if isinstance(expires_at_value, datetime) else None
         )
         is_expired = expires_at is not None and expires_at <= effective_now
         status = (
@@ -4783,7 +4792,11 @@ def _pending_inbox_rows(state: TeamState) -> list[dict[str, Any]]:
             continue
         title = _inbox_title(item)
         detail = _inbox_detail(state, item)
-        kind = "pending_escalation" if item.item_type == TeamInboxItemType.ESCALATION else "pending_inbox_item"
+        kind = (
+            "pending_escalation"
+            if item.item_type == TeamInboxItemType.ESCALATION
+            else "pending_inbox_item"
+        )
         rows.append(
             _runtime_row(
                 id=item.id,
@@ -4880,7 +4893,9 @@ def _failed_promotion_rows(state: TeamState) -> list[dict[str, Any]]:
 
 def _blocked_release_rows(state: TeamState) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for release in sorted(state.release_packages.values(), key=lambda entry: (entry.created_at, entry.id)):
+    for release in sorted(
+        state.release_packages.values(), key=lambda entry: (entry.created_at, entry.id)
+    ):
         if release.state != TeamRecordState.BLOCKED and not release.error:
             continue
         next_action_hint = _release_next_action_hint(state, release)

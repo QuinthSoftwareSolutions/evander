@@ -14,7 +14,7 @@
       "file": "admin-sessions.png",
       "title": "Admin session detail",
       "surface": "admin",
-      "route": "#sessions?session_id=session-imani-telemetry",
+      "route": "#sessions?session_id=session-telemetry-implementation",
       "view": "session-detail"
     },
     {

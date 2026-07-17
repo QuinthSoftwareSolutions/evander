@@ -271,7 +271,9 @@ class TeamsIngestWorker:
                 base_config=self.config,
             )
         except Exception:
-            logger.exception("Failed to load trigger orchestrator config for Teams communication ingest")
+            logger.exception(
+                "Failed to load trigger orchestrator config for Teams communication ingest"
+            )
             return {}
 
         targets_by_directory: dict[str, set[str]] = {}

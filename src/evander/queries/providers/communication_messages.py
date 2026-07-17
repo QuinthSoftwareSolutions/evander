@@ -315,9 +315,13 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         if not channel_id:
             raise ValueError("query:communication:messages requires a Discord channel target")
 
-        candidates = DiscordInboxStore(runtime_dir / "discord-inbox-store.json").list_all_messages(
-            channel_ids=[channel_id],
-        ).messages
+        candidates = (
+            DiscordInboxStore(runtime_dir / "discord-inbox-store.json")
+            .list_all_messages(
+                channel_ids=[channel_id],
+            )
+            .messages
+        )
         paged_messages = self._page_discord_messages(
             messages=candidates,
             limit=limit,
@@ -360,9 +364,7 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
             return ordered
 
         if before_cursor is not None:
-            before_key = self._parse_discord_cursor(
-                before_cursor, field_name="before_cursor"
-            )
+            before_key = self._parse_discord_cursor(before_cursor, field_name="before_cursor")
             ordered = [
                 message
                 for message in ordered
@@ -423,9 +425,7 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         timestamp = created_at.isoformat().replace("+00:00", "Z")
         return f"{timestamp}|{quote(message.message_id, safe='')}"
 
-    def _parse_discord_cursor(
-        self, value: str, *, field_name: str
-    ) -> tuple[datetime, str | None]:
+    def _parse_discord_cursor(self, value: str, *, field_name: str) -> tuple[datetime, str | None]:
         text = self._normalize_required_string(value, field_name=field_name)
         timestamp_text, separator, encoded_message_id = text.partition("|")
         cursor_dt = self._parse_timestamp_cursor(timestamp_text, field_name=field_name)
@@ -721,9 +721,7 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         if value is None:
             return self.DEFAULT_LIMIT
         if isinstance(value, bool):
-            raise ValueError(
-                f"{self.NODE_TYPE} limit must be between 1 and {self.MAX_LIMIT}"
-            )
+            raise ValueError(f"{self.NODE_TYPE} limit must be between 1 and {self.MAX_LIMIT}")
         try:
             limit = int(str(value).strip())
         except (TypeError, ValueError) as exc:
@@ -731,9 +729,7 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
                 f"{self.NODE_TYPE} limit must be between 1 and {self.MAX_LIMIT}"
             ) from exc
         if limit < 1 or limit > self.MAX_LIMIT:
-            raise ValueError(
-                f"{self.NODE_TYPE} limit must be between 1 and {self.MAX_LIMIT}"
-            )
+            raise ValueError(f"{self.NODE_TYPE} limit must be between 1 and {self.MAX_LIMIT}")
         return limit
 
     def _coerce_optional_cursor(self, value: Any, *, field_name: str) -> str | None:

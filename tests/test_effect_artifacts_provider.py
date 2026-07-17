@@ -203,7 +203,7 @@ def test_artifact_publish_effect_accepts_source_paths(
     result = provider.execute()
 
     assert result["source_paths"] == ["reports/report.txt"]
-    assert "\"reports/report.txt\"" in commands[0]
+    assert '"reports/report.txt"' in commands[0]
     stored = PublishedArtifactStore(tmp_path).get("runs/session-1/report")
     assert stored.metadata.metadata["source_paths"] == ["reports/report.txt"]
 

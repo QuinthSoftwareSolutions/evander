@@ -1,61 +1,102 @@
 # 24. Team Git Promotion and Release Gates
 
-> **At a glance.** Team Git moves reviewed, pinned commits through internal agent, review, feature, and release branches before one lease-protected canonical push. Release packages freeze accepted deliverables, verification evidence, waivers, reviewed change manifests, commands, reviewers, scope, and candidate SHA. Failed candidate verification or rejected release review requires changed reviewed content and a new release; retryable infrastructure or blocked-process failures create immutable successor attempts.
+> **At a glance.** A safe release must publish the exact code that passed review, not whatever a branch happens to contain later. Team carries that exact version through its internal preparation and verification steps, then gives the final publication a narrow, time-bounded authority. If the code itself fails verification, it must change and be reviewed again; a retry is reserved for failures in the surrounding infrastructure or process.
+>
+> An operator can follow the release with four questions: What exact code was approved? What evidence and policy apply? Did each required gate pass? What exact version reached the canonical branch? The internal branch names, worktrees, leases, and record fields later in the chapter explain how Evander makes those answers reliable.
+
+## The release promise
+
+A branch name can move after review. A commit SHA cannot: it identifies one exact snapshot. Team therefore turns accepted deliverables into a fixed release candidate, checks that candidate, and publishes that same candidate only after its gates pass.
+
+In plain language, the path is:
+
+```text
+accepted work -> fixed candidate -> verification and release review
+              -> canonical publication of that same candidate
+```
+
+Internal review, feature, and release branches are preparation areas. The release package's canonical branch and published commit are the final publication evidence. If content fails, it must be corrected and reviewed as new content. If the candidate is sound but a test worker times out or a reviewer cannot access evidence, a linked retry may run against the unchanged candidate.
 
 ## The repository boundary
 
-A Team project stores only a core <code>managed_repo_id</code>, directory scope, optional base branch, and canonical release prefix. The central managed-Git registry owns the upstream identity and host bare repository. Team commands never accept a trusted host checkout path as repository authority.
+Team refers to a repository by its registered identity rather than by an arbitrary host folder. Every preparation branch stays inside the managed repository until the one canonical publication step.
 
-All Team branches before canonical publication live in that managed bare repository:
-
-| Stage | Deterministic shape | Purpose |
-|---|---|---|
-| Ephemeral agent | <code>agents/&lt;session&gt;/&lt;assignment&gt;</code> | Disposable worker output |
-| Review | <code>team/&lt;team&gt;/reviews/&lt;source-id&gt;</code> | Captured reviewed source |
-| Feature | <code>team/&lt;team&gt;/features/&lt;task&gt;-&lt;agent&gt;</code> | Consolidated accepted task work |
-| Internal release | <code>team/&lt;team&gt;/releases/&lt;release&gt;</code> | Consolidated candidate |
-| Canonical | default <code>releases/&lt;project&gt;/&lt;release&gt;</code> | The only Team branch pushed upstream |
-
-Branch validation rejects whitespace, control characters, colon, a leading slash, <code>..</code>, and a leading <code>refs/</code>. Operators may configure the canonical prefix, but it remains a validated plain branch name.
+> <span class="sidebar-kicker">Technical reference</span> **Repository identity and deterministic branches**
+>
+> A Team project stores only a core <code>managed_repo_id</code>, directory scope, optional base branch, and canonical release prefix. The central managed-Git registry owns the upstream identity and host bare repository. Team commands never accept a trusted host checkout path as repository authority.
+>
+> All Team branches before canonical publication live in that managed bare repository:
+>
+> | Stage | Deterministic shape | Purpose |
+> |---|---|---|
+> | Ephemeral agent | <code>agents/&lt;session&gt;/&lt;assignment&gt;</code> | Disposable worker output |
+> | Review | <code>team/&lt;team&gt;/reviews/&lt;source-id&gt;</code> | Captured reviewed source |
+> | Feature | <code>team/&lt;team&gt;/features/&lt;task&gt;-&lt;agent&gt;</code> | Consolidated accepted task work |
+> | Internal release | <code>team/&lt;team&gt;/releases/&lt;release&gt;</code> | Consolidated candidate |
+> | Canonical | default <code>releases/&lt;project&gt;/&lt;release&gt;</code> | The only Team branch pushed upstream |
+>
+> Branch validation rejects whitespace, control characters, colon, a leading slash, <code>..</code>, and a leading <code>refs/</code>. Operators may configure the canonical prefix, but it remains a validated plain branch name.
 
 ## Intent, effect, and evidence
 
-Every promotion is a durable <code>GitPromotionRecord</code>. It records promotion kind, source refs and pinned SHAs, expected commit, target branch, state, output, and error.
+Requesting a promotion and completing it are two different events. The first records what should happen; a background workflow performs the Git operation; a result record then says what actually happened. A successful request therefore does not by itself prove that Git changed.
 
-The flow has three steps:
-
-1. An authorized MCP/Admin command records promotion intent and durable outbox event.
-2. The workflow pack invokes the relevant managed-Git effect.
-3. <code>effect:team:record-git-promotion</code> attaches the actual success/failure and updates related Team evidence.
-
-The command's success means intent was recorded. The promotion record and effect output say whether Git succeeded.
-
-Managed-Git effects use operation-scoped worktrees and temporary refs. Target updates are compare-and-swap operations. Conflicts fail; Evander never auto-resolves them. Temporary resources are removed on success and failure.
+> <span class="sidebar-kicker">Deeper detail</span> **Intent, effect, and promotion record**
+>
+> Every promotion is a durable <code>GitPromotionRecord</code>. It records promotion kind, source refs and pinned SHAs, expected commit, target branch, state, output, and error.
+>
+> The flow has three steps:
+>
+> 1. An authorized MCP/Admin command records promotion intent and durable outbox event.
+> 2. The workflow pack invokes the relevant managed-Git effect.
+> 3. <code>effect:team:record-git-promotion</code> attaches the actual success/failure and updates related Team evidence.
+>
+> The command's success means intent was recorded. The promotion record and effect output say whether Git succeeded.
+>
+> Managed-Git effects use operation-scoped worktrees and temporary refs. Target updates are compare-and-swap operations. Conflicts fail; Evander never auto-resolves them. Temporary resources are removed on success and failure.
 
 ## The promotion ladder
 
+Each rung freezes evidence for the next one. The names below are useful when an operator follows a release record; the exact command and manifest behavior matters most to release administrators.
+
 ### Agent or ephemeral output → review
 
-<code>team_publish_review_branch</code> captures a persistent deliverable's validated agent branch/commit or an accepted ephemeral assignment branch into a deterministic review ref. The actor must be the producer/parent, an authorized superior, project lead, or manager as applicable.
+The first step captures the exact output that is ready to be reviewed. It does not publish that output upstream.
+
+> <span class="sidebar-kicker">Technical detail</span> **Capturing the review ref**
+>
+> <code>team_publish_review_branch</code> captures a persistent deliverable's validated agent branch/commit or an accepted ephemeral assignment branch into a deterministic review ref. The actor must be the producer/parent, an authorized superior, project lead, or manager as applicable.
 
 ### Review → feature
 
-<code>team_update_feature_branch</code> consolidates accepted current deliverables for one task. Each source must match the commit actually accepted by review. The resulting reviewed manifest freezes:
+Accepted results for one task are combined into a task-level feature branch. Only the exact commits accepted by review may enter it.
 
-- base and result tree;
-- included commits;
-- changed paths;
-- source deliverable/review evidence.
+> <span class="sidebar-kicker">Technical detail</span> **Consolidating accepted review evidence**
+>
+> <code>team_update_feature_branch</code> consolidates accepted current deliverables for one task. Each source must match the commit actually accepted by review. The resulting reviewed manifest freezes:
+>
+> - base and result tree;
+> - included commits;
+> - changed paths;
+> - source deliverable/review evidence.
 
 ### Feature → internal release
 
-<code>team_request_release</code> selects accepted deliverables from one project. If needed, prerequisite feature promotions are created first. Release consolidation merges pinned feature commits into the internal release branch and freezes the candidate SHA and tree.
+Accepted task results from one project are combined into the fixed release candidate.
+
+> <span class="sidebar-kicker">Technical detail</span> **Freezing the internal release candidate**
+>
+> <code>team_request_release</code> selects accepted deliverables from one project. If needed, prerequisite feature promotions are created first. Release consolidation merges pinned feature commits into the internal release branch and freezes the candidate SHA and tree.
 
 ### Internal release → canonical
 
-Only after every gate passes does the workflow create the canonical-push promotion. Core <code>effect:git:push-branch</code> performs expected-commit and destination-lease preflight, then pushes the approved release commit to the canonical branch. <code>effect:team:mark-release-published</code> records canonical branch, published commit, timestamp, and accepted package state.
+After every required check and review passes, that fixed candidate becomes the one canonical publication.
 
 The internal release branch is not the published branch operators should test or advertise. The release package's <code>canonical_branch</code> and <code>published_commit_sha</code> are the publication truth.
+
+> <span class="sidebar-kicker">Technical detail</span> **Publishing the exact candidate**
+>
+> Only after every gate passes does the workflow create the canonical-push promotion. Core <code>effect:git:push-branch</code> performs expected-commit and destination-lease preflight, then pushes the approved release commit to the canonical branch. <code>effect:team:mark-release-published</code> records canonical branch, published commit, timestamp, and accepted package state.
 
 ![Pinned Team Git promotion and release-gate flow](../../assets/evander-user-manual/diagrams/16-team-release.svg)
 
@@ -63,26 +104,30 @@ The internal release branch is not the published branch operators should test or
 
 ## Creating a release package
 
-The caller must be:
-
-- the project lead;
-- the top-level Team manager; or
-- an agent whose same-project role grants <code>request_release</code>.
+The release package is the sealed description of one candidate: what work it contains, what reviewers accepted, what changed, which checks must run, and who requested it. Later policy changes do not silently rewrite that package.
 
 All selected deliverables must be accepted and belong to one project. Artifact-only releases are allowed without Git configuration. A Git release requires project Git configuration and an explicit release policy unless <code>allow_ungated=true</code> was deliberately configured.
 
-The release package freezes a typed manifest containing:
-
-- deliverable IDs, verification status, evidence refs, and waiver records;
-- accepted immutable deliverable reviews;
-- reviewed change manifests;
-- candidate commit and tree;
-- scope-validation result;
-- ordered verification commands;
-- release-review requirements;
-- actor and timestamp evidence.
-
 This prevents policy drift after request time from silently redefining what was approved.
+
+> <span class="sidebar-kicker">Technical reference</span> **Request authority and frozen manifest**
+>
+> The caller must be:
+>
+> - the project lead;
+> - the top-level Team manager; or
+> - an agent whose same-project role grants <code>request_release</code>.
+>
+> The release package freezes a typed manifest containing:
+>
+> - deliverable IDs, verification status, evidence refs, and waiver records;
+> - accepted immutable deliverable reviews;
+> - reviewed change manifests;
+> - candidate commit and tree;
+> - scope-validation result;
+> - ordered verification commands;
+> - release-review requirements;
+> - actor and timestamp evidence.
 
 ## Verification evidence and waivers
 
@@ -98,19 +143,25 @@ A role with <code>request_release</code> alone cannot grant the waiver. Each wai
 
 A waiver acknowledges incomplete verification evidence; it does not waive reviewed-scope mismatch.
 
+In everyday terms, “we could not run this check” may be acknowledged by an authorized person with a reason; “this check failed” may not. A waiver never permits extra, unreviewed content.
+
 ## Release policy
 
-<code>Project.release_policy</code> selects:
+The project policy says how the fixed candidate will be checked and who must review it. Unless the project was deliberately configured for ungated release, at least one command or review requirement is mandatory.
 
-- <code>container_worker_vm</code> verification backend;
-- optional container image;
-- ordered commands, each with name, working directory, argv, and timeout;
-- required reviewer/profile pairs;
-- or explicit <code>allow_ungated=true</code>.
-
-Without <code>allow_ungated</code>, at least one command or review requirement is required.
-
-The verifier creates a disposable worker session, clones by <code>managed_repo_id</code>, checks out the exact candidate SHA, runs commands in order, records bounded results, and destroys the session. Release reviewers decide that same candidate SHA under their profiles.
+> <span class="sidebar-kicker">Technical sidebar</span> **Release-policy fields and verifier behavior**
+>
+> <code>Project.release_policy</code> selects:
+>
+> - <code>container_worker_vm</code> verification backend;
+> - optional container image;
+> - ordered commands, each with name, working directory, argv, and timeout;
+> - required reviewer/profile pairs;
+> - or explicit <code>allow_ungated=true</code>.
+>
+> Without <code>allow_ungated</code>, at least one command or review requirement is required.
+>
+> The verifier creates a disposable worker session, clones by <code>managed_repo_id</code>, checks out the exact candidate SHA, runs commands in order, records bounded results, and destroys the session. Release reviewers decide that same candidate SHA under their profiles.
 
 ## Scope validation
 
@@ -123,6 +174,8 @@ For Northstar, if the reviewed telemetry change covers <code>src/telemetry/retry
 ## Gate outcomes and retries
 
 Candidate identity never changes within one release package.
+
+The practical distinction is **content failure versus process failure**. Content failure means the candidate must change. Process failure may justify another attempt against the same candidate. Git-promotion recovery is a third, separate path.
 
 ### Terminal candidate failures
 
@@ -171,7 +224,15 @@ If integration verification times out, Riley may request an audited retry agains
 | Release review blocked | Retryable only with a concrete process/evidence blocker. |
 | Release package says accepted but upstream seems different | Compare canonical branch/published SHA, promotion record, core push effect, and remote ref. Do not inspect only the internal release branch. |
 
-## Practical runbook
+## Troubleshooting and handoff
+
+Start with the release package in Team Delivery. Capture its ID, state, candidate SHA and tree, scope-validation result, verification run, release reviews, prerequisite promotion IDs, and any canonical branch or published SHA. State whether the failure is a candidate defect, a process/evidence problem, or a Git promotion failure; the correct recovery differs for each.
+
+If the package says accepted but the upstream result looks wrong, do not test or advertise the internal release branch. Hand the package's <code>canonical_branch</code> and <code>published_commit_sha</code>, the canonical-push promotion, and the visible remote mismatch to a release administrator.
+
+Never turn a failed test or rejected review into a retry merely to preserve the same package. New content requires new reviewed deliverables and a new release.
+
+## Release runbook
 
 Before release:
 

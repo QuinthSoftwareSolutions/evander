@@ -32,7 +32,7 @@ def test_setup_bootstrap_script_installs_python_prereqs_and_repo_venv() -> None:
 
     assert "apt-get update" in script
     assert "apt-get install -y python3 python3-venv python3-pip" in script
-    assert 'elif command -v sudo >/dev/null 2>&1; then' in script
+    assert "elif command -v sudo >/dev/null 2>&1; then" in script
     assert "elif command -v pkexec >/dev/null 2>&1; then" in script
     assert '"${PYTHON_BIN}" -m venv "${VENV_DIR}"' in script
     assert '"${VENV_DIR}/bin/python" -m pip install -e "${install_spec}"' in script

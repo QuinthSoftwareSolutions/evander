@@ -6,6 +6,8 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+import { fulfillAdminShellBackgroundApiRequest } from "./adminShellHelpers.mjs";
+
 function jsonResponse(payload, status = 200) {
   return {
     status,
@@ -54,6 +56,7 @@ function createWorkflowDocument(toolArgumentPolicies) {
           id: "effect-1",
           display_name: "Dispatch agent",
           type: "effect:agent:create",
+          execution_backend: "libvirt_vm",
           prompt: "Handle ticket",
           tool_argument_policies: toolArgumentPolicies,
         },
@@ -105,6 +108,19 @@ function createWorkflowCatalog() {
         type: "effect:agent:create",
         label: "Create agent",
         fields: [
+          {
+            key: "execution_backend",
+            label: "Execution backend",
+            kind: "enum",
+            required: true,
+            bindable: false,
+            read_only: false,
+            multiline: false,
+            description: null,
+            placeholder: null,
+            options: [{ value: "libvirt_vm", label: "libvirt_vm" }],
+            item_fields: [],
+          },
           {
             key: "tool_argument_policies",
             label: "Tool argument policies",
@@ -260,6 +276,10 @@ test("workflow editor structured tool argument policies support structured editi
     const url = new URL(route.request().url());
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
+
+    if (await fulfillAdminShellBackgroundApiRequest(route, pathname)) {
+      return;
+    }
 
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse(sessionResponse));

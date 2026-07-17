@@ -275,7 +275,9 @@ class CommunicationMessagesQueryDefinition(QueryDefinition):
             and _is_static_config_value(self.cursor)
             and _is_static_config_value(self.before_cursor)
         ):
-            raise ValueError("query:communication:messages cursor and before_cursor are mutually exclusive")
+            raise ValueError(
+                "query:communication:messages cursor and before_cursor are mutually exclusive"
+            )
         return self
 
 

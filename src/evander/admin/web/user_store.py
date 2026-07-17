@@ -367,9 +367,7 @@ class AdminWebUserStore:
             if existing is None:
                 return None
             next_role = role or existing.role
-            self._ensure_not_last_admin_demotion(
-                connection, existing=existing, next_role=next_role
-            )
+            self._ensure_not_last_admin_demotion(connection, existing=existing, next_role=next_role)
             record = AdminWebUserRecord(
                 login=existing.login,
                 role=next_role,
@@ -516,7 +514,9 @@ class AdminWebUserStore:
         with self._connect() as connection:
             return self._get_group(connection, normalized)
 
-    def list_group_permissions(self, group_id: object | None = None) -> list[AdminWebGroupPermissionRecord]:
+    def list_group_permissions(
+        self, group_id: object | None = None
+    ) -> list[AdminWebGroupPermissionRecord]:
         self._ensure_ready()
         with self._connect() as connection:
             if group_id is None:
@@ -620,9 +620,7 @@ class AdminWebUserStore:
             directory_path=directory_path,
         )
 
-    def can(
-        self, login: object, permission: object, directory_path: object | None = None
-    ) -> bool:
+    def can(self, login: object, permission: object, directory_path: object | None = None) -> bool:
         normalized_login = normalize_admin_web_login(login)
         if normalized_login is None:
             return False
@@ -739,7 +737,12 @@ class AdminWebUserStore:
         self,
         *,
         login: object,
-        assignments: Iterable[AdminWebUserGroupAssignmentRecord | Mapping[str, Any] | tuple[object, object] | tuple[object, object, object]],
+        assignments: Iterable[
+            AdminWebUserGroupAssignmentRecord
+            | Mapping[str, Any]
+            | tuple[object, object]
+            | tuple[object, object, object]
+        ],
     ) -> list[AdminWebUserGroupAssignmentRecord]:
         normalized_login = normalize_admin_web_login(login)
         if normalized_login is None:
@@ -858,9 +861,7 @@ class AdminWebUserStore:
         if normalized_display_name is None:
             raise ValueError("display_name is required")
         normalized_description = (
-            None
-            if description is _UNSET
-            else _normalize_display_name(description)
+            None if description is _UNSET else _normalize_display_name(description)
         )
         self._ensure_ready()
         with self._connect() as connection:
@@ -876,7 +877,9 @@ class AdminWebUserStore:
                     if description is _UNSET and existing is not None
                     else normalized_description
                 ),
-                is_required=existing.is_required if is_required is None and existing else bool(is_required),
+                is_required=existing.is_required
+                if is_required is None and existing
+                else bool(is_required),
                 created_at=existing.created_at if existing is not None else now,
                 updated_at=now,
             )
@@ -1326,9 +1329,7 @@ class AdminWebUserStore:
             }
         )
 
-    def _row_to_user_group_assignment(
-        self, row: sqlite3.Row
-    ) -> AdminWebUserGroupAssignmentRecord:
+    def _row_to_user_group_assignment(self, row: sqlite3.Row) -> AdminWebUserGroupAssignmentRecord:
         return AdminWebUserGroupAssignmentRecord.model_validate(
             {
                 "login": row["login"],
@@ -1543,9 +1544,7 @@ class AdminWebUserStore:
         row = connection.execute("SELECT COUNT(*) AS count FROM admin_web_users").fetchone()
         return int(row["count"] if row is not None else 0)
 
-    def _get_user(
-        self, connection: sqlite3.Connection, login: str
-    ) -> AdminWebUserRecord | None:
+    def _get_user(self, connection: sqlite3.Connection, login: str) -> AdminWebUserRecord | None:
         row = connection.execute(
             """
             SELECT login, role, display_name, created_at, updated_at, last_login_at

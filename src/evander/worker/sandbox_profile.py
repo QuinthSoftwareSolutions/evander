@@ -107,8 +107,7 @@ def parse_worker_read_only_mount(spec: str) -> WorkerReadOnlyMount:
         host_path, container_path = parts[0], parts[1]
     else:
         raise ValueError(
-            "read-only mounts must use /host/path:/container/path or "
-            "/host/path:/container/path:ro"
+            "read-only mounts must use /host/path:/container/path or /host/path:/container/path:ro"
         )
     mount = WorkerReadOnlyMount(host_path=host_path, container_path=container_path)
     validate_worker_read_only_mount(mount)

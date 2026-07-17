@@ -207,9 +207,7 @@ class GateAggregateMetricDefinition(BaseModel):
     def validate_path(cls, value: str) -> str:
         path = str(value or "").strip()
         if not path or any(not segment for segment in path.split(".")):
-            raise ValueError(
-                "gate:aggregate metric path must be a non-empty dotted object path"
-            )
+            raise ValueError("gate:aggregate metric path must be a non-empty dotted object path")
         return path
 
 
@@ -534,9 +532,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:chat-assistant:ensure-session": (
             provider_models.ChatAssistantEnsureSessionEffectDefinition
         ),
-        "effect:agent:code-consultation": (
-            provider_models.CodeConsultationEffectDefinition
-        ),
+        "effect:agent:code-consultation": (provider_models.CodeConsultationEffectDefinition),
         "effect:agent:exec": provider_models.AgentExecEffectDefinition,
         "effect:semantic:ensure-collection": (
             provider_models.SemanticEnsureCollectionEffectDefinition

@@ -242,9 +242,7 @@ class TeamGitReleaseService:
                     release.published_commit_sha = normalized_commit
                 release.published_at = now
                 release.error = None
-                deliverable_set = _normalized_release_deliverable_set(
-                    release.deliverable_ids
-                )
+                deliverable_set = _normalized_release_deliverable_set(release.deliverable_ids)
                 if deliverable_set:
                     for candidate in state_model.release_packages.values():
                         if (
@@ -253,9 +251,7 @@ class TeamGitReleaseService:
                             or candidate.state != TeamRecordState.BLOCKED
                             or (candidate.created_at, candidate.id)
                             >= (release.created_at, release.id)
-                            or _normalized_release_deliverable_set(
-                                candidate.deliverable_ids
-                            )
+                            or _normalized_release_deliverable_set(candidate.deliverable_ids)
                             != deliverable_set
                         ):
                             continue

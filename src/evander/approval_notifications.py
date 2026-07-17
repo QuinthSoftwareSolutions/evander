@@ -167,8 +167,7 @@ class ApprovalNotificationDispatcher:
     def _render_message(self, request: ApprovalRequest) -> str:
         review_command = self._review_command(request.request_id)
         decision_command = (
-            f'evander-cli approve {request.request_id} <approver> '
-            '--approve|--deny --reason "..."'
+            f'evander-cli approve {request.request_id} <approver> --approve|--deny --reason "..."'
         )
         review_url = self._approval_admin_web_url(request.request_id)
         approve_url = self._approval_admin_web_url(request.request_id, decision="approve")
@@ -211,9 +210,9 @@ class ApprovalNotificationDispatcher:
         env_value = os.environ.get(_ADMIN_WEB_PUBLIC_BASE_URL_ENV, "").strip().rstrip("/")
         if env_value:
             return env_value
-        file_value = _load_optional_env_file(
-            self.project_dir / _ADMIN_WEB_ENV_RELATIVE_PATH
-        ).get(_ADMIN_WEB_PUBLIC_BASE_URL_ENV, "")
+        file_value = _load_optional_env_file(self.project_dir / _ADMIN_WEB_ENV_RELATIVE_PATH).get(
+            _ADMIN_WEB_PUBLIC_BASE_URL_ENV, ""
+        )
         return file_value.strip().rstrip("/") or _DEFAULT_ADMIN_WEB_BASE_URL
 
     @staticmethod
@@ -237,9 +236,7 @@ class ApprovalNotificationDispatcher:
             "thread_id",
         )
         parts = [
-            f"{key}={result[key]}"
-            for key in summary_keys
-            if result.get(key) not in (None, "")
+            f"{key}={result[key]}" for key in summary_keys if result.get(key) not in (None, "")
         ]
         if not parts:
             return None

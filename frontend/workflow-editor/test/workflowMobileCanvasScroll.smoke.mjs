@@ -6,6 +6,8 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+import { fulfillAdminShellBackgroundApiRequest } from "./adminShellHelpers.mjs";
+
 function jsonResponse(payload, status = 200) {
   return {
     status,
@@ -245,6 +247,10 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
 
+    if (await fulfillAdminShellBackgroundApiRequest(route, pathname)) {
+      return;
+    }
+
     if (pathname === "/api/admin/branding") {
       await route.fulfill(jsonResponse({}));
       return;
@@ -390,7 +396,8 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
 
   const canvasPane = page.locator(".canvas-shell .react-flow__pane");
   await assert.doesNotReject(() => canvasPane.waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.locator(".compact-workflow-toolbar").waitFor({ state: "visible" }));
+  const workflowTools = page.getByLabel("Workflow tools");
+  await assert.doesNotReject(() => workflowTools.waitFor({ state: "visible" }));
   assert.equal(
     await page.locator(".sidebar").evaluate((element) => getComputedStyle(element).display),
     "none",
@@ -434,7 +441,8 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     "one-finger touch should not change the ReactFlow viewport transform",
   );
 
-  await page.getByRole("button", { name: "Pan" }).click();
+  await workflowTools.getByRole("button", { name: "Pan", exact: true }).click();
+  await page.locator(".workflow-editor-shell.compact-mode-pan").waitFor({ state: "visible" });
   await positionCanvasForTouch(page);
   const panModeBox = await page.locator(".canvas-shell").boundingBox();
   assert.ok(panModeBox, "expected canvas shell bounds for pan mode");
@@ -472,7 +480,8 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     "one-finger touch should pan the graph when Pan mode is active",
   );
 
-  await page.getByRole("button", { name: "Select" }).click();
+  await workflowTools.getByRole("button", { name: "Select", exact: true }).click();
+  await page.locator(".workflow-editor-shell.compact-mode-select").waitFor({ state: "visible" });
   await positionCanvasForTouch(page);
   const twoFingerBox = await page.locator(".canvas-shell").boundingBox();
   assert.ok(twoFingerBox, "expected canvas shell bounds for two-finger gesture");
@@ -579,15 +588,15 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     "single-touch drag on an unlocked node should move that node",
   );
 
-  await page.getByRole("button", { name: "Create" }).click();
+  await workflowTools.getByRole("button", { name: "Create", exact: true }).click();
   const createSheet = page.locator(".compact-workflow-sheet.panel-create");
   await assert.doesNotReject(() => createSheet.waitFor({ state: "visible" }));
   await createSheet.getByLabel("Search nodes").fill("notify");
   await createSheet.getByRole("button", { name: "Notify" }).click();
-  const createdNode = page.locator(".react-flow__node", { hasText: "effect-notify-1" });
+  const createdNode = page.locator('.react-flow__node[data-id="effect-notify"]');
   await assert.doesNotReject(() => createdNode.waitFor({ state: "visible" }));
 
-  await page.getByRole("button", { name: "Inspector" }).click();
+  await workflowTools.getByRole("button", { name: "Inspector", exact: true }).click();
   const inspectorSheet = page.locator(".compact-workflow-sheet.panel-inspector");
   await assert.doesNotReject(() => inspectorSheet.waitFor({ state: "visible" }));
   await inspectorSheet.getByLabel("Display name").fill("Mobile notify");
@@ -595,13 +604,13 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
   await inspectorSheet.getByRole("button", { name: "Close" }).click();
   await assert.doesNotReject(() => inspectorSheet.waitFor({ state: "hidden" }));
 
-  await page.getByRole("button", { name: "Connect" }).click();
+  await workflowTools.getByRole("button", { name: "Connect", exact: true }).click();
   await page.locator(".react-flow__node", { hasText: "Incoming command" }).click();
   await assert.doesNotReject(() => page.locator(".pending-connection-layer line").waitFor({ state: "attached" }));
   await page.locator(".react-flow__node", { hasText: "Mobile notify" }).click();
   await page.waitForFunction(() => !document.querySelector(".pending-connection-layer line"));
 
-  await page.getByRole("button", { name: "Save" }).click();
+  await workflowTools.getByRole("button", { name: "Save", exact: true }).click();
   const saveSheet = page.locator(".compact-workflow-sheet.panel-save");
   await assert.doesNotReject(() => saveSheet.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => saveSheet.getByText("Unsaved workflow changes").waitFor({ state: "visible" }));
@@ -627,11 +636,11 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
   );
   assert.equal(typeof savedWorkflowPayload.layout.nodes["trigger-1"].x, "number");
   assert.equal(typeof savedWorkflowPayload.layout.nodes["trigger-1"].y, "number");
-  assert.ok(savedWorkflowPayload.layout.nodes["effect-notify-1"], "expected the created node layout to be saved");
+  assert.ok(savedWorkflowPayload.layout.nodes["effect-notify"], "expected the created node layout to be saved");
   assert.ok(
     savedWorkflowPayload.config.effects.some(
       (effect) =>
-        effect.id === "effect-notify-1" &&
+        effect.id === "effect-notify" &&
         effect.type === "effect:notify" &&
         effect.display_name === "Mobile notify",
     ),
@@ -641,7 +650,7 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     savedWorkflowPayload.config.edges.some(
       (edge) =>
         edge.source_id === "trigger-1" &&
-        edge.target_id === "effect-notify-1" &&
+        edge.target_id === "effect-notify" &&
         edge.source_port === "completed",
     ),
     "expected compact Connect mode to save an edge from the trigger to the created node",

@@ -54,9 +54,7 @@ class WebhookTriggerProvider(TriggerProviderBase):
                     trigger_id=trigger.id,
                     trigger_type=trigger.type,
                     occurred_at=event.created_at.astimezone(UTC),
-                    trace_id=(
-                        event.source.workflow_trace_id if event.source is not None else None
-                    ),
+                    trace_id=(event.source.workflow_trace_id if event.source is not None else None),
                     payload=dict(event.payload),
                 )
             )
@@ -84,13 +82,13 @@ class WebhookTriggerProvider(TriggerProviderBase):
         if self.runtime_context is None:
             raise RuntimeError("WebhookTriggerProvider has no runtime context")
         metadata_path = self.runtime_context.metadata.get("internal_event_store_path")
-        path = Path(metadata_path) if metadata_path else internal_event_store_path(
-            self.runtime_context.resolved_config.runtime_dir
+        path = (
+            Path(metadata_path)
+            if metadata_path
+            else internal_event_store_path(self.runtime_context.resolved_config.runtime_dir)
         )
         journal_path = self.runtime_context.metadata.get("workflow_event_journal_path")
-        return InternalEventBus(
-            path, journal_path=Path(journal_path) if journal_path else None
-        )
+        return InternalEventBus(path, journal_path=Path(journal_path) if journal_path else None)
 
     def _cursor_store(self) -> TriggerCursorStore:
         if self.runtime_context is None:
@@ -124,7 +122,9 @@ def _internal_event_id_from_trigger_event_id(event_id: str, trigger_id: str) -> 
     return internal_event_id or None
 
 
-def _acknowledge_internal_event_id(state: dict[str, object], internal_event_id: str) -> dict[str, object]:
+def _acknowledge_internal_event_id(
+    state: dict[str, object], internal_event_id: str
+) -> dict[str, object]:
     state["emitted_internal_event_ids"] = merge_cursor_ids(
         state.get("emitted_internal_event_ids"),
         [internal_event_id],

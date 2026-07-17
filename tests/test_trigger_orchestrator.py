@@ -726,9 +726,7 @@ def test_trigger_orchestrator_publishes_multiple_events_from_one_provider_poll(
     assert result.events_discovered == 2
     assert result.events_published == 2
 
-    queue_payload = json.loads(
-        worker_config.event_queue_store_path.read_text(encoding="utf-8")
-    )
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert list(queue_payload.keys()) == ["event-1", "event-2"]
     cursor_payload = json.loads(
         worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
@@ -1028,9 +1026,11 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
         if worker_config.provider_modules and len(build_calls) == 2:
             raise RuntimeError("temporary provider_loader reload failure")
         provider_factory = SimpleNamespace(
-            build=lambda trigger, **_: _StaticProvider([event])
-            if worker_config.provider_modules and trigger.id == "reload-trigger"
-            else _StaticProvider([])
+            build=lambda trigger, **_: (
+                _StaticProvider([event])
+                if worker_config.provider_modules and trigger.id == "reload-trigger"
+                else _StaticProvider([])
+            )
         )
         return SimpleNamespace(
             provider_config_resolver=object(),
@@ -1074,9 +1074,7 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
     assert "provider_loader reload failed" in caplog.text
     assert "restart or fix configuration before retrying" in caplog.text
 
-    queue_payload = json.loads(
-        updated_config.event_queue_store_path.read_text(encoding="utf-8")
-    )
+    queue_payload = json.loads(updated_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert list(queue_payload.keys()) == ["reload-event-1"]
 
 
@@ -1100,9 +1098,7 @@ def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
             ],
         }
     )
-    scheduled_store = ScheduledInternalEventStore(
-        worker_config.scheduled_internal_event_store_path
-    )
+    scheduled_store = ScheduledInternalEventStore(worker_config.scheduled_internal_event_store_path)
     scheduled_event, created = scheduled_store.schedule_event(
         event_type="issue.plan_committed",
         payload={"issue_id": "ISSUE-1", "plan_version": 3},
@@ -1118,9 +1114,7 @@ def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
             "node_type": "effect:event:schedule",
         },
     )
-    worker = TriggerOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
 
     result = worker.run_once()
 
@@ -1175,9 +1169,7 @@ def test_future_scheduled_internal_event_stays_pending_until_due(
             "triggers": [],
         }
     )
-    scheduled_store = ScheduledInternalEventStore(
-        worker_config.scheduled_internal_event_store_path
-    )
+    scheduled_store = ScheduledInternalEventStore(worker_config.scheduled_internal_event_store_path)
     scheduled_event, created = scheduled_store.schedule_event(
         event_type="issue.plan_committed",
         payload={"issue_id": "ISSUE-2"},
@@ -1192,9 +1184,7 @@ def test_future_scheduled_internal_event_stays_pending_until_due(
             "node_type": "effect:event:schedule",
         },
     )
-    worker = TriggerOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
 
     result = worker.run_once()
 
@@ -1224,9 +1214,7 @@ def test_due_scheduled_internal_event_is_published_once_across_cycles(
             "triggers": [],
         }
     )
-    scheduled_store = ScheduledInternalEventStore(
-        worker_config.scheduled_internal_event_store_path
-    )
+    scheduled_store = ScheduledInternalEventStore(worker_config.scheduled_internal_event_store_path)
     scheduled_event, created = scheduled_store.schedule_event(
         event_type="issue.plan_committed",
         payload={"issue_id": "ISSUE-3"},
@@ -1241,9 +1229,7 @@ def test_due_scheduled_internal_event_is_published_once_across_cycles(
             "node_type": "effect:event:schedule",
         },
     )
-    worker = TriggerOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
 
     first_cycle = worker.run_once()
     second_cycle = worker.run_once()
@@ -1428,9 +1414,7 @@ def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Pa
         correlation_key="issue:ISSUE-1",
         idempotency_key="test-event-1",
     )
-    worker = TriggerOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
 
     result = worker.run_once()
 
@@ -1476,9 +1460,7 @@ def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: P
         correlation_key="issue:other",
         idempotency_key="wrong-correlation",
     )
-    worker = TriggerOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
 
     result = worker.run_once()
 
@@ -1521,9 +1503,7 @@ def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Pat
         payload={"answer": "yes"},
         idempotency_key="answer-1",
     )
-    worker = TriggerOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None
-    )  # type: ignore[arg-type]
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
 
     result = worker.run_once()
 
@@ -1703,9 +1683,7 @@ def test_webhook_trigger_does_not_cross_deliver_between_slugs(tmp_path: Path) ->
         },
     )
 
-    build_provider = _webhook_provider(
-        runtime_dir, trigger_id="webhook-build", slug="build-notify"
-    )
+    build_provider = _webhook_provider(runtime_dir, trigger_id="webhook-build", slug="build-notify")
     deploy_provider = _webhook_provider(
         runtime_dir, trigger_id="webhook-deploy", slug="deploy-notify"
     )
@@ -1713,9 +1691,7 @@ def test_webhook_trigger_does_not_cross_deliver_between_slugs(tmp_path: Path) ->
     build_events = build_provider.poll()
     deploy_events = deploy_provider.poll()
 
-    assert [event.event_id for event in build_events] == [
-        f"webhook-build:{first_event.event_id}"
-    ]
+    assert [event.event_id for event in build_events] == [f"webhook-build:{first_event.event_id}"]
     assert [event.event_id for event in deploy_events] == [
         f"webhook-deploy:{second_event.event_id}"
     ]

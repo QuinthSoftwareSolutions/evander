@@ -91,17 +91,9 @@ def test_migrate_payload_converts_legacy_role_strings() -> None:
 
     assert payload["schema_version"] == 2
     assert "role" not in payload["agents"]["release"]
-    assert state.roles["team__manager"].permissions == [
-        RolePermission.CREATE_ROOT_TASK
-    ]
-    assert state.roles["project__project-lead"].permissions == [
-        RolePermission.CREATE_ROOT_TASK
-    ]
+    assert state.roles["team__manager"].permissions == [RolePermission.CREATE_ROOT_TASK]
+    assert state.roles["project__project-lead"].permissions == [RolePermission.CREATE_ROOT_TASK]
     assert state.agents["release"].role_id == "project__release-operator"
-    assert state.roles["project__release-operator"].permissions == [
-        RolePermission.REQUEST_RELEASE
-    ]
-    assert state.review_profiles["profile"].applicable_role_ids == [
-        "project__reviewer"
-    ]
+    assert state.roles["project__release-operator"].permissions == [RolePermission.REQUEST_RELEASE]
+    assert state.review_profiles["profile"].applicable_role_ids == ["project__reviewer"]
     assert "applicable_roles" not in payload["review_profiles"]["profile"]

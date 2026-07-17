@@ -1988,15 +1988,11 @@ class ManagedGitAdminService:
             return {"work_item_linked": False}
         repository = pr.get("repository")
         repository_id = (
-            str(repository.get("id") or "").strip()
-            if isinstance(repository, Mapping)
-            else ""
+            str(repository.get("id") or "").strip() if isinstance(repository, Mapping) else ""
         )
         project_info = repository.get("project") if isinstance(repository, Mapping) else None
         project_id = (
-            str(project_info.get("id") or "").strip()
-            if isinstance(project_info, Mapping)
-            else ""
+            str(project_info.get("id") or "").strip() if isinstance(project_info, Mapping) else ""
         )
         pr_id = str(pr.get("pullRequestId") or "").strip()
         if not repository_id or not project_id or not pr_id:
@@ -3698,6 +3694,22 @@ class ManagedGitAdminService:
         payload = self._read_json_mapping(path)
         if payload is None:
             raise ManagedGitConflictError(f"Migrated JSON state is invalid: {path}")
+        if kind == "team_state":
+            projects = payload.get("projects")
+            if not isinstance(projects, dict):
+                return
+            for project_id, project in projects.items():
+                if not isinstance(project, dict) or not isinstance(project.get("git"), dict):
+                    continue
+                legacy = self._legacy_field_paths(
+                    project["git"], include_repo_path=True, include_repo_source=True
+                )
+                if legacy:
+                    raise ManagedGitConflictError(
+                        f"Team project {project_id} retains legacy managed Git fields",
+                        details={"legacy_fields": legacy},
+                    )
+            return
         if kind == "directory_issue_setup_config" and "git_root" in payload:
             raise ManagedGitConflictError(
                 f"Directory configuration retains legacy issue_setup.git_root: {path}"
@@ -5078,6 +5090,8 @@ class ManagedGitAdminService:
                 )
                 if not isinstance(rewritten_metadata, dict):
                     rewritten_metadata = {}
+                if len(repo_ids) == 1:
+                    rewritten_metadata["managed_repo_id"] = next(iter(repo_ids))
                 rewritten_metadata["managed_git_remote_reconciliation_required"] = True
                 rewritten_metadata["managed_git_migration_id"] = migration_id
                 raw_session["metadata"] = rewritten_metadata

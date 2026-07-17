@@ -32,6 +32,7 @@ from .common import (
 
 CHAT_MESSAGE_QUEUED_EVENT_TYPE = "team.chat.message_queued"
 
+
 def _operator_chat_participant_payloads(
     state: TeamState,
     *,
@@ -59,11 +60,13 @@ def _operator_chat_participant_payloads(
         ),
     )
 
+
 def _chat_preview(value: object, *, limit: int = 160) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
         return text
     return f"{text[: max(0, limit - 1)].rstrip()}..."
+
 
 def _publish_admin_chat_notification(
     *,
@@ -98,6 +101,7 @@ def _publish_admin_chat_notification(
     except Exception:
         return
 
+
 def _publish_admin_chat_notifications(
     *,
     runtime_dir: Path,
@@ -111,6 +115,7 @@ def _publish_admin_chat_notifications(
             message_id=message_id,
         )
 
+
 def _touch_conversation(
     conversation: TeamConversation,
     *,
@@ -120,6 +125,7 @@ def _touch_conversation(
     conversation.last_message_preview = _chat_preview(preview)
     conversation.last_interaction_at = now
     conversation.updated_at = now
+
 
 def _append_pending_chat_message_queued_event_for_agent(
     state: TeamState,
@@ -170,6 +176,7 @@ def _append_pending_chat_message_queued_event_for_agent(
         }
     )
 
+
 def _apply_chat_reply(
     state: TeamState,
     *,
@@ -216,6 +223,7 @@ def _apply_chat_reply(
     _touch_conversation(conversation, now=now, preview=_chat_preview(body))
     result["replied_chat_message_ids"].append(source_message.id)
     return reply_id
+
 
 def _apply_operator_chat_message(
     state: TeamState,
@@ -288,6 +296,7 @@ def _apply_operator_chat_message(
     _touch_conversation(conversation, now=now, preview=_chat_preview(body))
     return message_id
 
+
 def _mark_chat_dispatch_message_failed(
     state: TeamState,
     *,
@@ -322,6 +331,7 @@ def _mark_chat_dispatch_message_failed(
         )
     return source_message.id
 
+
 def _mark_chat_dispatch_message_replied_from_activity(
     state: TeamState,
     *,
@@ -352,6 +362,7 @@ def _mark_chat_dispatch_message_replied_from_activity(
                 preview=f"Replied: {_chat_preview(source_message.body)}",
             )
     return source_message.id
+
 
 def _clear_completed_chat_dispatch_lease(
     state: TeamState,
@@ -384,6 +395,7 @@ def _clear_completed_chat_dispatch_lease(
     runtime.updated_at = now
     return True
 
+
 def _chat_dispatch_finalization_error(
     failed_activities: Sequence[TeamDispatchActivity],
 ) -> str:
@@ -396,6 +408,7 @@ def _chat_dispatch_finalization_error(
             reply_failure.error_message or reply_failure.error_code or "team_reply_to_chat failed"
         )
     return "Team chat dispatch completed without a successful team_reply_to_chat call"
+
 
 __all__ = [
     "CHAT_MESSAGE_QUEUED_EVENT_TYPE",

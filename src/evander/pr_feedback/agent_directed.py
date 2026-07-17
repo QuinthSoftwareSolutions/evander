@@ -55,17 +55,14 @@ def annotate_agent_directed_feedback(
         )
         return item.model_copy(update={"metadata": metadata})
 
-    same_thread = (
-        _metadata_contains_identity(
-            metadata,
-            keys=("prior_thread_comment_author_names", "prior_thread_comment_author_unique_names"),
-            identities=author_names,
-        )
-        or _metadata_contains_identity_id(
-            metadata,
-            keys=("prior_thread_comment_author_ids",),
-            identities=author_ids,
-        )
+    same_thread = _metadata_contains_identity(
+        metadata,
+        keys=("prior_thread_comment_author_names", "prior_thread_comment_author_unique_names"),
+        identities=author_names,
+    ) or _metadata_contains_identity_id(
+        metadata,
+        keys=("prior_thread_comment_author_ids",),
+        identities=author_ids,
     )
     mentioned = (
         _metadata_contains_identity(

@@ -529,9 +529,7 @@ def test_semantic_delete_points_rejects_payload_replay_even_with_loose_session_s
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_semantic_fakes(monkeypatch)
-    context = build_gateway_context(
-        tmp_path, allowed_tools=[ToolName.SEMANTIC_DELETE_POINTS]
-    )
+    context = build_gateway_context(tmp_path, allowed_tools=[ToolName.SEMANTIC_DELETE_POINTS])
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",

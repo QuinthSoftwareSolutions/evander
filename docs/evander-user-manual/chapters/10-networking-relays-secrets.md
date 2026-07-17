@@ -1,10 +1,83 @@
 # 10. Networking, Relays, Packages, and Secrets
 
-> **At a glance.** An Evander guest is useful precisely because it can reach *selected capabilities* without receiving the credentials behind them. The guest or worker container talks to private, host-owned endpoints for MCP, model inference, packages, Git, and allowlisted HTTP targets. The host resolves the session and directory policy, supplies upstream credentials where that relay owns them, strips transport secrets, and records the consequential action. Default-deny network forwarding supports this design; it does not replace application-level session and policy checks.
+> **At a glance.** An agent is useful only if it can reach the models, code, packages, tools, and test systems needed for its job. Evander provides controlled doors to those services instead of opening the whole network or copying host secrets into the agent's workspace. This chapter explains what each door is for and why network reachability is never treated as permission by itself.
 
-## The mental model: doors, not an open corridor
+## Controlled doors, not an open corridor
 
-Think of the isolated execution environment as a workshop with a few labelled service doors:
+An isolated workspace does not normally browse the internet or receive the host's provider credentials. Instead, it reaches a small set of Evander-owned services. Each service has one job and checks the request appropriate to that job.
+
+| What the agent needs | Controlled route | Plain-language boundary |
+|---|---|---|
+| Evander tools | MCP gateway | Show and run only the tools allowed for this active session. |
+| A model | Model relay | Send a supported model request while the real provider key remains on the host. |
+| Packages | Package relay, facade, or prepared cache | Reach configured package sources without opening a general download route. |
+| A named test or application environment | HTTP target relay | Reach only a target alias recorded for this session; use the application's own guest-held login. |
+| Source code | Restricted managed Git over SSH | Read or write only the repository scope and refs granted to this session. |
+
+Three ideas keep this model understandable:
+
+1. **A working connection is not permission.** The route can work while a later session, target, tool, or policy check denies the action.
+2. **Different doors handle credentials differently.** The model and private NuGet relays add the host-owned upstream credential they are designed to protect. The HTTP target relay deliberately does not; it forwards authentication already held by the guest.
+3. **A narrow failure is useful evidence.** A package-cache miss, an expired session, and an application login failure occur at different boundaries and should not be “fixed” by opening general network access.
+
+The host resolves the session and directory rules, supplies an upstream credential only where a relay owns that responsibility, removes Evander transport secrets before forwarding, and records the consequential activity. Default-deny forwarding supports those checks; it does not replace them.
+
+## A request through a controlled door
+
+Suppose the implementation agent for Northstar Platform needs to test telemetry retry behavior.
+
+- A model request goes to Evander's model relay. Evander checks the session, selects the configured provider, removes guest transport credentials, adds the host's provider credential, and records available usage information.
+- A package restore goes through the appropriate relay or cache. The route may serve a public feed, add a host-held private-feed credential, or use already prepared package content.
+- A request to the provisioned `mission-control` environment uses a session alias such as `mission-control-api`. The agent supplies its legitimate application credential; the relay confines the destination and does not turn that URL into general internet permission.
+
+The agent may experience all three as ordinary development traffic. Their security contracts are deliberately different behind the scenes.
+
+## What an operator may notice
+
+| What you see | What it usually tells you | Useful information to capture |
+|---|---|---|
+| The agent cannot reach any controlled service | Session routing, workspace networking, or bootstrap state may be wrong. | Session ID, backend, exact connection error, and whether the shell was opened before the latest bootstrap |
+| Tools work, but model calls fail | The MCP route is healthy; model policy, provider configuration, credential, or upstream service needs attention. | Session ID, model, provider mode if shown, status/error, and approximate time |
+| Public packages work, but a private feed fails | The package route is present; the private-feed credential or feed configuration may be missing. | Feed name, package, restore error, session ID, and whether public packages still work |
+| An HTTP target returns `401` | The request may have reached the target application, which rejected the guest-managed login. | Target alias, application status, session ID, and a redacted description of the authentication used |
+| An HTTP target alias returns `404` | That alias is not present in the session contract. | Session ID, requested alias, directory, and expected workflow |
+| A restore reports content unavailable | Direct internet is intentionally absent; the relay or cache may not contain or reach the requested package. | Ecosystem, package/version, configured source, and exact restore error |
+
+Do not include secret values, session tokens, private keys, or full authorization headers in a support handoff. Names of configured environment variables and redacted errors are usually enough to locate the boundary.
+
+## Reading common failures
+
+An operator can use the first column to describe the failure. The remaining columns tell an administrator what safe outcome to expect and which boundary to repair.
+
+| Failure | Expected behavior | Interpretation |
+|---|---|---|
+| Missing model provider key | Relay returns a service error before upstream use. | Fix the service environment named by effective provider config. |
+| Expired or bad session token | Session relay request is rejected (`401`/`403` or WebSocket policy close). | Repair session/bootstrap state; do not bypass session routing. |
+| Hosted web search requested but disabled | Relay returns a policy error and logs the denial. | Enable only on the session that genuinely needs it. |
+| Unsupported provider path | Relay returns `501`, validation error, or WebSocket policy close. | Use a supported API; the relay is not a generic reverse proxy. |
+| Azure NuGet PAT missing | Public NuGet may work; Azure feed returns `503`. | Set the configured PAT environment variable for the NuGet unit. |
+| HTTP target alias missing | Relay returns `404`. | Add the alias through the session/workflow metadata contract. |
+| HTTP target redirect changes origin | Relay returns `502` rather than following it. | Correct the target base URL or application redirect behavior. |
+| Package restore misses cache | Restore may fail because direct internet is unavailable. | Prewarm the cache or make the appropriate relay/cache reachable. |
+| SSE transport closes after final bytes | Relay logs `relay_stream_transport_terminated`; the client may still have a complete response. | Correlate chunks/bytes and provider events before treating it as data loss. |
+
+## Troubleshooting: what to hand to an administrator
+
+Start with the session and one failing request:
+
+1. Record the directory, run or trace ID, session ID, execution backend, and time of the request.
+2. Name the door that failed: tool, model, package/feed, Git, or HTTP target alias.
+3. Copy the exact status and error, but redact credentials and authorization material.
+4. Note which nearby route still works—for example, “MCP tools work, but model calls fail” or “public NuGet works, but the Azure feed returns `503`.”
+5. Give those details to an Evander administrator. Do not add firewall ports, copy a host key into the workspace, or bypass the relay as a diagnostic shortcut.
+
+If a secret may have been exposed, preserve the audit evidence and contact the administrator responsible for that credential so it can be rotated. Deleting a visible record does not revoke a credential.
+
+The remainder of this chapter is network, protocol, and administrator reference material.
+
+## Administrator reference: doors and network boundaries
+
+The exact service doors and default ports are:
 
 - MCP on port `8000` is the tool-capability door;
 - the model relay on `11434` is the inference door;
@@ -17,7 +90,7 @@ The checked-in firewall example allows those host TCP ports and drops other forw
 
 MCP is therefore a central capability boundary, but not the only reachable host service. Every direct relay must enforce its own narrow contract.
 
-## Session routing and the guest environment
+## Administrator reference: session routing and the guest environment
 
 Cloud-init writes `/etc/evander/session.env`, and the shell profile loads it for the `agent` user. The file contains routing data such as session identity, MCP URL/token, model relay URL, HTTP-target relay prefix, and package locations. It also sets a placeholder `OPENAI_API_KEY` so tools that insist on an API-key variable can start. That placeholder is not the upstream provider secret.
 
@@ -29,7 +102,7 @@ source ~/.profile
 
 Session-bearing relay requests are authenticated with the session's MCP token. The token may be carried in a supported header, query parameter, or generated auth path, depending on the client. Relays remove it from the upstream query and headers. The session manifest must exist and be active; the model relay also rejects expired sessions.
 
-## Model inference relay
+## Administrator reference: model inference relay
 
 `evander-openai-relay` exposes a session-scoped model surface while resolving the actual provider from effective directory and session configuration. Public OpenAI is the default when no mode override is supplied. The current modes are:
 
@@ -50,7 +123,7 @@ Hosted OpenAI web search is denied unless the session manifest explicitly sets `
 
 A host-local model is not a reason to connect the guest directly to Ollama. Keep the agent pointed at Evander's session-scoped relay and configure `local_openai_api_base_url` on the host. If the relay listens on wildcard port `11434`, it rejects the ambiguous default of calling a loopback service on that same port. Bind the relay to the guest-facing address or move the local model to another private port, such as `127.0.0.1:11435`.
 
-## Package paths
+## Administrator reference: package paths
 
 ### NuGet
 
@@ -78,7 +151,7 @@ The npm audit protocol is a special case. `evander-npm-audit-facade` sends ordin
 
 This lets `npm audit` work without turning the worker's npm registry setting into a direct public package route. The facade does not inject an npm credential.
 
-## Session-scoped HTTP targets
+## Administrator reference: session-scoped HTTP targets
 
 The HTTP target relay differs deliberately from the model and NuGet relays: **it forwards guest-managed authorization and cookies**. It does not inject a host secret for the target.
 
@@ -97,9 +170,9 @@ The relay:
 5. makes one request without automatically following redirects;
 6. rewrites a same-origin redirect back through the relay and rejects a redirect outside the configured origin.
 
-This is useful while Imani verifies the telemetry retry behavior in Northstar Platform's provisioned `mission-control` environment. A workflow can add `mission-control-api` and `mission-control-ui` aliases to the session, while the agent authenticates to those applications using credentials it legitimately holds. The public environment URL does not become a general network permission.
+This is useful while the implementation agent verifies telemetry retry behavior in Northstar Platform's provisioned `mission-control` environment. A workflow can add `mission-control-api` and `mission-control-ui` aliases to the session, while the agent authenticates to those applications using credentials it legitimately holds. The public environment URL does not become a general network permission.
 
-## Where secrets belong
+## Administrator reference: where secrets belong
 
 Provider configuration stores *environment-variable names*, URLs, IDs, and non-secret routing metadata. The environment of the relevant host service stores the values. Typical examples are `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_DEVOPS_PAT`, `AZURE_ARTIFACTS_PAT`, `DISCORD_BOT_TOKEN`, `EVANDER_WORKER_TOKEN`, and bridge/provider tokens.
 
@@ -115,21 +188,7 @@ The repo-root `secrets.env` can be loaded by supported systemd templates, but it
 
 There are narrow exceptions where a guest receives a short-lived or scoped credential: the MCP session token, a session-scoped restricted Git key, a one-time response/consultation token, or an ephemeral OpenAI Realtime client secret. These are capabilities with a bounded audience and purpose, not copies of the long-lived host credential.
 
-## Failure behavior
-
-| Failure | Expected behavior | Interpretation |
-|---|---|---|
-| Missing model provider key | Relay returns a service error before upstream use. | Fix the service environment named by effective provider config. |
-| Expired or bad session token | Session relay request is rejected (`401`/`403` or WebSocket policy close). | Repair session/bootstrap state; do not bypass session routing. |
-| Hosted web search requested but disabled | Relay returns a policy error and logs the denial. | Enable only on the session that genuinely needs it. |
-| Unsupported provider path | Relay returns `501`, validation error, or WebSocket policy close. | Use a supported API; the relay is not a generic reverse proxy. |
-| Azure NuGet PAT missing | Public NuGet may work; Azure feed returns `503`. | Set the configured PAT environment variable for the NuGet unit. |
-| HTTP target alias missing | Relay returns `404`. | Add the alias through the session/workflow metadata contract. |
-| HTTP target redirect changes origin | Relay returns `502` rather than following it. | Correct the target base URL or application redirect behavior. |
-| Package restore misses cache | Restore may fail because direct internet is unavailable. | Prewarm the cache or make the appropriate relay/cache reachable. |
-| SSE transport closes after final bytes | Relay logs `relay_stream_transport_terminated`; the client may still have a complete response. | Correlate chunks/bytes and provider events before treating it as data loss. |
-
-## Practical runbook
+## Administrator runbook
 
 First verify the listeners locally on the control plane:
 

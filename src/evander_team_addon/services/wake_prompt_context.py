@@ -169,7 +169,10 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
         context["project_repo"] = _compact_project_repo(project_repo)
 
     review_artifact_imports = sorted(
-        (_compact_review_artifact_import(row) for row in _mapping_rows(lease.get("review_artifact_imports"))),
+        (
+            _compact_review_artifact_import(row)
+            for row in _mapping_rows(lease.get("review_artifact_imports"))
+        ),
         key=lambda row: (
             _sort_text(row.get("review_request_id")),
             _sort_text(row.get("deliverable_id")),
@@ -293,7 +296,9 @@ def _compact_task(task: Mapping[str, Any]) -> dict[str, Any]:
     _copy_row_omitted_count(row, "child_task_ids", task.get("child_task_ids"))
     _copy_row_omitted_count(row, "deliverable_ids", task.get("deliverable_ids"))
     subtask_counts = task.get("subtask_counts")
-    row["subtask_counts"] = _json_value(subtask_counts if isinstance(subtask_counts, Mapping) else {})
+    row["subtask_counts"] = _json_value(
+        subtask_counts if isinstance(subtask_counts, Mapping) else {}
+    )
     return row
 
 
@@ -466,9 +471,7 @@ def _compact_action_feedback(row: Mapping[str, Any]) -> dict[str, Any]:
     if correction_hints:
         compact["correction_hints"] = correction_hints[:ID_LIST_LIMIT]
         if len(correction_hints) > ID_LIST_LIMIT:
-            compact["correction_hints_omitted_count"] = (
-                len(correction_hints) - ID_LIST_LIMIT
-            )
+            compact["correction_hints_omitted_count"] = len(correction_hints) - ID_LIST_LIMIT
     return compact
 
 
@@ -552,10 +555,7 @@ def _compact_manager_fallback_summary(summary: Mapping[str, Any]) -> dict[str, A
         key=_task_sort_key,
     )
     row["deliverables"] = _manager_fallback_limited_rows(
-        [
-            _compact_manager_deliverable(item)
-            for item in _mapping_rows(summary.get("deliverables"))
-        ],
+        [_compact_manager_deliverable(item) for item in _mapping_rows(summary.get("deliverables"))],
         MAX_MANAGER_FALLBACK_ROWS,
         "deliverables",
         omitted_counts,
@@ -775,8 +775,7 @@ def _compact_project_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
         ),
     )
     git_contexts = [
-        _compact_git_work_context(row)
-        for row in _mapping_rows(repo.get("git_work_contexts"))
+        _compact_git_work_context(row) for row in _mapping_rows(repo.get("git_work_contexts"))
     ]
     if git_contexts:
         row["git_work_contexts"] = git_contexts

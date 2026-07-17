@@ -10,6 +10,10 @@ from typing import Any, Callable
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from evander.config import GatewayConfig
+from evander.connectors.models import (
+    ConnectorDirectoryConfig,
+    validate_connector_directory_overlay,
+)
 from evander.directories import DirectoryService, DirectoryStore
 from evander.host_config import HostConfig, build_runtime_gateway_config
 from evander.models import DirectoryInfo, DirectoryPath
@@ -34,6 +38,7 @@ DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "issue_setup": "issue-setup.json",
     "pr_template": "pr-template.json",
     "automation": "automation.json",
+    "connectors": "connectors.json",
 }
 
 LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
@@ -272,6 +277,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     "pr_template": frozenset({"pr_template_markdown"}),
+    "connectors": frozenset({"auth_profiles", "connectors"}),
 }
 
 
@@ -462,8 +468,7 @@ class EffectiveContactDirectoryConfig(ContactDirectoryConfig):
         )
         if unknown_contacts:
             raise ValueError(
-                "user_contact_links reference unknown contacts: "
-                + ", ".join(unknown_contacts)
+                "user_contact_links reference unknown contacts: " + ", ".join(unknown_contacts)
             )
         return self
 
@@ -534,6 +539,8 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
         }
     if domain == "contacts":
         return {"contacts": {}, "user_contact_links": {}}
+    if domain == "connectors":
+        return {"auth_profiles": {}, "connectors": {}}
     if domain == "pr_template":
         return {"pr_template_markdown": ""}
     return {key: payload[key] for key in sorted(allowed_fields) if key in payload}
@@ -561,6 +568,9 @@ def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> d
         return validated.model_dump(mode="json")
     if domain == "contacts":
         validated = EffectiveContactDirectoryConfig.model_validate(payload)
+        return validated.model_dump(mode="json")
+    if domain == "connectors":
+        validated = ConnectorDirectoryConfig.model_validate(payload)
         return validated.model_dump(mode="json")
     if domain == "pr_template":
         validated = PrTemplateDirectoryConfig.model_validate(payload)
@@ -714,6 +724,8 @@ class DirectoryConfigStore:
         if domain == "contacts":
             validated = ContactDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
+        if domain == "connectors":
+            return validate_connector_directory_overlay(payload)
         if domain == "issue_setup":
             validated = IssueSetupDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
@@ -745,9 +757,7 @@ class DirectoryConfigStore:
                 "directory config domain 'providers' does not allow fields: "
                 + ", ".join(unknown_fields)
             )
-        provider_payload = {
-            key: value for key, value in payload.items() if key in allowed_fields
-        }
+        provider_payload = {key: value for key, value in payload.items() if key in allowed_fields}
         validated = GatewayConfig.model_validate(
             provider_payload,
             context={

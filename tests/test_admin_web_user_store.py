@@ -22,9 +22,7 @@ def test_admin_web_user_store_initializes_sqlite_schema(tmp_path: Path) -> None:
     with sqlite3.connect(tmp_path / "runtime" / "admin-web.db") as connection:
         tables = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
 
     assert "admin_web_users" in tables
@@ -61,10 +59,7 @@ def test_admin_web_user_store_mutations_use_sqlite(tmp_path: Path) -> None:
 
     with sqlite3.connect(tmp_path / "runtime" / "admin-web.db") as connection:
         stored_logins = [
-            row[0]
-            for row in connection.execute(
-                "SELECT login FROM admin_web_users ORDER BY login"
-            )
+            row[0] for row in connection.execute("SELECT login FROM admin_web_users ORDER BY login")
         ]
     assert stored_logins == ["operator@example.com"]
 
@@ -134,9 +129,8 @@ def test_admin_web_user_store_persists_user_preferences(tmp_path: Path) -> None:
     )
 
     assert stored == {"completed_tutorial_ids": ["first-steps"], "skipped_tutorial_ids": []}
-    assert store.get_user_preference(
-        "operator@example.com", "workflow_tutorial_progress"
-    ) == {"completed_tutorial_ids": ["first-steps"], "skipped_tutorial_ids": []}
-    assert store.get_user_preference(
-        "other@example.com", "workflow_tutorial_progress"
-    ) is None
+    assert store.get_user_preference("operator@example.com", "workflow_tutorial_progress") == {
+        "completed_tutorial_ids": ["first-steps"],
+        "skipped_tutorial_ids": [],
+    }
+    assert store.get_user_preference("other@example.com", "workflow_tutorial_progress") is None

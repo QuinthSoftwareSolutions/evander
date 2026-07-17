@@ -236,10 +236,7 @@ def test_release_package_upgrades_legacy_candidate_manifest_shape() -> None:
     assert release.manifest.evidence_status == "legacy_partial"
     assert release.manifest.candidate_commit_sha == "candidate-sha"
     assert release.manifest.deliverables[0].deliverable_id == "deliverable"
-    assert (
-        release.manifest.deliverables[0].feature_branch
-        == "team/team/features/task-worker"
-    )
+    assert release.manifest.deliverables[0].feature_branch == "team/team/features/task-worker"
 
 
 def test_release_policy_rejects_duplicate_reviewer_profile_pairs() -> None:
@@ -537,9 +534,7 @@ def test_ephemeral_assignments_do_not_join_reporting_hierarchy() -> None:
 
     validated = TeamState.model_validate(state.model_dump(mode="python"))
 
-    assert "session-ephemeral" not in {
-        agent.session_id for agent in validated.agents.values()
-    }
+    assert "session-ephemeral" not in {agent.session_id for agent in validated.agents.values()}
     assert validated.agents["ui"].subordinate_agent_ids == []
 
 
@@ -657,25 +652,15 @@ def test_validate_branch_name_accepts_plain_names() -> None:
 
 
 def test_deterministic_branch_name_builders() -> None:
-    assert ephemeral_agent_branch("session-1", "assignment-1") == (
-        "agents/session-1/assignment-1"
-    )
-    assert review_branch("team-1", "assignment-1") == (
-        "team/team-1/reviews/assignment-1"
-    )
-    assert feature_branch("team-1", "task-1", "ui") == (
-        "team/team-1/features/task-1-ui"
-    )
+    assert ephemeral_agent_branch("session-1", "assignment-1") == ("agents/session-1/assignment-1")
+    assert review_branch("team-1", "assignment-1") == ("team/team-1/reviews/assignment-1")
+    assert feature_branch("team-1", "task-1", "ui") == ("team/team-1/features/task-1-ui")
     assert release_branch("team-1", "release-1") == "team/team-1/releases/release-1"
 
 
 def test_canonical_release_branch_honors_project_prefix() -> None:
-    default_project = Project(
-        id="project", team_id="team", name="Project", lead_agent_id="lead"
-    )
-    assert canonical_release_branch(default_project, "release-1") == (
-        "releases/project/release-1"
-    )
+    default_project = Project(id="project", team_id="team", name="Project", lead_agent_id="lead")
+    assert canonical_release_branch(default_project, "release-1") == ("releases/project/release-1")
 
     custom_project = Project(
         id="project",
@@ -709,9 +694,7 @@ def test_canonical_release_branch_prefix_normalizes_trailing_slash() -> None:
 
 def test_git_promotion_and_release_round_trip_through_team_state() -> None:
     state = _valid_state()
-    state.deliverables["deliverable"].git_refs.feature_branch = (
-        "team/team/features/task-ui"
-    )
+    state.deliverables["deliverable"].git_refs.feature_branch = "team/team/features/task-ui"
     state.release_packages["release"].feature_branches = ["team/team/features/task-ui"]
     state.release_packages["release"].release_branch = "team/team/releases/release"
     state.release_packages["release"].canonical_branch = "releases/project/release"
@@ -735,9 +718,7 @@ def test_git_promotion_and_release_round_trip_through_team_state() -> None:
     assert validated.deliverables["deliverable"].git_refs.feature_branch == (
         "team/team/features/task-ui"
     )
-    assert validated.release_packages["release"].canonical_branch == (
-        "releases/project/release"
-    )
+    assert validated.release_packages["release"].canonical_branch == ("releases/project/release")
 
 
 def _state_with_task_graph() -> dict:
@@ -837,9 +818,7 @@ def test_case_link_rejects_missing_task_backlink() -> None:
         }
     }
 
-    with pytest.raises(
-        ValidationError, match="case case task task does not point back"
-    ):
+    with pytest.raises(ValidationError, match="case case task task does not point back"):
         TeamState.model_validate(state)
 
 
@@ -888,9 +867,7 @@ def test_task_graph_rejects_cross_project_dependency() -> None:
     }
     state["teams"]["team"]["project_ids"] = ["project", "other"]
 
-    with pytest.raises(
-        ValidationError, match="dependency dep-a belongs to project other"
-    ):
+    with pytest.raises(ValidationError, match="dependency dep-a belongs to project other"):
         TeamState.model_validate(state)
 
 
@@ -1063,10 +1040,7 @@ def test_team_state_payload_includes_agent_session_backend_health() -> None:
         now=datetime(2026, 1, 1, tzinfo=UTC),
     )
 
-    health = {
-        row["agent_id"]: row
-        for row in payload["runtime_operations"]["session_health"]
-    }
+    health = {row["agent_id"]: row for row in payload["runtime_operations"]["session_health"]}
     assert health["ui"]["session_present"] is True
     assert health["ui"]["vm_provider"] == "container_worker_vm"
     assert health["ui"]["execution_backend"] == "container_worker_vm"
@@ -1106,10 +1080,7 @@ def test_team_state_payload_classifies_stale_index_lock_release_blocker() -> Non
         release_branch="team/team/releases/release",
         git_promotion_record_ids=["promotion-1"],
         state=TeamRecordState.BLOCKED,
-        error=(
-            "fatal: Unable to create '/home/jonathan/true-app/.git/index.lock': "
-            "File exists."
-        ),
+        error=("fatal: Unable to create '/home/jonathan/true-app/.git/index.lock': File exists."),
     )
     state.git_promotions["promotion-1"] = GitPromotionRecord(
         id="promotion-1",
@@ -1163,10 +1134,7 @@ def test_blocked_release_hint_uses_failed_feature_promotion_target() -> None:
 
     hint = payload["release_packages"]["release"]["next_action_hint"]
     assert "Failed feature promotion feature-promotion" in hint
-    assert (
-        "Resolve and commit on promotion target branch "
-        "team/team/features/task-ui"
-    ) in hint
+    assert ("Resolve and commit on promotion target branch team/team/features/task-ui") in hint
     assert "submit git_release_recoveries" in hint
     assert "do not submit git_release_recoveries" not in hint
     assert "Continue from release branch" not in hint
@@ -1237,15 +1205,12 @@ def test_runtime_operations_payload_classifies_runtime_attention_rows() -> None:
     assert rows["blocked_release_package"]["release_package_id"] == "release"
     assert rows["blocked_release_package"]["state"] == "blocked"
     assert rows["blocked_release_package"]["next_action"] == "resolve_blocked_release"
-    assert "do not create another git_release_requests" in rows[
-        "blocked_release_package"
-    ]["next_action_hint"]
-    assert "git_release_recoveries" in rows["blocked_release_package"][
-        "next_action_hint"
-    ]
-    assert "team/team/releases/release" in rows["blocked_release_package"][
-        "next_action_hint"
-    ]
+    assert (
+        "do not create another git_release_requests"
+        in rows["blocked_release_package"]["next_action_hint"]
+    )
+    assert "git_release_recoveries" in rows["blocked_release_package"]["next_action_hint"]
+    assert "team/team/releases/release" in rows["blocked_release_package"]["next_action_hint"]
     assert rows["failed_ephemeral_assignment"]["assignment_id"] == "ephemeral-failed"
     assert rows["failed_ephemeral_assignment"]["state"] == "failed"
     assert rows["cleanup_pending_ephemeral_assignment"]["assignment_id"] == "ephemeral-cleanup"
@@ -1410,11 +1375,7 @@ def test_runtime_attention_hides_failed_action_from_older_dispatch() -> None:
 
     payload = runtime_operations_payload(state, now=datetime(2026, 1, 1, tzinfo=UTC))
 
-    rows = [
-        row
-        for row in payload["attention"]
-        if row["kind"] == "failed_action_record"
-    ]
+    rows = [row for row in payload["attention"] if row["kind"] == "failed_action_record"]
     assert len(rows) == 1
     assert rows[0]["action_record_id"] == "action-2"
     assert rows[0]["dispatch_id"] == "dispatch-ui-follow-up"
@@ -1437,11 +1398,7 @@ def test_runtime_attention_keeps_undismissed_failure_from_current_dispatch() -> 
 
     payload = runtime_operations_payload(state, now=datetime(2026, 1, 1, tzinfo=UTC))
 
-    rows = [
-        row
-        for row in payload["attention"]
-        if row["kind"] == "failed_action_record"
-    ]
+    rows = [row for row in payload["attention"] if row["kind"] == "failed_action_record"]
     assert len(rows) == 1
     assert rows[0]["action_record_id"] == "action-1"
     assert rows[0]["dispatch_id"] == "dispatch-ui"
@@ -1549,7 +1506,9 @@ def test_review_profile_rejects_missing_team() -> None:
         }
     }
 
-    with pytest.raises(ValidationError, match="review profile profile references missing team ghost"):
+    with pytest.raises(
+        ValidationError, match="review profile profile references missing team ghost"
+    ):
         TeamState.model_validate(state)
 
 
@@ -1569,7 +1528,9 @@ def test_review_profile_rejects_cross_team_project() -> None:
         }
     }
 
-    with pytest.raises(ValidationError, match="review profile profile project project belongs to team team"):
+    with pytest.raises(
+        ValidationError, match="review profile profile project project belongs to team team"
+    ):
         TeamState.model_validate(state)
 
 
@@ -1628,9 +1589,7 @@ def test_review_rejects_duplicate_criterion_results() -> None:
         ReviewCriterionResult(criterion_id="tests", state="failed"),
     ]
 
-    with pytest.raises(
-        ValidationError, match="has duplicate criterion result tests"
-    ):
+    with pytest.raises(ValidationError, match="has duplicate criterion result tests"):
         TeamState.model_validate(state.model_dump(mode="python"))
 
 
@@ -1640,9 +1599,7 @@ def test_review_rejects_criterion_results_without_profile() -> None:
         ReviewCriterionResult(criterion_id="tests", state="passed"),
     ]
 
-    with pytest.raises(
-        ValidationError, match="has criterion results but no review profile"
-    ):
+    with pytest.raises(ValidationError, match="has criterion results but no review profile"):
         TeamState.model_validate(state.model_dump(mode="python"))
 
 
@@ -1650,9 +1607,7 @@ def test_review_rejects_missing_profile_reference() -> None:
     state = _valid_state().model_dump(mode="python")
     state["review_requests"]["review"]["review_profile_id"] = "ghost"
 
-    with pytest.raises(
-        ValidationError, match="references missing review profile ghost"
-    ):
+    with pytest.raises(ValidationError, match="references missing review profile ghost"):
         TeamState.model_validate(state)
 
 
@@ -1687,7 +1642,6 @@ def test_git_promotion_rejects_missing_project() -> None:
 
     with pytest.raises(ValidationError, match="missing project missing-project"):
         TeamState.model_validate(state)
-
 
 
 def test_persistent_agent_can_be_teamless() -> None:

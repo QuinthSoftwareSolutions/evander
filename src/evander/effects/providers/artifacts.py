@@ -418,7 +418,9 @@ class ArtifactPublishArtifactsEffectProvider(EffectProviderBase):
         except Exception as exc:
             raise RuntimeError("artifact publish script returned invalid archive content") from exc
 
-        session_id = _required_text(exec_result.get("session_id"), "artifact publish did not resolve session_id")
+        session_id = _required_text(
+            exec_result.get("session_id"), "artifact publish did not resolve session_id"
+        )
         record = store.publish_bytes(
             key=key,
             session_id=session_id,
@@ -519,8 +521,7 @@ class ArtifactImportPublishedEffectProvider(EffectProviderBase):
             "success": True,
             "action": "artifact_import_published",
             "message": (
-                f"Imported {script_payload.get('imported_file_count', 0)} file(s) "
-                f"from {key}"
+                f"Imported {script_payload.get('imported_file_count', 0)} file(s) from {key}"
             ),
             "key": artifact.metadata.key,
             "session_id": exec_result.get("session_id") or copy_result.get("session_id"),

@@ -497,13 +497,15 @@ class RetellPhoneCallService:
         if not normalized_request_id and not normalized_call_id:
             raise ValueError("request_id or call_id is required")
         record = (
-            self.store.get_by_request_id(normalized_request_id)
-            if normalized_request_id
-            else None
+            self.store.get_by_request_id(normalized_request_id) if normalized_request_id else None
         )
         if normalized_call_id:
             by_call_id = self.store.get_by_call_id(normalized_call_id)
-            if record is not None and by_call_id is not None and by_call_id.request_id != record.request_id:
+            if (
+                record is not None
+                and by_call_id is not None
+                and by_call_id.request_id != record.request_id
+            ):
                 raise ValueError("request_id and call_id refer to different phone calls")
             record = record or by_call_id
         if record is None:
@@ -515,7 +517,10 @@ class RetellPhoneCallService:
         record: RetellPhoneCallRecord,
         session: SessionManifest,
     ) -> None:
-        if record.session_id != session.session_id or record.directory_path != session.directory_path:
+        if (
+            record.session_id != session.session_id
+            or record.directory_path != session.directory_path
+        ):
             raise ValueError("Phone call request is outside this session scope")
 
     def _resolve_contact(
@@ -526,13 +531,9 @@ class RetellPhoneCallService:
             raise ValueError(f"Unknown contact id for Retell phone call: {alias}")
         primary_numbers = [phone for phone in contact.phone_numbers if phone.primary]
         if not primary_numbers:
-            raise ValueError(
-                f"Contact {alias!r} does not have a primary phone number configured"
-            )
+            raise ValueError(f"Contact {alias!r} does not have a primary phone number configured")
         if len(primary_numbers) > 1:
-            raise ValueError(
-                f"Contact {alias!r} has more than one primary phone number configured"
-            )
+            raise ValueError(f"Contact {alias!r} has more than one primary phone number configured")
         return contact, primary_numbers[0]
 
     def _require_from_number(self) -> str:
@@ -700,9 +701,7 @@ def _record_with_retell_payload(
     if "end_timestamp" in payload:
         update["end_timestamp"] = _optional_int(payload.get("end_timestamp"))
     if "transfer_end_timestamp" in payload:
-        update["transfer_end_timestamp"] = _optional_int(
-            payload.get("transfer_end_timestamp")
-        )
+        update["transfer_end_timestamp"] = _optional_int(payload.get("transfer_end_timestamp"))
     if "duration_ms" in payload:
         update["duration_ms"] = _optional_int(payload.get("duration_ms"))
     if "disconnection_reason" in payload:

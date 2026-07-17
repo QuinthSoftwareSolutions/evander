@@ -574,9 +574,7 @@ def test_directory_config_effective_local_openai_rejects_default_relay_loopback(
         validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
     )
 
-    assert any(
-        "local_openai_api_base_url" in error for error in resolution.validation_errors
-    )
+    assert any("local_openai_api_base_url" in error for error in resolution.validation_errors)
 
 
 def test_provider_config_resolver_uses_claude_agent_provider_as_session_override(
@@ -1490,9 +1488,7 @@ def test_directory_config_store_prunes_retired_ado_pr_fields_on_read(
         encoding="utf-8",
     )
 
-    assert config_store.read(team.path, domain="ado_worker") == {
-        "ado_repo_source": "/tmp/repo"
-    }
+    assert config_store.read(team.path, domain="ado_worker") == {"ado_repo_source": "/tmp/repo"}
 
 
 def test_managed_git_operation_timeout_is_host_and_directory_configurable(

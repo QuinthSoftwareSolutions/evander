@@ -31,8 +31,7 @@ def sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         if normalized not in SAFE_TOKEN_USAGE_METADATA_KEYS and (
             normalized in SENSITIVE_METADATA_KEYS
             or any(
-                marker in normalized
-                for marker in ("token", "secret", "password", "authorization")
+                marker in normalized for marker in ("token", "secret", "password", "authorization")
             )
         ):
             sanitized[key] = "[redacted]"

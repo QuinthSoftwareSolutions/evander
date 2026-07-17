@@ -106,9 +106,7 @@ class ModelUsageListQueryProvider(QueryProviderBase):
                         "estimated_cached_input_cost": _decimal_to_float(
                             estimate.cached_input_cost
                         ),
-                        "estimated_cache_write_cost": _decimal_to_float(
-                            estimate.cache_write_cost
-                        ),
+                        "estimated_cache_write_cost": _decimal_to_float(estimate.cache_write_cost),
                         "estimated_output_cost": _decimal_to_float(estimate.output_cost),
                         "cost_currency": estimate.currency,
                         "cost_status": estimate.status,

@@ -369,9 +369,9 @@ def test_consult_codebase_releases_snapshot_when_timeout_setup_fails(
         )
 
     consultation_id = managed_git.pins[0][2]["consultation_id"]
-    record = CodeConsultationStore(
-        consultation_store_path(context.config.runtime_dir)
-    ).get(consultation_id)
+    record = CodeConsultationStore(consultation_store_path(context.config.runtime_dir)).get(
+        consultation_id
+    )
     assert record is not None
     assert record.status == "failed"
     assert record.cleanup_status == "completed"
@@ -413,9 +413,9 @@ def test_consult_codebase_enqueues_cleanup_when_dispatch_publication_fails(
         )
 
     consultation_id = managed_git.pins[0][2]["consultation_id"]
-    record = CodeConsultationStore(
-        consultation_store_path(context.config.runtime_dir)
-    ).get(consultation_id)
+    record = CodeConsultationStore(consultation_store_path(context.config.runtime_dir)).get(
+        consultation_id
+    )
     assert record is not None
     assert record.status == "failed"
     assert record.started_at is not None

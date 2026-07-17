@@ -1,6 +1,22 @@
 # 28. System Reference
 
-> **At a glance.** This chapter is the compact map to Evander's operational surface: processes, ports, runtime stores, command entry points, UI areas, and source-code ownership. Use the earlier chapters to understand *why* these pieces exist; use this chapter when you need to find one quickly.
+> **At a glance.** This is the manual's lookup chapter. Use it when you remember that Evander has a service, command, port, file, or screen for something but cannot remember its exact name or owner. The earlier chapters explain why the pieces exist; the tables here help you find the right one quickly.
+
+## Find the right map
+
+You do not need to read this chapter from beginning to end. Start with the question you are trying to answer:
+
+| If you are asking… | Go to… |
+|---|---|
+| “What is this background service for?” | [Persistent control-plane services](#282-persistent-control-plane-services) |
+| “What does this port provide?” | [Default guest-reachable ports](#283-default-guest-reachable-ports) |
+| “Which saved record is authoritative?” | [Runtime source-of-truth map](#284-selected-runtime-source-of-truth-map) |
+| “What command starts this task?” | [Core command map](#285-core-command-map) |
+| “Where do I find this in the interface?” | [Admin Web area map](#286-admin-web-area-map) or [Team Add-on view map](#287-team-add-on-view-map) |
+| “Which part of the code owns this behavior?” | [Developer reference](#288-developer-reference-source-code-ownership-map) |
+| “Which host checks should an administrator run?” | [Administrator runbook](#289-administrator-runbook-fast-orientation-commands) |
+
+For ordinary operation, the screen maps and the plain responsibilities in the service tables are usually enough. Paths, ports, process names, and source locations become useful when an administrator or developer needs to verify the layer behind what the interface shows.
 
 ## 28.1 Reference conventions
 
@@ -136,6 +152,7 @@ Admin Web is the supported operator GUI. Its core areas answer different questio
 | Sessions | Which agent sessions are active, paused, terminal, or awaiting intervention? |
 | Tool Visibility | Which tools does a session actually see, and what binding or denial explains that result? |
 | MCP Tools | Which directory policy controls approval and denial for each tool? |
+| Connectors | Which named host-side integrations and operations are available in this directory? |
 | Tool Calls | What was invoked, allowed, denied, or failed? |
 | Configuration | Which host and directory-scoped values resolve here? |
 | Reports | What happened during orchestration and operations, including effects and gates? |
@@ -168,7 +185,7 @@ The Team Add-on contributes one navigation area with fourteen current views. The
 
 UI state is a projection. For a disputed operational fact, prefer the Team Admin API payload and then `runtime/addons/team-addon/state.db` over what a stale browser tab last rendered.
 
-## 28.8 Source-code ownership map
+## 28.8 Developer reference: source-code ownership map
 
 | Concern | Start here |
 |---|---|
@@ -196,9 +213,11 @@ UI state is a projection. For a disputed operational fact, prefer the Team Admin
 
 Route handlers and compatibility adapters should stay thin. New domain behavior belongs in a narrow service or domain module and should enter Admin surfaces through the supported runtime composition layer.
 
-## 28.9 Fast orientation commands
+## 28.9 Administrator runbook: fast orientation commands
 
-These commands avoid intentional business-state mutation. `evander-cli status` is bootstrap-aware: it may create or migrate missing runtime configuration, and it reports a useful core subset rather than every installed service or endpoint. Run it as the intended operator against the intended runtime directory.
+If an operator is handing off a problem, the useful starting packet is the selected directory, the affected Admin Web area, what was expected, what appeared instead, and any visible run, session, event, approval, or Team work-item ID. The administrator can then choose the narrow check below that corresponds to the reported layer.
+
+These commands avoid intentional business-state mutation. `evander-cli status` is bootstrap-aware: it may create or migrate missing runtime configuration, and it reports a useful core subset rather than every installed service or endpoint. Run it as the intended host operator against the intended runtime directory.
 
 ```bash
 # Basic control-plane summary; may initialize/migrate missing runtime configuration

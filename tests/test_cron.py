@@ -49,9 +49,9 @@ def test_next_cron_time_supports_standard_field_syntax(
 
 
 def test_next_cron_time_uses_posix_day_of_month_or_week_semantics() -> None:
-    assert next_cron_time(
-        "0 9 1 * mon", datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
-    ) == datetime(2026, 6, 8, 9, 0, tzinfo=UTC)
+    assert next_cron_time("0 9 1 * mon", datetime(2026, 6, 1, 9, 0, tzinfo=UTC)) == datetime(
+        2026, 6, 8, 9, 0, tzinfo=UTC
+    )
 
 
 @pytest.mark.parametrize(
@@ -81,7 +81,10 @@ def test_latest_cron_time_on_or_before_supports_exact_and_previous_matches(
 
 
 def test_latest_cron_time_on_or_before_returns_none_for_invalid_syntax() -> None:
-    assert latest_cron_time_on_or_before("0 nope * * *", datetime(2026, 5, 18, 6, 0, tzinfo=UTC)) is None
+    assert (
+        latest_cron_time_on_or_before("0 nope * * *", datetime(2026, 5, 18, 6, 0, tzinfo=UTC))
+        is None
+    )
 
 
 def test_validate_cron_expression_rejects_invalid_syntax() -> None:

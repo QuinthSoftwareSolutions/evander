@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from evander.container_worker_images import resolve_container_worker_image_selector
+from evander.connectors.models import normalize_connector_grants
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
 from evander.directories import DirectoryStore
 from evander.events.provider_models import AgentCreateEffectDefinition
@@ -63,6 +64,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "ttl_hours": effect.ttl_hours,
             "capability_profile": effect.capability_profile,
             "allowed_tools": effect.allowed_tools,
+            "connector_grants": effect.connector_grants,
             "tool_argument_policies": effect.tool_argument_policies,
             "allowed_script_names": effect.allowed_script_names,
             "allowed_contact_ids": effect.allowed_contact_ids,
@@ -163,9 +165,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 execution_backend=execution_backend,
                 vm_name=existing_session.vm_id or vm_name,
                 vm_image=vm_image_selection["image_ref"] if vm_image_selection else None,
-                vm_image_alias=vm_image_selection["template_alias"]
-                if vm_image_selection
-                else None,
+                vm_image_alias=vm_image_selection["template_alias"] if vm_image_selection else None,
             )
         vm_image_selection: dict[str, str | None] | None = None
         record_vm_image_selection = False
@@ -212,6 +212,12 @@ class AgentCreateEffectProvider(EffectProviderBase):
             config=config,
             directory_path=directory_path,
         )
+        connector_grants = _validated_connector_grants(
+            context,
+            directory_path=directory_path,
+            session_id=session_id or f"session-{vm_name}",
+            value=payload.get("connector_grants"),
+        )
         result = context.vm_creator.create_vm(
             provider=normalize_optional_string(payload.get("provider")),
             vm_name=vm_name,
@@ -221,6 +227,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             vm_user=normalize_optional_string(payload.get("vm_user")) or "agent",
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=as_string_list(payload.get("allowed_tools")),
+            connector_grants=connector_grants,
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             allowed_contact_ids=resolved_contact_ids,
@@ -386,6 +393,21 @@ class AgentCreateEffectProvider(EffectProviderBase):
             config=config,
             directory_path=directory_path,
         )
+        connector_grants = _validated_connector_grants(
+            context,
+            directory_path=directory_path,
+            session_id=session_id,
+            value=payload.get("connector_grants"),
+        )
+        if (
+            connector_grants is None
+            and existing_session is not None
+            and existing_session.directory_path == directory_path
+        ):
+            connector_grants = {
+                connector_id: list(operation_names)
+                for connector_id, operation_names in existing_session.connector_grants.items()
+            }
         manifest = build_container_session_manifest(
             config=effective_config_for_directory(context, directory_path),
             session_id=session_id,
@@ -393,6 +415,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             model=model,
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=resolved_allowed_tools,
+            connector_grants=connector_grants,
             tool_argument_policies=payload.get("tool_argument_policies"),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             allowed_contact_ids=resolved_contact_ids,
@@ -584,9 +607,7 @@ def _agent_communication_allowlists(
                 selected_teams_channels.append(target.id)
             continue
         if target.provider == "email":
-            missing_capabilities = sorted(
-                {"read", "write"} - set(target.policy.capabilities)
-            )
+            missing_capabilities = sorted({"read", "write"} - set(target.policy.capabilities))
             if missing_capabilities:
                 raise ValueError(
                     "effect:agent:create email communication target "
@@ -695,6 +716,38 @@ def _existing_session_for_create(
         if matches:
             return matches[-1]
     return None
+
+
+def _validated_connector_grants(
+    context: Any,
+    *,
+    directory_path: str,
+    session_id: str,
+    value: object,
+) -> dict[str, list[str]] | None:
+    if value is None:
+        return None
+    grants = normalize_connector_grants(value)
+    if not grants:
+        return {}
+    resolver = getattr(context, "provider_config_resolver", None)
+    if resolver is None or not hasattr(resolver, "resolve_connectors_for_directory"):
+        raise ValueError("connector grants require a directory connector configuration resolver")
+    config = resolver.resolve_connectors_for_directory(directory_path)
+    for connector_id, operation_names in grants.items():
+        connector = config.connectors.get(connector_id)
+        if connector is None or connector.disabled:
+            raise ValueError(
+                f"session {session_id!r} grants unknown or disabled connector {connector_id!r}"
+            )
+        for operation_name in operation_names:
+            operation = connector.operations.get(operation_name)
+            if operation is None or operation.disabled:
+                raise ValueError(
+                    f"session {session_id!r} grants unknown or disabled connector operation "
+                    f"{connector_id}.{operation_name}"
+                )
+    return grants
 
 
 def _libvirt_vm_template_selection_from_session(session: Any) -> dict[str, str | None] | None:

@@ -22,6 +22,4 @@ def test_non_daemon_modules_do_not_import_pr_feedback_daemon() -> None:
             if _PATTERN.search(line):
                 offending.append(f"{path}:{line_number}: {line.strip()}")
 
-    assert offending == [], (
-        "Non-daemon PR feedback daemon imports found:\n" + "\n".join(offending)
-    )
+    assert offending == [], "Non-daemon PR feedback daemon imports found:\n" + "\n".join(offending)

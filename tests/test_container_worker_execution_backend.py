@@ -103,9 +103,7 @@ class FakeContainerWorkerClient:
             metadata=request.metadata,
         )
 
-    def clone_repo(
-        self, session_id: str, request: WorkerRepoCloneRequest
-    ) -> WorkerRepoCloneRecord:
+    def clone_repo(self, session_id: str, request: WorkerRepoCloneRequest) -> WorkerRepoCloneRecord:
         self.cloned_repos.append((session_id, request))
         return WorkerRepoCloneRecord(
             session_id=session_id,
@@ -394,9 +392,7 @@ def test_session_preparation_clone_and_write_delegate_to_worker_client(tmp_path:
     clone = backend.clone_repo(session_id="session-1", repo_source="/tmp/repo", repo_name="Repo")
     written = backend.write_files(
         session_id="session-1",
-        files=[
-            {"destination_path": "/home/agent/repos/Repo/AGENT_TASK.yaml", "content": "task"}
-        ],
+        files=[{"destination_path": "/home/agent/repos/Repo/AGENT_TASK.yaml", "content": "task"}],
     )
 
     assert prepared.repo_root_container_path == "/home/agent/repos"
@@ -434,9 +430,7 @@ def test_delete_session_delegates_to_worker_client(tmp_path: Path) -> None:
 
 def test_delete_session_uses_targeted_repository_lookup(tmp_path: Path) -> None:
     client = FakeContainerWorkerClient()
-    record = ContainerWorkerExecutionRepository(
-        tmp_path / "container-worker-executions.json"
-    )
+    record = ContainerWorkerExecutionRepository(tmp_path / "container-worker-executions.json")
     record.put(
         ContainerWorkerExecutionRecord(
             execution_id="exec-1",

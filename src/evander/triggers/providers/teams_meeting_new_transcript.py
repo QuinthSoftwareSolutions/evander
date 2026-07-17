@@ -77,7 +77,9 @@ class TeamsMeetingNewTranscriptTriggerProvider(TriggerProviderBase):
         last_sequences: dict[str, int],
         session_filter: set[str],
     ) -> list[TeamsMeetingEvent]:
-        store = TeamsMeetingStore(Path(self.runtime_context.resolved_config.teams_meeting_store_path))
+        store = TeamsMeetingStore(
+            Path(self.runtime_context.resolved_config.teams_meeting_store_path)
+        )
         transcript_events: list[TeamsMeetingEvent] = []
         for binding in store.list_bindings():
             if session_filter and binding.session_id not in session_filter:

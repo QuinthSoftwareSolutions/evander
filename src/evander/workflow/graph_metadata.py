@@ -30,9 +30,7 @@ def resolve_workflow_graph_metadata(
 
     normalized_nodes = _normalize_node_map(nodes_by_id)
     components = _connected_components(normalized_nodes, edges)
-    component_by_node_id = {
-        node_id: component for component in components for node_id in component
-    }
+    component_by_node_id = {node_id: component for component in components for node_id in component}
 
     exact_metadata_by_component: dict[frozenset[str], ResolvedWorkflowGraphMetadata] = {}
     normalized_graphs = [_normalize_workflow_graph(graph) for graph in workflow_graphs or []]
@@ -188,9 +186,7 @@ def _graphs_overlapping_component(
 
 def _normalized_node_id_set(node_ids: Iterable[Any]) -> frozenset[str]:
     return frozenset(
-        node_id
-        for node_id in (_normalize_text(node_id) for node_id in node_ids)
-        if node_id
+        node_id for node_id in (_normalize_text(node_id) for node_id in node_ids) if node_id
     )
 
 

@@ -38,6 +38,7 @@ EPHEMERAL_REQUESTED_EVENT_TYPE = "team.ephemeral.requested"
 
 EPHEMERAL_COMPLETED_EVENT_TYPE = "team.ephemeral.completed"
 
+
 def _ephemeral_request_result() -> dict[str, Any]:
     return {
         "success": True,
@@ -46,6 +47,7 @@ def _ephemeral_request_result() -> dict[str, Any]:
         "created_ephemeral_assignment_ids": [],
         "events": [],
     }
+
 
 def _create_ephemeral_assignments(
     state: TeamState,
@@ -112,6 +114,7 @@ def _create_ephemeral_assignments(
         state.ephemeral_assignments[assignment.id] = assignment
         result["created_ephemeral_assignment_ids"].append(assignment.id)
 
+
 def _active_ephemeral_assignments_for_parent(
     state: TeamState,
     parent_agent_id: str,
@@ -126,6 +129,7 @@ def _active_ephemeral_assignments_for_parent(
         for assignment in state.ephemeral_assignments.values()
         if assignment.parent_agent_id == parent_agent_id and assignment.state in active_states
     ]
+
 
 def _resolve_ephemeral_assignment(
     state: TeamState,
@@ -147,6 +151,7 @@ def _resolve_ephemeral_assignment(
             if assignment.session_id == session_id:
                 return assignment
     raise ValueError("ephemeral action requires assignment_id or a known session_id")
+
 
 def _apply_ephemeral_acceptance(
     state: TeamState,
@@ -205,6 +210,7 @@ def _apply_ephemeral_acceptance(
     assignment.updated_at = utc_now()
     return None
 
+
 def _create_ephemeral_parent_notice(
     state: TeamState,
     assignment: EphemeralAssignment,
@@ -225,6 +231,7 @@ def _create_ephemeral_parent_notice(
         },
     )
     return inbox_id
+
 
 def _ephemeral_assignment_event_payload(
     state: TeamState,
@@ -289,6 +296,7 @@ def _ephemeral_assignment_event_payload(
         },
     }
 
+
 def _build_ephemeral_prompt(
     *,
     assignment: EphemeralAssignment,
@@ -330,6 +338,7 @@ def _build_ephemeral_prompt(
         "and request_id. Use this argument shape:\n"
         f"{_json_dumps(schema)}\n"
     )
+
 
 __all__ = [
     "EPHEMERAL_REQUESTED_EVENT_TYPE",

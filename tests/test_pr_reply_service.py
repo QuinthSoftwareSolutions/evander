@@ -293,9 +293,7 @@ def test_azure_reply_provider_posts_reply_with_mentions(
             )
         assert request.url.path.endswith("/pullRequests/17/threads/44/comments")
         payload = json.loads(request.content.decode("utf-8"))
-        assert payload["content"] == (
-            "@<11111111-1111-1111-1111-111111111111>\n\nHandled."
-        )
+        assert payload["content"] == ("@<11111111-1111-1111-1111-111111111111>\n\nHandled.")
         return httpx.Response(
             201,
             json={"id": 301, "_links": {"web": {"href": "https://ado.test/reply/301"}}},

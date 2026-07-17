@@ -26,8 +26,7 @@ class CapturingRestoreService(MssqlSeedRestoreService):
     def _run_sql_output(self, script: str) -> str:
         self.scripts.append(script)
         return (
-            "AppData\t/var/opt/mssql/data/app.mdf\tD\n"
-            "AppLog\t/var/opt/mssql/data/app_log.ldf\tL\n"
+            "AppData\t/var/opt/mssql/data/app.mdf\tD\nAppLog\t/var/opt/mssql/data/app_log.ldf\tL\n"
         )
 
     def _run_sql(self, script: str) -> None:
@@ -49,7 +48,10 @@ def test_sidecar_restore_generates_replace_script_and_reattaches_session_login()
 
     assert result["status"] == "restored"
     restore_script = service.scripts[-1]
-    assert "ALTER DATABASE [asb_session_app_hash] SET SINGLE_USER WITH ROLLBACK IMMEDIATE" in restore_script
+    assert (
+        "ALTER DATABASE [asb_session_app_hash] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
+        in restore_script
+    )
     assert "RESTORE DATABASE [asb_session_app_hash]" in restore_script
     assert "FROM DISK = N'/var/lib/evander/mssql-seeds/app.bak'" in restore_script
     assert "MOVE N'AppData' TO N'/var/opt/mssql/data/asb_session_app_hash.mdf'" in restore_script

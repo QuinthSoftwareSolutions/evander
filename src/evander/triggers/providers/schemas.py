@@ -372,7 +372,9 @@ class RemoteIssueMatchingTriggerDefinition(TriggerDefinition):
         if self.provider == "github" and self.wiql:
             raise ValueError("trigger:remote-issue-matching wiql is only valid for Azure DevOps")
         if self.provider == "github" and self.query_mode is not None:
-            raise ValueError("trigger:remote-issue-matching query_mode is only valid for Azure DevOps")
+            raise ValueError(
+                "trigger:remote-issue-matching query_mode is only valid for Azure DevOps"
+            )
         if self.provider == "azure_devops":
             self.query_mode = validate_ado_query_mode(
                 query_mode=self.query_mode,

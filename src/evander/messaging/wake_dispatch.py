@@ -378,9 +378,7 @@ class HostWakeDispatcher:
             scoped_config=worker_config,
             agent_provider=agent_provider,
         )
-        agent_env = {
-            "AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id)
-        }
+        agent_env = {"AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id)}
         if agent_provider:
             agent_env["AGENT_PROVIDER"] = agent_provider
         if agent_model:
@@ -529,7 +527,9 @@ class HostWakeDispatcher:
         session_id = normalize_optional_string(getattr(session, "session_id", None))
         if not session_id:
             raise ValueError("container wake dispatch requires a session_id")
-        directory_path = normalize_optional_string(getattr(session, "directory_path", None)) or "root"
+        directory_path = (
+            normalize_optional_string(getattr(session, "directory_path", None)) or "root"
+        )
         target_name = self._container_target_name(session=session, session_id=session_id)
         effective_resume_mode = normalize_optional_string(resume_mode) or "same_context"
         dispatch_id = f"wake-{int(time.time() * 1_000_000)}-{session_id}"
@@ -723,8 +723,7 @@ class HostWakeDispatcher:
                             "resume_mode": effective_resume_mode,
                             "agent_provider": agent_provider,
                             "model": (
-                                agent_model
-                                or str(getattr(session, "model", "") or "").strip()
+                                agent_model or str(getattr(session, "model", "") or "").strip()
                             ),
                             "model_provider_mode": base_config.model_provider_mode,
                         },
@@ -966,7 +965,9 @@ class HostWakeDispatcher:
         agent_provider: str | None = None,
     ) -> str | None:
         session = self.runtime.session_repository.get_session(binding.session_id)
-        provider = normalize_optional_string(agent_provider) or self._resolve_agent_provider_for_binding(
+        provider = normalize_optional_string(
+            agent_provider
+        ) or self._resolve_agent_provider_for_binding(
             binding,
             scoped_config=scoped_config,
         )
@@ -1105,7 +1106,9 @@ class HostWakeDispatcher:
                 for record in read_all().values()
                 if normalize_optional_string(getattr(record, "session_id", None))
                 == normalized_session_id
-                and (normalize_optional_string(getattr(record, "last_status", None)) or "").casefold()
+                and (
+                    normalize_optional_string(getattr(record, "last_status", None)) or ""
+                ).casefold()
                 in _ACTIVE_CONTAINER_STATUSES
             ]
 
@@ -1114,12 +1117,15 @@ class HostWakeDispatcher:
             try:
                 inspected = backend.inspect(getattr(record, "execution_id"))
                 inspected_status = getattr(inspected, "status", None)
-                status = normalize_optional_string(getattr(inspected_status, "value", inspected_status))
+                status = normalize_optional_string(
+                    getattr(inspected_status, "value", inspected_status)
+                )
             except Exception:
                 pass
             if (status or "").casefold() in _ACTIVE_CONTAINER_STATUSES:
                 return True
         return False
+
 
 def probe_agent_dispatch_state(*, session_id: str, vm_id: str, script_path: Path) -> str:
     if not script_path.exists():

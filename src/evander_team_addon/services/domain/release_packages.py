@@ -137,6 +137,7 @@ def _emit_git_release_recovery_event(
         }
     )
 
+
 def _apply_git_release_request(
     state: TeamState,
     *,
@@ -185,6 +186,7 @@ def _apply_git_release_request(
         team_id=actor.team_id,
     )
 
+
 def _release_request_permitted(
     state: TeamState,
     *,
@@ -201,6 +203,7 @@ def _release_request_permitted(
         )
         or (_is_team_manager(state, actor) and project.team_id == actor.team_id)
     )
+
 
 def _failed_release_promotion_for_recovery(
     state: TeamState,
@@ -225,6 +228,7 @@ def _failed_release_promotion_for_recovery(
         reverse=True,
     )
     return promotions[0]
+
 
 def _apply_git_release_recovery(
     state: TeamState,
@@ -307,9 +311,7 @@ def _apply_git_release_recovery(
         "expected_commit_sha": expected_commit_sha,
         "source_branches": [agent_branch],
         "expected_source_commits": {agent_branch: expected_commit_sha},
-        "allowed_changed_paths": (
-            allowed_changed_paths if release.policy_version >= 2 else None
-        ),
+        "allowed_changed_paths": (allowed_changed_paths if release.policy_version >= 2 else None),
     }
     payload.update(_managed_repo_fields(git))
     summary = _optional_text(request.get("summary"))
@@ -323,6 +325,7 @@ def _apply_git_release_recovery(
         payload=payload,
     )
     return release.id
+
 
 def _build_release_package(
     state: TeamState,
@@ -352,9 +355,7 @@ def _build_release_package(
     feature_sources_by_task: dict[str, list[str]] = {}
     source_expected_commits: dict[str, str] = {}
     waiver_requests = _release_waiver_requests(request.get("verification_waivers"))
-    waivers_by_deliverable = {
-        item["deliverable_id"]: item for item in waiver_requests
-    }
+    waivers_by_deliverable = {item["deliverable_id"]: item for item in waiver_requests}
     if len(waivers_by_deliverable) != len(waiver_requests):
         result["errors"].append("verification_waivers contains duplicate deliverable_id")
         return None
@@ -383,9 +384,7 @@ def _build_release_package(
             valid = False
             continue
         verification_status = (
-            deliverable.verification.status
-            if deliverable.verification is not None
-            else "missing"
+            deliverable.verification.status if deliverable.verification is not None else "missing"
         )
         waiver_request = waivers_by_deliverable.get(deliverable_id)
         if verification_status == "failed":
@@ -411,9 +410,7 @@ def _build_release_package(
             actor_kind = _optional_text(request.get("waiver_actor_kind"))
             actor_id = _optional_text(request.get("waiver_actor_id"))
             if actor_kind not in {"agent", "operator"} or actor_id is None:
-                result["errors"].append(
-                    "verification waiver actor identity is required"
-                )
+                result["errors"].append("verification waiver actor identity is required")
                 valid = False
                 continue
             verification_waivers.append(
@@ -478,10 +475,7 @@ def _build_release_package(
                     source_branch,
                 )
                 previous_expected = source_expected_commits.get(source_branch)
-                if (
-                    previous_expected is not None
-                    and previous_expected != reviewed_commit_sha
-                ):
+                if previous_expected is not None and previous_expected != reviewed_commit_sha:
                     result["errors"].append(
                         f"source branch {source_branch} has multiple reviewed commits in one release"
                     )
@@ -699,12 +693,14 @@ def _duplicate_release_package_error(release: ReleasePackage) -> str:
     )
     return "; ".join(parts)
 
+
 def _feature_promotion_source_branch_for_release(deliverable: Deliverable) -> str | None:
     refs = deliverable.git_refs
     source_branch = refs.review_branch or refs.agent_branch
     if source_branch is None:
         return None
     return validate_branch_name(source_branch)
+
 
 def _release_feature_branches_from_deliverables(
     state: TeamState,
@@ -770,6 +766,7 @@ def _release_allowed_changed_paths(
             allowed = _append_unique(allowed, path)
     return allowed, missing_manifest_ids
 
+
 def _release_feature_prerequisites_ready(
     state: TeamState,
     release: ReleasePackage,
@@ -781,6 +778,7 @@ def _release_feature_prerequisites_ready(
         if promotion.state != "succeeded":
             return False
     return True
+
 
 def _queue_release_promotion_if_ready(
     state: TeamState,
@@ -828,9 +826,8 @@ def _queue_release_promotion_if_ready(
     )
     if release.policy_version >= 2 and missing_manifest_ids:
         release.state = TeamRecordState.BLOCKED
-        release.error = (
-            "release scope validation is missing reviewed manifests for: "
-            + ", ".join(sorted(missing_manifest_ids))
+        release.error = "release scope validation is missing reviewed manifests for: " + ", ".join(
+            sorted(missing_manifest_ids)
         )
         if release.scope_validation is not None:
             release.scope_validation.state = "blocked"
@@ -880,6 +877,7 @@ def _queue_release_promotion_if_ready(
     )
     result["git_promotion_event_ids"].append(release_promotion.id)
 
+
 def _release_failure_recipient(state: TeamState, release: ReleasePackage) -> str | None:
     project = state.projects.get(release.project_id)
     if project is None:
@@ -889,6 +887,7 @@ def _release_failure_recipient(state: TeamState, release: ReleasePackage) -> str
         return lead_agent_id
     team = state.teams.get(project.team_id)
     return team.manager_agent_id if team is not None else None
+
 
 __all__ = [
     "GIT_RELEASE_RECOVERY_EVENT_TYPE",

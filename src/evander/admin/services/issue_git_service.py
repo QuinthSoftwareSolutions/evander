@@ -32,9 +32,7 @@ def _extract_local_issue_id_candidate(value: str) -> str | None:
         return normalized
     if normalized.startswith("vm-") and normalized[3:].isdigit():
         return normalized[3:]
-    prefixed_match = re.match(
-        r"^(?:local|issue)[:/\-]([0-9]+)$", normalized, flags=re.IGNORECASE
-    )
+    prefixed_match = re.match(r"^(?:local|issue)[:/\-]([0-9]+)$", normalized, flags=re.IGNORECASE)
     if prefixed_match:
         return prefixed_match.group(1)
     session_match = re.match(r"^issue-([0-9]+)(?:-|$)", normalized)
@@ -134,9 +132,7 @@ def _issue_session_backend(session: Any) -> str:
     if not isinstance(metadata, Mapping):
         metadata = {}
     backend = str(
-        metadata.get("execution_backend")
-        or getattr(session, "vm_provider", None)
-        or ""
+        metadata.get("execution_backend") or getattr(session, "vm_provider", None) or ""
     ).strip()
     if backend:
         return backend
@@ -392,9 +388,7 @@ class IssueGitAdminSupport:
         if updated_at is not None:
             payload["updated_at"] = updated_at.isoformat()
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
-        yaml_path.write_text(
-            yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
-        )
+        yaml_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     def direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
         snapshot = self.directory_ownership.list_entities(directory_path, include_descendants=False)
@@ -668,9 +662,7 @@ class IssueGitAdminService:
                 source_path = Path(yaml_path)
                 source_text = source_path.read_text(encoding="utf-8")
                 try:
-                    yaml_payload = json.loads(
-                        json.dumps(yaml.safe_load(source_text) or {})
-                    )
+                    yaml_payload = json.loads(json.dumps(yaml.safe_load(source_text) or {}))
                 except Exception:
                     yaml_payload = {}
                 issue_number = issue_helpers.extract_issue_number_from_payload(
@@ -680,9 +672,7 @@ class IssueGitAdminService:
                 target_yaml_path.write_text(source_text, encoding="utf-8")
                 yaml_text = target_yaml_path.read_text(encoding="utf-8")
                 try:
-                    yaml_payload = json.loads(
-                        json.dumps(yaml.safe_load(yaml_text) or {})
-                    )
+                    yaml_payload = json.loads(json.dumps(yaml.safe_load(yaml_text) or {}))
                 except Exception:
                     yaml_payload = {}
                 raw_source = yaml_payload.get("source")
@@ -795,9 +785,7 @@ class IssueGitAdminService:
             existing_record = admin.local_issue_store.get(issue_id)
             resolved_managed_repo_id = (
                 existing_record.managed_repo_id
-                if existing_record is not None
-                and managed_repo_id is None
-                and repo_source is None
+                if existing_record is not None and managed_repo_id is None and repo_source is None
                 else self._resolve_managed_repo_id(
                     directory_path=normalized_directory_path,
                     managed_repo_id=managed_repo_id,

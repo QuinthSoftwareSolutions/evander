@@ -256,9 +256,9 @@ def _normalize_string_case(value: str, *, case_sensitive: bool) -> str:
 
 def _values_equal(left: Any, right: Any, *, case_sensitive: bool) -> bool:
     if isinstance(left, str) and isinstance(right, str):
-        return _normalize_string_case(left, case_sensitive=case_sensitive) == _normalize_string_case(
-            right, case_sensitive=case_sensitive
-        )
+        return _normalize_string_case(
+            left, case_sensitive=case_sensitive
+        ) == _normalize_string_case(right, case_sensitive=case_sensitive)
     return left == right
 
 
@@ -393,9 +393,7 @@ class PolicyEngine:
 
     def set_extra_mcp_tool_names(self, tool_names: list[str] | tuple[str, ...] | set[str]) -> None:
         self.extra_mcp_tool_names = {
-            str(tool_name or "").strip()
-            for tool_name in tool_names
-            if str(tool_name or "").strip()
+            str(tool_name or "").strip() for tool_name in tool_names if str(tool_name or "").strip()
         }
 
     def _iter_known_tool_names(self) -> list[McpToolName]:
@@ -428,7 +426,9 @@ class PolicyEngine:
             return ToolApprovalStatus(requires_approval=True, approval_locked=True)
         effective_policy = effective_policy or self.effective_policy_for_session(session)
         required_tools = {tool_name_value(tool) for tool in session.approval_required_tools or []}
-        required_tools.update(tool_name_value(tool) for tool in effective_policy.approval_required_tools)
+        required_tools.update(
+            tool_name_value(tool) for tool in effective_policy.approval_required_tools
+        )
         rule = effective_policy.mcp_tool_policies.get(tool_value)
         if rule is not None and rule.require_approval:
             return ToolApprovalStatus(requires_approval=True, approval_locked=False)
@@ -713,11 +713,7 @@ class PolicyEngine:
             raise PolicyError(
                 f"Tool {tool_value} requires per-invocation approval in this directory"
             )
-        if (
-            rule is not None
-            and rule.require_exact_payload
-            and not per_invocation_approval_consumed
-        ):
+        if rule is not None and rule.require_exact_payload and not per_invocation_approval_consumed:
             raise PolicyError(
                 f"Tool {tool_value} requires exact-payload approval in this directory"
             )
@@ -808,7 +804,9 @@ class PolicyEngine:
                     "approval_locked": visibility.approval_locked,
                 }
                 if visibility.approval_settings is not None:
-                    entry["approval_settings"] = visibility.approval_settings.model_dump(mode="json")
+                    entry["approval_settings"] = visibility.approval_settings.model_dump(
+                        mode="json"
+                    )
                 available_tools.append(entry)
                 if visibility.requires_approval:
                     approval_required_tools.append(tool_name_value(visibility.tool))
@@ -1357,9 +1355,7 @@ class PolicyEngine:
         return effective_value
 
     def require_communication_file_receive_enabled(self, session: SessionManifest) -> None:
-        if not self._communication_file_policy_value(
-            session, "communication_file_receive_enabled"
-        ):
+        if not self._communication_file_policy_value(session, "communication_file_receive_enabled"):
             raise PolicyError(
                 f"Inbound communication file receive is disabled for session {session.session_id}"
             )
@@ -1407,9 +1403,7 @@ class PolicyEngine:
         )
 
     def require_communication_file_send_enabled(self, session: SessionManifest) -> None:
-        if not self._communication_file_policy_value(
-            session, "communication_file_send_enabled"
-        ):
+        if not self._communication_file_policy_value(session, "communication_file_send_enabled"):
             raise PolicyError(
                 f"Outbound communication file send is disabled for session {session.session_id}"
             )
@@ -1479,9 +1473,7 @@ class PolicyEngine:
         safe_filename = self.require_safe_communication_filename(session, filename)
         if byte_count < 0:
             raise PolicyError("Communication file size must be non-negative")
-        max_bytes = self._communication_file_policy_value(
-            session, "communication_file_max_bytes"
-        )
+        max_bytes = self._communication_file_policy_value(session, "communication_file_max_bytes")
         if max_bytes is not None and byte_count > int(max_bytes):
             raise PolicyError(
                 f"Communication file exceeds max bytes for session {session.session_id}: "
@@ -1856,8 +1848,13 @@ class PolicyEngine:
                 )
                 return request
             settings = _approval_settings_for_request(request)
-            payload_mode = settings.payload_mode if settings is not None else ApprovalPayloadMode.EXACT
-            if payload_mode == ApprovalPayloadMode.EXACT and request.payload_digest != digest_payload(payload):
+            payload_mode = (
+                settings.payload_mode if settings is not None else ApprovalPayloadMode.EXACT
+            )
+            if (
+                payload_mode == ApprovalPayloadMode.EXACT
+                and request.payload_digest != digest_payload(payload)
+            ):
                 error = _approval_rejection_error(
                     request_id=request_id,
                     rejection_kind="payload_mismatch",

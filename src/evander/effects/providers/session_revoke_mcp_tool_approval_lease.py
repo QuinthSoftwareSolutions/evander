@@ -142,5 +142,7 @@ class SessionRevokeMcpToolApprovalLeaseEffectProvider(EffectProviderBase):
             "tools": [tool_name_value(tool) for tool in lease.tools],
             "revoked": True,
             "already_revoked": already_revoked,
-            "revoked_at": revoked_at.astimezone(UTC).isoformat() if revoked_at is not None else None,
+            "revoked_at": revoked_at.astimezone(UTC).isoformat()
+            if revoked_at is not None
+            else None,
         }

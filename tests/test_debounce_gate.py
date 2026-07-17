@@ -43,7 +43,9 @@ def _worker(tmp_path: Path) -> EffectOrchestratorWorker:
         }
     )
     return EffectOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
     )
 
 

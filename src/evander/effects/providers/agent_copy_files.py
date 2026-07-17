@@ -29,9 +29,7 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
             "vm_name": effect.vm_name,
             "vm_user": effect.vm_user,
             "allowed_source_roots": effect.allowed_source_roots,
-            "files": [
-                entry.model_dump(mode="json", exclude_none=True) for entry in effect.files
-            ],
+            "files": [entry.model_dump(mode="json", exclude_none=True) for entry in effect.files],
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -79,8 +77,7 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
         return {
             "success": True,
             "message": (
-                f"Copied {result.copied_count} file(s) into container worker "
-                f"session {session_id}"
+                f"Copied {result.copied_count} file(s) into container worker session {session_id}"
             ),
             "session_id": session_id,
             "execution_backend": "container_worker_vm",
@@ -167,9 +164,7 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
                 raise ValueError(
                     "effect:agent:copy-files only supports file sources for container sessions"
                 )
-            payload["content_base64"] = base64.b64encode(local_source.read_bytes()).decode(
-                "ascii"
-            )
+            payload["content_base64"] = base64.b64encode(local_source.read_bytes()).decode("ascii")
             return payload
         if isinstance(content, (bytes, bytearray)):
             payload["content_base64"] = base64.b64encode(bytes(content)).decode("ascii")

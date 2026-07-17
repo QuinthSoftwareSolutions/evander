@@ -67,9 +67,7 @@ def test_workflow_state_store_uses_runtime_dir_and_isolates_scopes(tmp_path: Pat
         "scope": "directory"
     }
     assert store.get("root", "graph-b", "workflow", "cursor").record.value == {"scope": "graph"}
-    assert store.get("root", "graph-a", "other", "cursor").record.value == {
-        "scope": "namespace"
-    }
+    assert store.get("root", "graph-a", "other", "cursor").record.value == {"scope": "namespace"}
     assert store.get("root", "graph-a", "workflow", "other").record.value == {"scope": "key"}
 
 

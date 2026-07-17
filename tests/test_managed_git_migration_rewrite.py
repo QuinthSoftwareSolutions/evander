@@ -103,9 +103,7 @@ class _FakeWorkflowConfigAdmin:
         assert worker_id == "trigger-orchestrator"
         return SimpleNamespace(config={"workflow_packs": ["live.json"]})
 
-    def read_workflow_pack_for_migration(
-        self, *, workflow_pack: str
-    ) -> SimpleNamespace:
+    def read_workflow_pack_for_migration(self, *, workflow_pack: str) -> SimpleNamespace:
         assert workflow_pack == "live.json"
         return SimpleNamespace(
             content=self.content,
@@ -188,7 +186,12 @@ def test_apply_rewrites_all_legacy_state_and_records_bindings(tmp_path: Path) ->
                         "canonical_release_branch_prefix": "releases/<project-id>/",
                     },
                 }
-            }
+            },
+            "git_promotions": {
+                "promotion-7": {
+                    "outputs": {"host_repo_path": str(source)},
+                }
+            },
         },
     )
     _write_json(
@@ -227,32 +230,32 @@ def test_apply_rewrites_all_legacy_state_and_records_bindings(tmp_path: Path) ->
     assert "repo_source" not in issue
     session = json.loads((runtime / "sessions.json").read_text())["session-7"]
     metadata = session["metadata"]
+    assert metadata["managed_repo_id"] == repo_id
     assert metadata["managed_git_remote_reconciliation_required"] is True
     assert metadata["container_git_write_access"]["managed_repo_id"] == repo_id
     assert "bare_repo_path" not in metadata["container_git_write_access"]
     assert "authorized_repo_path" not in metadata["container_git_write_access"]
-    team_git = json.loads(
-        (runtime / "addons" / "team-addon" / "state.json").read_text()
-    )["projects"]["project-7"]["git"]
+    team_git = json.loads((runtime / "addons" / "team-addon" / "state.json").read_text())[
+        "projects"
+    ]["project-7"]["git"]
     assert team_git == {
         "base_branch": "main",
         "canonical_release_branch_prefix": "releases/<project-id>/",
         "managed_repo_id": repo_id,
     }
-    workflow_node = json.loads(
-        (runtime / "workflow-packs" / "legacy.json").read_text()
-    )["nodes"][0]
+    promotion_output = json.loads((runtime / "addons" / "team-addon" / "state.json").read_text())[
+        "git_promotions"
+    ]["promotion-7"]["outputs"]
+    assert promotion_output == {"host_repo_path": str(source)}
+    workflow_node = json.loads((runtime / "workflow-packs" / "legacy.json").read_text())["nodes"][0]
     assert workflow_node["managed_repo_id"] == repo_id
     assert "repo_source" not in workflow_node
     assert "host_repo_path" not in workflow_node
     assert "git_root" not in json.loads(issue_setup_path.read_text(encoding="utf-8"))
 
-    registry = json.loads(
-        (runtime / "managed-git-repositories.json").read_text(encoding="utf-8")
-    )
+    registry = json.loads((runtime / "managed-git-repositories.json").read_text(encoding="utf-8"))
     bindings = {
-        (item["kind"], item["binding_id"])
-        for item in registry["repositories"][repo_id]["bindings"]
+        (item["kind"], item["binding_id"]) for item in registry["repositories"][repo_id]["bindings"]
     }
     assert {
         ("issues", "root:local:7"),
@@ -284,9 +287,7 @@ def test_apply_rewrites_directory_owned_authorized_key(
     )
     authorized_keys = tmp_path / "authorized_keys"
     assignment_name = (
-        "EVANDER_GIT_AUTH_REPO_PREFIX_B64"
-        if prefix_scoped
-        else "EVANDER_GIT_AUTH_REPO_B64"
+        "EVANDER_GIT_AUTH_REPO_PREFIX_B64" if prefix_scoped else "EVANDER_GIT_AUTH_REPO_B64"
     )
     assignment_value = legacy.parent if prefix_scoped else legacy
     authorized_keys.write_text(
@@ -325,9 +326,9 @@ def test_apply_rewrites_directory_owned_authorized_key(
     auth_text = authorized_keys.read_text(encoding="utf-8")
     assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64=" not in auth_text
     assert _b64(tmp_path / "runtime" / "managed-git" / f"{repo_id}.git") in auth_text
-    assert service.get_repository(repo_id)["bindings_by_kind"][
-        "authorized_sessions"
-    ] == ["session-team-a"]
+    assert service.get_repository(repo_id)["bindings_by_kind"]["authorized_sessions"] == [
+        "session-team-a"
+    ]
 
 
 def test_apply_correlates_each_authorized_key_with_its_exact_session(
@@ -403,19 +404,13 @@ def test_apply_correlates_each_authorized_key_with_its_exact_session(
     applied = service.migrate("apply")
     records = {
         record["canonical_repository_url"]: record
-        for record in (
-            service.get_repository(repo_id) for repo_id in applied["managed_repo_ids"]
-        )
+        for record in (service.get_repository(repo_id) for repo_id in applied["managed_repo_ids"])
     }
 
-    assert records[str(first_upstream.resolve())]["bindings_by_kind"][
-        "authorized_sessions"
-    ] == [
+    assert records[str(first_upstream.resolve())]["bindings_by_kind"]["authorized_sessions"] == [
         "session-first"
     ]
-    assert records[str(second_upstream.resolve())]["bindings_by_kind"][
-        "authorized_sessions"
-    ] == [
+    assert records[str(second_upstream.resolve())]["bindings_by_kind"]["authorized_sessions"] == [
         "session-second"
     ]
 
@@ -544,9 +539,7 @@ def test_apply_rewrites_team_sqlite_project_git_json(tmp_path: Path) -> None:
             "INSERT INTO team_state_metadata(key, value) VALUES (?, ?)",
             [("revision", "0"), ("updated_at", "2026-01-01T00:00:00Z")],
         )
-        connection.execute(
-            "CREATE TABLE team_projects (id TEXT PRIMARY KEY, git_json TEXT)"
-        )
+        connection.execute("CREATE TABLE team_projects (id TEXT PRIMARY KEY, git_json TEXT)")
         connection.execute(
             "INSERT INTO team_projects(id, git_json) VALUES (?, ?)",
             (
@@ -571,9 +564,7 @@ def test_apply_rewrites_team_sqlite_project_git_json(tmp_path: Path) -> None:
         ).fetchone()[0]
     assert json.loads(raw_git) == {"base_branch": "main", "managed_repo_id": repo_id}
     registry = json.loads(
-        (tmp_path / "runtime" / "managed-git-repositories.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "runtime" / "managed-git-repositories.json").read_text(encoding="utf-8")
     )
     assert {
         (binding["kind"], binding["binding_id"])
@@ -595,12 +586,8 @@ def test_apply_updates_team_sqlite_in_place_with_wal_connection(tmp_path: Path) 
             "INSERT INTO team_state_metadata(key, value) VALUES (?, ?)",
             [("revision", "0"), ("updated_at", "2026-01-01T00:00:00Z")],
         )
-        writer.execute(
-            "CREATE TABLE team_projects (id TEXT PRIMARY KEY, git_json TEXT)"
-        )
-        writer.execute(
-            "CREATE TABLE unrelated_state (id TEXT PRIMARY KEY, value TEXT)"
-        )
+        writer.execute("CREATE TABLE team_projects (id TEXT PRIMARY KEY, git_json TEXT)")
+        writer.execute("CREATE TABLE unrelated_state (id TEXT PRIMARY KEY, value TEXT)")
         writer.execute(
             "INSERT INTO team_projects(id, git_json) VALUES (?, ?)",
             (
@@ -614,9 +601,7 @@ def test_apply_updates_team_sqlite_in_place_with_wal_connection(tmp_path: Path) 
                 ),
             ),
         )
-        writer.execute(
-            "INSERT INTO unrelated_state(id, value) VALUES ('before', 'preserved')"
-        )
+        writer.execute("INSERT INTO unrelated_state(id, value) VALUES ('before', 'preserved')")
         writer.commit()
         assert db_path.with_name(f"{db_path.name}-wal").exists()
 
@@ -624,9 +609,7 @@ def test_apply_updates_team_sqlite_in_place_with_wal_connection(tmp_path: Path) 
         applied = service.migrate("apply")
         repo_id = applied["managed_repo_ids"][0]
 
-        writer.execute(
-            "INSERT INTO unrelated_state(id, value) VALUES ('after', 'also preserved')"
-        )
+        writer.execute("INSERT INTO unrelated_state(id, value) VALUES ('after', 'also preserved')")
         writer.commit()
 
     with sqlite3.connect(db_path) as connection:
@@ -696,9 +679,7 @@ def test_apply_recovers_prepared_manifest_after_state_replacement(tmp_path: Path
     service = _service(tmp_path)
     applied = service.migrate("apply")
     manifest_path = (
-        service.runtime_dir
-        / "managed-git-migrations"
-        / f"{applied['migration_id']}.json"
+        service.runtime_dir / "managed-git-migrations" / f"{applied['migration_id']}.json"
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["status"] = "prepared"
@@ -754,24 +735,19 @@ def test_apply_rewrites_nested_clone_config_and_legacy_expressions(
 
     dry_run = service.migrate("dry-run")
 
-    assert "nested-config.json" in dry_run["inventory"][
-        "workflow_packs_with_legacy_fields"
-    ]
+    assert "nested-config.json" in dry_run["inventory"]["workflow_packs_with_legacy_fields"]
 
     applied = service.migrate("apply")
     repo_id = applied["managed_repo_ids"][0]
     nodes = {
-        node["id"]: node
-        for node in json.loads(workflow_path.read_text(encoding="utf-8"))["nodes"]
+        node["id"]: node for node in json.loads(workflow_path.read_text(encoding="utf-8"))["nodes"]
     }
     assert nodes["ensure"]["config"] == {
         "directory_path": "root",
         "repo_source": str(source),
     }
     assert nodes["clone"]["config"] == {"managed_repo_id": repo_id}
-    assert nodes["prompt"]["config"]["prompt"] == (
-        "Repository: ${{clone.managed_repo_id ?? null}}"
-    )
+    assert nodes["prompt"]["config"]["prompt"] == ("Repository: ${{clone.managed_repo_id ?? null}}")
 
 
 def test_migrated_workflow_verifier_rejects_legacy_expression(tmp_path: Path) -> None:
@@ -853,9 +829,7 @@ def test_apply_rewrites_live_workflow_pack_through_revision_service(
         ]
     }
     manifest_record = next(
-        item
-        for item in applied["rewritten_files"]
-        if item["path"] == str(workflow_path.resolve())
+        item for item in applied["rewritten_files"] if item["path"] == str(workflow_path.resolve())
     )
     assert manifest_record == {
         "path": str(workflow_path.resolve()),

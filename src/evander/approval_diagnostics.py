@@ -93,7 +93,9 @@ def _normalize_redacted_keys(redacted_keys: Iterable[str] | None) -> set[str]:
 
 
 def _normalize_redacted_markers(redacted_markers: Iterable[str] | None) -> tuple[str, ...]:
-    markers = redacted_markers if redacted_markers is not None else DEFAULT_SENSITIVE_PAYLOAD_MARKERS
+    markers = (
+        redacted_markers if redacted_markers is not None else DEFAULT_SENSITIVE_PAYLOAD_MARKERS
+    )
     normalized: list[str] = []
     seen: set[str] = set()
     for marker in markers:
@@ -176,7 +178,9 @@ def _build_differences(
     extra: list[dict[str, Any]] = []
     truncated = False
 
-    def append_changed(path: str, approved_value: Any, attempted_value: Any, *, redacted: bool) -> None:
+    def append_changed(
+        path: str, approved_value: Any, attempted_value: Any, *, redacted: bool
+    ) -> None:
         nonlocal truncated
         if len(changed) >= max_diff_entries:
             truncated = True
@@ -213,7 +217,9 @@ def _build_differences(
             }
         )
 
-    def walk(path: str, approved_value: Any, attempted_value: Any, *, key_name: str | None = None) -> None:
+    def walk(
+        path: str, approved_value: Any, attempted_value: Any, *, key_name: str | None = None
+    ) -> None:
         nonlocal truncated
         if truncated:
             return
@@ -333,8 +339,14 @@ def _build_differences(
 
     walk("", approved_payload, attempted_payload)
     return {
-        "changed": {"entries": changed, "truncated": truncated and len(changed) >= max_diff_entries},
-        "missing": {"entries": missing, "truncated": truncated and len(missing) >= max_diff_entries},
+        "changed": {
+            "entries": changed,
+            "truncated": truncated and len(changed) >= max_diff_entries,
+        },
+        "missing": {
+            "entries": missing,
+            "truncated": truncated and len(missing) >= max_diff_entries,
+        },
         "extra": {"entries": extra, "truncated": truncated and len(extra) >= max_diff_entries},
         "truncated": truncated,
     }

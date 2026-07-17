@@ -57,9 +57,7 @@ def test_local_ticket_constants_and_cursor_paths(tmp_path: Path) -> None:
     assert RECENT_ISSUE_LIMIT == 512
     assert ticket_cursor_path(tmp_path, "created") == tmp_path / TICKET_CREATED_CURSOR_FILENAME
     assert ticket_cursor_path(tmp_path, "changed") == tmp_path / TICKET_CHANGED_CURSOR_FILENAME
-    assert ticket_cursor_store(tmp_path, "created").path == ticket_cursor_path(
-        tmp_path, "created"
-    )
+    assert ticket_cursor_store(tmp_path, "created").path == ticket_cursor_path(tmp_path, "created")
 
 
 def test_within_ticket_directories_scopes_exactly_and_ignores_blank_entries() -> None:
@@ -89,15 +87,14 @@ def test_ticket_timestamp_parse_and_format_normalizes_to_utc() -> None:
     assert parse_ticket_timestamp("2026-05-02T11:30:00Z") == datetime(
         2026, 5, 2, 11, 30, tzinfo=UTC
     )
-    assert parse_ticket_timestamp("2026-05-02T11:30:00") == datetime(
-        2026, 5, 2, 11, 30, tzinfo=UTC
-    )
+    assert parse_ticket_timestamp("2026-05-02T11:30:00") == datetime(2026, 5, 2, 11, 30, tzinfo=UTC)
     assert parse_ticket_timestamp("2026-05-02T13:30:00+02:00") == datetime(
         2026, 5, 2, 11, 30, tzinfo=UTC
     )
-    assert format_ticket_timestamp(
-        datetime(2026, 5, 2, 13, 30, tzinfo=timezone(timedelta(hours=2)))
-    ) == "2026-05-02T11:30:00Z"
+    assert (
+        format_ticket_timestamp(datetime(2026, 5, 2, 13, 30, tzinfo=timezone(timedelta(hours=2))))
+        == "2026-05-02T11:30:00Z"
+    )
 
 
 def test_local_ticket_candidates_sort_and_scope_by_directory(
@@ -143,10 +140,9 @@ def test_local_ticket_candidates_sort_and_scope_by_directory(
     )
 
     assert [issue.issue_id for issue in candidates] == ["issue-a", "issue-b"]
-    assert (
-        max_local_ticket_timestamp(candidates, ["root/example-industry/app"], "created_at")
-        == datetime(2026, 5, 2, 11, 30, tzinfo=UTC)
-    )
+    assert max_local_ticket_timestamp(
+        candidates, ["root/example-industry/app"], "created_at"
+    ) == datetime(2026, 5, 2, 11, 30, tzinfo=UTC)
 
 
 def test_seed_new_ticket_created_trigger_cursors_preserves_existing_entries(

@@ -34,6 +34,8 @@ can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
 2. Run `evander-cli init-state --runtime-dir runtime`.
 3. Edit host-global bootstrap settings in `runtime/host-config.json`.
 4. Configure `root` directory overlays directly with the admin UI or `evander-cli directories config-set`.
+   Configure named agent integrations on the **Connectors** page or in the `connectors` directory
+   domain; keep credential values in the gateway/Admin service environment.
 5. If you are importing an older install, run `evander-cli migrate-global-config-to-root --config /path/to/legacy-gateway.yaml` once to seed `host-config.json` plus `root` from the legacy YAML file.
 6. Create the libvirt network with `./scripts/create_libvirt_network.sh`.
 7. Apply guest forwarding policy with `./scripts/apply_firewall.sh`.
@@ -67,6 +69,22 @@ Before debugging individual scripts or services, run the consolidated host statu
 
 The status output reports config load status, runtime store path permissions, key systemd unit states,
 gateway/relay endpoint reachability, and active/expired session summary.
+
+## Connector Operations
+
+Use Admin Web **Connectors** to inspect the effective directory configuration, verify whether each
+host auth profile has all required environment secrets, save revision-checked overrides, and run a
+configured health operation. CLI diagnosis is available through `evander-cli connectors list`,
+`show`, `validate`, and `test`; pass `--directory` to inspect a child scope.
+
+After changing an environment secret, restart `evander-gateway` and `evander-admin-web` so new
+processes read it. Connector JSON stores only environment variable names. If a call is unavailable,
+check in order: effective connector validation, auth availability, the session's
+`list_connectors`/`call_connector` tool visibility, its exact `connector_grants`, pending approval,
+and the connector-specific tool-call audit entry. Artifact results remain host-side until a
+separately allowed communication-artifact copy operation imports them into the session workspace.
+
+See [connectors](connectors.md) for schemas, examples, authentication behavior, and custom drivers.
 
 ## Workflow Runtime Files and Troubleshooting
 

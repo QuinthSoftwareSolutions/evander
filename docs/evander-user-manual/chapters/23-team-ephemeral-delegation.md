@@ -1,8 +1,10 @@
 # 23. Ephemeral Delegation
 
-> **At a glance.** A persistent Team agent may delegate a bounded task to a disposable Evander session when its configured ephemeral policy permits it. The child receives one assignment, one narrow reporting tool, a deterministic Git branch, and a lifecycle managed by the Team workflow pack. Completion produces evidence for the parent to accept or reject; it never grants the child general Team authority or automatically accepts the parent task.
+> **At a glance.** A regular Team agent can sometimes ask a temporary helper to investigate or implement one clearly bounded piece of work. The helper receives only that assignment and a narrow way to return its result; it does not become a new permanent team member. The parent agent remains responsible for checking the evidence and deciding whether to use it.
+>
+> Think of this as controlled parallel work, not hiring another member of the organization. The request, temporary session, result, parent decision, and cleanup are all recorded separately. Operators can follow those milestones without needing to understand the workflow nodes that move the assignment between them.
 
-## Why ephemeral agents exist
+## When a temporary helper is useful
 
 Persistent agents carry organizational identity, reporting relationships, Team memory visibility, inbox, and recurring responsibility. Ephemeral agents are intentionally different. They are short-lived workers for a bounded prompt such as:
 
@@ -15,51 +17,72 @@ The parent remains responsible for the Team task. Delegation increases execution
 
 For Northstar, Imani can delegate “add deterministic jitter edge-case tests” while continuing the main retry implementation. The child cannot reassign Imani's task, message Priya, request release, or decide Rowan's review.
 
+The parent therefore asks a narrow question, receives evidence, and remains accountable for the task. A useful assignment has a clear stopping point—such as a test, patch, or research report—and does not imply authority to coordinate the Team.
+
+```text
+parent requests bounded help -> temporary worker runs -> result returns
+                             -> parent accepts or rejects -> workspace is cleaned up
+```
+
+Completion and acceptance are deliberately separate. A worker can finish successfully while the parent still decides that its result is obsolete, incomplete, or unsuitable.
+
 ## Admission and capacity
 
-The parent persistent agent has an effective ephemeral policy with <code>max_concurrent</code>. A value of zero disables delegation. Active capacity counts assignments in <code>requested</code>, <code>spawn_pending</code>, and <code>running</code>.
+Before creating a helper, Team checks that the parent really owns the work, that delegation is enabled, and that enough capacity remains for the whole request. A batch either passes together or creates nothing; one invalid assignment cannot leave a half-created set behind.
 
-A request is valid only when:
-
-- the caller is the resolved persistent parent on an active dispatch;
-- the parent has positive capacity and the complete requested batch fits;
-- each target task belongs to a project assigned to the parent;
-- the parent owns the target task;
-- requested model, provider mode, execution backend, image, tools, TTL, directory, and metadata pass schema and policy validation.
-
-Batch requests validate all items before mutation. One invalid child does not leave the other children partially created.
-
-The default execution backend is <code>container_worker_vm</code>. An assignment may carry an explicit compatible model/provider, image, and <code>ttl_hours</code>. These are bounded execution inputs, not general secret or host-path transport.
+> <span class="sidebar-kicker">Technical sidebar</span> **Admission and capacity checks**
+>
+> The parent persistent agent has an effective ephemeral policy with <code>max_concurrent</code>. A value of zero disables delegation. Active capacity counts assignments in <code>requested</code>, <code>spawn_pending</code>, and <code>running</code>.
+>
+> A request is valid only when:
+>
+> - the caller is the resolved persistent parent on an active dispatch;
+> - the parent has positive capacity and the complete requested batch fits;
+> - each target task belongs to a project assigned to the parent;
+> - the parent owns the target task;
+> - requested model, provider mode, execution backend, image, tools, TTL, directory, and metadata pass schema and policy validation.
+>
+> Batch requests validate all items before mutation. One invalid child does not leave the other children partially created.
+>
+> The default execution backend is <code>container_worker_vm</code>. An assignment may carry an explicit compatible model/provider, image, and <code>ttl_hours</code>. These are bounded execution inputs, not general secret or host-path transport.
 
 ## The assignment record
 
-An <code>EphemeralAssignment</code> captures:
+The assignment is the durable envelope around disposable work. It remains after the worker session is removed and tells an operator what was requested, which session ran it, what came back, what the parent decided, and whether cleanup finished.
 
-- parent agent, Team, project, and task;
-- title and complete prompt;
-- eventual core session ID;
-- model/provider/backend/image choices;
-- allowed tools and TTL;
-- directory and metadata;
-- summary, artifacts, optional agent branch, error, and timestamps;
-- lifecycle state.
-
-States are <code>requested</code>, <code>spawn_pending</code>, <code>running</code>, <code>completed</code>, <code>accepted</code>, <code>rejected</code>, <code>cleanup_pending</code>, <code>cleaned_up</code>, and <code>failed</code>. They describe execution, decision, and cleanup milestones rather than one mandatory linear chain. In particular, core-session cleanup can finish before the parent accepts a completed result, and the parent may accept a result whose session is already cleaned up. Failures may occur during spawn, execution, result validation, or cleanup; durable records remain useful evidence after compute is gone.
+> <span class="sidebar-kicker">Technical reference</span> **Assignment fields and states**
+>
+> An <code>EphemeralAssignment</code> captures:
+>
+> - parent agent, Team, project, and task;
+> - title and complete prompt;
+> - eventual core session ID;
+> - model/provider/backend/image choices;
+> - allowed tools and TTL;
+> - directory and metadata;
+> - summary, artifacts, optional agent branch, error, and timestamps;
+> - lifecycle state.
+>
+> States are <code>requested</code>, <code>spawn_pending</code>, <code>running</code>, <code>completed</code>, <code>accepted</code>, <code>rejected</code>, <code>cleanup_pending</code>, <code>cleaned_up</code>, and <code>failed</code>. They describe execution, decision, and cleanup milestones rather than one mandatory linear chain. In particular, core-session cleanup can finish before the parent accepts a completed result, and the parent may accept a result whose session is already cleaned up. Failures may occur during spawn, execution, result validation, or cleanup; durable records remain useful evidence after compute is gone.
 
 ## Asynchronous lifecycle
 
-The parent's <code>team_request_ephemeral_agent</code> or batch command performs only the durable request transaction. It creates the assignment and outbox intent. The registered runtime pack then:
+The helper does not have to start before the parent's command returns. Team first records the request, then the ordinary Evander workflow creates and prompts the temporary worker in the background. When the result returns, the parent is notified and the worker session is destroyed.
 
-1. consumes <code>team.ephemeral.requested</code>;
-2. creates an ordinary core Evander agent/session through <code>effect:agent:create</code>;
-3. records the spawned session with <code>effect:team:mark-ephemeral-spawned</code>;
-4. prompts the worker through <code>effect:agent:prompt</code>;
-5. routes the completed session through <code>query:team:session-routing</code>;
-6. records result/completion and notifies the parent;
-7. destroys the core agent/session;
-8. records cleanup through <code>effect:team:mark-ephemeral-cleaned-up</code>.
-
-The lifecycle composes core execution effects; the add-on does not implement a hidden second container scheduler.
+> <span class="sidebar-kicker">Deeper detail</span> **The composed workflow path**
+>
+> The parent's <code>team_request_ephemeral_agent</code> or batch command performs only the durable request transaction. It creates the assignment and outbox intent. The registered runtime pack then:
+>
+> 1. consumes <code>team.ephemeral.requested</code>;
+> 2. creates an ordinary core Evander agent/session through <code>effect:agent:create</code>;
+> 3. records the spawned session with <code>effect:team:mark-ephemeral-spawned</code>;
+> 4. prompts the worker through <code>effect:agent:prompt</code>;
+> 5. routes the completed session through <code>query:team:session-routing</code>;
+> 6. records result/completion and notifies the parent;
+> 7. destroys the core agent/session;
+> 8. records cleanup through <code>effect:team:mark-ephemeral-cleaned-up</code>.
+>
+> The lifecycle composes core execution effects; the add-on does not implement a hidden second container scheduler.
 
 ![Ephemeral assignment lifecycle across Team and core execution](../../assets/evander-user-manual/diagrams/15-ephemeral-lifecycle.svg)
 
@@ -67,19 +90,23 @@ The lifecycle composes core execution effects; the add-on does not implement a h
 
 ## The worker's authority
 
-An ephemeral wake exposes only:
+The worker receives no ordinary Team command surface. It can report the result of this assignment, but it cannot inherit the parent's identity, lease, or organizational authority.
 
-<code>team_report_ephemeral_result</code>
-
-The executor resolves the assignment from the ambient worker session. The child cannot call ordinary persistent Team commands. It receives the prompt and execution resources necessary for the assignment, but not the parent's organizational identity or lease.
-
-A successful report requires a useful summary. It may attach stable artifact references and a Git branch. An error report marks the assignment failed with its evidence.
-
-If the child reports Git output, the branch must be exactly:
-
-<code>agents/&lt;session-id&gt;/&lt;assignment-id&gt;</code>
-
-The server derives and verifies the name. A mismatched branch fails the assignment instead of accepting untraceable code.
+> <span class="sidebar-kicker">Technical sidebar</span> **The one Team command and the Git branch check**
+>
+> An ephemeral wake exposes only:
+>
+> <code>team_report_ephemeral_result</code>
+>
+> The executor resolves the assignment from the ambient worker session. The child cannot call ordinary persistent Team commands. It receives the prompt and execution resources necessary for the assignment, but not the parent's organizational identity or lease.
+>
+> A successful report requires a useful summary. It may attach stable artifact references and a Git branch. An error report marks the assignment failed with its evidence.
+>
+> If the child reports Git output, the branch must be exactly:
+>
+> <code>agents/&lt;session-id&gt;/&lt;assignment-id&gt;</code>
+>
+> The server derives and verifies the name. A mismatched branch fails the assignment instead of accepting untraceable code.
 
 ## Completion is not acceptance
 
@@ -132,7 +159,21 @@ Artifact-only ephemeral work is fully supported and needs no repository.
 | Completed result never becomes deliverable | Parent has not accepted it, or acceptance failed validation. | Wake the parent, inspect evidence, and accept or reject deliberately. |
 | Cleanup failed | Core destroy or Team cleanup recording failed. | Preserve the assignment/session evidence, retry cleanup safely, and confirm worker resources are gone. |
 
-## Practical runbook
+## Troubleshooting and handoff
+
+In Team Operations, begin with the assignment rather than the temporary worker. Record the assignment ID, parent, task, session ID if one exists, lifecycle state, and the last transition. If the assignment is still waiting, capture its outbox ID and workflow run. If it finished, capture the summary, artifact references, branch, error, and the parent's decision.
+
+A useful handoff states the boundary that failed: the request was not picked up, the session was created but not recorded, the worker could not report, the parent has not decided, or cleanup is incomplete. Do not delete the assignment after removing leaked compute; it is the evidence that connects the cleanup to the original request.
+
+> <span class="sidebar-kicker">Administrator tracing checklist</span> **Follow one assignment end to end**
+>
+> 1. Record assignment ID, parent, task, session ID, lifecycle state, outbox ID, and workflow run.
+> 2. Follow create → mark spawned → prompt → session routing → report → destroy → cleanup.
+> 3. Inspect the worker's only Team command activity.
+> 4. Verify branch, artifact refs, summary, and error independently.
+> 5. Keep the durable assignment even after fixing leaked compute.
+
+## Delegation runbook
 
 Before delegating:
 
@@ -141,14 +182,6 @@ Before delegating:
 3. Select backend/model/image only when the defaults are unsuitable.
 4. Decide whether the result should be artifact-only or use the deterministic Git branch.
 5. Use stable request IDs for the semantic batch.
-
-To diagnose:
-
-1. Record assignment ID, parent, task, session ID, lifecycle state, outbox ID, and workflow run.
-2. Follow create → mark spawned → prompt → session routing → report → destroy → cleanup.
-3. Inspect the worker's only Team command activity.
-4. Verify branch, artifact refs, summary, and error independently.
-5. Keep the durable assignment even after fixing leaked compute.
 
 To accept:
 

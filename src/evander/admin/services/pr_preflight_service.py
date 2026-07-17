@@ -121,9 +121,7 @@ class PrIntegrationPreflightAdminService:
                 )
 
             pr = MergePreflightPullRequest(
-                pr_id=self._normalize_required_text(
-                    response.pr_id or pr_id, field_name="pr_id"
-                ),
+                pr_id=self._normalize_required_text(response.pr_id or pr_id, field_name="pr_id"),
                 source_branch=self._normalize_optional_text(response.source_branch),
                 target_branch=self._normalize_optional_text(response.target_branch),
                 source_commit=self._normalize_optional_text(response.source_commit),
@@ -147,8 +145,7 @@ class PrIntegrationPreflightAdminService:
         target_commit = next((pr.target_commit for pr in pull_requests if pr.target_commit), None)
         target_branch = next((pr.target_branch for pr in pull_requests if pr.target_branch), None)
         source_ref = self._managed_branch_ref(
-            target_branch
-            or str(managed_record.get("default_branch") or "main")
+            target_branch or str(managed_record.get("default_branch") or "main")
         )
         try:
             worktree_args: dict[str, Any] = {

@@ -6,6 +6,9 @@
 Guest and worker-container networking is default-deny. Reachability is limited to host ports explicitly allowlisted for the deployment, such as SSH/Git (`22`), MCP (`8000`), enabled model/package/HTTP relays and caches (`11434`, `11666`, `11777`, `11881`, `8081`, and `3142`), plus any deliberately configured provider-specific endpoint. MCP is the tool-capability boundary, not the sole host service on that allowlist.
 - Host orchestrator: creates session manifests, launches VMs, and destroys them at the end of a run.
 - MCP gateway: the MCP capability boundary reachable from guests; it is not the only guest-reachable host service.
+- Connector service: directory-scoped named operations implemented by fixed REST, approved-root
+  filesystem, or add-on drivers; sessions see only their granted operation schemas and never host
+  credentials or arbitrary destinations.
 - OpenAI relay: a separate host service that exposes an OpenAI-compatible `/v1` endpoint to guests while keeping the real API key on the host.
 - NuGet relay: a separate host service that exposes guest-reachable feed endpoints for nuget.org and private Azure Artifacts while keeping private feed credentials on the host.
 - Managed Git service: directory-scoped bare repositories, capability-limited guest intake, pinned ref transactions, publication, and ephemeral worktree ownership.
@@ -21,6 +24,20 @@ Guest and worker-container networking is default-deny. Reachability is limited t
 - Git handles code transport; MCP remains the control and policy path.
 - Session manifests are the smallest useful policy primitive for v1.
 - Approval records let you keep autonomy for drafts and read operations while gating sends.
+
+## Connector Boundary
+
+The gateway's `list_connectors` and `call_connector` tools are a generic semantic capability
+surface, not a general HTTP client. Operators fix the endpoint, method, path template, query/body
+mapping, result bounds, authentication profile, and approval requirement in directory config.
+Session manifests then grant exact connector-operation pairs. The service validates grants and
+JSON Schema before resolving credentials or performing I/O.
+
+REST credentials remain in host environment variables. OAuth client-credential tokens are
+host-cached and never cross the MCP response boundary. File and binary responses become opaque
+communication-artifact handles, preserving the existing separate policy gate for copying bytes
+into a guest workspace. Add-ons can contribute protocol-specific drivers while reusing the same
+discovery, grants, approvals, artifact, and audit contracts. See [connectors](connectors.md).
 
 ## Managed Git Boundary
 

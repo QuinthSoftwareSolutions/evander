@@ -18,6 +18,7 @@ from ..domain.common import (
     _required_text,
 )
 
+
 def _normalize_team_command_context(context: TeamCommandContext) -> TeamCommandContext:
     return TeamCommandContext(
         ambient_session_id=_required_text(
@@ -35,6 +36,7 @@ def _normalize_team_command_context(context: TeamCommandContext) -> TeamCommandC
         causation_id=_optional_text(context.causation_id),
         progress_classification=_optional_text(context.progress_classification) or "none",
     )
+
 
 def _team_command_context_scope(context: TeamCommandContext) -> str:
     wake_class = _normalized_wake_session_class(context.wake_session_class)
@@ -62,9 +64,11 @@ def _team_command_context_scope(context: TeamCommandContext) -> str:
         return "assignment"
     return "agent"
 
+
 def _normalized_wake_session_class(value: object) -> str:
     text = _optional_text(value) or "team"
     return re.sub(r"[^a-z0-9]+", "_", text.casefold()).strip("_")
+
 
 def _resolve_command_agent(
     state: TeamState,
@@ -100,6 +104,7 @@ def _resolve_command_agent(
             message=str(exc),
             correction_context={"session_id": context.ambient_session_id},
         ) from None
+
 
 def _resolve_command_governance_group(
     state: TeamState,
@@ -161,6 +166,7 @@ def _resolve_command_governance_group(
         },
     )
 
+
 def _resolve_command_assignment(
     state: TeamState,
     context: TeamCommandContext,
@@ -211,11 +217,12 @@ def _resolve_command_assignment(
         },
     )
 
+
 __all__ = [
-    '_normalize_team_command_context',
-    '_team_command_context_scope',
-    '_normalized_wake_session_class',
-    '_resolve_command_agent',
-    '_resolve_command_governance_group',
-    '_resolve_command_assignment',
+    "_normalize_team_command_context",
+    "_team_command_context_scope",
+    "_normalized_wake_session_class",
+    "_resolve_command_agent",
+    "_resolve_command_governance_group",
+    "_resolve_command_assignment",
 ]

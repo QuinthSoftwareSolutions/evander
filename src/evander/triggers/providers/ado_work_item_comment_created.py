@@ -274,9 +274,7 @@ class AdoWorkItemCommentCreatedTriggerProvider(TriggerProviderBase):
         return self.runtime_context
 
     def _trigger(self) -> AdoWorkItemCommentCreatedTriggerDefinition:
-        if not isinstance(
-            self.trigger_definition, AdoWorkItemCommentCreatedTriggerDefinition
-        ):
+        if not isinstance(self.trigger_definition, AdoWorkItemCommentCreatedTriggerDefinition):
             raise RuntimeError(
                 "AdoWorkItemCommentCreatedTriggerProvider initialized with wrong definition"
             )
@@ -289,7 +287,9 @@ class AdoWorkItemCommentCreatedTriggerProvider(TriggerProviderBase):
         return str(result.get("project") or trigger.project or "").strip()
 
 
-def _normalize_comments(*, work_item_id: str, work_item: Mapping[str, Any]) -> list[_NormalizedComment]:
+def _normalize_comments(
+    *, work_item_id: str, work_item: Mapping[str, Any]
+) -> list[_NormalizedComment]:
     comments = work_item.get("comments")
     if not isinstance(comments, list):
         return []

@@ -859,6 +859,7 @@ def test_vm_create_provider_returns_required_outputs() -> None:
     }
     assert admin_service.create_vm_calls[0]["model_provider_mode"] == "local_openai"
     assert admin_service.create_vm_calls[0]["dotnet"] is True
+    assert admin_service.create_vm_calls[0]["connector_grants"] is None
 
 
 def test_vm_create_provider_passes_codex_skills() -> None:
@@ -933,6 +934,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
     assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
+    assert admin_service.create_vm_calls[0]["connector_grants"] is None
     assert admin_service.create_vm_calls[0]["metadata"]["model_provider_mode"] == "local_openai"
 
 
@@ -4389,15 +4391,11 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert (
         "CANONICAL_REMOTE_URL=ssh://evander-git-host-write/runtime/managed-git/"
         "mr_0123456789abcdefabcd.git"
-    ) in (
-        clone_config_command
-    )
+    ) in (clone_config_command)
     assert (
         "PUSH_REMOTE_URL=ssh://evander-git-host-write/runtime/managed-git/"
         "mr_0123456789abcdefabcd.git"
-    ) in (
-        clone_config_command
-    )
+    ) in (clone_config_command)
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
     assert backend.started_specs[-1].command is not None
     assert "cd /home/agent" in str(backend.started_specs[-1].command)
@@ -4917,10 +4915,7 @@ def test_agent_clone_container_passes_managed_repo_to_clone_resolver(
     )
     clone_resolver_calls, _ = _attach_managed_git_clone(
         admin_service,
-        clone_url=(
-            "ssh://evander-git-host/runtime/managed-git/"
-            "mr_0123456789abcdefabcd.git"
-        ),
+        clone_url=("ssh://evander-git-host/runtime/managed-git/mr_0123456789abcdefabcd.git"),
         display_name="evander",
     )
     backend = _FakeContainerBackend()
@@ -4952,8 +4947,7 @@ def test_agent_clone_container_passes_managed_repo_to_clone_resolver(
         }
     ]
     assert backend.cloned_repos[0]["repo_source"] == (
-        "ssh://evander-git-host-write/runtime/managed-git/"
-        "mr_0123456789abcdefabcd.git"
+        "ssh://evander-git-host-write/runtime/managed-git/mr_0123456789abcdefabcd.git"
     )
     assert backend.cloned_repos[0]["reconcile_existing_remote"] is True
 
@@ -5314,6 +5308,7 @@ def test_agent_clone_container_rolls_back_access_after_post_provision_failure(
     )
 
     if failure_stage == "clone":
+
         def fail_clone(**kwargs):
             backend.cloned_repos.append(dict(kwargs))
             raise RuntimeError("clone failed")
@@ -5322,6 +5317,7 @@ def test_agent_clone_container_rolls_back_access_after_post_provision_failure(
     elif failure_stage == "helpers":
         backend.write_files_error = RuntimeError("helpers failed")
     else:
+
         def fail_configure(**kwargs):
             del kwargs
             raise RuntimeError("configure failed")
@@ -5340,9 +5336,7 @@ def test_agent_clone_container_rolls_back_access_after_post_provision_failure(
             "public_key_body": "AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKey",
         }
     ]
-    assert unbind_calls == [
-        {"kind": "authorized_sessions", "binding_id": "session-1"}
-    ]
+    assert unbind_calls == [{"kind": "authorized_sessions", "binding_id": "session-1"}]
     assert bind_calls == [
         {
             "managed_repo_id": _MANAGED_REPO_ID,
@@ -5352,9 +5346,7 @@ def test_agent_clone_container_rolls_back_access_after_post_provision_failure(
     ]
     assert len(backend.started_specs) == 1
     cleanup_spec = backend.started_specs[0]
-    assert cleanup_spec.metadata["effect_type"] == (
-        "effect:agent:clone-repo:git-write-cleanup"
-    )
+    assert cleanup_spec.metadata["effect_type"] == ("effect:agent:clone-repo:git-write-cleanup")
     assert 'rm -f "$HOME/.ssh/evander-git-write"' in str(cleanup_spec.command)
     assert backend.destroyed == [cleanup_spec.target_name]
 
@@ -5408,9 +5400,7 @@ def test_agent_clone_container_preserves_access_binding_when_host_revocation_fai
         "evander.effects.providers.agent_clone_repo.remove_git_authorized_key_by_public_key_body",
         fail_host_revocation,
     )
-    backend.clone_repo = lambda **kwargs: (_ for _ in ()).throw(
-        RuntimeError("clone failed")
-    )
+    backend.clone_repo = lambda **kwargs: (_ for _ in ()).throw(RuntimeError("clone failed"))
     factory = EffectProviderFactory(
         provider_config_resolver=_ContainerResolverStub(config),
         admin_service=admin_service,
@@ -5619,6 +5609,7 @@ def test_agent_create_container_upserts_when_session_exists(
             vm_provider="container_worker_vm",
             model="gpt-5.4",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
+            connector_grants={"manually-assigned": ["read"]},
             web_search_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={
@@ -5687,6 +5678,7 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated is not None
     assert updated.model == "gpt-5.5"
     assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN, ToolName.STAGE_ARTIFACT]
+    assert updated.connector_grants == {"manually-assigned": ["read"]}
     assert updated.web_search_enabled is True
     assert updated.metadata["execution_backend"] == "container_worker_vm"
     assert updated.metadata["agent_provider"] == "claude"
@@ -5711,6 +5703,47 @@ def test_agent_create_container_upserts_when_session_exists(
         in bootstrap_by_path["/home/agent/.evander/session.env"]["content"]
     )
     assert 'web_search = "live"' in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-clear-connectors",
+            display_name="Clear connectors",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            existing_agent_behavior="upsert",
+            connector_grants={},
+        )
+    ).execute()
+
+    cleared = session_repository.get_session("session-1")
+    assert cleared is not None
+    assert cleared.connector_grants == {}
+
+    session_repository.upsert_session(
+        cleared.model_copy(
+            update={
+                "directory_path": "root/team-a",
+                "connector_grants": {"team-a-documents": ["read"]},
+            }
+        )
+    )
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-move-directory",
+            display_name="Move directory",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            existing_agent_behavior="upsert",
+            directory_path="root/team-b",
+        )
+    ).execute()
+
+    moved = session_repository.get_session("session-1")
+    assert moved is not None
+    assert moved.directory_path == "root/team-b"
+    assert moved.connector_grants == {}
 
 
 def test_agent_create_container_upsert_preserves_omitted_allowed_contacts(
@@ -5949,8 +5982,7 @@ def test_agent_clone_container_uses_dedicated_write_alias_for_agent_remote() -> 
 
     assert (
         "PUSH_REMOTE_URL=ssh://evander-git-host-write/opt/evander/runtime/managed-git/"
-        "mr_0123456789abcdefabcd.git"
-        in command
+        "mr_0123456789abcdefabcd.git" in command
     )
     assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
 
@@ -6140,8 +6172,7 @@ def test_container_reachable_git_remote_url_is_limited_to_mounted_paths() -> Non
     assert _container_reachable_git_remote_url("git@example.test/org/repo.git") is None
     assert (
         _container_reachable_git_remote_url(
-            "ssh://evander-git-host/opt/evander/runtime/managed-git/"
-            "mr_0123456789abcdefabcd.git"
+            "ssh://evander-git-host/opt/evander/runtime/managed-git/mr_0123456789abcdefabcd.git"
         )
         == "ssh://evander-git-host/opt/evander/runtime/managed-git/"
         "mr_0123456789abcdefabcd.git"

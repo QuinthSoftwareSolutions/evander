@@ -42,9 +42,7 @@ def test_manual_manifest_covers_thirty_ordered_chapters() -> None:
     assert manifest["title"] == "Evander Technical Manual"
     assert manifest["subtitle"] == "Core Platform and Team Add-on"
     assert len(rows) == 30
-    assert [int(title.split(".", 1)[0]) for _part, _path, title in rows] == list(
-        range(1, 31)
-    )
+    assert [int(title.split(".", 1)[0]) for _part, _path, title in rows] == list(range(1, 31))
     assert len({path.name for _part, path, _title in rows}) == 30
 
 
@@ -54,9 +52,55 @@ def test_every_chapter_is_layered_and_source_grounded() -> None:
     for _part, path, _title in rows:
         text = path.read_text(encoding="utf-8")
         assert "**At a glance.**" in text[:2_000], path.name
+        opening = text.split("\n\n## ", 1)[0].split("**At a glance.**", 1)[1]
+        opening_words = re.findall(r"\b[\w'-]+\b", opening)
+        assert 40 <= len(opening_words) <= 125, path.name
+        assert "`" not in opening, path.name
         assert text.count("## Source trail") == 1, path.name
         source_trail = text.split("## Source trail", 1)[1]
         assert source_trail.count("\n-") >= 2, path.name
+
+
+def test_end_to_end_story_has_plain_narrative_and_optional_sidebars() -> None:
+    chapter = (CHAPTERS / "02-end-to-end-story.md").read_text(encoding="utf-8")
+    opening = chapter.split("\n\n## ", 1)[0]
+    css = (SOURCE / "manual.css").read_text(encoding="utf-8")
+
+    assert "Imagine a piece of work passing through a well-run workshop" in opening
+    for compressed_term in (
+        "compiled workflow",
+        "pinned commits",
+        "isolated execution target",
+    ):
+        assert compressed_term not in opening
+
+    assert chapter.count('class="sidebar-kicker"') >= 8
+    assert "Evander is the guarded coordinator; the agent is a temporary worker" in chapter
+    assert "Git calls that unique version identifier a **commit SHA**" in chapter
+    assert "## A practical operator handoff" in chapter
+    assert "Administrator runbook" in chapter
+    assert "blockquote:has(.sidebar-kicker)" in css
+
+
+def test_trust_model_leads_with_plain_promises_and_layers_security_detail() -> None:
+    chapter = (CHAPTERS / "03-trust-model.md").read_text(encoding="utf-8")
+
+    assert "## Three promises to keep in mind" in chapter
+    for promise in (
+        "The agent cannot freely use host credentials",
+        "The agent cannot freely reach the internet",
+        "The agent cannot exceed this job's permissions",
+    ):
+        assert promise in chapter
+
+    assert "## What Evander protects—and from whom" in chapter
+    assert "the temporary worker reaches useful capabilities through Evander" in chapter
+    assert "every line must be true" in chapter
+    assert chapter.count('class="sidebar-kicker"') >= 10
+    assert "## If you are concerned about access or a secret" in chapter
+    assert "Start with the observable job, not host firewall commands" in chapter
+    assert "Administrator runbook" in chapter
+    assert "sudo nft list ruleset" in chapter.split("Administrator runbook", 1)[1]
 
 
 def test_subject_index_is_large_linked_and_validated_by_assembly() -> None:
@@ -88,6 +132,9 @@ def test_every_diagram_source_has_both_outputs_and_is_used() -> None:
 
 def test_screenshots_are_sanitized_dark_mode_publication_assets() -> None:
     manifest = json.loads((SCREENSHOT_ASSETS / "manifest.json").read_text(encoding="utf-8"))
+    fixture = (ROOT / "scripts/capture_evander_user_manual_screenshots.mjs").read_text(
+        encoding="utf-8"
+    )
 
     assert manifest["schema_version"] == 1
     assert manifest["fixture"] == "northstar"
@@ -99,6 +146,15 @@ def test_screenshots_are_sanitized_dark_mode_publication_assets() -> None:
     for item in screenshots:
         path = SCREENSHOT_ASSETS / item["file"]
         _assert_dark_screenshot(path)
+
+    assert "session-telemetry-implementation" in fixture
+    assert "Create implementation session" in fixture
+    for named_core_fixture in (
+        "session-imani-telemetry",
+        "vm-imani-telemetry",
+        "Create Imani session",
+    ):
+        assert named_core_fixture not in fixture
 
 
 def test_shared_admin_manual_screenshots_are_refreshed_in_dark_mode() -> None:
@@ -193,14 +249,20 @@ def test_design_history_is_explicitly_non_normative() -> None:
     assert "current implementation is normative" in assembled.lower()
 
 
-def test_northstar_named_cast_is_not_reused_as_human_operators() -> None:
+def test_northstar_names_are_reserved_for_team_chapters() -> None:
     introduction = (CHAPTERS / "01-reading-paths.md").read_text(encoding="utf-8")
-    chapter_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(CHAPTERS.glob("*.md"))
-    )
+    paths = sorted(CHAPTERS.glob("*.md"))
+    core_text = "\n".join(path.read_text(encoding="utf-8") for path in paths[:15])
+    team_text = "\n".join(path.read_text(encoding="utf-8") for path in paths[15:25])
+    chapter_text = f"{core_text}\n{team_text}"
 
-    assert "These five named characters are AI Team agents throughout the manual" in introduction
+    assert "In Chapters 1–15, agents are described by what they do" in introduction
+    assert "introduce a small named cast only when persistent identities" in introduction
     assert "Human actions are attributed generically to **an operator**" in introduction
+    for name in ("Mira", "Priya", "Imani", "Rowan", "Riley"):
+        assert re.search(rf"\b{name}\b", core_text, re.IGNORECASE) is None, name
+        assert re.search(rf"\b{name}\b", team_text, re.IGNORECASE), name
+
     for conflation in (
         "Priya or another authorized operator",
         "Priya's Admin Web",

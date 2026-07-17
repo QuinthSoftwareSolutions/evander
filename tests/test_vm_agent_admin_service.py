@@ -76,10 +76,12 @@ def test_admin_service_vm_domain_class_compat_wrappers_are_callable() -> None:
     )
 
     assert (
-        VmAgentAdminService._agent_record_matches_directory("root/team", "root", direct_only=False) is True
+        VmAgentAdminService._agent_record_matches_directory("root/team", "root", direct_only=False)
+        is True
     )
     assert (
-        VmAgentAdminService._agent_record_matches_directory("root/team", "root", direct_only=True) is False
+        VmAgentAdminService._agent_record_matches_directory("root/team", "root", direct_only=True)
+        is False
     )
     assert VmAgentAdminService._container_execution_status(running_record) == "running"
     assert VmAgentAdminService._container_execution_status(failed_record) == "failed"
@@ -519,9 +521,7 @@ def test_vm_agent_admin_service_uses_explicit_ports_for_boundary_operations(
     assert prompt_result["status"] == "queued"
     assert prompt_calls == [("vm-1", "libvirt_vm", {"prompt": "continue"})]
     assert backend == "container-backend"
-    assert backend_calls == [
-        {"directory_path": "root/team-a", "worker_url": "http://worker.test"}
-    ]
+    assert backend_calls == [{"directory_path": "root/team-a", "worker_url": "http://worker.test"}]
     assert create_payloads == [
         {"backend": "container_worker_vm", "session_id": "container-session"}
     ]
@@ -975,7 +975,9 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         == "list_vms-result"
     )
     assert (
-        admin.vm_agent_admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent")
+        admin.vm_agent_admin.get_agent_log_snapshot(
+            "vm-1", lines=12, repo_name="repo-a", vm_user="agent"
+        )
         == "get_agent_log_snapshot-result"
     )
     assert admin.vm_agent_admin.start_vm("vm-2") == "start_vm-result"
@@ -1168,7 +1170,9 @@ def test_admin_service_routes_phase_1_vm_operations_through_vm_agent_admin() -> 
     admin.vm_agent_admin = FakeVmAgentAdmin()
 
     assert (
-        admin.vm_agent_admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent")
+        admin.vm_agent_admin.get_agent_log_snapshot(
+            "vm-1", lines=12, repo_name="repo-a", vm_user="agent"
+        )
         == "log-result"
     )
     assert admin.vm_agent_admin.start_vm("vm-2") == "start-result"
@@ -1521,9 +1525,7 @@ def test_resume_agent_reconciles_migrated_vm_git_access_before_dispatch(
     managed_git = ManagedGit()
     admin = FakeAdmin(sessions=sessions)
     admin.config.runtime_dir = tmp_path / "runtime"
-    service = VmAgentAdminService(
-        _vm_agent_dependencies(admin, managed_git_admin=managed_git)
-    )
+    service = VmAgentAdminService(_vm_agent_dependencies(admin, managed_git_admin=managed_git))
     clone_calls: list[dict[str, Any]] = []
 
     def reconcile_clone(**kwargs: Any) -> VmActionResult:

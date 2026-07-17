@@ -6,6 +6,8 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+import { fulfillAdminShellBackgroundApiRequest } from "./adminShellHelpers.mjs";
+
 function jsonResponse(payload, status = 200) {
   return {
     status,
@@ -366,6 +368,10 @@ test("workflow editor keeps node ids read-only and resets display-name edits", a
     const url = new URL(route.request().url());
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
+
+    if (await fulfillAdminShellBackgroundApiRequest(route, pathname)) {
+      return;
+    }
 
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse(sessionResponse));

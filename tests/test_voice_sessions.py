@@ -107,10 +107,8 @@ def _contacts() -> ContactDirectoryConfig:
                 },
                 "support": {
                     "name": "Support",
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550000003", "primary": True}
-                    ],
-                }
+                    "phone_numbers": [{"label": "main", "number": "+15550000003", "primary": True}],
+                },
             }
         }
     )
@@ -307,9 +305,10 @@ def test_voice_projection_renders_policy_tool_summary_details() -> None:
     )
 
     assert projection["tool_summary"] == tool_summary
-    assert "Available MCP tools: make_phone_call, get_phone_call_result (approval required)" in projection[
-        "context"
-    ]
+    assert (
+        "Available MCP tools: make_phone_call, get_phone_call_result (approval required)"
+        in projection["context"]
+    )
     assert (
         "Unavailable MCP tools: run_script (Tool run_script is not allowed for session session-1)"
         in projection["context"]
@@ -330,7 +329,9 @@ def test_voice_projection_instructions_set_natural_phone_behavior() -> None:
     assert "do not repeat the prior answer" in instructions
     assert "one or two short spoken paragraphs" in instructions
     assert "pause naturally after a long answer" in instructions
-    assert "do not fill pending time with generic startup or context-check scaffolding" in instructions
+    assert (
+        "do not fill pending time with generic startup or context-check scaffolding" in instructions
+    )
     assert "give the answer directly" in instructions
     assert "do not narrate internal bookkeeping" in instructions
     assert "authoritative first-turn task state" in instructions
@@ -447,10 +448,13 @@ def test_voice_query_delegator_schedules_origin_agent_wake_and_completes(
         answer="The retry is no longer needed.",
     )
 
-    assert disable_pending_voice_query_wake(
-        query=completed_after_failure,
-        wake_store=wake_store,
-    ) is True
+    assert (
+        disable_pending_voice_query_wake(
+            query=completed_after_failure,
+            wake_store=wake_store,
+        )
+        is True
+    )
     disabled_after_failure = wake_store.get_request(retried_request.request_id)
     assert disabled_after_failure is not None
     assert disabled_after_failure.enabled is False
@@ -550,9 +554,10 @@ def test_openai_realtime_phone_backend_starts_bridge_without_auto_reconciliation
     assert bridge.start_calls[0]["projection"]["tool_summary"] == _projected_tool_summary(
         "session-1"
     )
-    assert "Available MCP tools: make_phone_call, get_phone_call_result (approval required)" in bridge.start_calls[0][
-        "projection"
-    ]["context"]
+    assert (
+        "Available MCP tools: make_phone_call, get_phone_call_result (approval required)"
+        in bridge.start_calls[0]["projection"]["context"]
+    )
     assert (
         "Unavailable MCP tools: run_script (Tool run_script is not allowed for session session-1)"
         in bridge.start_calls[0]["projection"]["context"]

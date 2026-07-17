@@ -86,9 +86,7 @@ class WorkflowPackGraph(BaseModel):
             normalized_directory_paths.append(normalized_directory_path)
 
         if len(normalized_directory_paths) > 1:
-            raise ValueError(
-                "Workflow graph directory_paths must contain at most one directory."
-            )
+            raise ValueError("Workflow graph directory_paths must contain at most one directory.")
         payload["directory_path"] = (
             normalized_directory_paths[0] if normalized_directory_paths else "root"
         )

@@ -144,9 +144,7 @@ class IssueUpsertAdoProxyEffectProvider(EffectProviderBase):
     @classmethod
     def _coerce_items(cls, *, item: Any, items: Any) -> list[dict[str, Any]]:
         if item is not None and items is not None:
-            raise ValueError(
-                "effect:issue:upsert-ado-proxy item and items are mutually exclusive"
-            )
+            raise ValueError("effect:issue:upsert-ado-proxy item and items are mutually exclusive")
         if item is not None:
             if isinstance(item, Mapping) and isinstance(item.get("items"), list):
                 return cls._coerce_item_list(item.get("items"))
@@ -166,9 +164,7 @@ class IssueUpsertAdoProxyEffectProvider(EffectProviderBase):
         normalized: list[dict[str, Any]] = []
         for item in value:
             if not isinstance(item, Mapping):
-                raise ValueError(
-                    "effect:issue:upsert-ado-proxy items must contain objects"
-                )
+                raise ValueError("effect:issue:upsert-ado-proxy items must contain objects")
             normalized.append(dict(item))
         return normalized
 

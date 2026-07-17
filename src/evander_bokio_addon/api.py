@@ -205,7 +205,9 @@ def _exception_payload(exc: Exception) -> dict[str, Any]:
 def _page_args(request: Request) -> dict[str, Any]:
     return {
         "page": int(request.query_params.get("page") or 1),
-        "page_size": int(request.query_params.get("pageSize") or request.query_params.get("page_size") or 25),
+        "page_size": int(
+            request.query_params.get("pageSize") or request.query_params.get("page_size") or 25
+        ),
         "query": str(request.query_params.get("query") or "").strip() or None,
     }
 

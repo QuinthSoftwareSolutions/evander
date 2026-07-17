@@ -371,9 +371,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
             self._release_enqueue_prompt(prompt_lock_claim)
-            message = (
-                "effect:agent:enqueue-prompt did not receive a thread_id from resume_agent"
-            )
+            message = "effect:agent:enqueue-prompt did not receive a thread_id from resume_agent"
             raise EffectProviderExecutionError(
                 message,
                 outputs=_prompt_error_outputs(
@@ -1206,9 +1204,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             ) from exc
 
     @classmethod
-    def _context_retry_metadata(
-        cls, payload: Mapping[str, Any] | None
-    ) -> dict[str, str]:
+    def _context_retry_metadata(cls, payload: Mapping[str, Any] | None) -> dict[str, str]:
         if not isinstance(payload, Mapping):
             return {}
         metadata: dict[str, str] = {}

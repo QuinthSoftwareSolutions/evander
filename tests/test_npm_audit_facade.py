@@ -48,6 +48,7 @@ def write_provider_overlay(config: GatewayConfig, payload: dict[str, object]) ->
         payload=payload,
     )
 
+
 def test_health_reports_audit_and_package_upstreams(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     client = TestClient(create_app(config))
@@ -69,9 +70,7 @@ def test_health_reports_audit_and_package_upstreams(tmp_path: Path) -> None:
         "/-/npm/v1/security/audits/quick",
     ],
 )
-def test_audit_posts_target_public_npm_and_strip_authorization(
-    tmp_path: Path, path: str
-) -> None:
+def test_audit_posts_target_public_npm_and_strip_authorization(tmp_path: Path, path: str) -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -165,8 +164,7 @@ def test_package_requests_use_default_nexus_url_and_preserve_raw_path_and_query(
     assert upstream_stream.closed is True
     assert captured["method"] == "GET"
     assert (
-        captured["raw_path"]
-        == "/repository/npm-all/@scope%2fpkg/-/pkg.tgz?download=1&tag=latest"
+        captured["raw_path"] == "/repository/npm-all/@scope%2fpkg/-/pkg.tgz?download=1&tag=latest"
     )
     assert captured["authorization"] is None
     assert captured["accept-encoding"] == "identity"
@@ -193,10 +191,7 @@ def test_package_requests_do_not_double_prefix_rewritten_nexus_tarball_paths(
 
     assert response.status_code == 200
     assert response.content == b"tgz"
-    assert (
-        captured["url"]
-        == "http://192.168.250.1:8081/repository/npm-all/npm/-/npm-10.9.8.tgz"
-    )
+    assert captured["url"] == "http://192.168.250.1:8081/repository/npm-all/npm/-/npm-10.9.8.tgz"
 
 
 def test_package_requests_use_root_overlay_for_custom_registry(tmp_path: Path) -> None:

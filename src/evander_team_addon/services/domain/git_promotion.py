@@ -69,6 +69,7 @@ def _apply_git_review_promotion(
         assignment_id=assignment_id,
     )
 
+
 def _apply_ephemeral_git_review_promotion(
     state: TeamState,
     *,
@@ -169,6 +170,7 @@ def _apply_ephemeral_git_review_promotion(
     _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
     return promotion_id
 
+
 def _apply_persistent_git_review_promotion(
     state: TeamState,
     *,
@@ -261,11 +263,13 @@ def _apply_persistent_git_review_promotion(
     _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
     return promotion_id
 
+
 def _commit_source_branch(commit_sha: str) -> str:
     slug = "".join(ch if ch.isalnum() else "-" for ch in commit_sha).strip("-")
     if not slug:
         slug = "unknown"
     return validate_branch_name(f"commit/{slug[:64]}")
+
 
 def _apply_git_feature_update(
     state: TeamState,
@@ -355,6 +359,7 @@ def _apply_git_feature_update(
     _emit_git_promotion_event(result, promotion_id=promotion_id, payload=payload)
     return promotion_id
 
+
 def _branch_aliases(branch: str | None) -> set[str]:
     value = _optional_text(branch)
     if value is None:
@@ -373,6 +378,7 @@ def _branch_aliases(branch: str | None) -> set[str]:
                         changed = True
     return aliases
 
+
 def _promotion_source_branch_aliases(promotion: GitPromotionRecord) -> set[str]:
     aliases = _branch_aliases(promotion.source_branch)
     for key in ("source_branches", "merged_branches"):
@@ -384,6 +390,7 @@ def _promotion_source_branch_aliases(promotion: GitPromotionRecord) -> set[str]:
                 aliases.update(_branch_aliases(item))
     return aliases
 
+
 def _deliverable_git_branch_aliases(deliverable: Deliverable) -> set[str]:
     refs = deliverable.git_refs
     aliases: set[str] = set()
@@ -392,6 +399,7 @@ def _deliverable_git_branch_aliases(deliverable: Deliverable) -> set[str]:
     aliases.update(_branch_aliases(refs.feature_branch))
     aliases.update(_branch_aliases(refs.release_branch))
     return aliases
+
 
 def _deliverable_has_git_source_refs(deliverable: Deliverable) -> bool:
     refs = deliverable.git_refs
@@ -405,6 +413,7 @@ def _deliverable_has_git_source_refs(deliverable: Deliverable) -> bool:
             refs.promotion_record_ids,
         )
     )
+
 
 def _accepted_source_deliverables_for_feature_promotion(
     state: TeamState,
@@ -440,6 +449,7 @@ def _accepted_source_deliverables_for_feature_promotion(
         return matching
     return []
 
+
 def _attach_feature_promotion_to_accepted_deliverables(
     state: TeamState,
     *,
@@ -462,9 +472,7 @@ def _attach_feature_promotion_to_accepted_deliverables(
         source_branch = refs.review_branch or refs.agent_branch
         raw_manifest = source_manifests.get(source_branch) if source_branch else None
         if isinstance(raw_manifest, dict):
-            deliverable.review_manifest = DeliverableReviewManifest.model_validate(
-                raw_manifest
-            )
+            deliverable.review_manifest = DeliverableReviewManifest.model_validate(raw_manifest)
         refs.feature_branch = promotion.target_branch
         if commit_sha is not None:
             refs.feature_commit_sha = commit_sha
@@ -478,6 +486,7 @@ def _attach_feature_promotion_to_accepted_deliverables(
         )
     promotion.deliverable_id = matching_deliverables[0].id
     return True
+
 
 def _is_safe_synthetic_feature_deliverable(
     state: TeamState,
@@ -506,6 +515,7 @@ def _is_safe_synthetic_feature_deliverable(
             for release in state.release_packages.values()
         )
     )
+
 
 def _attach_promotion_success(
     state: TeamState,
@@ -642,10 +652,7 @@ def _clear_recovered_release_block(
         for candidate in state.git_promotions.values()
         if candidate.id != promotion.id
         and candidate.state == "failed"
-        and (
-            candidate.id in related_promotion_ids
-            or candidate.release_package_id == release.id
-        )
+        and (candidate.id in related_promotion_ids or candidate.release_package_id == release.id)
     ]
     if remaining_failed_promotions:
         remaining_failed_promotions.sort(
@@ -662,6 +669,7 @@ def _clear_recovered_release_block(
     release.state = TeamRecordState.PENDING
     release.error = None
     release.updated_at = utc_now()
+
 
 def _queue_canonical_push_after_release_success(
     state: TeamState,
@@ -684,12 +692,8 @@ def _queue_canonical_push_after_release_success(
         )
         result["error"] = release.error
         return
-    if (
-        release.policy_version >= 2
-        and (
-            release.scope_validation is None
-            or release.scope_validation.state != "passed"
-        )
+    if release.policy_version >= 2 and (
+        release.scope_validation is None or release.scope_validation.state != "passed"
     ):
         release.state = TeamRecordState.BLOCKED
         release.error = "release scope validation did not pass"
@@ -758,6 +762,7 @@ def _queue_canonical_push_after_release_success(
     _emit_git_promotion_event(result, promotion_id=existing.id, payload=payload)
     result["git_promotion_event_ids"].append(existing.id)
 
+
 def _attach_promotion_failure(
     state: TeamState,
     *,
@@ -823,6 +828,7 @@ def _attach_promotion_failure(
         )
         result["created_inbox_item_ids"].append(inbox_id)
 
+
 def _promotion_failure_recipient(
     state: TeamState,
     promotion: GitPromotionRecord,
@@ -834,6 +840,7 @@ def _promotion_failure_recipient(
     if lead_agent_id is not None:
         return lead_agent_id
     return None
+
 
 __all__ = [
     "GIT_PROMOTION_EVENT_TYPE",

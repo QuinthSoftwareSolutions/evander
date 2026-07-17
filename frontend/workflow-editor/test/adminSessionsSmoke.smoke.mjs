@@ -224,6 +224,11 @@ async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
 
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
+
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse(sessionResponse));
       return;
@@ -382,7 +387,9 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
 
   const navEntry = page
     .locator('nav[aria-label="Admin sections"] .admin-shell-tab')
-    .filter({ hasText: "Sessions" });
+    .filter({
+      has: page.locator(".admin-shell-tab-label-full").getByText("Sessions", { exact: true }),
+    });
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
@@ -690,6 +697,13 @@ test("admin shell sessions page reset clears an existing approval settings overr
         approval_tool_settings: {
           prompt_agent: permissiveApprovalSettings,
         },
+        mcp_tool_policies: {
+          prompt_agent: {
+            max_ttl_seconds: null,
+            max_uses: null,
+            require_exact_payload: false,
+          },
+        },
       },
     }),
     {
@@ -716,13 +730,13 @@ test("admin shell sessions page reset clears an existing approval settings overr
   await assert.doesNotReject(() => approvalModal.waitFor({ state: "visible" }));
   await page.waitForFunction(() => {
     const ttlLabel = Array.from(document.querySelectorAll("label.field-stack")).find((label) =>
-      label.textContent?.includes("TTL seconds"),
+      label.textContent?.includes("Grant expires after (seconds)"),
     );
     const ttlInput = ttlLabel?.querySelector("input");
     return ttlInput instanceof HTMLInputElement && ttlInput.value === "86400";
   });
-  assert.equal(await page.getByLabel("TTL seconds").inputValue(), "86400");
-  assert.equal(await page.getByLabel("Payload").inputValue(), "any");
+  assert.equal(await page.getByLabel("Grant expires after (seconds)").inputValue(), "86400");
+  assert.equal(await page.getByLabel("Argument matching").inputValue(), "any");
 
   await page.getByRole("button", { name: "Reset to inherited defaults" }).click();
   await assert.doesNotReject(() => approvalModal.waitFor({ state: "hidden" }));

@@ -166,7 +166,7 @@ def test_http_request_provider_posts_json_body_and_normalizes_method(
     assert result["status_code"] == 201
     assert result["body_json"] == {"created": True}
     assert result["success"] is True
-    assert request.content.decode("utf-8") == "{\"name\":\"demo\",\"enabled\":true}"
+    assert request.content.decode("utf-8") == '{"name":"demo","enabled":true}'
 
 
 def test_http_request_provider_returns_body_json_none_for_text_response(

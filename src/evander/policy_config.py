@@ -139,9 +139,7 @@ class EffectivePolicyConfig(BaseModel):
 
     @field_validator("tool_argument_policies", mode="before")
     @classmethod
-    def normalize_tool_argument_policies_field(
-        cls, value: object
-    ) -> dict[str, list[object]]:
+    def normalize_tool_argument_policies_field(cls, value: object) -> dict[str, list[object]]:
         return normalize_tool_argument_policies(value, field_name="tool_argument_policies")
 
     @field_validator("tool_argument_policies")
@@ -518,8 +516,7 @@ class PolicyConfigResolver:
             if not self._target_has_capability(target, capability):
                 if strict_target_capability:
                     raise ValueError(
-                        f"communication target {target.id!r} does not allow "
-                        f"{capability} capability"
+                        f"communication target {target.id!r} does not allow {capability} capability"
                     )
                 return ""
             target_address = normalize_teams_target(target.address)
@@ -575,8 +572,7 @@ class PolicyConfigResolver:
             if not self._target_has_capability(target, capability):
                 if strict_target_capability:
                     raise ValueError(
-                        f"communication target {target.id!r} does not allow "
-                        f"{capability} capability"
+                        f"communication target {target.id!r} does not allow {capability} capability"
                     )
                 return ""
             target_address = normalize_teams_target(target.address)

@@ -342,9 +342,7 @@ def test_admin_web_builtin_owner_directory_filters_reject_malformed_paths(
     )
     client = TestClient(create_app(service))
     if auth_mode == "local_password":
-        login = client.post(
-            "/api/auth/login", json={"username": "admin", "password": "admin-pass"}
-        )
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin-pass"})
         assert login.status_code == 200
 
     sessions_response = client.get("/api/admin/sessions?directory_path=bad")

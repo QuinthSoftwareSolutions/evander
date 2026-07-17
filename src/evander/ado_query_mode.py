@@ -23,7 +23,9 @@ def resolve_ado_query_mode(*, query_mode: object, wiql: str | None) -> AdoQueryM
     normalized = normalize_ado_query_mode(query_mode)
     if normalized is not None:
         return normalized
-    return ADO_QUERY_MODE_MANUAL_WIQL if str(wiql or "").strip() else ADO_QUERY_MODE_STRUCTURED_FILTERS
+    return (
+        ADO_QUERY_MODE_MANUAL_WIQL if str(wiql or "").strip() else ADO_QUERY_MODE_STRUCTURED_FILTERS
+    )
 
 
 def validate_ado_query_mode(

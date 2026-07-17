@@ -947,9 +947,7 @@ def test_failed_refresh_does_not_persist_invalid_default_branch_override(
     stored = _internal_record(service, record["managed_repo_id"])
     assert stored["default_branch"] == "main"
     assert stored["default_branch_source"] == "upstream"
-    assert _run("git", f"--git-dir={bare}", "config", "--get", "evander.baseBranch") == (
-        "main"
-    )
+    assert _run("git", f"--git-dir={bare}", "config", "--get", "evander.baseBranch") == ("main")
 
 
 def test_failed_refresh_after_descendant_promotion_rolls_back_default_override(
@@ -972,9 +970,7 @@ def test_failed_refresh_after_descendant_promotion_rolls_back_default_override(
     assert records[0]["directory_path"] == "root/team"
     assert records[0]["default_branch"] == "main"
     bare = _bare_path(service, records[0]["managed_repo_id"])
-    assert _run("git", f"--git-dir={bare}", "config", "--get", "evander.baseBranch") == (
-        "main"
-    )
+    assert _run("git", f"--git-dir={bare}", "config", "--get", "evander.baseBranch") == ("main")
 
 
 def test_refresh_updates_canonical_refs_and_preserves_host_and_guest_namespaces(

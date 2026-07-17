@@ -72,7 +72,9 @@ def _worker(
         }
     )
     return EffectOrchestratorWorker(
-        config=config, worker_config=worker_config, runtime=None  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
     )
 
 
@@ -122,7 +124,9 @@ def _make_all_buffer_states_due(worker: EffectOrchestratorWorker) -> None:
         adapter.put(key, state)
 
 
-def _gate_records(worker: EffectOrchestratorWorker, gate_id: str = "gate-buffer") -> list[dict[str, Any]]:
+def _gate_records(
+    worker: EffectOrchestratorWorker, gate_id: str = "gate-buffer"
+) -> list[dict[str, Any]]:
     path = worker.worker_config.gate_execution_store_path
     if not path.exists():
         return []

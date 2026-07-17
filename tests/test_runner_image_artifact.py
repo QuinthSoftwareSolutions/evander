@@ -51,7 +51,9 @@ def _create_codex_fixture(
     version: str = "1.0.0",
     binary_text: str = "#!/usr/bin/env bash\nexit 0\n",
 ) -> tuple[Path, Path, Path]:
-    host_codex_root = tmp_path.joinpath("host-codex", "node_modules", *HOST_CODEX_PACKAGE.split("/"))
+    host_codex_root = tmp_path.joinpath(
+        "host-codex", "node_modules", *HOST_CODEX_PACKAGE.split("/")
+    )
     platform_root = tmp_path.joinpath(
         "host-codex", "node_modules", *RUNNER_PLATFORM_PACKAGE.split("/")
     )
@@ -164,7 +166,9 @@ def _run_runner_script_raw(
 def _docker_invocations(log_path: Path) -> list[str]:
     if not log_path.exists():
         return []
-    return [line.strip() for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        line.strip() for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
 
 
 def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
@@ -224,7 +228,10 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "CODEX_LEGACY_BINARY_RELATIVE_PATH" in script
     assert "add_codex_binary_candidates" in script
     assert "HOISTED_CODEX_BINARY_ROOT" in script
-    assert 'HOST_CODEX_NODE_MODULES="$(cd "${HOST_CODEX_ROOT}/../.." 2>/dev/null && pwd || true)"' in script
+    assert (
+        'HOST_CODEX_NODE_MODULES="$(cd "${HOST_CODEX_ROOT}/../.." 2>/dev/null && pwd || true)"'
+        in script
+    )
     assert "NODE_RESOLVED_CODEX_BINARY_ROOT" in script
     assert "RUNNER_BUILD_NETWORK" in script
     assert "RUNNER_MANIFEST_PATH" in script
@@ -233,8 +240,11 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "dist/evander-runner.tar" in script
     assert 'build_args=(build -t "${RUNNER_IMAGE_NAME}")' in script
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
-    assert 'build_args+=(--pull)' in script
-    assert 'RUNNER_ARCHIVE_TMP_PATH="$(mktemp "$(dirname "${RUNNER_ARCHIVE_PATH}")/.runner-archive.XXXXXX.tar")"' in script
+    assert "build_args+=(--pull)" in script
+    assert (
+        'RUNNER_ARCHIVE_TMP_PATH="$(mktemp "$(dirname "${RUNNER_ARCHIVE_PATH}")/.runner-archive.XXXXXX.tar")"'
+        in script
+    )
     assert '"${DOCKER}" save -o "${RUNNER_ARCHIVE_TMP_PATH}" "${RUNNER_IMAGE_NAME}"' in script
     assert 'mv -f "${RUNNER_ARCHIVE_TMP_PATH}" "${RUNNER_ARCHIVE_PATH}"' in script
     assert "Reused cached ${RUNNER_IMAGE_NAME} archive at ${RUNNER_ARCHIVE_PATH}" in script
@@ -255,8 +265,11 @@ def test_claude_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert 'cp "${RESOLVED_CLAUDE_BIN}" "${BUILD_CONTEXT}/claude"' in script
     assert 'build_args=(build -t "${RUNNER_IMAGE_NAME}")' in script
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
-    assert 'build_args+=(--pull)' in script
-    assert 'RUNNER_ARCHIVE_TMP_PATH="$(mktemp "$(dirname "${RUNNER_ARCHIVE_PATH}")/.runner-archive.XXXXXX.tar")"' in script
+    assert "build_args+=(--pull)" in script
+    assert (
+        'RUNNER_ARCHIVE_TMP_PATH="$(mktemp "$(dirname "${RUNNER_ARCHIVE_PATH}")/.runner-archive.XXXXXX.tar")"'
+        in script
+    )
     assert '"${DOCKER}" save -o "${RUNNER_ARCHIVE_TMP_PATH}" "${RUNNER_IMAGE_NAME}"' in script
     assert 'mv -f "${RUNNER_ARCHIVE_TMP_PATH}" "${RUNNER_ARCHIVE_PATH}"' in script
     assert "Reused cached ${RUNNER_IMAGE_NAME} archive at ${RUNNER_ARCHIVE_PATH}" in script

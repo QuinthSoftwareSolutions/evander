@@ -183,9 +183,7 @@ def test_verification_retry_uses_commands_frozen_in_release_manifest() -> None:
     )
     release.verification_run_ids = [failed_run.id]
     state = TeamState.empty()
-    state.projects["project"] = _project(
-        release_policy=ProjectReleasePolicy(allow_ungated=True)
-    )
+    state.projects["project"] = _project(release_policy=ProjectReleasePolicy(allow_ungated=True))
     state.release_verification_runs[failed_run.id] = failed_run
 
     result: dict[str, object] = {}

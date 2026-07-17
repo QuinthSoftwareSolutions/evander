@@ -102,9 +102,7 @@ def test_admin_runtime_adapter_delegates_skill_validation_when_backed() -> None:
     skill_admin = _SkillAdmin()
     adapter = AdminRuntimeProviderAdapter(SimpleNamespace(skill_admin=skill_admin))
 
-    assert adapter.validate_managed_codex_skills([" skill-a ", "skill-a"]) == [
-        "managed:skill-a"
-    ]
+    assert adapter.validate_managed_codex_skills([" skill-a ", "skill-a"]) == ["managed:skill-a"]
     assert skill_admin.calls == [["skill-a"]]
     assert adapter.resolve_container_codex_skill_files(["skill-a"]) == [
         {"name": "skill-a", "path": "/skills/skill-a/SKILL.md"}

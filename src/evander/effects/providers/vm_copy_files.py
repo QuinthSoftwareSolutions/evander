@@ -71,9 +71,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 index=index,
             )
             if not template_path.exists():
-                raise ValueError(
-                    f"{effect_type} template source does not exist: {template_path}"
-                )
+                raise ValueError(f"{effect_type} template source does not exist: {template_path}")
             if template_path.is_dir():
                 raise ValueError(f"{effect_type} template source must be a file: {template_path}")
             template_text = template_path.read_text(encoding="utf-8")
@@ -184,9 +182,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 copied_file = {
                     "source_path": entry.get("source_path"),
                     "destination_path": remote_path,
-                    "source_kind": "content"
-                    if entry.get("content") is not None
-                    else "source_path",
+                    "source_kind": "content" if entry.get("content") is not None else "source_path",
                     "recursive": recursive,
                     "mode": entry["mode"],
                     "overwrite": entry["overwrite"],
@@ -345,7 +341,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             cmd.append("-r")
         cmd.extend(
             [
-            *ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                *ssh_options(vm_name, vm_ip, ssh_private_key_path),
                 str(local_source),
                 remote_spec,
             ]
@@ -511,8 +507,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             raise ValueError(f"{effect_type} files must be a list")
         entries: list[dict[str, Any]] = []
         source_roots = list(
-            allowed_source_roots
-            or self._approved_source_roots(None, effect_type=effect_type)
+            allowed_source_roots or self._approved_source_roots(None, effect_type=effect_type)
         )
         for raw_entry in value:
             if not isinstance(raw_entry, Mapping):
@@ -587,9 +582,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 self._resolve_root_path(runtime_dir / name)
                 for name in _DEFAULT_RUNTIME_SOURCE_ROOT_NAMES
             )
-        roots.extend(
-            self._normalize_configured_source_roots(value, effect_type=effect_type)
-        )
+        roots.extend(self._normalize_configured_source_roots(value, effect_type=effect_type))
         unique_roots: list[Path] = []
         seen: set[str] = set()
         for root in roots:
@@ -720,9 +713,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         if not text:
             return None
         if text not in {"text", "json", "yaml"}:
-            raise ValueError(
-                "effect:vm:copy-files content_format must be one of: text, json, yaml"
-            )
+            raise ValueError("effect:vm:copy-files content_format must be one of: text, json, yaml")
         return text
 
     @staticmethod
@@ -733,9 +724,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         if not text:
             return None
         if text != "managed_section":
-            raise ValueError(
-                "effect:vm:copy-files merge_strategy must be one of: managed_section"
-            )
+            raise ValueError("effect:vm:copy-files merge_strategy must be one of: managed_section")
         return text
 
     @staticmethod

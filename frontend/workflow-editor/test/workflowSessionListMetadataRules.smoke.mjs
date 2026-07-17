@@ -6,6 +6,8 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+import { fulfillAdminShellBackgroundApiRequest } from "./adminShellHelpers.mjs";
+
 function jsonResponse(payload, status = 200) {
   return {
     status,
@@ -186,6 +188,10 @@ test("workflow editor exposes query session metadata filters as metadata rules",
   await context.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const { pathname } = url;
+
+    if (await fulfillAdminShellBackgroundApiRequest(route, pathname)) {
+      return;
+    }
 
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse({

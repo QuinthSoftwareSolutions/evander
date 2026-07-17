@@ -55,7 +55,9 @@ class AddonAdminService:
 
     def read_addon_state(self) -> dict[str, Any]:
         host_config = self._read_host_config()
-        worker_payload = self.workflow_config_admin.read_worker_global_config("trigger-orchestrator")
+        worker_payload = self.workflow_config_admin.read_worker_global_config(
+            "trigger-orchestrator"
+        )
         host_loader = host_config.addon_loader
         worker_loader = self._worker_addon_loader(worker_payload.config)
         worker_runtime_addon_ids, worker_runtime_loader_error = (
@@ -81,6 +83,7 @@ class AddonAdminService:
             pending_enable = enabled and not loaded
             pending_disable = loaded and not enabled
             has_mcp_tools = bool(registration and registration.mcp_tools is not None)
+            has_connector_drivers = bool(registration and registration.connector_drivers)
             addons.append(
                 {
                     "candidate_key": candidate.source,
@@ -98,7 +101,10 @@ class AddonAdminService:
                     "has_admin_ui": bool(registration and registration.admin_ui_routes),
                     "has_admin_api": bool(registration and registration.admin_api_routes),
                     "has_mcp_tools": has_mcp_tools,
-                    "has_workflow_providers": bool(registration and registration.workflow_providers),
+                    "has_connector_drivers": has_connector_drivers,
+                    "has_workflow_providers": bool(
+                        registration and registration.workflow_providers
+                    ),
                     "workflow_node_types": sorted(node_types),
                     "referenced_workflow_node_types": referenced_node_types,
                     "runtime_workflow_pack": self._runtime_workflow_pack_status(
@@ -111,7 +117,9 @@ class AddonAdminService:
                     ),
                     "load_error": candidate.error,
                     "required_restart_services": list(
-                        self._required_restart_services(has_mcp_tools=has_mcp_tools)
+                        self._required_restart_services(
+                            has_mcp_tools=has_mcp_tools or has_connector_drivers
+                        )
                     ),
                 }
             )
@@ -140,6 +148,7 @@ class AddonAdminService:
                     "has_admin_ui": False,
                     "has_admin_api": False,
                     "has_mcp_tools": False,
+                    "has_connector_drivers": False,
                     "has_workflow_providers": False,
                     "workflow_node_types": [],
                     "referenced_workflow_node_types": [],
@@ -152,8 +161,9 @@ class AddonAdminService:
             )
 
         restart_required = any(item["restart_required"] for item in addons)
-        has_mcp_change = any(
-            item["restart_required"] and item["has_mcp_tools"] for item in addons
+        has_gateway_change = any(
+            item["restart_required"] and (item["has_mcp_tools"] or item["has_connector_drivers"])
+            for item in addons
         )
         return {
             "addon_loader": host_loader.model_dump(mode="json"),
@@ -164,7 +174,7 @@ class AddonAdminService:
             "revision": self._revision(host_loader, worker_loader),
             "restart_required": restart_required,
             "required_restart_services": list(
-                self._required_restart_services(has_mcp_tools=has_mcp_change)
+                self._required_restart_services(has_mcp_tools=has_gateway_change)
             )
             if restart_required
             else [],
@@ -597,11 +607,7 @@ class AddonAdminService:
         workflow_packs = worker_config.get("workflow_packs")
         if not isinstance(workflow_packs, list):
             return worker_config
-        remaining = [
-            item
-            for item in workflow_packs
-            if str(item or "").strip() not in references
-        ]
+        remaining = [item for item in workflow_packs if str(item or "").strip() not in references]
         if len(remaining) == len(workflow_packs):
             return worker_config
         updated = dict(worker_config)

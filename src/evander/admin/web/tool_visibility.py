@@ -27,9 +27,7 @@ def tool_visibility_routes(service: AdminRuntimeComponents) -> list[Route]:
                 service.approval_audit_admin.tool_visibility_payload,
                 target=session_id,
                 workflow_run_id=_optional_text(params.get("workflow_run_id")),
-                mcp_tool_approval_lease_id=_optional_text(
-                    params.get("mcp_tool_approval_lease_id")
-                ),
+                mcp_tool_approval_lease_id=_optional_text(params.get("mcp_tool_approval_lease_id")),
                 mcp_transport_session_id=_optional_text(params.get("mcp_transport_session_id")),
             )
         except ValueError as exc:

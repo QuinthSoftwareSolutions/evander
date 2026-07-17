@@ -372,13 +372,17 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
         }
 
     monkeypatch.setattr(
-        service.operations_admin, "teams_auth_status", MethodType(fake_status, service.operations_admin)
+        service.operations_admin,
+        "teams_auth_status",
+        MethodType(fake_status, service.operations_admin),
     )
     monkeypatch.setattr(
         service.operations_admin, "teams_auth_list", MethodType(fake_list, service.operations_admin)
     )
     monkeypatch.setattr(
-        service.operations_admin, "teams_auth_login", MethodType(fake_login, service.operations_admin)
+        service.operations_admin,
+        "teams_auth_login",
+        MethodType(fake_login, service.operations_admin),
     )
     monkeypatch.setattr(
         service.operations_admin,
@@ -386,7 +390,9 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
         MethodType(fake_complete_login, service.operations_admin),
     )
     monkeypatch.setattr(
-        service.operations_admin, "teams_auth_logout", MethodType(fake_logout, service.operations_admin)
+        service.operations_admin,
+        "teams_auth_logout",
+        MethodType(fake_logout, service.operations_admin),
     )
     monkeypatch.setattr(
         service.operations_admin,
@@ -416,7 +422,9 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
         params={"directory_path": selected_directory_path},
         json={"login_session_id": login_session_id},
     )
-    logout = client.post("/api/teams-auth/logout", params={"directory_path": selected_directory_path})
+    logout = client.post(
+        "/api/teams-auth/logout", params={"directory_path": selected_directory_path}
+    )
 
     assert unlock.status_code == 200
 
@@ -450,7 +458,10 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
     assert login_payload["identity_id"] == "teams-identity"
     assert login_payload["tenant_id"] == "tenant-123"
     assert login_payload["scopes"] == ["scope-a"]
-    assert login_payload["message"] == "Go to https://microsoft.com/devicelogin and enter code ABCD-EFGH"
+    assert (
+        login_payload["message"]
+        == "Go to https://microsoft.com/devicelogin and enter code ABCD-EFGH"
+    )
     assert login_payload["user_code"] == "ABCD-EFGH"
     assert login_payload["status"] == "device_code_pending"
     assert login_payload["authenticated"] is False
@@ -533,7 +544,9 @@ def test_admin_web_teams_auth_mutations_require_privileged_unlock(
         return {"directory_path": directory, "status": "logged_out", "authenticated": False}
 
     monkeypatch.setattr(
-        service.operations_admin, "teams_auth_login", MethodType(fake_login, service.operations_admin)
+        service.operations_admin,
+        "teams_auth_login",
+        MethodType(fake_login, service.operations_admin),
     )
     monkeypatch.setattr(
         service.operations_admin,
@@ -541,7 +554,9 @@ def test_admin_web_teams_auth_mutations_require_privileged_unlock(
         MethodType(fake_complete, service.operations_admin),
     )
     monkeypatch.setattr(
-        service.operations_admin, "teams_auth_logout", MethodType(fake_logout, service.operations_admin)
+        service.operations_admin,
+        "teams_auth_logout",
+        MethodType(fake_logout, service.operations_admin),
     )
 
     client = TestClient(create_app(service))

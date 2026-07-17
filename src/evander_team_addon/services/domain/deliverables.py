@@ -27,6 +27,7 @@ _DELIVERABLE_VERIFICATION_STATUSES = frozenset(
     {"passed", "failed", "partial", "not_run", "unknown"}
 )
 
+
 def _deliverable_git_refs_from_payload(value: object) -> DeliverableGitRefs:
     payload = _optional_mapping(value, "git_refs") or {}
     branch_context_id = _optional_text(payload.get("branch_context_id"))
@@ -38,6 +39,7 @@ def _deliverable_git_refs_from_payload(value: object) -> DeliverableGitRefs:
         agent_branch=agent_branch,
         commit_sha=_optional_text(payload.get("commit_sha")),
     )
+
 
 def _normalize_deliverable_verification_mapping(
     value: object,
@@ -60,6 +62,7 @@ def _normalize_deliverable_verification_mapping(
         ),
     }
 
+
 def _deliverable_verification_from_payload(
     value: object,
 ) -> DeliverableVerification | None:
@@ -71,10 +74,12 @@ def _deliverable_verification_from_payload(
         return None
     return DeliverableVerification.model_validate(payload)
 
+
 def _deliverable_verification_payload(deliverable: Deliverable) -> dict[str, Any] | None:
     if deliverable.verification is None:
         return None
     return deliverable.verification.model_dump(mode="json")
+
 
 def _deliverable_submission_next_action_hints(
     *,
@@ -115,6 +120,7 @@ def _deliverable_submission_next_action_hints(
         )
     return hints
 
+
 def _superseded_deliverable_for_rework(
     state: TeamState,
     *,
@@ -152,6 +158,7 @@ def _superseded_deliverable_for_rework(
         )
     return deliverable
 
+
 def _active_task_deliverables(
     state: TeamState,
     task: AgentTask,
@@ -162,6 +169,7 @@ def _active_task_deliverables(
         if (deliverable := state.deliverables.get(deliverable_id)) is not None
         and deliverable.superseded_by_deliverable_id is None
     ]
+
 
 __all__ = [
     "_DELIVERABLE_VERIFICATION_STATUSES",

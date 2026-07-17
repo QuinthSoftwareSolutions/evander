@@ -238,9 +238,7 @@ def test_issue_git_admin_service_create_update_and_delete_local_issue(
 ) -> None:
     admin, store = _build_issue_admin(tmp_path)
     service = IssueGitAdminService(_issue_git_dependencies(admin))
-    monkeypatch.setattr(
-        issue_git_module.vm_helpers, "dominfo_field", lambda *args, **kwargs: None
-    )
+    monkeypatch.setattr(issue_git_module.vm_helpers, "dominfo_field", lambda *args, **kwargs: None)
 
     created = service.create_issue(
         title="Fix dashboard",
@@ -316,9 +314,7 @@ def test_issue_git_admin_service_delete_local_issue_names_session_blockers(
 ) -> None:
     admin, store = _build_issue_admin(tmp_path)
     service = IssueGitAdminService(_issue_git_dependencies(admin))
-    monkeypatch.setattr(
-        issue_git_module.vm_helpers, "dominfo_field", lambda *args, **kwargs: None
-    )
+    monkeypatch.setattr(issue_git_module.vm_helpers, "dominfo_field", lambda *args, **kwargs: None)
 
     created = service.create_issue(title="Fix dashboard", body="Build it")
     blocking_session_id = "issue-1-root-example-example_backup-20260601T072318Z-run"
@@ -381,12 +377,14 @@ def test_issue_git_admin_service_get_issue_passes_remote_reference_project(
     admin, store = _build_issue_admin(tmp_path)
     remote_calls: list[dict[str, object]] = []
     admin.issue_service = SimpleNamespace(
-        read_remote_issue=lambda **kwargs: remote_calls.append(kwargs)
-        or {
-            "title": "Remote",
-            "description": "Body",
-            "state": "In Progress",
-        },
+        read_remote_issue=lambda **kwargs: (
+            remote_calls.append(kwargs)
+            or {
+                "title": "Remote",
+                "description": "Body",
+                "state": "In Progress",
+            }
+        ),
         post_remote_comment=lambda **kwargs: {"comment_added": True},
         update_remote_issue=lambda **kwargs: {"updated": True},
     )
@@ -429,12 +427,14 @@ def test_issue_git_admin_service_update_issue_passes_remote_reference_project(
     update_calls: list[dict[str, object]] = []
     read_calls: list[dict[str, object]] = []
     admin.issue_service = SimpleNamespace(
-        read_remote_issue=lambda **kwargs: read_calls.append(kwargs)
-        or {
-            "title": "Remote",
-            "description": "Body",
-            "state": "In Progress",
-        },
+        read_remote_issue=lambda **kwargs: (
+            read_calls.append(kwargs)
+            or {
+                "title": "Remote",
+                "description": "Body",
+                "state": "In Progress",
+            }
+        ),
         post_remote_comment=lambda **kwargs: {"comment_added": True},
         update_remote_issue=lambda **kwargs: update_calls.append(kwargs) or {"updated": True},
     )
@@ -486,11 +486,16 @@ def test_admin_service_delegates_issue_git_methods() -> None:
     service.issue_git_admin = fake
 
     assert (
-        service.issue_git_admin.session_update_metadata(target="session-1", metadata={"foo": "bar"})["name"]
+        service.issue_git_admin.session_update_metadata(
+            target="session-1", metadata={"foo": "bar"}
+        )["name"]
         == "session_update_metadata"
     )
     assert service.issue_git_admin.create_issue(title="New issue")["name"] == "create_issue"
-    assert service.issue_git_admin.update_issue("issue-1", state="In Progress")["name"] == "update_issue"
+    assert (
+        service.issue_git_admin.update_issue("issue-1", state="In Progress")["name"]
+        == "update_issue"
+    )
     assert service.issue_git_admin.delete_local_issue("issue-7")["name"] == "delete_local_issue"
 
     assert [name for name, _args, _kwargs in fake.calls] == [
@@ -547,9 +552,7 @@ def test_issue_git_admin_service_update_issue_metadata_updates_nested_and_preser
     )
     store.put(issue.issue_id, issue)
 
-    service.update_issue_metadata(
-        issue_id="root::local::1", patch={"plan.status": "committed"}
-    )
+    service.update_issue_metadata(issue_id="root::local::1", patch={"plan.status": "committed"})
 
     updated = store.get("root::local::1")
     assert isinstance(updated, LocalIssueRecord)

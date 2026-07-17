@@ -23,8 +23,7 @@ class TeamReleaseGateService:
         error: str | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_results = [
-            ReleaseVerificationCommandResult.model_validate(item)
-            for item in command_results
+            ReleaseVerificationCommandResult.model_validate(item) for item in command_results
         ]
         result: dict[str, Any] = {
             "success": False,

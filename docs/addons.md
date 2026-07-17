@@ -18,6 +18,8 @@ Add-ons may register generic integration points:
 - Host-side MCP tools registered through the add-on MCP registrar and governed
   by the same session, directory policy, approval, and audit machinery as core
   tools
+- Connector drivers registered by type name and invoked only through the core connector service,
+  preserving directory resolution, exact session grants, approvals, auth handling, and audit
 - Private runtime state under `runtime/addons/<addon_id>/`
 
 Add-ons must not add domain-specific fields to core models such as
@@ -118,8 +120,18 @@ def register_addon():
                 },
             ],
         },
+        "connector_drivers": {
+            "example_service": ExampleServiceConnectorDriver(),
+        },
     }
 ```
+
+Connector-driver extensions implement the small async driver protocol documented in
+[Agent Connectors](connectors.md). Add-ons should use a driver only when the built-in declarative
+REST or filesystem drivers cannot express the integration. A custom driver never receives a
+session's unrestricted environment or arbitrary agent headers; the core resolves configured auth
+and validates the operation before invoking it. Adding or removing a connector driver requires a
+gateway restart.
 
 ## Storage
 
@@ -298,6 +310,33 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
 
 - Agents can inspect company information, accounts, journal entries, invoices,
   supplier invoices, uploads, and prepared actions.
+- Receipt and invoice intake is connector- and communication-driven. An agent can
+  import a PDF, JPEG, or PNG returned as an artifact by a granted filesystem/REST
+  connector, or by `communication_download_attachment`, with
+  `bokio_import_evidence_artifact`. The add-on makes a durable, content-deduplicated
+  evidence record and retains artifact provenance without retaining a connector
+  credential or a guest-visible host path.
+- The preferred source for vendor receipts is a dedicated billing mailbox. A
+  scheduled bookkeeping workflow can use `email_list_unread`,
+  `communication_list_attachments`, and `communication_download_attachment`; the
+  last tool returns the artifact that the Bokio import tool accepts. Use a
+  filesystem connector for a known file in a controlled host dropbox of manually
+  downloaded or scanned documents. A REST connector may provide vendor cost data
+  or a fixed document download endpoint, but it does not replace the email
+  integration for user-delegated mailboxes.
+- `bokio_list_evidence` and `bokio_get_evidence` expose evidence metadata,
+  provenance, and Bokio association state. `bokio_stage_evidence_for_workspace`
+  can make previously retained evidence available to a new session as an artifact.
+- `bokio_attach_evidence` uploads managed evidence with a Bokio journal-entry ID,
+  linking it to an existing transaction or entry. `bokio_create_journal_entry_with_evidence`
+  creates an entry and attaches one or more evidence records with a durable
+  operation key. These outward writes follow the standard per-tool MCP policy;
+  enable autonomous use only for sessions that are explicitly permitted to make
+  those calls.
+- If an evidence upload has an uncertain failure, its state becomes
+  `needs_attention`; an agent can make an explicit `retry_if_failed` call after
+  reconciling the existing entry. The add-on never blindly recreates a journal
+  entry whose creation outcome is unknown.
 - Agents can prepare journal entries, supplier invoices, and bank payments as
   local add-on actions for operator approval.
 - Document uploads read only from add-on-owned staging directories under
@@ -305,13 +344,21 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   `uploads/sessions/<session-id>`, workflow uploads use
   `uploads/scopes/workflows` unless a `session_id` is supplied, and Admin API
   uploads use `uploads/scopes/admin`.
-- Creation tools execute only approved prepared actions and should also be
-  policy-gated with MCP invocation approval for production sessions.
+- Prepared-action execution tools execute only approved prepared actions and
+  should also be policy-gated with MCP invocation approval for production
+  sessions.
 - Bank payments created through Bokio still require a signatory to log in to
   Bokio and sign with BankID before submission to the bank.
 - Supplier invoice support uses Bokio's preview API surface and should be
   treated as less stable than company, account, journal-entry, invoice, upload,
   and SIE reads.
+
+For an autonomous bookkeeping session, allow the relevant email tools or the
+generic `list_connectors` and `call_connector` tools with exact connector-operation
+grants, then allow the required `bokio_*` tools. Keep
+`communication_copy_artifact_to_workspace` separate: it is needed only when the
+agent must inspect the original file in its workspace, not to persist or attach
+the document to Bokio.
 
 ## Team Module Guidance
 

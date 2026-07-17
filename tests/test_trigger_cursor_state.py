@@ -12,8 +12,9 @@ from evander.triggers.providers._cursor_state import (
 )
 
 
-def _update_cursor_from_process(path: str, label: str) -> None:
+def _update_cursor_from_process(path: str, label: str, start_barrier) -> None:
     store = TriggerCursorStore(Path(path))
+    start_barrier.wait(timeout=5)
 
     def append_label(state: dict[str, object]) -> dict[str, object]:
         labels = list(state.get("labels", []))
@@ -33,12 +34,8 @@ def test_cursor_state_helpers_merge_unique_ids_and_latest_timestamp() -> None:
         ["cursor-2", "cursor-3", "", None, "cursor-4"],
         limit=3,
     ) == ["cursor-2", "cursor-3", "cursor-4"]
-    assert latest_cursor_timestamp_text("2026-04-03T12:00:00Z", newer) == (
-        "2026-04-03T12:05:00Z"
-    )
-    assert latest_cursor_timestamp_text("2026-04-03T12:10:00Z", newer) == (
-        "2026-04-03T12:10:00Z"
-    )
+    assert latest_cursor_timestamp_text("2026-04-03T12:00:00Z", newer) == ("2026-04-03T12:05:00Z")
+    assert latest_cursor_timestamp_text("2026-04-03T12:10:00Z", newer) == ("2026-04-03T12:10:00Z")
 
 
 def test_trigger_cursor_store_update_merges_without_overwriting_other_keys(
@@ -90,15 +87,29 @@ def test_trigger_cursor_store_serializes_updates_across_processes(tmp_path: Path
     path = tmp_path / "trigger-cursors.json"
     TriggerCursorStore(path).put("trigger-a", {"labels": []})
 
-    context = multiprocessing.get_context("fork")
+    context = multiprocessing.get_context("spawn")
+    start_barrier = context.Barrier(3)
     processes = [
-        context.Process(target=_update_cursor_from_process, args=(str(path), "one")),
-        context.Process(target=_update_cursor_from_process, args=(str(path), "two")),
+        context.Process(
+            target=_update_cursor_from_process,
+            args=(str(path), "one", start_barrier),
+        ),
+        context.Process(
+            target=_update_cursor_from_process,
+            args=(str(path), "two", start_barrier),
+        ),
     ]
-    for process in processes:
-        process.start()
-    for process in processes:
-        process.join(timeout=5)
+    try:
+        for process in processes:
+            process.start()
+        start_barrier.wait(timeout=5)
+        for process in processes:
+            process.join(timeout=5)
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
 
     for process in processes:
         assert process.exitcode == 0

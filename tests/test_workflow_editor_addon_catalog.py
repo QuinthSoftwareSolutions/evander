@@ -84,9 +84,7 @@ def test_workflow_editor_catalog_excludes_addon_nodes_when_addon_disabled(
     payload = _catalog_payload(tmp_path, enable_team_addon=False)
 
     node_types = {node["type"] for node in payload["nodes"]}
-    internal_event_types = {
-        entry["event_type"] for entry in payload.get("internal_events", [])
-    }
+    internal_event_types = {entry["event_type"] for entry in payload.get("internal_events", [])}
 
     assert "effect:team:wake-due-agents" not in node_types
     assert "query:team:state" not in node_types
@@ -112,9 +110,7 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     internal_event_field = next(
         field for field in internal_event_trigger["fields"] if field["key"] == "event_type"
     )
-    internal_event_options = {
-        option["value"]: option for option in internal_event_field["options"]
-    }
+    internal_event_options = {option["value"]: option for option in internal_event_field["options"]}
 
     assert "query:team:agent-action-artifact" not in nodes
     assert "effect:team:apply-agent-action" not in nodes

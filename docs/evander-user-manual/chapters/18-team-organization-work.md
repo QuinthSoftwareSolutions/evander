@@ -1,6 +1,17 @@
 # 18. Organization, Projects, Tasks, and Cases
 
-> **At a glance.** Team organization is an explicit authorization graph, while projects, cases, goals, and tasks form the work graph. Reporting lines govern directional coordination; project assignments and narrow role permissions govern project actions. Cases preserve intake context, tasks carry executable ownership, and repository validation keeps every cross-link within the right Team and project.
+> **At a glance.** A Team needs to remember two different things: how its agents are organized and what work they are doing. Reporting relationships answer who may direct or support whom; projects, cases, goals, and tasks answer what should be accomplished. Keeping those structures separate makes responsibility clearer and prevents a job title from silently becoming permission to change unrelated work.
+
+## Start with four questions
+
+When an operator opens a Team record, four questions usually locate the work:
+
+1. **Which outcome matters?** The project and goal describe why the work exists.
+2. **What arrived or changed?** A case preserves the intake story and outside reference.
+3. **Who must do what next?** Tasks carry ownership, dependencies, and current state.
+4. **Who may direct or decide?** Roles, reporting lines, review assignments, and release policy answer different parts of that question.
+
+The same agent can appear in both the organization and the work without those relationships becoming interchangeable. A project lead coordinates the project; a direct superior occupies a reporting relationship; a reviewer decides on submitted evidence; and a release authority governs publication.
 
 ## Two graphs that meet at an agent
 
@@ -20,23 +31,25 @@ Priya's project leadership does not make her the Team manager. Rowan's review as
 
 A Team has exactly one manager identity and may contain subordinate agents. Agents are stable domain records attached to core session IDs. Display names and avatars help people navigate the UI but do not participate in authorization.
 
-A role contains:
-
-- a stable ID and display name;
-- a Team and optional project scope;
-- a default ephemeral-delegation policy;
-- a narrow permission set;
-- archival state.
-
-Current permission names include <code>create_root_task</code>, <code>prepare_bookkeeping_action</code>, <code>request_payment_preparation</code>, <code>request_release</code>, and <code>review_bookkeeping_action</code>. They are capabilities, not a replacement for contextual checks. For example, <code>request_release</code> is still limited to the relevant project and accepted scope.
-
-Reporting relationships constrain agent mail:
-
-- questions and progress reports travel upward to the direct superior;
-- status requests travel downward to a direct subordinate;
-- no ordinary tool permits skip-level messaging.
-
-This keeps routine coordination local. Broader intervention uses task reassignment, manager routing, governance, or an operator directive rather than a covert communication shortcut.
+> <span class="sidebar-kicker">Deeper detail</span> **What a role and reporting edge record**
+>
+> A role contains:
+>
+> - a stable ID and display name;
+> - a Team and optional project scope;
+> - a default ephemeral-delegation policy;
+> - a narrow permission set;
+> - archival state.
+>
+> Current permission names include <code>create_root_task</code>, <code>prepare_bookkeeping_action</code>, <code>request_payment_preparation</code>, <code>request_release</code>, and <code>review_bookkeeping_action</code>. They are capabilities, not a replacement for contextual checks. For example, <code>request_release</code> is still limited to the relevant project and accepted scope.
+>
+> Reporting relationships constrain agent mail:
+>
+> - questions and progress reports travel upward to the direct superior;
+> - status requests travel downward to a direct subordinate;
+> - no ordinary tool permits skip-level messaging.
+>
+> This keeps routine coordination local. Broader intervention uses task reassignment, manager routing, governance, or an operator directive rather than a covert communication shortcut.
 
 An active stand-down overlays the hierarchy. A hold on an agent's subtree prevents descendants from acquiring Team work even if their tasks otherwise appear ready. Chapter 20 covers its runtime effect.
 
@@ -68,13 +81,17 @@ The <code>team_update_goal</code> command permits an authorized agent to update 
 
 ## Tasks: the executable work graph
 
-A task records Team, project, owner, creator, title, description, priority, state, and optional:
+To an operator, a task is the clearest answer to “who owns the next concrete piece of work?” It can be waiting, active, blocked, under review, or complete. Parent and dependency links explain why a seemingly pending task may not yet be ready.
 
-- parent task;
-- dependency tasks;
-- case;
-- deliverables;
-- metadata and timestamps.
+> <span class="sidebar-kicker">Technical reference</span> **Task fields**
+>
+> A task records Team, project, owner, creator, title, description, priority, state, and optional:
+>
+> - parent task;
+> - dependency tasks;
+> - case;
+> - deliverables;
+> - metadata and timestamps.
 
 Task state has a deliberate review-aware lifecycle:
 
@@ -113,7 +130,9 @@ Suppose Northstar receives support report <code>OBS-184</code>: telemetry delive
 
 The case/task link is bidirectional. If a task names a case, the case must list that task; repository mutations maintain and validate both sides. A project-scoped case cannot link work from another project.
 
-## Work creation surfaces
+## Deeper detail: work creation surfaces
+
+The UI is the normal operator surface. Agent commands and workflow effects create the same validated records when work must be decomposed or ingested automatically; they do not bypass the ownership and scope rules described above.
 
 Operators can create and edit projects, cases, goals, and tasks through the UI and Admin API with <code>expected_revision</code>. Agent commands include:
 
@@ -126,15 +145,19 @@ Workflow authors can use <code>effect:team:create-case</code>, <code>effect:team
 
 The effect providers use the same model validation. They are not a back door around ownership, scope, or graph rules.
 
-## Readiness and derived project state
+## How Team decides what is ready
 
-The wake service evaluates ready work rather than simply searching for nonterminal tasks. It considers:
+Team does not wake every agent who has an unfinished task. It looks for work that can actually advance: dependencies must be satisfied, the right person must be active, and a task under review belongs with the reviewer rather than the producer. This is why “the task is still open” is not enough to explain who should wake next.
 
-- ownership and active agent status;
-- dependency readiness;
-- pending reviews and rework;
-- inbox and action feedback;
-- active leases, stand-downs, no-progress state, and cost caps.
+> <span class="sidebar-kicker">Deeper detail</span> **Readiness inputs**
+>
+> The wake service evaluates ready work rather than simply searching for nonterminal tasks. It considers:
+>
+> - ownership and active agent status;
+> - dependency readiness;
+> - pending reviews and rework;
+> - inbox and action feedback;
+> - active leases, stand-downs, no-progress state, and cost caps.
 
 A task in <code>waiting_for_review</code> with an active review normally wakes its reviewer, not its producer. A rejected review returns the task to active rework. Accepted deliverables and closed findings can cascade the task to accepted. Only then should project goals and status be reevaluated.
 
@@ -154,7 +177,9 @@ One sensible plan is:
 
 That sequence lets later chapters build from one traceable line of work.
 
-## Failure patterns
+## Troubleshooting
+
+Start with the record that appears stuck. For a task, read its owner, dependencies, current deliverable, and active review before changing state. For a project, inspect its goals and remaining active work. For a missing external update, remember that a case's source reference records provenance but does not provide synchronization by itself.
 
 | Error or symptom | Meaning | Recovery |
 |---|---|---|
@@ -166,7 +191,7 @@ That sequence lets later chapters build from one traceable line of work.
 | Project status looks wrong | A goal, task, review, or deliverable remains active or blocked. | Inspect the underlying records; project status is derived. |
 | External ticket changes do not appear | A source reference was mistaken for synchronization. | Add a workflow integration or update the case through its API/effect. |
 
-## Practical runbook
+## Operator runbook
 
 When establishing a project:
 
@@ -186,6 +211,8 @@ When work appears stuck:
 4. Check Team cost coverage and cap.
 5. Correct the domain record or runtime blocker through its owning surface.
 6. Confirm that a wake is queued or that the normal scheduler will evaluate it.
+
+If the domain records look ready but no wake or session activity follows, hand an administrator the Team and project IDs, task and owner IDs, current Team revision, relevant review or inbox ID, and the last visible runtime-attention state. Do not remove dependency edges, accept goals, or overwrite project state merely to force the work forward.
 
 ## Source trail
 

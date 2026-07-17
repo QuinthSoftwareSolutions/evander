@@ -105,7 +105,9 @@ class PullRequestGetQueryProvider(QueryProviderBase):
             raise RuntimeError(f"{self.NODE_TYPE} provider_config_resolver is not available")
         resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
         if not callable(resolve_for_directory):
-            raise RuntimeError(f"{self.NODE_TYPE} provider_config_resolver cannot resolve directories")
+            raise RuntimeError(
+                f"{self.NODE_TYPE} provider_config_resolver cannot resolve directories"
+            )
         return resolve_for_directory(directory_path)
 
     @classmethod

@@ -208,8 +208,7 @@ class TeamsMeetingStore:
             seen_bridge_sequences = {
                 int(raw_event["bridge_sequence"])
                 for raw_event in raw_events
-                if isinstance(raw_event, dict)
-                and isinstance(raw_event.get("bridge_sequence"), int)
+                if isinstance(raw_event, dict) and isinstance(raw_event.get("bridge_sequence"), int)
             }
             appended: list[TeamsMeetingEvent] = []
             for bridge_event in sorted(bridge_events, key=lambda item: item.sequence):
@@ -236,7 +235,9 @@ class TeamsMeetingStore:
                 raw_events.append(event.model_dump(mode="json"))
                 appended.append(event)
                 seen_bridge_sequences.add(bridge_event.sequence)
-                binding.last_bridge_sequence = max(binding.last_bridge_sequence, bridge_event.sequence)
+                binding.last_bridge_sequence = max(
+                    binding.last_bridge_sequence, bridge_event.sequence
+                )
             binding.updated_at = datetime.now(UTC)
             _ensure_mapping(payload, "bindings")[meeting_id] = binding.model_dump(mode="json")
             self._atomic_write(payload)
@@ -255,9 +256,7 @@ class TeamsMeetingStore:
         with self._lock:
             raw_events = list(_ensure_list(self._read_raw(), "events", binding.meeting_id))
         events = [
-            TeamsMeetingEvent.model_validate(raw)
-            for raw in raw_events
-            if isinstance(raw, dict)
+            TeamsMeetingEvent.model_validate(raw) for raw in raw_events if isinstance(raw, dict)
         ]
         events.sort(key=lambda item: item.sequence)
         if since_sequence is not None:
@@ -322,7 +321,9 @@ class TeamsMeetingBridgeClient:
             payload["projection"] = sanitize_voice_metadata(projection)
         return self._request("POST", "/meetings/join", json=payload)
 
-    def get_events(self, *, meeting_id: str, after_sequence: int = 0) -> list[TeamsMeetingBridgeEvent]:
+    def get_events(
+        self, *, meeting_id: str, after_sequence: int = 0
+    ) -> list[TeamsMeetingBridgeEvent]:
         payload = self._request(
             "GET",
             f"/meetings/{quote(meeting_id, safe='')}/events",
@@ -619,7 +620,9 @@ class TeamsMeetingService:
         voice_session_id = str(binding.metadata.get("voice_session_id") or "").strip()
         if not voice_session_id or not hasattr(self.runtime, "voice_session_store"):
             return
-        events = self.store.list_events_for_session(binding.session_id, since_sequence=0, limit=10_000)
+        events = self.store.list_events_for_session(
+            binding.session_id, since_sequence=0, limit=10_000
+        )
         transcript = voice_session_transcript_from_teams_events(events)
         self.runtime.voice_session_store.complete_session(
             voice_session_id,

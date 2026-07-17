@@ -1944,9 +1944,7 @@ def test_admin_service_creates_git_work_context_for_task_owner(tmp_path: Path) -
     assert context.agent_id == "backend"
     assert context.task_id == "task"
     assert context.agent_branch == "agents/session-backend/task"
-    assert repo.read().git_work_contexts[context_id].worktree_path == (
-        "/worktrees/backend-task"
-    )
+    assert repo.read().git_work_contexts[context_id].worktree_path == ("/worktrees/backend-task")
 
 
 def test_submit_deliverable_command_rejects_git_refs_without_context(
@@ -3997,6 +3995,7 @@ def test_task_state_entered_at_changes_only_on_state_transition(
             datetime(2026, 6, 21, 10, 2, 1, tzinfo=UTC),
         ]
     )
+
     def fake_now() -> datetime:
         return next(moments)
 
@@ -8801,9 +8800,7 @@ def _set_project_git(
             managed_repo_id=MANAGED_REPO_ID,
             base_branch="main",
         )
-        state.projects["project"].release_policy = ProjectReleasePolicy(
-            allow_ungated=True
-        )
+        state.projects["project"].release_policy = ProjectReleasePolicy(allow_ungated=True)
         return state
 
     repo.update(_mutate)
@@ -8860,9 +8857,7 @@ def test_update_feature_branch_command_replay_conflict_and_outbox(
     )
 
     def _set_review_branch(state):
-        state.deliverables["deliverable"].git_refs.review_branch = (
-            "team/team/reviews/deliverable"
-        )
+        state.deliverables["deliverable"].git_refs.review_branch = "team/team/reviews/deliverable"
         return state
 
     repo.update(_set_review_branch)
@@ -9034,8 +9029,7 @@ def test_request_release_command_returns_package_events_and_next_action_hints(
     assert list(state.release_packages) == ["rel-1"]
     assert len(repo.list_outbox_records()) == len(outbox_records)
     assert any(
-        "already covers this deliverable set" in hint
-        for hint in duplicate["next_action_hints"]
+        "already covers this deliverable set" in hint for hint in duplicate["next_action_hints"]
     )
 
 
@@ -9955,9 +9949,7 @@ def test_ordinary_release_role_cannot_authorize_verification_waiver(
 
     def _grant_release_only(state):
         state.roles["project__backend"].permissions = [RolePermission.REQUEST_RELEASE]
-        state.deliverables["deliverable"].verification = DeliverableVerification(
-            status="partial"
-        )
+        state.deliverables["deliverable"].verification = DeliverableVerification(status="partial")
         return state
 
     repo.update(_grant_release_only)
@@ -10032,9 +10024,7 @@ def test_operator_verification_waiver_records_authenticated_actor(tmp_path: Path
     )
 
     def _make_not_run(state):
-        state.deliverables["deliverable"].verification = DeliverableVerification(
-            status="not_run"
-        )
+        state.deliverables["deliverable"].verification = DeliverableVerification(status="not_run")
         return state
 
     repo.update(_make_not_run)
@@ -10102,9 +10092,7 @@ def test_canonical_push_waits_for_candidate_verification_and_release_review(
         },
     )
     assert requested["success"] is True
-    release_promotion_id = state.release_packages[
-        "release-gated"
-    ].git_promotion_record_ids[0]
+    release_promotion_id = state.release_packages["release-gated"].git_promotion_record_ids[0]
 
     state, consolidated = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=release_promotion_id,
@@ -10122,9 +10110,7 @@ def test_canonical_push_waits_for_candidate_verification_and_release_review(
         state.git_promotions[promotion_id].promotion_kind != "canonical_push"
         for promotion_id in release.git_promotion_record_ids
     )
-    assert consolidated["events"][0]["event_type"] == (
-        "team.release.verification_requested"
-    )
+    assert consolidated["events"][0]["event_type"] == ("team.release.verification_requested")
 
     run_id = release.verification_run_ids[0]
     state, verified = _team_release_gate_service(repo).record_verification_result(
@@ -10240,9 +10226,7 @@ def test_release_review_uses_criteria_snapshot_after_profile_edit(
     state, missing = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
-            "review_decisions": [
-                {"review_request_id": review_id, "state": "accepted"}
-            ],
+            "review_decisions": [{"review_request_id": review_id, "state": "accepted"}],
         },
     )
     assert missing["success"] is False
@@ -10345,8 +10329,7 @@ def test_release_candidate_runs_ci_before_configured_release_reviews_and_push(
     assert release.review_request_ids == []
     assert len(release.verification_run_ids) == 1
     assert not any(
-        promotion.promotion_kind == "canonical_push"
-        for promotion in state.git_promotions.values()
+        promotion.promotion_kind == "canonical_push" for promotion in state.git_promotions.values()
     )
     assert [event["event_type"] for event in promotion_result["events"]] == [
         "team.release.verification_requested"
@@ -10367,8 +10350,7 @@ def test_release_candidate_runs_ci_before_configured_release_reviews_and_push(
     assert verification_result["created_review_request_ids"] == release.review_request_ids
     assert release.approved_commit_sha is None
     assert not any(
-        promotion.promotion_kind == "canonical_push"
-        for promotion in state.git_promotions.values()
+        promotion.promotion_kind == "canonical_push" for promotion in state.git_promotions.values()
     )
 
     review_by_agent = {
@@ -10828,9 +10810,7 @@ def test_rejected_release_review_requires_changed_candidate_content(
     )
     unchanged = state.release_packages["release-same-rejected-content"]
     assert unchanged.state == TeamRecordState.REJECTED
-    assert "unchanged from failed release release-rejected-review" in (
-        unchanged.error or ""
-    )
+    assert "unchanged from failed release release-rejected-review" in (unchanged.error or "")
 
 
 def test_git_release_request_fails_closed_without_project_release_policy(
@@ -10976,8 +10956,7 @@ def test_git_release_request_reuses_active_package_for_same_deliverables(
     assert len(state.git_promotions) == 1
     assert len(repo.list_outbox_records()) == first_outbox_count
     assert any(
-        "already covers this deliverable set" in hint
-        for hint in duplicate["next_action_hints"]
+        "already covers this deliverable set" in hint for hint in duplicate["next_action_hints"]
     )
 
 
@@ -11054,9 +11033,7 @@ def test_apply_agent_action_git_release_recovery_emits_recovery_event(
         "base_branch": "main",
         "expected_commit_sha": "reviewed-commit",
         "source_branches": ["agents/lead/release-resolved"],
-        "expected_source_commits": {
-            "agents/lead/release-resolved": "reviewed-commit"
-        },
+        "expected_source_commits": {"agents/lead/release-resolved": "reviewed-commit"},
         "allowed_changed_paths": ["M\tsrc/reviewed.py"],
         "summary": "Resolved release merge conflict.",
     }
@@ -11075,9 +11052,7 @@ def test_apply_agent_action_git_release_recovery_continues_failed_feature_promot
     )
 
     def _set_agent_branch(state):
-        state.deliverables["deliverable"].git_refs.agent_branch = (
-            "agents/backend/work"
-        )
+        state.deliverables["deliverable"].git_refs.agent_branch = "agents/backend/work"
         return state
 
     repo.update(_set_agent_branch)
@@ -11187,9 +11162,7 @@ def test_release_recovery_keys_each_failed_promotion_and_keeps_remaining_error(
 
     first_event = first["events"][0]
     assert first_event["payload"]["promotion_id"] == "promotion-new"
-    assert ":rel-1:promotion-new:agents/lead/release-resolved:" in first_event[
-        "idempotency_key"
-    ]
+    assert ":rel-1:promotion-new:agents/lead/release-resolved:" in first_event["idempotency_key"]
 
     state, promotion_result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id="promotion-new",
@@ -11217,9 +11190,7 @@ def test_release_recovery_keys_each_failed_promotion_and_keeps_remaining_error(
 
     second_event = second["events"][0]
     assert second_event["payload"]["promotion_id"] == "promotion-old"
-    assert ":rel-1:promotion-old:agents/lead/release-resolved:" in second_event[
-        "idempotency_key"
-    ]
+    assert ":rel-1:promotion-old:agents/lead/release-resolved:" in second_event["idempotency_key"]
     assert first_event["idempotency_key"] != second_event["idempotency_key"]
 
 
@@ -12205,9 +12176,7 @@ def test_apply_agent_action_review_request_auto_selects_matching_profile(
     assert result["success"] is True
     assert state.review_requests["review-1"].review_profile_id == "profile"
     inbox_item = next(
-        item
-        for item in state.inbox.values()
-        if item.payload.get("review_request_id") == "review-1"
+        item for item in state.inbox.values() if item.payload.get("review_request_id") == "review-1"
     )
     assert inbox_item.payload["review_profile"]["id"] == "profile"
 
@@ -12514,9 +12483,7 @@ def test_accepted_review_requires_required_criteria_to_pass(
                 {
                     "review_request_id": "review-1",
                     "state": "accepted",
-                    "criteria": [
-                        {"criterion_id": "tests", "state": criterion_state}
-                    ],
+                    "criteria": [{"criterion_id": "tests", "state": criterion_state}],
                 }
             ],
         },
@@ -12585,9 +12552,7 @@ def test_review_findings_survive_rework_and_require_matching_profile_resolution(
         },
     )
     assert requested["success"] is True
-    carried_ids = [
-        finding.id for finding in state.deliverables["deliverable-v2"].carried_findings
-    ]
+    carried_ids = [finding.id for finding in state.deliverables["deliverable-v2"].carried_findings]
     assert len(carried_ids) == 2
 
     state, wrong = _team_agent_action_service(repo).apply_agent_action(
@@ -12611,8 +12576,7 @@ def test_review_findings_survive_rework_and_require_matching_profile_resolution(
     assert wrong["success"] is False
     assert any("matching review profile" in error for error in wrong["errors"])
     assert all(
-        finding.state == "open"
-        for finding in state.deliverables["deliverable-v2"].carried_findings
+        finding.state == "open" for finding in state.deliverables["deliverable-v2"].carried_findings
     )
     state, wrong_accepted = _team_agent_action_service(repo).apply_agent_action(
         action={
@@ -12666,8 +12630,7 @@ def test_review_findings_survive_rework_and_require_matching_profile_resolution(
     assert resolved["success"] is True
     assert state.deliverables["deliverable-v2"].state == TeamRecordState.ACCEPTED
     assert all(
-        finding.state == "resolved"
-        and finding.resolved_by_review_request_id == "review-2"
+        finding.state == "resolved" and finding.resolved_by_review_request_id == "review-2"
         for finding in repo.read().deliverables["deliverable-v2"].carried_findings
     )
 

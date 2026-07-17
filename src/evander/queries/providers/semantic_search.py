@@ -50,7 +50,9 @@ class SemanticSearchQueryProvider(QueryProviderBase):
         filter_payload = optional_mapping(
             payload.get("filter"), node_type=NODE_TYPE, field_name="filter"
         )
-        limit = optional_limit(payload.get("limit"), node_type=NODE_TYPE, field_name="limit", default=10)
+        limit = optional_limit(
+            payload.get("limit"), node_type=NODE_TYPE, field_name="limit", default=10
+        )
         score_threshold = optional_float(
             payload.get("score_threshold"),
             node_type=NODE_TYPE,
@@ -66,9 +68,7 @@ class SemanticSearchQueryProvider(QueryProviderBase):
         )
         qdrant_api_key = resolve_qdrant_api_key(context, settings)
         with QdrantClient(settings.qdrant_base_url, api_key=qdrant_api_key) as client:
-            collection = require_collection_exists(
-                client, collection_name, node_type=NODE_TYPE
-            )
+            collection = require_collection_exists(client, collection_name, node_type=NODE_TYPE)
             require_collection_schema(collection, settings)
             vector = embed_text(context, settings, query_text)
             points = client.query_points(

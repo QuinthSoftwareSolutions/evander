@@ -133,8 +133,8 @@ def _mark_pending_scheduled_for(
     current = _parse_dt(state.get("pending_scheduled_for"))
     if current is not None and current >= scheduled_for:
         return state
-    state["pending_scheduled_for"] = scheduled_for.astimezone(UTC).isoformat().replace(
-        "+00:00", "Z"
+    state["pending_scheduled_for"] = (
+        scheduled_for.astimezone(UTC).isoformat().replace("+00:00", "Z")
     )
     return state
 

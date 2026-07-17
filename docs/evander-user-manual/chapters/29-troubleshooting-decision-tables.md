@@ -1,27 +1,39 @@
 # 29. Troubleshooting Decision Tables
 
-> **At a glance.** Start with the failed boundary, collect one authoritative observation, and only then change state. These tables turn common symptoms into bounded investigations for core Evander and the Team Add-on.
+> **At a glance.** When Evander appears stuck, resist the urge to restart or delete things immediately. First identify the boundary where progress stopped and collect one trustworthy observation from that boundary. The tables in this chapter turn common symptoms into a short investigation and a safe next step.
 
-## 29.1 The diagnostic discipline
+## 29.1 Start with three questions
 
-Most difficult incidents become simpler when the evidence is read in this order:
+An operator can make a useful first report without knowing which database or service owns the work. Begin with:
 
-1. **Name the intended outcome.** “The agent should have been woken” is more useful than “Team is broken.”
-2. **Locate the boundary.** Browser/API, command transaction, durable store, orchestrator, execution backend, relay, or provider.
-3. **Read the source of truth.** Use live service status, canonical store rows, and exact event/effect records before local speculation.
-4. **Correlate identities.** Keep the session ID, directory, event ID, workflow run, effect execution, Team task/lease, and Git SHA together.
-5. **Choose the smallest reversible action.** Retry through the owning API or worker; do not hand-edit a database or live workflow pack.
-6. **Verify the outcome and the side effects.** A successful HTTP response is not proof that the downstream event, effect, wake, or release happened.
+1. **What did you expect to happen?** For example, “the assigned agent should have started work.”
+2. **What is the last thing you can see?** The item arrived, the run started, an approval appeared, a session was created, or the agent finished.
+3. **Which identifiers are visible?** Record the directory and any source-item, run, session, approval, task, or release ID shown in Admin Web.
 
-The first broad check is:
+Then find the closest symptom in the tables below. The first column helps describe the problem; the final column gives the safest next action. If that action requires host access, hand the captured details to an Evander administrator rather than deleting records or restarting unrelated services.
 
-```bash
-evander-cli status --runtime-dir runtime --json
-```
+> <span class="sidebar-kicker">Deeper detail</span> **The diagnostic discipline**
+>
+> A technical investigation becomes much simpler when the evidence is read in the following order. These boundaries and records let an administrator follow the same work beyond what Admin Web projects.
+>
+> 1. **Name the intended outcome.** “The agent should have been woken” is more useful than “Team is broken.”
+> 2. **Locate the boundary.** Browser/API, command transaction, durable store, orchestrator, execution backend, relay, or provider.
+> 3. **Read the source of truth.** Use live service status, canonical store rows, and exact event/effect records before local speculation.
+> 4. **Correlate identities.** Keep the session ID, directory, event ID, workflow run, effect execution, Team task/lease, and Git SHA together.
+> 5. **Choose the smallest reversible action.** Retry through the owning API or worker; do not hand-edit a database or live workflow pack.
+> 6. **Verify the outcome and the side effects.** A successful HTTP response is not proof that the downstream event, effect, wake, or release happened.
 
-Then narrow the investigation. Avoid running broad smoke suites without an explicit timeout; UI and browser processes can retain open handles after nearby assertions have passed.
+> <span class="sidebar-kicker">For administrators</span> **The first broad host check**
+>
+> ```bash
+> evander-cli status --runtime-dir runtime --json
+> ```
+>
+> Then narrow the investigation. Avoid running broad smoke suites without an explicit timeout; UI and browser processes can retain open handles after nearby assertions have passed.
 
 ## 29.2 Core control-plane symptoms
+
+An operator can scan the **Symptom** and **Next safe action** columns first. The middle columns name the host evidence an administrator uses to distinguish similar-looking failures.
 
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
@@ -39,6 +51,8 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 
 ## 29.3 Execution and relay symptoms
 
+These symptoms all mean that coordination reached, or tried to reach, the temporary workspace. The table separates a workspace problem from failure in one of its controlled routes to a model, package source, tool, or approved target.
+
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
 | VM creation fails before boot | Exact output of `launch_agent_vm.sh`, libvirt domain/network state | Host prerequisites, storage, libvirt network, or permissions | Keep disks under `/var/lib/libvirt/images/evander`; fix the named prerequisite and rerun the reconciliatory script |
@@ -53,6 +67,8 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 
 ## 29.4 Managed Git and artifact symptoms
 
+The everyday question here is whether the agent received the intended code or files, and whether the exact reviewed result was the one published. The identifiers in the middle columns let an administrator prove that chain.
+
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
 | Guest clone is denied | Restricted-SSH log plus managed repository ID/binding | Unknown ID, directory binding, key scope, or wrapper rule | Register/refresh through `evander-cli git-repos`; clone by returned `managed_repo_id` |
@@ -64,6 +80,8 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 
 ## 29.5 Provider, communication, and wake symptoms
 
+First establish whether the external item or message was saved inside Evander. Only then investigate whether it was eligible to start or resume work.
+
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
 | Azure DevOps work item never enters a workflow | Matching trigger/query run, workflow-owned cursor, and effective ADO provider config | Trigger/query filters, credentials, cursor, or downstream proxy-issue effect | Trace `trigger:ado:work-item-matching` or `query:ado:work-items`; the ADO worker owns PR feedback/completion, not work-item intake |
@@ -74,6 +92,8 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 | Outbound notification fails | Effect execution and configured target in `runtime/communication-targets.db` | Target capability, credential, attachment, or provider | Correct the named target/provider and retry the effect only when its idempotency record permits |
 
 ## 29.6 Team command and UI symptoms
+
+The Team interface is a view of durable Team state. A stale screen and a failed Team command can look similar, so compare what the interface shows with the response or record named in the table before attempting recovery.
 
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
@@ -87,6 +107,8 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 
 ## 29.7 Team wake and delivery symptoms
 
+The presence of a task, message, or deliverable does not by itself prove that the next assignment, wake, review, or release transition occurred. Follow the linked records in order and stop at the first missing transition.
+
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
 | Pending Team inbox item does not wake an agent | Inbox priority/handled state, active lease/session, and wake decision payload | Eligibility or duplicate suppression | Current behavior treats non-low pending inbox work as wakeable; inspect the actual decision reason rather than assuming `response_requested` is required |
@@ -98,9 +120,9 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 | Release is waiting | Release package, verification records, approved candidate SHA, and gate status | Missing evidence, failed job, or lease mismatch | Satisfy the named gate; only partial, not-run, unknown, or missing verification can receive an authorized reasoned waiver—failed verification is unwaivable and requires a corrected reviewed candidate |
 | Release reports success but remote ref differs | Remote ref readback and recorded published SHA | Publish/readback failure | Treat as failed publication, stop follow-on completion, and reconcile the remote with the exact approved SHA |
 
-## 29.8 Evidence bundle for escalation
+## 29.8 What to include when asking for help
 
-An effective escalation contains a small, correlated packet:
+An effective handoff contains a small, correlated packet. Capture what is available; you do not need every ID before asking for help:
 
 - expected outcome and actual outcome;
 - UTC time window and host/service identity;
@@ -113,7 +135,7 @@ An effective escalation contains a small, correlated packet:
 
 Do not include API keys, cookies, bearer tokens, private key material, raw environment files, or unrestricted database dumps. A screenshot should be dark-mode when practical and sanitized just like text evidence.
 
-## 29.9 Recovery boundaries
+## 29.9 Before a recovery changes or deletes state
 
 Stop and obtain a deliberate operator decision before any action that would:
 

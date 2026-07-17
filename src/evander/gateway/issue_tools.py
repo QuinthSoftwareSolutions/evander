@@ -110,7 +110,9 @@ def register_issue_tools(
             )
             if status:
                 filtered = [
-                    issue for issue in issues if _issue_matches_requested_status(issue, status_filter)
+                    issue
+                    for issue in issues
+                    if _issue_matches_requested_status(issue, status_filter)
                 ]
             else:
                 filtered = [

@@ -311,9 +311,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
         normalized_release_branch = _optional_text(release_branch)
         normalized_canonical_branch = _optional_text(canonical_branch)
         normalized_summary = _optional_text(summary)
-        normalized_verification_waivers = [
-            dict(item) for item in (verification_waivers or [])
-        ]
+        normalized_verification_waivers = [dict(item) for item in (verification_waivers or [])]
         normalized_handled_ids = _unique_text_list(
             handled_inbox_item_ids or [],
             "handled_inbox_item_ids",
@@ -411,9 +409,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                     "release_package_ids": [release_id],
                     "created": created,
                     "duplicate": bool(intent_result.get("duplicate", False)),
-                    "existing_release_package_id": intent_result.get(
-                        "existing_release_package_id"
-                    ),
+                    "existing_release_package_id": intent_result.get("existing_release_package_id"),
                     "promotion_event_ids": promotion_event_ids,
                     "git_promotion_event_ids": promotion_event_ids,
                     "release_branch": release.release_branch,
@@ -422,9 +418,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                     "release_package": release_payload,
                     "outbox_record_ids": outbox_ids,
                     "events": list(intent_result["events"]),
-                    "next_action_hints": list(
-                        intent_result.get("next_action_hints") or []
-                    )
+                    "next_action_hints": list(intent_result.get("next_action_hints") or [])
                     or _release_command_next_action_hints(
                         state,
                         release,
@@ -433,9 +427,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                     "progress_made": progress_made,
                 },
                 created_domain_ids=(
-                    [release_id, *promotion_event_ids, *outbox_ids]
-                    if progress_made
-                    else []
+                    [release_id, *promotion_event_ids, *outbox_ids] if progress_made else []
                 ),
                 created_event_ids=promotion_event_ids,
                 outbox_records=outbox_records,

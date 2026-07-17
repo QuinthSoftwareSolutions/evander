@@ -39,6 +39,7 @@ from .stand_down import _active_stand_downs_for_agent
 
 AGENT_WAKE_REQUESTED_EVENT_TYPE = "team.agent.wake_requested"
 
+
 def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
     terminal = {
         TeamTaskState.FINISHED,
@@ -52,6 +53,7 @@ def _active_tasks_for_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
     ]
     tasks.sort(key=lambda item: (item.priority, item.created_at, item.id))
     return tasks
+
 
 def _case_payloads_for_agent(state: TeamState, agent_id: str) -> list[dict[str, Any]]:
     active_task_ids = {task.id for task in _active_tasks_for_agent(state, agent_id)}
@@ -67,6 +69,7 @@ def _case_payloads_for_agent(state: TeamState, agent_id: str) -> list[dict[str, 
     cases.sort(key=lambda item: (_priority_sort_value(item.priority), item.updated_at, item.id))
     return [case.model_dump(mode="json") for case in cases]
 
+
 def _case_payloads_for_team(state: TeamState, team_id: str) -> list[dict[str, Any]]:
     cases = [
         case
@@ -75,6 +78,7 @@ def _case_payloads_for_team(state: TeamState, team_id: str) -> list[dict[str, An
     ]
     cases.sort(key=lambda item: (_priority_sort_value(item.priority), item.updated_at, item.id))
     return [case.model_dump(mode="json") for case in cases]
+
 
 def _release_package_payloads_for_agent(
     state: TeamState,
@@ -90,6 +94,7 @@ def _release_package_payloads_for_agent(
     return {
         release.id: release_package_payload_with_derived(state, release) for release in releases
     }
+
 
 def _runtime_attention_payloads_for_agent(
     state: TeamState,
@@ -116,14 +121,18 @@ def _runtime_attention_payloads_for_agent(
     ]
     return rows
 
+
 def _wakeable_inbox_items(items: list[AgentInboxItem]) -> list[AgentInboxItem]:
     return [item for item in items if _inbox_item_can_wake(item)]
+
 
 def _inbox_item_can_wake(item: AgentInboxItem) -> bool:
     return item.response_requested or item.priority != TeamInboxPriority.LOW
 
+
 def _task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
     return not _task_waits_on_active_deliverable_review(state, task)
+
 
 def _task_waits_on_active_deliverable_review(state: TeamState, task: AgentTask) -> bool:
     if task.state != TeamTaskState.WAITING_FOR_REVIEW:
@@ -137,6 +146,7 @@ def _task_waits_on_active_deliverable_review(state: TeamState, task: AgentTask) 
     return any(
         deliverable.state in review_states for deliverable in _active_task_deliverables(state, task)
     )
+
 
 def _pending_reviews_for_agent(state: TeamState, agent_id: str) -> list[ReviewRequest]:
     pending_states = {
@@ -152,6 +162,7 @@ def _pending_reviews_for_agent(state: TeamState, agent_id: str) -> list[ReviewRe
     reviews.sort(key=lambda item: (item.created_at or datetime.min.replace(tzinfo=UTC), item.id))
     return reviews
 
+
 def _pending_ephemeral_acceptances_for_agent(
     state: TeamState,
     agent_id: str,
@@ -165,6 +176,7 @@ def _pending_ephemeral_acceptances_for_agent(
     assignments.sort(key=lambda item: (item.updated_at, item.id))
     return assignments
 
+
 def _pending_inbox_for_agent(state: TeamState, agent_id: str) -> list[AgentInboxItem]:
     items = [
         item
@@ -173,6 +185,7 @@ def _pending_inbox_for_agent(state: TeamState, agent_id: str) -> list[AgentInbox
     ]
     items.sort(key=lambda item: (item.created_at, item.id))
     return items
+
 
 def _append_agent_wake_requested_event_for_inbox_item(
     state: TeamState,
@@ -191,6 +204,7 @@ def _append_agent_wake_requested_event_for_inbox_item(
         now=now,
         delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
     )
+
 
 def _append_follow_up_agent_wake_requested_event(
     state: TeamState,
@@ -226,6 +240,7 @@ def _append_follow_up_agent_wake_requested_event(
             f"after-dispatch:{completed_dispatch_id}" if delay_seconds <= 0 else None
         ),
     )
+
 
 def _agent_immediate_wake_request(
     state: TeamState,
@@ -265,6 +280,7 @@ def _agent_immediate_wake_request(
         return "task_ready", DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
     return None
 
+
 def _agent_task_work_ready(state: TeamState, agent_id: str) -> bool:
     wakeable_tasks = [
         task
@@ -274,6 +290,7 @@ def _agent_task_work_ready(state: TeamState, agent_id: str) -> bool:
     return any(state.dependency_status(task.id) == "satisfied" for task in wakeable_tasks) or any(
         state.subtask_counts(task.id)["open"] > 0 for task in wakeable_tasks
     )
+
 
 def _append_agent_wake_requested_event(
     state: TeamState,
@@ -309,6 +326,7 @@ def _append_agent_wake_requested_event(
             },
         }
     )
+
 
 __all__ = [
     "AGENT_WAKE_REQUESTED_EVENT_TYPE",

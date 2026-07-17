@@ -210,9 +210,7 @@ def test_prefix_only_read_key_is_rejected(tmp_path: Path) -> None:
             "GIT_SSH_VARIANT": "ssh",
             "EVANDER_TEST_WRAPPER": str(WRAPPER),
             "EVANDER_GIT_AUTH_ACCESS": "read-only",
-            "EVANDER_GIT_AUTH_REPO_PREFIX_B64": base64.b64encode(
-                str(git_root).encode()
-            ).decode(),
+            "EVANDER_GIT_AUTH_REPO_PREFIX_B64": base64.b64encode(str(git_root).encode()).decode(),
         }
     )
 

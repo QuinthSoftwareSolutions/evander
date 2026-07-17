@@ -1,6 +1,6 @@
 # 21. Chat, Agent Mail, Voice, and Escalation
 
-> **At a glance.** Team communication has four distinct paths. Chat is a signed-in human operator's durable conversation with one persistent agent. Agent Mail is directional agent-to-agent inbox state governed by reporting lines. Voice is a browser OpenAI Realtime session projected from Team context. Escalation is a manager-to-operator or manager-to-governance workflow. They share some wake machinery, but not identity, authorization, storage, or delivery semantics.
+> **At a glance.** Team offers several ways to communicate because a person chatting with an agent is not the same as one agent assigning work to another. Chat serves signed-in users, Agent Mail carries agent-to-agent messages, voice supports a live spoken conversation, and escalation raises an issue beyond the ordinary reporting path. Choosing the right channel preserves who is speaking, what response is expected, and whether the message should wake anyone.
 
 ## Choose the path by who is speaking
 
@@ -13,7 +13,9 @@
 | Top-level manager → governance manager | Governance agenda escalation |
 | Human operator ↔ persistent agent by audio | Browser voice call |
 
-The paths are not interchangeable. A Chat transcript is not an agent inbox. A communication target does not grant inbound access to the manager's session. A voice call is not an Agent Mail exchange. The distinction protects both user expectations and authorization.
+The paths are not interchangeable. A Chat transcript is not an agent inbox. A communication target does not grant inbound access to the manager's session. A voice call is not an Agent Mail exchange. The channels may share some wake machinery, but not identity, authorization, storage, or delivery semantics. The distinction protects both user expectations and authorization.
+
+For Northstar, an operator who wants to discuss a task with Imani uses Chat. Imani reports routine progress upward to Priya through Agent Mail. A durable instruction to the Team goes to Mira as an operator directive. Mira escalates beyond the Team only when ordinary reporting cannot resolve the issue. The speaker, intended recipient, and desired durability choose the channel.
 
 ## Operator Chat
 
@@ -21,17 +23,21 @@ A Team conversation contains exactly one signed-in operator user and one persist
 
 Operators normally see their own conversations. A user with <code>team_chats.read_all</code> may inspect another operator's history, but the UI marks that mode read-only and blocks sending. The permission does not broaden Agent Mail visibility.
 
-Sending a Chat message does not execute the agent inline in the API request:
+The reply may take time because sending a Chat message records work for the agent rather than running the model inside the browser request. A reply-only dispatch can answer but cannot change Team state; a mutation-enabled dispatch can perform an otherwise authorized Team action and then explain the result. Later messages in the same conversation may use a different dispatch mode.
 
-1. The Admin API records the operator message and queues <code>team.chat.message_queued</code>.
-2. The Team runtime claims a queued message only when the agent is active, not stood down, not cost-blocked, not already leased, and its core session is not busy.
-3. It creates a Chat dispatch and prompts the agent with the human operator identity and message context.
-4. The agent replies with <code>team_reply_to_chat</code>.
-5. Dispatch finalization marks the operator message replied; a dispatch without a successful reply is marked failed with the available error context.
-
-A Chat dispatch can be **reply-only** or allow ordinary Team mutations. Its <code>allow_team_mutations</code> metadata controls whether the agent receives normal Team action tools alongside <code>team_reply_to_chat</code>. When a human asks “please change Imani's task priority,” a mutation-enabled dispatch can perform the authorized state change and reply. A reply-only dispatch must answer without changing Team state.
-
-The agent may use <code>team_send_operator_chat_message</code> only for operator participants listed in its current dispatch context. That is a bounded proactive message, not a way to enumerate arbitrary Admin users.
+> <span class="sidebar-kicker">Deeper detail</span> **How a Chat message is dispatched**
+>
+> Sending a Chat message does not execute the agent inline in the API request:
+>
+> 1. The Admin API records the operator message and queues <code>team.chat.message_queued</code>.
+> 2. The Team runtime claims a queued message only when the agent is active, not stood down, not cost-blocked, not already leased, and its core session is not busy.
+> 3. It creates a Chat dispatch and prompts the agent with the human operator identity and message context.
+> 4. The agent replies with <code>team_reply_to_chat</code>.
+> 5. Dispatch finalization marks the operator message replied; a dispatch without a successful reply is marked failed with the available error context.
+>
+> A Chat dispatch can be **reply-only** or allow ordinary Team mutations. Its <code>allow_team_mutations</code> metadata controls whether the agent receives normal Team action tools alongside <code>team_reply_to_chat</code>. When a human asks “please change Imani's task priority,” a mutation-enabled dispatch can perform the authorized state change and reply. A reply-only dispatch must answer without changing Team state.
+>
+> The agent may use <code>team_send_operator_chat_message</code> only for operator participants listed in its current dispatch context. That is a bounded proactive message, not a way to enumerate arbitrary Admin users.
 
 ![Team Chat conversation between a synthetic operator and Imani](../../assets/evander-user-manual/screenshots/team-chat.png)
 
@@ -39,16 +45,20 @@ The agent may use <code>team_send_operator_chat_message</code> only for operator
 
 ## Agent Mail
 
-The **Mail** view renders durable <code>AgentInboxItem</code> records. Each item has a type, sender, recipient, priority, reply intent, payload, state, and timestamps. Types include:
+Agent Mail is structured internal coordination, not free-form access to any agent. The reporting relationship chooses the legal recipient, while priority and reply intent tell Team how urgently to present the item and whether a meaningful response is expected.
 
-- <code>operator_directive</code>;
-- <code>question</code>;
-- <code>status_request</code>;
-- <code>progress_report</code>;
-- <code>deliverable_notice</code>;
-- <code>escalation</code>.
-
-State is <code>pending</code> or <code>handled</code>. The UI presents received and sent projections over this one durable inbox collection, with structured payload details, errors, and fallback content. There is no separate Agent Mail outbox collection, and Mail is not backed by the Chat conversation tables.
+> <span class="sidebar-kicker">Technical reference</span> **Inbox records and message types**
+>
+> The **Mail** view renders durable <code>AgentInboxItem</code> records. Each item has a type, sender, recipient, priority, reply intent, payload, state, and timestamps. Types include:
+>
+> - <code>operator_directive</code>;
+> - <code>question</code>;
+> - <code>status_request</code>;
+> - <code>progress_report</code>;
+> - <code>deliverable_notice</code>;
+> - <code>escalation</code>.
+>
+> State is <code>pending</code> or <code>handled</code>. The UI presents received and sent projections over this one durable inbox collection, with structured payload details, errors, and fallback content. There is no separate Agent Mail outbox collection, and Mail is not backed by the Chat conversation tables.
 
 Direction is enforced:
 
@@ -86,20 +96,24 @@ Use a directive when “please investigate telemetry retry safety” should surv
 
 ## Browser voice
 
-The Team UI can start a direct browser voice call to a persistent agent. The add-on prepares an OpenAI Realtime session with a projection of the agent's current:
+Voice is for a live spoken exchange with one persistent agent. It uses a bounded snapshot of that agent's Team context; it does not turn the audio session into unrestricted access to every Team record, and it does not share an implementation path with telephone or Agent Mail integrations.
 
-- Team, role, project, and reporting context;
-- tasks, cases, inbox, reviews, deliverables, and runtime state;
-- authorized visible tool context;
-- optional voice profile and speaking style.
-
-The browser talks to OpenAI Realtime using the prepared session. This path does not use DIDWW, Asterisk, or SIP. Core voice-session state is stored in <code>runtime/voice-sessions-store.json</code>, outside Team SQLite.
+> <span class="sidebar-kicker">Technical sidebar</span> **Voice projection and reconciliation**
+>
+> The Team UI can start a direct browser voice call to a persistent agent. The add-on prepares an OpenAI Realtime session with a projection of the agent's current:
+>
+> - Team, role, project, and reporting context;
+> - tasks, cases, inbox, reviews, deliverables, and runtime state;
+> - authorized visible tool context;
+> - optional voice profile and speaking style.
+>
+> The browser talks to OpenAI Realtime using the prepared session. This path does not use DIDWW, Asterisk, or SIP. Core voice-session state is stored in <code>runtime/voice-sessions-store.json</code>, outside Team SQLite.
 
 Projected context is intentionally bounded. If the realtime agent needs nonprojected detail, it can create a durable <code>query_origin_agent</code> request for the originating text agent. Terminal calls schedule reconciliation so those requests and final call state can re-enter the normal wake flow.
 
 A call launched from Chat can add a voice-call system message to that conversation. The audio call still remains a voice session rather than a sequence of Chat messages.
 
-An avatar is unrelated UI metadata. Saving Rowan's portrait does not select Rowan's voice or change prompt identity.
+An avatar is unrelated UI metadata. Saving an agent's portrait does not select that agent's voice or change prompt identity.
 
 ## Escalation
 
@@ -107,9 +121,13 @@ Only the top-level Team manager may escalate out of the Team.
 
 ### Direct operator escalation
 
-When <code>Team.escalate_to_governance</code> is false, the Team needs an <code>operator_communication_target_id</code>. The manager's <code>team_escalate_operator</code> command records durable intent and an outbox event. The runtime pack routes <code>team.operator.escalation_requested</code> to the generic <code>effect:communication:send-message</code> provider bound to that target.
+The manager can send a durable escalation to the Team's configured operator destination. Team records the request first; the ordinary Evander communication workflow performs and records delivery.
 
-The Team service does not call a Discord or Teams sender directly. The workflow document owns routing and delivery evidence.
+> <span class="sidebar-kicker">Deeper detail</span> **Direct escalation routing**
+>
+> When <code>Team.escalate_to_governance</code> is false, the Team needs an <code>operator_communication_target_id</code>. The manager's <code>team_escalate_operator</code> command records durable intent and an outbox event. The runtime pack routes <code>team.operator.escalation_requested</code> to the generic <code>effect:communication:send-message</code> provider bound to that target.
+>
+> The Team service does not call a Discord or Teams sender directly. The workflow document owns routing and delivery evidence.
 
 The target is outbound-only. It does not let external users address or wake Mira's real session. Inbound Discord or Teams access must be configured on the core session with the appropriate readable communication target and tool policy.
 
@@ -119,7 +137,9 @@ When <code>escalate_to_governance</code> is true, the command creates pending go
 
 This path is useful when Mira must report that the telemetry fix is blocked by a cross-Team API policy. It is not a substitute for a routine question to Priya.
 
-## Failure and delivery semantics
+## Troubleshooting
+
+Start by identifying the channel. A queued Chat message, pending Agent Mail item, undelivered escalation, and incomplete voice call have different owners and evidence. Capture the stable conversation, message, inbox, outbox, workflow, or voice-session ID shown by the relevant view rather than searching by text alone.
 
 | Symptom | Interpretation and next check |
 |---|---|
@@ -133,7 +153,13 @@ This path is useful when Mira must report that the telemetry fix is blocked by a
 | Voice has incomplete knowledge | The projection is bounded; inspect or retry the durable origin-agent query path. |
 | Voice record is absent from Team SQLite | Correct storage boundary; inspect the core voice-session store and optional Chat projection. |
 
-## Practical runbook
+## Operator handoff
+
+For any communication problem, record the Team, channel, sender, intended recipient, time, visible state, and stable message or session ID. Include the agent's session and any dispatch or workflow-run ID if shown. Say whether the content was never accepted, accepted but waiting, dispatched without a reply, or completed without external delivery.
+
+Do not resend under a new request ID merely because delivery is delayed, and do not reinterpret an outbound escalation target as inbound permission to reach an agent. The detailed trace below is for administrators and support.
+
+## Administrator runbook
 
 For Chat:
 

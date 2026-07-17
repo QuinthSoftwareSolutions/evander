@@ -212,9 +212,7 @@ class SkatteverketRepository:
 
     def list_connections(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM connections ORDER BY connection_id"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM connections ORDER BY connection_id").fetchall()
         return [_connection_payload(row) for row in rows]
 
     def get_connection(self, connection_id: str = "default") -> dict[str, Any] | None:
@@ -424,7 +422,11 @@ class SkatteverketRepository:
         return [_submission_payload(row) for row in rows]
 
     def _record_audit(
-        self, conn: sqlite3.Connection, event_type: str, subject_id: str | None, payload: dict[str, Any]
+        self,
+        conn: sqlite3.Connection,
+        event_type: str,
+        subject_id: str | None,
+        payload: dict[str, Any],
     ) -> None:
         conn.execute(
             """

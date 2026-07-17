@@ -1,5 +1,96 @@
 # Changelog
 
+## 2026-07-17 - Repository Readiness And Admin Frontend Reliability
+
+- Restored a clean repository-wide Ruff lint and formatting baseline, while preserving the
+  historical gateway compatibility exports and strengthening previously unchecked workflow
+  reload assertions.
+- Kept the trigger-cursor cross-process serialization regression concurrent while using spawned,
+  synchronized workers instead of forking the multithreaded test runner.
+- Updated Admin Web browser-smoke fixtures and selectors for branding, session policy labels,
+  connector-aware navigation, and current success feedback so the suite exercises the current UI
+  contract without ambiguous or stale expectations.
+- Made the Sessions policy and wake-schedule panels stack at constrained content widths so the
+  neighboring panel cannot cover the policy Save button.
+- Resynchronized workflow inspector drafts after undo and made compact-canvas Pan mode take
+  precedence over node dragging, keeping restored values and touch gestures consistent with the
+  selected controls.
+- Split Admin Web operational views into lazy-loaded route bundles, reducing the initial JavaScript
+  payload below the Vite warning threshold without suppressing the warning.
+- Refreshed the generated technical-manual publication metadata and binary editions after
+  formatting the checked-in publication generator.
+
+## 2026-07-17 - Connector And Bokio Review Hardening
+
+- Authorized connector reads, edits, and health checks against the resolved requested directory,
+  allowing child-directory owners to manage the connectors in their scope without root access.
+- Rejected composed connector input schemas whose references, boolean applicators, or negations
+  cannot accept the object-shaped arguments supplied by MCP.
+- Cleared omitted connector grants when either container or libvirt agent upserts move a session
+  into a different directory, and reset the Admin Web create dialog's grants when its directory
+  changes, preventing directory-scoped connector capabilities from crossing trust boundaries.
+- Rejected connector schemas that exclude object arguments or use remote references, disabled
+  runtime schema retrieval, and clamped operation-required approvals to exact single-use calls.
+- Preserved spaces and non-ASCII filesystem names without permitting placeholder traversal, and
+  limited connector-operation audit fallback metadata to actual connector calls.
+- Added one-time Admin Web reload recovery for lazy chunks made stale by a frontend deployment.
+- Kept definite pre-request Bokio journal-creation failures retryable and prevented delayed
+  evidence failures from regressing an already completed operation.
+- Marked Bokio evidence associations failed when their retained blob cannot be opened, allowing a
+  deliberate retry after the evidence is restored.
+- Restored the tracked Admin Web entrypoint to the mainline bundle reference instead of retaining
+  an unresolved generated hash.
+
+## 2026-07-16 - Connector, Managed-Git, And Bokio Review Hardening
+
+- Followed REST `303 See Other` responses with bodyless GET requests, rejected protected API-key
+  headers, refreshed OAuth tokens when effective profiles or credentials change, and preserved
+  provider-advertised short token lifetimes.
+- Prevented stale Admin connector responses and mutations from crossing directory selections.
+- Serialized content-deduplicated Bokio evidence ingestion, atomically claimed explicit failed
+  upload retries, and kept evidence visible for attention while any association remains failed.
+- Atomically claimed Bokio journal-entry creation before the external request, retained unknown
+  outcomes for manual inspection, and rejected idempotency keys reused with a different payload or
+  evidence set.
+- Kept container-worker Git write identities container-visible while using a separate host-only SSH
+  configuration for worker-side clone and reconciliation commands.
+- Preserved existing connector grants when container-agent upserts omit the field, while retaining
+  an explicit empty grant object as the supported way to clear access.
+- Read filesystem connector artifacts through one symlink-safe, bounded file descriptor; serialized
+  connector revision checks with configuration writes; evicted OAuth tokens rejected on writes
+  without retrying the write; and rejected malformed fixed REST headers during configuration.
+
+## 2026-07-16 - Bokio Connector Evidence Association
+
+- Added durable, content-deduplicated Bokio evidence records imported from
+  session-owned connector or communication artifacts, preserving source provenance
+  without exposing host paths or credentials.
+- Added agent tools to inspect, stage, and attach retained receipt/invoice
+  evidence to existing Bokio journal entries, or create a journal entry and
+  attach evidence in one tracked operation.
+
+## 2026-07-16 - Directory-Scoped Agent Connectors
+
+- Added named, directory-scoped connectors with inherited configuration, exact per-session
+  operation grants, JSON Schema input validation, explicit approval gates, and connector-aware
+  audit records.
+- Added host-authenticated REST and confined filesystem drivers, including bounded responses,
+  redirect controls, artifact-backed file retrieval, static environment-secret profiles, and
+  cached OAuth 2 client-credentials tokens.
+- Added `list_connectors` and `call_connector` MCP tools plus Admin Web, Admin API, and CLI
+  surfaces for configuration, auth readiness, health checks, agent/session grants, and add-on
+  connector-driver registration.
+
+## 2026-07-16 - Expanded Architectural Design History
+
+- Expanded the illustrated manual's design-history chapter from a compressed chronology into a
+  source-backed account of the pressures, invariants, and compatibility consequences behind
+  directory ownership, typed workflows, execution backends, selective SQLite adoption, add-ons,
+  Team command transactions, focused Admin composition, proof-bearing authority, and managed Git.
+- Added plain-language turning-point sidebars, a preserved-invariants narrative, an exact
+  chronology, compatibility-direction and fail-closed tables, and a revised evolution diagram;
+  corrected incremental repository/backend claims and the current `runtime/pr-map.json` role.
+
 ## 2026-07-14 - Scoped Release And Relay Integrity Fixes
 
 - Failed closed when directory-scoped managed-Git credential configuration cannot be resolved,
@@ -9,6 +100,14 @@
   and container execution timeouts as timed-out release verification runs.
 - Preserved upgrades from ADO worker configurations containing retired automatic-PR settings and
   made the managed-Git operation timeout configurable through host and directory provider config.
+- Scoped Team-state migration verification to active project Git configurations, so historical
+  promotion output may retain audit-only legacy path fields without blocking migration finalization.
+- Fixed host-side container-worker managed-Git reconciliation to use a host-only SSH configuration
+  with absolute session-key paths.
+- Kept the local container-worker setup unit’s Git source allowlist aligned with the restricted
+  write alias used during managed-Git reconciliation.
+- Recorded a uniquely resolved managed repository on migrated session metadata, allowing
+  reconciliation to dispatch Team agents instead of leaving their repository identity nested.
 
 ## 2026-07-13 - Managed PR And Immutable Recovery Hardening
 
@@ -36,6 +135,20 @@
 - Added publication-integrity checks tied to the implemented service, firewall, Admin navigation,
   Team navigation, current CLI, screenshot, and diagram inventories, and corrected stale trigger,
   Team role, Agent Mail, chat-tool, and wake-eligibility documentation found during source review.
+- Recast every chapter's At a glance passage as a plain-language introduction and layered the
+  end-to-end chapter with optional technical and administrator sidebars, keeping the complete
+  implementation detail without forcing it into the first-read narrative. Core chapters now use
+  functional agent labels, reserving the named Northstar cast for Team Add-on relationships where
+  stable identities carry useful meaning.
+- Reframed the trust-model chapter around three operator-facing security promises, everyday
+  examples, and a practical incident handoff, while retaining protocol, network, session, Git,
+  worker, approval, and host-response mechanics in clearly labeled reference sidebars. Concise
+  distributed-systems and security terms now replace repeated paraphrases where useful, with
+  brief footnotes plus matching glossary and subject-index entries.
+- Extended that layered reading model through the remaining core, Team, engineering, history,
+  reference, and troubleshooting chapters: plain orientation and concrete examples now lead into
+  optional deeper detail, operator handoffs, and clearly labeled administrator runbooks, while
+  preserving the full commands, invariants, failure behavior, storage contracts, and source trails.
 
 ## 2026-07-13 - Documentation Accuracy And Drift Checks
 

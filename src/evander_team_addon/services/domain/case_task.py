@@ -54,6 +54,7 @@ class _TaskCreationPlan:
     title: str
     description: str
 
+
 def _validate_case_scope(
     state: TeamState,
     *,
@@ -71,6 +72,7 @@ def _validate_case_scope(
         if owner.team_id != team_id:
             raise ValueError(f"case owner {owner_agent_id} does not belong to team {team_id}")
 
+
 def _case_can_link_task(state: TeamState, *, case: TeamCase, task: AgentTask) -> bool:
     project = state.projects.get(task.project_id)
     if project is None:
@@ -80,6 +82,7 @@ def _case_can_link_task(state: TeamState, *, case: TeamCase, task: AgentTask) ->
     if case.project_id is not None and task.project_id != case.project_id:
         return False
     return True
+
 
 def _link_task_to_case(
     state: TeamState,
@@ -99,6 +102,7 @@ def _link_task_to_case(
     case.task_ids = _append_unique(case.task_ids, task_id)
     case.updated_at = now
 
+
 def _unlink_task_from_case(
     state: TeamState,
     *,
@@ -114,6 +118,7 @@ def _unlink_task_from_case(
     if task is not None and task.case_id == case_id:
         task.case_id = None
         task.updated_at = now
+
 
 def _sync_case_task_link(
     state: TeamState,
@@ -132,6 +137,7 @@ def _sync_case_task_link(
     if new_case_id is not None:
         _link_task_to_case(state, task_id=task.id, case_id=new_case_id, now=now)
 
+
 def _snapshot_case_task_state(
     state: TeamState,
 ) -> tuple[dict[str, TeamCase], dict[str, AgentTask]]:
@@ -140,11 +146,13 @@ def _snapshot_case_task_state(
         {task_id: task.model_copy(deep=True) for task_id, task in state.tasks.items()},
     )
 
+
 def _restore_case_task_state(
     state: TeamState,
     snapshot: tuple[dict[str, TeamCase], dict[str, AgentTask]],
 ) -> None:
     state.cases, state.tasks = snapshot
+
 
 def _apply_case_update(
     state: TeamState,
@@ -261,6 +269,7 @@ def _apply_case_update(
         _link_task_to_case(state, task_id=task_id, case_id=case.id, now=now)
     return case.id, True
 
+
 def _case_edit_error(
     state: TeamState,
     *,
@@ -278,6 +287,7 @@ def _case_edit_error(
     if case.owner_agent_id is not None and _supervises(state, actor.id, case.owner_agent_id):
         return None
     return f"agent {actor.id} cannot update case {case.id}"
+
 
 def _task_creation_mandate_error(
     state: TeamState,
@@ -315,6 +325,7 @@ def _task_creation_mandate_error(
         f"without {RolePermission.CREATE_ROOT_TASK.value} permission"
     )
 
+
 def _upward_recipient_error(
     agent: PersistentAgent,
     recipient_id: str | None,
@@ -331,6 +342,7 @@ def _upward_recipient_error(
             f"{agent.reports_to_agent_id}"
         )
     return None
+
 
 def _plan_task_creation(
     state: TeamState,
@@ -444,6 +456,7 @@ def _plan_task_creation(
         description=_required_text(creation.get("description"), "description"),
     )
 
+
 def _apply_task_creation_plan(
     state: TeamState,
     *,
@@ -471,6 +484,7 @@ def _apply_task_creation_plan(
     if plan.task_state in _NON_TERMINAL_TASK_STATES:
         _mark_agent_work_due(state, agent_id=plan.owner_id, now=now)
     return plan.task_id
+
 
 def _task_owner_reassignment_error(
     state: TeamState,
@@ -500,6 +514,7 @@ def _task_owner_reassignment_error(
         )
     return None
 
+
 def _subordinate_task_finish_allowed(
     state: TeamState,
     *,
@@ -525,6 +540,7 @@ def _subordinate_task_finish_allowed(
         )
         is None
     )
+
 
 def _task_creation_batch_graph_errors(
     state: TeamState,
@@ -577,6 +593,7 @@ def _task_creation_batch_graph_errors(
         for task_id, graph_error in next_errors.items():
             errors.setdefault(task_id, graph_error)
 
+
 def _task_creation_plan_batch_mandate_error(
     state: TeamState,
     *,
@@ -617,6 +634,7 @@ def _task_creation_plan_batch_mandate_error(
         f"agent {actor.id} can only create child tasks under its own active tasks "
         f"without {RolePermission.CREATE_ROOT_TASK.value} permission"
     )
+
 
 def _task_creation_plan_graph_error(
     plan: _TaskCreationPlan,
@@ -659,6 +677,7 @@ def _task_creation_plan_graph_error(
             return f"task dependency cycle includes {plan.task_id}"
     return None
 
+
 def _dependency_path_exists(
     dependency_map: dict[str, list[str]],
     *,
@@ -676,6 +695,7 @@ def _dependency_path_exists(
         seen.add(task_id)
         stack.extend(dependency_map.get(task_id, []))
     return False
+
 
 def _has_dependency_cycle(dependency_map: dict[str, list[str]]) -> bool:
     """Iterative DFS mirroring TeamState._validate_no_dependency_cycle."""
@@ -705,6 +725,7 @@ def _has_dependency_cycle(dependency_map: dict[str, list[str]]) -> bool:
                 visited.add(node)
                 stack.pop()
     return False
+
 
 def _task_graph_edit_error(
     state: TeamState,
@@ -760,6 +781,7 @@ def _task_graph_edit_error(
             return f"task dependency cycle includes {task_id}"
     return None
 
+
 def _apply_goal_update(
     state: TeamState,
     *,
@@ -796,6 +818,7 @@ def _apply_goal_update(
     project.updated_at = utc_now()
     projects_to_recalc.add(project_id)
     return goal_id
+
 
 __all__ = [
     "_TaskCreationPlan",

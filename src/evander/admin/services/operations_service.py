@@ -271,9 +271,7 @@ class OperationsAdminService:
         return self._worker_control_admin.list_background_workers()
 
     def get_background_worker_log_snapshot(self, worker_id: str, *, lines: int = 200):
-        return self._worker_control_admin.get_background_worker_log_snapshot(
-            worker_id, lines=lines
-        )
+        return self._worker_control_admin.get_background_worker_log_snapshot(worker_id, lines=lines)
 
     def start_background_worker(self, worker_id: str):
         return self._worker_control_admin.start_background_worker(worker_id)

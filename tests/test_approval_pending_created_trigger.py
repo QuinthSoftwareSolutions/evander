@@ -366,9 +366,10 @@ def test_pending_created_trigger_emits_recreated_pending_request_with_new_identi
         f"approval-trigger:{recreated.request_id}:{recreated.created_at.astimezone(UTC).isoformat()}"
     ]
     assert second_event[0].event_id != first_event[0].event_id
-    assert second_event[0].payload["approval_request"]["created_at"] != first_event[0].payload[
-        "approval_request"
-    ]["created_at"]
+    assert (
+        second_event[0].payload["approval_request"]["created_at"]
+        != first_event[0].payload["approval_request"]["created_at"]
+    )
 
 
 def test_pending_created_trigger_reports_notification_state_without_resending_notifications(

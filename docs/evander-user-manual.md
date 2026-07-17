@@ -66,7 +66,7 @@ Build a trustworthy mental model before introducing implementation detail.
 
 # 1. How to Read This Manual
 
-> **At a glance.** This manual is both a guided tour and a technical reference. Read Chapters 1–3 for the governing ideas, follow the numbered chapters for a complete system model, or jump from a symptom to the runbook and source trail in the relevant chapter. Examples use one fictional organization throughout so that the machinery remains concrete without being mistaken for a built-in deployment.
+> **At a glance.** You do not have to read this manual at one speed or from cover to cover. If Evander is new to you, begin with the story and the security ideas; if you are solving a particular problem, jump directly to the relevant explanation or runbook. One fictional organization appears throughout so that unfamiliar machinery can be learned through people and work rather than as a list of disconnected features.
 
 ## The two useful speeds
 
@@ -81,7 +81,9 @@ At overview speed, keep four ideas in mind:
 
 At reference speed, use the mechanics, invariants, failure tables, commands, and source trails in each chapter. A claim such as “a directory policy is inherited” is only the overview. The reference account also says which values merge, which replace, which restrictions cannot be relaxed by a child, where the files live, and what happens when validation fails.
 
-The opening **At a glance** paragraph and the first section of every chapter are written for overview speed. The remainder is designed to survive close technical use.
+The opening **At a glance** passage and the first section of every chapter are written for overview speed. They introduce the problem and the mental model in ordinary language; they are not compressed substitutes for the technical chapter. The remainder is designed to survive close technical use.
+
+Indented boxes labelled **Deeper detail**, **Technical sidebar**, **For administrators**, or **Administrator runbook** let a chapter explain an important mechanism without interrupting its main story. Skip them on a first read. Return when you need the implementation detail, exact record, or host-level procedure.
 
 ## Choose a reading path
 
@@ -100,9 +102,9 @@ For a broad understanding, read the story in Chapter 2 before studying individua
 
 ## The continuous Northstar example
 
-The manual follows a synthetic team named `northstar-platform` and its `mission-control` project. A work item asks the team to add telemetry retry behavior. Mira manages the team, Priya leads the project, Imani implements the change, Rowan reviews it, and Riley handles the release. These five named characters are AI Team agents throughout the manual. Human actions are attributed generically to **an operator** or, for interactive chat and voice, **a signed-in user**.
+The manual follows a synthetic team named `northstar-platform` and its `mission-control` project. A work item asks the team to add telemetry retry behavior. In Chapters 1–15, agents are described by what they do: the implementation agent makes the change, the review agent examines it, and the release agent handles publication. The Team Add-on chapters introduce a small named cast only when persistent identities and organizational relationships become useful. Human actions are attributed generically to **an operator** or, for interactive chat and voice, **a signed-in user**.
 
-Core chapters use this example without assuming the Team Add-on is installed. For example, “Imani's session” means an ordinary core session associated with the work. Team chapters then explain how the add-on records Imani's role, assigns the task, schedules wakeups, governs review, and coordinates Riley's release action.
+Core chapters use this example without assuming the Team Add-on is installed. For example, “the implementation session” means an ordinary core session associated with the work. Team chapters then explain how the add-on records named identities and roles, assigns tasks, schedules wakeups, governs review, and coordinates release work.
 
 Unless a passage explicitly says otherwise, Northstar names and payloads are illustrative. They are not default accounts, reserved identifiers, a shipped workflow, or a promise that every installation has Azure DevOps, Teams, or a container worker configured. The example's directory path is:
 
@@ -202,166 +204,210 @@ Non-mutating observation is the safest first move, but commands that assemble th
 
 # 2. One Work Item, End to End
 
-> **At a glance.** A useful Evander run is a chain of durable, bounded decisions: an external or internal trigger becomes an event; a compiled workflow routes it; effects create an expiring session and isolated execution target; the agent reaches models, tools, packages, and Git only through host-controlled surfaces; reviews and publication operate on pinned commits; and the host retains enough workflow, approval, audit, and cleanup evidence to explain the outcome.
+> **At a glance.** Imagine a piece of work passing through a well-run workshop. Evander notices the work, decides which prepared process applies, gives an agent a temporary workspace and only the permissions needed for that job, pauses when a person must approve something sensitive, and records exactly what was reviewed and released.
+>
+> This chapter follows one work item through that journey. You do not need to understand every service or record on the first read. The important idea is that each handoff is saved, limited, and traceable, so a stopped process can be resumed and a finished one can be explained.
 
 ## A representative mission
 
-Northstar's `mission-control` project receives a work item: **add retry behavior to telemetry delivery**. An operator has defined a workflow for this class of work. Imani will implement it, Rowan will review it, and Riley will handle release. The Team Add-on can coordinate those agent roles, but the machinery in this chapter is core Evander.
+Northstar's `mission-control` project receives a work item: **add retry behavior to telemetry delivery**. An operator has prepared the route that this kind of work should follow. An implementation agent will make the change, a review agent will examine it, and a release agent will handle publication. The Team Add-on can coordinate those roles, but the journey in this chapter uses Evander's core safety and execution machinery.
 
-No single built-in workflow is implied. The repository includes providers and example packs that can compose this path—ticket triggers, filters, deduplication, agent creation, managed-repository cloning, prompts, Git promotion, and pull-request creation. An operator selects the providers and exact graph appropriate to the installation.
+That prepared route is called a **workflow**. A **provider** is the connector that lets Evander observe or act in another system, such as Azure DevOps. A workflow **pack** is a saved collection of workflow definitions, and the visual arrangement of steps and connections is often called a **graph**. These terms become precise later; for now, think *connector, reusable process, and process map*.
 
-The simplest mental model is a relay race. Each stage hands the next stage a durable identifier instead of a vague assertion that work happened:
+Evander does not ship one universal process for every organization. An operator chooses the connectors and workflow that match the local tools, review rules, and release practices. The Northstar story is therefore a realistic example, not a hidden default.
+
+The simplest mental model is a relay race. Each stage hands the next stage a durable identifier—a saved reference to what happened—instead of a vague assertion that work happened:
 
 ```text
-work item -> trigger event -> workflow run -> session -> execution
-          -> tool/audit records -> Git SHA -> review -> publication -> cleanup evidence
+work item -> saved event -> workflow run -> agent session
+          -> temporary workspace -> work and approvals
+          -> exact code version -> review -> release -> cleanup
 ```
 
-The identifiers are what make the run recoverable and explainable.
+Those identifiers are what make the run recoverable and explainable.
 
 ![Evander system context from operator intent through the host control plane to isolated execution and external services](assets/evander-user-manual/diagrams/01-system-context.svg)
 
+Put simply, Evander is the guarded coordinator; the agent is a temporary worker with limited access. The arrows show approved routes through the coordinator, not general access from the worker to the host or internet.
+
 <p class="figure-caption">Figure 2.1 — The end-to-end path crosses explicit host boundaries; no arrow represents general guest access.</p>
 
-## Before the event: define the boundary
+## Before the work arrives: agree on the boundary
 
-Northstar's project lives at `root/northstar-platform/mission-control`. The operator has already:
+Before the first run, an administrator connects the source repository and any external work system, chooses the project settings, prepares the workflow, and decides which tools may require human approval. An ordinary operator does not need to memorize that wiring to follow a run; they need to know which project is selected and which prepared process is expected to handle the item.
 
-- registered the source repository as an Evander-managed repository and obtained a `managed_repo_id`;
-- configured provider, policy, VM or worker, and automation settings at root or along the project directory ancestry;
-- created or selected a workflow graph whose directory is the Northstar project;
-- configured any external trigger credential as a host secret, referenced by environment-variable name rather than copied into the workflow;
-- selected the tools, argument constraints, communication targets, and approval behavior appropriate to an implementation session.
+The setup answers three plain questions before any temporary workspace is created:
 
-This setup answers three questions before compute is created: *whose work is this, which configuration applies, and what authority may the future session receive?*
+1. **Whose work is this?** The selected directory identifies the organization and project.
+2. **Which rules apply?** The directory determines the effective provider, workflow, security, and execution settings.
+3. **What may the agent do?** The future session receives only the tools, code access, contacts, and limits chosen for this job.
 
-## Stage 1: a trigger becomes a durable event
+> <span class="sidebar-kicker">For administrators</span> **What was prepared in advance**
+>
+> The repository was registered with Evander and assigned a `managed_repo_id`. Provider, policy, execution-backend, and automation settings were configured at `root` or along `root/northstar-platform/mission-control`. A workflow graph was selected for that directory. External credentials stayed in host secret storage, and the session's tools, argument constraints, communication targets, and approval behavior were chosen before dispatch.
 
-Suppose an Azure DevOps or ticket provider observes the telemetry-retry work item. The trigger orchestrator polls enabled trigger definitions, resolves the graph's directory-scoped provider settings, and asks the provider for candidate events. A provider event carries a stable event identity, source identity, and payload; the queue deduplicates that event ID and also supports an explicit idempotency key where the publisher supplies one.
+## Stage 1: a new item becomes a saved event
 
-Only after durable publication does the trigger worker call the provider's acknowledgement hook and advance its cursor. This order prevents an ordinary crash between “seen” and “queued” from silently discarding the work. It does not mean a provider can never redeliver; stable event identity, optional queue idempotency keys, and downstream node execution keys make redelivery converge at the orchestration boundary.
+Suppose the Azure DevOps connector notices the telemetry-retry work item. Evander first turns that observation into an **event**: a saved statement that something happened and may need a response. Saving the event separates the work from the connector that noticed it. If that connector restarts a moment later, the work does not disappear with it.
 
-A successful publish wakes the effect orchestrator. The default store is SQLite at `runtime/orchestration.db`; a legacy JSON backend remains available as a rollback path. The event now exists independently of either worker process.
+Evander saves the event before telling Azure DevOps that it has been received. If a crash happens at an awkward moment, the connector may offer the same item again. Stable identifiers make that redelivery **idempotent**[^idempotency]: Evander continues from the existing record instead of quietly losing the item or beginning unrelated duplicate work.
 
-## Stage 2: the graph narrows intent
+Once the event is safely stored, Evander wakes the part of the system that advances workflows.
 
-The compiled graph routes the event along edges from its source node. A realistic Northstar path may use:
+> <span class="sidebar-kicker">Deeper detail</span> **Durable publication and redelivery**
+>
+> The trigger orchestrator polls enabled trigger definitions, resolves directory-scoped provider settings, and asks each provider for candidate events. A provider supplies a stable event identity, source identity and type, and payload; it may also supply an idempotency key. The queue deduplicates the event ID and, when present, the idempotency key. Only after durable publication does the worker call the provider's acknowledgement hook and advance its cursor.
+>
+> The default event and execution store is SQLite at `runtime/orchestration.db`. A legacy JSON backend remains available as a rollback path. These storage choices matter to administrators and recovery tooling, but they do not change the operator-level promise: acknowledgement follows durable publication.
 
-- `gate:filter` to accept only the relevant project, type, state, or label;
-- `gate:dedupe` to collapse a repeated start request;
-- a query such as `query:session:list` to discover an existing active session;
-- `effect:agent:create` only when no suitable session exists.
+## Stage 2: the workflow decides what should happen
 
-Queries read and return data to later nodes. Gates transform, branch, delay, iterate, merge, serialize, or reject flow. Effects change the world. Each node receives resolved configuration and a graph-aware input payload. Expressions such as `${{node.output}}` are validated and resolved against upstream outputs rather than being arbitrary host code.
+The workflow is the prepared checklist and route for this kind of event. In Northstar's case it might ask:
 
-The graph is compiled and validated before it becomes the current runtime configuration. Missing endpoints, duplicate node IDs, invalid provider schemas, unsafe cycles, and invalid bindings are rejected. If a later hot reload is invalid, the workers retain their last-known-good configuration and log the failure.
+1. Is this item for the `mission-control` project and in a state we handle?
+2. Have we already started this exact request?
+3. Is there a suitable active agent session?
+4. If not, should Evander create one?
 
-## Stage 3: create an expiring session
+Evander calls these kinds of steps **gates**, **queries**, and **effects**. A gate makes a decision about the route, like a checkpoint. A query looks something up without changing it. An effect changes the world, such as creating a session or posting a message. The everyday example above is the concept; the technical names are useful when reading or editing the visual workflow.
 
-`effect:agent:create` creates a session manifest and prepares the selected execution backend. The manifest is Imani's agent capability envelope for this run. It includes:
+Evander checks a workflow before making it active. If a later edit is invalid, the running services keep the last known good version and report the failed update. A bad edit therefore does not silently replace a working process.
 
-- a unique session ID and expiry;
-- `root/northstar-platform/mission-control` as its directory;
-- a VM or worker binding and selected model, where applicable;
-- the MCP tools it may request and which require per-invocation approval;
-- allowlists for contacts, scripts, channels, mailboxes, files, and search where enabled;
-- argument-policy and quota settings;
-- metadata that correlates the session with the workflow run, work item, agent role, and Git intent.
+> <span class="sidebar-kicker">Deeper detail</span> **What “compiled workflow” means**
+>
+> A workflow graph is compiled into validated nodes and edges. A realistic path may use `gate:filter`, `gate:dedupe`, `query:session:list`, and `effect:agent:create`. Queries return data to later nodes; gates can branch, delay, iterate, merge, serialize, or reject flow; effects perform state changes. References such as `${{node.output}}` are checked against upstream outputs rather than executed as arbitrary host code.
+>
+> Compilation rejects missing endpoints, duplicate node IDs, invalid provider settings, unsafe cycles, and broken bindings. A failed hot reload leaves the previous compiled graph in service.
 
-The manifest contains authority descriptions, not general host credentials. Provider keys remain on the host. An expired or unknown session is denied even if an old client still knows its ID.
+## Stage 3: give the agent a temporary, limited job
 
-The backend then creates compute. With `libvirt_vm`, that is normally a disposable VM overlay. With `container_worker_vm`, the control plane asks the authenticated worker daemon to prepare durable session directories and later run disposable Docker jobs. Chapter 9 compares their precise lifecycle and isolation semantics.
+When the workflow decides that implementation should begin, Evander creates a **session**. The session is both a job identity and a temporary permission card. It says which project the job belongs to, when the permission expires, which tools and resources the agent may use, and how later records should be connected back to this work item.
 
-## Stage 4: transport code without smuggling authority
+The session does not contain the host's general credentials. Those stay with Evander. Knowing an old session ID is also not enough to keep working after it expires.
 
-The workflow passes `managed_repo_id`, not an arbitrary host checkout path, to the clone effect. The managed Git service resolves the registered bare repository and provisions scoped SSH access for the session. The guest or worker container clones into its own workspace.
+Evander then starts a **sandbox**[^sandbox]: a temporary, isolated work environment. Depending on the installation, this may be a disposable virtual machine or a disposable container running on a dedicated worker machine. To an operator, both mean the same thing at this point in the story: the implementation agent gets a bounded place to work, while the host keeps control of policy and secrets. Chapter 9 explains the infrastructure differences.
 
-Imani's execution environment can read the repository and, when explicitly granted, push only through the restricted Git path and permitted agent namespace. The supported flow separates:
+> <span class="sidebar-kicker">Technical sidebar</span> **What the session manifest records**
+>
+> The manifest contains a unique session ID and expiry; the directory `root/northstar-platform/mission-control`; the selected model and VM or worker binding where applicable; visible and approval-required MCP tools; allowlists for contacts, scripts, channels, mailboxes, files, and search; argument and quota rules; and metadata linking the session to the workflow run, source item, agent role, and intended Git operation.
+>
+> With `libvirt_vm`, the environment is normally a disposable VM overlay. With `container_worker_vm`, the control plane asks an authenticated worker daemon to prepare session directories and run disposable Docker jobs.
 
-1. a session's work branch;
-2. the exact commit SHA produced by that session;
-3. a workflow decision to pin and promote that SHA;
-4. a later push or pull-request effect guarded by an explicit lease.
+## Stage 4: give the agent controlled access to the code
 
-Branch names are convenient labels; the commit SHA is the evidence. The host never has to serialize a source tree through MCP, and the agent never needs the host operator's unrestricted Git identity.
+Evander gives the implementation agent access through a registered repository rather than exposing an arbitrary folder on the host. The agent clones the code into its own workspace and, if explicitly allowed, pushes changes only through a restricted Git route and an agent-specific branch area.
 
-## Stage 5: the agent works through narrow host surfaces
+The key safety idea is simple: Evander records exactly which version was produced, reviewed, and released. Git calls that unique version identifier a **commit SHA** (usually shortened here to **SHA**). A branch name is a movable label; a SHA identifies one exact snapshot of the code.
 
-Inside its VM or container, Imani's agent sees an ordinary development environment, but its useful external paths are mediated:
+This distinction prevents a subtle but serious mistake: approving one version and later publishing a different version merely because the same branch name moved.
 
-- model requests go to the OpenAI-compatible host relay;
-- MCP calls go to the gateway at `/mcp` and are bound to the session;
-- NuGet, npm audit, PyPI/npm cache, or apt cache paths use the configured package surfaces;
-- allowlisted external HTTP environments use the session-scoped HTTP target relay;
-- source changes move through restricted Git over SSH.
+> <span class="sidebar-kicker">Deeper detail</span> **The managed-Git handoff**
+>
+> The workflow passes a `managed_repo_id`, not a trusted host checkout path, to the clone effect. The managed-Git service resolves the host-owned bare repository and provisions scoped SSH access. The supported sequence separates the agent's work branch, the exact SHA produced by that session, the workflow decision that pins and promotes that SHA, and the later push or pull-request effect protected by an explicit lease. Source code moves with Git, not inside MCP messages.
 
-General guest or container internet access is not the default. The host retains real model and provider secrets. The HTTP target relay is deliberately different from a secret-injecting proxy: it constrains the target, while forwarding authentication headers or cookies supplied by the guest session; it does not place a host credential into the request.
+## Stage 5: let the agent use only the services it needs
 
-For MCP, the session ID is only the start. The connection must present the session proof token, its MCP transport becomes bound to the session, `tools/list` is filtered, and every invocation is checked against effective directory policy, session grants, argument rules, approval state, and workflow-scoped leases.
+Inside the sandbox, the implementation agent sees familiar development tools. What is different is the route outward. Evander provides a few controlled doors for model requests, approved tools, packages, code, and explicitly allowed test systems. General internet access is not the default, and the host's model or provider credentials are not copied into the workspace.
+
+Every tool request is checked against this job's permissions. A reachable service does not automatically give the agent permission to use every tool, contact, repository, or destination behind it.
+
+> <span class="sidebar-kicker">Technical sidebar</span> **The controlled doors**
+>
+> Model requests use the OpenAI-compatible host relay. MCP tool calls use the gateway at `/mcp`. Package traffic may use the NuGet relay, npm-audit facade, PyPI/npm cache, or apt cache. Restricted Git uses SSH. An allowlisted external environment uses the session-scoped HTTP target relay.
+>
+> The HTTP relay constrains the destination but does not inject a host credential; it forwards authentication supplied by the guest. For MCP, a proof token binds the transport to the session, `tools/list` is filtered, and each invocation is checked against directory policy, session grants, argument rules, approval state, and any workflow lease.
 
 ## Stage 6: pause safely for human approval
 
-Assume the implementation needs one tool call that Northstar policy marks approval-required. The first exact invocation does not execute. It creates or reuses a pending approval request containing a digest of the unredacted payload, a redacted review payload, a human summary, the session, directory, tool, intended effect, expiry, and grant settings.
+Suppose the implementation agent requests a sensitive tool action. Evander does not perform it immediately. It creates a pending approval that tells an authorized operator which job is asking, which tool it wants to use, what the action is expected to do, when the request expires, and a safe-to-display summary of the requested input.
 
-An authorized operator reviews it. A decision records the approver and a reason. If approved, Imani retries with the returned request ID and the same payload. The gateway rejects a changed payload under the default exact-payload mode, a request for another session or tool, an expired or denied request, and a grant whose use count is exhausted. Consumption is atomic.
+If the operator approves, the agent retries that same action using the approval request ID. Approval applies to the bounded request; it is not a general promotion to greater power. The session must still be active, the tool must still be allowed, and the input must still satisfy policy.
 
-Approval is not a blanket elevation. The directory may still deny the tool, argument policy may still reject a value, and the session must still be active. Conversely, approval is not required for every mutation by an immutable global rule: operators configure it per policy and session, while the two built-in destructive tools `delete_ado_backlog_item` and `semantic_delete_points` are always exact-payload, one-use approval operations.
+> <span class="sidebar-kicker">Deeper detail</span> **Why the agent retries the exact request**
+>
+> The durable request stores a digest of the original payload, a redacted review payload, a human summary, session and directory identity, tool and intended effect, expiry, and grant settings. Under the default exact-payload mode, changing the payload, session, or tool invalidates the approval. Expired, denied, or exhausted grants are rejected, and use consumption is atomic.
+>
+> Approval requirements are configurable, but the built-in destructive tools `delete_ado_backlog_item` and `semantic_delete_points` always require one-use, exact-payload approval. Chapter 7 is the full protocol reference.
 
-## Stage 7: complete, review, and publish a pinned result
+## Stage 7: complete, review, and publish the exact result
 
-When the prompt effect finishes, its completion event carries structured outputs back into the graph. A workflow can inspect the session context, copy artifacts, update issue state, await a Git push event, or enqueue another prompt. It can then pin the pushed SHA, promote an agent branch, create a pull request, and route new review feedback back to the same session.
+When the implementation agent finishes, Evander records the result and advances the prepared process. It can collect artifacts, update the work item, wait for the Git push, open a pull request, and route feedback back to the same job.
 
-Rowan reviews the commit that the workflow identified—not merely “whatever is now at the branch tip.” If changes are requested, another durable event can enqueue a bounded follow-up prompt. Once review and configured gates pass, Riley's publication path receives the approved SHA and a lease that describes what may be pushed or released.
+The review agent examines the exact commit identified by the workflow—not merely whatever happens to be at the tip of a branch later. If changes are requested, Evander can start a bounded follow-up while keeping the earlier attempt visible. Once review and release checks pass, the release path receives that approved SHA and the limited authority needed to publish it.
 
-The Team Add-on adds a richer organizational record around this sequence: Mira's team, Priya's project, Imani's task, Rowan's review assignment, Riley's release authority, one durable agent-inbox collection, command outbox events, wake scheduling, and governance checks. It does not replace the core session, workflow, policy, execution, approval, or managed-Git controls described here.
+The Team Add-on adds the organizational story around these core controls: a team manager, a project lead, a task owner, an assigned reviewer, a release authority, Agent Mail, wake scheduling, and governance. It coordinates *who should do what*; core Evander still owns the session, workflow, policy, execution, approval, and controlled Git paths.
 
-## Stage 8: retain evidence and clean up compute
+> <span class="sidebar-kicker">Technical sidebar</span> **How completion re-enters the workflow**
+>
+> A completed prompt publishes structured output as another event. Later nodes can inspect session context, copy artifacts, update issue state, wait for Git evidence, enqueue a follow-up prompt, pin and promote the pushed SHA, create a pull request, or route review feedback. These transitions remain journalled under the same trace and workflow revision.
 
-The effect orchestrator journals node executions with event, trace, node, type, status, resolved configuration hash, inputs, outputs, errors, binding trace, and configuration revision. MCP calls produce append-only JSONL audit events and a queryable SQLite index. Approval decisions and uses remain linked by request ID. Session and execution records preserve the selected backend and cleanup result.
+## Stage 8: keep the evidence and remove the sandbox
 
-Destroying disposable compute is not the same as erasing the evidence. A VM disk or worker session directory may be removed while the host retains the session, workflow, Git, audit, and cleanup records according to retention policy. A `cleanup_failed` result should remain visible until the leaked resource is actually reconciled.
+After the work finishes, Evander can remove the sandbox without erasing the job's **provenance**[^provenance]. The host retains the session, workflow decisions, approvals, tool-call history, exact code version, review result, release evidence, and cleanup outcome according to its retention policy.
 
-## End-to-end invariants
+Removing compute and removing evidence are different actions. If cleanup fails, the failure remains visible until an operator or automated recovery process cleans up the leaked resource through a follow-up action.
 
-The story depends on a handful of rules that hold across subsystems:
+> <span class="sidebar-kicker">Technical sidebar</span> **The retained records**
+>
+> Workflow node executions retain event, trace, node, type, status, configuration hash and revision, inputs, outputs, errors, and binding trace. MCP calls produce append-only JSONL audit events with a queryable SQLite index. Approval decisions and uses remain linked by request ID. Session and backend records retain the selected execution target and cleanup result.
 
-- Directory context is chosen before provider, policy, and execution settings are resolved.
-- External observation is acknowledged only after durable event publication.
-- Session identity, transport proof, tool visibility, argument policy, and approval are separate checks.
-- A network-open port does not confer a tool, target, repository, or secret.
-- Workflow node idempotency prevents a completed node from being casually rerun, but external effects must still tolerate at-least-once recovery around crashes.
-- Code provenance is a managed repository plus an exact commit, not an MCP payload or a mutable branch label.
-- Disposable compute may disappear; durable host evidence must still explain the run.
+## What should always be true
 
-## Failure behavior
+The full system is easier to trust when its promises are stated plainly:
 
-| Where the story stops | Likely durable evidence | Meaning |
+- Evander decides which project and rules apply before it creates the job.
+- It saves observed work before telling the external system that the work was received.
+- A session ID, a network connection, a visible tool, and an approval are separate checks; none grants all the others.
+- The agent receives controlled routes to useful services, not the host's general network access or credentials.
+- Repeated delivery or a restarted worker should converge on the existing saved work rather than quietly lose it.
+- The exact code version—not a movable branch label—is the evidence used for review and release.
+- The sandbox may disappear; enough host-side evidence remains to explain what happened.
+
+## Troubleshooting
+
+Start with what an operator can observe, then ask an administrator for the deeper store or service evidence only when needed.
+
+| What you see | First place to look | What it usually means |
 |---|---|---|
-| Trigger sees nothing | Provider cursor and trigger logs | Provider credentials, filter, directory settings, or polling are wrong. |
-| Event exists but graph does not advance | Queue and workflow journal | The graph has no matching edge, a gate dropped the item, or execution failed. |
-| Agent is not created | Effect execution record | Backend configuration, capacity, image/template, or provider validation failed. |
-| Clone is denied | Session, managed-repo registry, Git authorization log | The repository ID, session scope, key, or allowed ref is wrong. |
-| Tool is absent | Session manifest and visibility explanation | It is not granted, is directory-denied, or lacks required structural context. |
-| Tool returns an approval request | Approval store and tool-call audit | This is a controlled pause, not a gateway outage. |
-| Prompt completed but downstream is quiet | Effect record with completion state | Completion publication may be pending or its port has no edge. |
-| Review targets the wrong code | Git event, pinned SHA, promotion record | A mutable ref was used where the exact trigger SHA was required. |
-| Compute remains after completion | Backend cleanup record | Cleanup is incomplete; preserve and reconcile the failure evidence. |
+| The work item never appears | Provider status and trigger history | The external connection, filter, project settings, or polling may be wrong. |
+| The item appears but does not advance | Workflow run and event history | No route matched, a checkpoint rejected it, or a workflow step failed. |
+| The agent never starts | Session and execution details | Capacity, the selected environment, or its configuration failed. |
+| The code cannot be cloned | Repository and session authorization details | The repository, session scope, key, or allowed branch is wrong. |
+| An expected tool is missing | Session permission explanation | The tool was not granted, was denied by project policy, or lacks required context. |
+| A tool reports that approval is required | Approvals and tool-call audit | This is a controlled pause, not a gateway outage. |
+| The agent finished but nothing follows | Workflow run after the completion step | Completion may still be publishing, or the process has no next route. |
+| Review appears to target the wrong code | Reviewed SHA and promotion/release record | A movable branch label may have been used instead of the pinned version. |
+| The sandbox remains | Session cleanup status | Cleanup is incomplete; preserve the evidence and follow the supported recovery path. |
 
-## Practical runbook
+> <span class="sidebar-kicker">For administrators</span> **Authoritative evidence behind the table**
+>
+> The corresponding implementation records are the provider cursor and trigger logs; orchestration queue and node-execution journal; backend effect execution; managed-repository registry and Git authorization log; session manifest and visibility explanation; approval store and append-only tool audit; completion event; pinned-SHA promotion record; and backend cleanup record.
 
-Start with the broad stores, then follow IDs rather than timestamps alone:
+## A practical operator handoff
 
-```bash
-evander-cli status --runtime-dir runtime --json
-evander-cli list-sessions --runtime-dir runtime --all
-evander-cli list-approvals --runtime-dir runtime
-systemctl status evander-trigger-orchestrator.service
-systemctl status evander-effect-orchestrator.service
-```
+In Admin Web, select the affected directory first. Capture the source work-item ID, workflow run or trace ID, session ID, any approval request ID, and the exact commit SHA if code was produced. Those few identifiers usually let an administrator or support engineer trace the same run across the detailed records.
 
-For the Northstar run, record these values together: directory path, source item ID, trigger event ID, trace ID, workflow run ID, configuration revision, session ID, backend execution or VM ID, approval request IDs, managed repository ID, pushed SHA, and cleanup result.
+Do not delete queue, journal, approval, or session files to “unstick” a run. First establish whether it is waiting, running, waiting for completion, failed, skipped, exhausted, expired, or already completed. Use the supported Admin Web or CLI action after that diagnosis.
 
-Do not “unstick” a run by deleting queue, journal, approval, or session files. First determine whether the item is pending, running, completion-pending, failed, skipped, exhausted, expired, or already completed under the same idempotency key. Use the supported Admin Web controls or CLI after that diagnosis.
+> <span class="sidebar-kicker">Administrator runbook</span> **Host-level checks**
+>
+> Start with broad status and then follow identifiers rather than timestamps alone:
+>
+> ```bash
+> evander-cli status --runtime-dir runtime --json
+> evander-cli list-sessions --runtime-dir runtime --all
+> evander-cli list-approvals --runtime-dir runtime
+> systemctl status evander-trigger-orchestrator.service
+> systemctl status evander-effect-orchestrator.service
+> ```
+>
+> For a deep support handoff, add the directory path, configuration revision, backend execution or VM ID, managed repository ID, cleanup result, and any relevant node-execution IDs. Run bootstrap-aware commands against the intended runtime and back up an unfamiliar runtime first.
+
+[^idempotency]: Idempotency means that repeating the same operation has the same intended effect as performing it once. Here, redelivery returns to the saved event and run instead of starting unrelated work.
+
+[^sandbox]: In this manual, a sandbox is the bounded execution environment used for one session—a disposable VM or a container on a worker VM—not an unrestricted host workspace.
+
+[^provenance]: Provenance is evidence of a result's origin and history: the event, session, code version, decisions, and actions that produced it.
 
 ## Source trail
 
@@ -376,155 +422,227 @@ Do not “unstick” a run by deleting queue, journal, approval, or session file
 
 # 3. Trust Model and Security Boundaries
 
-> **At a glance.** Evander assumes that agent-generated actions and isolated workloads are not entitled to the host's ambient authority. The host keeps secrets and policy, the workload receives an expiring session, and every useful crossing—models, MCP tools, packages, external HTTP, Git, and worker dispatch—uses a narrow surface with its own authentication and scope. Isolation reduces the blast radius; it does not replace policy, approval, provenance, or audit.
+> **At a glance.** An agent may need to write code, call tools, and reach outside services, but it should not inherit all the power of the computer running Evander. Three promises define the boundary: host credentials stay on the host, the agent receives controlled routes rather than open internet access, and every action remains limited by the current job's permissions. Evander checks those promises at several points so that one mistaken or compromised component does not automatically unlock everything else.
 
-## Start with zones, not processes
+## Three promises to keep in mind
 
-The security model is clearer when the system is divided into trust zones:
+The full security design becomes easier to follow when it is reduced to three promises.
 
-| Zone | What it may hold | What it must not assume |
+1. **The agent cannot freely use host credentials.** When the agent harness[^agent-harness] sends a prompt to the configured AI model, the request goes through Evander. The real provider key stays on the host; the temporary workspace does not receive a copy.
+2. **The agent cannot freely reach the internet.** If it needs a package or an approved test system, Evander provides a specific route. That route does not become permission to browse or contact arbitrary destinations.
+3. **The agent cannot exceed this job's permissions.** A telemetry-retry job may inspect one work item, use selected tools, and work in one registered repository. It does not thereby gain access to every project, recipient, script, or administrative control.
+
+Everything else in this chapter explains how Evander keeps one or more of those promises. On a first read, the promises and examples are enough. The sidebars give the exact enforcement details needed for security review, administration, and incident response.
+
+## What Evander protects—and from whom
+
+Evander separates people, control, temporary work, and outside systems. Each area is trusted for a different purpose:
+
+| Area | What belongs there | What crossing the boundary requires |
 |---|---|---|
-| Operator plane | Human identity, RBAC, privileged Admin Web session | That a browser login grants an agent capability |
-| Host control plane | Real provider secrets, policy, sessions, workflow state, managed Git, audit | That data from a guest, webhook, model, or provider is trustworthy |
-| Isolated execution | Source workspace, bounded session configuration, temporary credentials or proof tokens | General internet, host filesystem access, or ambient provider credentials |
-| Worker VM | Worker bearer-token verifier, Docker runtime, durable session directories | Authority beyond jobs accepted from its configured control plane |
-| External systems | Models, Azure DevOps, Git hosts, communication and HTTP targets, package sources | That a request claiming to be “the agent” is sufficient without the relevant relay/provider credential |
-
-The default execution boundary is a libvirt VM. The additive container path places Docker jobs on a dedicated worker VM; the VM is still the stronger outer boundary. Containers and VMs do not have identical isolation properties, which is why Chapter 9 states their separate lifecycle and sandbox contracts.
+| Operator access | A person's sign-in, role, approvals, and privileged Admin Web state | A human permission must never be silently reused as an agent permission. |
+| Evander host | Real provider credentials, policy, sessions, workflow state, managed Git, and audit evidence | Input from an agent, model, webhook, or provider must be checked before it changes trusted state. |
+| Temporary workspace | The job's source checkout, tools, and limited session configuration | Access to host files, outside services, or another project must be explicitly provided. |
+| Worker machine | The container runtime and session workspaces for jobs assigned to that worker | A worker may run accepted jobs; it does not choose unrelated control-plane authority. |
+| Outside services | Models, Git hosts, work trackers, communication systems, package sources, and approved HTTP targets | Requests pass through the relevant credentialed provider or restricted relay. Merely claiming to be an agent is not enough. |
 
 ![Evander trust zones and the narrow crossings between them](assets/evander-user-manual/diagrams/02-trust-zones.svg)
 
 <p class="figure-caption">Figure 3.1 — Authority stays in its zone and crosses only through authenticated, scoped surfaces.</p>
 
-## The authority chain
+The figure's practical message is simple: the temporary worker reaches useful capabilities through Evander; it does not inherit the host or operator's general authority.
 
-An action is permitted by an intersection, not by one master switch:
+> <span class="sidebar-kicker">Technical sidebar</span> **Execution boundaries are not interchangeable**
+>
+> The default execution boundary is a disposable `libvirt_vm`. The additive `container_worker_vm` backend runs disposable Docker containers inside a dedicated worker VM; that VM remains the stronger outer boundary. Containers and VMs do not have identical isolation properties, so Chapter 9 defines their lifecycle and sandbox contracts separately. Human access is independently controlled by authentication, role-based access control (RBAC), directory scope, and the transient privileged-operation lock.
+
+## Permission is a series of checks
+
+A request is allowed only when every applicable check succeeds. No single switch grants general access:
 
 ```text
-directory policy
-  AND active session grant
-  AND authenticated/bound transport
-  AND argument constraints
-  AND provider/target/repository scope
-  AND approval or workflow lease when required
+right project rules
+  AND active job
+  AND verified connection
+  AND allowed tool and input
+  AND allowed destination
+  AND approval when required
+= request may run
 ```
 
-Removing any term denies or prevents the action. This is intentional defense in depth. If Imani's Northstar session can connect to port 8000 but `send_email` is not visible, the socket does not upgrade the session. If the tool is visible but its recipient violates the directory and session allowlists, the call is rejected. If the payload is allowed but approval-required, execution pauses. If an approved payload changes, exact binding rejects the retry.
+Read the chain from top to bottom: every line must be true, and passing one line does not replace any of the others.
 
-The human plane is separate. An operator's Admin Web permission to edit Northstar workflows does not become Imani's MCP permission. Conversely, a session granted a tool cannot edit users or unlock privileged Admin Web operations.
+For example:
 
-## Default-deny workload networking
+- A session may reach the tool gateway, but it still cannot use an email tool that was not granted.
+- The email tool may be visible, but a recipient outside the job's approved list is still rejected.
+- An operator may approve one sensitive request, but changing that request's input makes it a different request.
+- An operator's permission to edit a workflow does not become the agent's permission to edit users, unlock Admin Web, or call another tool.
 
-Guests and worker containers do not receive general internet access by default. The host firewall admits explicit guest-to-host ports needed for controlled services. Those firewall openings are routing prerequisites, not capability grants.
+Together, these independent checks provide **defense in depth**[^defense-in-depth]. If a check cannot decide safely, it **fails closed**[^fail-closed].
 
-The standard guest-facing paths are:
+> <span class="sidebar-kicker">Deeper detail</span> **The exact authority intersection**
+>
+> The implementation evaluates directory policy, an active session grant, authenticated and session-bound transport, argument constraints, provider/target/repository scope, and any required approval or workflow-scoped lease. Removing any term denies or prevents the action. Network reachability is only a routing prerequisite; a session ID is only a correlator; tool visibility is only one policy result; and approval is valid only for its bounded request.
 
-- SSH for restricted Git and controlled host/guest administration;
-- the MCP gateway;
-- model, NuGet, HTTP-target, and npm-audit relays;
-- optional operator-deployed package caches.
+## Promise 1: host credentials stay on the host
 
-The container worker defaults to Docker network mode `none`. A different mode is valid only when the worker deployment explicitly enables its egress policy and supplies an allowlist. The worker backend is not a general network escape hatch.
+Suppose a failing test needs analysis. The agent harness sends the relevant prompt and context to the configured AI model through Evander's model relay. The relay adds the real provider credential on the trusted host. The model's response returns to the agent, but the provider key does not.
 
-This posture changes how dependencies are supplied. Base VMs remain small; host-side bootstraps seed optional toolchains. Package traffic uses configured relays or caches. Large immutable worker toolchains belong in runner images or read-only cache mounts rather than being downloaded from arbitrary sites during a prompt.
+The same ownership principle applies to work trackers, communication providers, and other host integrations. The agent asks for an allowed action; a host-side component uses the credential needed to perform it. A workflow or project setting normally names the host environment variable that contains a secret—it does not contain the secret value itself.
 
-## Secrets remain host-owned
+This arrangement limits routine exposure, but it cannot make careless handling harmless. A credential pasted into source code, a prompt, a tool argument, or a log has crossed the boundary. Redaction can reduce what later screens display; it cannot make an exposed credential trustworthy again.
 
-Live secrets belong in host environment files, a secret manager feeding those environments, or other host-owned provider configuration. Directory JSON and workflow packs normally refer to an environment-variable name such as a PAT or token variable; they should not contain the secret value.
+> <span class="sidebar-kicker">Technical sidebar</span> **Two relays with different promises**
+>
+> The OpenAI relay demonstrates host-owned authentication. The guest receives a host relay URL and a placeholder API key for client compatibility. The relay authenticates upstream with the real credential and keeps the upstream client alive for the complete streaming response.
+>
+> The HTTP target relay has a different contract. It confines a session to an allowlisted base URL but forwards authentication headers and cookies supplied by the guest request. It does not inject a host credential. Treating target confinement as secret substitution would overstate the boundary.
 
-The OpenAI relay demonstrates the pattern: the guest is configured with a host relay URL and a placeholder API key suitable for client compatibility. The host relay authenticates upstream with the real credential and keeps the upstream client alive for the full streaming response. The guest never needs the real key.
+> <span class="sidebar-kicker">For administrators</span> **Where secrets belong**
+>
+> Live values belong in host environment files, a secret manager that feeds those environments, or another host-owned provider configuration. Directory JSON and workflow packs should refer to environment-variable names. Secret-bearing session authentication metadata must not be exposed through ordinary operator payloads. If exposure is plausible, preserve evidence and rotate the credential at its authority source; deleting or redacting a record is not revocation.
 
-Not every relay injects a host credential. The HTTP target relay is session-scoped and checks an allowlisted base URL, but forwards authentication headers and cookies supplied by the guest request. Its guarantee is target confinement, not secret substitution. Treating it as a host credential broker would be a serious design error.
+## Promise 2: the agent gets controlled routes, not open internet
 
-Secrets can still leak through payloads, logs, prompts, source files, or provider responses if an operator places them there. Redaction reduces accidental disclosure in approval and audit views; it is not retroactive secret revocation. Rotate a credential whenever exposure is plausible.
+Evander uses **default-deny egress**[^default-deny-egress]. Suppose the telemetry-retry job needs a package and access to a provisioned test API. Evander can provide a package cache and one approved HTTP target. The agent can use those routes for the job, but it does not gain a general path to unrelated websites or services.
 
-## Session capability and MCP proof
+The same distinction applies to every reachable host port. Reaching the gateway does not grant every tool. Reaching SSH does not grant every repository or branch. Reaching a package service does not turn it into a general web proxy. The service at the end of the route performs its own scope and identity checks.
 
-A session manifest ties a workload to a directory, expiry, execution identity, allowed tools, approval behavior, allowlists, argument policies, quotas, and correlation metadata. It is the durable capability description.
+This changes how environments are prepared. Optional toolchains can be seeded from the host, package traffic can use controlled relays or caches, and larger worker toolchains can be placed in runner images or read-only cache mounts. A prompt should not need arbitrary internet access simply to recreate a known development environment.
 
-MCP adds proof and binding:
+> <span class="sidebar-kicker">Technical sidebar</span> **Network enforcement**
+>
+> Guests do not receive general internet access by default. The host firewall admits explicit guest-to-host routes: SSH on port `22`, MCP on `8000`, the model relay on `11434`, the NuGet relay on `11666`, the HTTP target relay on `11777`, and the npm-audit facade on `11881`. Optional package caches commonly use Nexus on `8081` and apt-cacher-ng on `3142`. An open route remains subject to session and service policy.
+>
+> Separately, the host uses controlled SSH into libvirt VMs for bootstrap, status, log, and maintenance operations. That host-to-guest administrative path is not a guest session capability and should not be confused with the guest-to-host restricted-Git route.
+>
+> The container worker defaults jobs to Docker network mode `none`. A deployment may choose a different mode only with explicit worker egress configuration and an allowlist. The worker backend is not a general network escape hatch.
 
-1. A session-specific proof token is generated when the session is prepared. Session MCP-auth metadata retains the issued token for guest provisioning together with its SHA-256 verifier, so that metadata is secret-bearing and must not be exposed through ordinary operator payloads.
-2. The client declares a session in the connection query or `x-evander-session-id` header and presents the proof token through a supported header or query field.
-3. Once the MCP transport receives its `mcp-session-id`, Evander persists the transport-to-session binding in `runtime/mcp-transport-bindings.json`.
-4. A later attempt to reuse that transport for a conflicting Evander session is rejected.
-5. `tools/list` and tool invocation are filtered or denied for missing, invalid, or expired session context.
+## Promise 3: permission belongs to this job
 
-Passing a session ID as a tool argument is retained only as a compatibility shape; the gateway binds the authoritative session from the connection and rejects a conflict. Session identifiers are correlators, not bearer secrets.
+A **session** is the job's temporary identity and permission card. It applies **least privilege**[^least-privilege] and connects the work to a project, an expiry time, and an execution environment. When it expires, its earlier ID does not preserve permission to continue.
 
-## Tools, targets, and arguments
+For the telemetry-retry job, the session might allow the agent to inspect work item `MC-248`, run two named test scripts, use one managed repository, and publish a report only after approval. A review job in the same project may receive a different tool set. Neither session automatically inherits what the other can do.
 
-Tool policy has several independent dimensions:
+Every tool request is then checked in the context of that session. The agent cannot widen its own permission by writing a different session ID into a tool argument, choosing a new recipient, or changing an approved payload.
 
-- **Visibility:** whether the tool appears in the session's MCP catalog.
-- **Directory denial:** an ancestor can mark a tool denied; a child cannot undo that deny.
-- **Session grant:** the manifest or a valid workflow-scoped lease must grant it.
-- **Argument policy:** required, fixed, pattern, enum, allowlist, and denylist rules constrain payload fields. Inherited and session rules both apply.
-- **Resource allowlists:** contacts, scripts, channels, users, mailboxes, folders, files, search, and HTTP targets narrow provider-specific access.
-- **Approval:** selected calls require a human decision bound to the request.
+> <span class="sidebar-kicker">Technical sidebar</span> **What the session manifest controls**
+>
+> The manifest binds a session to its directory, expiry, selected execution identity, allowed and approval-required tools, resource allowlists, argument policies, quotas, and correlation metadata. Tool policy has independent dimensions: directory denial, session or workflow-lease grant, catalog visibility, argument constraints, provider-specific resource allowlists, and per-invocation approval. An ancestor directory deny cannot be undone by a child.
+>
+> Argument rules can require fields, fix values, match patterns or enumerations, and apply allowlists or denylists. Resource rules can narrow contacts, scripts, channels, users, mailboxes, folders, files, search, and HTTP targets. Inherited rules and session rules both apply.
 
-This lets Northstar grant Imani a useful tool without granting its most general form. A script tool can be restricted to named scripts; a communication tool can be restricted to configured target IDs; an HTTP tool can select only a session metadata alias whose base URL the host already accepted.
+> <span class="sidebar-kicker">Deeper detail</span> **How MCP proves which session is calling**
+>
+> 1. Evander generates a session-specific proof token while preparing the session. MCP-auth metadata retains the issued token for guest provisioning together with its SHA-256 verifier, making that metadata secret-bearing.
+> 2. The client declares the session in the connection query or `x-evander-session-id` header and presents the proof through a supported header or query field.
+> 3. After MCP assigns its `mcp-session-id`, Evander persists the transport-to-session binding in `runtime/mcp-transport-bindings.json`.
+> 4. Reusing that transport for a conflicting Evander session is rejected.
+> 5. `tools/list` and each invocation are filtered or denied when session context is missing, invalid, conflicting, or expired.
+>
+> A session ID supplied as a tool argument remains only as a compatibility shape. The authenticated connection supplies the authoritative identity and rejects a conflict. Session identifiers are correlators, not bearer secrets.
 
-## Git is the code boundary
+## Code follows a separate controlled route
 
-Evander moves code through Git, not through MCP file payloads. The host registers or refreshes an upstream into an Evander-owned bare repository. A session receives a managed repository ID; the control plane resolves the internal path and provisions a scoped SSH key. The restricted SSH wrapper limits permitted operations and refs.
+Evander transports source code through Git rather than embedding files in tool messages. The agent receives access to a registered repository, works in its own checkout, and can write only through the Git route and branch area granted to the session.
 
-Agent writes belong under `refs/heads/agents/<session-id>/<topic>`. Workflows consume the exact SHA from the triggering push, pin it, and promote or publish it with explicit lease checks. This prevents a time-of-check/time-of-use swap in which a mutable branch advances after review.
+The important operator-level result is that review and release refer to one exact code version. A branch name can move; a commit SHA identifies the snapshot that was actually produced. The release path therefore uses the reviewed SHA, not whichever version happens to occupy a familiar branch name later.
 
-The managed repository and ephemeral host worktrees live beneath the runtime root. Exposing a trusted host checkout path to an agent would bypass the ownership, cleanup, and provenance model.
+> <span class="sidebar-kicker">Deeper detail</span> **Managed-Git enforcement**
+>
+> The host registers or refreshes an upstream into an Evander-owned bare repository. The session receives a `managed_repo_id`; the control plane resolves the internal path and provisions a scoped SSH key. The restricted SSH wrapper constrains operations and refs. Agent writes belong below `refs/heads/agents/<session-id>/<topic>`.
+>
+> Workflows consume the exact SHA from the triggering push, pin it, and promote or publish it with explicit lease checks. This prevents a **TOCTOU race**[^toctou] in which a mutable branch advances after review. Managed repositories and ephemeral worktrees stay below the runtime root; exposing a trusted host checkout would bypass ownership, cleanup, and provenance controls.
 
-## Provider and worker boundaries
+## Outside systems and worker machines remain separate
 
-Provider adapters run on the host. They resolve settings for the selected directory and use host credentials to call Azure DevOps, communication systems, or other integrations. Provider output remains untrusted workflow input: schemas, gates, and bindings validate its shape before effects consume it.
+Evander may trust a host credential to contact a work tracker without trusting everything the tracker returns. A title, comment, webhook, or model response is still input. Workflows check its shape and route before an effect is allowed to change trusted state.
 
-The container worker API is authenticated with a bearer token retained by the control plane. Jobs receive a sanitized execution specification and explicit mounts/configuration. The protocol intentionally lacks general secret transport and arbitrary host-path transport. A compromised worker remains serious—it sees its session workspaces and can attack its own VM—but it should not automatically inherit unrelated control-plane secrets or repositories.
+A worker machine is similarly trusted to run accepted jobs, not to invent new ones. If a worker is compromised, the incident is serious: it can see its assigned session workspaces and attack its own VM. The protocol is designed so that this does not automatically reveal unrelated control-plane secrets or repositories.
+
+> <span class="sidebar-kicker">Technical sidebar</span> **Provider and worker enforcement**
+>
+> Provider adapters run on the host, resolve settings for the selected directory, and use host credentials for Azure DevOps, communications, and other integrations. Provider output remains untrusted workflow input; schemas, gates, and bindings validate it before effects consume it.
+>
+> The container worker API uses a bearer token retained by the control plane. Jobs receive a sanitized execution specification and explicit mounts and configuration. The protocol intentionally omits general secret transport and arbitrary host-path transport.
 
 ## Approval is a boundary, not absolution
 
-An approval request includes a digest of the real payload while presenting a redacted copy for review. Exact-payload mode, expiry, use count, session, and tool checks prevent casual reuse. Operator decisions require identity and reason and enter the audit trail.
+Some actions remain sensitive even when the tool, target, and input are otherwise allowed. Evander pauses those actions and asks an authorized operator to decide. The approval shows which session and tool are involved, the intended effect, when the request expires, and a safe-to-display view of the input.
 
-Approval does not prove the requested action is wise or the displayed summary is complete. The reviewer must inspect intended effect, relevant redacted fields, session, directory, tool, and surrounding workflow context. Highly sensitive content should be represented by safe references rather than hidden behind so much redaction that the decision becomes meaningless.
+Approval does not prove that the action is wise. The operator still needs to inspect the directory, job, tool, destination, intended effect, and surrounding workflow. If redaction hides so much that the decision cannot be understood, the safer design is to pass a reference to protected content rather than ask for a blind approval.
 
-Workflow-scoped MCP leases are similarly narrow. They can add a tool for one session and workflow run, with expiry and usage limits. They cannot override a directory deny or eliminate a tool's per-invocation approval requirement.
+An approval also does not promote the session. It authorizes the bounded request while all other checks remain in place.
 
-## Failure behavior and containment
+> <span class="sidebar-kicker">Deeper detail</span> **Exact binding and workflow leases**
+>
+> An approval record binds a digest of the real payload to its session, tool, expiry, payload mode, and maximum use count while presenting a redacted copy for review. Operator decisions require identity and reason and enter the audit trail. In exact-payload mode, changing an argument invalidates the retry.
+>
+> A workflow-scoped MCP lease can add a tool for one session and workflow run with expiry and usage limits. It cannot override a directory deny or remove a tool's per-invocation approval requirement.
+
+## When a boundary is challenged
+
+The expected response is usually denial, a controlled pause, or a retained failure record—not silent expansion of authority:
 
 | Failure or attack | Expected boundary response |
 |---|---|
-| Guest calls the public model endpoint directly | Default networking blocks it; the supported client points at the host relay. |
-| Stolen session ID without proof token | MCP authentication fails; the ID alone is insufficient. |
-| One MCP transport declares a second session | Persistent binding detects the conflict and rejects it. |
-| Child directory tries to re-enable an ancestor-denied tool | Effective policy re-applies the inherited deny. |
-| Approved invocation changes an argument | Exact payload digest check rejects it unless policy explicitly chose a broader mode. |
-| Agent pushes outside its namespace | Restricted SSH/ref enforcement rejects the write. |
-| Workflow pack contains a secret value | Validation cannot make that safe; remove it, rotate the secret, and replace it with an env reference. |
-| Audit SQLite indexing fails | Append-only JSONL remains the canonical record; the index can be rebuilt. |
-| Worker cleanup fails | Host records `cleanup_failed`; operators retain evidence and retry cleanup. |
-| Host relay is compromised | The relay's upstream credential is exposed; isolate the host and rotate it. Workload isolation does not contain a host compromise. |
+| Agent calls the public model endpoint directly | Default networking blocks it; the supported client points at the host relay. |
+| Someone has a session ID but not its proof token | MCP authentication fails; the ID alone is insufficient. |
+| One MCP connection declares a second session | The persisted binding detects the conflict and rejects it. |
+| A child directory tries to re-enable an ancestor-denied tool | Effective policy reapplies the inherited deny. |
+| An approved invocation changes an argument | Exact payload binding rejects it unless policy deliberately selected a broader mode. |
+| The agent pushes outside its branch area | Restricted SSH and ref enforcement reject the write. |
+| A workflow pack contains a secret value | Remove it, rotate the credential, and replace the value with a host environment reference. |
+| Audit indexing fails | Append-only JSONL remains the canonical tool-call audit; the SQLite index can be rebuilt. |
+| Worker cleanup fails | The host records `cleanup_failed`; evidence remains available while an administrator retries cleanup. |
+| A host relay is compromised | Its upstream credential may be exposed. Isolate the host and rotate the credential; workload isolation does not contain a host compromise. |
 
-## Practical security runbook
+## If you are concerned about access or a secret
 
-For an unexpected capability, work from outside inward:
+Start with the observable job, not host firewall commands.
 
-1. Identify the runtime directory and session ID.
-2. Confirm the session is active and bound to the expected directory and execution target.
-3. Inspect effective directory policy and provenance, not just the child overlay.
-4. Inspect the session's allowed tools and argument/resource allowlists.
-5. Inspect MCP transport binding, approval or lease IDs, and the matching tool-call audit record.
-6. Verify the relay, Git wrapper, or provider enforced its own target scope.
+1. In Admin Web, select the directory where the work ran and open the relevant session.
+2. Record what looked wrong: the tool or service, target, approximate time, and expected behavior.
+3. Capture the session ID, workflow run or trace ID, approval request ID, tool-call record, and execution or VM ID when available.
+4. If your role permits it, use the supported control to stop or contain the affected session. Otherwise contact an Evander administrator. Do not delete session, approval, audit, or workflow records.
+5. If a credential may have appeared in source, a prompt, a payload, a response, or a log, treat the exposure as plausible until checked. Preserve evidence and ask the credential owner to rotate it at the source.
 
-Useful first checks include:
+Deleting a redacted UI record, destroying a temporary workspace, or removing a session from a list does not revoke an external credential. Rotation at the system that issued the credential is the decisive step.
 
-```bash
-evander-cli status --runtime-dir runtime --json
-evander-cli list-sessions --runtime-dir runtime --all
-evander-cli directories config-show root/northstar-platform/mission-control \
-  --domain policy --runtime-dir runtime
-sudo nft list ruleset
-sudo ss -ltnp
-```
+> <span class="sidebar-kicker">Administrator runbook</span> **Host-level security checks**
+>
+> Work from the reported directory and session outward:
+>
+> 1. Confirm the runtime directory, session status, expiry, directory binding, and execution target.
+> 2. Inspect effective directory policy and provenance rather than only the child overlay.
+> 3. Compare allowed tools, argument rules, resource allowlists, and any workflow-scoped lease.
+> 4. Inspect MCP transport binding, approval state, and the matching append-only tool-call audit event.
+> 5. Verify that the relay, restricted Git wrapper, provider, or worker enforced its own target scope.
+> 6. For possible secret exposure, contain the smallest affected service or session, preserve logs and audit evidence, rotate the credential at its authority source, update host secret storage, and then restart or reissue only the affected scope.
+>
+> Useful first checks include:
+>
+> ```bash
+> evander-cli status --runtime-dir runtime --json
+> evander-cli list-sessions --runtime-dir runtime --all
+> evander-cli directories config-show root/northstar-platform/mission-control \
+>   --domain policy --runtime-dir runtime
+> sudo nft list ruleset
+> sudo ss -ltnp
+> ```
 
-If a secret may have crossed a boundary, stop the affected session or service, preserve relevant logs and audit records, rotate the credential at its authority source, update the host secret, and then restart/reissue the smallest affected scope. Deleting a redacted UI record does not invalidate a credential.
+[^agent-harness]: The agent harness is the program that coordinates the agent's work: it sends prompts and context to the configured model, presents tools, and applies the model's responses in the working session.
+
+[^defense-in-depth]: Defense in depth uses several independent controls so that bypassing or misconfiguring one does not remove the others.
+
+[^fail-closed]: A check fails closed when an error or uncertainty causes denial rather than permission.
+
+[^default-deny-egress]: Egress is outbound network traffic. Default-deny means it is blocked unless a specific route has been allowed.
+
+[^least-privilege]: Least privilege gives each job only the access needed for its current purpose and duration.
+
+[^toctou]: TOCTOU means “time of check to time of use”: the state validated during review changes before the later action uses it.
 
 ## Source trail
 
@@ -545,48 +663,179 @@ Trace configuration, policy, orchestration, execution, Git, integration, and ope
 
 # 4. System Topology, Services, and Ports
 
-> **At a glance.** Evander is a set of small host services around shared runtime state, not one monolithic daemon. Admin Web and the CLI assemble the control plane; the MCP gateway and relays face isolated workloads; provider workers ingest external change; trigger and effect orchestrators advance workflows; and an optional worker daemon runs on a separate worker VM. Ports describe reachability, while sessions, policy, target allowlists, and credentials describe authority.
+> **At a glance.** Evander has a visible operator interface and several background parts. Admin Web is where people inspect work and make decisions, while workflow services notice events, start jobs, and move them forward. Temporary workspaces do the agent's work, and controlled connections provide only the tools and outside access that job needs. The first half of this chapter helps an operator recognize those parts and common failure patterns. The second half gives administrators the exact service, port, firewall, and storage map.
 
-## The topology in one view
+## Four parts to recognize
 
-For a standard libvirt deployment, the important paths are:
+You do not need to memorize process names to understand where work is happening. Start with four parts:
+
+1. **Admin Web is the operator surface.** It shows runs, sessions, approvals, configuration, workers, and audit records. It lets a person observe or decide; it is not the process that continuously executes workflows.
+2. **Workflow services coordinate the work.** They notice eligible events, record them, decide which workflow path applies, and advance that path. They continue to matter even when nobody has Admin Web open.
+3. **A temporary workspace performs the agent's job.** Depending on the configured backend, this is a disposable virtual machine or a disposable container inside a worker machine.
+4. **Controlled connections provide capabilities.** The workspace reaches Evander tools, a model, managed Git, packages, or approved outside systems through narrow routes. A working route does not by itself grant permission to use everything behind it.
+
+The relationship is easier to see without the service names:
 
 ```text
-operator browser/CLI
-        |
-        v
-Admin Web + shared admin runtime ---- runtime stores/databases
-        |                                      ^
-        v                                      |
-trigger/effect workers <---- provider workers/events
-        |
-        v
-libvirt VM ---- MCP / model / package / HTTP relays ---- external providers
-        `------ restricted SSH/Git -------------------- managed bare repos
+external event ---------> workflow services ---------> temporary workspace
+                                |                              |
+                                v                              v
+operator <----> Admin Web <----> shared job records     controlled connections
 ```
 
-With `container_worker_vm`, agent effects call `evander-worker-daemon` on a dedicated worker VM. The disposable Docker job then calls back to the control-plane gateway and relays through explicitly configured guest URLs.
+An integration can deliver work directly to the workflow services; it does not have to pass through Admin Web. Admin Web and the background services meet through shared Evander state, which is why the interface can show work that arrived while no operator was signed in.
 
-Processes share domain services and stores, but they do not all need to be running for every installation. A host used only for local VM sessions may not configure Teams, Discord, DIDWW, Azure DevOps, or a container worker. “Installed by the systemd installer” and “required for this workflow” are different statements.
+## What an operator may notice
 
-## Operator and guest-facing services
+Because these parts are separate, one can be healthy while another is waiting, denied, misconfigured, or unavailable. That is useful evidence rather than a contradiction.
 
-These are the default listeners in current configuration. Live environment files can override them.
+| What you see | What it usually tells you | Useful information to capture |
+|---|---|---|
+| Admin Web opens, but a run does not advance | The operator interface is available; a workflow service, queue, approval, or execution backend may need attention | Directory, run ID, session ID, last status, and time of the last change |
+| A request reaches Evander but is denied | The connection may be working; a job permission, target rule, argument rule, or approval check stopped the action | Tool or action, visible denial, target, session ID, and approximate time |
+| An integration is configured, but no new work arrives | Its dedicated worker, credential, provider connection, or source-side filter may be unavailable | Directory, integration name, expected item or message, and last successful activity |
+| A session is created, but no workspace starts | Coordination reached the execution step; virtual-machine or worker provisioning may have failed | Session ID, execution or VM ID, worker name if shown, and the visible failure |
+| The agent works locally but cannot reach a model, package, repository, or approved target | The temporary workspace is alive; the relevant controlled connection needs inspection | Destination or capability, exact error, session ID, and whether the failure is repeatable |
+
+The important distinction is **reachable versus permitted**. A refused connection means the request did not reach a service. A denial from that service means the route worked and a later check made a decision.
+
+## The process topology in one view
+
+The plain map above is enough for ordinary orientation. The exact process path is useful when reading logs, status output, or deployment configuration.
+
+> <span class="sidebar-kicker">Deeper detail</span> **Standard and worker-backed paths**
+>
+> In a standard deployment using local disposable virtual machines, the major paths are:
+>
+> ```text
+> operator browser/CLI
+>         |
+>         v
+> Admin Web + shared admin runtime ---- runtime stores/databases
+>         |                                      ^
+>         v                                      |
+> trigger/effect workers <---- provider workers/events
+>         |
+>         v
+> libvirt VM ---- controlled relays ---- external systems
+>         `------ restricted Git ------ managed repos
+> ```
+>
+> Here, “controlled relays” covers MCP, model, package, and approved HTTP access.
+>
+> With the `container_worker_vm` backend, agent effects call `evander-worker-daemon` on a dedicated worker VM. The daemon creates a disposable Docker job, which calls back to the control-plane gateway and relays through explicitly configured guest URLs.
+
+Processes share domain services and stores, but they do not all need to be running for every installation. A host used only for local sessions may not configure Teams, Discord, DIDWW, Azure DevOps, or a container worker. “Installed by the service installer” and “required for this workflow” are different statements.
+
+## Services an operator may hear about
+
+The names below often appear in status messages or an administrator's explanation. Their plain roles matter more than their command lines.
+
+### Core services
+
+“Core” here means part of the ordinary control-plane or agent path. A particular action may use only some of them—for example, opening Admin Web does not require a workflow run to be active.
+
+| Role | Name you may see | Plain responsibility |
+|---|---|---|
+| Operator interface | `evander-admin-web` | Shows and changes supported Evander state for authenticated users. |
+| Event intake | `evander-trigger-orchestrator.service` | Notices eligible trigger events and records them durably. |
+| Workflow execution | `evander-effect-orchestrator.service` | Advances recorded events through workflow decisions and effects. |
+| Tool access | `evander-gateway` | Presents the job's allowed Evander tools and checks the session on each request. |
+| Model access | `evander-openai-relay` | Lets the agent harness call the configured model while the real provider credential stays on the host. |
+| Execution backend | Local libvirt support or `evander-worker-daemon` | Creates and removes the temporary workspace selected for the job. |
+
+### Optional integration services
+
+| Capability | Services or components you may see | When they matter |
+|---|---|---|
+| Azure DevOps feedback and proxy issue state | `evander-ado-worker.service`, `evander-proxy-issue-sync.service` | When Azure DevOps supplies review feedback or locally mirrored issue state. |
+| Discord intake and wakes | `evander-discord-ingest.service`, `evander-discord-wake.service` | When Discord messages are ingested or allowed to wake an agent. |
+| Scheduled resumes | `evander-scheduled-wake.service` | When a session should resume at a recorded future time. |
+| Teams intake | `evander-teams-ingest.service`, `evander-teams-meeting-ingest.service` | When Teams messages, meetings, or media enter configured flows. |
+| Packages and approved HTTP targets | NuGet relay, npm-audit facade, optional package caches, HTTP target relay | When a workspace needs one of those controlled outside routes. |
+| Telephony | `evander-didww-sip-bridge.service` | When the DIDWW integration is configured. |
+| Remote container execution | `evander-worker-daemon` on a worker VM | Only when the selected backend uses disposable worker containers. |
+
+Optional does not mean unimportant. It means the service is needed only when the deployment uses that capability.
+
+## A Northstar request across the system
+
+Return to the telemetry-retry work item from Chapter 2. Without process names, the trip looks like this:
+
+1. A configured integration notices the source event.
+2. Workflow services record the event before treating it as accepted work.
+3. The workflow decides what should happen and asks the selected execution backend for a temporary workspace.
+4. The agent works there, using only the controlled tool, model, package, HTTP, and Git routes provided for the job.
+5. An operator follows progress and handles any approval through Admin Web.
+6. Review feedback or another source event returns through its integration and enters the same durable workflow path.
+
+Admin Web can display and influence this work, but the request does not travel through the browser on its way to the gateway. Closing the browser does not stop the background workflow services.
+
+> <span class="sidebar-kicker">Technical sidebar</span> **The same request with process and port names**
+>
+> 1. A provider worker or workflow trigger sees Northstar's source event using credentials resolved for `root/northstar-platform/mission-control`.
+> 2. The trigger orchestrator writes a queue record to `orchestration.db` and signals the effect worker's local wake mechanism.
+> 3. The effect worker creates the implementation session and calls the selected backend.
+> 4. A local implementation VM reaches ports `8000`, `11434`, and configured package surfaces through the host firewall; it uses port `22` for restricted managed Git.
+> 5. Operators inspect state through Admin Web on `8100`, normally from the host or through its reverse proxy.
+> 6. Review feedback returns through a provider worker or trigger and re-enters the same durable event path.
+
+## Reading common failures
+
+An operator can use the first column to describe the symptom. The remaining columns help an administrator choose the first layer to inspect.
+
+| Symptom | Layer to inspect first | Important distinction |
+|---|---|---|
+| Connection refused | Listener process and bind address | The service is not reachable; policy has not run yet. |
+| Timeout from a workspace | Firewall, routing, service bind, or worker network | A port may listen on the wrong interface. |
+| HTTP `401` from MCP | Session proof | The network path works; authentication failed. |
+| HTTP `406` from plain GET `/mcp` | MCP content negotiation | This can be expected liveness evidence, not a dead gateway. |
+| Tool absent or denied | Session and effective policy | Gateway reachability does not grant the tool. |
+| Admin Web healthy, runs stalled | Trigger/effect services and queue | The UI is not the executor. |
+| Trigger healthy, effects absent | Effect worker, graph, queue, completion state | Trigger publication and effect execution are distinct stages. |
+| Optional cache port open, restore fails | Actual cache service and client URL | Firewall allowance does not start Nexus or apt-cacher-ng. |
+| Worker daemon unreachable | Control-plane-to-worker routing, token, or service | Guest firewall settings are not the same path. |
+| All stores appear empty after restart | Runtime-root mismatch | The process may use `/var/lib/evander` while someone inspects repository `runtime`. |
+
+## Troubleshooting: what to hand to an administrator
+
+Start with what Admin Web can show. Capture what is available; a missing identifier should not prevent a useful handoff.
+
+1. Confirm the selected directory and record its path.
+2. Open the relevant run or session and record the run or trace ID, session ID, source item or event ID, last status, and time of the last change.
+3. Copy the exact visible error or denial. If an approval, tool call, execution, VM, or worker is involved, record its ID too.
+4. Note what still works: for example, “Admin Web opens and the session exists, but no workspace was created.” This helps locate the boundary that failed.
+5. Give those details to an Evander administrator. Do not delete runtime files, open firewall ports, or start unrelated services to make the symptom disappear.
+
+If Admin Web itself is unavailable, record the address used, the time, and the exact browser or proxy error. An operator normally does not need socket commands or host access to make the initial report.
+
+The remainder of this chapter is administrator reference material.
+
+## Administrator reference: listeners and ports
+
+A **listener** is a service waiting for network requests. Its bind address determines which host interfaces accept those requests. Loopback (`127.0.0.1`) means the same host only; `0.0.0.0` means all configured interfaces, still subject to routing and firewall rules. Live environment files can override the defaults below.
+
+### Core and commonly used listeners
+
+| Surface | Entry point | Default bind/port | Intended caller | Notes |
+|---|---|---:|---|---|
+| Admin Web | `evander-admin-web` | `127.0.0.1:8100` | Operator browser or reverse proxy | Dashboard, sessions, approvals, workflows, config, users, chat, and audit. `/healthz` is the health endpoint. |
+| MCP gateway | `evander-gateway` | `0.0.0.0:8000` | Workspace MCP client | Streamable MCP at `/mcp`; a plain GET may return `406` and still prove the endpoint is listening. |
+| OpenAI relay | `evander-openai-relay` | `0.0.0.0:11434` | Workspace model client | Keeps host model credentials and forwards streamed responses as they arrive. |
+
+Admin Web deliberately defaults to loopback. Exposing it through a reverse proxy requires authentication, cookie, TLS, and network controls; changing its bind address alone is not a complete exposure design.
+
+### Optional listeners
 
 | Surface | Entry point or service | Default bind/port | Intended caller | Notes |
 |---|---|---:|---|---|
-| Admin Web | `evander-admin-web` | `127.0.0.1:8100` | Operator browser or reverse proxy | Dashboard, sessions, approvals, workflows, config, users, chat, and audit. `/healthz` is the health endpoint. |
-| MCP gateway | `evander-gateway` | `0.0.0.0:8000` | Guest/container MCP client | Streamable MCP at `/mcp`; a plain GET may return `406` and still prove the endpoint is listening. |
-| OpenAI relay | `evander-openai-relay` | `0.0.0.0:11434` | Guest/container model client | Keeps host model credentials; forwards streaming SSE without buffering away the stream lifetime. |
-| NuGet relay | `evander-nuget-relay` | `0.0.0.0:11666` | Guest/container package client | Narrow NuGet package surface; `/healthz` is available. |
-| HTTP target relay | `evander-http-target-relay` | `0.0.0.0:11777` | Session with configured target alias | Constrains external HTTP targets; forwards guest-managed auth rather than injecting a host secret. |
-| npm audit facade | `evander-npm-audit-facade` | `0.0.0.0:11881` | Guest/container npm tooling | Narrow audit compatibility surface. |
-| DIDWW SIP bridge | `evander-didww-sip-bridge` | Configurable; example is loopback `11888` | Host telephony integration | Optional, host-local integration; do not confuse it with the worker daemon's port on a separate host. |
-| Worker daemon | `evander-worker-daemon` | CLI default `127.0.0.1:11888`; Ansible worker default `0.0.0.0:11888` | Authenticated control plane on the constrained worker network | Deployed by `ansible/worker.yml`, not the control-plane systemd installer. |
+| NuGet relay | `evander-nuget-relay` | `0.0.0.0:11666` | Workspace package client | Narrow NuGet package surface; `/healthz` is available. |
+| HTTP target relay | `evander-http-target-relay` | `0.0.0.0:11777` | Session with a configured target alias | Constrains external HTTP targets; forwards guest-managed authentication rather than injecting a host secret. |
+| npm audit facade | `evander-npm-audit-facade` | `0.0.0.0:11881` | Workspace npm tooling | Narrow audit compatibility surface. |
+| DIDWW SIP bridge | `evander-didww-sip-bridge` | Configurable; example is loopback `11888` | Host telephony integration | Host-local integration; do not confuse its example port with the worker daemon on a separate host. |
+| Worker daemon | `evander-worker-daemon` | CLI default `127.0.0.1:11888`; Ansible worker default `0.0.0.0:11888` | Authenticated control plane on the constrained worker network | Deployed by `ansible/worker.yml`, not the control-plane service installer. |
 
-Admin Web deliberately defaults to loopback. Exposing it through a reverse proxy requires the operator to preserve authentication, cookie, TLS, and network controls; changing its bind address alone is not a complete exposure design.
-
-## Firewall defaults
+## Administrator reference: firewall defaults
 
 `config/firewall.env.example` permits guest-to-host TCP only on an explicit list:
 
@@ -601,39 +850,46 @@ Admin Web deliberately defaults to loopback. Exposing it through a reverse proxy
 | `8081` | Optional Nexus PyPI/npm cache |
 | `3142` | Optional apt-cacher-ng provisioning cache |
 
-The last two are firewall allowances for optional services, not services started by Evander. Conversely, loopback Admin Web and host-local support databases are not guest firewall entries. Qdrant, where used for semantic storage, defaults to a host-local `127.0.0.1:6333` provider endpoint rather than a general guest-facing database.
+The last two are firewall allowances for optional services, not services started by Evander. Conversely, loopback Admin Web and host-local support databases are not guest firewall entries. Qdrant, where used for semantic storage, defaults to a host-local `127.0.0.1:6333` provider endpoint rather than a general workspace-facing database.
 
-Opening a port establishes a route. The service still applies its own session proof, target, repository, or upstream-authentication rules.
+Opening a port establishes a route. The service still applies its own session proof, target, repository, or upstream-authentication rules. Port reachability is not a capability grant.
 
-## Workers without public listeners
+## Administrator reference: background workers
 
-Most background services are polling or queue consumers:
+### Core workflow workers
 
 | Worker | Responsibility |
 |---|---|
 | `evander-trigger-orchestrator.service` | Poll enabled workflow triggers, publish durable events, advance cursors, and wake the effect worker. Its command is `evander-cli trigger-orchestrator`, not a separate `evander-trigger-orchestrator` console script. |
 | `evander-effect-orchestrator.service` | Route queued events through graphs and execute gates, queries, and effects. |
-| `evander-ado-worker.service` | Poll Azure DevOps PR feedback/completion; work-item intake remains workflow-owned. |
+
+### Optional integration and wake workers
+
+| Worker | Responsibility |
+|---|---|
+| `evander-ado-worker.service` | Poll Azure DevOps PR feedback and completion; work-item intake remains workflow-owned. |
 | `evander-proxy-issue-sync.service` | Refresh local proxy issue state from Azure DevOps. |
 | `evander-discord-ingest.service` | Ingest Discord data. |
 | `evander-discord-wake.service` | Turn eligible Discord messages into agent wake activity. |
 | `evander-scheduled-wake.service` | Resume sessions whose scheduled wake is due. |
 | `evander-teams-ingest.service` | Run `evander-cli teams-ingest` through `scripts/run_teams_ingest.sh`. |
-| `evander-teams-meeting-ingest.service` | Ingest configured Teams meeting media/events. |
+| `evander-teams-meeting-ingest.service` | Ingest configured Teams meeting media and events. |
+
+Most background services poll a provider or consume a queue rather than accept public network connections.
 
 There is no current `evander-host-heartbeat.service`. Older references to it are stale. Azure DevOps feedback polling belongs to the ADO worker; Discord and scheduled wakeups belong to their dedicated workers. Optional guest-local heartbeat timer assets are a different mechanism and are disabled by default by provider bootstraps.
 
-## Control-plane installation set
+## Administrator reference: installation and shared state
 
-`scripts/install_systemd_units.sh` renders and enables the firewall, gateway, Admin Web, OpenAI relay, DIDWW bridge, NuGet relay, npm audit facade, HTTP target relay, ADO and proxy workers, Discord ingest/wake, scheduled wake, Teams ingest/meeting ingest, and both orchestrators.
+On a systemd-based host, `scripts/install_systemd_units.sh` renders and enables the firewall, gateway, Admin Web, OpenAI relay, DIDWW bridge, NuGet relay, npm audit facade, HTTP target relay, ADO and proxy workers, Discord ingest and wake, scheduled wake, Teams ingest and meeting ingest, and both orchestrators.
 
-Enabling a unit does not make an unconfigured integration healthy. Before install or start, populate the required local files for the services in use, including `config/firewall.env`, `config/admin-web.env`, provider worker JSON, trigger-orchestrator JSON, optional relay env files, and optional repository-root `secrets.env`.
+> <span class="sidebar-kicker">Administrator note</span> **Enabled does not mean configured or healthy**
+>
+> Before installation or startup, populate the required local files for the services in use, including `config/firewall.env`, `config/admin-web.env`, provider-worker JSON, trigger-orchestrator JSON, optional relay environment files, and optional repository-root `secrets.env`. The unit templates generally start processes after network readiness and load their configured environment, but they cannot supply missing credentials or integration settings.
 
-The unit templates generally order processes after network readiness and load their configured environment. They are deliberately separate failure domains. The gateway can be healthy while a Teams credential is invalid; Admin Web can render while the effect worker is stopped; a package relay can be absent without changing workflow queue durability.
+The separate units are deliberate failure boundaries. The gateway can be healthy while a Teams credential is invalid. Admin Web can render while the effect worker is stopped. A package relay can be absent without changing workflow queue durability.
 
-## Runtime state shared across services
-
-All control-plane processes must agree on the runtime root. Important shared surfaces include:
+All control-plane processes must also agree on the **runtime root**: the directory containing Evander's live configuration, records, databases, managed repositories, and add-on state. Important shared surfaces include:
 
 - `host-config.json` and `directory-config/` for bootstrap and effective configuration;
 - session, approval, directory, wake, prompt, and provider state stores;
@@ -642,39 +898,11 @@ All control-plane processes must agree on the runtime root. Important shared sur
 - `managed-git-repositories.json`, `managed-git/`, and `git-worktrees/` for managed source;
 - add-on state below `runtime/addons/` when an add-on is installed.
 
-If two services point at different runtime roots, each may look internally consistent while the system appears split-brained. Always inspect the unit's effective command and environment before editing the repository's example configuration.
+If two services point at different runtime roots, each may look internally consistent while the system appears split. Always inspect a unit's effective command and environment before editing the repository's example configuration.
 
-## A Northstar request across processes
+## Administrator runbook
 
-For the telemetry-retry work item, a typical process sequence is:
-
-1. A provider worker or workflow trigger sees Northstar's source event using credentials resolved for `root/northstar-platform/mission-control`.
-2. The trigger orchestrator writes a queue record to `orchestration.db` and signals the effect worker's local wake mechanism.
-3. The effect worker creates Imani's session and calls the selected backend.
-4. Imani's VM reaches ports `8000`, `11434`, and package surfaces through the host firewall; it uses port `22` for restricted managed Git.
-5. Operators inspect state through Admin Web on `8100`, normally via the host or its reverse proxy.
-6. Review feedback returns through a provider worker or trigger and re-enters the same durable event path.
-
-No request needs to pass through Admin Web to reach the gateway, and Admin Web is not the workflow engine. It is an operator surface over the same domain services and stores.
-
-## Failure behavior
-
-| Symptom | Layer to inspect first | Important distinction |
-|---|---|---|
-| Connection refused | Listener/process and bind address | The service is not reachable; policy has not run yet. |
-| Timeout from guest | Firewall, routing, service bind, or worker network | A port may listen on the wrong interface. |
-| HTTP `401` from MCP | Session proof | The network path works; authentication failed. |
-| HTTP `406` from plain GET `/mcp` | MCP content negotiation | This can be expected liveness evidence, not a dead gateway. |
-| Tool absent or denied | Session and effective policy | Gateway reachability does not grant the tool. |
-| Admin Web healthy, runs stalled | Trigger/effect services and queue | The UI is not the executor. |
-| Trigger healthy, effects absent | Effect worker, graph, queue, completion state | Trigger publication and effect execution are distinct stages. |
-| Optional cache port open, restore fails | Actual cache service and client URL | Firewall allowance does not start Nexus or apt-cacher-ng. |
-| Worker daemon unreachable | Control-plane-to-worker routing/token/service | Guest firewall settings are not the same path. |
-| All stores appear empty after restart | Runtime-root mismatch | The process may be using `/var/lib/evander` while the operator inspects repository `runtime`. |
-
-## Practical runbook
-
-Begin with the application view and then descend to systemd and sockets:
+Begin with the application view and then descend to the Linux service manager and network listeners:
 
 ```bash
 evander-cli status --runtime-dir runtime --json
@@ -694,7 +922,7 @@ curl -i http://127.0.0.1:11666/healthz
 curl -i http://127.0.0.1:8000/mcp
 ```
 
-For the gateway probe, record the status and headers; do not require `200` from a content-negotiation-free GET. For service failures, inspect the actual unit and recent logs:
+For the gateway probe, record the status and headers; do not require `200` from a GET that omits MCP content negotiation. For service failures, inspect the effective unit and recent logs:
 
 ```bash
 sudo systemctl cat evander-gateway.service
@@ -707,13 +935,12 @@ Before reinstalling units, run the supported preflight:
 ./scripts/install_systemd_units.sh --preflight
 ```
 
-Do not start every optional worker merely to make `systemctl --failed` empty. Configure and run only the integrations the deployment intends to use, while keeping required core surfaces healthy.
+Do not start every optional worker merely to make `systemctl --failed` empty. Configure and run only the integrations the deployment intends to use, while keeping the core surfaces required by its workflows healthy.
 
 ## Source trail
 
-- `pyproject.toml` — installed console entry points.
-- `systemd/*.service.template` and `scripts/install_systemd_units.sh` — current control-plane units, commands, environment files, and installation set.
-- `config/firewall.env.example` and `scripts/apply_firewall.sh` — guest-to-host port defaults and firewall realization.
+- `pyproject.toml`, `systemd/*.service.template`, and `scripts/install_systemd_units.sh` — installed entry points and current control-plane units.
+- `config/firewall.env.example` and `scripts/apply_firewall.sh` — workspace-to-host port defaults and firewall realization.
 - `src/evander/host_config.py`, `src/evander/admin/web/app.py`, `src/evander/worker/cli.py`, and `src/evander/didww_sip_bridge.py` — listener defaults.
 - `src/evander/daemons/trigger_orchestrator.py` and `src/evander/daemons/effect_orchestrator.py` — orchestration worker topology.
 - `docs/operations.md`, `docs/architecture.md`, and `docs/container-worker-backend.md` — supported deployment and worker layout.
@@ -722,11 +949,121 @@ Do not start every optional worker merely to make `systemctl --failed` empty. Co
 
 # 5. Runtime Assembly, Configuration, and Directories
 
-> **At a glance.** Evander separates host bootstrap settings from inheritable directory settings, workflow definitions, host secrets, and durable runtime state. `build_admin_runtime` is the supported composition root for operator and integration surfaces. Directory configuration resolves from immutable `root` through the selected ancestry: objects merge recursively, while lists, scalars, and `null` replace. Effective configuration and its provenance—not one JSON overlay—determine behavior.
+> **At a glance.** Evander can serve several organizations, teams, and projects without making
+> each one repeat the same settings. Broad rules can live near the top of a directory tree, while
+> a project records only what is different. When a job starts, Evander combines those layers and
+> can show where the final values came from.
+>
+> For an operator, the practical lesson is simple: first select the directory that owns the work,
+> then inspect the setting as it applies there. The technical sections later in this chapter explain
+> the files, merge rules, stores, and startup path that make this possible.
 
-## Five kinds of configuration-shaped data
+## Start with the directory that owns the work
 
-Several Evander files contain JSON or environment variables, but they have different ownership and update rules:
+A directory is Evander's logical place for an organization, team, or project. It is not a folder
+containing source code. Selecting a directory tells Evander which inherited configuration,
+permissions, providers, repositories, workflows, and communication targets belong to the work.
+
+Every installation begins with an immutable top-level directory called `root`. Child directories
+form a tree. A project might therefore appear as:
+
+```text
+root
+└── northstar-platform
+    └── mission-control
+```
+
+If an operator selects `mission-control`, Evander starts with its built-in defaults, applies the
+settings at `root`, then the settings at `northstar-platform`, and finally the project's own
+overrides. The project does not have to copy every organization-wide setting merely to change its
+VM template or provider project.
+
+![Root-to-leaf directory configuration inheritance](assets/evander-user-manual/diagrams/04-directory-config.svg)
+
+Read the figure from the broadest scope at the top to the selected project at the bottom. The
+result is one validated set of settings for the job; the project layer does not become a separate
+control plane.
+
+<p class="figure-caption">Figure 5.1 — Evander combines defaults and ordered directory layers, while preserving broader tool denials.</p>
+
+## What an operator may notice
+
+The same screen can show a local value, an inherited value, or a value selected for one running
+session. Those are different views of the same configuration story.
+
+| What you see | What it usually means | Safe next step |
+|---|---|---|
+| A field is present although the project has no local value | The value came from a parent directory or a built-in default | Inspect the effective value and its source before adding an override |
+| Changing a list removes inherited entries | Lists replace rather than extend the parent list | Enter the complete list intended for this project, or remove the override |
+| A project cannot re-enable a denied tool | A broader security rule deliberately remains in force | Find the denying ancestor and ask for a security review there |
+| A save is rejected | Validation, the selected directory, or workflow revision/lock protection prevented the change | Read the validation message; reload the current revision if necessary |
+| A valid screen does not match a running session | The session may retain an explicit selection made when it was created | Inspect the session as well as the current directory configuration |
+| Admin Web and a background service appear to see different state | The processes may be using different runtime roots or code revisions | Record the directory, service, and visible values for an administrator |
+
+Do not copy an inherited value into the project merely to make it visible in the raw view. That
+creates a new local override and can prevent later parent changes from reaching the project.
+
+## Raw, effective, and selected values
+
+Evander presents three useful views:
+
+- **Raw** is exactly what one directory overrides.
+- **Effective** is the validated result after defaults and the full path from `root` to the
+  selected directory have been combined.
+- **Selected runtime value** may additionally be pinned or overridden by session metadata, such as
+  a model-provider mode or exact worker image reference selected when that session was created.
+
+The Admin Web configuration surface and `directories config-show` expose raw and effective
+information. Provenance—the recorded source of a value—answers “why is this here?” A field can be
+effective even when no file exists at the leaf, because it came from a default or an ancestor.
+
+Sessions carry a canonical directory path. Policy and provider resolution begin there, with
+supported session-level selections added where defined. Administrative ownership checks and
+validation therefore guard moves or deletions while sessions or workflows still refer to a
+directory.
+
+## A project example
+
+Suppose `root` selects `libvirt_vm`, disables email sending, and denies a destructive MCP tool.
+`root/northstar-platform` selects a provider project and an approval notification target.
+`mission-control` selects a VM template and narrows the allowed contacts.
+
+The project's implementation session receives the combined result. It does not duplicate the
+root relay settings, and it cannot undo the destructive-tool denial. Its contacts list replaces
+the inherited list rather than extending it. Provenance can show that the provider organization
+came from `root` while the project name came from `northstar-platform`.
+
+This pattern lets operators own project-specific automation while administrators maintain broader
+policy without one enormous global configuration file.
+
+## Troubleshooting configuration
+
+Start in Admin Web with the directory that owns the work. Record the raw value, effective value,
+and displayed source for the field in question. If a run or session is involved, also capture its
+run ID or session ID and the value shown there.
+
+| Symptom | Likely cause | Safe response |
+|---|---|---|
+| Service shows empty runtime | Different `--runtime-dir` or unit environment | Inspect the running unit and `host-config.json`; do not copy state blindly. |
+| Child list lost inherited entries | Lists replace, not concatenate | Write the full intended child list or remove the override. |
+| Child cannot re-enable a tool | An ancestor deny is monotonic | Change the denying ancestor after a security review; do not patch runtime output. |
+| Configuration save is rejected | Domain schema, directory path, revision, or lock conflict | Correct the validation error or reload the current revision. |
+| Hot-running process retains older workflow | Invalid reload kept last-known-good | Inspect worker log and Admin Web validation; fix and publish a new valid revision. |
+| Legacy YAML edit has no effect | Current runtime has migrated to host/root configuration | Inspect `host-config.json` and root domains. |
+| Admin and gateway disagree | Independently launched processes used different roots or code revisions | Compare command lines, environments, checkout revision, and resolved config. |
+| SQLite/JSON becomes corrupt after manual edit | Domain transaction/locking was bypassed | Stop writers, preserve evidence, restore from backup or supported reconstruction; do not keep editing. |
+
+Do not edit a runtime database, JSON state file, or live workflow pack to force the display into the
+desired state. If the safe path is unclear, hand the administrator the selected directory, domain,
+raw and effective values, provenance, validation message, relevant run/session ID, and approximate
+time.
+
+The remainder of this chapter is administrator and extension-author reference material.
+
+## Administrator reference: five kinds of configuration-shaped data
+
+Several Evander files contain JSON or environment variables, but they have different ownership and
+update rules:
 
 | Kind | Typical location | Purpose | Safe mutation path |
 |---|---|---|---|
@@ -736,9 +1073,11 @@ Several Evander files contain JSON or environment variables, but they have diffe
 | Secrets/service env | `config/*.env`, provider JSON env references, optional `secrets.env` | Credentials and process-specific listener/auth settings | Host operator and secret-management process |
 | Runtime state | JSON/SQLite beneath the runtime root | Sessions, approvals, queue/journal, Git registry, audit, add-ons | Domain CLI/Admin/API only; do not hand-edit |
 
-The distinction prevents two recurring mistakes. First, a listener port belongs to host bootstrap or service environment, not a child project's provider overlay. Second, `orchestration.db` may contain JSON columns, but it is a durable state database, not configuration to edit into a desired state.
+The distinction prevents two recurring mistakes. A listener port belongs to host bootstrap or a
+service environment, not a child project's provider overlay. Likewise, `orchestration.db` may
+contain JSON columns, but it is durable state, not configuration to edit into a desired state.
 
-## Bootstrapping a runtime
+### Bootstrapping a runtime
 
 The repository-oriented first-run sequence is:
 
@@ -747,15 +1086,26 @@ uv pip install -e '.[dev]'
 evander-cli init-state --runtime-dir runtime
 ```
 
-Initialization establishes `host-config.json`, the directory registry, the immutable root directory, root directory-config files, and other required stores. The packaged `HostConfig` default runtime is `/var/lib/evander`; commands and repository services commonly pass `runtime` explicitly. Relative runtime paths are resolved, and default store paths follow the selected runtime root.
+Initialization establishes `host-config.json`, the directory registry, the immutable root
+directory, root directory-config files, and other required stores. The packaged `HostConfig`
+default runtime is `/var/lib/evander`; commands and repository services commonly pass `runtime`
+explicitly. Relative runtime paths are resolved, and default store paths follow the selected
+runtime root.
 
-Legacy gateway YAML is accepted as explicit migration or bootstrap input. It is not the current live baseline. Once host and root directory configuration exist, diagnose those current surfaces rather than repeatedly editing an old YAML file.
+Legacy gateway YAML is accepted as explicit migration or bootstrap input. It is not the current
+live baseline. Once host and root directory configuration exist, diagnose those current surfaces
+rather than repeatedly editing an old YAML file.
 
-At startup, `load_runtime_gateway_config` combines the host bootstrap with root directory domains into a validated `GatewayConfig`. Broader assembly then adds the repositories and services that a process needs.
+At startup, `load_runtime_gateway_config` combines the host bootstrap with root directory domains
+into a validated `GatewayConfig`. Broader assembly then adds the repositories and services that a
+process needs.
 
-## The supported composition root
+### The supported composition root
 
-`src/evander/admin/composition.py::build_admin_runtime` is the supported assembly surface for the CLI, gateway integrations, Admin Web, workflow providers, and add-ons that need administration services. It:
+`src/evander/admin/composition.py::build_admin_runtime` (the `build_admin_runtime` composition
+function) is the supported assembly surface for the
+CLI, gateway integrations, Admin Web, workflow providers, and add-ons that need administration
+services. It:
 
 1. resolves an explicit legacy path only when supplied or when the input is clearly YAML;
 2. loads or creates host bootstrap configuration;
@@ -764,29 +1114,27 @@ At startup, `load_runtime_gateway_config` combines the host bootstrap with root 
 5. resolves the current runtime gateway configuration;
 6. builds the shared `RuntimeContext`;
 7. opens the audit index and starts best-effort import from canonical JSONL;
-8. composes narrow domain services for directories, sessions, approvals, issues, Git, workflows, workers, reports, skills, and other operator functions.
+8. composes narrow domain services for directories, sessions, approvals, issues, Git, workflows,
+   workers, reports, skills, and other operator functions.
 
-`RuntimeContext` is the lower-level shared bundle. It contains repositories and runtime services such as sessions, approvals, tool approval leases, directories, MCP transport bindings, drafts, email and communication stores, wake state, prompt queues, scripts, policy/provider resolvers, `PolicyEngine`, and `AuditLogger`.
+`RuntimeContext` is the lower-level shared bundle. It contains repositories and runtime services
+such as sessions, approvals, tool approval leases, directories, MCP transport bindings, drafts,
+email and communication stores, wake state, prompt queues, scripts, policy/provider resolvers,
+`PolicyEngine`, and `AuditLogger`.
 
-This assembly boundary matters to extensions. Reconstructing stores ad hoc can choose a different runtime root, omit a migration, bypass a repository adapter, or create policy and provider resolvers with different context. Add behavior through narrow services and the add-on/provider registration surfaces rather than creating a second hidden control plane.
+This assembly boundary matters to extensions. Reconstructing stores ad hoc can choose a different
+runtime root, omit a migration, bypass a repository adapter, or create policy and provider
+resolvers with different context. Add behavior through narrow services and the add-on/provider
+registration surfaces rather than creating a second hidden control plane.
 
 ![Runtime composition from bootstrap files through resolved configuration to shared services](assets/evander-user-manual/diagrams/03-runtime-composition.svg)
 
-<p class="figure-caption">Figure 5.1 — One supported composition path keeps CLI, gateway, Admin Web, workflows, and add-ons on the same runtime truth.</p>
+<p class="figure-caption">Figure 5.2 — One supported composition path keeps CLI, gateway, Admin Web, workflows, and add-ons on the same runtime truth.</p>
 
-## Directories are configuration and authorization scope
+### Directory invariants and authorization scope
 
-Every installation has an immutable top-level directory named and addressed as `root`. Child directories form a tree. The directory store rejects a missing parent, duplicate sibling name, invalid canonical path, and cycles. Root cannot be moved into or replaced by a child.
-
-Northstar can therefore be represented as:
-
-```text
-root
-└── northstar-platform
-    └── mission-control
-```
-
-The same canonical path can scope:
+The directory store rejects a missing parent, duplicate sibling name, invalid canonical path, and
+cycles. Root cannot be moved into or replaced by a child. The same canonical path can scope:
 
 - effective policy and provider settings;
 - Admin Web RBAC assignments;
@@ -794,9 +1142,10 @@ The same canonical path can scope:
 - managed repositories and provider operations;
 - communication targets and Team Add-on records.
 
-A directory is not a filesystem checkout. It is a logical ownership and inheritance node whose configuration happens to be stored under a matching runtime path.
+A directory is a logical ownership and inheritance node whose configuration happens to be stored
+under a matching runtime path; it is not a filesystem checkout.
 
-## Configuration domains
+### Configuration domains
 
 The current directory-config store recognizes these canonical domains:
 
@@ -813,11 +1162,16 @@ The current directory-config store recognizes these canonical domains:
 | `pr_template` | `pr-template.json` | Pull-request template content/settings |
 | `automation` | `automation.json` | Directory automation configuration |
 
-Hyphenated CLI aliases such as `ado-worker` and `issue-setup` are normalized to canonical domain names. Legacy domain files and metadata overlays are migration compatibility surfaces; new work should use the canonical files.
+Hyphenated CLI aliases such as `ado-worker` and `issue-setup` are normalized to canonical domain
+names. Legacy domain files and metadata overlays are migration compatibility surfaces; new work
+should use the canonical files.
 
-## Resolution: root to leaf
+### Resolution mechanics: root to leaf
 
-To resolve Northstar's `policy`, Evander starts with model defaults, applies any raw `root/policy.json`, then `root/northstar-platform/policy.json`, then the leaf `root/northstar-platform/mission-control/policy.json`. Each applied layer records directory ID, path, domain, and overlay. Provenance maps effective leaf fields back to their source.
+To resolve the example project's `policy`, Evander starts with model defaults, applies any raw
+`root/policy.json`, then `root/northstar-platform/policy.json`, then the leaf
+`root/northstar-platform/mission-control/policy.json`. Each applied layer records directory ID,
+path, domain, and overlay. Provenance maps effective leaf fields back to their source.
 
 Merge semantics are deliberately simple:
 
@@ -827,27 +1181,15 @@ Merge semantics are deliberately simple:
 - an explicit `null` replaces an inherited value with `null` if the domain schema permits it;
 - the final effective payload is validated as a domain model.
 
-For example, a child can replace an inherited list of approval notification targets without inheriting every root target. It cannot append one item merely by supplying a one-item list. Operators should inspect the effective result after a list change.
+A child can replace an inherited list of approval notification targets without inheriting every
+root target. It cannot append one item merely by supplying a one-item list.
 
-Policy adds one monotonic security rule: every MCP tool denied by any applied ancestor remains denied in the effective result, even if a child overlay writes `denied: false`. This exception prevents delegation from weakening an upstream prohibition while retaining ordinary replacement semantics for other values.
+Policy adds one monotonic security rule: every MCP tool denied by any applied ancestor remains
+denied in the effective result, even if a child overlay writes `denied: false`. This exception
+prevents delegation from weakening an upstream prohibition while retaining ordinary replacement
+semantics for other values.
 
-![Root-to-leaf directory configuration inheritance](assets/evander-user-manual/diagrams/04-directory-config.svg)
-
-<p class="figure-caption">Figure 5.2 — Effective configuration is validated after ordered root-to-leaf overlay, with inherited tool denials remaining monotonic.</p>
-
-## Raw, effective, and selected values
-
-Three views answer different questions:
-
-- **Raw** is exactly what one directory overrides.
-- **Effective** is the validated merge through the full ancestry plus defaults.
-- **Selected runtime value** may additionally be pinned or overridden by session metadata—for example a model-provider mode or the exact worker image reference selected when the session was created.
-
-The Admin Web configuration surface and `directories config-show` expose raw and effective information. Use provenance to answer “why is this value here?” A root overlay may be absent because the value came from the code default; a leaf may have no file because it intentionally inherits.
-
-Sessions carry a canonical directory path. Policy resolution uses that path for current effective policy. Provider resolution also begins there, with supported session-level selections layered where defined. Moving or deleting directory ownership while sessions or workflows refer to it is therefore guarded by administrative ownership checks and validation.
-
-## Runtime directories and durable stores
+### Runtime directories and durable stores
 
 The precise set grows with enabled features, but these paths are foundational:
 
@@ -867,30 +1209,11 @@ The precise set grows with enabled features, but these paths are foundational:
 | `admin-web.db` | Admin users, groups, assignments, and grants |
 | `addons/` | Add-on-owned runtime state, including Team state when enabled |
 
-The service and repository types define transaction and locking behavior. JSON stores use their supported atomic mutation paths; SQLite stores use schema, busy timeout, WAL, and domain transactions. A text editor provides none of those guarantees.
+The service and repository types define transaction and locking behavior. JSON stores use their
+supported atomic mutation paths; SQLite stores use schema, busy timeout, WAL, and domain
+transactions. A text editor provides none of those guarantees.
 
-## Northstar configuration in practice
-
-Suppose root selects `libvirt_vm`, disables email sending, and denies a destructive MCP tool. `root/northstar-platform` selects a provider project and approval notification target. `mission-control` selects a VM template and narrows allowed contacts.
-
-Imani's telemetry-retry session receives the effective intersection. The project does not have to duplicate root relay settings. It cannot undo the destructive-tool deny. Its contacts list replaces the inherited list rather than extending it. If an operator inspects the provider setting, provenance can show that the organization came from root while the project name came from `northstar-platform`.
-
-This same structure lets operators set team-wide policy while owning project-specific automation without copying one large global configuration file.
-
-## Failure behavior
-
-| Symptom | Likely cause | Safe response |
-|---|---|---|
-| Service shows empty runtime | Different `--runtime-dir` or unit environment | Inspect the running unit and `host-config.json`; do not copy state blindly. |
-| Child list lost inherited entries | Lists replace, not concatenate | Write the full intended child list or remove the override. |
-| Child cannot re-enable a tool | An ancestor deny is monotonic | Change the denying ancestor after a security review; do not patch runtime output. |
-| Configuration save is rejected | Domain schema, directory path, revision, or lock conflict | Correct the validation error or reload the current revision. |
-| Hot-running process retains older workflow | Invalid reload kept last-known-good | Inspect worker log and Admin Web validation; fix and publish a new valid revision. |
-| Legacy YAML edit has no effect | Current runtime has migrated to host/root configuration | Inspect `host-config.json` and root domains. |
-| Admin and gateway disagree | Independently launched processes used different roots or code revisions | Compare command lines, environments, checkout revision, and resolved config. |
-| SQLite/JSON becomes corrupt after manual edit | Domain transaction/locking was bypassed | Stop writers, preserve evidence, restore from backup or supported reconstruction; do not keep editing. |
-
-## Practical runbook
+## Administrator runbook
 
 Inspect rather than infer:
 
@@ -908,29 +1231,148 @@ Before a mutation:
 
 1. Record the selected runtime and current directory path.
 2. Read the raw overlay, effective value, provenance, and validation errors.
-3. Determine whether the field belongs to host, directory, workflow, secret, or state configuration.
-4. Use Admin Web's current revision/lock path or `directories config-set`; never write a live workflow pack from a stale local copy.
+3. Determine whether the field belongs to host, directory, workflow, secret, or state
+   configuration.
+4. Use Admin Web's current revision/lock path or `directories config-set`; never write a live
+   workflow pack from a stale local copy.
 5. Read back the raw and effective result.
 6. Check the relevant worker/service log for reload acceptance.
 
-For first-run or recovery initialization, `evander-cli init-state --runtime-dir runtime` is idempotent setup, not a command to erase current state.
+For first-run or recovery initialization, `evander-cli init-state --runtime-dir runtime` is
+idempotent setup, not a command to erase current state.
 
 ## Source trail
 
-- `src/evander/host_config.py` and `src/evander/bootstrap.py` — host bootstrap, runtime-relative paths, legacy import, and root initialization.
-- `src/evander/admin/composition.py` and `src/evander/runtime.py` — supported composition root and shared runtime services.
-- `src/evander/directories.py` and `src/evander/directory_config.py` — tree invariants, domain files, ancestry merge, provenance, and validation.
-- `src/evander/policy_config.py` and `src/evander/provider_config.py` — effective policy/provider resolution and monotonic tool denies.
-- `src/evander/workflow/runtime_config.py` and `src/evander/admin/services/workflow_config_service.py` — workflow loading, validation, hot reload, revision, lock, and history behavior.
+- `src/evander/host_config.py` and `src/evander/bootstrap.py` — host bootstrap,
+  runtime-relative paths, legacy import, and root initialization.
+- `src/evander/admin/composition.py` and `src/evander/runtime.py` — supported composition root and
+  shared runtime services.
+- `src/evander/directories.py` and `src/evander/directory_config.py` — tree invariants, domain
+  files, ancestry merge, provenance, and validation.
+- `src/evander/policy_config.py` and `src/evander/provider_config.py` — effective policy/provider
+  resolution and monotonic tool denies.
+- `src/evander/workflow/runtime_config.py` and
+  `src/evander/admin/services/workflow_config_service.py` — workflow loading, validation, hot
+  reload, revision, lock, and history behavior.
 - `docs/configuration-reference.md` and `docs/operations.md` — field-level and operator guidance.
-- `tests/test_directory_config.py`, `tests/test_directory_admin.py`, `tests/test_cli.py`, and `tests/test_admin_extracted_services.py` — inheritance, initialization, mutation, and assembly contracts.
+- `tests/test_directory_config.py`, `tests/test_directory_admin.py`, `tests/test_cli.py`, and
+  `tests/test_admin_extracted_services.py` — inheritance, initialization, mutation, and assembly
+  contracts.
 
 
 # 6. Identity, Sessions, RBAC, and Policy
 
-> **At a glance.** Evander has two deliberately separate authorization planes. Human operators authenticate to Admin Web and receive directory-scoped RBAC permissions plus a transient privileged-operation lock. Agents receive expiring session manifests whose tools and resources are intersected with effective directory policy. Workflow, transport, provider, and external identities correlate actions, but none substitutes for either human RBAC or session capability.
+> **At a glance.** Evander treats a signed-in person and a working agent as different kinds of
+> identity. A person signs in to Admin Web and receives responsibility for particular operator
+> functions and directories. An agent receives a temporary session describing what one job may
+> use.
+>
+> This separation is why an audit record can say which person approved an action, which bounded
+> agent session performed it, and which workflow asked for it. It also means that changing a
+> person's access and revoking an agent's session are separate actions.
 
-## The identity stack
+## Two identities, two kinds of responsibility
+
+An operator's login answers: **which parts of Evander may this person view or change?** A session
+answers: **what may this agent use for this particular job, and for how long?** Neither identity
+automatically inherits the other's authority.
+
+Three practical boundaries follow:
+
+1. Signing in to Admin Web does not create an agent session.
+2. An agent session does not let the agent act as the signed-in operator.
+3. A workflow, approval, or visible tool can add context to a session, but none turns it into
+   unrestricted host access.
+
+The directory connects these worlds without merging them. A person may be responsible for one
+directory and its descendants; an agent session also names the directory whose policy applies to
+that job.
+
+## What an operator may notice
+
+| What you see | What it usually means | Useful next step |
+|---|---|---|
+| You can sign in, but a page or edit is unavailable | Authentication succeeded, but your role does not grant that action in the selected directory | Confirm the directory and ask an owner to review your assignment |
+| You can work in one project but not its sibling | Directory assignments flow downward to descendants, not sideways to siblings | Check that the correct project is selected |
+| A sensitive edit says privileged operations are locked | Your current browser session is authorized but its temporary safety lock is still engaged | Review the action, then use the supported unlock control if appropriate |
+| An agent has no visible tools | The session may be expired, unproved, incorrectly bound, or intentionally granted no tools | Record the session ID, directory, expiry, and visible status |
+| A tool is visible but its call is denied | Seeing the tool did not pre-approve every recipient, target, argument, lease, or sensitive action | Capture the tool name, request, denial, session ID, and run ID |
+| A workflow lease works in one run but not another | The lease is deliberately tied to one session and workflow run | Compare the session, run, lease, and expiry rather than broadening policy |
+
+These distinctions are useful evidence. “The page loaded but the edit was denied” points to a
+different boundary than “I could not sign in,” just as “the agent saw the tool but one call was
+rejected” differs from “the tool was absent.”
+
+## A session is the job's permission card
+
+When Evander creates a session, it records the job's identity, directory, expiry, selected
+execution context, and allowed capabilities. An empty or absent permission is not read as broad
+access. Unknown and expired sessions are denied, and an old workload cannot prolong its own
+authority merely by continuing to send traffic.
+
+Two sessions in the same project can therefore differ. An implementation session may receive only
+the tools needed to inspect a work item, operate the managed-repository workflow, and report its
+result, while a review session receives a different set. Renewal or reissue is an explicit
+operator or domain action.
+
+![Admin Web detail for a synthetic implementation session](assets/evander-user-manual/screenshots/admin-sessions.png)
+
+The operator view brings together the session's state, directory, execution backend, expiry, and
+tool grants. It is the right starting point when an agent can work but cannot perform one expected
+action.
+
+<p class="figure-caption">Figure 6.1 — Session state, scope, backend, and tool grants meet in one operator view. Sanitized Northstar fixture.</p>
+
+## The privileged-operations lock is a safety catch
+
+Some sensitive Admin Web changes require both the necessary role and an unlocked browser session.
+Login begins locked. Unlocking marks only the current authenticated Admin Web session; locking,
+logging out, cookie expiry, or an Admin Web restart removes that mark.
+
+This is protection against an accidental click or an unattended open console. It is not a second
+password, multi-factor authentication, or a human approval for an agent's tool call. Workflow and
+MCP approvals are separate durable decisions bound to the requested action.
+
+## How Evander decides whether an agent may use a tool
+
+For an operator, the decision can be read as a short sequence of questions:
+
+1. Is this a real, unexpired session?
+2. Which directory owns it, and what rules apply there?
+3. Is the tool forbidden, allowed for the session, or temporarily exposed by this workflow?
+4. Does this type of tool have everything it needs—for example, an execution to resume?
+5. Are the requested target and arguments within the job's limits?
+6. Does this particular action require human approval?
+7. If approval or a temporary workflow grant is presented, is it still valid for this session and
+   run?
+
+A tool can appear in the agent's catalog and still reject one disallowed recipient, script,
+target, or argument. Visibility says the tool may be relevant to the job; it does not predict every
+future request.
+
+## Troubleshooting access
+
+For a human-access problem, record the authentication mode if known, login name, selected
+directory, page or action requested, exact message, and whether the privileged-operations lock is
+shown as locked. An owner or administrator can then inspect the matching group assignments and
+direct grants without exposing password-verifier data.
+
+For an agent-access problem, start with the session page and the relevant tool-call or workflow
+record. Capture:
+
+- session ID, directory, expiry, and backend or VM binding if shown;
+- tool name and whether it was absent or merely denied on invocation;
+- exact visible reason and the safe-to-share request summary;
+- workflow run and lease IDs, and approval request ID if present;
+- time of the attempt and remaining-use information if displayed.
+
+Do not edit `sessions.json`, broaden the root policy, or change a human's group merely to make one
+agent call succeed. Those actions affect different boundaries. Ask an administrator to revoke the
+smallest affected session or lease when authority is no longer appropriate.
+
+The remainder of this chapter is administrator and security-reference material.
+
+## Administrator reference: the identity stack
 
 “Who did this?” can refer to several valid identities:
 
@@ -938,15 +1380,16 @@ For first-run or recovery initialization, `evander-cli init-state --runtime-dir 
 |---|---|---|
 | Human operator | An operator's Admin Web login | Reading or mutating operator surfaces through RBAC |
 | Directory scope | `root/northstar-platform/mission-control` | Which inherited configuration and RBAC assignments apply |
-| Agent/session | Imani's `session_id` and optional VM/provider binding | MCP visibility, allowlists, quotas, expiry, execution correlation |
+| Agent/session | An implementation session's `session_id` and optional VM/provider binding | MCP visibility, allowlists, quotas, expiry, execution correlation |
 | Workflow | Run ID, graph ID/revision, trace ID, node execution ID | Why the action was scheduled and which configuration produced it |
 | MCP transport | Protocol `mcp-session-id` bound to an Evander session | Which session the connection is allowed to represent |
 | Provider identity | ADO project, Git account, Teams app, relay credential | Which external service principal the host uses |
-| Team identity | Mira, Priya, Imani, Rowan, and Riley as AI Team agents | Add-on task, wake, review, governance, and release responsibility |
+| Team identity | Team manager, project lead, task owner, reviewer, and release agent IDs | Add-on task, wake, review, governance, and release responsibility |
 
-The audit trail combines several of these so an operator can distinguish “an operator approved a request for Imani's session during workflow run X” from the less useful “a tool ran.”
+The audit trail combines several of these so it can distinguish “an operator approved a request
+for the implementation session during workflow run X” from the less useful “a tool ran.”
 
-## Admin Web authentication
+### Admin Web authentication
 
 Admin Web supports three current modes:
 
@@ -956,17 +1399,28 @@ Admin Web supports three current modes:
 | `local_password` | Local users and PBKDF2 password credentials, with an environment-supplied bootstrap/break-glass account. |
 | `azure_sso` | Azure SSO identity mapped to the local user/RBAC store. |
 
-If no mode is supplied, a configured admin password selects `local_password`; otherwise the process falls back to `none`. Production operators should set the mode deliberately rather than relying on that convenience behavior.
+If no mode is supplied, a configured admin password selects `local_password`; otherwise the
+process falls back to `none`. Production administrators should set the mode deliberately rather
+than relying on that convenience behavior.
 
-The durable user, group, assignment, and direct-grant store is SQLite at `runtime/admin-web.db`. Legacy JSON user data is migration input. Local passwords use PBKDF2-HMAC-SHA-256 with 200,000 iterations and a 32-byte random salt. The database stores a verifier, not the plaintext password.
+The durable user, group, assignment, and direct-grant store is SQLite at `runtime/admin-web.db`.
+Legacy JSON user data is migration input. Local passwords use PBKDF2-HMAC-SHA-256 with 200,000
+iterations and a 32-byte random salt. The database stores a verifier, not the plaintext password.
 
-Successful authentication creates an HMAC-signed `evander_admin_session` cookie. The default session TTL is 43,200 seconds (12 hours), with a minimum of 60 seconds. Set a stable `EVANDER_ADMIN_WEB_SESSION_SECRET`; if absent, the process generates one, so a restart invalidates existing cookies. Set secure-cookie and reverse-proxy/TLS behavior as part of a complete exposure design.
+Successful authentication creates an HMAC-signed `evander_admin_session` cookie. The default
+session TTL is 43,200 seconds (12 hours), with a minimum of 60 seconds. Set a stable
+`EVANDER_ADMIN_WEB_SESSION_SECRET`; if absent, the process generates one, so a restart invalidates
+existing cookies. Secure-cookie and reverse-proxy/TLS behavior belong to the complete exposure
+design.
 
-The first-owner bootstrap is guarded. The configured local bootstrap account or Azure bootstrap allowlist can establish the first usable owner, but later authorization comes from durable users and assignments. User-management logic protects the effective owner boundary so an operator cannot casually remove or disable the last owner.
+The first-owner bootstrap is guarded. The configured local bootstrap account or Azure bootstrap
+allowlist can establish the first usable owner, but later authorization comes from durable users
+and assignments. User-management logic protects the effective owner boundary so an operator
+cannot casually remove or disable the last owner.
 
-## Directory-scoped RBAC
+### Directory-scoped role-based access control
 
-Admin RBAC has this permission catalog:
+Role-based access control (RBAC) uses this permission catalog:
 
 | Permission | Meaning |
 |---|---|
@@ -980,21 +1434,30 @@ Admin RBAC has this permission catalog:
 | `workflow_runs.control` | Operate workflow runs |
 | `team_chats.read_all` | Read Team chats beyond ordinary participant scope |
 
-Built-in groups are `owner`, `operator`, `workflow-maintainer`, `workflow-viewer`, `auditor`, and `viewer`. Owner and operator are required group definitions. `admin.owner` expands to the full catalog. Operator receives workflow read/write, pack management, run read/control, and Team chat read-all; it does not implicitly receive user/group management unless configured through another group or ownership.
+Built-in groups are `owner`, `operator`, `workflow-maintainer`, `workflow-viewer`, `auditor`, and
+`viewer`. Owner and operator are required group definitions. `admin.owner` expands to the full
+catalog. Operator receives workflow read/write, pack management, run read/control, and Team chat
+read-all; it does not implicitly receive user/group management unless configured through another
+group or ownership.
 
-A group assignment at a directory applies to that directory and descendants. Thus a Northstar assignment at `root/northstar-platform` applies to `mission-control` but not to an unrelated root child. Direct workflow grants are limited to workflow read or write, and write expands to read. Effective permission is the union of matching group assignments and matching direct workflow grants.
+A group assignment at a directory applies to that directory and descendants. Thus an assignment
+at `root/northstar-platform` applies to `mission-control` but not to an unrelated root child.
+Direct workflow grants are limited to workflow read or write, and write expands to read. Effective
+permission is the union of matching group assignments and matching direct workflow grants. Scope
+inheritance is downward only: an assignment on `mission-control` does not authorize its parent or
+sibling.
 
-Scope inheritance is downward only. An assignment on `mission-control` does not authorize its parent or sibling.
+### Privileged-operation lock implementation
 
-## The privileged-operation lock
+Authentication and RBAC answer whether an operator *may* perform an action. Sensitive mutation
+routes also require the current authenticated Admin Web session to be marked as
+privileged-unlocked.
 
-Authentication and RBAC answer whether an operator *may* perform an action. Sensitive mutation routes add a transient lock: the current authenticated Admin Web session must also be marked as privileged-unlocked.
+Calling the unlock endpoint marks the current cookie session in process memory; it is not a second
+password or SSO challenge. Routes call `request_has_privileged_operations`, optionally with a
+required permission and directory scope, so both authorization and transient state must pass.
 
-Login begins locked. Calling the unlock endpoint marks the current cookie session in process memory; it is not a second password or SSO challenge. Lock, logout, cookie expiry, or process restart removes the mark. Routes call `request_has_privileged_operations`, optionally with a required permission and directory scope, so both authorization and the transient state must pass.
-
-This is a guard against accidental clicks and unattended open consoles, not multi-factor authentication. It must not be described as a second human approval. Workflow/MCP approvals are a separate durable mechanism with payload binding and an audit decision.
-
-## Session manifests: agent identity as a bounded capability
+### Session manifest fields
 
 A `SessionManifest` includes:
 
@@ -1009,37 +1472,41 @@ A `SessionManifest` includes:
 - web-search enablement and quotas;
 - metadata for workflow, issue, Team, Git, HTTP-target, and execution correlation.
 
-An empty or absent permission is not interpreted as broad ambient access. Unknown and expired sessions are denied. Renewal or reissue is an explicit operator/domain action; an old workload cannot extend its own expiry simply by continuing to send traffic.
+### Policy evaluation details
 
-Northstar can create Imani's session with only the tools needed to inspect the work item, operate the managed repository workflow, and report results. Rowan's review session can have a different tool set even though both belong to the same directory.
+The policy engine's effective tool-request sequence is:
 
-![Admin Web session detail for Imani's synthetic telemetry-retry session](assets/evander-user-manual/screenshots/admin-sessions.png)
+1. require an existing, unexpired session;
+2. resolve effective policy for its directory;
+3. apply directory denial and any special capability profile;
+4. require the tool in `allowed_tools` or in a valid workflow-scoped approval lease for this
+   session and run;
+5. require structural prerequisites such as a bound execution for resume behavior or a feedback
+   stream for feedback tools;
+6. apply inherited and session argument/resource rules to the payload;
+7. require and validate per-invocation approval where configured.
 
-<p class="figure-caption">Figure 6.1 — Session state, scope, backend, and tool grants meet in one operator view. Sanitized Northstar fixture.</p>
+Tool visibility and execution use the same underlying policy decisions, but visibility cannot
+pre-validate a future payload.
 
-## How policy is evaluated
+Directory policy supplies safe defaults: approval TTL 3,600 seconds, session TTL 28,800 seconds,
+email sending disabled, and communication file send/receive disabled. Live directory overlays may
+alter supported values. These defaults are not a substitute for explicitly reviewing a production
+root policy.
 
-For a tool request, the policy engine effectively asks:
+Argument-policy operators include required fields, fixed values, patterns, enums, allowlists, and
+denylists. The resolved directory rule list and the session rule list both apply; a permissive
+session rule does not erase a directory constraint. Within directory inheritance, ordinary list
+replacement follows the merge rules in Chapter 5.
 
-1. Does the session exist and remain unexpired?
-2. What is the effective policy for its directory?
-3. Is the tool denied by directory policy or a special capability profile?
-4. Is it granted by `allowed_tools`, or by a valid workflow-scoped approval lease for this session and run?
-5. Are any structural prerequisites present—for example a bound execution for resume behavior or a feedback stream for feedback tools?
-6. Do inherited and session argument/resource rules permit this payload?
-7. Does the tool require per-invocation approval, and is the presented approval valid?
+### Workflow-scoped tool leases
 
-Tool visibility and tool execution use the same underlying policy decisions, but visibility cannot pre-validate a future payload. A tool can appear in `tools/list` and still reject a disallowed recipient, script, target, or argument.
+A `SessionToolApprovalLease` temporarily grants named MCP tools to exactly one session and workflow
+run. It contains a lease ID, effect execution correlation, per-tool approval settings, optional
+notification targets, expiry, revocation time, and used counts.
 
-Directory policy supplies safe defaults: approval TTL 3,600 seconds, session TTL 28,800 seconds, email sending disabled, and communication file send/receive disabled. Live directory overlays may alter supported values. These defaults are not a substitute for explicitly reviewing a production root policy.
-
-Argument-policy operators include required fields, fixed values, patterns, enums, allowlists, and denylists. The resolved directory rule list and the session rule list both apply; a permissive session rule does not erase a directory constraint. Within directory inheritance, ordinary list replacement follows the merge rules in Chapter 5.
-
-## Workflow-scoped tool leases
-
-A `SessionToolApprovalLease` temporarily grants named MCP tools to exactly one session and workflow run. It contains a lease ID, effect execution correlation, per-tool approval settings, optional notification targets, expiry, revocation time, and used counts.
-
-The workflow context must present matching run and lease IDs. Use is consumed under the repository's atomic update path. A lease cannot:
+The workflow context must present matching run and lease IDs. Use is consumed under the
+repository's atomic update path. A lease cannot:
 
 - revive an expired session;
 - cross to another session or workflow run;
@@ -1047,9 +1514,11 @@ The workflow context must present matching run and lease IDs. Use is consumed un
 - bypass argument/resource policy;
 - remove mandatory or configured per-invocation approval.
 
-This distinction is useful for the Northstar flow. The project's graph may reserve one tool for Imani during a bounded implementation step without putting that tool in every long-lived session. The lease says the workflow may expose the tool; a separate exact approval may still be required for a sensitive call.
+A project's graph may reserve one tool for the implementation agent during a bounded step without
+putting that tool in every long-lived session. The lease says the workflow may expose the tool; a
+separate exact approval may still be required for a sensitive call.
 
-## Failure behavior
+## Failure reference
 
 | Symptom | Decision that failed | Typical cause |
 |---|---|---|
@@ -1063,11 +1532,13 @@ This distinction is useful for the Northstar flow. The project's graph may reser
 | Lease works in one run but not another | Workflow scope | Run/session mismatch is intentional |
 | Last owner mutation is rejected | Recovery invariant | Store prevents loss of the effective owner boundary |
 
-## Practical runbook
+## Administrator runbook
 
-For a human access issue, collect: auth mode, login, current directory, requested permission, matching group assignments, direct grants, and privileged-lock state. Do not inspect or copy password-verifier fields unless incident response requires it.
+For a human-access issue, collect the auth mode, login, current directory, requested permission,
+matching group assignments, direct grants, and privileged-lock state. Do not inspect or copy
+password-verifier fields unless incident response requires it.
 
-For an agent access issue:
+For an agent-access issue:
 
 ```bash
 evander-cli list-sessions --runtime-dir runtime --all
@@ -1076,34 +1547,160 @@ evander-cli directories config-show root/northstar-platform/mission-control \
 evander-cli list-approvals --runtime-dir runtime
 ```
 
-Then use Admin Web's session tool-visibility view or the gateway audit entry to identify the exact reason. Compare all of the following before changing policy: normalized tool name, session expiry, directory, session grant, inherited deny, structural prerequisite, argument payload, workflow run/lease, approval request, and remaining uses.
+Then use Admin Web's session tool-visibility view or the gateway audit entry to identify the exact
+reason. Compare the normalized tool name, session expiry, directory, session grant, inherited deny,
+structural prerequisite, argument payload, workflow run/lease, approval request, and remaining
+uses before changing policy.
 
-Use the lifecycle commands rather than editing `sessions.json`:
+Use lifecycle commands rather than editing `sessions.json`:
 
 ```bash
 evander-cli renew-session <session-id> --runtime-dir runtime
 evander-cli revoke-session <session-id> --runtime-dir runtime
 ```
 
-Check each command's `--help` for the required renewal/expiry arguments in the installed revision. Revoke the smallest affected session or lease when authority is no longer appropriate; changing a human's group does not automatically revoke an already issued agent session.
+Check each command's `--help` for the required renewal/expiry arguments in the installed revision.
+Revoke the smallest affected session or lease when authority is no longer appropriate; changing a
+human's group does not automatically revoke an already issued agent session.
 
 ## Source trail
 
-- `src/evander/admin/web/shared.py`, `src/evander/admin/web/user_store.py`, and `src/evander/admin/web/rbac.py` — authentication, cookies, password storage, groups, permission scope, and privileged lock.
-- `src/evander/admin/web/users.py` and `tests/test_admin_web_user_store.py` — user/group administration, bootstrap, migration, and owner protection.
+- `src/evander/admin/web/shared.py`, `src/evander/admin/web/user_store.py`, and
+  `src/evander/admin/web/rbac.py` — authentication, cookies, password storage, groups, permission
+  scope, and privileged lock.
+- `src/evander/admin/web/users.py` and `tests/test_admin_web_user_store.py` — user/group
+  administration, bootstrap, migration, and owner protection.
 - `src/evander/models.py` — `SessionManifest`, `SessionToolApprovalLease`, and approval models.
-- `src/evander/policy.py` and `src/evander/policy_config.py` — visibility, grants, denial, structural checks, arguments, approvals, and defaults.
-- `src/evander/repositories/session_manifests.py` and `src/evander/repositories/session_tool_approval_leases.py` — durable session and lease mutation semantics.
-- `tests/test_admin_web_rbac.py`, `tests/test_policy.py`, `tests/test_gateway.py`, and `tests/test_session_tool_approval_leases.py` — authorization-plane invariants.
+- `src/evander/policy.py` and `src/evander/policy_config.py` — visibility, grants, denial,
+  structural checks, arguments, approvals, and defaults.
+- `src/evander/repositories/session_manifests.py` and
+  `src/evander/repositories/session_tool_approval_leases.py` — durable session and lease mutation
+  semantics.
+- `tests/test_admin_web_rbac.py`, `tests/test_policy.py`, `tests/test_gateway.py`, and
+  `tests/test_session_tool_approval_leases.py` — authorization-plane invariants.
 
 
 # 7. MCP, Approvals, and Audit
 
-> **At a glance.** The MCP gateway turns one host endpoint into a session-specific tool catalog. It binds each MCP transport to an Evander session, verifies session proof, filters tools, validates every invocation, and records the decision. Approval-required calls use a two-step protocol: create a durable request without executing, obtain a reasoned human decision, then retry the bound payload before expiry and use exhaustion. JSONL audit is canonical; SQLite is its query index.
+> **At a glance.** An agent does not call arbitrary host functions. It asks Evander to use a named
+> tool for the current job. Evander identifies the session, checks the job's rules and the specific
+> request, pauses for a person when approval is required, and records the outcome.
+>
+> For an operator, the most important distinction is between **seeing a tool**, **being allowed to
+> request an action**, and **having that exact sensitive action approved**. These are separate
+> checks. The technical reference later in this chapter explains the MCP connection, proof tokens,
+> payload binding, leases, and audit stores behind them.
 
-## MCP is a policy gateway
+## One tool request in plain language
 
-`evander-gateway` hosts a FastMCP server named “Evander Gateway” at the streamable `/mcp` path. It is not a transparent proxy to arbitrary host functions. Registered tools are adapters over explicit host services, and both discovery and invocation are session-aware.
+MCP is the protocol the agent harness uses to discover and call Evander tools. A typical request
+passes through six understandable stages:
+
+1. Evander identifies the temporary session making the request.
+2. It confirms that the session is active and that the tool belongs to this job.
+3. It checks the requested recipient, target, file, or other arguments against policy.
+4. If the action is sensitive, Evander creates a pending request instead of performing it.
+5. After a decision, the agent retries the same request; Evander runs it only if every check still
+   passes.
+6. Evander records the decision and result for later inspection.
+
+This is why a working connection does not imply that every tool or action is available. It is also
+why an approval does not become permanent extra power.
+
+![MCP tool invocation policy, approval, execution, and audit sequence](assets/evander-user-manual/diagrams/05-mcp-policy-sequence.svg)
+
+Put simply, the figure shows one request moving through identity, policy, approval, execution, and
+recordkeeping. A stop at any earlier stage prevents the host operation.
+
+<p class="figure-caption">Figure 7.1 — Catalog visibility, invocation authorization, approval, execution, and audit are separate checks in one request envelope.</p>
+
+## What an operator sees when approval is required
+
+The agent's first call does not run the sensitive action. Evander creates a durable pending request
+and tells the agent to wait for a decision. In Admin Web, the operator can see which session and
+directory asked, the tool and intended effect, when the request expires, and a redacted summary of
+the input.
+
+Before deciding, verify four things:
+
+1. **The job:** Is this the expected session, directory, and workflow context?
+2. **The action:** Does the tool and intended effect match the work being performed?
+3. **The boundary:** Is the displayed target or redacted input as narrow as expected?
+4. **The timing:** Is the request still current, and is there a clear reason to perform it now?
+
+Approve or deny with a useful reason. Approval does not execute the action; the agent must retry
+the bound request. If the retry changes the payload, session, or tool under the ordinary exact
+binding, Evander rejects it rather than treating the old approval as permission for something new.
+
+![Admin Web approval detail bound to a synthetic operation](assets/evander-user-manual/screenshots/admin-approvals.png)
+
+The operator receives a review surface, not the agent's authority or the host's provider
+credentials. A delayed chat notification should lead back to this canonical request before a
+decision is made.
+
+<p class="figure-caption">Figure 7.2 — The operator sees the request identity, bound action, status, and decision surface without receiving ambient guest authority. Sanitized Northstar fixture.</p>
+
+## Approval is bounded, not blanket elevation
+
+The ordinary approval is tied to the exact request, has one use, and expires according to policy
+(3,600 seconds by default). Directory policy can impose tighter limits. Once the use or time limit
+is reached, the request no longer authorizes a retry.
+
+A workflow can also make a tool temporarily available for one session and run. That temporary
+grant answers “may this workflow step expose the tool?” An invocation approval answers “may this
+exact sensitive call execute now?” Where both apply, both must pass.
+
+Neither control can revive an expired session, override a broader directory denial, cross to a
+different job, or bypass the request's argument rules.
+
+## What the audit trail is for
+
+Evander records allowed, blocked, denied, failed, and completed tool activity with the identities
+that explain it. Operators can relate a tool call to a session, workflow, approval, and person
+without relying on a vague message that “the tool ran.” Sensitive values are redacted recursively
+before they are presented in ordinary audit views.
+
+The audit view and the workflow run answer complementary questions:
+
+- the audit trail explains the tool request, policy decision, approval, and result;
+- workflow evidence explains why the request was scheduled and how the graph continued.
+
+Redaction reduces accidental disclosure. It is not permission to place secrets in ordinary tool
+arguments, messages, or workflow payloads.
+
+## What an operator may notice
+
+| What you see | What it means | Useful evidence to capture |
+|---|---|---|
+| A plain browser request to `/mcp` returns `406` | The endpoint may be listening, but the request did not speak MCP | HTTP status and headers; do not diagnose a dead gateway from this alone |
+| The client receives HTTP `401` | Session proof is missing or invalid | Session ID, expiry, client header/query behavior, and time |
+| The client receives `409` or a session-conflict error | The connection is already tied to a different session | Declared session and protocol connection ID |
+| A tool is absent | Visibility policy or a structural prerequisite excluded it | Session, directory, expected tool, and visibility explanation |
+| The first call returns an approval request | Evander paused as designed | Request ID, status, expiry, job, and intended effect |
+| An approved retry reports payload mismatch | The retried arguments do not match the approved request | Original review summary and current redacted payload |
+| An approved retry is exhausted or expired | Its use or time boundary has ended | Request settings, status, and decision/use history |
+| An approval notification failed | Delivery failed; the durable request was not approved or denied | Request ID, delivery error, and whether it remains pending |
+| Admin Web misses recent calls | The query index may be stale although the canonical log is intact | Runtime root, approximate time, and whether other audit entries appear |
+| The canonical audit log lacks the event | The wrong runtime/process may be under inspection, or append did not occur | Running service configuration and gateway error/time |
+
+## Troubleshooting an approval or tool call
+
+Start with the request, session, and audit views in Admin Web. Record the request ID, session ID,
+directory, workflow run or trace ID, tool, intended effect, status, expiry, remaining uses, decision
+reason, and exact visible error. If the tool is absent rather than denied, say so explicitly.
+
+Do not approve merely to clear a pending queue, and do not ask the agent to vary the request until
+one retry happens to pass. If the request is unclear or broader than expected, deny it with a reason
+that helps the workflow or operator correct the request. If recent audit entries are missing, an
+administrator should check the canonical log before assuming the action was unrecorded.
+
+The remainder of this chapter is administrator and protocol reference material.
+
+## Administrator reference: MCP as a policy gateway
+
+`evander-gateway` hosts a FastMCP server named “Evander Gateway” at the streamable `/mcp` path. It
+is not a transparent proxy to arbitrary host functions. Registered tools adapt explicit host
+services, and both discovery and invocation are session-aware.
 
 The broad request path is:
 
@@ -1118,35 +1715,41 @@ MCP HTTP request
   -> append audit event and best-effort index it
 ```
 
-This order explains why “the gateway is reachable” and “the tool is usable” are different observations.
+### Connection binding and proof
 
-![MCP tool invocation policy, approval, execution, and audit sequence](assets/evander-user-manual/diagrams/05-mcp-policy-sequence.svg)
+An MCP client initially declares its Evander session with the `session_id` query parameter or
+`x-evander-session-id` header. It supplies the session proof token with one of the supported MCP
+session-token query parameters or headers, normally `x-evander-mcp-session-token`.
 
-<p class="figure-caption">Figure 7.1 — Catalog visibility, invocation authorization, approval, execution, and audit are separate checks in one request envelope.</p>
+The MCP protocol assigns an `mcp-session-id`. When that transport ID and a declared Evander session
+first appear together, Evander persists their relationship in
+`runtime/mcp-transport-bindings.json`. Future requests on the transport inherit the binding. A
+request declaring a conflicting Evander session is rejected rather than silently rebound.
 
-## Connection binding and proof
+Session setup issues a random proof token and records MCP-auth metadata on the session, including a
+SHA-256 verifier. Comparison is constant-time. Query-string tokens are redacted when the gateway
+logs request URLs. Headers are preferred because URLs are more likely to appear in infrastructure
+logs.
 
-An MCP client initially declares its Evander session with the `session_id` query parameter or `x-evander-session-id` header. It supplies the session proof token with one of the supported MCP session token query parameters or headers, normally `x-evander-mcp-session-token`.
+The `session_id` field remains optional on tool schemas for legacy clients. The wrapper supplies
+the bound connection session and rejects a conflicting explicit field. An unbound caller cannot
+choose another session merely by changing a tool argument.
 
-The MCP protocol itself assigns an `mcp-session-id`. When that transport ID and a declared Evander session first appear together, Evander persists their relationship in `runtime/mcp-transport-bindings.json`. Future requests on the transport inherit the binding. A request that declares a conflicting Evander session is rejected rather than silently rebound.
+### Catalog filtering
 
-Session setup issues a random proof token and records MCP-auth metadata on the session, including a SHA-256 verifier. Comparison is constant-time. Query-string tokens are redacted when the gateway logs request URLs. Headers are preferred because URLs are more likely to appear in infrastructure logs.
+MCP `tools/list` is evaluated for the authenticated session. It includes only tools that are
+registered, compatible with the session's capability profile, not directory-denied, granted by the
+session or an eligible workflow lease, and structurally usable.
 
-The `session_id` field remains optional on tool schemas for legacy clients. The wrapper supplies the bound connection session and rejects a conflicting explicit field. An unbound caller cannot choose another session merely by changing a tool argument.
+Structural examples include resume operations that need a bound execution and feedback operations
+that need a configured feedback stream. A bad or missing proof can produce HTTP authentication
+rejection before catalog evaluation; a valid session with no visible tools can legitimately
+receive an empty catalog. Catalog visibility is not pre-approval, and argument/resource policy can
+still reject a particular payload.
 
-## Catalog filtering
+### Invocation checks
 
-MCP `tools/list` is evaluated for the authenticated session. The result contains only tools that are registered, compatible with the session's capability profile, not directory-denied, granted by the session or an eligible workflow lease, and structurally usable.
-
-Structural examples include resume operations that need a bound execution and feedback operations that need a configured feedback stream. This avoids advertising a tool that cannot make sense for the session even before arguments are known.
-
-A bad or missing proof can produce an HTTP authentication rejection before catalog evaluation. An otherwise valid session with no visible tools can legitimately receive an empty catalog. Inspect the status and audit/policy reason rather than treating both outcomes as “MCP returned nothing.”
-
-Catalog visibility is not pre-approval. A visible tool can still require an approval request when invoked, and argument/resource policy can reject a particular payload.
-
-## Invocation checks
-
-The gateway's registered-tool wrapper performs the current invocation controls around the tool implementation:
+The registered-tool wrapper applies these controls around the tool implementation:
 
 1. bind the authoritative session from the request context;
 2. require valid session proof and an active manifest;
@@ -1157,11 +1760,16 @@ The gateway's registered-tool wrapper performs the current invocation controls a
 7. dispatch the host operation;
 8. audit allowed, blocked, denied, error, and result context with redaction.
 
-The exact helper ordering can differ for specialized tool families, but none may treat a free-form `session_id` as sufficient authority. Add-on tools register into the same gateway and remain subject to the same connection, session, and audit envelope.
+The exact helper ordering can differ for specialized tool families, but none may treat a free-form
+`session_id` as sufficient authority. Add-on tools enter the same gateway and remain subject to the
+same connection, session, and audit envelope.
 
-## The approval handshake
+### The approval handshake and durable record
 
-When Imani invokes an approval-required tool during the telemetry-retry work, the first call omits `approval_request_id`. Evander does not run the effect. It creates or reuses a request whose ID is deterministic for the session and invocation payload, then returns an error/instruction identifying the pending request and asking the agent to retry after a decision.
+On the first invocation of an approval-required tool, the agent omits `approval_request_id`.
+Evander does not run the effect. It creates or reuses a request whose ID is deterministic for the
+session and invocation payload, then returns an error/instruction identifying the pending request
+and asking the agent to retry after a decision.
 
 The stored `ApprovalRequest` contains:
 
@@ -1173,17 +1781,16 @@ The stored `ApprovalRequest` contains:
 - notification targets, deliveries, errors, and attempt state;
 - approver, decision time, reason, and decision history.
 
-The digest and review payload serve different purposes. Redaction limits disclosure to the operator surface; hashing the original payload preserves exact binding even when a sensitive field is hidden.
+The digest and review payload serve different purposes. Redaction limits disclosure to the
+operator surface; hashing the original payload preserves exact binding even when a sensitive field
+is hidden.
 
-An operator approves or denies a pending request and supplies a non-empty reason. An approval does not itself execute the action. Imani retries the tool with the request ID. The policy engine atomically validates status and optionally consumes use while checking expiry, payload mode, session, tool, and maximum uses.
+An operator supplies a non-empty reason when approving or denying. On retry, the policy engine
+atomically validates status and optionally consumes use while checking expiry, payload mode,
+session, tool, and maximum uses. The `approval_submit` and `approval_check` protocol tools do not
+require their own approval, which would otherwise create an infinite loop.
 
-The `approval_submit` and `approval_check` protocol tools do not require their own approval, which would otherwise create an infinite loop.
-
-![Admin Web approval detail bound to the telemetry-retry operation](assets/evander-user-manual/screenshots/admin-approvals.png)
-
-<p class="figure-caption">Figure 7.2 — The operator sees the request identity, bound action, status, and decision surface without receiving ambient guest authority. Sanitized Northstar fixture.</p>
-
-## Grant settings and limits
+### Grant settings and mandatory approval
 
 The ordinary default is:
 
@@ -1191,49 +1798,70 @@ The ordinary default is:
 - one use;
 - an expiry derived from effective policy, 3,600 seconds by default.
 
-Session per-tool settings can request a TTL, use count, and payload mode. Directory policy remains the upper security boundary: it can cap TTL and use count and require exact payload. A broader `ANY` payload mode is therefore an explicit policy choice, not an accidental consequence of a redacted value.
+Session per-tool settings can request a TTL, use count, and payload mode. Directory policy remains
+the upper security boundary: it can cap TTL and use count and require exact payload. A broader
+`ANY` payload mode is therefore an explicit policy choice, not an accidental consequence of a
+redacted value.
 
-Two built-in destructive operations are always stricter: `delete_ado_backlog_item` and `semantic_delete_points` require exact-payload, one-use approval. This mandatory set is intentionally small and explicit. Other tools become approval-required through effective directory policy, session settings, communication-file rules, or specialized policy behavior.
+Two built-in destructive operations are always stricter: `delete_ado_backlog_item` and
+`semantic_delete_points` require exact-payload, one-use approval. This mandatory set is
+intentionally small and explicit. Other tools become approval-required through effective directory
+policy, session settings, communication-file rules, or specialized policy behavior.
 
-A reusable request ID does not mean unlimited use. Once the configured use count is reached, status becomes exhausted and the next attempt is rejected. A pending or approved request that passes its deadline becomes expired. Denial, expiry, exhaustion, payload mismatch, wrong session, wrong tool, and unknown request are distinct rejection states for audit and diagnosis.
+A reusable request ID does not mean unlimited use. Once the configured use count is reached,
+status becomes exhausted and the next attempt is rejected. A pending or approved request that
+passes its deadline becomes expired. Denial, expiry, exhaustion, payload mismatch, wrong session,
+wrong tool, and unknown request are distinct rejection states for audit and diagnosis.
 
-## Workflow-scoped leases versus invocation approvals
+### Workflow-scoped leases versus invocation approvals
 
-A workflow may issue a `SessionToolApprovalLease` to expose a tool temporarily for one session and workflow run. The MCP context presents the lease and workflow-run IDs, and consumption tracks per-tool use.
-
-The two controls answer different questions:
+A workflow may issue a `SessionToolApprovalLease` to expose a tool temporarily for one session and
+workflow run. The MCP context presents the lease and workflow-run IDs, and consumption tracks
+per-tool use.
 
 | Control | Question |
 |---|---|
 | Workflow tool lease | May this workflow step temporarily add this tool to this session's catalog? |
 | Invocation approval | May this exact sensitive call execute now? |
 
-A lease cannot cross a session/run boundary, revive an expired session, override a directory deny, or bypass invocation approval. Where both apply, both must pass.
+A lease cannot cross a session/run boundary, revive an expired session, override a directory deny,
+or bypass invocation approval.
 
-## Approval notifications
+### Approval notifications
 
-Effective policy or the session can select configured communication target IDs for pending approvals. Request creation records queued/disabled status and delivery attempts. Notification failure does not silently approve or deny the request; the durable approval remains pending until decision or expiry.
+Effective policy or the session can select configured communication target IDs for pending
+approvals. Request creation records queued/disabled status and delivery attempts. Notification
+failure does not silently approve or deny the request; the durable approval remains pending until
+decision or expiry.
 
-Notifications carry a review prompt, not provider credentials. Operators should use the canonical request in Admin Web or CLI for the final decision, especially if a chat notification is truncated or delayed.
+Notifications carry a review prompt, not provider credentials. Operators should use the canonical
+request in Admin Web or CLI for the final decision, especially if a chat notification is truncated
+or delayed. A project can route an implementation session's request to an authorized operator
+without revealing a raw address or phone number to the agent. The session sees the target ID and
+approval outcome, while the host resolves contact and provider details.
 
-Northstar can route Imani's approval request to an authorized operator without revealing a raw address or phone number to the agent. The session sees the target ID and approval outcome, while the host resolves the contact/provider details.
+### Canonical audit stream and query index
 
-## Audit: canonical stream and query index
-
-`AuditLogger` appends one JSON object per line to the configured audit path, normally `runtime/audit.jsonl`. For tool calls, records can include:
+`AuditLogger` appends one JSON object per line to the configured audit path, normally
+`runtime/audit.jsonl`. For tool calls, records can include:
 
 - timestamp, directory, session, VM, agent role, and actor user ID;
 - tool name, status, decision, and error summary;
 - request, correlation, workflow run, trace, approval, and lease IDs;
 - duration and redacted arguments/results.
 
-The effective policy's redacted keys are applied recursively, with additional sensitive markers guarded by the index. Proof-token query values are also redacted in transport logs. Redaction is designed to reduce accidental disclosure; it should not be used as permission to place secrets in ordinary payloads.
+The effective policy's redacted keys are applied recursively, with additional sensitive markers
+guarded by the index. Proof-token query values are also redacted in transport logs.
 
-`runtime/audit.db` is a SQLite search index built from the JSONL stream. It stores normalized columns plus the payload/search text and uses WAL. Appends try to index immediately; Admin runtime startup can import historical tail data. If indexing fails, the JSONL append remains canonical. Rebuilding the index must not rewrite the source log.
+`runtime/audit.db` is a SQLite search index built from the JSONL stream. It stores normalized
+columns plus payload/search text and uses WAL. Appends try to index immediately; Admin runtime
+startup can import historical tail data. If indexing fails, the JSONL append remains canonical.
+Rebuilding the index must not rewrite the source log.
 
-Approval decisions create their own audit context, linked by request and session. Workflow execution journals are complementary: audit explains tool policy/decision activity, while orchestration state explains graph routing and node execution.
+Approval decisions create their own audit context, linked by request and session. Workflow
+execution journals remain complementary to this audit evidence.
 
-## Failure behavior
+## Administrator failure reference
 
 | Symptom | Meaning | First evidence |
 |---|---|---|
@@ -1248,9 +1876,9 @@ Approval decisions create their own audit context, linked by request and session
 | Admin audit view misses recent calls | SQLite index stale or unavailable | Canonical `audit.jsonl`; rebuild index |
 | JSONL lacks expected event | Wrong runtime, process, or code path; append itself did not occur | Running unit config and gateway log |
 
-## Practical runbook
+## Administrator runbook
 
-For a pending Northstar request:
+For a pending request:
 
 ```bash
 evander-cli list-approvals --runtime-dir runtime \
@@ -1260,7 +1888,8 @@ evander-cli list-approvals --runtime-dir runtime \
 evander-cli show-approval <request-id> --runtime-dir runtime
 ```
 
-After confirming session, tool, intended effect, expiry, exact redacted payload, and surrounding workflow context:
+After confirming the session, tool, intended effect, expiry, exact redacted payload, and surrounding
+workflow context:
 
 ```bash
 evander-cli approve <request-id> <operator-id> \
@@ -1277,23 +1906,145 @@ If the query index is stale but JSONL is intact:
 evander-cli rebuild-audit-index --runtime-dir runtime --reset --json
 ```
 
-For an MCP identity problem, compare the declared Evander session, protocol `mcp-session-id`, proof-token header, manifest expiry, and persistent binding. Reissuing a session is safer than hand-editing a binding when a guest was cloned or its session material was copied unexpectedly.
+For an MCP identity problem, compare the declared Evander session, protocol `mcp-session-id`,
+proof-token header, manifest expiry, and persistent binding. Reissuing a session is safer than
+hand-editing a binding when a guest was cloned or its session material was copied unexpectedly.
 
 ## Source trail
 
-- `src/evander/gateway/server.py`, `src/evander/gateway/app.py`, and `src/evander/gateway/session_context.py` — MCP registration, middleware, catalog filtering, binding, and invocation context.
-- `src/evander/session_auth.py` and `src/evander/repositories/mcp_transport_bindings.py` — proof-token issuance/verification and persistent transport binding.
-- `src/evander/policy.py`, `src/evander/policy_config.py`, and `src/evander/models.py` — tool visibility, approval creation/validation/consumption, settings, and durable records.
-- `src/evander/approval_notifications.py` and `src/evander/admin/services/approval_audit_service.py` — notifications, operator decisions, queue health, and audit context.
-- `src/evander/audit.py` and `src/evander/repositories/audit_index.py` — canonical JSONL append and queryable SQLite index.
-- `tests/test_gateway.py`, `tests/test_policy.py`, `tests/test_approval_notifications.py`, and `tests/test_session_tool_approval_leases.py` — gateway, exact binding, notification, and lease behavior.
+- `src/evander/gateway/server.py`, `src/evander/gateway/app.py`, and
+  `src/evander/gateway/session_context.py` — MCP registration, middleware, catalog filtering,
+  binding, and invocation context.
+- `src/evander/session_auth.py` and `src/evander/repositories/mcp_transport_bindings.py` —
+  proof-token issuance/verification and persistent transport binding.
+- `src/evander/policy.py`, `src/evander/policy_config.py`, and `src/evander/models.py` — tool
+  visibility, approval creation/validation/consumption, settings, and durable records.
+- `src/evander/approval_notifications.py` and
+  `src/evander/admin/services/approval_audit_service.py` — notifications, operator decisions,
+  queue health, and audit context.
+- `src/evander/audit.py` and `src/evander/repositories/audit_index.py` — canonical JSONL append and
+  queryable SQLite index.
+- `tests/test_gateway.py`, `tests/test_policy.py`, `tests/test_approval_notifications.py`, and
+  `tests/test_session_tool_approval_leases.py` — gateway, exact binding, notification, and lease
+  behavior.
 
 
 # 8. Workflow Runtime and Orchestration
 
-> **At a glance.** Evander workflows are validated event graphs. Triggers publish durable events; gates shape control flow; queries read data; effects change state; and completion events continue the graph. Two workers split observation from execution and share a SQLite-backed queue/journal by default. Node execution is idempotent at the event-and-node boundary, while external providers must tolerate recovery of a previously running operation. Invalid hot reloads retain the last-known-good graph.
+> **At a glance.** A workflow is Evander's prepared answer to “when this happens, what should we
+> check and do next?” It can notice an event, make a decision, look something up, perform an action,
+> and continue when that action finishes.
+>
+> Evander saves the event and each completed step as the work advances. A stopped worker can
+> therefore continue from evidence rather than guessing what happened. An operator can follow the
+> run as a sequence of named steps; the later administrator reference explains packs, compiled
+> graphs, queue records, bindings, revisions, and recovery windows.
 
-## The four node families
+## Read a workflow as a prepared route
+
+Most workflow steps have one of four everyday jobs:
+
+| Job in the route | What it does | Technical name |
+|---|---|---|
+| Notice something | Observes time, another system, a webhook, or an internal event | Trigger |
+| Choose the path | Filters, deduplicates, branches, loops deliberately, or joins work | Gate |
+| Find information | Reads state without performing the external business change | Query |
+| Do something | Creates a session, sends a prompt, updates a system, or publishes code | Effect |
+
+Connections between steps show which result leads to which next step. A query or effect does not
+directly call the next box; its completion becomes a saved event. That extra handoff is what lets
+the route survive a process restart.
+
+A representative project route might read:
+
+```text
+ticket created
+  -> keep items for mission-control
+  -> ignore a start already handled
+  -> look for an active session
+  -> continue only when none is active
+  -> create an implementation session
+  -> clone the managed repository
+  -> prompt the implementation work
+  -> wait for and pin the Git result
+  -> obtain a review decision
+  -> pass the release gates
+```
+
+This is an example, not a built-in universal process. Operators choose the integrations, checks,
+and release rules that fit their organization. The Team Add-on chapters explain the additional
+task, review, and governance route around core workflow execution.
+
+![Durable workflow path from trigger observation through gates, queries, and effects](assets/evander-user-manual/diagrams/06-workflow-pipeline.svg)
+
+The figure's main message is that each handoff has a saved record. The trigger worker and effect
+worker do not have to remain in one uninterrupted in-memory conversation.
+
+<p class="figure-caption">Figure 8.1 — Workers coordinate through durable event and execution records instead of an in-memory call chain.</p>
+
+## Following a run in Admin Web
+
+The workflow editor shows the prepared route. A workflow run shows what happened when one event
+traveled through a particular revision of that route. The current editor can change after a run
+begins, so keep the run's recorded revision in view when comparing expected and actual behavior.
+
+For one run, an operator usually needs only a small set of landmarks:
+
+- the source item or event and its time;
+- the run or trace ID;
+- the last step that completed and its output path;
+- the first step that is waiting, denied, or failed;
+- the session ID, approval ID, or code version linked from that step.
+
+![Admin Web workflow editor showing a synthetic mission-control graph](assets/evander-user-manual/screenshots/admin-workflow.png)
+
+The editor is the authoring view. Runtime events and executions remain separate durable records
+underneath it, which is why opening or closing the browser does not start or stop the workflow.
+
+<p class="figure-caption">Figure 8.2 — The editor is the authoring projection over a revisioned graph; runtime events and executions remain durable records underneath. Sanitized Northstar fixture.</p>
+
+## What an operator may notice
+
+| What you see | What it usually means | Safe next step |
+|---|---|---|
+| The same source item appears again | Publication or acknowledgement may have been retried; stable identities should converge on the existing event | Compare the event/source IDs before treating it as duplicate work |
+| Other sources advance but one does not | One trigger or provider can fail without stopping the others | Capture the integration, directory, expected item, and last successful activity |
+| An event exists but no step runs | The effect worker, route from the source, or active graph revision needs attention | Record event, run/trace, source step and output, and shown revision |
+| A gate appears to have “lost” an item | It may have deliberately filtered, deduplicated, serialized, or sent the item down another output | Inspect the gate result and selected output path |
+| A step remains `running` after a restart | Recovery may resubmit it; the external action may already have happened | Do not manually run the action again until an administrator checks its evidence |
+| A step succeeded but no later step appears | Completion publication may be pending, or no connection matches its output | Record the execution status, output, and any `completion_pending` state |
+| A workflow edit has no effect | Validation may have kept the last-known-good revision active | Compare the run revision with the editor and read validation messages |
+| A review loop stops | Its declared cycle, depth limit, event budget, or business condition ended the route | Capture the last gate/output and iteration state |
+| A value cannot be passed to the next step | The binding may name missing or unavailable upstream output | Capture the source output and binding error |
+| A Team task is open but no agent wakes | The Team-to-core handoff or governance decision may still be pending | Check both the Team task/outbox state and the linked core run |
+
+## Why a completed action may still be waiting
+
+An important recovery state is `completion_pending`. It means a step's provider succeeded, but the
+saved completion event that should move the route onward was not published successfully. Evander
+retries that publication instead of immediately performing the successful external action again.
+
+This is safer than treating every stalled route as permission to repeat work. There is still an
+unavoidable uncertainty if a process dies after an outside system changes but before Evander saves
+the local success record. That is why release, Git, communication, and provider operations use
+stable identities, leases, or reconciliation where available.
+
+## Troubleshooting a workflow run
+
+Start with Admin Web. Record the selected directory; source item and event ID; run or trace ID;
+graph ID and revision; last completed step and output; first waiting or failed step; execution
+status; and any linked session, approval, completion event, or Team task ID. Include the exact
+visible error and approximate time.
+
+Do not delete a `running` record until someone has established whether its external effect
+occurred. Do not force a second effect merely because completion publication is pending. If a new
+edit is not active, do not overwrite the workflow file: resolve validation errors or reload and
+merge through the editor when another revision or lock is current.
+
+An administrator can use the detailed IDs and status records below to locate the exact durable
+handoff. The remainder of this chapter is administrator and workflow-author reference material.
+
+## Administrator reference: node families and identifiers
 
 A workflow graph contains globally unique node IDs from four families:
 
@@ -1304,35 +2055,18 @@ A workflow graph contains globally unique node IDs from four families:
 | Query | Read data and publish structured outputs | `query:session:list`, `query:ado:work-items` |
 | Effect | Change host or external state and publish completion outputs | `effect:agent:create`, `effect:agent:prompt`, `effect:git:promote-agent-branch` |
 
-Edges connect source nodes and output ports to target nodes. A completion is itself an event, so a query or effect does not call the next node directly. This preserves queue durability and lets the graph resume after process failure.
+Edges connect source nodes and output ports to target nodes. A completion is itself an event, so a
+query or effect does not call the next node directly.
 
-Northstar's telemetry-retry flow might be summarized as:
+### Packs, graphs, and intermediate representation
 
-```text
-ticket created
-  -> filter mission-control
-  -> dedupe work-item start
-  -> query active sessions
-  -> filter none active
-  -> create Imani's agent
-  -> clone managed repo
-  -> prompt implementation
-  -> await/pin Git result
-  -> Rowan review
-  -> Riley publication gates
-```
+A workflow pack has a `pack_id`, `pack_version`, optional description, graph metadata, and a
+versioned intermediate representation (IR). Each graph has one canonical directory path, optional
+user IDs, and a list of node IDs. Each IR node wraps a typed node envelope plus bindings and
+optional retry/idempotency policy; edges are part of the IR.
 
-This is a representative composition. The exact providers, gates, and review/release graph are operator-defined, and Team Add-on chapters explain the additional task and governance nodes.
-
-![Durable workflow path from trigger observation through gates, queries, and effects](assets/evander-user-manual/diagrams/06-workflow-pipeline.svg)
-
-<p class="figure-caption">Figure 8.1 — Workers coordinate through durable event and execution records instead of an in-memory call chain.</p>
-
-## Packs, graphs, and IR
-
-A workflow pack has a `pack_id`, `pack_version`, optional description, graph metadata, and a versioned intermediate representation. Each graph has one canonical directory path, optional user IDs, and a list of node IDs. Each IR node wraps a typed node envelope plus bindings and optional retry/idempotency policy; edges are part of the IR.
-
-`config/trigger-orchestrator/config.json` selects workflow packs and can also contain inline graphs or IR. During load, Evander:
+`config/trigger-orchestrator/config.json` selects workflow packs and can also contain inline graphs
+or IR. During load, Evander:
 
 1. reads global orchestration settings;
 2. migrates supported older node/port shapes;
@@ -1343,17 +2077,21 @@ A workflow pack has a `pack_id`, `pack_version`, optional description, graph met
 7. validates graph, binding, directory, and communication-target constraints;
 8. computes the compiled runtime configuration.
 
-The hidden system pack is runtime-managed and not an editable operator graph. Node IDs and webhook slugs must be globally unique across active configuration. A graph cannot claim multiple directory paths.
+The hidden system pack is runtime-managed and not an editable operator graph. Node IDs and webhook
+slugs must be globally unique across active configuration. A graph cannot claim multiple directory
+paths.
 
-Checked-in example packs illustrate supported combinations but are not automatically active. Live operator packs may be ignored by Git and edited through Admin Web. Use its revision and lock behavior; writing a stale file directly can defeat concurrency protection even if the JSON itself is valid.
+Checked-in example packs illustrate supported combinations but are not automatically active. Live
+operator packs may be ignored by Git and edited through Admin Web. Use its revision and lock
+behavior; writing a stale file directly can defeat concurrency protection even if the JSON itself
+is valid.
 
-![Admin Web workflow editor showing the synthetic mission-control telemetry-retry graph](assets/evander-user-manual/screenshots/admin-workflow.png)
+### Compilation and bindings
 
-<p class="figure-caption">Figure 8.2 — The editor is the authoring projection over a revisioned graph; runtime events and executions remain durable records underneath. Sanitized Northstar fixture.</p>
-
-## Compilation and bindings
-
-Compilation turns authoring IR into concrete trigger, gate, query, effect, and edge definitions. Provider schemas validate node configuration before execution. Graph validation rejects missing endpoints, illegal trigger inbound edges, accidental cycles, invalid ports, duplicate IDs, and inconsistent graph membership.
+Compilation turns authoring IR into concrete trigger, gate, query, effect, and edge definitions.
+Provider schemas validate node configuration before execution. Graph validation rejects missing
+endpoints, illegal trigger inbound edges, accidental cycles, invalid ports, duplicate IDs, and
+inconsistent graph membership.
 
 Bindings carry upstream output into downstream configuration. A value such as:
 
@@ -1361,19 +2099,32 @@ Bindings carry upstream output into downstream configuration. A value such as:
 ${{node.output}}
 ```
 
-is resolved from declared upstream output context. Validation uses provider output schemas and graph ancestry to catch references that are unavailable, misspelled, or not dominant on the path. Execution stores a binding trace and a hash of the resolved configuration so an operator can see what value the node actually received.
+is resolved from declared upstream output context. Validation uses provider output schemas and
+graph ancestry to catch references that are unavailable, misspelled, or not dominant on the path.
+Execution stores a binding trace and a hash of the resolved configuration so an operator can see
+what value the node actually received.
 
-Bindings are data selection, not arbitrary Python or shell evaluation. An effect that intentionally executes a command has its own typed provider and policy boundary; a generic binding cannot become host code.
+Bindings are data selection, not arbitrary Python or shell evaluation. An effect that
+intentionally executes a command has its own typed provider and policy boundary; a generic binding
+cannot become host code.
 
-## Providers and extensions
+### Providers and extensions
 
-Node type names resolve through the orchestration provider loader. A profile determines the built-in provider set, and configuration can add explicit Python modules or enabled entry points. Add-ons contribute providers through their registration surfaces. Provider factories receive shared administration/runtime services so they operate on the same sessions, Git registry, policy, and stores as the CLI and Admin Web.
+Node type names resolve through the orchestration provider loader. A profile determines the
+built-in provider set, and configuration can add explicit Python modules or enabled entry points.
+Add-ons contribute providers through their registration surfaces. Provider factories receive
+shared administration/runtime services so they operate on the same sessions, Git registry,
+policy, and stores as the CLI and Admin Web.
 
-The graph's directory path is passed into provider construction and effective configuration resolution. A single active graph set can therefore contain projects using different ADO projects, backends, contacts, or Team state without duplicating a daemon per directory.
+The graph's directory path is passed into provider construction and effective configuration
+resolution. One active graph set can therefore contain projects using different ADO projects,
+backends, contacts, or Team state without duplicating a daemon per directory.
 
-Provider initialization failures are isolated and logged where possible; one bad optional provider should not erase a valid current graph. A node whose provider cannot be constructed cannot execute successfully, and its failure remains visible in execution evidence.
+Provider initialization failures are isolated and logged where possible; one bad optional
+provider should not erase a valid current graph. A node whose provider cannot be constructed
+cannot execute successfully, and its failure remains visible in execution evidence.
 
-## The trigger orchestrator
+### The trigger orchestrator
 
 The trigger worker runs as:
 
@@ -1381,37 +2132,49 @@ The trigger worker runs as:
 evander-cli trigger-orchestrator --runtime-dir runtime
 ```
 
-or with `--once` for one diagnostic cycle. A single-instance polling kernel owns its lock and local wake mechanism. Each cycle:
+or with `--once` for one diagnostic cycle. A single-instance polling kernel owns its lock and local
+wake mechanism. Each cycle:
 
 1. checks workflow and provider configuration for a valid reload;
 2. publishes due scheduled internal events;
 3. selects enabled, non-system triggers;
 4. constructs each provider using the graph's effective directory context;
 5. polls for candidate events;
-6. validates provider output and publishes each stable event ID, using an additional idempotency key when the publisher supplies one;
+6. validates provider output and publishes each stable event ID, using an additional idempotency
+   key when the publisher supplies one;
 7. acknowledges the provider item only after durable publication;
 8. records cursor state and wakes the effect orchestrator.
 
-Provider initialization and polling failures are logged per trigger so the cycle can continue with other definitions. A publish failure prevents acknowledgement of that item. Redelivery is therefore possible and expected; stable idempotency is part of a correct trigger provider.
+Provider initialization and polling failures are logged per trigger so the cycle can continue with
+other definitions. A publish failure prevents acknowledgement of that item. Redelivery is expected;
+stable idempotency is part of a correct trigger provider.
 
-The default polling interval is five seconds with up to five seconds of configured jitter. A successful publish lets the loop return promptly rather than sleeping through available work.
+The default polling interval is five seconds with up to five seconds of configured jitter. A
+successful publish lets the loop return promptly rather than sleeping through available work.
 
-## The durable orchestration store
+### The durable orchestration store
 
 `OrchestrationCoreConfig` defaults to:
 
 - SQLite backend at `runtime/orchestration.db`;
 - 30-day orchestration retention;
 - WAL checkpoint mode `truncate`;
-- a checkpoint threshold of 64 MiB, interval of 300 seconds, and checkpoint busy timeout of 1,000 ms;
+- a checkpoint threshold of 64 MiB, interval of 300 seconds, and checkpoint busy timeout of
+  1,000 ms;
 - maximum graph depth 16;
 - maximum 200 events per effect-worker cycle.
 
-The database unifies the trigger-event queue, workflow events, gate and effect/query executions, and workflow configuration snapshots behind repository interfaces. Provider and worker cursors remain in their repository-backed JSON paths (for example `trigger-cursors-*.json` and `trigger-orchestrator-cursors.json`). SQLite WAL supports independent trigger, effect, and Admin readers/writers while the repository applies a busy timeout and transactions.
+The database unifies the trigger-event queue, workflow events, gate and effect/query executions,
+and workflow configuration snapshots behind repository interfaces. Provider and worker cursors
+remain in repository-backed JSON paths, for example `trigger-cursors-*.json` and
+`trigger-orchestrator-cursors.json`. SQLite WAL supports independent trigger, effect, and Admin
+readers/writers while the repository applies a busy timeout and transactions.
 
-The `json` backend remains a rollback/compatibility option with legacy paths for queue, cursors, journals, execution records, and snapshots. It is not the preferred concurrent production backend. `evander-cli migrate-orchestration-store` imports legacy state through a supported migration flow.
+The `json` backend remains a rollback/compatibility option with legacy paths for queue, cursors,
+journals, execution records, and snapshots. It is not the preferred concurrent production backend.
+`evander-cli migrate-orchestration-store` imports legacy state through a supported migration flow.
 
-## The effect orchestrator
+### The effect orchestrator
 
 The effect worker runs as:
 
@@ -1419,7 +2182,10 @@ The effect worker runs as:
 evander-effect-orchestrator --runtime-dir runtime
 ```
 
-It resets stale queue `inflight` markers at startup, reloads the current graph, retries completion-pending publication, claims queued events, and routes them along matching source node/port edges. Gates execute through registered gate providers; queries and effects run through a bounded executor so short independent operations can overlap.
+It resets stale queue `inflight` markers at startup, reloads the current graph, retries
+completion-pending publication, claims queued events, and routes them along matching source
+node/port edges. Gates execute through registered gate providers; queries and effects run through a
+bounded executor so short independent operations can overlap.
 
 For every dispatched node, the worker records an idempotency key of:
 
@@ -1427,46 +2193,77 @@ For every dispatched node, the worker records an idempotency key of:
 <event-id>::<node-id>
 ```
 
-The execution record includes execution and idempotency IDs, source event/trace/node/type, status and timestamps, resolved configuration and hash, input, outputs, published-completion state, error, binding trace, and configuration revision.
+The execution record includes execution and idempotency IDs, source event/trace/node/type, status
+and timestamps, resolved configuration and hash, input, outputs, published-completion state, error,
+binding trace, and configuration revision.
 
-If a non-running execution already exists for that key, the node is not run again. If the record is still `running` after a process restart but no in-process future exists, the worker resubmits the provider using the stored resolved configuration. That recovery rule means Evander does **not** promise exactly-once external side effects. Providers that call external systems need their own stable idempotency key or reconciliation behavior.
+If a non-running execution already exists for that key, the node is not run again. If the record
+is still `running` after a process restart but no in-process future exists, the worker resubmits the
+provider using the stored resolved configuration. Evander therefore does **not** promise
+exactly-once external side effects. Providers that call external systems need a stable idempotency
+key or reconciliation behavior of their own.
 
-## Completion events and recovery
+### Completion events and recovery
 
-When a query, effect, or gate finishes, the worker builds a deterministic completion event and publishes it back to the queue. Downstream edges select its output port. The original execution is not considered fully propagated until completion publication is recorded.
+When a query, effect, or gate finishes, the worker builds a deterministic completion event and
+publishes it back to the queue. Downstream edges select its output port. The original execution is
+not considered fully propagated until completion publication is recorded.
 
-If the provider succeeds but queue publication fails, the record becomes `completion_pending` with the intended outcome. Later cycles retry publication rather than rerunning the successful provider. This distinction prevents a transient queue error from turning an already completed external effect into an immediate duplicate.
+If the provider succeeds but queue publication fails, the record becomes `completion_pending` with
+the intended outcome. Later cycles retry publication rather than rerunning the successful provider.
 
-There is still an unavoidable crash window around external systems that do not support idempotency: the process can die after the remote side effect but before the local success record is durable. Provider design and reconciliation must account for it. ADO work-item updates, Git promotion, communication sends, and release operations should use their provider-specific stable identities and leases.
+There is still an unavoidable crash window around external systems without idempotency: the
+process can die after the remote side effect but before the local success record is durable.
+Provider design and reconciliation must account for it. ADO work-item updates, Git promotion,
+communication sends, and release operations should use provider-specific stable identities and
+leases.
 
-## Cycles, depth, and event budgets
+### Cycles, depth, and event budgets
 
-Graphs are acyclic by default. A feedback or iteration edge must set `allow_cycle: true`; accidental cycles and self edges are rejected. Deliberate cycles are still bounded by `max_graph_depth`, and each worker cycle claims only `max_events_per_cycle` records.
+Graphs are acyclic by default. A feedback or iteration edge must set `allow_cycle: true`;
+accidental cycles and self edges are rejected. Deliberate cycles remain bounded by
+`max_graph_depth`, and each worker cycle claims only `max_events_per_cycle` records.
 
-The Northstar graph may use a declared cycle for Rowan's change request to return to Imani's implementation step. The edge declares intent; dedupe, iteration state, task state, and depth limits prevent it from becoming an unbounded hot loop. An explicit cycle is permission to route again, not proof that the business condition will eventually terminate.
+A review-change request may use a declared cycle to return to implementation. The edge declares
+intent; dedupe, iteration state, task state, and depth limits prevent an unbounded hot loop. An
+explicit cycle is permission to route again, not proof that the business condition will eventually
+terminate.
 
-## Configuration revisions and hot reload
+### Configuration revisions and hot reload
 
-Both workers fingerprint the global configuration, referenced pack files, and communication-target SQLite files (including WAL/SHM state). When the fingerprint changes, the reloader parses, composes, validates, and compiles a candidate.
+Both workers fingerprint the global configuration, referenced pack files, and
+communication-target SQLite files, including WAL/SHM state. When the fingerprint changes, the
+reloader parses, composes, validates, and compiles a candidate.
 
-If successful, the new current configuration and provider revision take effect. Workflow snapshots and node records retain revision context so existing evidence remains intelligible. If invalid, the worker logs the exception and keeps the last-known-good configuration. A bad edit therefore does not replace a working graph with an empty one.
+If successful, the new current configuration and provider revision take effect. Workflow snapshots
+and node records retain revision context so existing evidence remains intelligible. If invalid,
+the worker logs the exception and keeps the last-known-good configuration. A bad edit does not
+replace a working graph with an empty one.
 
-Effect-worker store-binding changes are treated conservatively: switching the live queue/execution store is deferred until old queued/inflight work drains. Provider-loader changes rebuild provider factories. Operators should still schedule major graph or store migrations deliberately rather than relying on opportunistic hot reload.
+Effect-worker store-binding changes are treated conservatively: switching the live queue/execution
+store is deferred until old queued/inflight work drains. Provider-loader changes rebuild provider
+factories. Administrators should still schedule major graph or store migrations deliberately rather
+than relying on opportunistic hot reload.
 
-## Team Add-on on the same runtime
+### Team Add-on on the same runtime
 
-The Team Add-on ships a workflow pack with core trigger/gate/effect/query shapes such as Team outbox publication, due-agent wake, governance-manager wake, ephemeral agent lifecycle, Git promotion/consolidation, release recording, and session-routing queries.
+The Team Add-on ships a workflow pack with core trigger/gate/effect/query shapes such as Team
+outbox publication, due-agent wake, governance-manager wake, ephemeral agent lifecycle, Git
+promotion/consolidation, release recording, and session-routing queries.
 
 Team state remains add-on-owned, but execution remains core-owned:
 
-- Team decides that Imani is due to work and emits/publishes a durable intent.
+- Team decides that an implementation agent is due to work and emits or publishes a durable
+  intent.
 - Core workflow creates or resumes the session and executes the prompt.
-- Core completion becomes a Team-visible result/outbox event.
-- Team governance decides whether Rowan or Riley should act next.
+- Core completion becomes a Team-visible result or outbox event.
+- Team governance decides whether review or release work should happen next.
 
-This seam is important during diagnosis. A Team task can exist without a core wake having been published; a core workflow run can be healthy while Team governance intentionally withholds the next dispatch.
+This seam matters during diagnosis. A Team task can exist without a core wake having been
+published; a core workflow run can be healthy while Team governance intentionally withholds the
+next dispatch.
 
-## Failure behavior
+## Administrator failure reference
 
 | Symptom | Durable state to inspect | Interpretation |
 |---|---|---|
@@ -1481,7 +2278,7 @@ This seam is important during diagnosis. A Team task can exist without a core wa
 | Bind expression fails | Binding trace/error and provider schema | Upstream output is missing, wrong port/path, or not valid on every route. |
 | Team task is open but no agent wakes | Team outbox/wake/governance plus core queue | Cross the add-on/core seam and find which durable handoff is missing. |
 
-## Practical runbook
+## Administrator runbook
 
 Validate each worker independently with one-cycle commands:
 
@@ -1499,34 +2296,132 @@ sudo journalctl -u evander-trigger-orchestrator.service -n 200 --no-pager
 sudo journalctl -u evander-effect-orchestrator.service -n 200 --no-pager
 ```
 
-For one run, collect source event ID, trace ID, graph ID, configuration revision, source node/port, target node, node idempotency key, execution status, completion event ID, and workflow run/session IDs. In Admin Web, compare the graph revision shown for the run with the current editor revision.
+For one run, collect source event ID, trace ID, graph ID, configuration revision, source node/port,
+target node, node idempotency key, execution status, completion event ID, and workflow run/session
+IDs. In Admin Web, compare the graph revision shown for the run with the current editor revision.
 
-Do not delete a `running` record until you know whether its external effect occurred. Do not force a second effect merely because completion publication is pending. Prefer provider reconciliation, supported retry/force-complete controls for the specific node type, or recovery of queue publication.
+Do not delete a `running` record until you know whether its external effect occurred. Do not force
+a second effect merely because completion publication is pending. Prefer provider reconciliation,
+supported retry/force-complete controls for the specific node type, or recovery of queue
+publication.
 
-Before publishing a workflow edit, run validation and resolve every error. If another operator holds the workflow lock or the revision changed, reload and merge through Admin Web instead of overwriting the pack.
+Before publishing a workflow edit, run validation and resolve every error. If another operator
+holds the workflow lock or the revision changed, reload and merge through Admin Web instead of
+overwriting the pack.
 
 ## Source trail
 
-- `src/evander/config.py` — orchestration defaults, paths, validation, limits, and provider-loader configuration.
-- `src/evander/workflow/packs.py`, `compiler.py`, `validation.py`, `binding.py`, and `runtime_config.py` — pack composition, compilation, graph/binding checks, and last-known-good reload.
-- `src/evander/daemons/trigger_orchestrator.py` and `src/evander/orchestration/kernels.py` — trigger polling, single-instance loop, publication, acknowledgement, and wakeup.
-- `src/evander/daemons/effect_orchestrator.py` — graph routing, node execution, idempotency, completion-pending recovery, cycles, and revision evidence.
-- `src/evander/triggers/queue.py` and `src/evander/repositories/orchestration_db.py` — JSON/SQLite queue and shared orchestration persistence.
-- `src/evander/orchestration/adapters/provider_factories.py` and `src/evander/workflow/plugins.py` — provider construction and extension loading.
-- `tests/test_workflow_packs.py`, `tests/test_workflow_compiler.py`, `tests/test_workflow_validation.py`, `tests/test_trigger_orchestrator.py`, `tests/test_effect_orchestrator.py`, and `tests/test_workflow_orchestrator_live_reload.py` — workflow contract and recovery tests.
+- `src/evander/config.py` — orchestration defaults, paths, validation, limits, and provider-loader
+  configuration.
+- `src/evander/workflow/packs.py`, `compiler.py`, `validation.py`, `binding.py`, and
+  `runtime_config.py` — pack composition, compilation, graph/binding checks, and last-known-good
+  reload.
+- `src/evander/daemons/trigger_orchestrator.py` and `src/evander/orchestration/kernels.py` —
+  trigger polling, single-instance loop, publication, acknowledgement, and wakeup.
+- `src/evander/daemons/effect_orchestrator.py` — graph routing, node execution, idempotency,
+  completion-pending recovery, cycles, and revision evidence.
+- `src/evander/triggers/queue.py` and `src/evander/repositories/orchestration_db.py` — JSON/SQLite
+  queue and shared orchestration persistence.
+- `src/evander/orchestration/adapters/provider_factories.py` and
+  `src/evander/workflow/plugins.py` — provider construction and extension loading.
+- `tests/test_workflow_packs.py`, `tests/test_workflow_compiler.py`,
+  `tests/test_workflow_validation.py`, `tests/test_trigger_orchestrator.py`,
+  `tests/test_effect_orchestrator.py`, and `tests/test_workflow_orchestrator_live_reload.py` —
+  workflow contract and recovery tests.
 
 
 # 9. Execution Backends
 
-> **At a glance.** Evander separates the decision to run an agent from the machinery that runs it. The supported default, `libvirt_vm`, gives a session a disposable virtual machine. The additive `container_worker_vm` backend sends narrowly described jobs to one configured worker VM, where Docker containers are disposable but selected session state is durable. Both paths share session, workflow, policy, relay, Git, and observability contracts; they do not offer identical isolation or lifecycle semantics.
+> **At a glance.** Once Evander decides that an agent may work, it still needs a safe place for that work to happen. The usual choice is a temporary virtual machine; another supported choice runs temporary containers on a dedicated worker machine. This chapter compares those environments while keeping the more important promise in view: changing where the agent runs does not change who grants permission or where durable evidence belongs.
 
-## The mental model: a control plane and an execution plane
+## Where the agent's work happens
 
-The host control plane decides *what* may happen. It owns the session manifest, effective directory configuration, tool policy, credentials, managed Git identity, workflow state, and audit trail. An execution backend decides *where and how* a permitted operation runs. This distinction is one of Evander's most useful design seams: a workflow can use portable `effect:agent:*` nodes without embedding `virsh`, Docker, host paths, or worker credentials in its graph.
+Evander separates two responsibilities. The control plane decides what the job is allowed to do and keeps the durable record. The **execution backend** provides the temporary workspace in which the permitted work runs.
+
+An installation currently has two choices:
+
+| Workspace choice | What the agent receives | What remains outside it |
+|---|---|---|
+| Temporary virtual machine (`libvirt_vm`) | A disposable VM with its own disk and selected toolchains | Session policy, real credentials, workflow state, managed Git, and audit evidence remain host-owned. |
+| Worker container (`container_worker_vm`) | A disposable Docker job on one configured worker VM, with selected session state kept between jobs | The control plane still owns permission, credentials, workflow state, Git identity, and durable evidence. |
+
+To an operator, the shared promises matter more than the infrastructure names:
+
+- the session and directory rules are chosen before the workspace starts;
+- the agent uses the same controlled model, tool, package, HTTP, and Git routes in either kind of workspace;
+- the exact code version and the work's evidence remain traceable after temporary compute is removed;
+- selecting a different backend does not grant broader authority.
+
+The two backends share session, workflow, policy, relay, Git, and observability contracts, but they do not have identical isolation or lifecycle semantics. The later reference sections explain those differences.
 
 ![The Evander control plane dispatches the same portable agent lifecycle to either a libvirt VM or the authenticated container worker.](assets/evander-user-manual/diagrams/07-execution-backends.svg)
 
+The diagram's main point is that Evander can change the kind of temporary workspace without moving its policy, credentials, Git authority, or durable records into that workspace.
+
 <p class="figure-caption">Figure 9.1 — Backend selection changes the execution mechanism, not the host-owned session, policy, relay, Git, or evidence contracts.</p>
+
+## What an operator may notice
+
+The workspace is only one stage in a run. These observations help distinguish an execution problem from an earlier workflow or later publication problem.
+
+| What you see | What it usually tells you | Useful information to capture |
+|---|---|---|
+| A session exists, but no VM or worker job appears | Evander reached session creation, but backend preparation or startup may have failed. | Session ID, selected backend, execution or VM ID if shown, last status, and visible error |
+| The workspace starts with the wrong image or missing tools | The recorded template/image selection or an optional bootstrap/cache may not match the job. | Session ID, backend, image or template shown, and the missing command or tool |
+| A prompt never starts | The workspace may exist even though queue persistence or dispatch failed before the agent harness began. | Session ID, execution ID, prompt status, and time of the last change |
+| The agent works, but model, tool, package, HTTP, or Git access fails | Compute is running; the relevant controlled connection or job permission needs inspection. | Exact error, requested capability, session ID, and whether the failure repeats |
+| Cleanup reports `cleanup_failed` | Evander could not prove that every worker-owned resource was removed. The record is evidence, not clutter. | Session ID, execution ID, worker job ID if shown, and the cleanup error |
+
+## A Northstar Platform run from assignment to cleanup
+
+Suppose the project lead for Northstar Platform's `mission-control` project assigns an implementation agent the work item “add telemetry retry behavior.” The operator-visible journey is the same with either backend:
+
+1. Evander selects the project directory, creates or reuses a session, and chooses the configured workspace type.
+2. It prepares a VM or a worker session and records which backend and image or template were selected.
+3. It gives the session controlled access to `mission-control` through the repository's managed identity, not through an arbitrary host path.
+4. Setup and agent work run inside the temporary workspace. Model calls, Evander tools, packages, and Git continue through their controlled routes.
+5. Evander records the result and logs. A container job may disappear at this point while its session evidence remains.
+6. The workflow can promote only the exact Git commit received from the managed Git event. The workspace type does not change that publication rule.
+7. Cleanup removes the disposable compute while host records remain available to explain the run and its cleanup outcome.
+
+> <span class="sidebar-kicker">Deeper detail</span> **The same journey in backend terms**
+>
+> Effective provider configuration selects `libvirt_vm` unless the session or directory explicitly selects `container_worker_vm`. `effect:agent:create` emits `metric_agent_create_backend_path`; the VM path launches or associates a VM, while the container path prepares the worker session and records the selected image. `effect:agent:clone-repo` receives only `mission-control`'s `managed_repo_id`; the control plane resolves an internal, restricted SSH source and grants the implementation session read-only or session-scoped write access.
+>
+> Bootstrap and prompt effects then use the host model relay, MCP gateway, and package relays or mounted caches. For a container job, `runtime/container-worker-executions.db` maps Evander's execution/session identity to the worker job ID. Destruction removes disposable compute but retains host session and cleanup records long enough to explain what happened.
+>
+> This is the central invariant: *backend portability does not weaken provenance*. A worker job may be short lived, but the session, Git SHA, workflow run, dispatch, policy decision, and model-usage correlation remain host-owned.
+
+## Reading backend failures
+
+An operator can use the first column to describe the symptom. The remaining columns guide an administrator toward the relevant backend layer.
+
+| Symptom | What it means | First checks |
+|---|---|---|
+| `unknown` for a VM | No matching VM summary or session-to-VM mapping was found. | Inspect the session manifest, `vm_id`, and `virsh list --all`. |
+| Container backend construction fails | `container_worker_base_url` is missing or invalid. | Inspect effective directory provider configuration, not only root defaults. |
+| Worker returns unauthorized/unreachable | Bearer token, URL, routing, service, or firewall is wrong. | Check the daemon unit, `/healthz`, token env name/value, and control-plane-to-worker reachability. |
+| Prompt never starts | Queue persistence or worker dispatch failed before the agent harness started. | Find `metric_prompt_enqueue_failed`, then inspect the prompt store and worker session state. |
+| Wrong image or toolchain | The session recorded a different image alias/ref, or the worker cache is incomplete. | Inspect session metadata and the worker image catalog; do not change the catalog and assume an existing session changed. |
+| `cleanup_failed` | Worker deletion did not complete. | Preserve the record, inspect its cleanup error, retry after fixing reachability or worker state. |
+| Model unavailable | The provider rejected the configured model before useful work. | Inspect sanitized wake/job failure metadata and the directory/session model override. |
+| VM starts but guest tools are stale | Optional bootstrap state no longer matches the host. | Re-run the relevant idempotent bootstrap script. |
+
+## Troubleshooting: what to hand to an administrator
+
+Start in Admin Web and capture what is available:
+
+1. Record the directory, run or trace ID, session ID, and last status.
+2. Record the selected backend and any VM, execution, worker, or worker-job identity shown.
+3. Copy the exact error and note the last successful stage—for example, “the session exists, but no workspace was created” or “the workspace runs, but model access fails.”
+4. If cleanup is involved, preserve the `cleanup_failed` record and its error. Do not delete it to tidy the dashboard.
+5. Give those details to an Evander administrator. Do not repeatedly create replacement sessions unless the workflow's recovery procedure calls for it.
+
+The remainder of this chapter is implementation and administrator reference material.
+
+## Administrator reference: control plane and execution plane
+
+The host control plane decides *what* may happen. It owns the session manifest, effective directory configuration, tool policy, credentials, managed Git identity, workflow state, and audit trail. An execution backend decides *where and how* a permitted operation runs. This distinction is one of Evander's most useful design seams: a workflow can use portable `effect:agent:*` nodes without embedding `virsh`, Docker, host paths, or worker credentials in its graph.
 
 The shared backend protocol has six operations:
 
@@ -1543,7 +2438,7 @@ Normalized status values are `unknown`, `preparing`, `starting`, `running`, `sto
 
 `ExecutionSpec` carries execution-defining fields explicitly: backend, session and target identity, directory, command, image, resolved clone source and branch, working directory, resource limits, persistence mode, and workspace mode. The free-form `metadata` field is sanitized context. It is not an escape hatch for commands, credentials, host repository paths, or other execution inputs.
 
-## The two current backends
+## Administrator reference: the two current backends
 
 ### `libvirt_vm`: the default
 
@@ -1574,7 +2469,7 @@ The portable agent effects map as follows:
 | `effect:agent:clone-repo` | Resolve a `managed_repo_id` on the control plane and clone into `/home/agent/repos/<repo-name>`. |
 | `effect:agent:copy-files` | Write validated paths below the durable `/home/agent`. |
 | `effect:agent:exec` | Run a deterministic setup command in a transient job. |
-| `effect:agent:prompt` | Start the provider harness in a disposable job, retain outcome/log evidence, then remove the job. |
+| `effect:agent:prompt` | Start the configured agent harness in a disposable job, retain outcome/log evidence, then remove the job. |
 | `effect:agent:destroy` | Delete worker jobs and session files while retaining host cleanup evidence. |
 
 The selected container image comes from the directory-scoped `container_worker_images` alias map. `container_worker_default_image` is the fallback for older or unspecified sessions. Once an alias is resolved, the exact image reference is stored with the session and reused; a later catalog change does not silently change an existing agent's runtime. Claude sessions normally select an appropriate Claude runner image and `model_provider_mode: "anthropic"`.
@@ -1585,21 +2480,7 @@ The default security posture is no general container network. A non-`none` Docke
 
 SQL Server is also intentionally separate. `effect:agent:create` rejects the VM-style `mssql=true` and `mssql_init_root` options for container sessions. Container agents use the worker-host SQL Server through the scoped MCP provisioning operations `mssql_provision_database`, `mssql_list_databases`, and `mssql_drop_database`.
 
-## A Northstar Platform run from intent to cleanup
-
-Suppose Priya, project lead for Northstar Platform's `mission-control` project, assigns Imani the work item “add telemetry retry behavior.”
-
-1. The trigger selects a directory and creates or reuses a session manifest. Effective provider configuration selects `libvirt_vm` unless the session or directory explicitly selects `container_worker_vm`.
-2. `effect:agent:create` emits `metric_agent_create_backend_path` and prepares the backend. A VM path launches or associates a VM. A container path prepares the worker session and records the selected image.
-3. `effect:agent:clone-repo` receives only `mission-control`'s `managed_repo_id`. The control plane resolves an internal, restricted SSH source and grants Imani's session either read-only or session-scoped write access.
-4. Bootstrap and prompt effects run. Model calls go to the host relay; MCP calls go to the gateway; package restores go to package relays or mounted caches.
-5. The prompt result and logs are recorded. For a container job, the execution mapping in `runtime/container-worker-executions.db` connects Evander's execution/session identity to the worker job ID.
-6. The workflow promotes only the pinned Git commit it received from the managed Git event. Backend identity does not change that publication rule.
-7. Destruction removes the disposable compute. Host session and cleanup records remain long enough to explain what happened.
-
-This flow illustrates an important invariant: *backend portability does not weaken provenance*. A worker job may be short lived, but the session, Git SHA, workflow run, dispatch, policy decision, and model-usage correlation remain host-owned.
-
-## Persistence and cleanup semantics
+## Administrator reference: persistence and cleanup
 
 Stopping and destroying are intentionally different. Stopping a VM leaves its disk. Stopping a worker job leaves the durable session home. Destroying a VM removes the linked VM through the VM service. Destroying a container session asks the worker to remove jobs, files, Git keys, and session-owned databases, then retains the host session manifest and execution mapping as a cleanup tombstone.
 
@@ -1607,20 +2488,7 @@ Do not erase a `cleanup_failed` record to make a dashboard look tidy. It is the 
 
 Chat Assistant mappings are also backend-aware. Libvirt uses one global assistant VM/session with distinct per-user agent thread IDs. Container execution uses a distinct assistant session per user. The durable mapping in `runtime/chat-assistant-session-mappings.json` makes concurrent “open chat” and “first message” initialization converge instead of creating duplicates.
 
-## Failure behavior
-
-| Symptom | What it means | First checks |
-|---|---|---|
-| `unknown` for a VM | No matching VM summary or session-to-VM mapping was found. | Inspect the session manifest, `vm_id`, and `virsh list --all`. |
-| Container backend construction fails | `container_worker_base_url` is missing or invalid. | Inspect effective directory provider configuration, not only root defaults. |
-| Worker returns unauthorized/unreachable | Bearer token, URL, routing, service, or firewall is wrong. | Check the daemon unit, `/healthz`, token env name/value, and control-plane-to-worker reachability. |
-| Prompt never starts | Queue persistence or worker dispatch failed before the harness ran. | Find `metric_prompt_enqueue_failed`, then inspect the prompt store and worker session state. |
-| Wrong image or toolchain | The session recorded a different image alias/ref, or the worker cache is incomplete. | Inspect session metadata and the worker image catalog; do not change the catalog and assume an existing session changed. |
-| `cleanup_failed` | Worker deletion did not complete. | Preserve the record, inspect its cleanup error, retry after fixing reachability or worker state. |
-| Model unavailable | The provider rejected the configured model before useful work. | Inspect sanitized wake/job failure metadata and the directory/session model override. |
-| VM starts but guest tools are stale | Optional bootstrap state no longer matches the host. | Re-run the relevant idempotent bootstrap script. |
-
-## Practical runbook
+## Administrator runbook
 
 Start with the broad control-plane view:
 
@@ -1672,11 +2540,84 @@ For deployment details and a deeper worker security checklist, continue with `do
 
 # 10. Networking, Relays, Packages, and Secrets
 
-> **At a glance.** An Evander guest is useful precisely because it can reach *selected capabilities* without receiving the credentials behind them. The guest or worker container talks to private, host-owned endpoints for MCP, model inference, packages, Git, and allowlisted HTTP targets. The host resolves the session and directory policy, supplies upstream credentials where that relay owns them, strips transport secrets, and records the consequential action. Default-deny network forwarding supports this design; it does not replace application-level session and policy checks.
+> **At a glance.** An agent is useful only if it can reach the models, code, packages, tools, and test systems needed for its job. Evander provides controlled doors to those services instead of opening the whole network or copying host secrets into the agent's workspace. This chapter explains what each door is for and why network reachability is never treated as permission by itself.
 
-## The mental model: doors, not an open corridor
+## Controlled doors, not an open corridor
 
-Think of the isolated execution environment as a workshop with a few labelled service doors:
+An isolated workspace does not normally browse the internet or receive the host's provider credentials. Instead, it reaches a small set of Evander-owned services. Each service has one job and checks the request appropriate to that job.
+
+| What the agent needs | Controlled route | Plain-language boundary |
+|---|---|---|
+| Evander tools | MCP gateway | Show and run only the tools allowed for this active session. |
+| A model | Model relay | Send a supported model request while the real provider key remains on the host. |
+| Packages | Package relay, facade, or prepared cache | Reach configured package sources without opening a general download route. |
+| A named test or application environment | HTTP target relay | Reach only a target alias recorded for this session; use the application's own guest-held login. |
+| Source code | Restricted managed Git over SSH | Read or write only the repository scope and refs granted to this session. |
+
+Three ideas keep this model understandable:
+
+1. **A working connection is not permission.** The route can work while a later session, target, tool, or policy check denies the action.
+2. **Different doors handle credentials differently.** The model and private NuGet relays add the host-owned upstream credential they are designed to protect. The HTTP target relay deliberately does not; it forwards authentication already held by the guest.
+3. **A narrow failure is useful evidence.** A package-cache miss, an expired session, and an application login failure occur at different boundaries and should not be “fixed” by opening general network access.
+
+The host resolves the session and directory rules, supplies an upstream credential only where a relay owns that responsibility, removes Evander transport secrets before forwarding, and records the consequential activity. Default-deny forwarding supports those checks; it does not replace them.
+
+## A request through a controlled door
+
+Suppose the implementation agent for Northstar Platform needs to test telemetry retry behavior.
+
+- A model request goes to Evander's model relay. Evander checks the session, selects the configured provider, removes guest transport credentials, adds the host's provider credential, and records available usage information.
+- A package restore goes through the appropriate relay or cache. The route may serve a public feed, add a host-held private-feed credential, or use already prepared package content.
+- A request to the provisioned `mission-control` environment uses a session alias such as `mission-control-api`. The agent supplies its legitimate application credential; the relay confines the destination and does not turn that URL into general internet permission.
+
+The agent may experience all three as ordinary development traffic. Their security contracts are deliberately different behind the scenes.
+
+## What an operator may notice
+
+| What you see | What it usually tells you | Useful information to capture |
+|---|---|---|
+| The agent cannot reach any controlled service | Session routing, workspace networking, or bootstrap state may be wrong. | Session ID, backend, exact connection error, and whether the shell was opened before the latest bootstrap |
+| Tools work, but model calls fail | The MCP route is healthy; model policy, provider configuration, credential, or upstream service needs attention. | Session ID, model, provider mode if shown, status/error, and approximate time |
+| Public packages work, but a private feed fails | The package route is present; the private-feed credential or feed configuration may be missing. | Feed name, package, restore error, session ID, and whether public packages still work |
+| An HTTP target returns `401` | The request may have reached the target application, which rejected the guest-managed login. | Target alias, application status, session ID, and a redacted description of the authentication used |
+| An HTTP target alias returns `404` | That alias is not present in the session contract. | Session ID, requested alias, directory, and expected workflow |
+| A restore reports content unavailable | Direct internet is intentionally absent; the relay or cache may not contain or reach the requested package. | Ecosystem, package/version, configured source, and exact restore error |
+
+Do not include secret values, session tokens, private keys, or full authorization headers in a support handoff. Names of configured environment variables and redacted errors are usually enough to locate the boundary.
+
+## Reading common failures
+
+An operator can use the first column to describe the failure. The remaining columns tell an administrator what safe outcome to expect and which boundary to repair.
+
+| Failure | Expected behavior | Interpretation |
+|---|---|---|
+| Missing model provider key | Relay returns a service error before upstream use. | Fix the service environment named by effective provider config. |
+| Expired or bad session token | Session relay request is rejected (`401`/`403` or WebSocket policy close). | Repair session/bootstrap state; do not bypass session routing. |
+| Hosted web search requested but disabled | Relay returns a policy error and logs the denial. | Enable only on the session that genuinely needs it. |
+| Unsupported provider path | Relay returns `501`, validation error, or WebSocket policy close. | Use a supported API; the relay is not a generic reverse proxy. |
+| Azure NuGet PAT missing | Public NuGet may work; Azure feed returns `503`. | Set the configured PAT environment variable for the NuGet unit. |
+| HTTP target alias missing | Relay returns `404`. | Add the alias through the session/workflow metadata contract. |
+| HTTP target redirect changes origin | Relay returns `502` rather than following it. | Correct the target base URL or application redirect behavior. |
+| Package restore misses cache | Restore may fail because direct internet is unavailable. | Prewarm the cache or make the appropriate relay/cache reachable. |
+| SSE transport closes after final bytes | Relay logs `relay_stream_transport_terminated`; the client may still have a complete response. | Correlate chunks/bytes and provider events before treating it as data loss. |
+
+## Troubleshooting: what to hand to an administrator
+
+Start with the session and one failing request:
+
+1. Record the directory, run or trace ID, session ID, execution backend, and time of the request.
+2. Name the door that failed: tool, model, package/feed, Git, or HTTP target alias.
+3. Copy the exact status and error, but redact credentials and authorization material.
+4. Note which nearby route still works—for example, “MCP tools work, but model calls fail” or “public NuGet works, but the Azure feed returns `503`.”
+5. Give those details to an Evander administrator. Do not add firewall ports, copy a host key into the workspace, or bypass the relay as a diagnostic shortcut.
+
+If a secret may have been exposed, preserve the audit evidence and contact the administrator responsible for that credential so it can be rotated. Deleting a visible record does not revoke a credential.
+
+The remainder of this chapter is network, protocol, and administrator reference material.
+
+## Administrator reference: doors and network boundaries
+
+The exact service doors and default ports are:
 
 - MCP on port `8000` is the tool-capability door;
 - the model relay on `11434` is the inference door;
@@ -1689,7 +2630,7 @@ The checked-in firewall example allows those host TCP ports and drops other forw
 
 MCP is therefore a central capability boundary, but not the only reachable host service. Every direct relay must enforce its own narrow contract.
 
-## Session routing and the guest environment
+## Administrator reference: session routing and the guest environment
 
 Cloud-init writes `/etc/evander/session.env`, and the shell profile loads it for the `agent` user. The file contains routing data such as session identity, MCP URL/token, model relay URL, HTTP-target relay prefix, and package locations. It also sets a placeholder `OPENAI_API_KEY` so tools that insist on an API-key variable can start. That placeholder is not the upstream provider secret.
 
@@ -1701,7 +2642,7 @@ source ~/.profile
 
 Session-bearing relay requests are authenticated with the session's MCP token. The token may be carried in a supported header, query parameter, or generated auth path, depending on the client. Relays remove it from the upstream query and headers. The session manifest must exist and be active; the model relay also rejects expired sessions.
 
-## Model inference relay
+## Administrator reference: model inference relay
 
 `evander-openai-relay` exposes a session-scoped model surface while resolving the actual provider from effective directory and session configuration. Public OpenAI is the default when no mode override is supplied. The current modes are:
 
@@ -1722,7 +2663,7 @@ Hosted OpenAI web search is denied unless the session manifest explicitly sets `
 
 A host-local model is not a reason to connect the guest directly to Ollama. Keep the agent pointed at Evander's session-scoped relay and configure `local_openai_api_base_url` on the host. If the relay listens on wildcard port `11434`, it rejects the ambiguous default of calling a loopback service on that same port. Bind the relay to the guest-facing address or move the local model to another private port, such as `127.0.0.1:11435`.
 
-## Package paths
+## Administrator reference: package paths
 
 ### NuGet
 
@@ -1750,7 +2691,7 @@ The npm audit protocol is a special case. `evander-npm-audit-facade` sends ordin
 
 This lets `npm audit` work without turning the worker's npm registry setting into a direct public package route. The facade does not inject an npm credential.
 
-## Session-scoped HTTP targets
+## Administrator reference: session-scoped HTTP targets
 
 The HTTP target relay differs deliberately from the model and NuGet relays: **it forwards guest-managed authorization and cookies**. It does not inject a host secret for the target.
 
@@ -1769,9 +2710,9 @@ The relay:
 5. makes one request without automatically following redirects;
 6. rewrites a same-origin redirect back through the relay and rejects a redirect outside the configured origin.
 
-This is useful while Imani verifies the telemetry retry behavior in Northstar Platform's provisioned `mission-control` environment. A workflow can add `mission-control-api` and `mission-control-ui` aliases to the session, while the agent authenticates to those applications using credentials it legitimately holds. The public environment URL does not become a general network permission.
+This is useful while the implementation agent verifies telemetry retry behavior in Northstar Platform's provisioned `mission-control` environment. A workflow can add `mission-control-api` and `mission-control-ui` aliases to the session, while the agent authenticates to those applications using credentials it legitimately holds. The public environment URL does not become a general network permission.
 
-## Where secrets belong
+## Administrator reference: where secrets belong
 
 Provider configuration stores *environment-variable names*, URLs, IDs, and non-secret routing metadata. The environment of the relevant host service stores the values. Typical examples are `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_DEVOPS_PAT`, `AZURE_ARTIFACTS_PAT`, `DISCORD_BOT_TOKEN`, `EVANDER_WORKER_TOKEN`, and bridge/provider tokens.
 
@@ -1787,21 +2728,7 @@ The repo-root `secrets.env` can be loaded by supported systemd templates, but it
 
 There are narrow exceptions where a guest receives a short-lived or scoped credential: the MCP session token, a session-scoped restricted Git key, a one-time response/consultation token, or an ephemeral OpenAI Realtime client secret. These are capabilities with a bounded audience and purpose, not copies of the long-lived host credential.
 
-## Failure behavior
-
-| Failure | Expected behavior | Interpretation |
-|---|---|---|
-| Missing model provider key | Relay returns a service error before upstream use. | Fix the service environment named by effective provider config. |
-| Expired or bad session token | Session relay request is rejected (`401`/`403` or WebSocket policy close). | Repair session/bootstrap state; do not bypass session routing. |
-| Hosted web search requested but disabled | Relay returns a policy error and logs the denial. | Enable only on the session that genuinely needs it. |
-| Unsupported provider path | Relay returns `501`, validation error, or WebSocket policy close. | Use a supported API; the relay is not a generic reverse proxy. |
-| Azure NuGet PAT missing | Public NuGet may work; Azure feed returns `503`. | Set the configured PAT environment variable for the NuGet unit. |
-| HTTP target alias missing | Relay returns `404`. | Add the alias through the session/workflow metadata contract. |
-| HTTP target redirect changes origin | Relay returns `502` rather than following it. | Correct the target base URL or application redirect behavior. |
-| Package restore misses cache | Restore may fail because direct internet is unavailable. | Prewarm the cache or make the appropriate relay/cache reachable. |
-| SSE transport closes after final bytes | Relay logs `relay_stream_transport_terminated`; the client may still have a complete response. | Correlate chunks/bytes and provider events before treating it as data loss. |
-
-## Practical runbook
+## Administrator runbook
 
 First verify the listeners locally on the control plane:
 
@@ -1858,11 +2785,17 @@ When diagnosing, preserve the separation of concerns: a DNS or firewall failure 
 
 # 11. Managed Git, Artifacts, and Code Consultations
 
-> **At a glance.** Evander moves code with Git, moves result files through artifact stores, and answers bounded repository questions with disposable consultations. These are three different data planes. Managed Git preserves commit identity and controls ref publication. Published artifacts preserve immutable file bundles. A code consultation pins one managed commit, gives a short-lived worker read-only access to it, accepts one structured answer, and then removes the worker. Host paths are private implementation details in all three flows.
+> **At a glance.** Source code, produced files, and a quick question about a repository are different kinds of things, so Evander moves them in different ways. Git carries exact versions of code; artifact storage carries durable result files; a consultation gives a temporary reader one bounded question. Choosing the right route keeps the result traceable without exposing arbitrary folders on the host.
 
-## The mental model: source, output, and inquiry
+## Three kinds of movement
 
-Use the narrowest transport that matches the thing being moved:
+It helps to begin with the thing being moved:
+
+- **Source code** belongs in managed Git. Git gives Evander an exact commit to review and publish.
+- **Reports, bundles, and other produced files** belong in artifact storage. Publishing makes one immutable archive; an artifact space can organize versions without rewriting old archives.
+- **A bounded question about code** belongs in a code consultation. Evander pins one repository snapshot, gives a temporary worker read-only access, accepts one structured answer, and cleans the worker up.
+
+The matching identities are:
 
 | Need | Correct surface | Durable identity |
 |---|---|---|
@@ -1873,11 +2806,71 @@ Use the narrowest transport that matches the thing being moved:
 
 A host checkout path is not a public repository identity. `/artifacts` is not a Git remote. An artifact key is not a mutable “latest” file. A consultation is not a persistent Team member. Keeping those distinctions sharp prevents a large class of provenance and cleanup errors.
 
+These are three separate data planes, and host paths remain private implementation details in all three flows.
+
 ![Managed Git carries a session-owned agent ref through an exact-SHA host pin, review, and lease-protected upstream publication.](assets/evander-user-manual/diagrams/08-managed-git.svg)
+
+Read the diagram from left to right: the agent can propose a commit in its own area, but the host separately pins the exact version, reviews it, and publishes it under a fresh check of the destination.
 
 <p class="figure-caption">Figure 11.1 — Ref ownership and exact-SHA pinning keep guest work, host review, and canonical publication as separate authority transitions.</p>
 
-## Managed repository identity and trust scope
+## One change, three routes
+
+For the Northstar Platform telemetry-retry change:
+
+1. The implementation session clones `mission-control` through its `managed_repo_id` and pushes only to the branch area assigned to that session.
+2. The workflow records and pins the exact commit produced by that push. Review and release use that commit, not merely the latest version under a movable branch name.
+3. The session may stage a test report under `/artifacts`. Publishing it under a key such as the following creates one immutable archive:
+
+   ```text
+   northstar-platform/mission-control/telemetry-retry/dispatch-8/test-report
+   ```
+
+4. If another agent needs one answer about that exact source snapshot, a code consultation can read the pinned commit without becoming a permanent Team role or receiving write access.
+
+A newer report gets a new artifact key. A later code change gets a new commit. Keeping those identities distinct makes it possible to say precisely what was reviewed, what file bundle was retained, and which snapshot supported an answer.
+
+## What an operator may notice
+
+| What you see | What it usually tells you | Useful information to capture |
+|---|---|---|
+| A branch has moved, but review still shows an earlier commit | Evander pinned the exact submitted SHA instead of silently following the branch. | Managed repository, session, agent ref, and expected/reviewed SHA |
+| Publication stops after the destination changes | The destination lease prevented stale automation from overwriting newer upstream work. | Managed repository, destination ref, approved SHA, and visible lease error |
+| Publishing the same artifact key fails | Published keys are immutable; the original archive remains unchanged. | Artifact key, source session, intended new key, and error |
+| An artifact space edit reports a conflict | Another writer changed the space revision first. | Space path, logical artifact ID, expected/current revision, and intended change |
+| A consultation remains queued | The directory/profile may be at capacity, or the request may be waiting within its deadline. | Consultation ID, directory/profile, status, deadline, and source session |
+| A consultation ends but cleanup is incomplete | Evander retains the terminal record and does not release capacity prematurely. | Consultation ID, worker session/job, cleanup status, and cleanup error |
+
+## Reading common failures
+
+The safe outcome is often a refusal rather than an automatic recovery. That refusal preserves the exact source, archive, or snapshot the workflow intended to use.
+
+| Failure | Safe outcome |
+|---|---|
+| Managed source ref moves before promotion | Promotion returns `source_ref_moved`; no newer SHA is substituted. |
+| Upstream destination changes before publication | The explicit lease fails; no blind overwrite occurs. |
+| Merge conflict in an operation worktree | The operation fails and cleans up; Evander does not auto-resolve agent code. |
+| Guest pushes outside its namespace | The forced SSH command rejects the update. |
+| Duplicate published artifact key | Publication fails; the existing artifact remains unchanged. |
+| Unsafe artifact path, symlink, or archive member | Read/stage/import rejects it instead of escaping the artifact root. |
+| Artifact-space revision is stale | Mutation returns a revision conflict; reload and reapply intentionally. |
+| Consultation exceeds capacity | It remains queued until capacity is released or its deadline expires. |
+| Consultation result cites invalid lines/path | Result submission fails validation; the snapshot remains authoritative. |
+| Consultation worker cleanup fails | The terminal record is retained and capacity is not released prematurely. |
+
+## Troubleshooting: what to hand to an administrator
+
+Begin with the kind of object involved and its durable identity:
+
+1. For source code, record the directory, `managed_repo_id`, session ID, relevant ref, and exact commit SHA.
+2. For a published file bundle, record the artifact key, source session, publication status, and archive SHA-256 if shown. For an artifact-space conflict, also record the space path and revision.
+3. For a code consultation, record the consultation ID, source session, pinned commit, status, deadline, and cleanup state.
+4. Copy the exact refusal or error and note the last successful stage.
+5. Give those details to an Evander administrator. Do not move branch labels to “match,” overwrite an artifact, delete a retained cleanup record, or manually release a consultation snapshot or capacity slot.
+
+The remainder of this chapter is managed-Git, artifact, consultation, and administrator reference material.
+
+## Administrator reference: managed repository identity and trust scope
 
 Evander keeps one host-owned bare repository for each canonical upstream *within an owning directory trust boundary*. The registry is `runtime/managed-git-repositories.json`; bare repositories live below `runtime/managed-git/`. Consumers address a repository by a deterministic ID shaped as `mr_` plus 20 hexadecimal characters.
 
@@ -1892,7 +2885,7 @@ Directory inheritance matters:
 
 The registry contains canonical identity, provider, display name, default branch, refresh source, host commit identity, internal repository location, timestamps, and active bindings. It must not contain provider credentials or temporary worktree paths.
 
-## Ref ownership: one namespace, one writer
+## Administrator reference: ref ownership
 
 The bare repository is a controlled exchange, not a shared free-for-all.
 
@@ -1916,13 +2909,13 @@ Guest clones include three helpers:
 
 The bare repository's post-receive hook only enqueues a structured trigger event. It never receives an upstream token and never publishes to the canonical remote.
 
-## Pinned promotion and publication
+## Administrator reference: pinned promotion and publication
 
 A `trigger:git:push` event names the managed repository, changed ref, old and new SHA, session, notes ref, default branch, and derived review branch. Downstream logic must carry the event's exact new SHA.
 
 Promotion checks that the source agent ref still equals `expected_commit_sha`, then pins that object under a host-only operation ref in the same transaction. If the agent has pushed again, the event becomes `source_ref_moved`; Evander does not silently review the newer commit. Review and Team target updates use compare-and-swap.
 
-Publication is equally strict. When Northstar Platform's release agent Riley publishes the reviewed change:
+Publication is equally strict. When Northstar Platform's release agent publishes the reviewed change:
 
 1. Fetch the upstream destination into an operation-local ref.
 2. Verify that destination is an ancestor of the approved SHA.
@@ -1943,7 +2936,7 @@ It starts from a pinned host-only ref. Hooks, LFS smudge, submodule initializati
 
 The worktree is scratch space, not an agent sandbox. Never execute agent-authored builds or tests there. Success, failure, cancellation, and normal termination remove the worktree, prune its registration, and compare-and-swap delete its operation ref. Startup and periodic maintenance reconcile abandoned worktrees only when their lock is free and they are older than the configured stale threshold, one hour by default.
 
-## Artifact lifecycle
+## Administrator reference: artifact lifecycle
 
 ### Session artifacts
 
@@ -1957,7 +2950,7 @@ Session artifacts are working output. They are not durable publication until a w
 
 Metadata includes the key, storage ID, archive filename and format, byte count, SHA-256, publication time, source session, execution backend, source file count/bytes, and caller metadata. The storage ID is derived from the key, while the recorded SHA-256 verifies the actual archive bytes. Import copies the stored archive into a target session and extracts only safe archive members below its artifact root.
 
-For Imani's telemetry retry work, Northstar Platform might publish:
+For the telemetry retry work, Northstar Platform might publish:
 
 ```text
 northstar-platform/mission-control/telemetry-retry/dispatch-8/test-report
@@ -1973,7 +2966,7 @@ Space state in `runtime/artifact-spaces.json` carries a revision. Mutations can 
 
 The split is intentional: the artifact blob remains immutable, while the space can answer “what is the latest accepted `mission-control` release report?” without changing any old archive.
 
-## Request-scoped codebase consultations
+## Administrator reference: request-scoped codebase consultations
 
 Use `consult_codebase` when an agent needs a bounded answer about a repository snapshot but does not need to assign work to a persistent Team agent. The caller supplies a `managed_repo_id`, a question, and either a source ref, exact SHA, or a repository with a default branch. Evander resolves and records one exact commit before queueing the work.
 
@@ -1992,22 +2985,7 @@ Queue time counts against the consultation deadline. `max_concurrency` is per di
 
 The result token is bound to the worker session, stored only as a hash in the database, and consumed once. The signing secret comes from the host environment named by `agent_consultation_token_secret_env`. Never place the secret value in provider configuration.
 
-## Failure behavior
-
-| Failure | Safe outcome |
-|---|---|
-| Managed source ref moves before promotion | Promotion returns `source_ref_moved`; no newer SHA is substituted. |
-| Upstream destination changes before publication | The explicit lease fails; no blind overwrite occurs. |
-| Merge conflict in an operation worktree | The operation fails and cleans up; Evander does not auto-resolve agent code. |
-| Guest pushes outside its namespace | The forced SSH command rejects the update. |
-| Duplicate published artifact key | Publication fails; the existing artifact remains unchanged. |
-| Unsafe artifact path, symlink, or archive member | Read/stage/import rejects it instead of escaping the artifact root. |
-| Artifact-space revision is stale | Mutation returns a revision conflict; reload and reapply intentionally. |
-| Consultation exceeds capacity | It remains queued until capacity is released or its deadline expires. |
-| Consultation result cites invalid lines/path | Result submission fails validation; the snapshot remains authoritative. |
-| Consultation worker cleanup fails | The terminal record is retained and capacity is not released prematurely. |
-
-## Practical runbook
+## Administrator runbook
 
 Register and inspect the Northstar Platform `mission-control` repository:
 
@@ -2061,11 +3039,22 @@ For a legacy mirror deployment, do not improvise a partial conversion. Stop trig
 
 # 12. Issues and Provider Integrations
 
-> **At a glance.** Evander keeps a local issue record as the control-plane anchor for work, while provider adapters read or change the corresponding Azure DevOps or GitHub object through host-owned credentials. A local issue can be authored in Evander or act as a cache-backed proxy for a remote work item. Workflow triggers own intake; provider queries and effects own external API calls; the ADO worker owns Azure DevOps pull-request feedback and completion polling. Those responsibilities are deliberately separate.
+> **At a glance.** Work may begin inside Evander or in an external tracker such as Azure DevOps or GitHub. Evander keeps a local record that its sessions and workflows can rely on, while a controlled connector reads or updates the external item using host-owned credentials. This chapter explains how those two views stay related without pretending they are the same record.
 
-## The mental model: anchor, projection, provider
+## One work item, three views
 
-Three records that look like “the issue” serve different purposes:
+An operator may see what looks like the same work item in Evander and in an external tracker. They
+are related, but they are not interchangeable copies. Evander keeps a dependable local anchor for
+the job, a refreshed view of selected remote details, and a link to the provider's authoritative
+record.
+
+For example, Northstar Platform's `mission-control` project can track “add telemetry retry
+behavior” as a local proxy for Azure DevOps work item 14084. The implementation session refers to
+the local record, the proxy view shows the remote title and state, and a workflow action posts a
+progress comment to Azure DevOps. If the provider is briefly unavailable, Evander can still explain
+which local job and session were involved without claiming that its cached title or status is fresh.
+
+The three views serve different purposes:
 
 | Record | Authority | Purpose |
 |---|---|---|
@@ -2073,64 +3062,128 @@ Three records that look like “the issue” serve different purposes:
 | Proxy cache | Evander runtime, refreshed from provider | Fast display of selected remote fields and synchronization diagnostics |
 | Remote issue or pull request | Azure DevOps or GitHub | Provider-native discussion, status, reviewers, commits, and links |
 
-The local record never smuggles a provider token into a guest. When an agent uses an issue tool, the gateway resolves its session and directory, applies policy, and calls a host provider. Provider-normalized responses then cross the boundary.
+The local record never carries a provider token into the temporary workspace. An agent asks Evander
+to perform an allowed issue action; Evander checks the session and directory, applies policy, and
+uses the host-owned provider connection. Provider-normalized responses then cross the boundary.
 
-Northstar Platform's `mission-control` project, for example, can track “add telemetry retry behavior” as a local proxy for Azure DevOps work item 14084. Imani's execution session refers to the local record; the proxy cache shows the remote title and state; a workflow effect posts a progress comment to Azure DevOps.
+## What an operator may notice
 
-## Local issue identity and lifecycle
+The separation between local and remote records explains several otherwise surprising situations:
 
-A `LocalIssueRecord` has an internal `issue_id`, a human-facing `issue_number`, directory path, title, description, state, source type, timestamps, and metadata. Identity is scoped. The same visible number can exist in different directories or provider projects, so callers should use the internal ID whenever a number could be ambiguous.
+| What you see | What it tells you | Useful evidence to capture |
+|---|---|---|
+| The issue exists in Evander but its remote title or state looks old | The local anchor is available, but its refreshed provider view may be stale | Directory, internal issue ID, provider link, cache time, and sync diagnostic |
+| A local issue changes state but the provider item does not | The local lifecycle and the provider mutation are separate operations | Local state, intended remote operation, workflow run, and visible error |
+| A provider pull request has new feedback but no agent responds | Provider feedback pickup, workflow publication, or session wake may be waiting | PR identity, latest comment or completion time, run ID, and session ID |
+| A merge check was clean earlier but now reports a stale target | The branch changed after the earlier check | PR identity, target SHA from the provider, and exact managed-repository SHA |
 
-The supported local states are:
+These differences are useful diagnostic evidence. Do not edit the cached record to make the two
+views appear consistent; refresh or retry the operation that owns the missing handoff.
 
-```text
-New -> Approved -> Committed -> In Progress -> Completed -> Closed
-```
+> <span class="sidebar-kicker">Deeper detail</span> **Local issue identity and lifecycle**
+>
+> A `LocalIssueRecord` has an internal `issue_id`, a human-facing `issue_number`, directory path,
+> title, description, state, source type, timestamps, and metadata. Identity is scoped. The same
+> visible number can exist in different directories or provider projects, so callers should use the
+> internal ID whenever a number could be ambiguous.
+>
+> The supported local states are:
+>
+> ```text
+> New -> Approved -> Committed -> In Progress -> Completed -> Closed
+> ```
+>
+> These are allowed values, not a promise that every transition must visit every intermediate state.
+> State-changing services enforce the operation-specific invariant. `claim_next_issue`, for example,
+> selects an eligible local manual issue by priority and age and moves it to `In Progress`.
+> `complete_issue` refuses an issue that is not already `In Progress`.
+>
+> Priority values are `P0` through `P3`; omitted priority behaves as `P3` for queue ordering.
+> `claim_next_issue` considers `Committed` records in the calling session's directory scope, orders
+> them by priority and age, and moves the winner to `In Progress`. Only `local_manual` issues
+> participate in the local claim/complete queue. A `remote_proxy` remains governed by its remote
+> system and is changed through provider-aware operations.
+>
+> Issue VM creation and repository bootstrap are separate actions. Creating the VM first makes
+> failures and cleanup visible; cloning a managed repository later gives the session only the
+> repository identity and access mode it needs. Deleting a local issue is blocked while a VM or
+> session still depends on it.
 
-These are allowed values, not a promise that every transition must visit every intermediate state. State-changing services enforce the operation-specific invariant. `claim_next_issue`, for example, selects an eligible local manual issue by priority and age and moves it to `In Progress`. `complete_issue` refuses an issue that is not already `In Progress`.
+> <span class="sidebar-kicker">Technical sidebar</span> **Remote proxies, freshness, and provider contracts**
+>
+> A proxy stores its binding in `metadata.remote`, including the normalized provider and remote
+> issue ID. `metadata.proxy_cache` contains the most recently materialized provider payload and
+> refresh time. Provider errors belong in synchronization metadata; they must not be disguised as
+> fresh remote state.
+>
+> Current proxy mutation support is Azure DevOps-specific. Provider-neutral workflow queries can
+> read remote issues from Azure DevOps and GitHub, but this does not imply that every mutation exists
+> for every provider. Unsupported combinations fail explicitly.
+>
+> The `evander-proxy-issue-sync` worker periodically batches Azure DevOps summaries for known
+> proxies. It refreshes changed cache entries and records diagnostics. A missing remote item does not
+> automatically delete its local proxy: disappearance can mean permissions, a transient provider
+> failure, or deletion, and requires an operator decision.
+>
+> Remote intake is workflow-owned. A remote-issue trigger or query discovers matching work and an
+> explicit proxy-upsert step creates or refreshes the local anchor. The proxy sync worker maintains
+> already-known records; it is not a second intake engine.
+>
+> Provider adapters translate external shapes into stable workflow contracts:
+>
+> - remote issue queries accept provider-specific filters and return canonical issue items;
+> - Azure DevOps effects create, update, delete, and comment on work items where configured;
+> - pull-request list/get queries normalize identifiers, branches, SHAs, status, reviewers, commits,
+>   and raw provider context;
+> - pull-request effects update supported metadata or tags;
+> - reply and publish services expose provider-specific discussion and PR publication behind
+>   normalized calls.
+>
+> Normalization is intentionally lossy at the portable layer. A workflow that needs a provider-only
+> field should declare that dependency rather than assuming every provider has it. Raw response data
+> is available only where the node contract explicitly exposes it.
+>
+> Inline provider media is also a trust boundary. Media URLs must use the expected HTTPS provider
+> host and pass size and content checks before Evander makes them available. Arbitrary HTML or image
+> URLs in an issue body are not fetched merely because a provider returned them.
 
-Priority values are `P0` through `P3`; omitted priority behaves as `P3` for queue ordering. `claim_next_issue` considers `Committed` records in the calling session's directory scope, orders them by priority and age, and moves the winner to `In Progress`. Only `local_manual` issues participate in the local claim/complete queue. A `remote_proxy` remains governed by its remote system and is changed through provider-aware operations.
+## Reviews and merge checks
 
-Issue VM creation and repository bootstrap are separate actions. Creating the VM first makes failures and cleanup visible; cloning a managed repository later gives the session only the repository identity and access mode it needs. Deleting a local issue is blocked while a VM or session still depends on it.
+During review, the important promise is that Evander checks the provider's current pull-request
+record against the exact code available in the authorized managed repository. The check reports
+what it found; it does not merge or publish anything.
 
-## Remote proxies and freshness
+If review of the retry-telemetry change reports a stale target, the target SHA reported by the pull
+request no longer matches the current target ref. The review agent should refresh the pull-request
+snapshot and rerun the check—not treat an earlier clean report as permission to publish.
 
-A proxy stores its binding in `metadata.remote`, including the normalized provider and remote issue ID. `metadata.proxy_cache` contains the most recently materialized provider payload and refresh time. Provider errors belong in synchronization metadata; they must not be disguised as fresh remote state.
+> <span class="sidebar-kicker">Deeper detail</span> **Feedback streams and merge preflight**
+>
+> Pull requests have two operating modes:
+>
+> 1. **Explicit streams.** Current workflow configuration names provider, repository, and matching
+>    rules. The ADO worker lists and polls those Azure DevOps PRs, records feedback cursors, and
+>    publishes new-feedback or completion events idempotently.
+> 2. **Legacy PR-map bindings.** Older sessions may be associated with entries in
+>    `runtime/pr-map.json`. This compatibility path remains readable, but new workflow design should
+>    prefer explicit PR triggers and managed repository identity.
+>
+> The ADO worker owns Azure DevOps review feedback and completion pickup. It does not own general
+> work-item intake. GitHub PR reads, replies, and publication use their provider services; do not
+> infer a GitHub polling worker from the ADO service name.
+>
+> Merge preflight is read-only analysis. It resolves the provider PR snapshot, verifies that expected
+> refs and commits exist in the authorized managed repository, and uses Git's merge-tree machinery
+> for single, pairwise, or ordered checks. Results distinguish a clean merge from conflicts, missing
+> refs, a stale target branch, repository errors, and provider errors. Preflight never merges,
+> pushes, or updates the PR.
 
-Current proxy mutation support is Azure DevOps-specific. Provider-neutral workflow queries can read remote issues from Azure DevOps and GitHub, but this does not imply that every mutation exists for every provider. Unsupported combinations fail explicitly.
+## Troubleshooting
 
-The `evander-proxy-issue-sync` worker periodically batches Azure DevOps summaries for known proxies. It refreshes changed cache entries and records diagnostics. A missing remote item does not automatically delete its local proxy: disappearance can mean permissions, a transient provider failure, or deletion, and requires an operator decision.
-
-Remote intake is workflow-owned. A remote-issue trigger or query discovers matching work and an explicit proxy-upsert step creates or refreshes the local anchor. The proxy sync worker maintains already-known records; it is not a second intake engine.
-
-## Provider-normalized workflow nodes
-
-Provider adapters translate external shapes into stable workflow contracts:
-
-- remote issue queries accept provider-specific filters and return canonical issue items;
-- Azure DevOps effects create, update, delete, and comment on work items where configured;
-- pull-request list/get queries normalize identifiers, branches, SHAs, status, reviewers, commits, and raw provider context;
-- pull-request effects update supported metadata or tags;
-- reply and publish services expose provider-specific discussion and PR publication behind normalized calls.
-
-Normalization is intentionally lossy at the portable layer. A workflow that needs a provider-only field should declare that dependency rather than assuming every provider has it. Raw response data is available only where the node contract explicitly exposes it.
-
-Inline provider media is also a trust boundary. Media URLs must use the expected HTTPS provider host and pass size and content checks before Evander makes them available. Arbitrary HTML or image URLs in an issue body are not fetched merely because a provider returned them.
-
-## Pull requests, feedback, and merge preflight
-
-Pull requests have two operating modes:
-
-1. **Explicit streams.** Current workflow configuration names provider, repository, and matching rules. The ADO worker lists and polls those Azure DevOps PRs, records feedback cursors, and publishes new-feedback or completion events idempotently.
-2. **Legacy PR-map bindings.** Older sessions may be associated with entries in `runtime/pr-map.json`. This compatibility path remains readable, but new workflow design should prefer explicit PR triggers and managed repository identity.
-
-The ADO worker owns Azure DevOps review feedback and completion pickup. It does not own general work-item intake. GitHub PR reads, replies, and publication use their provider services; do not infer a GitHub polling worker from the ADO service name.
-
-Merge preflight is read-only analysis. It resolves the provider PR snapshot, verifies that expected refs and commits exist in the authorized managed repository, and uses Git's merge-tree machinery for single, pairwise, or ordered checks. Results distinguish a clean merge from conflicts, missing refs, a stale target branch, repository errors, and provider errors. Preflight never merges, pushes, or updates the PR.
-
-For Rowan's review of Imani's retry-telemetry change, a stale-target result means the target SHA reported by the PR no longer matches the current target ref. Rowan should refresh the PR snapshot and rerun preflight—not treat an earlier clean report as permission to publish.
-
-## Failure behavior
+Begin with the record you can see. In Admin Web, select the directory and capture the internal issue
+ID, visible number, `source_type`, current state, provider link, and last visible error or sync time.
+For a pull request, capture its provider identity and the exact SHA involved. Those details let an
+administrator follow the boundary that failed without guessing from a title alone.
 
 | Symptom | Likely invariant or boundary | Safe response |
 |---|---|---|
@@ -2144,7 +3197,11 @@ For Rowan's review of Imani's retry-telemetry change, a stale-target result mean
 
 Provider failures should leave enough context to retry without fabricating success. Workflow effects record attempts and outcomes; polling workers preserve cursors only at their defined success boundary; proxy refresh keeps the last known cache with an explicit diagnostic.
 
-## Practical runbook
+Give the captured IDs and timestamps to an Evander administrator when the safe response requires
+host configuration, service logs, or a managed-repository refresh. Do not change cache JSON or
+substitute a branch tip for the recorded SHA.
+
+## Administrator runbook
 
 1. **Identify the record.** In Admin Web, select the directory and record the internal issue ID, visible number, `source_type`, and current state.
 2. **Separate local from remote truth.** For a proxy, inspect `metadata.remote`, cache timestamp, and sync diagnostics. Open the provider URL when remote authority matters.
@@ -2177,11 +3234,20 @@ Provider failures should leave enough context to retry without fabricating succe
 
 # 13. Communications, Meetings, Calls, and Wakes
 
-> **At a glance.** Evander turns external conversations into bounded, auditable control-plane data. Communication targets say *where* a session may read, write, or reply. Ingest workers copy allowed provider messages into local stores. Workflow triggers decide what those messages mean. Wake workers resume an existing agent context or start an explicitly allowed new one. Sending, scheduling, attachment retrieval, email, meetings, and calls each retain their own policy boundary.
+> **At a glance.** A message can inform an agent, ask for a reply, or become new work, but receiving it should not wake every agent indiscriminately. Evander first records communication through an allowed channel, then applies project rules to decide what it means and whether an agent should resume. This chapter follows that path across chat systems, email, meetings, calls, and scheduled reminders.
 
-## The mental model: address, message, event, wake
+## From a message to a wake
 
-Keep four identities distinct:
+A message does not travel straight from a chat system into an agent's active conversation. Evander
+first decides whether the project may use that communication destination, records the message, lets
+the workflow decide whether it matters, and only then asks an eligible session to resume.
+
+For the Northstar Platform team, an operator might configure a readable and replyable Teams chat for
+`mission-control`. The project workflow can select messages about the telemetry-retry work item and
+dispatch a wake only to the implementation session. A review session can reply in the same thread
+without gaining access to unrelated chats.
+
+Four identities keep those handoffs clear:
 
 | Concept | Example | Meaning |
 |---|---|---|
@@ -2190,88 +3256,200 @@ Keep four identities distinct:
 | Workflow event | `trigger:communication:new-message` | A durable fact eligible to start workflow logic |
 | Wake dispatch | session + source event + mode | A request to resume or create an agent turn |
 
-Receiving a message does not automatically wake every session. A send permission does not imply read permission. A successful provider API call does not prove that a workflow consumed the resulting event.
+Receiving a message does not automatically wake every session. A send permission does not imply read
+permission. A successful provider API call does not prove that a workflow consumed the resulting
+event.
 
-For the Northstar Platform team, an operator might configure a readable/replyable Teams chat for `mission-control`. The project workflow filters for the telemetry-retry work item, and only then dispatches a wake to Imani's active session. Rowan can reply in the thread without gaining access to unrelated chats.
+## What an operator may notice
 
-## Communication targets and directory policy
+Because each handoff is separate, partial progress is visible and useful:
 
-A target definition has a stable ID, provider and target kind, provider-native address, display metadata, and capabilities. Capabilities are explicit—typically `read`, `write`, and `reply`—and are checked per operation. Sessions refer to target IDs or legacy provider references; the resolver applies directory inheritance and overlays before returning the effective target.
+| What you see | What it usually means | Useful information to capture |
+|---|---|---|
+| The provider shows a message, but Evander does not | The message has not crossed the ingest boundary | Directory, target, sender, provider message time and ID |
+| Evander shows the message, but no workflow starts | The message was recorded but did not match the configured trigger or sender rules | Stored message ID, target, trigger, and last workflow activity |
+| A workflow runs, but the agent does not resume | The wake was denied, deferred, or failed after workflow selection | Run ID, wake record, session ID, and visible status |
+| Reading works, but replying does not | The target or thread may allow `read` without `reply` | Target ID, message or thread ID, requested operation, and denial |
+| A call or meeting is visible, but no summary arrives | Transport, event ingest, workflow, and wake are at different stages | Call or meeting ID, latest provider state, event time, and session ID |
 
-Target definitions contain addresses, not access tokens. Discord bot tokens, Microsoft Graph credentials, email credentials, and telephony secrets remain in host environment/configuration. Directory-scoped policy can narrow the root catalog. A child directory cannot turn an unknown or forbidden endpoint into an allowed target merely by supplying its raw provider ID.
+An operator does not need to inspect every service to make a useful report. The durable IDs reveal
+how far the communication travelled.
 
-Direct-message routes deserve a second check: the target may be allowed while the sender is not. Inbound routing and workflow triggers apply sender/user allowlists where configured.
+## Who may be contacted
 
-## Ingest, query, trigger, and wake are separate stages
+Operators and workflow authors select communication targets by a stable, readable ID rather than by
+pasting an arbitrary provider address into each job. Each target says whether the project may read,
+write, or reply. Direct messages can additionally restrict which senders are accepted.
 
-### Ingest
+> <span class="sidebar-kicker">Deeper detail</span> **Target resolution and policy**
+>
+> A target definition has a stable ID, provider and target kind, provider-native address, display
+> metadata, and capabilities. Capabilities are explicit—typically `read`, `write`, and `reply`—and
+> are checked per operation. Sessions refer to target IDs or legacy provider references; the resolver
+> applies directory inheritance and overlays before returning the effective target.
+>
+> Target definitions contain addresses, not access tokens. Discord bot tokens, Microsoft Graph
+> credentials, email credentials, and telephony secrets remain in host environment/configuration.
+> Directory-scoped policy can narrow the root catalog. A child directory cannot turn an unknown or
+> forbidden endpoint into an allowed target merely by supplying its raw provider ID.
+>
+> Direct-message routes deserve a second check: the target may be allowed while the sender is not.
+> Inbound routing and workflow triggers apply sender/user allowlists where configured.
 
-`evander-discord-ingest` and the Teams ingest command poll provider APIs using host credentials, normalize messages, and upsert them into provider-specific inbox stores. Cursor state makes repeated polling safe. Teams meeting ingest consumes the media bridge's structured event stream rather than pretending a meeting transcript is an ordinary Graph chat message.
+## Why a stored message may not wake an agent
 
-### Query and trigger
+Recording a message and deciding to act on it are intentionally different steps. A project can keep
+an auditable inbox without treating every notification as new work. If a message does matter, the
+workflow chooses the session and the wake behavior.
 
-`query:communication:messages` reads stored messages through the normalized target boundary. `trigger:communication:new-message` evaluates new stored messages for explicit targets and sender rules. Provider-specific compatibility triggers still exist, but the normalized trigger is the preferred design for portable workflow packs.
+> <span class="sidebar-kicker">Technical sidebar</span> **Ingest, query, trigger, and wake**
+>
+> **Ingest.** `evander-discord-ingest` and the Teams ingest command poll provider APIs using host
+> credentials, normalize messages, and upsert them into provider-specific inbox stores. Cursor state
+> makes repeated polling safe. Teams meeting ingest consumes the media bridge's structured event
+> stream rather than pretending a meeting transcript is an ordinary Graph chat message.
+>
+> **Query and trigger.** `query:communication:messages` reads stored messages through the normalized
+> target boundary. `trigger:communication:new-message` evaluates new stored messages for explicit
+> targets and sender rules. Provider-specific compatibility triggers still exist, but the normalized
+> trigger is the preferred design for portable workflow packs.
+>
+> **Wake.** Wake dispatch is a later decision. `evander-discord-wake` considers unread Discord
+> messages for eligible active sessions. `evander-scheduled-wake` handles persisted schedules. Azure
+> DevOps PR feedback is handled by `evander-ado-worker`, not either communication wake worker. There
+> is no current `evander-host-heartbeat` service.
+>
+> This separation prevents a provider polling hiccup from becoming a session lifecycle decision and
+> prevents one stored message from being delivered repeatedly without a durable cursor or dispatch
+> record.
 
-### Wake
+## Reading, replying, and exchanging files
 
-Wake dispatch is a later decision. `evander-discord-wake` considers unread Discord messages for eligible active sessions. `evander-scheduled-wake` handles persisted schedules. Azure DevOps PR feedback is handled by `evander-ado-worker`, not either communication wake worker. There is no current `evander-host-heartbeat` service.
+Permission follows the action. Being allowed to read a project channel does not automatically permit
+a new post, and permission to post does not imply access to every thread. Replies remain tied to the
+message or thread an operator can recognize.
 
-This separation prevents a provider polling hiccup from becoming a session lifecycle decision and prevents one stored message from being delivered repeatedly without a durable cursor or dispatch record.
+Attachments are not trusted merely because a provider displayed them. Evander checks an inbound
+file before storing it as a communication artifact, and it sends only a safe file from the current
+session's artifact area.
 
-## Reading, replying, and attachments
+> <span class="sidebar-kicker">Technical sidebar</span> **Tool and attachment checks**
+>
+> Gateway tools first resolve the calling session, then the effective target, capability, directory
+> policy, and approval requirement. Reads are limited to allowed targets. Replies additionally bind
+> to an existing message/thread. New outbound messages require `write`; threaded responses require
+> `reply`.
+>
+> Inbound attachments are metadata until explicitly fetched. Attachment helpers re-resolve the
+> source message and target, enforce allowlists, bound file size, reject unsafe filenames and media
+> types, and store accepted bytes as communication artifacts. An artifact link records the
+> provider/message relationship without making provider URLs a permanent trust token.
+>
+> Outbound files follow the inverse path: Evander reads a safe regular file from the session artifact
+> root, verifies the selected target and capability, then uploads through the host provider. A guest
+> cannot supply an arbitrary host path.
+>
+> All sensitive tool calls pass through policy and audit. If an approval is required, the provider
+> action does not happen until the approval is granted and still valid.
 
-Gateway tools first resolve the calling session, then the effective target, capability, directory policy, and approval requirement. Reads are limited to allowed targets. Replies additionally bind to an existing message/thread. New outbound messages require `write`; threaded responses require `reply`.
+## Email: drafting and sending are separate
 
-Inbound attachments are metadata until explicitly fetched. Attachment helpers re-resolve the source message and target, enforce allowlists, bound file size, reject unsafe filenames and media types, and store accepted bytes as communication artifacts. An artifact link records the provider/message relationship without making provider URLs a permanent trust token.
+An agent can prepare a draft without automatically gaining permission to send it. Recipient and
+domain rules still apply, and the final send can pause for explicit approval.
 
-Outbound files follow the inverse path: Evander reads a safe regular file from the session artifact root, verifies the selected target and capability, then uploads through the host provider. A guest cannot supply an arbitrary host path.
+> <span class="sidebar-kicker">Deeper detail</span> **Mailbox providers and state**
+>
+> Email providers support Gmail and Microsoft Graph behind a normalized interface. Mailbox and
+> folder reads are restricted by host policy. Sync cursors are stored locally so polling can continue
+> without scanning the entire mailbox.
+>
+> Drafting and sending are different operations. Recipient and domain allowlists constrain drafts;
+> a send can require explicit approval. The guest sees message and draft abstractions, not OAuth
+> refresh tokens. JSON-backed email is available for controlled/local use but should not be mistaken
+> for a live provider.
 
-All sensitive tool calls pass through policy and audit. If an approval is required, the provider action does not happen until the approval is granted and still valid.
-
-## Email
-
-Email providers support Gmail and Microsoft Graph behind a normalized interface. Mailbox and folder reads are restricted by host policy. Sync cursors are stored locally so polling can continue without scanning the entire mailbox.
-
-Drafting and sending are different operations. Recipient and domain allowlists constrain drafts; a send can require explicit approval. The guest sees message and draft abstractions, not OAuth refresh tokens. JSON-backed email is available for controlled/local use but should not be mistaken for a live provider.
-
-When a send result is uncertain—for example, the network fails after the provider accepted the request—inspect the provider's sent/draft state and Evander's audit entry before retrying. Blind retry can duplicate a message.
+When a send result is uncertain—for example, the network fails after the provider accepted the
+request—inspect the provider's sent/draft state and Evander's audit entry before retrying. Blind
+retry can duplicate a message.
 
 ## Scheduled wakes
 
-A wake request contains a target session, prompt/context, source, directory, resume mode, and either a one-time `resume_at` or a cron expression. The SQLite-backed wake store also records status, lease/attempt state, next run, and dispatch history. Older JSON state may be imported once; SQLite is the live authority.
+A scheduled wake asks Evander to resume a session at a particular time or on a repeating schedule.
+The schedule is saved, so restarting the worker does not erase the reminder. Before dispatch, Evander
+still checks that the target session can be resumed.
 
 Two resume modes matter:
 
-- `same_context` continues the existing agent context;
-- `new_context` creates an intentionally fresh turn where the Admin surface permits it.
+- `same_context` continues the existing agent context, so the reminder arrives in the current work;
+- `new_context` creates an intentionally fresh turn where an allowed Admin surface permits it.
 
-MCP scheduling supports only `same_context`, because the calling session cannot grant itself authority to create an unrelated context. Admin operations can select the supported mode explicitly.
+> <span class="sidebar-kicker">Technical sidebar</span> **Stored schedule and dispatch rules**
+>
+> A wake request contains a target session, prompt/context, source, directory, resume mode, and either
+> a one-time `resume_at` or a cron expression. The SQLite-backed wake store also records status,
+> lease/attempt state, next run, and dispatch history. Older JSON state may be imported once; SQLite
+> is the live authority.
+>
+> MCP scheduling supports only `same_context`, because the calling session cannot grant itself
+> authority to create an unrelated context. Admin operations can select the supported mode
+> explicitly.
+>
+> The worker claims due records, validates that the session is still dispatchable, and records the
+> outcome. A recurring schedule advances only across its handled-dispatch boundary. A failed one-time
+> dispatch remains retryable with bounded backoff/deadline state rather than being marked successful.
+> Disabled or completed one-time schedules have no next run.
 
-The worker claims due records, validates that the session is still dispatchable, and records the outcome. A recurring schedule advances only across its handled-dispatch boundary. A failed one-time dispatch remains retryable with bounded backoff/deadline state rather than being marked successful. Disabled or completed one-time schedules have no next run.
-
-Useful commands include:
-
-```bash
-evander-cli wake-schedules list
-evander-cli wake-schedules list --session-id <session-id>
-```
-
-Use `evander-cli wake-schedules --help` for the current create/edit/delete syntax; timestamps are interpreted as explicit instants and should include a timezone.
+> <span class="sidebar-kicker">For administrators</span> **Inspecting wake schedules**
+>
+> Useful commands include:
+>
+> ```bash
+> evander-cli wake-schedules list
+> evander-cli wake-schedules list --session-id <session-id>
+> ```
+>
+> Use `evander-cli wake-schedules --help` for the current create/edit/delete syntax; timestamps are
+> interpreted as explicit instants and should include a timezone.
 
 ## Voice calls and Teams meetings
 
-Phone calls use host-owned contact and provider configuration. Public session records contain a contact ID or masked display information, not a raw secret credential. Retell-backed calls and OpenAI Realtime over the DIDWW SIP bridge have different media transports but share a projected voice-session lifecycle that operators can inspect.
+Calls and meetings add a live media connection, but they follow the same saved-handoff principle as
+messages. A provider may accept a call or a bridge may join a meeting before any transcript, result,
+workflow event, or agent wake is available. Operators can therefore see where the handoff stopped.
 
-Call creation, status reconciliation, and the wake that reports a terminal call result are separate steps. If the provider accepted a call but the agent has not resumed, inspect the provider/call record and the voice-session reconciliation/wake path independently.
+Public session records use a contact ID or masked display information. The host keeps the telephony
+credential, just as it keeps chat and email credentials.
 
-Teams meetings use a dedicated media bridge because real-time meeting media is not exposed as an ordinary Linux Graph polling API. The Windows bridge joins or leaves, captures media/transcript events, and sends authenticated structured events to the host ingest surface. Evander persists meeting/session records and turns eligible transcript events into workflow input. Starting or stopping a bridge session is operational control, not proof that a workflow saw a transcript.
+> <span class="sidebar-kicker">Technical sidebar</span> **Call and meeting transport**
+>
+> Phone calls use host-owned contact and provider configuration. Public session records contain a
+> contact ID or masked display information, not a raw secret credential. Retell-backed calls and
+> OpenAI Realtime over the DIDWW SIP bridge have different media transports but share a projected
+> voice-session lifecycle that operators can inspect.
+>
+> Call creation, status reconciliation, and the wake that reports a terminal call result are
+> separate steps. If the provider accepted a call but the agent has not resumed, inspect the
+> provider/call record and the voice-session reconciliation/wake path independently.
+>
+> Teams meetings use a dedicated media bridge because real-time meeting media is not exposed as an
+> ordinary Linux Graph polling API. The Windows bridge joins or leaves, captures media/transcript
+> events, and sends authenticated structured events to the host ingest surface. Evander persists
+> meeting/session records and turns eligible transcript events into workflow input. Starting or
+> stopping a bridge session is operational control, not proof that a workflow saw a transcript.
 
-```bash
-evander-cli teams-meeting start --help
-evander-cli teams-meeting stop --help
-```
+> <span class="sidebar-kicker">For administrators</span> **Meeting bridge commands**
+>
+> ```bash
+> evander-cli teams-meeting start --help
+> evander-cli teams-meeting stop --help
+> ```
 
-## Failure behavior
+## Troubleshooting
+
+Start in Admin Web with the communication, run, wake, call, or meeting record that is visible. Record
+the selected directory, target, provider message or event ID, workflow run, wake dispatch, session
+ID, last status, and approximate time. Also state the last boundary that definitely worked—for
+example, “the message appears in Evander, but no workflow run was created.”
 
 | Symptom | Check first | Meaning |
 |---|---|---|
@@ -2285,7 +3463,11 @@ evander-cli teams-meeting stop --help
 
 Workers keep last-known-good configuration on a failed hot reload where supported and log the rejected reload. They should not replace a working policy with a partially parsed file.
 
-## Practical runbook
+If the next check requires provider credentials, worker journals, cursors, or bridge health, give the
+captured evidence to an Evander administrator. Do not resend a message while provider acceptance is
+uncertain, and do not edit a wake cursor or schedule database to make it advance.
+
+## Administrator runbook
 
 1. **Name the stage.** Decide whether the failure is provider receipt, ingest, local query, trigger, effect/send, or wake.
 2. **Resolve the target.** In Admin Web, inspect the effective directory target, provider kind, native address, capabilities, and sender restrictions.
@@ -2325,88 +3507,112 @@ Workers keep last-known-good configuration on a failed hot reload where supporte
 
 # 14. Semantic Memory, Model Usage, Skills, and Add-ons
 
-> **At a glance.** These four facilities extend what Evander can know or do without weakening its control-plane boundaries. Semantic storage indexes operator-selected text in Qdrant; it does not replace canonical records. Model-usage events record what providers report and estimate cost from an operator-owned catalog; they are not invoices. Managed skills copy reviewed instructions into selected agents. Add-ons register bounded UI, API, MCP, workflow, and private-state surfaces and take effect only after the relevant services restart.
+> **At a glance.** Evander can be extended with searchable knowledge, model-usage estimates, reusable agent instructions, and packaged add-ons. Each feature adds something useful, but none is allowed to become an invisible second source of truth or an unrestricted path into the control plane. This chapter explains what these extensions are good for and, just as importantly, what they do not replace.
 
 ## Four extension layers
 
-| Facility | Adds | Does not become |
+These four facilities solve different problems. Search helps an agent find relevant material. Usage records help an operator understand model activity. Skills give an agent reviewed instructions. Add-ons give Evander a packaged new capability. None of them silently changes the authority rules described earlier in the manual.
+
+| Facility | Helps with | Must not be mistaken for |
 |---|---|---|
 | Semantic store | Searchable vector projection | Canonical database or access-control bypass |
 | Model usage | Provider-neutral usage/cost observations | Provider billing ledger |
 | Managed skill | Reviewed `SKILL.md` installed into selected execution | Executable host plugin or secret carrier |
 | Add-on | Packaged control-plane integration | Permission to modify arbitrary core state |
 
-For Northstar Platform, an operator might index approved architecture notes, attach a reviewed telemetry-debugging skill to Imani's execution, inspect model use for the `mission-control` workflow, and use Team Add-on to inspect the coordinated assignment. Each action still carries directory, session, and audit context.
+For Northstar Platform, an operator might index approved architecture notes, attach a reviewed telemetry-debugging skill to the implementation execution, inspect model use for the `mission-control` workflow, and use Team Add-on to inspect the coordinated assignment. Each action still carries directory, session, and audit context.
 
 ## Semantic storage is a projection
 
-The current semantic-store provider is Qdrant and the current embedding provider is OpenAI-compatible embeddings. Defaults target host-local Qdrant at `http://127.0.0.1:6333` and `text-embedding-3-small` with 1,536 dimensions and cosine distance. Provider configuration is directory-resolved; API keys are named by environment variable and resolved on the host.
+Semantic search turns approved text into a form that can be searched by meaning rather than exact wording. It is useful for finding a likely architecture note or previous decision, but the result is still only a pointer back to the authoritative source. A close match does not make the text current, true, permitted, or relevant to the present directory.
 
-The v1 collection contract is strict:
+For Northstar, the approved review note remains in Team or artifact storage. The semantic store holds a searchable copy with enough source information to find that note again. If the searchable copy is deleted or rebuilt, the approved note remains.
 
-- a collection has one unnamed vector, not a named-vector schema;
-- its dimension and distance must match the effective embedding configuration;
-- a point ID is an unsigned 64-bit integer or a UUID string;
-- upsert embeds the supplied text and records that source text under the reserved payload key `_semantic_text`;
-- user payload must not counterfeit reserved fields;
-- get/search return normalized points and scores, while delete names explicit IDs.
-
-`effect:semantic:ensure-collection` is idempotent only when an existing collection has the expected schema. It refuses a mismatch instead of silently re-embedding old points into an incompatible space. Changing model or dimensions therefore requires an explicit migration: create a new collection, re-index from canonical sources, verify it, then switch consumers.
-
-Queries and effects are available both to workflows and, where policy allows, through gateway tools. Deletion is destructive and may require approval. A similarity result is evidence of proximity in the selected embedding space, not a statement of truth or authorization.
+> <span class="sidebar-kicker">Technical sidebar</span> **Collection and embedding contract**
+>
+> The current semantic-store provider is Qdrant and the current embedding provider is OpenAI-compatible embeddings. Defaults target host-local Qdrant at `http://127.0.0.1:6333` and `text-embedding-3-small` with 1,536 dimensions and cosine distance. Provider configuration is directory-resolved; API keys are named by environment variable and resolved on the host.
+>
+> The v1 collection contract is strict:
+>
+> - a collection has one unnamed vector, not a named-vector schema;
+> - its dimension and distance must match the effective embedding configuration;
+> - a point ID is an unsigned 64-bit integer or a UUID string;
+> - upsert embeds the supplied text and records that source text under the reserved payload key `_semantic_text`;
+> - user payload must not counterfeit reserved fields;
+> - get/search return normalized points and scores, while delete names explicit IDs.
+>
+> `effect:semantic:ensure-collection` is idempotent only when an existing collection has the expected schema. It refuses a mismatch instead of silently re-embedding old points into an incompatible space. Changing model or dimensions therefore requires an explicit migration: create a new collection, re-index from canonical sources, verify it, then switch consumers.
+>
+> Queries and effects are available both to workflows and, where policy allows, through gateway tools. Deletion is destructive and may require approval. A similarity result is evidence of proximity in the selected embedding space, not a statement of truth or authorization.
 
 ### A safe indexing pattern
 
-Use a deterministic point ID derived outside the semantic store and retain the canonical record ID in payload metadata. For example, Rowan's approved review note remains authoritative in Team or the artifact store; Qdrant receives its text plus `{team_id, project_id, source_type, source_id}`. Re-indexing the same point updates its vector, while deleting Qdrant never deletes the source note.
+Use a deterministic point ID derived outside the semantic store and retain the canonical record ID in payload metadata. For example, an approved review note remains authoritative in Team or the artifact store; Qdrant receives its text plus `{team_id, project_id, source_type, source_id}`. Re-indexing the same point updates its vector, while deleting Qdrant never deletes the source note.
 
 ## Model-usage events and estimates
 
-Relay and execution adapters normalize provider observations into `ModelInferenceUsageEvent` records in `runtime/model-usage.db`. An event can include provider/endpoint, model or deployment, input/output/total tokens, request status, duration, body byte counts and hashes, and correlation fields such as session, workflow run, effect, node, dispatch, harness, backend, directory, trace, and request IDs.
+Evander records what a model provider reported about a request and can estimate cost using a versioned price catalog. This helps answer questions such as “which workflow used the most model capacity?” It is not the provider's invoice, and missing usage information is shown as missing rather than silently counted as zero.
 
-Two cases must remain distinguishable:
-
-- `available`: the provider supplied usable token data;
-- `usage_unavailable`: a request completed or failed without a usable usage block.
-
-Evander does not invent missing token counts. Correlation is best effort within an explicitly bounded context; unattributed events remain useful provider observations rather than being assigned to the nearest-looking Team task.
-
-Cost calculation uses `runtime/model-pricing.openai.json` by default, or `EVANDER_MODEL_PRICING_PATH`. `evander-cli init-state` seeds the runtime catalog from `config/model-pricing.openai.json.example`; the example is not a live price feed. Rules can match provider, exact model or pattern, effective date, service tier, cached input, cache writes, batch multiplier, and long-context adjustments.
-
-An estimate reports statuses such as `estimated`, `pricing_unavailable`, `usage_unavailable`, `unsupported_provider`, or `insufficient_token_breakdown`. It is an operational estimate under a named catalog version and rule—not a substitute for the provider invoice. Operators must update pricing with revision checks when provider prices change.
+> <span class="sidebar-kicker">Deeper detail</span> **Usage records, attribution, and pricing**
+>
+> Relay and execution adapters normalize provider observations into `ModelInferenceUsageEvent` records in `runtime/model-usage.db`. An event can include provider/endpoint, model or deployment, input/output/total tokens, request status, duration, body byte counts and hashes, and correlation fields such as session, workflow run, effect, node, dispatch, agent harness (`agent_harness`), backend, directory, trace, and request IDs.
+>
+> Two cases must remain distinguishable:
+>
+> - `available`: the provider supplied usable token data;
+> - `usage_unavailable`: a request completed or failed without a usable usage block.
+>
+> Evander does not invent missing token counts. Correlation is best effort within an explicitly bounded context; unattributed events remain useful provider observations rather than being assigned to the nearest-looking Team task.
+>
+> Cost calculation uses `runtime/model-pricing.openai.json` by default, or `EVANDER_MODEL_PRICING_PATH`. `evander-cli init-state` seeds the runtime catalog from `config/model-pricing.openai.json.example`; the example is not a live price feed. Rules can match provider, exact model or pattern, effective date, service tier, cached input, cache writes, batch multiplier, and long-context adjustments.
+>
+> An estimate reports statuses such as `estimated`, `pricing_unavailable`, `usage_unavailable`, `unsupported_provider`, or `insufficient_token_breakdown`. It is an operational estimate under a named catalog version and rule—not a substitute for the provider invoice. Operators must update pricing with revision checks when provider prices change.
 
 ## Managed skills
 
-The skill library stores one reviewed instruction document at:
+A managed skill is a reviewed set of written instructions that Evander can place in a selected execution. It can teach the agent how this organization performs a task, but it does not install a host plugin or grant access. The job must already be allowed to use every tool, route, and resource named by the instructions.
 
-```text
-runtime/skills/<skill-name>/SKILL.md
-```
+Treat skill review like prompt and code review: look for requests to disclose data, make unbounded changes, assume authority the agent does not have, or use obsolete commands.
 
-Metadata lives in `runtime/skills-library.json`. Names may contain letters, numbers, dots, underscores, and dashes, but no traversal segments. Content must be non-empty. Creation uses a temporary file and atomic replacement before metadata is committed.
-
-When a container execution requests skills, Evander copies the selected files to:
-
-```text
-/home/agent/.config/evander/codex/skills/<skill-name>/SKILL.md
-```
-
-The agent receives text, not a host path. Unknown or missing skill content fails provisioning. Admin deletion is blocked when active configuration or workflow references would make the deletion unsafe.
-
-A skill can instruct an agent to call tools it already has; it cannot itself grant a tool, network route, host secret, or policy exemption. Treat skill review like prompt/code review: inspect instructions for data exfiltration, unbounded mutations, conflicting authority, and obsolete commands.
+> <span class="sidebar-kicker">Technical sidebar</span> **Skill storage and provisioning**
+>
+> The skill library stores one reviewed instruction document at:
+>
+> ```text
+> runtime/skills/<skill-name>/SKILL.md
+> ```
+>
+> Metadata lives in `runtime/skills-library.json`. Names may contain letters, numbers, dots, underscores, and dashes, but no traversal segments. Content must be non-empty. Creation uses a temporary file and atomic replacement before metadata is committed.
+>
+> When a container execution requests skills, Evander copies the selected files to:
+>
+> ```text
+> /home/agent/.config/evander/codex/skills/<skill-name>/SKILL.md
+> ```
+>
+> The agent receives text, not a host path. Unknown or missing skill content fails provisioning. Admin deletion is blocked when active configuration or workflow references would make the deletion unsafe.
+>
+> A skill can instruct an agent to call tools it already has; it cannot itself grant a tool, network route, host secret, or policy exemption.
 
 ## Add-ons
 
-An add-on returns an `AddonRegistration` with a validated ID, display name, optional Admin navigation, API/UI route factories, MCP registration hook, workflow providers, and metadata. It receives an `AddonContext` containing its runtime directory and supported core services. Private state belongs under:
+An add-on packages a larger extension to Evander. It may contribute its own Admin Web area, tools, workflow building blocks, and private records. Being present on disk is not the same as being enabled, and being enabled is not proof that it loaded successfully. Because several Evander processes assemble their capabilities at startup, an add-on change may require the services shown on the Add-ons page to restart.
 
-```text
-runtime/addons/<addon-id>/
-```
+Disabling an add-on prevents it from loading next time; it does not silently erase its saved records.
 
-Storage helpers reject absolute paths and traversal. Removing private add-on state must not corrupt core state, although it can intentionally erase that add-on's records.
-
-Discovery scans configured local package directories—`addons/` and `src/` by default—plus explicitly named modules. Entry-point discovery is disabled by default. Discovery and enablement are different: Admin Web can show a package that is present but disabled or failed to load.
-
-`addon_loader.enabled_addon_ids` is revision-edited configuration. Enabling or disabling is restart-gated because Admin routes, MCP tools, and workflow registries are assembled at process startup. Disabling prevents the next load; it does not delete private state.
+> <span class="sidebar-kicker">Technical sidebar</span> **Registration, discovery, and private state**
+>
+> An add-on returns an `AddonRegistration` with a validated ID, display name, optional Admin navigation, API/UI route factories, MCP registration hook, workflow providers, and metadata. It receives an `AddonContext` containing its runtime directory and supported core services. Private state belongs under:
+>
+> ```text
+> runtime/addons/<addon-id>/
+> ```
+>
+> Storage helpers reject absolute paths and traversal. Removing private add-on state must not corrupt core state, although it can intentionally erase that add-on's records.
+>
+> Discovery scans configured local package directories—`addons/` and `src/` by default—plus explicitly named modules. Entry-point discovery is disabled by default. Discovery and enablement are different: Admin Web can show a package that is present but disabled or failed to load.
+>
+> `addon_loader.enabled_addon_ids` is revision-edited configuration. Enabling or disabling is restart-gated because Admin routes, MCP tools, and workflow registries are assembled at process startup. Disabling prevents the next load; it does not delete private state.
 
 ### The Team Add-on boundary
 
@@ -2426,7 +3632,13 @@ The add-on is disabled by default. Enable `team-addon`, restart every service li
 | Add-on load error | Bad manifest/module/registration, duplicate ID, or missing asset | Inspect discovery and the journal; an explicitly enabled/mapped add-on can fail process assembly rather than start with an incomplete contract |
 | Team UI works but Team MCP tools are missing | Admin restarted but gateway did not | Restart gateway after confirming enablement |
 
-## Practical runbook
+## Troubleshooting and operator handoff
+
+An operator can begin in Admin Web. Record the selected directory, which of the four facilities is involved, what was expected, what appeared instead, and any visible session, workflow, skill, add-on, or Team identifier. For model usage, also record the time window and model name. For semantic search, retain the returned source reference rather than copying a result and treating it as authoritative.
+
+If a skill or add-on is missing from a running session, remember that an existing execution may still reflect the configuration with which it started. Do not work around that difference by copying host files into the sandbox or editing add-on state directly.
+
+## Administrator runbook
 
 1. **Semantic:** inspect effective directory settings, Qdrant health, collection size/distance, and embedding endpoint. Test store status before changing data.
 2. **Projection integrity:** retrieve a point by exact ID and compare its source metadata to the canonical record. Rebuild rather than hand-edit vectors.
@@ -2463,11 +3675,13 @@ The add-on is disabled by default. Enable `team-addon`, restart every service li
 
 # 15. Admin Operations, Observability, Backup, and Recovery
 
-> **At a glance.** Admin Web is the supported operator console over the same runtime stores, service managers, workflow registries, and policy engine used by Evander's CLI and gateway. Read views help reconstruct state; mutations remain protected by authentication, directory-scoped permissions, privileged unlock, approvals, and optimistic revision checks. Recovery starts from durable runtime truth—not from what the browser last rendered.
+> **At a glance.** Admin Web is the main place for an operator to understand what Evander is doing and to make supported changes. Its pages are views onto the same live system used by the command line and background services, not a separate copy. When something goes wrong, this chapter shows how to begin with durable evidence, make the smallest safe intervention, and preserve enough context to recover.
 
 ## The mental model: one runtime, several views
 
-Admin Web is not a second control plane. `build_admin_runtime` assembles focused services for sessions, issues/Git, VMs, workers, workflows, reports, approvals/audit, artifacts, configuration, add-ons, skills, capacity, and model usage around one `RuntimeContext`.
+Admin Web, the command line, and the background services are different ways of looking at or acting on the same Evander runtime. A browser page does not contain a separate copy of the truth. If the page and a saved record disagree, the discrepancy is evidence to investigate—not a reason to edit whichever file is easiest to reach.
+
+Think of Admin Web as the supported front desk. It gives an operator a coherent view and safe controls; the durable records, service status, and external provider remain behind it. A green summary means that one check succeeded, not that every later part of a workflow is healthy.
 
 | Surface | Best use | Authority |
 |---|---|---|
@@ -2477,11 +3691,15 @@ Admin Web is not a second control plane. `build_admin_runtime` assembles focused
 | runtime files/databases | Durable application state | Repository-specific source of truth |
 | provider APIs | External issues, PRs, messages, calls | External provider |
 
-A green dashboard card is a summarized observation. It does not replace the underlying session manifest, workflow run, effect attempt, service journal, or provider object.
+> <span class="sidebar-kicker">Technical sidebar</span> **How the shared Admin runtime is assembled**
+>
+> Admin Web is not a second control plane. `build_admin_runtime` assembles focused services for sessions, issues/Git, VMs, workers, workflows, reports, approvals/audit, artifacts, configuration, add-ons, skills, capacity, and model usage around one `RuntimeContext`.
+>
+> A green dashboard card is a summarized observation. It does not replace the underlying session manifest, workflow run, effect attempt, service journal, or provider object.
 
 ![Evander Admin operations dashboard in dark mode for the synthetic Northstar directory](assets/evander-user-manual/screenshots/admin-dashboard.png)
 
-<p class="figure-caption">Figure 15.2 — The dashboard is an orientation layer over live detail APIs, not a replacement source of truth. Sanitized Northstar fixture.</p>
+<p class="figure-caption">Figure 15.1 — The dashboard is an orientation layer over live detail APIs, not a replacement source of truth. Sanitized Northstar fixture.</p>
 
 ## Operator surfaces
 
@@ -2499,11 +3717,15 @@ Use the selected directory as part of every diagnosis. Directory inheritance cha
 
 ## Authentication, authorization, and privileged unlock
 
-Admin users and groups are stored in `runtime/admin-web.db`. Built-in groups include owner, operator, workflow maintainer, workflow viewer, auditor, and viewer. Permissions are directory-scoped and inherited downward. Direct workflow write implies workflow read; ownership expands to the full permission catalog.
+Signing in, being permitted to change a project, and temporarily unlocking a sensitive host operation are three separate decisions. A user may be able to see a page without being able to change it, or be able to change ordinary project settings without being able to perform a sensitive host action.
 
 Authentication answers *who*. RBAC answers *whether that identity can act in this directory*. Privileged unlock is an additional per-login-session guard for sensitive host mutations. It does not add a missing RBAC permission and should not be treated as a permanent administrator mode.
 
 Approval gates are separate again. A privileged owner can configure policy but an agent's gated tool invocation still needs its matching, unexpired approval. The approved tool, session, and payload digest must match at execution time.
+
+> <span class="sidebar-kicker">Deeper detail</span> **Admin identity and inherited permissions**
+>
+> Admin users and groups are stored in `runtime/admin-web.db`. Built-in groups include owner, operator, workflow maintainer, workflow viewer, auditor, and viewer. Permissions are directory-scoped and inherited downward. Direct workflow write implies workflow read; ownership expands to the full permission catalog.
 
 ## Revision-checked changes
 
@@ -2520,7 +3742,9 @@ Never work around a revision conflict by writing the live JSON file directly. Wo
 
 ## Observability and evidence
 
-### Health and capacity
+Start in Admin Web with the selected directory, then open the record closest to the symptom: a run, session, approval, tool call, worker, artifact, or Team item. Record the exact status and identifiers before refreshing or retrying. Those details let an administrator move from the interface to the matching service and durable record.
+
+### Administrator detail: health and capacity
 
 Start broad:
 
@@ -2531,7 +3755,7 @@ systemctl --failed
 
 The capacity endpoint, `/api/admin/capacity-health`, reports control-plane disk, known storage roots, session samples, and unavailable/permission-denied telemetry explicitly. Built-in disk thresholds warn below 15% free and become critical below 5% unless configured otherwise. “Unknown” is not healthy.
 
-### Journals and structured runtime records
+### Administrator detail: journals and structured runtime records
 
 Use service journals for process startup, reload, provider transport, and worker-loop failures:
 
@@ -2553,13 +3777,15 @@ evander-cli rebuild-audit-index --config runtime
 
 Audit redaction intentionally removes configured sensitive fields. Absence of a secret from an audit row is expected, not evidence that no credential was used.
 
-## Durable state inventory
+The remainder of the backup and restore material is administrator reference. An operator reporting a problem should preserve the visible records and identifiers; they should not copy, replace, or delete runtime databases.
+
+## Administrator reference: durable state inventory
 
 Before backup or repair, inventory the configured paths. Common current stores include:
 
 ![Configuration, JSON registries, SQLite stores, audit evidence, managed Git, and artifact blobs converge at a consistent backup boundary; derived indexes are rebuilt after restore.](assets/evander-user-manual/diagrams/09-runtime-stores.svg)
 
-<p class="figure-caption">Figure 15.1 — A recoverable snapshot preserves every canonical store at one consistency boundary and rebuilds derived state only after restore.</p>
+<p class="figure-caption">Figure 15.2 — A recoverable snapshot preserves every canonical store at one consistency boundary and rebuilds derived state only after restore.</p>
 
 | Data | Typical location | Recovery role |
 |---|---|---|
@@ -2578,7 +3804,7 @@ Ephemeral Git worktrees under `runtime/git-worktrees/` are reconstructible scrat
 
 Secrets and local service configuration—`config/*.env`, provider JSON, `secrets.env`, systemd environment, certificates—may live outside `runtime/`. Back them up separately with stricter permissions. Never place them in published artifacts or documentation captures.
 
-## Consistent backup
+## Administrator procedure: consistent backup
 
 There is no single “copy this directory while everything runs” guarantee across JSON, SQLite WAL, bare Git, add-on databases, VM disks, and external providers. Choose a consistency boundary.
 
@@ -2595,7 +3821,7 @@ For a control-plane backup:
 
 External provider state is not captured by this backup. Record outstanding PRs, messages, and call IDs when an incident or migration requires end-to-end reconciliation.
 
-## Restore and recovery
+## Administrator procedure: restore and recovery
 
 Restore to a compatible checkout/package revision first. Keep services stopped while placing runtime and secrets. Restore file ownership and modes, then initialize only missing state—do not run `init-state` over a restored runtime without reviewing what it will seed.
 
@@ -2621,6 +3847,8 @@ For a partially failed operation, prefer domain reconciliation over rollback by 
 
 ## Failure behavior
 
+An operator can use the first and third columns to describe what they see and which evidence an administrator should collect next.
+
 | Symptom | Interpretation | Next evidence |
 |---|---|---|
 | Admin Web is unavailable | UI process/config/auth may be down; runtime can still be intact | service status/journal, then CLI and files |
@@ -2631,7 +3859,13 @@ For a partially failed operation, prefer domain reconciliation over rollback by 
 | Restored worker repeats effects | Store/provider boundary was captured inconsistently | inspect effect idempotency key and provider state before enabling workers |
 | Team/Add-on data is missing after restore | Private add-on directory was omitted or wrong add-on not loaded | restored add-on state, enablement, restart, API read |
 
-## Practical incident runbook
+## Troubleshooting and operator handoff
+
+In Admin Web, select the affected directory and record the expected outcome, the last completed step, and the exact visible error. Capture the session, workflow run or trace, source event, approval, effect, task, or release ID that is relevant; capture only the identifiers that exist for this incident.
+
+If repeated work could change an external system, do not keep retrying while the result is uncertain. Tell the administrator what has already been attempted and whether an external issue, message, Git ref, or release may have changed. Do not delete audit rows, SQLite side files, workflow packs, leases, or worktrees to make the interface look clean.
+
+## Administrator incident runbook
 
 1. **Stabilize.** Stop only the component causing unsafe repeated mutations; preserve journals and state files before repair.
 2. **Declare scope and time.** Record directory, session/workflow/effect/provider IDs, commit SHA, and first observed failure.
@@ -2672,11 +3906,21 @@ Move from the Team domain model through commands, wakes, collaboration, review, 
 
 # 16. Team Add-on Boundary and Domain Model
 
-> **At a glance.** The Team Add-on is an optional Evander domain module for durable organizations, projects, work, communication, review, release, governance, and memory. Evander core still owns sessions, execution backends, workflows, managed Git, communications, artifacts, policy, and model usage. The add-on composes those capabilities through registered APIs, MCP tools, providers, and a workflow pack; its canonical business state lives in <code>runtime/addons/team-addon/state.db</code>.
+> **At a glance.** Core Evander knows how to run bounded agent work safely. The Team Add-on adds the organizational story around that work: who belongs to a team, what a project is trying to achieve, who owns a task, who reviews it, and how a release is governed. This chapter draws the line between those responsibilities so Team coordination does not become a second, competing execution system.
 
-## A second control plane, not a second product
+## What Team adds—and what it leaves alone
 
-Evander core answers questions such as “which isolated session should run?”, “which tools may it use?”, and “which pinned commit may be published?” The Team Add-on answers a different set:
+Core Evander is responsible for running work safely. The Team Add-on is responsible for organizing that work. Keeping those jobs separate means an operator can change who owns a task without accidentally changing sandbox policy, and can change an execution backend without rewriting the Team's reporting structure.
+
+Team is optional: it is a second control plane inside Evander, not a second product or a competing execution system. Core continues to own sessions, execution backends, workflows, managed Git, communications, artifacts, policy, and model usage.
+
+For the Northstar example, the distinction looks like this:
+
+- Team can say that Imani owns the telemetry-retry task; core Evander decides which isolated session may perform it.
+- Team can say that Rowan must review the result; core Evander records and checks the exact commit Rowan reviewed.
+- Team can say that Riley has release authority; core Evander still enforces the Git lease and publication checks.
+
+Evander core therefore answers questions such as “which isolated session should run?”, “which tools may it use?”, and “which pinned commit may be published?” The Team Add-on answers a different set:
 
 - Which persistent agent is the manager, lead, implementer, or reviewer?
 - Which project, case, task, deliverable, review, or release does an action belong to?
@@ -2685,15 +3929,17 @@ Evander core answers questions such as “which isolated session should run?”,
 
 The distinction matters operationally. A Team agent refers to a core Evander session, but it is not the session. A Team project may refer to a core managed repository, but it does not own the upstream repository definition. A Team release requests core Git effects, but it does not bypass their leases and compare-and-swap checks.
 
-The add-on is loaded through Evander's generic add-on mechanism. It contributes:
-
-- a self-contained Admin UI at <code>/addons/team-addon/</code>;
-- an Admin API below <code>/api/addons/team-addon/</code>;
-- Team-owned MCP read and command tools;
-- trigger, query, and effect providers;
-- the registered <code>team-runtime.v1</code> workflow-pack definition.
-
-No Team-specific model has to be embedded in core Admin Web or the core gateway. Disabling the add-on removes those registered surfaces; it does not turn Team records into core records.
+> <span class="sidebar-kicker">Technical sidebar</span> **How the add-on joins Evander**
+>
+> The add-on is loaded through Evander's generic add-on mechanism. It contributes:
+>
+> - a self-contained Admin UI at <code>/addons/team-addon/</code>;
+> - an Admin API below <code>/api/addons/team-addon/</code>;
+> - Team-owned MCP read and command tools;
+> - trigger, query, and effect providers;
+> - the registered <code>team-runtime.v1</code> workflow-pack definition.
+>
+> No Team-specific model has to be embedded in core Admin Web or the core gateway. Disabling the add-on removes those registered surfaces; it does not turn Team records into core records.
 
 ![Responsibility boundary between Evander core and the Team Add-on](assets/evander-user-manual/diagrams/10-team-boundary.svg)
 
@@ -2701,13 +3947,19 @@ No Team-specific model has to be embedded in core Admin Web or the core gateway.
 
 ## Canonical and derived state
 
-The canonical Team database is relational SQLite:
+When Team information disagrees between two screens or services, begin with the record that owns the fact. Team roles, projects, tasks, reviews, and releases belong to Team state. Sessions, repositories, workflow runs, artifacts, and model usage remain core Evander records that Team refers to by stable ID.
 
-<code>runtime/addons/team-addon/state.db</code>
+Some convenient views are copies or summaries. They can be refreshed or rebuilt; changing one of them does not change the underlying Team record.
 
-It contains the validated Team domain plus command-support tables for dispatch activity, idempotency, and the durable outbox. The store uses foreign-key enforcement, a busy timeout, write-ahead logging, and serialized write transactions. On the first database initialization only, an old <code>state.json</code> may be imported. That JSON file is migration input, not a live fallback.
+> <span class="sidebar-kicker">Technical sidebar</span> **The canonical Team store**
+>
+> The canonical Team database is relational SQLite:
+>
+> <code>runtime/addons/team-addon/state.db</code>
+>
+> It contains the validated Team domain plus command-support tables for dispatch activity, idempotency, and the durable outbox. The store uses foreign-key enforcement, a busy timeout, write-ahead logging, and serialized write transactions. On the first database initialization only, an old <code>state.json</code> may be imported. That JSON file is migration input, not a live fallback.
 
-Several useful projections are deliberately non-canonical:
+The following useful projections are deliberately non-canonical:
 
 | Projection | Purpose | Rebuild or recovery rule |
 |---|---|---|
@@ -2721,7 +3973,15 @@ This boundary prevents a common debugging error: changing a session manifest, a 
 
 ## The domain from the outside in
 
-The durable hierarchy is easiest to understand in layers.
+The durable model follows the same questions an operator asks while work moves through a Team:
+
+1. **Who is responsible?** Teams, roles, agents, and reporting lines describe the organization.
+2. **What are they trying to accomplish?** Projects and goals describe the intended outcome.
+3. **What work exists now?** Cases and tasks hold intake and assignable work.
+4. **What proves the work is ready?** Deliverables, reviews, and releases hold evidence and decisions.
+5. **What must survive the next conversation?** Runtime, communication, and memory records preserve continuity.
+
+The exact record types below are useful when reading the UI, API, or later chapters.
 
 ### Organization
 
@@ -2768,9 +4028,9 @@ Mira is the Team manager and organizational root. Priya leads <code>mission-cont
 
 This example demonstrates why the records stay separate. Mira's Team role, Priya's project leadership, Imani's task ownership, Rowan's assigned review, and Riley's release permission are five independent authorization facts. A friendly title such as “senior engineer” would not safely encode them.
 
-## Model invariants that protect the graph
+## Deeper detail: invariants that protect the graph
 
-The repository validates the complete next state before committing it. Important invariants include:
+An operator normally encounters these rules as a rejected edit with a useful explanation: for example, a task cannot depend on itself through a cycle, and a reviewer cannot be silently borrowed from another project. Underneath that behavior, the repository validates the complete next state before committing it. Important invariants include:
 
 - referenced Teams, projects, roles, agents, tasks, cases, deliverables, and reviews must exist and have compatible scope;
 - an agent attached to a Team has a valid role and reporting relationship; a teamless agent cannot retain Team reporting metadata;
@@ -2785,7 +4045,7 @@ Task states are <code>pending</code>, <code>in_progress</code>, <code>blocked</c
 
 The project status is recalculated from its goals and work. A project becomes complete only when its goals are accepted and no active work remains. Blocking work can make it blocked; otherwise it remains active. It is not an operator-maintained cosmetic flag.
 
-## Where mutations enter
+## Deeper detail: how writes enter Team state
 
 Three supported write paths share the repository rules:
 
@@ -2797,7 +4057,9 @@ Templates are a fourth convenience surface, but they materialize the same Team r
 
 Reads are grouped rather than duplicated across every chapter. Operators use the scoped Team UI views and Admin API. Agents use Team list/get tools such as tasks, inbox, cases, deliverables, reviews, releases, projects, agents, runtime attention, identity, and memory search. Workflows use <code>query:team:state</code>, <code>query:team:memory</code>, and <code>query:team:session-routing</code>.
 
-## Failure patterns
+## Troubleshooting
+
+Begin with the owning record and its stable ID. If the Team UI and a core Evander view disagree, do not choose one at random and edit it; decide whether the disputed fact is Team-owned or core-owned, reload the relevant view, and follow the reference between them.
 
 | Symptom | Likely boundary mistake | Correct first move |
 |---|---|---|
@@ -2808,7 +4070,13 @@ Reads are grouped rather than duplicated across every chapter. Operators use the
 | Legacy JSON changes are ignored | SQLite has already been initialized. | Treat <code>state.db</code> as authoritative; do not replay JSON over it. |
 | A Timeline row is missing an old intermediate value | Timeline was mistaken for an audit ledger. | Use command activity, workflow runs, Git promotion records, and external audit stores appropriate to the event. |
 
-## Practical runbook
+## What to hand to an administrator
+
+From the Team UI, capture the selected Team and project, the affected agent or work-record ID, the current Team revision, and the visible symptom. If the issue crosses into core Evander, also capture the referenced session, managed repository, workflow run, artifact, communication target, or model-usage ID. Say which screen or action produced the discrepancy and whether reloading changed it.
+
+Do not repair a mismatch by editing session metadata, a Qdrant point, generated UI data, or SQLite. Those changes either target a projection or bypass the model rules that keep the records consistent.
+
+## Administrator runbook
 
 For a live deployment:
 
@@ -2833,17 +4101,32 @@ For backup, use a SQLite-consistent backup mechanism or stop writers before copy
 
 # 17. Enabling and Operating the Team Add-on
 
-> **At a glance.** Enable the bundled Team Add-on from Admin Web's Add-ons page, allow Evander to materialize its registered runtime pack, restart the listed services, and verify the UI, API, MCP, and workflow catalogs. Day-to-day Team operation happens in fourteen add-on-owned views. Ordinary domain edits are revision-checked, so an operator must resolve concurrent changes rather than overwrite them; append-only Chat uses a specialized current-conversation contract.
+> **At a glance.** The Team Add-on is enabled from Admin Web and becomes part of the same Evander installation after its services are restarted. Once enabled, its views let operators inspect teams, projects, tasks, conversations, reviews, releases, and governance in one place. This chapter covers both the initial readiness check and the everyday habits that prevent one operator from overwriting another's recent change.
+
+## What enabling Team changes
+
+Enabling Team adds a coordinated set of screens and background capabilities to the existing Evander installation. After the required services restart, operators can create the organization, connect persistent agents to existing Evander sessions, follow work, and handle reviews and releases. The add-on does not create those sessions, repositories, or execution environments on its own.
+
+There are two useful readiness questions:
+
+1. **Can people open and use the Team views?** This checks the add-on UI and API.
+2. **Can Team work actually run?** This also needs the gateway, workflows, sessions, and whichever integrations the chosen process uses.
+
+A working screen with stalled background work is therefore possible and diagnosable. It does not mean the enablement setting was ignored.
 
 ## Before enabling it
 
-The bundled Python package must include <code>evander_team_addon</code>, its <code>addon.json</code>, and the packaged UI assets. The deployment also needs the core capabilities used by the workflows you intend to run:
+An operator should know which Team features the installation intends to use and who can restart the affected Evander services. Features such as managed Git, semantic memory, or external communication can be added when needed; they are not prerequisites for every Team.
 
-- persistent Evander sessions for registered Team agents;
-- a working gateway for Team MCP tools;
-- trigger and effect orchestrators for wakes and asynchronous effects;
-- a configured execution backend for persistent and ephemeral work;
-- managed Git, artifact publication, communications, model relays, and Qdrant only where the chosen Team features need them.
+> <span class="sidebar-kicker">For administrators</span> **Package and service prerequisites**
+>
+> The bundled Python package must include <code>evander_team_addon</code>, its <code>addon.json</code>, and the packaged UI assets. The deployment also needs the core capabilities used by the workflows you intend to run:
+>
+> - persistent Evander sessions for registered Team agents;
+> - a working gateway for Team MCP tools;
+> - trigger and effect orchestrators for wakes and asynchronous effects;
+> - a configured execution backend for persistent and ephemeral work;
+> - managed Git, artifact publication, communications, model relays, and Qdrant only where the chosen Team features need them.
 
 The add-on is disabled by default. Enabling it is a host configuration change, not merely a browser preference.
 
@@ -2857,11 +4140,15 @@ The supported operator path is:
 4. Let the Add-ons service materialize the registered <code>team-runtime.v1</code> definition into operator-owned workflow configuration.
 5. Restart every service listed by the page, normally including Admin Web, the trigger orchestrator, the effect orchestrator, and the gateway.
 
-Equivalent configuration sets <code>addon_loader.enabled_addon_ids</code> to include <code>team-addon</code>. Explicit module and Python entry-point loading remain compatibility mechanisms, but the Add-ons page is the normal operational surface because it coordinates host and worker configuration and reports the restart boundary.
+If the operator cannot restart host services, record the saved configuration revision and the restart list shown by Admin Web, then hand those to an administrator. Do not expect the new screens, tools, and workflow providers to appear consistently until that restart boundary has been completed.
 
-When the packaged runtime definition changes, use **Refresh runtime pack** on the same page or its equivalent revision-checked Admin API action. A live workflow pack is operator state. Never copy over its JSON file, rewrite it from a checkout, or race another editor with a stale document.
+> <span class="sidebar-kicker">Deeper detail</span> **Configuration and runtime-pack ownership**
+>
+> Equivalent configuration sets <code>addon_loader.enabled_addon_ids</code> to include <code>team-addon</code>. Explicit module and Python entry-point loading remain compatibility mechanisms, but the Add-ons page is the normal operational surface because it coordinates host and worker configuration and reports the restart boundary.
+>
+> When the packaged runtime definition changes, use **Refresh runtime pack** on the same page or its equivalent revision-checked Admin API action. A live workflow pack is operator state. Never copy over its JSON file, rewrite it from a checkout, or race another editor with a stale document.
 
-## Verify the complete registration
+## Administrator check: verify the complete registration
 
 After restart, verify all four planes:
 
@@ -2875,6 +4162,8 @@ After restart, verify all four planes:
 A <code>404</code> from all Team routes usually indicates loading or restart state. An empty Team view with working routes usually indicates valid but empty Team state. Those are different failures.
 
 ## The fourteen operator views
+
+An operator does not need to learn all fourteen views at once. **Workspace** is the broad starting point; **Operations** answers “why is an agent waiting?”; **Delivery** follows evidence, reviews, and releases; and **Teams**, **Projects**, **Task board**, and **Cases** hold the main organizational and work records. The remaining views support communication, memory, governance, planning, history, and reporting structure.
 
 The add-on UI currently has these top-level views:
 
@@ -2922,27 +4211,39 @@ After materialization:
 4. Inspect Imani's task in **Task board** and any intake case in **Cases**.
 5. Leave release policy and managed Git unset until the corresponding core resources and verification design are ready.
 
-## Optimistic writes and scoped reads
+## When two changes happen at once
 
-The canonical Team state has a monotonically advancing revision. Ordinary domain edit routes require <code>expected_revision</code>:
+Suppose one operator changes Imani's task while another changes the same Team from a different screen. Team does not silently let the last browser overwrite the first operator's work. It detects that the state has advanced and asks the later editor to reload, compare, and deliberately apply the intended change to the current record.
 
-- missing or null revision returns <code>400</code>;
-- a stale revision returns <code>409</code>;
-- a valid mutation commits the complete validated state and advances the revision.
+The practical response is straightforward:
 
-The UI does not need to reload the full state after every successful write. Endpoints return scoped views and revision invalidations. A state stream can announce that a newer revision exists without embedding all changed records.
+1. Preserve the intended edit.
+2. Reload the affected record.
+3. Compare what changed while it was open.
+4. Merge or reapply the intent deliberately.
+5. Save again and verify the result.
 
-Some edit flows support a narrowly defined conflict policy, <code>target_unchanged</code>, with a base resource token. That allows a mutation to rebase only when the particular target still matches what the operator read; creation can rebase only when the explicit ID is still absent. It is not a general “last writer wins” switch.
-
-Append-only Chat send is the important exception. It validates the current conversation and agent and deliberately does not reject a message merely because an unrelated global Team revision advanced. Conversation ownership, signed-in operator identity, agent eligibility, and the asynchronous dispatch rules still apply.
-
-When a <code>409</code> occurs:
-
-1. Preserve the operator's intended change.
-2. Reload the affected record and current revision.
-3. Compare the concurrent change field by field.
-4. Reapply or deliberately merge the intent.
-5. Submit against the new revision and verify the returned view.
+> <span class="sidebar-kicker">Deeper detail</span> **Revisions, scoped reads, and conflict policy**
+>
+> The canonical Team state has a monotonically advancing revision. Ordinary domain edit routes require <code>expected_revision</code>:
+>
+> - missing or null revision returns <code>400</code>;
+> - a stale revision returns <code>409</code>;
+> - a valid mutation commits the complete validated state and advances the revision.
+>
+> The UI does not need to reload the full state after every successful write. Endpoints return scoped views and revision invalidations. A state stream can announce that a newer revision exists without embedding all changed records.
+>
+> Some edit flows support a narrowly defined conflict policy, <code>target_unchanged</code>, with a base resource token. That allows a mutation to rebase only when the particular target still matches what the operator read; creation can rebase only when the explicit ID is still absent. It is not a general “last writer wins” switch.
+>
+> Append-only Chat send is the important exception. It validates the current conversation and agent and deliberately does not reject a message merely because an unrelated global Team revision advanced. Conversation ownership, signed-in operator identity, agent eligibility, and the asynchronous dispatch rules still apply.
+>
+> When a <code>409</code> occurs:
+>
+> 1. Preserve the operator's intended change.
+> 2. Reload the affected record and current revision.
+> 3. Compare the concurrent change field by field.
+> 4. Reapply or deliberately merge the intent.
+> 5. Submit against the new revision and verify the returned view.
 
 Never solve a conflict by directly replacing a live pack file or Team database.
 
@@ -2954,7 +4255,9 @@ Optional avatars are UI metadata. Uploaded PNG, JPEG, or WebP images are normali
 
 Browser voice calls use OpenAI Realtime with a projection of the selected agent's Team context. They are not DIDWW, Asterisk, or SIP calls. Core voice-session records live outside the Team database; a call started from Chat can be projected back into that conversation as a system message.
 
-## Common setup failures
+## Troubleshooting
+
+Use the symptom to distinguish registration from empty state and foreground UI from background runtime. Capture the enabled configuration revision, the selected Team or project, the failing page or action, and any visible run or session ID before asking for host-level help.
 
 | Symptom | Cause to test first | Recovery |
 |---|---|---|
@@ -2965,7 +4268,11 @@ Browser voice calls use OpenAI Realtime with a projection of the selected agent'
 | Repeated <code>409</code> writes | Another operator or runtime command is advancing Team state. | Reload narrowly, merge intentionally, and retry once with the new revision. |
 | An enabled add-on has no runtime behavior | The registered pack is disabled, invalid, or its orchestrators are stopped. | Inspect the live workflow document, validation report, run history, and service state. |
 
-## Practical runbook
+## Operator checklist
+
+After enablement, an operator can confirm that **Workspace** loads, create or preview a Team, inspect its reporting structure, and make one harmless revision-checked edit. If agents should run, also confirm that a wake appears in **Operations** and that the expected Team tools and workflow nodes are available. A failure in that second group is useful evidence for an administrator even when the UI itself works.
+
+## Administrator runbook
 
 ### Enable
 
@@ -3006,7 +4313,18 @@ Browser voice calls use OpenAI Realtime with a projection of the selected agent'
 
 # 18. Organization, Projects, Tasks, and Cases
 
-> **At a glance.** Team organization is an explicit authorization graph, while projects, cases, goals, and tasks form the work graph. Reporting lines govern directional coordination; project assignments and narrow role permissions govern project actions. Cases preserve intake context, tasks carry executable ownership, and repository validation keeps every cross-link within the right Team and project.
+> **At a glance.** A Team needs to remember two different things: how its agents are organized and what work they are doing. Reporting relationships answer who may direct or support whom; projects, cases, goals, and tasks answer what should be accomplished. Keeping those structures separate makes responsibility clearer and prevents a job title from silently becoming permission to change unrelated work.
+
+## Start with four questions
+
+When an operator opens a Team record, four questions usually locate the work:
+
+1. **Which outcome matters?** The project and goal describe why the work exists.
+2. **What arrived or changed?** A case preserves the intake story and outside reference.
+3. **Who must do what next?** Tasks carry ownership, dependencies, and current state.
+4. **Who may direct or decide?** Roles, reporting lines, review assignments, and release policy answer different parts of that question.
+
+The same agent can appear in both the organization and the work without those relationships becoming interchangeable. A project lead coordinates the project; a direct superior occupies a reporting relationship; a reviewer decides on submitted evidence; and a release authority governs publication.
 
 ## Two graphs that meet at an agent
 
@@ -3026,23 +4344,25 @@ Priya's project leadership does not make her the Team manager. Rowan's review as
 
 A Team has exactly one manager identity and may contain subordinate agents. Agents are stable domain records attached to core session IDs. Display names and avatars help people navigate the UI but do not participate in authorization.
 
-A role contains:
-
-- a stable ID and display name;
-- a Team and optional project scope;
-- a default ephemeral-delegation policy;
-- a narrow permission set;
-- archival state.
-
-Current permission names include <code>create_root_task</code>, <code>prepare_bookkeeping_action</code>, <code>request_payment_preparation</code>, <code>request_release</code>, and <code>review_bookkeeping_action</code>. They are capabilities, not a replacement for contextual checks. For example, <code>request_release</code> is still limited to the relevant project and accepted scope.
-
-Reporting relationships constrain agent mail:
-
-- questions and progress reports travel upward to the direct superior;
-- status requests travel downward to a direct subordinate;
-- no ordinary tool permits skip-level messaging.
-
-This keeps routine coordination local. Broader intervention uses task reassignment, manager routing, governance, or an operator directive rather than a covert communication shortcut.
+> <span class="sidebar-kicker">Deeper detail</span> **What a role and reporting edge record**
+>
+> A role contains:
+>
+> - a stable ID and display name;
+> - a Team and optional project scope;
+> - a default ephemeral-delegation policy;
+> - a narrow permission set;
+> - archival state.
+>
+> Current permission names include <code>create_root_task</code>, <code>prepare_bookkeeping_action</code>, <code>request_payment_preparation</code>, <code>request_release</code>, and <code>review_bookkeeping_action</code>. They are capabilities, not a replacement for contextual checks. For example, <code>request_release</code> is still limited to the relevant project and accepted scope.
+>
+> Reporting relationships constrain agent mail:
+>
+> - questions and progress reports travel upward to the direct superior;
+> - status requests travel downward to a direct subordinate;
+> - no ordinary tool permits skip-level messaging.
+>
+> This keeps routine coordination local. Broader intervention uses task reassignment, manager routing, governance, or an operator directive rather than a covert communication shortcut.
 
 An active stand-down overlays the hierarchy. A hold on an agent's subtree prevents descendants from acquiring Team work even if their tasks otherwise appear ready. Chapter 20 covers its runtime effect.
 
@@ -3074,13 +4394,17 @@ The <code>team_update_goal</code> command permits an authorized agent to update 
 
 ## Tasks: the executable work graph
 
-A task records Team, project, owner, creator, title, description, priority, state, and optional:
+To an operator, a task is the clearest answer to “who owns the next concrete piece of work?” It can be waiting, active, blocked, under review, or complete. Parent and dependency links explain why a seemingly pending task may not yet be ready.
 
-- parent task;
-- dependency tasks;
-- case;
-- deliverables;
-- metadata and timestamps.
+> <span class="sidebar-kicker">Technical reference</span> **Task fields**
+>
+> A task records Team, project, owner, creator, title, description, priority, state, and optional:
+>
+> - parent task;
+> - dependency tasks;
+> - case;
+> - deliverables;
+> - metadata and timestamps.
 
 Task state has a deliberate review-aware lifecycle:
 
@@ -3119,7 +4443,9 @@ Suppose Northstar receives support report <code>OBS-184</code>: telemetry delive
 
 The case/task link is bidirectional. If a task names a case, the case must list that task; repository mutations maintain and validate both sides. A project-scoped case cannot link work from another project.
 
-## Work creation surfaces
+## Deeper detail: work creation surfaces
+
+The UI is the normal operator surface. Agent commands and workflow effects create the same validated records when work must be decomposed or ingested automatically; they do not bypass the ownership and scope rules described above.
 
 Operators can create and edit projects, cases, goals, and tasks through the UI and Admin API with <code>expected_revision</code>. Agent commands include:
 
@@ -3132,15 +4458,19 @@ Workflow authors can use <code>effect:team:create-case</code>, <code>effect:team
 
 The effect providers use the same model validation. They are not a back door around ownership, scope, or graph rules.
 
-## Readiness and derived project state
+## How Team decides what is ready
 
-The wake service evaluates ready work rather than simply searching for nonterminal tasks. It considers:
+Team does not wake every agent who has an unfinished task. It looks for work that can actually advance: dependencies must be satisfied, the right person must be active, and a task under review belongs with the reviewer rather than the producer. This is why “the task is still open” is not enough to explain who should wake next.
 
-- ownership and active agent status;
-- dependency readiness;
-- pending reviews and rework;
-- inbox and action feedback;
-- active leases, stand-downs, no-progress state, and cost caps.
+> <span class="sidebar-kicker">Deeper detail</span> **Readiness inputs**
+>
+> The wake service evaluates ready work rather than simply searching for nonterminal tasks. It considers:
+>
+> - ownership and active agent status;
+> - dependency readiness;
+> - pending reviews and rework;
+> - inbox and action feedback;
+> - active leases, stand-downs, no-progress state, and cost caps.
 
 A task in <code>waiting_for_review</code> with an active review normally wakes its reviewer, not its producer. A rejected review returns the task to active rework. Accepted deliverables and closed findings can cascade the task to accepted. Only then should project goals and status be reevaluated.
 
@@ -3160,7 +4490,9 @@ One sensible plan is:
 
 That sequence lets later chapters build from one traceable line of work.
 
-## Failure patterns
+## Troubleshooting
+
+Start with the record that appears stuck. For a task, read its owner, dependencies, current deliverable, and active review before changing state. For a project, inspect its goals and remaining active work. For a missing external update, remember that a case's source reference records provenance but does not provide synchronization by itself.
 
 | Error or symptom | Meaning | Recovery |
 |---|---|---|
@@ -3172,7 +4504,7 @@ That sequence lets later chapters build from one traceable line of work.
 | Project status looks wrong | A goal, task, review, or deliverable remains active or blocked. | Inspect the underlying records; project status is derived. |
 | External ticket changes do not appear | A source reference was mistaken for synchronization. | Add a workflow integration or update the case through its API/effect. |
 
-## Practical runbook
+## Operator runbook
 
 When establishing a project:
 
@@ -3193,6 +4525,8 @@ When work appears stuck:
 5. Correct the domain record or runtime blocker through its owning surface.
 6. Confirm that a wake is queued or that the normal scheduler will evaluate it.
 
+If the domain records look ready but no wake or session activity follows, hand an administrator the Team and project IDs, task and owner IDs, current Team revision, relevant review or inbox ID, and the last visible runtime-attention state. Do not remove dependency edges, accept goals, or overwrite project state merely to force the work forward.
+
 ## Source trail
 
 - <code>src/evander_team_addon/models.py</code> — Team, role, agent, assignment, project, goal, case, and task models plus graph validation.
@@ -3206,9 +4540,19 @@ When work appears stuck:
 
 # 19. Commands, Identity, Revisions, and the Durable Outbox
 
-> **At a glance.** A Team MCP command is not a loose edit followed by best-effort messaging. The server derives the caller from the connected session, validates its current command scope, mutates the complete Team model, handles selected inbox items, records dispatch activity, enqueues asynchronous intent, and stores an idempotent response inside one SQLite write transaction. External effects happen later through the durable outbox and workflow runtime.
+> **At a glance.** When an agent changes Team state, Evander treats the change as one complete, accountable operation rather than a handful of unrelated edits. Either the important records are accepted together or the change fails without leaving a half-finished result. If the same request is safely repeated after a timeout, Evander can return the earlier answer instead of performing the work twice.
 
-## Two concurrency contracts
+## Three promises behind a Team command
+
+The transaction machinery in this chapter exists to keep three operator-visible promises:
+
+1. **No half-finished Team update.** If Imani submits a deliverable and handles the directive that caused it, Team records both changes together or records neither.
+2. **A safe retry does not repeat the business action.** If the response is lost in transit, repeating the same request can return the first result rather than create a second task, message, or release request.
+3. **Accepted does not mean externally completed.** Team can durably accept “promote this commit” before Git has performed the promotion. The request and its later execution have separate status and evidence.
+
+These promises are usually enough to interpret the UI. The rest of the chapter explains the exact identity, revision, replay, and delivery records behind them.
+
+## Deeper detail: two write contracts
 
 The Team Add-on exposes two related but distinct write contracts.
 
@@ -3228,6 +4572,8 @@ Both paths end in the same validated SQLite state, but they solve different prob
 
 ## Identity is ambient
 
+An agent does not tell Team who it is by putting a name or session ID in a command. Team starts from the already authenticated Evander connection and the currently leased dispatch. That prevents a caller from impersonating another Team member merely by changing an argument.
+
 For an ordinary persistent wake, the command executor resolves:
 
 - the ambient core session;
@@ -3242,48 +4588,60 @@ Governance commands use a governance-group scope and validate that the caller ma
 
 An inactive, teamless, stood-down, mismatched, or unleased persistent agent cannot mutate normal Team state. Tool hiding improves the prompt, but server authorization remains decisive even if a client manually invokes a hidden name.
 
-## The command transaction
+## One command, one durable result
 
-Conceptually, a successful command follows this order:
+Suppose Imani has read Priya's request and is ready to submit the telemetry deliverable. A single command can validate Imani's current authority, create the deliverable, mark the selected inbox item handled, record activity, and queue the next asynchronous work. If any required part is invalid, the intended Team change is not partly committed.
 
-1. Normalize command context, payload, and inbox IDs.
-2. Begin a serialized SQLite write transaction.
-3. Read and validate the complete current <code>TeamState</code>.
-4. Resolve the ambient caller and command scope.
-5. Check for an idempotent replay.
-6. Validate every requested inbox item and the command-specific authorization.
-7. Apply the domain mutation in memory.
-8. Mark the caller-owned pending inbox items handled.
-9. Advance the Team revision and validate the complete next state.
-10. Insert or reuse durable outbox records.
-11. Record successful dispatch activity and its progress classification.
-12. Store the idempotency response, including created domain and event IDs.
-13. Commit.
-
-If validation fails after identity can be resolved, the executor records a failure activity and returns a structured correction response without applying the requested domain mutation or advancing Team state. If the transaction itself fails, SQLite rolls it back.
+> <span class="sidebar-kicker">Technical sidebar</span> **The command transaction, step by step**
+>
+> Conceptually, a successful command follows this order:
+>
+> 1. Normalize command context, payload, and inbox IDs.
+> 2. Begin a serialized SQLite write transaction.
+> 3. Read and validate the complete current <code>TeamState</code>.
+> 4. Resolve the ambient caller and command scope.
+> 5. Check for an idempotent replay.
+> 6. Validate every requested inbox item and the command-specific authorization.
+> 7. Apply the domain mutation in memory.
+> 8. Mark the caller-owned pending inbox items handled.
+> 9. Advance the Team revision and validate the complete next state.
+> 10. Insert or reuse durable outbox records.
+> 11. Record successful dispatch activity and its progress classification.
+> 12. Store the idempotency response, including created domain and event IDs.
+> 13. Commit.
+>
+> If validation fails after identity can be resolved, the executor records a failure activity and returns a structured correction response without applying the requested domain mutation or advancing Team state. If the transaction itself fails, SQLite rolls it back.
 
 This design gives Northstar a useful guarantee. If Imani submits the telemetry retry deliverable while marking Priya's status request handled, a committed response means both Team facts are committed together. It cannot acknowledge the request while silently losing the deliverable.
 
 ![Atomic Team command and durable outbox flow](assets/evander-user-manual/diagrams/12-team-command-outbox.svg)
 
+Read the figure as one commit boundary: the Team change, inbox handling, activity, replay response, and instruction for later work become durable together.
+
 <p class="figure-caption">Figure 19.1 — State, inbox handling, activity, replay evidence, and outbox intent commit together.</p>
 
 ## Idempotency
 
-Commands that create, append, send, or enqueue asynchronous work should use a stable <code>request_id</code>. The effective replay key contains:
+**Idempotency** means that repeating the same request has the same business effect as making it once. It matters when the caller cannot tell whether a timeout happened before or after Team committed the command.
 
-- tool name;
-- resolved caller identity;
-- scope kind and scope ID;
-- request ID.
-
-The executor also stores a digest of the normalized payload.
-
-Reusing the same key with the same payload returns the original stored response. It does not create a second task, message, deliverable, escalation, ephemeral assignment, Git promotion, or outbox row. Reusing the same key with a different payload returns <code>idempotency_conflict</code> and does not mutate state.
-
-Choose request IDs at the semantic operation boundary. For example:
+Commands that create, append, send, or enqueue asynchronous work should use a stable <code>request_id</code>. Choose request IDs at the semantic operation boundary—that is, one stable ID for one meaningful business operation—such as:
 
 <code>northstar:telemetry-retry:deliverable:v2</code>
+
+Retry that same operation with the same request ID and payload. Use a new ID for a genuinely new operation, such as submitting version 3.
+
+> <span class="sidebar-kicker">Deeper detail</span> **How replay is recognized**
+>
+> The effective replay key contains:
+>
+> - tool name;
+> - resolved caller identity;
+> - scope kind and scope ID;
+> - request ID.
+>
+> The executor also stores a digest of the normalized payload.
+>
+> Reusing the same key with the same payload returns the original stored response. It does not create a second task, message, deliverable, escalation, ephemeral assignment, Git promotion, or outbox row. Reusing the same key with a different payload returns <code>idempotency_conflict</code> and does not mutate state.
 
 Do not generate a fresh random request ID on every network retry, because that converts a transport retry into a new business command. Do not reuse one ID for “submit v2” and “submit v3,” because those are different operations.
 
@@ -3302,7 +4660,7 @@ The executor validates the complete list before changing any item. One bad ID re
 
 Use the feature for genuine “read, act, and close” operations. A message with <code>response_requested=false</code> normally needs no acknowledgement, but the recipient should still handle it after reading or acting. Chapter 21 explains that reply intent and wake priority are independent.
 
-## Dispatch activity and progress
+## Deeper detail: dispatch activity and progress
 
 Every resolved command attempt can produce a durable <code>TeamDispatchActivity</code> with:
 
@@ -3320,22 +4678,26 @@ Use one <code>correlation_id</code> to group related actions across a Northstar 
 
 ## The durable outbox
 
-Some accepted commands describe work that cannot safely happen inside the database transaction: publish an internal event, wake an agent, start an ephemeral worker, perform Git promotion, run release recovery, or route an escalation.
+Some accepted commands describe work that must happen elsewhere or may take longer: wake an agent, start an ephemeral worker, promote a Git commit, recover a release, or deliver an escalation. Team first saves an **outbox** record—a durable instruction for that later work. This keeps the accepted command from disappearing if a service restarts between the database change and the external effect.
 
-The command writes a <code>TeamOutboxRecord</code> instead. Important fields include:
+The command response is therefore a receipt, not always a completion notice. “Promotion requested” means the request and outbox intent are committed. It does not mean Git finished. “Escalation queued” does not mean the communication provider delivered it.
 
-- intent type;
-- aggregate type and ID;
-- optional unique idempotency key;
-- payload and availability time;
-- status, attempt count, claim token, and claim expiry;
-- last error and timestamps.
-
-Outbox state moves through <code>pending</code>, <code>claimed</code>, <code>completed</code>, and <code>failed</code>. A publisher claims eligible rows with a lease. On success it completes them. On a configured retry it records the error and makes the row pending at a later availability time. A failure recorded without a retry delay remains failed.
-
-The bundled runtime pack calls <code>effect:team:publish-outbox-events</code> on its cron loop and after command-driven dispatch paths. Publication creates the Team internal event that the rest of the workflow graph consumes.
-
-The command response therefore distinguishes durable acceptance from external completion. “Promotion requested” means the request and outbox intent are committed. It does not mean Git finished. “Escalation queued” does not mean the communication provider delivered it.
+> <span class="sidebar-kicker">Technical sidebar</span> **Outbox records and publication**
+>
+> Some accepted commands describe work that cannot safely happen inside the database transaction: publish an internal event, wake an agent, start an ephemeral worker, perform Git promotion, run release recovery, or route an escalation.
+>
+> The command writes a <code>TeamOutboxRecord</code> instead. Important fields include:
+>
+> - intent type;
+> - aggregate type and ID;
+> - optional unique idempotency key;
+> - payload and availability time;
+> - status, attempt count, claim token, and claim expiry;
+> - last error and timestamps.
+>
+> Outbox state moves through <code>pending</code>, <code>claimed</code>, <code>completed</code>, and <code>failed</code>. A publisher claims eligible rows with a lease. On success it completes them. On a configured retry it records the error and makes the row pending at a later availability time. A failure recorded without a retry delay remains failed.
+>
+> The bundled runtime pack calls <code>effect:team:publish-outbox-events</code> on its cron loop and after command-driven dispatch paths. Publication creates the Team internal event that the rest of the workflow graph consumes.
 
 ## Northstar transaction traces
 
@@ -3351,7 +4713,9 @@ Imani publishes local <code>artifact_paths</code> before the final Team transact
 
 Riley's command freezes the accepted scope and any prerequisite Git promotions, stores the release package, and enqueues the next durable intent. The response says which release, promotion, and outbox records were accepted. The Delivery view and later workflow runs say whether verification and publication actually succeeded.
 
-## Failure patterns
+## Troubleshooting
+
+First ask which promise appears to have failed: was the Team command rejected, safely replayed, durably accepted but still waiting on its outbox work, or completed downstream with an unexpected result? That distinction prevents an operator from retrying a finished business action under a new request ID or deleting the evidence needed to trace it.
 
 | Response or symptom | Meaning | Operator or caller action |
 |---|---|---|
@@ -3363,7 +4727,13 @@ Riley's command freezes the accepted scope and any prerequisite Git promotions, 
 | Command accepted but effect absent | The outbox row is still pending, claimed, retrying, or failed. | Inspect the exact outbox record, publisher workflow run, and downstream event route. |
 | Duplicate external activity despite one command | A downstream effect lacks or violated its own idempotency/lease contract. | Preserve evidence and diagnose the effect; do not delete the Team idempotency record. |
 
-## Practical runbook
+## Operator handoff
+
+From the visible command result, capture the Team and project, agent and session, tool name, request ID, Team revision, and any returned activity or outbox IDs. State whether the command was rejected, returned an earlier replayed result, or was accepted while the later effect remained absent. If a task, deliverable, message, promotion, or release was created, include its stable ID.
+
+Retry with the same request ID only when repeating the same semantic payload. Do not create a fresh ID merely because the first response timed out, and do not delete a Team idempotency or outbox record to make the UI look clear.
+
+## Administrator runbook
 
 For an agent command problem:
 
@@ -3390,25 +4760,41 @@ For database inspection, use a consistent snapshot and current schema. The relev
 
 # 20. Wakes, Leases, Context Rotation, and Stand-down
 
-> **At a glance.** A Team wake is a leased dispatch of already-eligible work to one persistent agent session. Eligibility, immediacy, and safety are separate decisions: normal/high inbox can wake even without a requested reply; low-priority mail becomes its own wake reason only when it requests a response, and is then batched; active leases, busy sessions, stand-downs, cost caps, and no-progress controls still prevent unsafe or wasteful dispatch. Completion is finalized from durable command activity.
+> **At a glance.** A wake is Evander's decision to bring a persistent agent back to ready work; it is not the automatic consequence of every message or scheduled check. Before waking an agent, Team considers whether the work is eligible, whether another session is already busy with it, and whether safety or cost limits say to wait. This chapter explains that decision and what happens when an agent should pause, rotate context, or stand down.
 
-## The wake loop
+## What an operator needs to know
 
-The registered Team runtime pack runs a periodic evaluation, by default every fifteen minutes. Its wake effect asks the Team runtime to lease due agents. The current service defaults are:
+Most wake questions reduce to three checks:
 
-| Setting | Default |
-|---|---|
-| Maximum leases per evaluation | 10 |
-| Dispatch lease | 900 seconds |
-| Normal wake interval | 900 seconds |
-| No-progress threshold | 3 |
-| Low-priority batch threshold | 4 evaluation cycles |
+1. **Is there work for this agent that can advance now?** An open task may still be waiting on a dependency or reviewer, while a normal-priority message may be ready immediately.
+2. **Is the agent allowed and available to resume?** A live lease, busy session, stand-down, cost cap, or repeated no-progress cycle can delay otherwise ready work.
+3. **What should happen to conversational context?** The agent may continue its current context, rotate after becoming idle, or start an eligible wake with a fresh context according to policy.
 
-These are provider parameters and may be configured in the live workflow pack. Treat that revision-checked live pack as operational truth.
+A wake is therefore a scheduling decision, not a message receipt. The Operations view brings the reasons and blockers together; the exact timing and lease mechanics below explain what that view reports.
 
-The wake effect prepares the persistent session, optionally prepares the project's managed repository checkout, constructs a dynamic Team context, and resumes the agent. Static Team guidance is maintained in a managed section of the guest's <code>AGENTS.md</code>; repeated wakes do not need to restate every rule.
+## When Team wakes an agent
+
+Team periodically looks for eligible persistent agents, and important events can request a targeted evaluation sooner. When an agent is selected, Team prepares the session, relevant repository, and a current summary of the work before resuming it.
+
+> <span class="sidebar-kicker">Technical sidebar</span> **The wake loop and live defaults**
+>
+> The registered Team runtime pack runs a periodic evaluation, by default every fifteen minutes. Its wake effect asks the Team runtime to lease due agents. The current service defaults are:
+>
+> | Setting | Default |
+> |---|---|
+> | Maximum leases per evaluation | 10 |
+> | Dispatch lease | 900 seconds |
+> | Normal wake interval | 900 seconds |
+> | No-progress threshold | 3 |
+> | Low-priority batch threshold | 4 evaluation cycles |
+>
+> These are provider parameters and may be configured in the live workflow pack. Treat that revision-checked live pack as operational truth.
+>
+> The wake effect prepares the persistent session, optionally prepares the project's managed repository checkout, constructs a dynamic Team context, and resumes the agent. Static Team guidance is maintained in a managed section of the guest's <code>AGENTS.md</code>; repeated wakes do not need to restate every rule.
 
 ## Eligibility is not just “has an open task”
+
+For example, Imani should not wake merely to stare at a deliverable that Rowan is reviewing. Rowan may be the person whose work can advance. If the review is rejected, the resulting rework notice and task state can make Imani eligible again.
 
 An active persistent agent can be eligible because it has:
 
@@ -3433,6 +4819,8 @@ The manager fallback is last, not first. If a Team has open work but no member o
 
 ![Team agent wake decision flow](assets/evander-user-manual/diagrams/13-team-wake-decision.svg)
 
+The narrowing path is intentional: having something pending is only the first test, and each later check can safely defer the wake.
+
 <p class="figure-caption">Figure 20.1 — Eligibility is filtered through readiness, priority, batching, and runtime safety guards.</p>
 
 ## Inbox wake semantics
@@ -3456,7 +4844,9 @@ Normal/high inbox creation emits a debounced <code>team.agent.wake_requested</co
 
 Low-priority items accumulate evaluation cycles and are batched after the configured threshold unless another reason wakes the agent earlier. The resulting context includes the pending inbox, so a low/no-reply progress report can be read during useful work without causing a conversational ping-pong.
 
-## Leases and dispatch identity
+## Deeper detail: leases and dispatch identity
+
+A lease is Team's temporary claim that one dispatch is responsible for this persistent agent's current work. It prevents a second scheduler pass from starting another Team dispatch at the same time, and it gives later commands and completion events an exact job identity to match.
 
 Leasing assigns:
 
@@ -3513,7 +4903,7 @@ Use stand-down for a real operational reason: incident containment, unsafe outpu
 7. If Rowan rejects it, the normal-priority, response-requested rework notice wakes Imani for a successor deliverable.
 8. If an operator stands down Imani during investigation, new commands fail and no new lease is granted until authorized revocation.
 
-## Runtime and workflow surfaces
+## Deeper detail: runtime and workflow surfaces
 
 The bundled pack coordinates:
 
@@ -3527,7 +4917,9 @@ The primary runtime provider is <code>effect:team:wake-due-agents</code>. Operat
 
 The Operations view and Team runtime-attention reads expose wake due state, leases, stand-down, context policy, no-progress counters, and downstream failures. Core session logs remain necessary for startup and provider failures.
 
-## Failure patterns
+## Troubleshooting
+
+Begin in **Operations** with the agent's wake reason, runtime attention, active lease, stand-down, and context policy. Then compare the task, review, inbox, or action feedback that should have made the agent eligible. The table below helps distinguish expected scheduling from a stuck workflow.
 
 | Symptom | What to check |
 |---|---|
@@ -3540,7 +4932,13 @@ The Operations view and Team runtime-attention reads expose wake due state, leas
 | Revocation appears ineffective | Another operator or inherited superior hold may remain active. Inspect the effective stand-down list. |
 | Manager wakes without owned tasks | Manager fallback found open Team work with no member lease; inspect the supplied routing summary. |
 
-## Practical runbook
+## Operator handoff
+
+Capture the Team, agent, core session, last wake reason and time, current task or review, visible inbox priority and reply intent, effective stand-down, and any dispatch or workflow-run ID. For “did not wake,” state the specific work you expected to be eligible. For “woke unexpectedly,” record the reason shown in Operations rather than inferring it from the latest message alone.
+
+Do not clear a lease, no-progress counter, or stand-down directly. If the visible records do not explain the decision, give those identifiers and the last known Team revision to an administrator.
+
+## Administrator runbook
 
 For “why did this agent wake?”:
 
@@ -3573,7 +4971,7 @@ Do not clear leases, no-progress counters, or stand-down rows directly in SQLite
 
 # 21. Chat, Agent Mail, Voice, and Escalation
 
-> **At a glance.** Team communication has four distinct paths. Chat is a signed-in human operator's durable conversation with one persistent agent. Agent Mail is directional agent-to-agent inbox state governed by reporting lines. Voice is a browser OpenAI Realtime session projected from Team context. Escalation is a manager-to-operator or manager-to-governance workflow. They share some wake machinery, but not identity, authorization, storage, or delivery semantics.
+> **At a glance.** Team offers several ways to communicate because a person chatting with an agent is not the same as one agent assigning work to another. Chat serves signed-in users, Agent Mail carries agent-to-agent messages, voice supports a live spoken conversation, and escalation raises an issue beyond the ordinary reporting path. Choosing the right channel preserves who is speaking, what response is expected, and whether the message should wake anyone.
 
 ## Choose the path by who is speaking
 
@@ -3586,7 +4984,9 @@ Do not clear leases, no-progress counters, or stand-down rows directly in SQLite
 | Top-level manager → governance manager | Governance agenda escalation |
 | Human operator ↔ persistent agent by audio | Browser voice call |
 
-The paths are not interchangeable. A Chat transcript is not an agent inbox. A communication target does not grant inbound access to the manager's session. A voice call is not an Agent Mail exchange. The distinction protects both user expectations and authorization.
+The paths are not interchangeable. A Chat transcript is not an agent inbox. A communication target does not grant inbound access to the manager's session. A voice call is not an Agent Mail exchange. The channels may share some wake machinery, but not identity, authorization, storage, or delivery semantics. The distinction protects both user expectations and authorization.
+
+For Northstar, an operator who wants to discuss a task with Imani uses Chat. Imani reports routine progress upward to Priya through Agent Mail. A durable instruction to the Team goes to Mira as an operator directive. Mira escalates beyond the Team only when ordinary reporting cannot resolve the issue. The speaker, intended recipient, and desired durability choose the channel.
 
 ## Operator Chat
 
@@ -3594,17 +4994,21 @@ A Team conversation contains exactly one signed-in operator user and one persist
 
 Operators normally see their own conversations. A user with <code>team_chats.read_all</code> may inspect another operator's history, but the UI marks that mode read-only and blocks sending. The permission does not broaden Agent Mail visibility.
 
-Sending a Chat message does not execute the agent inline in the API request:
+The reply may take time because sending a Chat message records work for the agent rather than running the model inside the browser request. A reply-only dispatch can answer but cannot change Team state; a mutation-enabled dispatch can perform an otherwise authorized Team action and then explain the result. Later messages in the same conversation may use a different dispatch mode.
 
-1. The Admin API records the operator message and queues <code>team.chat.message_queued</code>.
-2. The Team runtime claims a queued message only when the agent is active, not stood down, not cost-blocked, not already leased, and its core session is not busy.
-3. It creates a Chat dispatch and prompts the agent with the human operator identity and message context.
-4. The agent replies with <code>team_reply_to_chat</code>.
-5. Dispatch finalization marks the operator message replied; a dispatch without a successful reply is marked failed with the available error context.
-
-A Chat dispatch can be **reply-only** or allow ordinary Team mutations. Its <code>allow_team_mutations</code> metadata controls whether the agent receives normal Team action tools alongside <code>team_reply_to_chat</code>. When a human asks “please change Imani's task priority,” a mutation-enabled dispatch can perform the authorized state change and reply. A reply-only dispatch must answer without changing Team state.
-
-The agent may use <code>team_send_operator_chat_message</code> only for operator participants listed in its current dispatch context. That is a bounded proactive message, not a way to enumerate arbitrary Admin users.
+> <span class="sidebar-kicker">Deeper detail</span> **How a Chat message is dispatched**
+>
+> Sending a Chat message does not execute the agent inline in the API request:
+>
+> 1. The Admin API records the operator message and queues <code>team.chat.message_queued</code>.
+> 2. The Team runtime claims a queued message only when the agent is active, not stood down, not cost-blocked, not already leased, and its core session is not busy.
+> 3. It creates a Chat dispatch and prompts the agent with the human operator identity and message context.
+> 4. The agent replies with <code>team_reply_to_chat</code>.
+> 5. Dispatch finalization marks the operator message replied; a dispatch without a successful reply is marked failed with the available error context.
+>
+> A Chat dispatch can be **reply-only** or allow ordinary Team mutations. Its <code>allow_team_mutations</code> metadata controls whether the agent receives normal Team action tools alongside <code>team_reply_to_chat</code>. When a human asks “please change Imani's task priority,” a mutation-enabled dispatch can perform the authorized state change and reply. A reply-only dispatch must answer without changing Team state.
+>
+> The agent may use <code>team_send_operator_chat_message</code> only for operator participants listed in its current dispatch context. That is a bounded proactive message, not a way to enumerate arbitrary Admin users.
 
 ![Team Chat conversation between a synthetic operator and Imani](assets/evander-user-manual/screenshots/team-chat.png)
 
@@ -3612,16 +5016,20 @@ The agent may use <code>team_send_operator_chat_message</code> only for operator
 
 ## Agent Mail
 
-The **Mail** view renders durable <code>AgentInboxItem</code> records. Each item has a type, sender, recipient, priority, reply intent, payload, state, and timestamps. Types include:
+Agent Mail is structured internal coordination, not free-form access to any agent. The reporting relationship chooses the legal recipient, while priority and reply intent tell Team how urgently to present the item and whether a meaningful response is expected.
 
-- <code>operator_directive</code>;
-- <code>question</code>;
-- <code>status_request</code>;
-- <code>progress_report</code>;
-- <code>deliverable_notice</code>;
-- <code>escalation</code>.
-
-State is <code>pending</code> or <code>handled</code>. The UI presents received and sent projections over this one durable inbox collection, with structured payload details, errors, and fallback content. There is no separate Agent Mail outbox collection, and Mail is not backed by the Chat conversation tables.
+> <span class="sidebar-kicker">Technical reference</span> **Inbox records and message types**
+>
+> The **Mail** view renders durable <code>AgentInboxItem</code> records. Each item has a type, sender, recipient, priority, reply intent, payload, state, and timestamps. Types include:
+>
+> - <code>operator_directive</code>;
+> - <code>question</code>;
+> - <code>status_request</code>;
+> - <code>progress_report</code>;
+> - <code>deliverable_notice</code>;
+> - <code>escalation</code>.
+>
+> State is <code>pending</code> or <code>handled</code>. The UI presents received and sent projections over this one durable inbox collection, with structured payload details, errors, and fallback content. There is no separate Agent Mail outbox collection, and Mail is not backed by the Chat conversation tables.
 
 Direction is enforced:
 
@@ -3659,20 +5067,24 @@ Use a directive when “please investigate telemetry retry safety” should surv
 
 ## Browser voice
 
-The Team UI can start a direct browser voice call to a persistent agent. The add-on prepares an OpenAI Realtime session with a projection of the agent's current:
+Voice is for a live spoken exchange with one persistent agent. It uses a bounded snapshot of that agent's Team context; it does not turn the audio session into unrestricted access to every Team record, and it does not share an implementation path with telephone or Agent Mail integrations.
 
-- Team, role, project, and reporting context;
-- tasks, cases, inbox, reviews, deliverables, and runtime state;
-- authorized visible tool context;
-- optional voice profile and speaking style.
-
-The browser talks to OpenAI Realtime using the prepared session. This path does not use DIDWW, Asterisk, or SIP. Core voice-session state is stored in <code>runtime/voice-sessions-store.json</code>, outside Team SQLite.
+> <span class="sidebar-kicker">Technical sidebar</span> **Voice projection and reconciliation**
+>
+> The Team UI can start a direct browser voice call to a persistent agent. The add-on prepares an OpenAI Realtime session with a projection of the agent's current:
+>
+> - Team, role, project, and reporting context;
+> - tasks, cases, inbox, reviews, deliverables, and runtime state;
+> - authorized visible tool context;
+> - optional voice profile and speaking style.
+>
+> The browser talks to OpenAI Realtime using the prepared session. This path does not use DIDWW, Asterisk, or SIP. Core voice-session state is stored in <code>runtime/voice-sessions-store.json</code>, outside Team SQLite.
 
 Projected context is intentionally bounded. If the realtime agent needs nonprojected detail, it can create a durable <code>query_origin_agent</code> request for the originating text agent. Terminal calls schedule reconciliation so those requests and final call state can re-enter the normal wake flow.
 
 A call launched from Chat can add a voice-call system message to that conversation. The audio call still remains a voice session rather than a sequence of Chat messages.
 
-An avatar is unrelated UI metadata. Saving Rowan's portrait does not select Rowan's voice or change prompt identity.
+An avatar is unrelated UI metadata. Saving an agent's portrait does not select that agent's voice or change prompt identity.
 
 ## Escalation
 
@@ -3680,9 +5092,13 @@ Only the top-level Team manager may escalate out of the Team.
 
 ### Direct operator escalation
 
-When <code>Team.escalate_to_governance</code> is false, the Team needs an <code>operator_communication_target_id</code>. The manager's <code>team_escalate_operator</code> command records durable intent and an outbox event. The runtime pack routes <code>team.operator.escalation_requested</code> to the generic <code>effect:communication:send-message</code> provider bound to that target.
+The manager can send a durable escalation to the Team's configured operator destination. Team records the request first; the ordinary Evander communication workflow performs and records delivery.
 
-The Team service does not call a Discord or Teams sender directly. The workflow document owns routing and delivery evidence.
+> <span class="sidebar-kicker">Deeper detail</span> **Direct escalation routing**
+>
+> When <code>Team.escalate_to_governance</code> is false, the Team needs an <code>operator_communication_target_id</code>. The manager's <code>team_escalate_operator</code> command records durable intent and an outbox event. The runtime pack routes <code>team.operator.escalation_requested</code> to the generic <code>effect:communication:send-message</code> provider bound to that target.
+>
+> The Team service does not call a Discord or Teams sender directly. The workflow document owns routing and delivery evidence.
 
 The target is outbound-only. It does not let external users address or wake Mira's real session. Inbound Discord or Teams access must be configured on the core session with the appropriate readable communication target and tool policy.
 
@@ -3692,7 +5108,9 @@ When <code>escalate_to_governance</code> is true, the command creates pending go
 
 This path is useful when Mira must report that the telemetry fix is blocked by a cross-Team API policy. It is not a substitute for a routine question to Priya.
 
-## Failure and delivery semantics
+## Troubleshooting
+
+Start by identifying the channel. A queued Chat message, pending Agent Mail item, undelivered escalation, and incomplete voice call have different owners and evidence. Capture the stable conversation, message, inbox, outbox, workflow, or voice-session ID shown by the relevant view rather than searching by text alone.
 
 | Symptom | Interpretation and next check |
 |---|---|
@@ -3706,7 +5124,13 @@ This path is useful when Mira must report that the telemetry fix is blocked by a
 | Voice has incomplete knowledge | The projection is bounded; inspect or retry the durable origin-agent query path. |
 | Voice record is absent from Team SQLite | Correct storage boundary; inspect the core voice-session store and optional Chat projection. |
 
-## Practical runbook
+## Operator handoff
+
+For any communication problem, record the Team, channel, sender, intended recipient, time, visible state, and stable message or session ID. Include the agent's session and any dispatch or workflow-run ID if shown. Say whether the content was never accepted, accepted but waiting, dispatched without a reply, or completed without external delivery.
+
+Do not resend under a new request ID merely because delivery is delayed, and do not reinterpret an outbound escalation target as inbound permission to reach an agent. The detailed trace below is for administrators and support.
+
+## Administrator runbook
 
 For Chat:
 
@@ -3748,22 +5172,43 @@ For voice:
 
 # 22. Deliverables, Reviews, and Decision Cascades
 
-> **At a glance.** A Team deliverable is a versioned evidence record for one task attempt, not merely a “done” flag. A review targets that exact deliverable and, for Git work, its pinned reviewed commit. Decisions are immutable, criteria are policy-enforced, and acceptance or rejection cascades deterministically through findings, deliverable state, task state, and project status. Rework creates a superseding deliverable instead of rewriting history.
+> **At a glance.** Marking a task “done” is not enough to explain what was produced or why it was accepted. Team records a deliverable for each attempt, attaches the evidence, and asks a reviewer to decide against that exact submission and code version. If rework is needed, the next attempt becomes a new record so the earlier evidence and decision remain understandable.
+>
+> On a first read, remember three things: the producer submits a specific result, each reviewer decides only on that result, and corrections create a successor instead of rewriting history. The exact fields, artifact rules, Git checks, and command surfaces later in the chapter are reference detail for readers who operate or troubleshoot the delivery system.
+
+## A review in plain language
+
+Suppose the implementation agent finishes Northstar's telemetry-retry change. “Finished” is only the agent's claim. Team still needs a package that a reviewer can inspect: the exact code version, the tests that ran, any supporting artifacts, and an honest account of anything that could not be checked. That package is the **deliverable**.
+
+A **review request** points to that deliverable rather than to the task in general. The reviewer can accept it, reject it with findings, or say that the review is blocked because the evidence or process is unavailable. If the producer corrects a defect, the correction becomes a new deliverable. The rejected attempt remains visible, so a later reader can understand what changed and why.
+
+This gives an operator a simple path to follow:
+
+```text
+task -> submitted deliverable -> one or more reviews
+     -> accepted result, blocked review, or a new rework deliverable
+```
+
+The key question is always **“Which exact deliverable and code version did this decision cover?”**
 
 ## Evidence before opinion
 
 Tasks describe intended work. Deliverables describe what was produced and how it was checked. Review requests bind a reviewer and policy to that evidence.
 
-A deliverable can include:
+An operator will usually start with the summary, verification result, artifacts, code version, and current reviews. Those are enough to understand whether the work is ready, waiting, or returning for correction.
 
-- a summary and producer;
-- stable artifact references;
-- a persistent Git work-context ID and derived agent branch/commit;
-- verification status, summary, and evidence refs;
-- supersession links;
-- review findings and state.
-
-Verification status is <code>passed</code>, <code>failed</code>, <code>partial</code>, <code>not_run</code>, or <code>unknown</code>. “Tests could not run because the integration service was unavailable” is <code>not_run</code> with a concrete explanation, not <code>passed</code>.
+> <span class="sidebar-kicker">Technical sidebar</span> **What a deliverable can record**
+>
+> A deliverable can include:
+>
+> - a summary and producer;
+> - stable artifact references;
+> - a persistent Git work-context ID and derived agent branch/commit;
+> - verification status, summary, and evidence refs;
+> - supersession links;
+> - review findings and state.
+>
+> Verification status is <code>passed</code>, <code>failed</code>, <code>partial</code>, <code>not_run</code>, or <code>unknown</code>. “Tests could not run because the integration service was unavailable” is <code>not_run</code> with a concrete explanation, not <code>passed</code>.
 
 For Northstar, Imani's first telemetry retry deliverable might contain:
 
@@ -3775,35 +5220,47 @@ For Northstar, Imani's first telemetry retry deliverable might contain:
 
 ## Artifact publication boundary
 
-There are two different ways artifact information can appear:
+An artifact is supporting material that can be opened again after the temporary workspace is gone—for example, a trace, test report, screenshot, or generated package. Team stores a stable reference to published material; merely typing a reference does not copy the underlying bytes into artifact storage.
 
-- <code>artifact_paths</code> asks the command adapter to publish safe paths from the current session's <code>/artifacts</code> tree and store the resulting stable refs;
-- <code>artifact_refs</code> or an artifact-space reference records already-published metadata.
+If a reviewer cannot retrieve an artifact, that is an evidence-access problem. It does not mean the artifact disproved the change.
 
-Supplying a ref does not publish bytes. Paths are validated as safe relative paths, and host publication is replay-idempotent. Publication occurs before the final Team state transaction because it crosses service boundaries. If publication succeeds but the Team mutation fails, the artifact may be orphaned until the same command is replayed or an operator cleans it up deliberately.
-
-Reviewer wakes import referenced review artifacts to a bounded path below:
-
-<code>/artifacts/team-review-inputs/&lt;review&gt;/&lt;deliverable&gt;/...</code>
-
-The review context records successful imports and permission or retrieval errors. A reviewer should distinguish “evidence disproves the change” from “evidence could not be accessed.”
+> <span class="sidebar-kicker">Deeper detail</span> **Publication and reviewer imports**
+>
+> There are two different ways artifact information can appear:
+>
+> - <code>artifact_paths</code> asks the command adapter to publish safe paths from the current session's <code>/artifacts</code> tree and store the resulting stable refs;
+> - <code>artifact_refs</code> or an artifact-space reference records already-published metadata.
+>
+> Supplying a ref does not publish bytes. Paths are validated as safe relative paths, and host publication is replay-idempotent. Publication occurs before the final Team state transaction because it crosses service boundaries. If publication succeeds but the Team mutation fails, the artifact may be orphaned until the same command is replayed or an operator cleans it up deliberately.
+>
+> Reviewer wakes import referenced review artifacts to a bounded path below:
+>
+> <code>/artifacts/team-review-inputs/&lt;review&gt;/&lt;deliverable&gt;/...</code>
+>
+> The review context records successful imports and permission or retrieval errors. A reviewer should distinguish “evidence disproves the change” from “evidence could not be accessed.”
 
 ## Persistent Git work contexts
 
-When a project uses managed Git, a persistent Team wake creates or reuses one task-specific work context and worktree. The context binds:
+When the result includes code, Team does not trust a branch name typed into the submission. It checks that the code came from the task's prepared Git workspace and derives the accepted branch itself. This is what lets a reviewer return later to the same code version.
 
-- agent, task, project, session, and dispatch;
-- deterministic agent branch;
-- prepared checkout/worktree;
-- status and timestamps.
+The branch remains internal evidence at this stage. Review does not publish it to the project's canonical upstream branch; Chapter 24 covers that later boundary.
 
-A Git deliverable must submit its <code>branch_context_id</code>. The server verifies the caller, task, dispatch, and context and derives the accepted agent branch. An agent cannot substitute an arbitrary branch string. Artifact-only deliverables remain valid without Git.
-
-The branch is evidence inside the managed bare repository, not a canonical publication. Promotion begins only through the reviewed Git flows in Chapter 24.
+> <span class="sidebar-kicker">Technical sidebar</span> **Persistent work-context checks**
+>
+> When a project uses managed Git, a persistent Team wake creates or reuses one task-specific work context and worktree. The context binds:
+>
+> - agent, task, project, session, and dispatch;
+> - deterministic agent branch;
+> - prepared checkout/worktree;
+> - status and timestamps.
+>
+> A Git deliverable must submit its <code>branch_context_id</code>. The server verifies the caller, task, dispatch, and context and derives the accepted agent branch. An agent cannot substitute an arbitrary branch string. Artifact-only deliverables remain valid without Git.
+>
+> The branch is evidence inside the managed bare repository, not a canonical publication. Promotion begins only through the reviewed Git flows in Chapter 24.
 
 ## Submitting and requesting review
 
-<code>team_submit_deliverable</code> records evidence and changes the task to <code>waiting_for_review</code>. The combined <code>team_submit_deliverable_for_review</code> can submit and create the intended handoff without a redundant intermediate notice.
+The producer submits the evidence, then asks the appropriate reviewer or reviewers to assess it. A combined action can do both when that is the intended handoff. Team prevents accidental duplicate active reviews of the same deliverable by the same reviewer.
 
 A review may be requested by an authorized producer, supervisor, project lead, or Team manager. The assigned reviewer must be active, in the same Team, and compatible with any selected review profile.
 
@@ -3818,11 +5275,17 @@ Review profiles can apply by project and role and define required and optional c
 
 Creating the same active review for one deliverable and reviewer is replay-safe: the service returns the existing review rather than duplicating inbox and wake work.
 
-Workflow authors can use <code>trigger:team:deliverable-created</code> and one <code>effect:team:create-review-request</code> node per required reviewer/profile. The trigger owns its cursor and suppresses old deliverables when first enabled, avoiding an accidental historical review storm.
+> <span class="sidebar-kicker">Technical sidebar</span> **Submission and automatic review creation**
+>
+> <code>team_submit_deliverable</code> records evidence and changes the task to <code>waiting_for_review</code>. The combined <code>team_submit_deliverable_for_review</code> can submit and create the intended handoff without a redundant intermediate notice.
+>
+> Workflow authors can use <code>trigger:team:deliverable-created</code> and one <code>effect:team:create-review-request</code> node per required reviewer/profile. The trigger owns its cursor and suppresses old deliverables when first enabled, avoiding an accidental historical review storm.
 
 ## Review decisions
 
 Only the assigned reviewer may decide a review. The decision is immutable.
+
+“Immutable” means the decision is not edited later to improve the history. Rework creates another deliverable and another review, while the earlier decision remains evidence.
 
 ### Accepted
 
@@ -3879,18 +5342,20 @@ This cascade prevents “one approval wins,” prevents review of a moving branc
 
 ## Review authorization and tool surface
 
-Ordinary Team command tools in this domain are:
+The distinction operators should remember is that **seeing a review is not the same as being allowed to decide it**. A manager can inspect delivery state, but only the assigned reviewer records that review's decision. Release authority also does not authorize rewriting a deliverable review.
 
-- <code>team_submit_deliverable</code>;
-- <code>team_submit_deliverable_for_review</code>;
-- <code>team_request_review</code>;
-- <code>team_decide_review</code>;
-- delivery list/get tools;
-- Git promotion and release tools covered in Chapter 24.
-
-Admin routes provide revision-checked operator create/edit/decision paths. Workflow providers add deliverable-created triggering and deterministic review-request creation. All paths reuse the same repository invariants.
-
-Review visibility is not review authority. A manager can inspect Team delivery state; only the assigned reviewer records that review's decision. Likewise, release authority does not authorize rewriting a deliverable review.
+> <span class="sidebar-kicker">Technical reference</span> **Commands and integration surfaces**
+>
+> Ordinary Team command tools in this domain are:
+>
+> - <code>team_submit_deliverable</code>;
+> - <code>team_submit_deliverable_for_review</code>;
+> - <code>team_request_review</code>;
+> - <code>team_decide_review</code>;
+> - delivery list/get tools;
+> - Git promotion and release tools covered in Chapter 24.
+>
+> Admin routes provide revision-checked operator create/edit/decision paths. Workflow providers add deliverable-created triggering and deterministic review-request creation. All paths reuse the same repository invariants.
 
 ## Decision and state failures
 
@@ -3905,7 +5370,13 @@ Review visibility is not review authority. A manager can inspect Team delivery s
 | Task stays waiting after one acceptance | Another active review or open carried finding remains. | Inspect the complete current deliverable review set. |
 | Rejected task has no useful next step | Findings were vague. | Preserve evidence and create concrete, testable findings in the review decision. |
 
-## Practical runbook
+## Troubleshooting and handoff
+
+In **Delivery**, begin with the task and identify its current deliverable. Then check every active review and every unresolved finding. Capture the task ID, deliverable ID, review IDs, verification status, artifact references, and reviewed commit. If an artifact cannot be opened, include the visible import or permission error rather than describing the candidate as failed.
+
+Do not edit a terminal review or force the task state merely because one acceptance did not advance it. Another review or a carried finding may still be open. Give the captured identities and the relevant row from the failure table to a Team administrator or the responsible producer/reviewer.
+
+## Producer, reviewer, and operator runbooks
 
 ### Producer
 
@@ -3945,9 +5416,11 @@ Review visibility is not review authority. A manager can inspect Team delivery s
 
 # 23. Ephemeral Delegation
 
-> **At a glance.** A persistent Team agent may delegate a bounded task to a disposable Evander session when its configured ephemeral policy permits it. The child receives one assignment, one narrow reporting tool, a deterministic Git branch, and a lifecycle managed by the Team workflow pack. Completion produces evidence for the parent to accept or reject; it never grants the child general Team authority or automatically accepts the parent task.
+> **At a glance.** A regular Team agent can sometimes ask a temporary helper to investigate or implement one clearly bounded piece of work. The helper receives only that assignment and a narrow way to return its result; it does not become a new permanent team member. The parent agent remains responsible for checking the evidence and deciding whether to use it.
+>
+> Think of this as controlled parallel work, not hiring another member of the organization. The request, temporary session, result, parent decision, and cleanup are all recorded separately. Operators can follow those milestones without needing to understand the workflow nodes that move the assignment between them.
 
-## Why ephemeral agents exist
+## When a temporary helper is useful
 
 Persistent agents carry organizational identity, reporting relationships, Team memory visibility, inbox, and recurring responsibility. Ephemeral agents are intentionally different. They are short-lived workers for a bounded prompt such as:
 
@@ -3960,51 +5433,72 @@ The parent remains responsible for the Team task. Delegation increases execution
 
 For Northstar, Imani can delegate “add deterministic jitter edge-case tests” while continuing the main retry implementation. The child cannot reassign Imani's task, message Priya, request release, or decide Rowan's review.
 
+The parent therefore asks a narrow question, receives evidence, and remains accountable for the task. A useful assignment has a clear stopping point—such as a test, patch, or research report—and does not imply authority to coordinate the Team.
+
+```text
+parent requests bounded help -> temporary worker runs -> result returns
+                             -> parent accepts or rejects -> workspace is cleaned up
+```
+
+Completion and acceptance are deliberately separate. A worker can finish successfully while the parent still decides that its result is obsolete, incomplete, or unsuitable.
+
 ## Admission and capacity
 
-The parent persistent agent has an effective ephemeral policy with <code>max_concurrent</code>. A value of zero disables delegation. Active capacity counts assignments in <code>requested</code>, <code>spawn_pending</code>, and <code>running</code>.
+Before creating a helper, Team checks that the parent really owns the work, that delegation is enabled, and that enough capacity remains for the whole request. A batch either passes together or creates nothing; one invalid assignment cannot leave a half-created set behind.
 
-A request is valid only when:
-
-- the caller is the resolved persistent parent on an active dispatch;
-- the parent has positive capacity and the complete requested batch fits;
-- each target task belongs to a project assigned to the parent;
-- the parent owns the target task;
-- requested model, provider mode, execution backend, image, tools, TTL, directory, and metadata pass schema and policy validation.
-
-Batch requests validate all items before mutation. One invalid child does not leave the other children partially created.
-
-The default execution backend is <code>container_worker_vm</code>. An assignment may carry an explicit compatible model/provider, image, and <code>ttl_hours</code>. These are bounded execution inputs, not general secret or host-path transport.
+> <span class="sidebar-kicker">Technical sidebar</span> **Admission and capacity checks**
+>
+> The parent persistent agent has an effective ephemeral policy with <code>max_concurrent</code>. A value of zero disables delegation. Active capacity counts assignments in <code>requested</code>, <code>spawn_pending</code>, and <code>running</code>.
+>
+> A request is valid only when:
+>
+> - the caller is the resolved persistent parent on an active dispatch;
+> - the parent has positive capacity and the complete requested batch fits;
+> - each target task belongs to a project assigned to the parent;
+> - the parent owns the target task;
+> - requested model, provider mode, execution backend, image, tools, TTL, directory, and metadata pass schema and policy validation.
+>
+> Batch requests validate all items before mutation. One invalid child does not leave the other children partially created.
+>
+> The default execution backend is <code>container_worker_vm</code>. An assignment may carry an explicit compatible model/provider, image, and <code>ttl_hours</code>. These are bounded execution inputs, not general secret or host-path transport.
 
 ## The assignment record
 
-An <code>EphemeralAssignment</code> captures:
+The assignment is the durable envelope around disposable work. It remains after the worker session is removed and tells an operator what was requested, which session ran it, what came back, what the parent decided, and whether cleanup finished.
 
-- parent agent, Team, project, and task;
-- title and complete prompt;
-- eventual core session ID;
-- model/provider/backend/image choices;
-- allowed tools and TTL;
-- directory and metadata;
-- summary, artifacts, optional agent branch, error, and timestamps;
-- lifecycle state.
-
-States are <code>requested</code>, <code>spawn_pending</code>, <code>running</code>, <code>completed</code>, <code>accepted</code>, <code>rejected</code>, <code>cleanup_pending</code>, <code>cleaned_up</code>, and <code>failed</code>. They describe execution, decision, and cleanup milestones rather than one mandatory linear chain. In particular, core-session cleanup can finish before the parent accepts a completed result, and the parent may accept a result whose session is already cleaned up. Failures may occur during spawn, execution, result validation, or cleanup; durable records remain useful evidence after compute is gone.
+> <span class="sidebar-kicker">Technical reference</span> **Assignment fields and states**
+>
+> An <code>EphemeralAssignment</code> captures:
+>
+> - parent agent, Team, project, and task;
+> - title and complete prompt;
+> - eventual core session ID;
+> - model/provider/backend/image choices;
+> - allowed tools and TTL;
+> - directory and metadata;
+> - summary, artifacts, optional agent branch, error, and timestamps;
+> - lifecycle state.
+>
+> States are <code>requested</code>, <code>spawn_pending</code>, <code>running</code>, <code>completed</code>, <code>accepted</code>, <code>rejected</code>, <code>cleanup_pending</code>, <code>cleaned_up</code>, and <code>failed</code>. They describe execution, decision, and cleanup milestones rather than one mandatory linear chain. In particular, core-session cleanup can finish before the parent accepts a completed result, and the parent may accept a result whose session is already cleaned up. Failures may occur during spawn, execution, result validation, or cleanup; durable records remain useful evidence after compute is gone.
 
 ## Asynchronous lifecycle
 
-The parent's <code>team_request_ephemeral_agent</code> or batch command performs only the durable request transaction. It creates the assignment and outbox intent. The registered runtime pack then:
+The helper does not have to start before the parent's command returns. Team first records the request, then the ordinary Evander workflow creates and prompts the temporary worker in the background. When the result returns, the parent is notified and the worker session is destroyed.
 
-1. consumes <code>team.ephemeral.requested</code>;
-2. creates an ordinary core Evander agent/session through <code>effect:agent:create</code>;
-3. records the spawned session with <code>effect:team:mark-ephemeral-spawned</code>;
-4. prompts the worker through <code>effect:agent:prompt</code>;
-5. routes the completed session through <code>query:team:session-routing</code>;
-6. records result/completion and notifies the parent;
-7. destroys the core agent/session;
-8. records cleanup through <code>effect:team:mark-ephemeral-cleaned-up</code>.
-
-The lifecycle composes core execution effects; the add-on does not implement a hidden second container scheduler.
+> <span class="sidebar-kicker">Deeper detail</span> **The composed workflow path**
+>
+> The parent's <code>team_request_ephemeral_agent</code> or batch command performs only the durable request transaction. It creates the assignment and outbox intent. The registered runtime pack then:
+>
+> 1. consumes <code>team.ephemeral.requested</code>;
+> 2. creates an ordinary core Evander agent/session through <code>effect:agent:create</code>;
+> 3. records the spawned session with <code>effect:team:mark-ephemeral-spawned</code>;
+> 4. prompts the worker through <code>effect:agent:prompt</code>;
+> 5. routes the completed session through <code>query:team:session-routing</code>;
+> 6. records result/completion and notifies the parent;
+> 7. destroys the core agent/session;
+> 8. records cleanup through <code>effect:team:mark-ephemeral-cleaned-up</code>.
+>
+> The lifecycle composes core execution effects; the add-on does not implement a hidden second container scheduler.
 
 ![Ephemeral assignment lifecycle across Team and core execution](assets/evander-user-manual/diagrams/15-ephemeral-lifecycle.svg)
 
@@ -4012,19 +5506,23 @@ The lifecycle composes core execution effects; the add-on does not implement a h
 
 ## The worker's authority
 
-An ephemeral wake exposes only:
+The worker receives no ordinary Team command surface. It can report the result of this assignment, but it cannot inherit the parent's identity, lease, or organizational authority.
 
-<code>team_report_ephemeral_result</code>
-
-The executor resolves the assignment from the ambient worker session. The child cannot call ordinary persistent Team commands. It receives the prompt and execution resources necessary for the assignment, but not the parent's organizational identity or lease.
-
-A successful report requires a useful summary. It may attach stable artifact references and a Git branch. An error report marks the assignment failed with its evidence.
-
-If the child reports Git output, the branch must be exactly:
-
-<code>agents/&lt;session-id&gt;/&lt;assignment-id&gt;</code>
-
-The server derives and verifies the name. A mismatched branch fails the assignment instead of accepting untraceable code.
+> <span class="sidebar-kicker">Technical sidebar</span> **The one Team command and the Git branch check**
+>
+> An ephemeral wake exposes only:
+>
+> <code>team_report_ephemeral_result</code>
+>
+> The executor resolves the assignment from the ambient worker session. The child cannot call ordinary persistent Team commands. It receives the prompt and execution resources necessary for the assignment, but not the parent's organizational identity or lease.
+>
+> A successful report requires a useful summary. It may attach stable artifact references and a Git branch. An error report marks the assignment failed with its evidence.
+>
+> If the child reports Git output, the branch must be exactly:
+>
+> <code>agents/&lt;session-id&gt;/&lt;assignment-id&gt;</code>
+>
+> The server derives and verifies the name. A mismatched branch fails the assignment instead of accepting untraceable code.
 
 ## Completion is not acceptance
 
@@ -4077,7 +5575,21 @@ Artifact-only ephemeral work is fully supported and needs no repository.
 | Completed result never becomes deliverable | Parent has not accepted it, or acceptance failed validation. | Wake the parent, inspect evidence, and accept or reject deliberately. |
 | Cleanup failed | Core destroy or Team cleanup recording failed. | Preserve the assignment/session evidence, retry cleanup safely, and confirm worker resources are gone. |
 
-## Practical runbook
+## Troubleshooting and handoff
+
+In Team Operations, begin with the assignment rather than the temporary worker. Record the assignment ID, parent, task, session ID if one exists, lifecycle state, and the last transition. If the assignment is still waiting, capture its outbox ID and workflow run. If it finished, capture the summary, artifact references, branch, error, and the parent's decision.
+
+A useful handoff states the boundary that failed: the request was not picked up, the session was created but not recorded, the worker could not report, the parent has not decided, or cleanup is incomplete. Do not delete the assignment after removing leaked compute; it is the evidence that connects the cleanup to the original request.
+
+> <span class="sidebar-kicker">Administrator tracing checklist</span> **Follow one assignment end to end**
+>
+> 1. Record assignment ID, parent, task, session ID, lifecycle state, outbox ID, and workflow run.
+> 2. Follow create → mark spawned → prompt → session routing → report → destroy → cleanup.
+> 3. Inspect the worker's only Team command activity.
+> 4. Verify branch, artifact refs, summary, and error independently.
+> 5. Keep the durable assignment even after fixing leaked compute.
+
+## Delegation runbook
 
 Before delegating:
 
@@ -4086,14 +5598,6 @@ Before delegating:
 3. Select backend/model/image only when the defaults are unsuitable.
 4. Decide whether the result should be artifact-only or use the deterministic Git branch.
 5. Use stable request IDs for the semantic batch.
-
-To diagnose:
-
-1. Record assignment ID, parent, task, session ID, lifecycle state, outbox ID, and workflow run.
-2. Follow create → mark spawned → prompt → session routing → report → destroy → cleanup.
-3. Inspect the worker's only Team command activity.
-4. Verify branch, artifact refs, summary, and error independently.
-5. Keep the durable assignment even after fixing leaked compute.
 
 To accept:
 
@@ -4115,62 +5619,103 @@ To accept:
 
 # 24. Team Git Promotion and Release Gates
 
-> **At a glance.** Team Git moves reviewed, pinned commits through internal agent, review, feature, and release branches before one lease-protected canonical push. Release packages freeze accepted deliverables, verification evidence, waivers, reviewed change manifests, commands, reviewers, scope, and candidate SHA. Failed candidate verification or rejected release review requires changed reviewed content and a new release; retryable infrastructure or blocked-process failures create immutable successor attempts.
+> **At a glance.** A safe release must publish the exact code that passed review, not whatever a branch happens to contain later. Team carries that exact version through its internal preparation and verification steps, then gives the final publication a narrow, time-bounded authority. If the code itself fails verification, it must change and be reviewed again; a retry is reserved for failures in the surrounding infrastructure or process.
+>
+> An operator can follow the release with four questions: What exact code was approved? What evidence and policy apply? Did each required gate pass? What exact version reached the canonical branch? The internal branch names, worktrees, leases, and record fields later in the chapter explain how Evander makes those answers reliable.
+
+## The release promise
+
+A branch name can move after review. A commit SHA cannot: it identifies one exact snapshot. Team therefore turns accepted deliverables into a fixed release candidate, checks that candidate, and publishes that same candidate only after its gates pass.
+
+In plain language, the path is:
+
+```text
+accepted work -> fixed candidate -> verification and release review
+              -> canonical publication of that same candidate
+```
+
+Internal review, feature, and release branches are preparation areas. The release package's canonical branch and published commit are the final publication evidence. If content fails, it must be corrected and reviewed as new content. If the candidate is sound but a test worker times out or a reviewer cannot access evidence, a linked retry may run against the unchanged candidate.
 
 ## The repository boundary
 
-A Team project stores only a core <code>managed_repo_id</code>, directory scope, optional base branch, and canonical release prefix. The central managed-Git registry owns the upstream identity and host bare repository. Team commands never accept a trusted host checkout path as repository authority.
+Team refers to a repository by its registered identity rather than by an arbitrary host folder. Every preparation branch stays inside the managed repository until the one canonical publication step.
 
-All Team branches before canonical publication live in that managed bare repository:
-
-| Stage | Deterministic shape | Purpose |
-|---|---|---|
-| Ephemeral agent | <code>agents/&lt;session&gt;/&lt;assignment&gt;</code> | Disposable worker output |
-| Review | <code>team/&lt;team&gt;/reviews/&lt;source-id&gt;</code> | Captured reviewed source |
-| Feature | <code>team/&lt;team&gt;/features/&lt;task&gt;-&lt;agent&gt;</code> | Consolidated accepted task work |
-| Internal release | <code>team/&lt;team&gt;/releases/&lt;release&gt;</code> | Consolidated candidate |
-| Canonical | default <code>releases/&lt;project&gt;/&lt;release&gt;</code> | The only Team branch pushed upstream |
-
-Branch validation rejects whitespace, control characters, colon, a leading slash, <code>..</code>, and a leading <code>refs/</code>. Operators may configure the canonical prefix, but it remains a validated plain branch name.
+> <span class="sidebar-kicker">Technical reference</span> **Repository identity and deterministic branches**
+>
+> A Team project stores only a core <code>managed_repo_id</code>, directory scope, optional base branch, and canonical release prefix. The central managed-Git registry owns the upstream identity and host bare repository. Team commands never accept a trusted host checkout path as repository authority.
+>
+> All Team branches before canonical publication live in that managed bare repository:
+>
+> | Stage | Deterministic shape | Purpose |
+> |---|---|---|
+> | Ephemeral agent | <code>agents/&lt;session&gt;/&lt;assignment&gt;</code> | Disposable worker output |
+> | Review | <code>team/&lt;team&gt;/reviews/&lt;source-id&gt;</code> | Captured reviewed source |
+> | Feature | <code>team/&lt;team&gt;/features/&lt;task&gt;-&lt;agent&gt;</code> | Consolidated accepted task work |
+> | Internal release | <code>team/&lt;team&gt;/releases/&lt;release&gt;</code> | Consolidated candidate |
+> | Canonical | default <code>releases/&lt;project&gt;/&lt;release&gt;</code> | The only Team branch pushed upstream |
+>
+> Branch validation rejects whitespace, control characters, colon, a leading slash, <code>..</code>, and a leading <code>refs/</code>. Operators may configure the canonical prefix, but it remains a validated plain branch name.
 
 ## Intent, effect, and evidence
 
-Every promotion is a durable <code>GitPromotionRecord</code>. It records promotion kind, source refs and pinned SHAs, expected commit, target branch, state, output, and error.
+Requesting a promotion and completing it are two different events. The first records what should happen; a background workflow performs the Git operation; a result record then says what actually happened. A successful request therefore does not by itself prove that Git changed.
 
-The flow has three steps:
-
-1. An authorized MCP/Admin command records promotion intent and durable outbox event.
-2. The workflow pack invokes the relevant managed-Git effect.
-3. <code>effect:team:record-git-promotion</code> attaches the actual success/failure and updates related Team evidence.
-
-The command's success means intent was recorded. The promotion record and effect output say whether Git succeeded.
-
-Managed-Git effects use operation-scoped worktrees and temporary refs. Target updates are compare-and-swap operations. Conflicts fail; Evander never auto-resolves them. Temporary resources are removed on success and failure.
+> <span class="sidebar-kicker">Deeper detail</span> **Intent, effect, and promotion record**
+>
+> Every promotion is a durable <code>GitPromotionRecord</code>. It records promotion kind, source refs and pinned SHAs, expected commit, target branch, state, output, and error.
+>
+> The flow has three steps:
+>
+> 1. An authorized MCP/Admin command records promotion intent and durable outbox event.
+> 2. The workflow pack invokes the relevant managed-Git effect.
+> 3. <code>effect:team:record-git-promotion</code> attaches the actual success/failure and updates related Team evidence.
+>
+> The command's success means intent was recorded. The promotion record and effect output say whether Git succeeded.
+>
+> Managed-Git effects use operation-scoped worktrees and temporary refs. Target updates are compare-and-swap operations. Conflicts fail; Evander never auto-resolves them. Temporary resources are removed on success and failure.
 
 ## The promotion ladder
 
+Each rung freezes evidence for the next one. The names below are useful when an operator follows a release record; the exact command and manifest behavior matters most to release administrators.
+
 ### Agent or ephemeral output → review
 
-<code>team_publish_review_branch</code> captures a persistent deliverable's validated agent branch/commit or an accepted ephemeral assignment branch into a deterministic review ref. The actor must be the producer/parent, an authorized superior, project lead, or manager as applicable.
+The first step captures the exact output that is ready to be reviewed. It does not publish that output upstream.
+
+> <span class="sidebar-kicker">Technical detail</span> **Capturing the review ref**
+>
+> <code>team_publish_review_branch</code> captures a persistent deliverable's validated agent branch/commit or an accepted ephemeral assignment branch into a deterministic review ref. The actor must be the producer/parent, an authorized superior, project lead, or manager as applicable.
 
 ### Review → feature
 
-<code>team_update_feature_branch</code> consolidates accepted current deliverables for one task. Each source must match the commit actually accepted by review. The resulting reviewed manifest freezes:
+Accepted results for one task are combined into a task-level feature branch. Only the exact commits accepted by review may enter it.
 
-- base and result tree;
-- included commits;
-- changed paths;
-- source deliverable/review evidence.
+> <span class="sidebar-kicker">Technical detail</span> **Consolidating accepted review evidence**
+>
+> <code>team_update_feature_branch</code> consolidates accepted current deliverables for one task. Each source must match the commit actually accepted by review. The resulting reviewed manifest freezes:
+>
+> - base and result tree;
+> - included commits;
+> - changed paths;
+> - source deliverable/review evidence.
 
 ### Feature → internal release
 
-<code>team_request_release</code> selects accepted deliverables from one project. If needed, prerequisite feature promotions are created first. Release consolidation merges pinned feature commits into the internal release branch and freezes the candidate SHA and tree.
+Accepted task results from one project are combined into the fixed release candidate.
+
+> <span class="sidebar-kicker">Technical detail</span> **Freezing the internal release candidate**
+>
+> <code>team_request_release</code> selects accepted deliverables from one project. If needed, prerequisite feature promotions are created first. Release consolidation merges pinned feature commits into the internal release branch and freezes the candidate SHA and tree.
 
 ### Internal release → canonical
 
-Only after every gate passes does the workflow create the canonical-push promotion. Core <code>effect:git:push-branch</code> performs expected-commit and destination-lease preflight, then pushes the approved release commit to the canonical branch. <code>effect:team:mark-release-published</code> records canonical branch, published commit, timestamp, and accepted package state.
+After every required check and review passes, that fixed candidate becomes the one canonical publication.
 
 The internal release branch is not the published branch operators should test or advertise. The release package's <code>canonical_branch</code> and <code>published_commit_sha</code> are the publication truth.
+
+> <span class="sidebar-kicker">Technical detail</span> **Publishing the exact candidate**
+>
+> Only after every gate passes does the workflow create the canonical-push promotion. Core <code>effect:git:push-branch</code> performs expected-commit and destination-lease preflight, then pushes the approved release commit to the canonical branch. <code>effect:team:mark-release-published</code> records canonical branch, published commit, timestamp, and accepted package state.
 
 ![Pinned Team Git promotion and release-gate flow](assets/evander-user-manual/diagrams/16-team-release.svg)
 
@@ -4178,26 +5723,30 @@ The internal release branch is not the published branch operators should test or
 
 ## Creating a release package
 
-The caller must be:
-
-- the project lead;
-- the top-level Team manager; or
-- an agent whose same-project role grants <code>request_release</code>.
+The release package is the sealed description of one candidate: what work it contains, what reviewers accepted, what changed, which checks must run, and who requested it. Later policy changes do not silently rewrite that package.
 
 All selected deliverables must be accepted and belong to one project. Artifact-only releases are allowed without Git configuration. A Git release requires project Git configuration and an explicit release policy unless <code>allow_ungated=true</code> was deliberately configured.
 
-The release package freezes a typed manifest containing:
-
-- deliverable IDs, verification status, evidence refs, and waiver records;
-- accepted immutable deliverable reviews;
-- reviewed change manifests;
-- candidate commit and tree;
-- scope-validation result;
-- ordered verification commands;
-- release-review requirements;
-- actor and timestamp evidence.
-
 This prevents policy drift after request time from silently redefining what was approved.
+
+> <span class="sidebar-kicker">Technical reference</span> **Request authority and frozen manifest**
+>
+> The caller must be:
+>
+> - the project lead;
+> - the top-level Team manager; or
+> - an agent whose same-project role grants <code>request_release</code>.
+>
+> The release package freezes a typed manifest containing:
+>
+> - deliverable IDs, verification status, evidence refs, and waiver records;
+> - accepted immutable deliverable reviews;
+> - reviewed change manifests;
+> - candidate commit and tree;
+> - scope-validation result;
+> - ordered verification commands;
+> - release-review requirements;
+> - actor and timestamp evidence.
 
 ## Verification evidence and waivers
 
@@ -4213,19 +5762,25 @@ A role with <code>request_release</code> alone cannot grant the waiver. Each wai
 
 A waiver acknowledges incomplete verification evidence; it does not waive reviewed-scope mismatch.
 
+In everyday terms, “we could not run this check” may be acknowledged by an authorized person with a reason; “this check failed” may not. A waiver never permits extra, unreviewed content.
+
 ## Release policy
 
-<code>Project.release_policy</code> selects:
+The project policy says how the fixed candidate will be checked and who must review it. Unless the project was deliberately configured for ungated release, at least one command or review requirement is mandatory.
 
-- <code>container_worker_vm</code> verification backend;
-- optional container image;
-- ordered commands, each with name, working directory, argv, and timeout;
-- required reviewer/profile pairs;
-- or explicit <code>allow_ungated=true</code>.
-
-Without <code>allow_ungated</code>, at least one command or review requirement is required.
-
-The verifier creates a disposable worker session, clones by <code>managed_repo_id</code>, checks out the exact candidate SHA, runs commands in order, records bounded results, and destroys the session. Release reviewers decide that same candidate SHA under their profiles.
+> <span class="sidebar-kicker">Technical sidebar</span> **Release-policy fields and verifier behavior**
+>
+> <code>Project.release_policy</code> selects:
+>
+> - <code>container_worker_vm</code> verification backend;
+> - optional container image;
+> - ordered commands, each with name, working directory, argv, and timeout;
+> - required reviewer/profile pairs;
+> - or explicit <code>allow_ungated=true</code>.
+>
+> Without <code>allow_ungated</code>, at least one command or review requirement is required.
+>
+> The verifier creates a disposable worker session, clones by <code>managed_repo_id</code>, checks out the exact candidate SHA, runs commands in order, records bounded results, and destroys the session. Release reviewers decide that same candidate SHA under their profiles.
 
 ## Scope validation
 
@@ -4238,6 +5793,8 @@ For Northstar, if the reviewed telemetry change covers <code>src/telemetry/retry
 ## Gate outcomes and retries
 
 Candidate identity never changes within one release package.
+
+The practical distinction is **content failure versus process failure**. Content failure means the candidate must change. Process failure may justify another attempt against the same candidate. Git-promotion recovery is a third, separate path.
 
 ### Terminal candidate failures
 
@@ -4286,7 +5843,15 @@ If integration verification times out, Riley may request an audited retry agains
 | Release review blocked | Retryable only with a concrete process/evidence blocker. |
 | Release package says accepted but upstream seems different | Compare canonical branch/published SHA, promotion record, core push effect, and remote ref. Do not inspect only the internal release branch. |
 
-## Practical runbook
+## Troubleshooting and handoff
+
+Start with the release package in Team Delivery. Capture its ID, state, candidate SHA and tree, scope-validation result, verification run, release reviews, prerequisite promotion IDs, and any canonical branch or published SHA. State whether the failure is a candidate defect, a process/evidence problem, or a Git promotion failure; the correct recovery differs for each.
+
+If the package says accepted but the upstream result looks wrong, do not test or advertise the internal release branch. Hand the package's <code>canonical_branch</code> and <code>published_commit_sha</code>, the canonical-push promotion, and the visible remote mismatch to a release administrator.
+
+Never turn a failed test or rejected review into a retry merely to preserve the same package. New content requires new reviewed deliverables and a new release.
+
+## Release runbook
 
 Before release:
 
@@ -4324,38 +5889,61 @@ After release:
 
 # 25. Governance, Memory, Cost, and Internals
 
-> **At a glance.** Governance provides cross-Team attention without erasing Team ownership. Durable memory preserves scoped organizational knowledge while Qdrant remains a rebuildable index. Cost totals are estimated operational guards with explicit coverage, not invoices. Under all three features, relational SQLite remains canonical; derived views, workflow events, semantic vectors, and session mirrors must be diagnosed through their owning boundaries.
+> **At a glance.** Some concerns sit above a single task: another group may need to advise a team, agents may need durable organizational memory, and managers may need a practical limit on model spending. Team supports all three without taking ownership away from the team doing the work. This chapter explains those features and the limits that keep advice, search results, and cost estimates from being mistaken for final authority.
+>
+> The first half is for operators and Team managers: it explains when governance may advise, what belongs in memory, and what a cost cap really means. The second half is administrator reference material about databases, workflow providers, diagnosis, backup, and recovery. You can understand the operational promises without reading the storage internals on the first pass.
+
+## Four ideas in one chapter
+
+These features answer different questions:
+
+| Question | Team feature | Limit to remember |
+|---|---|---|
+| How can another group raise or route a concern? | Governance groups and agendas | Governance advises through the member Team's manager; it does not inherit ownership of the Team's work. |
+| How can useful knowledge survive later sessions? | Durable Team memory | A memory record is curated context, not a substitute for the underlying artifact or current state. |
+| How can a manager stop new Team work after an estimated limit? | Cost caps | The estimate can have incomplete pricing or attribution and is not an invoice. |
+| How can an administrator explain or restore the system? | Canonical stores, ledgers, workflow records, and backups | Derived views and search indexes are not the sole source of truth. |
+
+Northstar might use governance to route a telemetry-policy conflict, memory to preserve the resulting retry decision, and a cost cap to pause future Team wakes if estimated model use grows too large. Each feature keeps its own evidence and authority boundary.
 
 ## Governance across Teams
 
-A <code>GovernanceGroup</code> has:
+Governance gives an oversight agent a bounded view of several Teams and a way to direct concerns to their managers. It does not place that agent above every project lead, producer, or reviewer. For Northstar, a governance manager may direct Mira to assess a telemetry-policy conflict, but should not assign Imani's implementation details directly or declare Rowan's review accepted.
 
-- one persistent governance manager;
-- a set of member Team IDs;
-- goals and optional estimated cost cap;
-- a durable agenda;
-- runtime lease, wake timing, and change fingerprints.
+Membership answers **which Teams may receive governance attention**. The agenda answers **which concern is pending**. A directive routes the resulting decision back through the member Team's manager.
 
-The governance manager is an oversight role, not the manager of every member Team. The manager receives summaries of member Teams, projects, Team managers, open/blocked work, cost, and pending agenda. It can create an operator directive for a member Team's manager and mark its own agenda handled.
-
-Current agenda types include:
-
-- <code>operator_directive</code>;
-- <code>team_escalation</code>;
-- <code>cost_cap_warning</code> and <code>cost_cap_reached</code>;
-- <code>stale_team</code> and <code>blocked_team</code>;
-- <code>scheduled_checkin</code>;
-- <code>policy_decision</code>.
-
-Adding or removing group membership creates a pending <code>policy_decision</code> agenda item containing previous, added, removed, and current Team IDs. It also makes governance evaluation due, so the next prompt contains the new Team summaries.
-
-The runtime leases a governance manager when agenda is pending and due or when member-Team cost/blocked fingerprints materially changed. Governance commands require the correct managed group and lease. The tool surface is deliberately small: create a directive and mark an agenda item handled, plus appropriate reads.
-
-Membership proves that a Team is an authorized governance target. It does not prove that the governance manager owns a product decision. For Northstar, a governance manager may direct Mira to assess a telemetry-policy conflict, but should not assign Imani's implementation details directly or declare Rowan's review accepted.
+> <span class="sidebar-kicker">Technical reference</span> **Governance records, agenda, and lease**
+>
+> A <code>GovernanceGroup</code> has:
+>
+> - one persistent governance manager;
+> - a set of member Team IDs;
+> - goals and optional estimated cost cap;
+> - a durable agenda;
+> - runtime lease, wake timing, and change fingerprints.
+>
+> The governance manager is an oversight role, not the manager of every member Team. The manager receives summaries of member Teams, projects, Team managers, open/blocked work, cost, and pending agenda. It can create an operator directive for a member Team's manager and mark its own agenda handled.
+>
+> Current agenda types include:
+>
+> - <code>operator_directive</code>;
+> - <code>team_escalation</code>;
+> - <code>cost_cap_warning</code> and <code>cost_cap_reached</code>;
+> - <code>stale_team</code> and <code>blocked_team</code>;
+> - <code>scheduled_checkin</code>;
+> - <code>policy_decision</code>.
+>
+> Adding or removing group membership creates a pending <code>policy_decision</code> agenda item containing previous, added, removed, and current Team IDs. It also makes governance evaluation due, so the next prompt contains the new Team summaries.
+>
+> The runtime leases a governance manager when agenda is pending and due or when member-Team cost/blocked fingerprints materially changed. Governance commands require the correct managed group and lease. The tool surface is deliberately small: create a directive and mark an agenda item handled, plus appropriate reads.
+>
+> Membership proves that a Team is an authorized governance target. It does not prove that the governance manager owns a product decision.
 
 ## Escalation into governance
 
-When <code>northstar-platform</code> has <code>escalate_to_governance=true</code>, Mira's escalation creates agenda in each group containing Northstar. The manager sees the Team and project summaries, decides what action is justified, creates a directive to Mira if needed, and handles the agenda.
+When a concern needs governance attention, a Team with escalation enabled can route it to every governance group configured to receive that Team's concerns. The governance manager sees the context, decides whether a directive is justified, and sends that directive to the Team manager rather than bypassing them.
+
+For Northstar, when <code>northstar-platform</code> has <code>escalate_to_governance=true</code>, Mira's escalation creates agenda in each group containing Northstar. The manager sees the Team and project summaries, decides what action is justified, creates a directive to Mira if needed, and handles the agenda.
 
 This creates an auditable loop:
 
@@ -4369,24 +5957,9 @@ Do not mark an agenda handled merely to silence a wake before routing the necess
 
 ## Durable Team memory
 
-Team memory is for compact knowledge that should survive dispatches and model contexts:
+Team memory is a curated notebook for knowledge that should outlive one conversation or dispatch. Good entries say what was decided, learned, preferred, or handed off. Bulky evidence stays in artifacts and is linked from the memory record.
 
-- <code>decision</code>;
-- <code>preference</code>;
-- <code>fact</code>;
-- <code>runbook</code>;
-- <code>postmortem</code>;
-- <code>research</code>;
-- <code>handoff</code>;
-- <code>other</code>.
-
-Scopes are <code>team_global</code>, <code>project</code>, <code>agent_private</code>, and <code>governance</code>. Records can be active, superseded, or archived. They contain title, summary, tags, refs, optional body, ownership/scope, and timestamps.
-
-Broad state and search payloads omit the potentially long body. Explicit detail reads return it. Store bulky logs, datasets, and test evidence as immutable artifacts, then link their refs from the memory record.
-
-Normal wake prompts do not inject all memory. Agents call <code>team_search_memory</code> when recall is useful. This prevents a growing knowledge base from consuming every dispatch context.
-
-Memory commands include <code>team_record_memory</code> and <code>team_archive_memory</code>. Archiving or superseding preserves history; it does not mutate the old statement into a new one. These actions are classified as context activity rather than substantive task progress, so repeatedly writing notes does not defeat no-progress protection.
+Normal wake prompts do not inject the entire notebook. An agent searches memory when it needs recall, preventing a growing knowledge base from consuming every dispatch context.
 
 For Northstar, useful records include:
 
@@ -4394,45 +5967,121 @@ For Northstar, useful records include:
 - runbook: “Diagnose retry exhaustion using attempt count, terminal reason, and upstream correlation.”
 - handoff: “D2 supersedes D1 after jitter deadline correction; Rowan review R4 is current.”
 
+> <span class="sidebar-kicker">Technical reference</span> **Memory types, scopes, and lifecycle**
+>
+> Team memory is for compact knowledge that should survive dispatches and model contexts:
+>
+> - <code>decision</code>;
+> - <code>preference</code>;
+> - <code>fact</code>;
+> - <code>runbook</code>;
+> - <code>postmortem</code>;
+> - <code>research</code>;
+> - <code>handoff</code>;
+> - <code>other</code>.
+>
+> Scopes are <code>team_global</code>, <code>project</code>, <code>agent_private</code>, and <code>governance</code>. Records can be active, superseded, or archived. They contain title, summary, tags, refs, optional body, ownership/scope, and timestamps.
+>
+> Broad state and search payloads omit the potentially long body. Explicit detail reads return it. Store bulky logs, datasets, and test evidence as immutable artifacts, then link their refs from the memory record.
+>
+> Normal wake prompts do not inject all memory. Agents call <code>team_search_memory</code> when recall is useful. This prevents a growing knowledge base from consuming every dispatch context.
+>
+> Memory commands include <code>team_record_memory</code> and <code>team_archive_memory</code>. Archiving or superseding preserves history; it does not mutate the old statement into a new one. These actions are classified as context activity rather than substantive task progress, so repeatedly writing notes does not defeat no-progress protection.
+
 ## Semantic indexing
 
-Canonical memory records live in Team SQLite. Qdrant stores a derived per-Team semantic collection with a generated name based on Team ID. Semantic results are joined back to canonical records and filtered by current visibility.
+Semantic search helps find relevant memory by meaning rather than exact wording. It is an index over the Team's canonical memory, not a second authoritative knowledge store. If the index is unavailable, the records remain; an administrator can rebuild it.
 
-Visibility protects:
+Search results are checked again against current visibility. Finding or possessing an internal index identifier never grants access to a private record.
 
-- agent-private records for the owning agent;
-- project records for agents with visible project scope;
-- governance records for the appropriate governance context;
-- broader subordinate/project context available to authorized managers.
-
-The exact visibility evaluator, not possession of a Qdrant point ID, determines access.
-
-Workflow providers are:
-
-- <code>query:team:memory</code>;
-- <code>effect:team:index-memory</code>;
-- <code>effect:team:reindex-memory</code>.
-
-If Qdrant is unavailable or corrupt, canonical memory remains. Repair connectivity and reindex rather than treating the vector collection as the backup.
+> <span class="sidebar-kicker">Deeper detail</span> **Canonical records and the Qdrant index**
+>
+> Canonical memory records live in Team SQLite. Qdrant stores a derived per-Team semantic collection with a generated name based on Team ID. Semantic results are joined back to canonical records and filtered by current visibility.
+>
+> Visibility protects:
+>
+> - agent-private records for the owning agent;
+> - project records for agents with visible project scope;
+> - governance records for the appropriate governance context;
+> - broader subordinate/project context available to authorized managers.
+>
+> The exact visibility evaluator, not possession of a Qdrant point ID, determines access.
+>
+> Workflow providers are:
+>
+> - <code>query:team:memory</code>;
+> - <code>effect:team:index-memory</code>;
+> - <code>effect:team:reindex-memory</code>.
+>
+> If Qdrant is unavailable or corrupt, canonical memory remains. Repair connectivity and reindex rather than treating the vector collection as the backup.
 
 ## Cost as an operational guard
 
-A Team may have <code>max_cost_usd</code>; a governance group may also have a cap. Cost aggregation reads recorded model usage from <code>runtime/model-usage.db</code>, applies the runtime pricing catalog, and may backfill supported Claude transcript usage. It deduplicates records and attributes them using request, dispatch, session, Team/project, and ephemeral-assignment metadata.
-
-The result separates Team, project, and unattributed amounts and includes:
-
-- estimated cost;
-- priced and unpriced usage;
-- <code>coverage_status</code>;
-- <code>coverage_reasons</code>.
-
-These totals are an estimated lifetime operational safety rail, not billing-grade truth. Missing prices, incomplete attribution, transcript gaps, or ingestion delay can produce partial coverage.
+A cost cap is a brake on future Team wakes, not a billing system. The displayed total is an estimated lifetime amount based on the usage Evander can price and attribute. Always read it together with its coverage information.
 
 When a Team reaches its cap, future Team wakes are blocked, including queued Chat. Existing external provider spend may already have occurred, and unrelated core workloads are not retroactively canceled. Raising or clearing the cap re-enables evaluation; do so only after understanding coverage.
 
 Governance can emit a warning before the group or Team reaches its cap, using the configured warning ratio, and an agenda item when it reaches the cap. A warning is not proof of exact invoiced spend.
 
-## SQLite internals
+> <span class="sidebar-kicker">Technical sidebar</span> **How the estimate is assembled**
+>
+> A Team may have <code>max_cost_usd</code>; a governance group may also have a cap. Cost aggregation reads recorded model usage from <code>runtime/model-usage.db</code>, applies the runtime pricing catalog, and may backfill supported Claude transcript usage. It deduplicates records and attributes them using request, dispatch, session, Team/project, and ephemeral-assignment metadata.
+>
+> The result separates Team, project, and unattributed amounts and includes:
+>
+> - estimated cost;
+> - priced and unpriced usage;
+> - <code>coverage_status</code>;
+> - <code>coverage_reasons</code>.
+>
+> These totals are an estimated lifetime operational safety rail, not billing-grade truth. Missing prices, incomplete attribution, transcript gaps, or ingestion delay can produce partial coverage.
+
+## What an operator should be able to explain
+
+At the end of the telemetry retry release, an operator should be able to answer:
+
+- Which governance decisions affected Northstar and who handled them?
+- Which current memory records explain the retry policy and supersede old guidance?
+- What proportion of Northstar usage was priced and attributed?
+- Which command activity and outbox rows led to the release?
+- Which canonical branch and SHA were published?
+
+If the answer depends only on a Chat transcript or Timeline rendering, the durable operational record is incomplete.
+
+## Troubleshooting and handoff
+
+Start in the Team surface that shows the symptom. Record the Team or governance-group ID, selected project, affected agent or manager, visible state, and time of the last change. For memory, capture the query, scope, expected record, and whether an exact metadata search can find it. For cost, capture the estimated total, coverage status and reasons, unpriced amount, and active cap.
+
+Use the table below to identify the first authoritative source an administrator should inspect. Do not treat a missing Timeline entry, Chat message, or semantic-search result as proof that the underlying record does not exist.
+
+| Symptom | First authoritative sources |
+|---|---|
+| Wrong Team ownership/state | <code>state.db</code> current schema and revision-checked Team API |
+| Agent did or did not wake | Team Operations/runtime payload, runtime row, live pack parameters, workflow run, core session state |
+| Async action missing | Team outbox row, internal event, workflow run, effect result |
+| Git release discrepancy | release package, promotion record, managed bare ref, canonical push effect, remote ref |
+| Memory search omission | canonical memory visibility, Qdrant health/index generation, query result |
+| Cost discrepancy | model-usage DB, attribution metadata, pricing catalog, coverage reasons |
+| Voice discrepancy | core voice-session store and optional Team Chat projection |
+
+Avoid broad guesses from UI appearance alone. If a private memory record appears to the wrong identity, treat that as an authorization incident and preserve the query context immediately.
+
+### Common failure patterns
+
+| Symptom | Correct response |
+|---|---|
+| Governance manager targets a Team outside the group | Membership authorization fails; update membership through revision-checked policy only if genuinely intended. |
+| Same agenda wakes repeatedly | Inspect pending/handled state, lease finalization, cost/blocked fingerprint change, and whether a directive was actually routed. |
+| Memory exists but semantic search misses it | Confirm visibility and canonical status, then inspect/rebuild the Team collection. |
+| Search exposes a private record | Treat as an authorization defect; preserve query context and inspect canonical visibility rejoin immediately. |
+| Team cap blocks Chat unexpectedly | Chat is a Team wake and is intentionally guarded; inspect estimated total and coverage. |
+| Cost total differs from invoice | Expected possibility; reconcile usage ingestion, pricing, attribution, and unpriced events. |
+| SQLite is locked | Identify the legitimate writer and long transaction; do not disable serialized writes or hand-edit WAL files. |
+| Live runtime behavior differs from packaged definition | The operator-owned pack may be customized or stale; inspect its current revision and history, then refresh/merge through the supported API. |
+
+The remainder of the chapter is administrator and maintainer reference material.
+
+## Administrator reference: SQLite internals
 
 <code>state.db</code> contains normalized relational tables for Teams, roles, agents, assignments, runtimes, projects, tasks, cases, deliverables, reviews, inbox, conversations, memory, governance, releases, promotions, ephemeral assignments, and related evidence.
 
@@ -4452,7 +6101,7 @@ The one-time legacy <code>state.json</code> import is recorded in database metad
 
 <p class="figure-caption">Figure 25.2 — Scoped UI reads refresh from revision-only invalidations while optimistic writes remain explicit.</p>
 
-## Workflow and provider internals
+## Administrator reference: workflow and provider internals
 
 The add-on registers its providers only while enabled. The main grouped contract is:
 
@@ -4469,23 +6118,7 @@ The registered <code>team-runtime.v1</code> pack composes these with core agent,
 
 The packaged Python definition is a source definition. Enablement materializes an operator-owned live workflow document under the normal revision and lock contract. Refresh it through the Add-ons surface. Never directly rewrite a live workflow-pack file, even during incident repair.
 
-## Diagnosis by source of truth
-
-Start with the observed symptom, then cross the boundary deliberately:
-
-| Symptom | First authoritative sources |
-|---|---|
-| Wrong Team ownership/state | <code>state.db</code> current schema and revision-checked Team API |
-| Agent did or did not wake | Team Operations/runtime payload, runtime row, live pack parameters, workflow run, core session state |
-| Async action missing | Team outbox row, internal event, workflow run, effect result |
-| Git release discrepancy | release package, promotion record, managed bare ref, canonical push effect, remote ref |
-| Memory search omission | canonical memory visibility, Qdrant health/index generation, query result |
-| Cost discrepancy | model-usage DB, attribution metadata, pricing catalog, coverage reasons |
-| Voice discrepancy | core voice-session store and optional Team Chat projection |
-
-Avoid broad guesses from UI appearance alone.
-
-## Backup and recovery
+## Administrator backup and recovery
 
 A useful backup set includes:
 
@@ -4510,32 +6143,7 @@ Recovery order:
 
 Do not replay legacy JSON over restored relational state.
 
-## Northstar operational review
-
-At the end of the telemetry retry release, an operator should be able to answer:
-
-- Which governance decisions affected Northstar and who handled them?
-- Which current memory records explain the retry policy and supersede old guidance?
-- What proportion of Northstar usage was priced and attributed?
-- Which command activity and outbox rows led to the release?
-- Which canonical branch and SHA were published?
-
-If the answer depends only on a Chat transcript or Timeline rendering, the durable operational record is incomplete.
-
-## Failure patterns
-
-| Symptom | Correct response |
-|---|---|
-| Governance manager targets a Team outside the group | Membership authorization fails; update membership through revision-checked policy only if genuinely intended. |
-| Same agenda wakes repeatedly | Inspect pending/handled state, lease finalization, cost/blocked fingerprint change, and whether a directive was actually routed. |
-| Memory exists but semantic search misses it | Confirm visibility and canonical status, then inspect/rebuild the Team collection. |
-| Search exposes a private record | Treat as an authorization defect; preserve query context and inspect canonical visibility rejoin immediately. |
-| Team cap blocks Chat unexpectedly | Chat is a Team wake and is intentionally guarded; inspect estimated total and coverage. |
-| Cost total differs from invoice | Expected possibility; reconcile usage ingestion, pricing, attribution, and unpriced events. |
-| SQLite is locked | Identify the legitimate writer and long transaction; do not disable serialized writes or hand-edit WAL files. |
-| Live runtime behavior differs from packaged definition | The operator-owned pack may be customized or stale; inspect its current revision and history, then refresh/merge through the supported API. |
-
-## Practical runbook
+## Administrator runbook
 
 ### Governance
 
@@ -4585,9 +6193,13 @@ Explain how to extend and verify Evander, then separate the historical decisions
 
 # 26. Engineering and Extension Guide
 
-> **At a glance.** Extend Evander at the narrowest stable seam. Prefer configuration for policy, a workflow pack for orchestration, a provider plugin for a reusable node, an add-on for a bounded product surface, and core changes only for control-plane invariants. Every extension must preserve directory scope, host-owned secrets, typed contracts, idempotency, auditability, and restart/migration behavior.
+> **At a glance.** Not every new requirement calls for changing Evander's core. Many can be expressed as configuration, a workflow, a provider plugin, or a self-contained add-on. This chapter helps an engineer choose the smallest extension point that fits, so new capability arrives without bypassing the security, recovery, and audit behavior the rest of the system relies on.
+>
+> This is an engineering chapter, so it keeps exact contracts and implementation checklists. Read **Choose the right seam** and **Seven rules every extension must preserve** first. Then go directly to the section for the extension you are building, and use the testing and troubleshooting sections as the completion gate.
 
 ## Choose the right seam
+
+Before writing code, ask whether the requirement changes **values**, **composition**, **a reusable integration**, **a product-sized domain**, **where isolated work runs**, or **Evander's own durable semantics**. Pick the first seam in the table that fully expresses the requirement.
 
 | Requirement | Preferred seam |
 |---|---|
@@ -4600,7 +6212,15 @@ Explain how to extend and verify Evander, then separate the historical decisions
 
 Northstar Platform's telemetry-retry process, for example, needs no new core scheduler: a communication or issue trigger, existing Git/session effects, and Team workflow primitives are enough. A genuinely new telemetry SaaS might warrant a provider plugin; a full telemetry-management product with its own records and UI might warrant an add-on.
 
-## Architectural rules contributors must preserve
+Three follow-up questions catch many over-sized designs:
+
+1. Can existing typed nodes express the behavior as a workflow?
+2. Does the feature need private durable state and its own UI/API surface, or only one reusable provider?
+3. Would the proposal introduce a second owner for secrets, source code, identity, or durable truth?
+
+If the third answer is yes, revise the boundary before implementation.
+
+## Seven rules every extension must preserve
 
 1. **Host paths and secrets stay private.** Public contracts use managed IDs, relative artifact paths, target IDs, and environment-variable names.
 2. **Code moves with Git.** Do not add MCP payload transport for repositories.
@@ -4610,18 +6230,22 @@ Northstar Platform's telemetry-retry process, for example, needs no new core sch
 6. **Durable truth has one owner.** Derived caches and indexes must be rebuildable or visibly stale.
 7. **Cleanup is part of success.** Temporary credentials, refs, worktrees, containers, leases, and pending records need terminal cleanup and startup reconciliation.
 
+These rules are not merely style conventions. They are compatibility with Evander's security, retry, and audit model. An extension that works on the happy path but bypasses one of them is incomplete.
+
 ## Extending the Admin runtime
 
 `src/evander/admin/composition.py::build_admin_runtime` and `AdminRuntimeComponents` are the supported assembly seam. Domain behavior belongs in a focused service under `src/evander/admin/services/`; web routes should validate HTTP/auth concerns and delegate. CLI and gateway adapters should use the same service rather than reimplementing business rules.
 
-A new admin domain normally needs:
+Use this seam when the new behavior belongs to Evander's supported administration surface and should be shared consistently by Admin Web, CLI, or gateway adapters.
 
-- a dependency dataclass/port for the narrow collaborators it uses;
-- a service with plain, testable methods;
-- construction and exposure in `AdminRuntimeComponents`;
-- thin route and payload models;
-- RBAC/privileged-unlock/revision behavior for mutations;
-- focused service tests and route authorization tests.
+> <span class="sidebar-kicker">Engineering checklist</span> **A new Admin domain normally needs**
+>
+> - a dependency dataclass/port for the narrow collaborators it uses;
+> - a service with plain, testable methods;
+> - construction and exposure in `AdminRuntimeComponents`;
+> - thin route and payload models;
+> - RBAC/privileged-unlock/revision behavior for mutations;
+> - focused service tests and route authorization tests.
 
 Do not recreate the removed monolithic `AdminService` facade or rely on another service's private attributes. Compatibility adapters, when unavoidable, should be thin and scheduled for removal.
 
@@ -4636,39 +6260,49 @@ Workflow nodes are divided by semantics:
 
 Putting a write in a query or a provider poll in an effect makes retry behavior impossible to reason about.
 
+Start by classifying the node by what it does to the outside world. That decision determines its retry contract: triggers discover, gates decide, queries read, and effects mutate.
+
 ### Complete node contract
 
-A production node includes all of the following:
+A node is not complete when only its Python provider runs. It must also be validatable, discoverable in the editor, bindable by later nodes, configurable at runtime, and testable under failure and replay.
 
-1. A namespaced node type such as `query:telemetry:deployment`.
-2. A typed definition model and resolver from `WorkflowNodeEnvelope`.
-3. A provider subclass of the appropriate base with declared node capability.
-4. A stable output schema registered for expression binding.
-5. Runtime-context use for directory config, secret resolution, services, and transport—never ambient guest state.
-6. A workflow-editor catalog entry with useful labels, field schemas, defaults, and output documentation.
-7. An internal event catalog entry only if the node introduces a stable event type.
-8. Registration in built-ins or a `ProviderPluginRegistration`.
-9. Validation, materialization, provider, registry, expression-binding, failure, and replay tests.
-10. Documentation, configuration reference, and `CHANGELOG.md` entry.
+> <span class="sidebar-kicker">Engineering checklist</span> **Complete production-node contract**
+>
+> A production node includes all of the following:
+>
+> 1. A namespaced node type such as `query:telemetry:deployment`.
+> 2. A typed definition model and resolver from `WorkflowNodeEnvelope`.
+> 3. A provider subclass of the appropriate base with declared node capability.
+> 4. A stable output schema registered for expression binding.
+> 5. Runtime-context use for directory config, secret resolution, services, and transport—never ambient guest state.
+> 6. A workflow-editor catalog entry with useful labels, field schemas, defaults, and output documentation.
+> 7. An internal event catalog entry only if the node introduces a stable event type.
+> 8. Registration in built-ins or a `ProviderPluginRegistration`.
+> 9. Validation, materialization, provider, registry, expression-binding, failure, and replay tests.
+> 10. Documentation, configuration reference, and `CHANGELOG.md` entry.
 
 `ProviderPluginRegistration` can contribute trigger, gate, effect, and query mappings; definition resolvers; editor entries; and internal event entries. The loader rejects duplicate catalog entries and catalog entries that do not match a provider of the declared kind. Module and `evander.providers` entry-point plugins are assembled at startup.
 
 ### Effect design checklist
 
-Before implementing an effect, write down:
+An effect crosses the most important boundary because it changes something. Define its replay, uncertainty, approval, and cleanup behavior before writing the provider call.
 
-- canonical input and normalized output;
-- external idempotency key and what a retry observes;
-- timeout/cancellation behavior;
-- which state is persisted before and after the call;
-- how an uncertain provider acceptance is reconciled;
-- policy/approval and audit fields;
-- secret redaction;
-- terminal and abandoned-work cleanup.
+> <span class="sidebar-kicker">Engineering checklist</span> **Before implementing an effect, write down**
+>
+> - canonical input and normalized output;
+> - external idempotency key and what a retry observes;
+> - timeout/cancellation behavior;
+> - which state is persisted before and after the call;
+> - how an uncertain provider acceptance is reconciled;
+> - policy/approval and audit fields;
+> - secret redaction;
+> - terminal and abandoned-work cleanup.
 
 Northstar Platform's “publish telemetry branch” effect should carry `managed_repo_id`, exact approved SHA, destination ref, and lease—not a host path and mutable branch tip.
 
 ## Building an add-on
+
+Choose an add-on when the extension is a cohesive product surface with private state and several integration points—not merely one reusable workflow node.
 
 An add-on package exposes `register_addon()` returning `AddonRegistration` or a compatible mapping. A typical package contains:
 
@@ -4691,14 +6325,18 @@ Add-on migrations must be transactional and idempotent. A legacy import should b
 
 ## Adding an execution backend
 
-Implement the complete `ExecutionBackend` protocol, not only “start”:
+An execution backend owns the full life of a temporary workspace. A successful start method is not enough; generic Evander workflows must be able to observe, stop, destroy, and reconcile the resource through the same abstraction.
 
-- create/start/stop/destroy;
-- status, list, and logs;
-- command execution and file transfer where the contract requires them;
-- cancellation and terminal cleanup;
-- stable mapping from session/execution ID to backend resource;
-- normalized errors and bounded timeouts.
+> <span class="sidebar-kicker">Engineering checklist</span> **Complete <code>ExecutionBackend</code> protocol**
+>
+> Implement the complete `ExecutionBackend` protocol, not only “start”:
+>
+> - create/start/stop/destroy;
+> - status, list, and logs;
+> - command execution and file transfer where the contract requires them;
+> - cancellation and terminal cleanup;
+> - stable mapping from session/execution ID to backend resource;
+> - normalized errors and bounded timeouts.
 
 Register the backend in `ExecutionBackendRegistry`, expose explicit configuration, and ensure generic workflow effects continue to address `execution_backend` rather than backend-specific implementation names.
 
@@ -4706,17 +6344,21 @@ Threat-model the backend independently. The container worker, for example, needs
 
 ## Adding a host relay or service
 
-A new host service touches more than its Python module. Update:
+A host relay or service changes deployment as well as application code. Decide who must reach it, which credential remains on the host, how calls are authenticated, and how operators will see its health before choosing its listener and firewall behavior.
 
-- a `pyproject.toml` entry point;
-- config model/example and secret-variable documentation;
-- systemd template and `scripts/install_systemd_units.sh` rendering/preflight;
-- firewall defaults only for ports guests or workers must reach;
-- bootstrap/session configuration if guests consume it;
-- runtime assembly and health/status reporting;
-- `README.md`, `docs/operations.md`, and `docs/configuration-reference.md`;
-- focused service, install-script, firewall, and documentation tests;
-- `CHANGELOG.md`.
+> <span class="sidebar-kicker">Engineering checklist</span> **A new host service touches more than its Python module**
+>
+> Update:
+>
+> - a `pyproject.toml` entry point;
+> - config model/example and secret-variable documentation;
+> - systemd template and `scripts/install_systemd_units.sh` rendering/preflight;
+> - firewall defaults only for ports guests or workers must reach;
+> - bootstrap/session configuration if guests consume it;
+> - runtime assembly and health/status reporting;
+> - `README.md`, `docs/operations.md`, and `docs/configuration-reference.md`;
+> - focused service, install-script, firewall, and documentation tests;
+> - `CHANGELOG.md`.
 
 Bind management-only services to loopback. If a guest-reachable port is needed, authenticate it with session-scoped capability and enforce the same policy server-side. Forward streaming response lifetime correctly and redact credentials from logs.
 
@@ -4726,19 +6368,23 @@ Choose storage based on concurrency and query needs. JSON repositories are suita
 
 For operator-edited documents, expose a deterministic revision and require `expected_revision`. For workflow packs, use the existing editor lock/revision path. For remote publication, use provider leases or compare-and-swap. These are the same concurrency principle at different layers.
 
-A migration plan must specify:
+A migration changes which representation is authoritative. State that transition explicitly and avoid leaving old and new stores as indefinite co-owners.
 
-- old and new authority;
-- whether migration is breaking or dual-read;
-- exact preflight and blocking conditions;
-- idempotent apply and dry-run behavior;
-- rollback limit;
-- active-worker/session handling;
-- verification and cleanup of legacy state.
+> <span class="sidebar-kicker">Engineering checklist</span> **A migration plan must specify**
+>
+> - old and new authority;
+> - whether migration is breaking or dual-read;
+> - exact preflight and blocking conditions;
+> - idempotent apply and dry-run behavior;
+> - rollback limit;
+> - active-worker/session handling;
+> - verification and cleanup of legacy state.
 
 Avoid indefinite dual authority. The managed Git migration deliberately replaced path-based checkouts with IDs and bare repositories rather than teaching every future feature both models.
 
 ## Testing and verification
+
+Test the narrow contract while developing, then run the complete Python suite before treating the extension as ready. Add failure, replay, authorization, cleanup, and deployment coverage in proportion to the seam you changed.
 
 Run focused tests while developing, then the Python suite:
 
@@ -4759,7 +6405,11 @@ git diff --cached --name-only
 
 Preserve unrelated user changes. Record every feature and bug fix in `CHANGELOG.md`.
 
-## Extension failure runbook
+## Troubleshooting an extension
+
+First identify which boundary failed: registration, schema materialization, scoped configuration, provider transport, replay, cleanup, migration, or documentation/deployment. Then trace one stable identity through that boundary instead of changing several layers at once.
+
+### Engineering runbook
 
 1. **Confirm loading.** Check the provider/add-on catalog, process restart, and duplicate-registration errors.
 2. **Validate the schema.** Materialize the smallest node/config payload and read the exact diagnostic before debugging transport.
@@ -4799,129 +6449,321 @@ Preserve unrelated user changes. Record every feature and bug fix in `CHANGELOG.
 
 # 27. Design History and Compatibility Boundaries
 
-> **At a glance.** This chapter is non-normative. It explains why current Evander has its present boundaries and identifies a few deliberate upgrade shims. For current commands and behavior, use the preceding chapters and the current source trail. A historical name, worker, file, or flow appearing here is not evidence that it remains supported.
+> **At a glance.** Evander began as a guarded host around disposable virtual machines, then acquired more kinds of work, more operators, another execution method, prepared workflows, optional domains, and stronger release evidence. Growth forced shared mechanisms to say clearly *whose work this is, who may act, and which record is current*.
+>
+> This chapter follows those turning points. It is non-normative—background, not instruction—but it explains why today's system insists on clear ownership, temporary job permissions, one current source of truth, and the exact code version that was reviewed. The precise technical names and migration consequences follow the plain story. Whenever history and the preceding technical chapters seem to disagree, the current implementation and its source trail win.
 
 ## How to read this history
 
-Evander grew from a small host gateway around disposable VMs into a directory-scoped control plane with provider-neutral workflows, a second execution backend, packaged add-ons, and managed Git. Most architectural changes followed the same pressure: replace an implicit shared resource with an explicit identity and owner.
+This is an architectural reconstruction from the changelog, retained design notes, tests, and current contracts. It is not an incident report, and it does not assume that every redesign followed a production failure. In many cases, a second writer, backend, or use case simply made an ambiguity visible. The history does not by itself tell us whether that ambiguity ever caused a concrete incident.
 
-| Earlier pressure | Current design response |
+An earlier design can therefore have been a sensible step and still be wrong to restore today. The host heartbeat, JSON coordination stores, action artifacts, repository paths, and the broad Admin facade each solved a real problem at one stage. They were retired or narrowed when the problem acquired more owners, more concurrency, or stronger evidence requirements.
+
+For an operator, three lessons matter more than the dates:
+
+1. **An old name can explain a leftover file without making that file current.** Confirm which service and store the running revision actually uses.
+2. **A migration bridge is not a second source of truth.** Once current state has moved, changing the old representation should not be expected to change the system.
+3. **Newer boundaries usually exist because the older shortcut became ambiguous or unsafe.** Work through the current API or service instead of restoring the shortcut.
+
+> <span class="sidebar-kicker">Historical perspective</span> **An earlier design can be both correct and retired**
+>
+> A design is judged against the system that exists around it. One host loop is easy to understand when it has one periodic duty. One JSON document is practical when one owner edits a small record. A host path can be an adequate local reference while only one process uses it. The same choices become poor authorities when several workers claim jobs, several directories use the same upstream repository, or review and release must prove that they acted on one exact version.
+>
+> The lesson is not that the first design was foolish. It is that compatibility work must preserve the *meaning* of old state without preserving every old shortcut as a permanent operating model.
+
+## The recurring design pattern
+
+Evander grew from a host gateway around disposable VMs into a directory-scoped control plane with provider-neutral workflows, multiple execution environments, packaged add-ons, and managed Git. Across those changes, the same five-stage pattern appears repeatedly:
+
+1. A small system uses one shared mechanism because its owner and meaning are obvious.
+2. A second writer, directory, backend, or domain arrives.
+3. Location, identity, permission, and durable authority begin to blur together.
+4. Evander introduces an explicit ID, owner, transaction, lease, or interface.
+5. The earlier surface becomes migration input, a narrow compatibility bridge, or a retired design.
+
+Different parts of the system reached those stages at different times:
+
+| Earlier pressure | Boundary that became explicit | What the boundary protects |
+|---|---|---|
+| One global configuration described all work | directory path, inherited overlay, and direct ownership | whose rules and records apply |
+| One periodic loop owned unrelated duties | dedicated trigger/effect, ingest, wake, proxy, and PR workers | one accountable owner for each kind of work |
+| A VM looked like the session itself | provider-neutral session plus `ExecutionBackend` | policy identity independent of compute mechanism |
+| JSON files coordinated concurrent claims and histories | selective SQLite repositories and transactions | atomic claims, retries, paging, and relational invariants |
+| One large Admin facade mediated every domain | explicit composition graph and focused services | visible dependencies and one owner per domain |
+| Team mutations arrived as guest artifacts | Team MCP commands, idempotency, private SQLite state, and outbox | validated intent separate from result files |
+| One host path represented “the repo” | `managed_repo_id`, owned ref namespaces, and operation worktrees | repository identity independent of storage location |
+| A branch name represented reviewed code | pinned commit SHA, compare-and-swap, and publication lease | the exact content approved for release |
+
+![Evander's architecture evolves from a guarded VM host through scoped workflows, pluggable execution and add-ons, focused ownership, durable proof, and managed Git.](assets/evander-user-manual/diagrams/19-design-evolution.svg)
+
+The figure is cumulative, not a sequence of discarded products. The original guarded host boundary remains underneath the later layers. Most redesigns made ownership *inside* that boundary more precise.
+
+<p class="figure-caption">Figure 27.1 — New capabilities repeatedly turn implicit location or authority into an explicit identity and owner.</p>
+
+## What did not change
+
+The history contains many replacements, but its central promises were unusually stable:
+
+- Broad credentials and policy decisions remain host-owned rather than being copied into an agent workspace.
+- Agent compute remains constrained and disposable; adding container workers did not make the host or worker generally accessible.
+- A session remains the job and permission identity even when its execution environment changes.
+- Git carries source code, MCP carries controlled operations, and artifact storage carries result files. Later designs made those roles sharper rather than merging them.
+- Durable host-side evidence is expected to outlive temporary compute.
+- Reachability is not authority. A visible service, a known session ID, an approval, and permission to perform one action remain separate checks.
+
+These invariants are the thread to follow when an older path or service name appears. The implementation around the invariant may have changed; the security or evidence promise usually did not.
+
+## Chronology at a glance
+
+The detailed stories below overlap. This compact chronology preserves the order of the main seams before examining why they mattered.
+
+| Period | What Evander learned to make explicit |
 |---|---|
-| One host path represented “the repo” | `managed_repo_id`, bare object store, controlled ref namespaces |
-| One periodic loop owned unrelated work | dedicated trigger/effect, ingest, wake, proxy, and PR workers |
-| One large Admin facade mediated every domain | explicit composition graph and focused services |
-| JSON files coordinated concurrent leases/queues | selective SQLite stores and transactional claims |
-| Team actions arrived as guest artifacts | Team MCP commands, idempotency, private SQLite state, outbox |
-| A VM was the execution model | provider-neutral session plus `ExecutionBackend` |
+| March 20, 2026 | keep broad authority on the host |
+| March 21–April 2 | give work an owner and a scope |
+| April 3–20 | turn automation into durable, understandable workflows |
+| April 21–May 4 | separate the job from the machine that runs it |
+| May 19–31 | make approvals, results, and retries explainable after a restart |
+| June 9–25 | add Team without creating a second control plane |
+| June 22–July 4 | make people, services, and add-ons explicit actors and owners |
+| July 2–14 | replace guessed identity and movable labels with proof and exact versions |
 
-![Evander's architecture evolves from a VM gateway through directory ownership and typed workflows to multiple execution backends, add-ons, focused services, and managed Git.](assets/evander-user-manual/diagrams/19-design-evolution.svg)
+## From a guarded host to scoped ownership
 
-<p class="figure-caption">Figure 27.1 — Each major redesign made an implicit shared resource into an explicit, scoped identity or owner.</p>
+### March 20: establish the boundary first
 
-## Timeline of the major seams
+The initial platform established the security shape that all later work inherited: host-side policy and audit, an MCP gateway, an OpenAI relay, firewall and service templates, disposable libvirt VMs, cloud-init, and Git-based code transport. Discord and NuGet support quickly exercised the same rule—provider integrations and secrets live on the host; guests receive narrow endpoints.
 
-### March 20, 2026: the secure host boundary
+This first version was small, but its separation of *control* from *execution* mattered. Later abstractions did not turn guests into trusted hosts or grant them general internet access. They supplied more precise ways to describe which host-controlled capability a particular job could use.
 
-The initial platform established the enduring security shape: host-side policy and audit, MCP gateway, OpenAI relay, firewall/service templates, disposable libvirt VMs, cloud-init, and Git-based code transport. Discord and NuGet support quickly exercised the same rule—providers and secrets live on the host; guests receive narrow endpoints.
+### March 21–April 2: automation needs an owner and a scope
 
-This remains the foundation. Later abstractions did not turn guests into trusted hosts or add general internet access.
+Issue VM automation, provider email, Azure DevOps polling, pull-request feedback, Teams and Discord ingest, and scheduled wakes made “one global configuration” insufficient. Directory metadata, inherited configuration overlays, scoped issue identities, approvals, local-versus-remote issue records, and ownership queries followed.
 
-### March 21–30: work, polling, and directory ownership
+Directory scope began as a way to place configuration and records. It gradually became an authority boundary: workers resolve the owning directory; workflow graphs and session queries stay in the selected scope; ambiguous issue identities are rejected instead of guessed; and authorization checks use the same ownership context. A directory is not merely a folder-like label. It answers which configuration lineage and owner apply to the work.
 
-Issue VM automation, provider email, ADO polling, and PR feedback made it clear that “one global configuration” was insufficient. Directory metadata, inherited configuration overlays, scoped issue identities, approvals, local/remote issue distinction, and Teams/Discord ingest followed.
+> <span class="sidebar-kicker">Design turning point</span> **The heartbeat changed owners twice**
+>
+> Early guest heartbeat behavior made the temporary worker responsible for noticing more work. Moving that responsibility to a host heartbeat improved secret ownership and allowed the host to wake idle sessions, reconcile state, and report status without trusting the guest.
+>
+> As periodic duties multiplied, however, one host loop became another ambiguous owner. Azure DevOps feedback and completion, provider ingest, Discord wake, scheduled wake, proxy freshness, and workflow polling acquired dedicated workers. There is no current `evander-host-heartbeat` service; optional guest heartbeat assets remain disabled by default.
+>
+> This is evolution rather than reversal: responsibility moved from an isolated worker to the host, then from a shared host loop to the specific host service that owns each duty.
 
-The host heartbeat of this period was an intermediate consolidation: it moved periodic responsibility out of guests. It is no longer a current service. Today ADO PR feedback/completion, Discord wake, scheduled wake, provider ingest, and workflow polling have dedicated owners. Optional guest heartbeat assets remain disabled by default.
+## From scripts to a durable workflow language
 
-### April 3–20: workflows become typed programs
+### April 3–20: a graph becomes an executable contract
 
-Trigger and effect models, registries, durable event queues, gates, queries, asynchronous completion, and the visual editor turned ad hoc automation into typed workflow graphs. Pack architecture, provider-owned schemas, runtime contexts, plugin loading, revisions, and live reload later separated stable orchestration semantics from provider implementation.
+The first workflow model separated “something happened” from “change something.” It then gave decisions and read-only lookups their own visible steps. Saving events and results made a process resumable; validating its routes before activation made it understandable. Automation was becoming a durable program rather than a chain of scripts that happened to run in order.
 
-This history explains two current rules: node kinds must reflect read/write semantics, and editor catalog/schema work is part of adding a provider—not optional UI polish.
+Workflow packs were the next step. The shared runtime could own progress and recovery while optional providers supplied the behavior for a particular external system. Operators could edit a process without allowing an invalid draft to displace the last known good version.
 
-### April 21–30: repository and execution abstractions
+Once a workflow could perform consequential external work, however, “the action succeeded” was no longer the whole story. Evander also had to know whether the result had been safely published for the next step. Completion and publication became separate, recoverable facts.
 
-Repository interfaces replaced broad file access, VM provider identity was separated from session semantics, and issue VM creation was split from repository setup. The `ExecutionBackend` abstraction then added `container_worker_vm` without removing `libvirt_vm`.
+> <span class="sidebar-kicker">Deeper detail</span> **Why typed capabilities replaced arbitrary scripts**
+>
+> Triggers, effects, gates, and queries gave discovery, mutation, routing, and read-only observation distinct contracts. Durable event queues, provider registries, asynchronous completion, graph validation, trace IDs, and the visual editor turned those contracts into typed workflow programs. Provider-owned schemas and runtime contexts let domain packs use host services without ambient access. Revisions, atomic saves, and live reload kept the previous compiled graph active after an invalid edit.
+>
+> The later `completion_pending` state captured the difference between completion and publication: retry publishing the result of an already completed effect without rerunning the external mutation itself.
+>
+> This history explains two current engineering rules: a node's kind must match its read or write semantics, and editor catalog/schema work is part of adding a provider rather than optional UI polish.
+>
+> An arbitrary host-script node can do almost anything, which also means the workflow definition cannot state its real inputs, outputs, authority, retry behavior, or safe destinations. Typed pipeline, diagnostics, and Git effects progressively covered concrete needs with bounded schemas and policy. The legacy host-script workflow effect was then removed.
+>
+> The design preference is not “Python instead of shell.” Host installation and machine orchestration still use shell where appropriate. The boundary is that an operator-authored workflow invokes a named, validated capability rather than supplying arbitrary host code or paths.
 
-Container workers sharpened boundaries that VMs had previously made implicit: authenticated worker API, private session homes, relay and package-cache networking, explicit resource profiles, lifecycle reconciliation, and backend-neutral Admin/workflow operations.
+## Separating the job from the machine
 
-### May: concurrent state moves selectively to SQLite
+### April 21–May 4: repositories and execution become interfaces
 
-Teams/Discord inboxes, scheduled wakes, worker jobs, and orchestration adopted SQLite where concurrent claims, paging, WAL, or transactional history required it. Tool-call audit kept JSONL as canonical evidence and added SQLite only as a derived search index.
+Repository interfaces began progressively replacing high-value broad file access with domain operations for sessions, triggers, executions, review requests, wakes, and feedback. This was deliberately incremental; some compatibility-shaped repository methods and transitional callers remain. The important move was to give durable behavior an owning interface before changing every backing store.
 
-This was not a blanket “JSON is obsolete” migration. Small operator documents and registries still use atomic, locked JSON; queues and relational state use SQLite; append-only evidence uses JSONL. The owner repository determines the format.
+At roughly the same time, VM-provider identity was separated from session semantics, and issue VM creation was split from repository preparation. The `ExecutionBackend` abstraction then added `container_worker_vm` without removing `libvirt_vm`, which remains the default.
 
-### June 17–25: Team becomes an add-on with command semantics
+Container workers made a distinction visible that one VM per job had allowed the system to blur: a **session** is the job's identity, policy, expiry, and evidence boundary; an **execution backend** supplies and manages the compute. Supported lifecycle and `effect:agent:*` operations became backend-aware, while backend-specific VM behavior and some issue/PR paths remained outside that portable surface.
 
-Team Add-on moved its canonical state from `state.json` to relational `state.db` with a one-time import. Roles, leases, task/review/release records, artifact references, and activity required transactional invariants.
+The later guarded VM-to-container migration is useful proof of the separation. It preserved the session manifest and its model, tools, approvals, Team metadata, and thread history while changing only the backend identity fields and copying the durable session home. The session remained the same job identity even though the machine mechanism changed.
 
-The clean MCP cutover then retired action-artifact providers. Agents report Team mutations through Team-owned MCP tools bound to dispatch permissions and idempotency. Asynchronous intent goes through the Team outbox and workflow events. Artifacts remain for deliverable files, not as a covert command bus.
+> <span class="sidebar-kicker">Deeper detail</span> **An abstraction is a promise with a boundary**
+>
+> `ExecutionBackend` does not claim that every libvirt operation works on every future environment. It defines the supported preparation, start, stop, inspection, destruction, and log seams that generic callers may rely on. Backend-aware `effect:agent:*` workflow operations build on that abstraction. Container-worker authentication, private session homes, relay networking, package caches, resource profiles, and reconciliation remain implementation responsibilities.
+>
+> This qualification matters during upgrades: “backend-aware” is not evidence that an older VM-only command has become portable.
 
-### June 26–30: Evander identity and focused Admin composition
+## Durability follows the coordination problem
 
-Operational naming moved to Evander: Python package, `evander-*` services, `EVANDER_*` variables, and guest `.evander`/`/etc/evander` paths. Installer/setup code retained narrow upgrade handling for earlier service, firewall, network, environment, and guest paths.
+### May 19–31: successful actions become durable evidence
 
-In parallel, Admin domains were extracted behind ports and focused services. The short-lived compatibility guidance around `AdminService` was superseded on June 30: the facade was removed, and Admin Web, gateway, CLI, providers, and tests now assemble through `build_admin_runtime` and `AdminRuntimeComponents`.
+By May, workflows could accept external events, grant run-scoped tool leases, publish immutable artifacts, and link a run to sessions, approvals, tool calls, communications, and binding traces. Approval gained exact-payload retry checks and argument policies. Session expiry was enforced across resume, workflow, wake, queue, and relay paths rather than only in one UI action. These changes made a run explainable across restarts and across several cooperating services.
 
-### July 2 onward: add-on workflow composition and Git work identity
+Artifacts also separated into clearer roles. A session's `/artifacts` directory is a mutable workspace. Staging and publication create an immutable host-owned result that workflows and operators can inspect or later import. Team eventually added hierarchical artifact spaces over those published keys. Not every file in `/artifacts` is immutable; publication is the transition that creates durable evidence.
 
-Add-ons gained runtime workflow packs and Team gained server-owned Git work contexts. This made add-on enablement a runtime-registry concern: a pack cannot remain active when its providers will not load, and enablement requires the affected processes to restart.
+### May 21–27: storage follows the coordination problem
 
-### July 13: managed bare repositories and bounded consultations
+Teams and Discord inboxes, scheduled wakes, worker jobs, and orchestration adopted SQLite where concurrent claims, paging, write-ahead logging, or transactional history required it. Tool-call audit deliberately kept append-only JSONL as canonical evidence and added SQLite only as a rebuildable search index.
 
-Managed Git replaced issue-specific mirrors and persistent checkout routing with a deterministic ID, one directory-owned bare repository per canonical upstream, disjoint ref ownership, exact-SHA pinning, compare-and-swap promotion, lease-protected publication, and ephemeral hardened worktrees.
+> <span class="sidebar-kicker">Storage sidebar</span> **Storage follows coordination, not fashion**
+>
+> A small operator-owned document with one writer remains a good candidate for atomic, locked JSON. A queue in which several workers claim rows, renew leases, retry, page results, and preserve history needs transactions and indexes, so SQLite is a better fit. An append-only security record benefits from JSONL's simple canonical sequence, even when SQLite makes searching it faster.
+>
+> The wake and worker migrations illustrate the usual pattern: initialize SQLite, import legacy JSON while the database is empty, and thereafter treat the populated database as live authority. Some repositories, including Team, also record explicit migration metadata. The source file remains untouched as rollback evidence, and the repository API can remain stable while its persistence semantics change. Editing the source JSON afterward does not edit live state.
 
-This was a breaking migration, not an indefinite dual read. The same commit-identity machinery enabled code consultations: a disposable read-only worker answers one bounded question against one pinned commit, then is cleaned up.
+This was never a blanket “JSON is obsolete” migration. The owner repository and concurrency contract determine the format.
+
+## Optional domains without a second control plane
+
+### June 9–25: Team grows behind the add-on boundary
+
+The generic add-on boundary arrived with a strong architectural claim: opinionated product domains may extend Admin Web, workflow providers, MCP, and private storage without forcing their concepts into core session and workflow schemas. Add-ons are discovered separately from being enabled, store state beneath their own runtime area, and must not become alternate owners of core secrets, execution, or policy.
+
+Team was the first large proof of that seam. On June 9 it introduced private organizational state, persistent agents, durable work and review, and Git-first delivery while core remained Team-agnostic. Over the following weeks, roles, governance, communication, leases, wake rules, and release recovery tested whether a rich add-on could remain private without becoming a second control plane.
+
+On June 17, Team's canonical state moved from `state.json` to relational `state.db` with a one-time import. Roles, assignments, leases, task/review/release records, artifact references, and activity needed transactional invariants that were awkward to maintain as one document.
+
+On June 25, the clean MCP cutover retired action-artifact providers. Agents began reporting mutations through Team-owned MCP tools bound to dispatch permissions and idempotency. The mutation, revision, activity entry, idempotency result, and outbox intent can be committed together. A separate publisher turns pending outbox rows into workflow events and records completion or retry.
+
+> <span class="sidebar-kicker">Design turning point</span> **Artifacts are nouns; commands are verbs**
+>
+> A deliverable file is naturally an artifact: it can be published, reviewed, retained, and referred to by an immutable key. “Finish this task,” “request review,” or “change this assignment” is different. A command needs an authenticated actor, permission and lease checks, validation, an idempotency key, one transactional outcome, and a useful response if the caller repeats it after a timeout.
+>
+> Using artifacts for both blurred evidence and authority. Team MCP commands and the outbox separated the verb from its resulting evidence. Artifacts remain important for deliverables; they are no longer a covert command bus.
+
+The distinction between add-on and core remained intact as more add-ons appeared. Bokio and Skatteverket proved that the same seam could host very different domain integrations without adding their concepts to the core gateway. Runtime workflow packs and later package discovery made enablement an operator-managed lifecycle: a pack cannot remain active when its provider implementation will not load, and affected processes must restart after an enablement change.
+
+## Explicit people, focused services, and a persisted name
+
+### June 22–23: the operator becomes an explicit actor
+
+Multi-user local authentication made the signed-in person's identity and permissions part of each operation. Team chat became per operator rather than one global conversation. The broad Lock/Unlock control was eventually narrowed to a local UI read-only guard; backend authority still comes from authentication, RBAC, privileged-operation checks, directory scope, and revisions. A visual lock is useful protection against accidental clicks, but it is not an authorization boundary.
+
+### June 26–30: a persisted name makes renaming an upgrade
+
+Operational naming also moved to Evander: Python package, `evander-*` services, `EVANDER_*` variables, and guest `.evander` and `/etc/evander` paths. Installer and setup code retained narrow upgrade handling for earlier service, firewall, network, environment, and guest paths.
+
+> <span class="sidebar-kicker">Compatibility sidebar</span> **A rename becomes a migration when the old name is durable**
+>
+> Changing a heading is cosmetic. Changing a systemd unit, environment-variable prefix, network name, package import, runtime path, guest profile hook, or stored workflow field changes how a running installation finds its state. The Evander rename therefore needed discovery, repair, cleanup, and compatibility logic—not merely search and replace.
+>
+> Historical changelog entries and rollback artifacts may use the former product name. That residue helps identify their era; it does not make the former service or path a current authority.
+
+### June 27–30: focused services expose domain ownership
+
+In parallel, Admin domains were extracted behind protocol ports and focused services. The large `AdminService` facade had been useful as a shared entry point. The refactor treated construction and domain ownership as separate concerns: the composition root would assemble the graph, while focused services would own behavior.
+
+The transition was unusually quick. June 27 guidance described `AdminService` as a compatibility facade while focused services and a composition builder were introduced. By June 30 that guidance had been superseded: the facade was removed, and Admin Web, gateway, CLI, providers, and tests assembled one explicit graph through `build_admin_runtime` and `AdminRuntimeComponents`.
+
+The lesson is not that facades are inherently bad. A convenient entry point should simply not become the hidden owner of unrelated domains. The composition root may know how services fit together; each focused service should own its own behavior.
+
+## From a session label to proof-bearing authority
+
+### July 2–14: tighten every consequential identity
+
+On July 2, per-session MCP proof tokens made an important distinction explicit: knowing a `session_id` is not proof that a caller represents that session. The token bound the MCP transport more tightly. Subsequent hardening scoped relay access, HTTP targets, Git repositories, branch namespaces, approval reads, and workflow effects to their actual directory and session authority.
+
+This was defense maturation, not evidence of a documented breach. It applied the original rule—reachability is not permission—at more boundaries as the number of reachable services grew.
+
+Git tells the same story over a longer arc. The first platform already used host-mediated cloning, restricted agent pushes, promotion, and pull-request creation. Private container Git, mirror serialization, deterministic Team namespaces, typed Git effects, server-owned work contexts, and pinned reviewed commits progressively removed ambient paths and movable labels from consequential operations.
+
+On July 13, managed Git completed that arc. It replaced issue-specific mirrors and persistent-checkout routing with a deterministic ID and one directory-owned bare repository per canonical upstream. Guest, refresh, review, Team, and operation refs gained disjoint owners. Host workflows pin exact commits; compare-and-swap protects internal targets; explicit leases protect upstream publication; and unique detached worktrees are created for one operation, removed on normal completion or termination, and reconciled after abnormal termination. This was a breaking migration, not an indefinite dual read.
+
+Where a repository happens to be stored is therefore no longer how the rest of the system identifies it. The path is private implementation detail; `managed_repo_id`, directory ownership, ref, and exact SHA carry the meaning.
+
+The same commit-identity machinery enabled bounded code consultations: a disposable read-only worker answers one question against one pinned commit, submits a structured result with validated citations, and is cleaned up. July release work also froze candidate and review criteria, classified candidate failures separately from transient infrastructure failures, and retained immutable attempt lineage. A retry may repeat an eligible gate against the same pinned candidate; it may not quietly substitute different code.
+
+> <span class="sidebar-kicker">Deeper detail</span> **Why exact identity keeps returning**
+>
+> Directory paths, session IDs, event IDs, idempotency keys, managed repository IDs, commit SHAs, workflow revisions, and approval payload digests identify different things. Architecturally, they answer the same question: *what exact object or decision does this later action refer to?*
+>
+> A stable ID alone is not always enough. The system may also need an owner, expected current value, lease, expiry, or proof token. That combination prevents a stale label, retry, or neighboring directory from silently changing the meaning of the action.
 
 ## Current compatibility surfaces
 
 Compatibility is intentionally narrow. Treat these as migration bridges, not design examples.
 
+If an operator encounters one of these names, the safest first step is to record where it appeared and which live Evander revision is running. Do not copy data from the older surface into the newer one until an administrator has identified the migration contract and current authority.
+
 | Surface | Current status | New work should use |
 |---|---|---|
-| Legacy gateway YAML | Import/migration input only | `runtime/host-config.json` plus directory config |
-| Older guest session/config paths | Read/repair fallback in selected bootstrap paths | `/etc/evander/session.env`, `/home/agent/.evander`, provider-neutral guest config |
-| `runtime/pr-map.json` | Compatibility association for older PR sessions | explicit PR workflow streams and managed repository identity |
-| JSON wake/inbox/worker/Team stores | One-time import where the owning repository supports it | the current SQLite store |
-| ADO-specific workflow node types | Supported compatibility surfaces | provider-neutral remote issue/PR nodes where semantics match |
-| Old service/firewall/network names | Installer/setup cleanup only | `evander-*` services and current network/config names |
-| Checked-in workflow pack examples | Examples/built-ins, not assumed live authority | revision-checked live packs through Admin Web/API |
+| Legacy gateway YAML | import/migration input only | `runtime/host-config.json` plus directory config |
+| Older guest session/config paths | read/repair fallback in selected bootstrap paths | `/etc/evander/session.env`, `/home/agent/.agent/config.env`, and current `/home/agent/.evander` run-state paths |
+| `runtime/pr-map.json` | live compatibility store for session-bound and legacy PR streams; repository-scoped streams can bypass it | explicit PR workflow streams and managed repository identity |
+| JSON wake/inbox/worker/Team stores | one-time import where the owning repository supports it | the current SQLite store |
+| ADO-specific workflow node types | supported compatibility surfaces, and still appropriate for ADO-only semantics | provider-neutral remote issue/PR nodes where semantics match |
+| Historical Team action artifacts and unpinned terminal releases | retained evidence; incomplete unpinned releases do not satisfy current gates | Team MCP commands and exact pinned release evidence |
+| `AdminService` references | historical design or short-lived compatibility guidance | focused services assembled by `build_admin_runtime` |
+| Legacy managed-Git path fields | migration or audit-only residue, not live routing authority | `managed_repo_id`, owned ref, and exact SHA |
+| Old service/firewall/network names | installer/setup cleanup only | `evander-*` services and current network/config names |
+| Checked-in workflow pack examples | examples or built-ins, not assumed live authority | revision-checked live packs through Admin Web/API |
 
-An import is not dual authority. Once a SQLite repository has initialized and recorded its migration, editing the legacy JSON should not change live state. Keep the legacy file only as documented rollback evidence until finalization says it may be archived.
+> <span class="sidebar-kicker">Migration model</span> **Compatibility should have a direction**
+>
+> A healthy migration flows one way:
+>
+> ```text
+> old authority -> inventory/import/repair -> current authority -> verification -> finalization
+> ```
+>
+> A bridge may read an old record long enough to import or repair it. It should not leave both ends accepting ordinary writes indefinitely. Two writable representations invite dual authority: each can be internally valid while disagreeing about the real state.
+
+Once a SQLite repository has imported legacy JSON and made the database live authority, editing the legacy file should not change live state. Keep it only as documented rollback evidence until finalization says it may be archived.
 
 ## Retired designs: do not revive them
 
-- There is no current `evander-host-heartbeat` service. Use the dedicated worker that owns the event.
-- Do not write Team commands as action artifacts. Use Team MCP commands and the outbox/runtime workflow.
-- Do not address repositories by trusted-checkout or mirror paths. Register and pass `managed_repo_id`.
-- Do not run agent-authored code in managed Git operation worktrees.
-- Do not add new calls through `AdminService`; it no longer exists.
-- Do not write live workflow pack files from a stale copy. Use lock/revision APIs.
-- Do not make the gateway or MCP carry repository contents.
-- Do not treat `audit.db`, semantic vectors, proxy caches, or UI payloads as canonical state.
+| Retired shortcut | Ambiguity or risk | Current owner or surface |
+|---|---|---|
+| `evander-host-heartbeat` or guest heartbeat as general scheduler | one loop appears to own unrelated provider and wake duties | dedicated PR, ingest, wake, proxy, trigger, and effect workers |
+| Team commands written as action artifacts | a file cannot cleanly prove actor, permission, idempotency, and transactional outcome | Team MCP commands plus Team outbox/runtime workflow |
+| repositories addressed by trusted-checkout or mirror paths | location is mistaken for identity and directory ownership | registered `managed_repo_id` |
+| agent-authored code run in managed-Git operation worktrees | host scratch space is mistaken for an isolation boundary | disposable VM/container execution backend |
+| new calls routed through `AdminService` | composition entry point appears to own unrelated domains | focused service from `AdminRuntimeComponents` |
+| live workflow packs edited from a stale file copy | concurrent operator changes can be overwritten | lock and revision APIs |
+| repository contents carried through gateway or MCP | control messages become an unbounded code transport | Git clone/fetch/push through managed Git |
+| `audit.db`, semantic vectors, proxy caches, or UI payloads treated as canonical | a rebuildable or partial projection becomes a second truth | the owning canonical log, repository, provider, or record |
 
 ## Why compatibility sometimes fails closed
 
-Upgrade shims stop when continuing would hide ambiguity. Examples include:
+Upgrade shims stop when continuing would hide ambiguity. The refusal protects a specific invariant:
 
-- an issue number matches several directory/provider records;
-- an old repository path cannot be mapped uniquely to a managed repository;
-- active workers or Team leases make a Git migration unsafe;
-- a live workflow references a provider that the configured add-on loader will not load;
-- a legacy Team release lacks the exact pinned evidence required by current release gates;
-- an existing semantic collection has a different vector schema.
+| Ambiguity | Why guessing is unsafe | Invariant protected |
+|---|---|---|
+| an issue number matches several directory/provider records | the wrong project could receive the operation | directory and provider identity |
+| an old repository path cannot map uniquely to a managed repository | refs or credentials could cross ownership boundaries | repository ownership |
+| active workers or Team leases make a Git migration unsafe | old and new writers could mutate the same work | exclusive writer and lease ownership |
+| a workflow references a provider the add-on loader will not load | the graph would advertise an implementation that is absent | pack/provider consistency |
+| a legacy nonterminal Team release lacks exact pinned evidence | release could proceed without proving the reviewed content | exact candidate identity |
+| an existing semantic collection has a different vector schema | results from incompatible representations could be mixed | semantic result correctness |
 
-The remedy is an explicit migrator or operator decision, not a guess. A fail-closed upgrade can be inconvenient, but it preserves the identity or evidence the newer invariant was introduced to protect.
+The remedy is an explicit migrator or operator decision, not a guess. A fail-closed upgrade can be inconvenient, but it preserves the identity or evidence the newer invariant was introduced to protect. Historical terminal records may remain readable even when an incomplete old operation must be rejected and recreated under the current contract.
 
-## Upgrade archaeology runbook
+## Questions this history teaches us to ask
+
+When an unfamiliar compatibility surface appears, six questions usually reveal its role:
+
+1. What is the stable identity: a path, or an explicit ID and owner?
+2. Which component is allowed to write the canonical state?
+3. Is this record canonical, derived, cached, or migration input?
+4. Which resource is intentionally temporary, and which evidence must survive it?
+5. What value must be pinned exactly before review, retry, or publication?
+6. How does the migration end, and what prevents both designs remaining writable?
+
+These are reading questions, not a demand that an operator solve the architecture. They help distinguish a stale instruction from a supported recovery path before anything is changed.
+
+## Troubleshooting and operator handoff
+
+When a screen, log, or local instruction refers to an older design, record the exact name, path, command, or error together with the affected directory and time. Also capture the running version shown by the installation, if available. An operator does not need to decide which historical store is authoritative before asking for help.
+
+Avoid “trying both” old and new commands, enabling a retired service, or editing both candidate stores. Those actions can create the dual authority that the migration was designed to remove.
+
+## Administrator runbook: upgrade archaeology
 
 When a deployment behaves as if an older design is still active:
 
-1. **Identify the running revision.** Record package/checkout commit, service unit `ExecStart`, config path, and runtime path. Do not assume the shell checkout is what systemd serves.
+1. **Identify the running revision.** Record package or checkout commit, service unit `ExecStart`, config path, and runtime path. Do not assume the shell checkout is what systemd serves.
 2. **Read the relevant changelog window.** Find both the introduction and later retirement. A June compatibility note may have been superseded days later.
-3. **Inspect current assembly.** Check `pyproject.toml` entry points, systemd templates/install script, `build_admin_runtime`, provider/add-on catalogs, and the owning repository constructor.
+3. **Inspect current assembly.** Check `pyproject.toml` entry points, systemd templates and install script, `build_admin_runtime`, provider/add-on catalogs, and the owning repository constructor.
 4. **Find migration markers and both candidate stores.** Determine which one current code opens before editing either.
-5. **Run the supported preflight/dry-run.** For managed Git, use the `git-repos migrate` flow; for add-ons, use discovery/enablement diagnostics; for service rename, use installer preflight.
-6. **Quiesce the writers named by the migrator.** Preserve backups and active lease/operation evidence.
+5. **Run the supported preflight or dry-run.** For managed Git, use the `git-repos migrate` flow; for add-ons, use discovery and enablement diagnostics; for a service rename, use installer preflight.
+6. **Quiesce the writers named by the migrator.** Preserve backups and active lease or operation evidence.
 7. **Apply once and verify through the current API.** Check IDs, counts, SHAs, revisions, and provider state—not merely that the new file exists.
 8. **Finalize only when rollback artifacts are no longer needed.** Do not leave two writable authorities.
 9. **Remove stale operational instructions.** Update local runbooks and automation so the next operator does not invoke a retired command.
@@ -4933,15 +6775,19 @@ When a deployment behaves as if an older design is still active:
 - `docs/architecture.md`
 - `docs/execution-backends.md`
 - `docs/addons.md`
+- `docs/git-remotes.md`
 - `docs/repository-layer-refactor-note.md`
 - `src/evander/admin/composition.py`
 - `src/evander/workflow/plugins.py`
 - `src/evander/execution/backend.py`
+- `src/evander/repositories/session_manifests.py`
 - `src/evander/messaging/wake_store.py`
 - `src/evander/repositories/audit_index.py`
 - `src/evander/addons.py`
 - `src/evander/admin/services/managed_git_service.py`
 - `src/evander_team_addon/repository.py`
+- `src/evander_team_addon/sqlite_store.py`
+- `src/evander_team_addon/services/commands/executor.py`
 - `scripts/install_systemd_units.sh`
 - `tests/test_workflow_plugins.py`
 - `tests/test_container_worker_execution_backend.py`
@@ -4958,7 +6804,23 @@ Provide compact maps, diagnostic tables, terminology, and the cross-format subje
 
 # 28. System Reference
 
-> **At a glance.** This chapter is the compact map to Evander's operational surface: processes, ports, runtime stores, command entry points, UI areas, and source-code ownership. Use the earlier chapters to understand *why* these pieces exist; use this chapter when you need to find one quickly.
+> **At a glance.** This is the manual's lookup chapter. Use it when you remember that Evander has a service, command, port, file, or screen for something but cannot remember its exact name or owner. The earlier chapters explain why the pieces exist; the tables here help you find the right one quickly.
+
+## Find the right map
+
+You do not need to read this chapter from beginning to end. Start with the question you are trying to answer:
+
+| If you are asking… | Go to… |
+|---|---|
+| “What is this background service for?” | [Persistent control-plane services](#282-persistent-control-plane-services) |
+| “What does this port provide?” | [Default guest-reachable ports](#283-default-guest-reachable-ports) |
+| “Which saved record is authoritative?” | [Runtime source-of-truth map](#284-selected-runtime-source-of-truth-map) |
+| “What command starts this task?” | [Core command map](#285-core-command-map) |
+| “Where do I find this in the interface?” | [Admin Web area map](#286-admin-web-area-map) or [Team Add-on view map](#287-team-add-on-view-map) |
+| “Which part of the code owns this behavior?” | [Developer reference](#288-developer-reference-source-code-ownership-map) |
+| “Which host checks should an administrator run?” | [Administrator runbook](#289-administrator-runbook-fast-orientation-commands) |
+
+For ordinary operation, the screen maps and the plain responsibilities in the service tables are usually enough. Paths, ports, process names, and source locations become useful when an administrator or developer needs to verify the layer behind what the interface shows.
 
 ## 28.1 Reference conventions
 
@@ -5094,6 +6956,7 @@ Admin Web is the supported operator GUI. Its core areas answer different questio
 | Sessions | Which agent sessions are active, paused, terminal, or awaiting intervention? |
 | Tool Visibility | Which tools does a session actually see, and what binding or denial explains that result? |
 | MCP Tools | Which directory policy controls approval and denial for each tool? |
+| Connectors | Which named host-side integrations and operations are available in this directory? |
 | Tool Calls | What was invoked, allowed, denied, or failed? |
 | Configuration | Which host and directory-scoped values resolve here? |
 | Reports | What happened during orchestration and operations, including effects and gates? |
@@ -5126,7 +6989,7 @@ The Team Add-on contributes one navigation area with fourteen current views. The
 
 UI state is a projection. For a disputed operational fact, prefer the Team Admin API payload and then `runtime/addons/team-addon/state.db` over what a stale browser tab last rendered.
 
-## 28.8 Source-code ownership map
+## 28.8 Developer reference: source-code ownership map
 
 | Concern | Start here |
 |---|---|
@@ -5154,9 +7017,11 @@ UI state is a projection. For a disputed operational fact, prefer the Team Admin
 
 Route handlers and compatibility adapters should stay thin. New domain behavior belongs in a narrow service or domain module and should enter Admin surfaces through the supported runtime composition layer.
 
-## 28.9 Fast orientation commands
+## 28.9 Administrator runbook: fast orientation commands
 
-These commands avoid intentional business-state mutation. `evander-cli status` is bootstrap-aware: it may create or migrate missing runtime configuration, and it reports a useful core subset rather than every installed service or endpoint. Run it as the intended operator against the intended runtime directory.
+If an operator is handing off a problem, the useful starting packet is the selected directory, the affected Admin Web area, what was expected, what appeared instead, and any visible run, session, event, approval, or Team work-item ID. The administrator can then choose the narrow check below that corresponds to the reported layer.
+
+These commands avoid intentional business-state mutation. `evander-cli status` is bootstrap-aware: it may create or migrate missing runtime configuration, and it reports a useful core subset rather than every installed service or endpoint. Run it as the intended host operator against the intended runtime directory.
 
 ```bash
 # Basic control-plane summary; may initialize/migrate missing runtime configuration
@@ -5195,28 +7060,40 @@ When a command reveals secrets or user content, prefer field names, counts, reda
 
 # 29. Troubleshooting Decision Tables
 
-> **At a glance.** Start with the failed boundary, collect one authoritative observation, and only then change state. These tables turn common symptoms into bounded investigations for core Evander and the Team Add-on.
+> **At a glance.** When Evander appears stuck, resist the urge to restart or delete things immediately. First identify the boundary where progress stopped and collect one trustworthy observation from that boundary. The tables in this chapter turn common symptoms into a short investigation and a safe next step.
 
-## 29.1 The diagnostic discipline
+## 29.1 Start with three questions
 
-Most difficult incidents become simpler when the evidence is read in this order:
+An operator can make a useful first report without knowing which database or service owns the work. Begin with:
 
-1. **Name the intended outcome.** “The agent should have been woken” is more useful than “Team is broken.”
-2. **Locate the boundary.** Browser/API, command transaction, durable store, orchestrator, execution backend, relay, or provider.
-3. **Read the source of truth.** Use live service status, canonical store rows, and exact event/effect records before local speculation.
-4. **Correlate identities.** Keep the session ID, directory, event ID, workflow run, effect execution, Team task/lease, and Git SHA together.
-5. **Choose the smallest reversible action.** Retry through the owning API or worker; do not hand-edit a database or live workflow pack.
-6. **Verify the outcome and the side effects.** A successful HTTP response is not proof that the downstream event, effect, wake, or release happened.
+1. **What did you expect to happen?** For example, “the assigned agent should have started work.”
+2. **What is the last thing you can see?** The item arrived, the run started, an approval appeared, a session was created, or the agent finished.
+3. **Which identifiers are visible?** Record the directory and any source-item, run, session, approval, task, or release ID shown in Admin Web.
 
-The first broad check is:
+Then find the closest symptom in the tables below. The first column helps describe the problem; the final column gives the safest next action. If that action requires host access, hand the captured details to an Evander administrator rather than deleting records or restarting unrelated services.
 
-```bash
-evander-cli status --runtime-dir runtime --json
-```
+> <span class="sidebar-kicker">Deeper detail</span> **The diagnostic discipline**
+>
+> A technical investigation becomes much simpler when the evidence is read in the following order. These boundaries and records let an administrator follow the same work beyond what Admin Web projects.
+>
+> 1. **Name the intended outcome.** “The agent should have been woken” is more useful than “Team is broken.”
+> 2. **Locate the boundary.** Browser/API, command transaction, durable store, orchestrator, execution backend, relay, or provider.
+> 3. **Read the source of truth.** Use live service status, canonical store rows, and exact event/effect records before local speculation.
+> 4. **Correlate identities.** Keep the session ID, directory, event ID, workflow run, effect execution, Team task/lease, and Git SHA together.
+> 5. **Choose the smallest reversible action.** Retry through the owning API or worker; do not hand-edit a database or live workflow pack.
+> 6. **Verify the outcome and the side effects.** A successful HTTP response is not proof that the downstream event, effect, wake, or release happened.
 
-Then narrow the investigation. Avoid running broad smoke suites without an explicit timeout; UI and browser processes can retain open handles after nearby assertions have passed.
+> <span class="sidebar-kicker">For administrators</span> **The first broad host check**
+>
+> ```bash
+> evander-cli status --runtime-dir runtime --json
+> ```
+>
+> Then narrow the investigation. Avoid running broad smoke suites without an explicit timeout; UI and browser processes can retain open handles after nearby assertions have passed.
 
 ## 29.2 Core control-plane symptoms
+
+An operator can scan the **Symptom** and **Next safe action** columns first. The middle columns name the host evidence an administrator uses to distinguish similar-looking failures.
 
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
@@ -5234,6 +7111,8 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 
 ## 29.3 Execution and relay symptoms
 
+These symptoms all mean that coordination reached, or tried to reach, the temporary workspace. The table separates a workspace problem from failure in one of its controlled routes to a model, package source, tool, or approved target.
+
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
 | VM creation fails before boot | Exact output of `launch_agent_vm.sh`, libvirt domain/network state | Host prerequisites, storage, libvirt network, or permissions | Keep disks under `/var/lib/libvirt/images/evander`; fix the named prerequisite and rerun the reconciliatory script |
@@ -5248,6 +7127,8 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 
 ## 29.4 Managed Git and artifact symptoms
 
+The everyday question here is whether the agent received the intended code or files, and whether the exact reviewed result was the one published. The identifiers in the middle columns let an administrator prove that chain.
+
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
 | Guest clone is denied | Restricted-SSH log plus managed repository ID/binding | Unknown ID, directory binding, key scope, or wrapper rule | Register/refresh through `evander-cli git-repos`; clone by returned `managed_repo_id` |
@@ -5259,6 +7140,8 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 
 ## 29.5 Provider, communication, and wake symptoms
 
+First establish whether the external item or message was saved inside Evander. Only then investigate whether it was eligible to start or resume work.
+
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
 | Azure DevOps work item never enters a workflow | Matching trigger/query run, workflow-owned cursor, and effective ADO provider config | Trigger/query filters, credentials, cursor, or downstream proxy-issue effect | Trace `trigger:ado:work-item-matching` or `query:ado:work-items`; the ADO worker owns PR feedback/completion, not work-item intake |
@@ -5269,6 +7152,8 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 | Outbound notification fails | Effect execution and configured target in `runtime/communication-targets.db` | Target capability, credential, attachment, or provider | Correct the named target/provider and retry the effect only when its idempotency record permits |
 
 ## 29.6 Team command and UI symptoms
+
+The Team interface is a view of durable Team state. A stale screen and a failed Team command can look similar, so compare what the interface shows with the response or record named in the table before attempting recovery.
 
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
@@ -5282,6 +7167,8 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 
 ## 29.7 Team wake and delivery symptoms
 
+The presence of a task, message, or deliverable does not by itself prove that the next assignment, wake, review, or release transition occurred. Follow the linked records in order and stop at the first missing transition.
+
 | Symptom | First authoritative observation | Likely boundary | Next safe action |
 |---|---|---|---|
 | Pending Team inbox item does not wake an agent | Inbox priority/handled state, active lease/session, and wake decision payload | Eligibility or duplicate suppression | Current behavior treats non-low pending inbox work as wakeable; inspect the actual decision reason rather than assuming `response_requested` is required |
@@ -5293,9 +7180,9 @@ Then narrow the investigation. Avoid running broad smoke suites without an expli
 | Release is waiting | Release package, verification records, approved candidate SHA, and gate status | Missing evidence, failed job, or lease mismatch | Satisfy the named gate; only partial, not-run, unknown, or missing verification can receive an authorized reasoned waiver—failed verification is unwaivable and requires a corrected reviewed candidate |
 | Release reports success but remote ref differs | Remote ref readback and recorded published SHA | Publish/readback failure | Treat as failed publication, stop follow-on completion, and reconcile the remote with the exact approved SHA |
 
-## 29.8 Evidence bundle for escalation
+## 29.8 What to include when asking for help
 
-An effective escalation contains a small, correlated packet:
+An effective handoff contains a small, correlated packet. Capture what is available; you do not need every ID before asking for help:
 
 - expected outcome and actual outcome;
 - UTC time window and host/service identity;
@@ -5308,7 +7195,7 @@ An effective escalation contains a small, correlated packet:
 
 Do not include API keys, cookies, bearer tokens, private key material, raw environment files, or unrestricted database dumps. A screenshot should be dark-mode when practical and sanitized just like text evidence.
 
-## 29.9 Recovery boundaries
+## 29.9 Before a recovery changes or deletes state
 
 Stop and obtain a deliberate operator decision before any action that would:
 
@@ -5333,7 +7220,24 @@ Recovery is complete only when the original outcome is verified **and** the cont
 
 # 30. Glossary
 
-> **At a glance.** Evander uses ordinary words—session, event, team, release—with precise technical meanings. This glossary defines those meanings for the current system and points out distinctions that prevent operational mistakes.
+> **At a glance.** Evander gives familiar words such as “session,” “event,” “team,” and “release” specific meanings. Use this glossary whenever a term feels more precise than ordinary conversation or when two nearby concepts seem easy to confuse. Each definition describes the current system rather than a historical or generic software meaning.
+
+## How to use this glossary
+
+Look up the word exactly as it appears in Admin Web, a status message, a workflow, or an administrator's explanation. A definition often says both what the thing **is** and what nearby thing it **is not**; that distinction is part of the meaning, not a qualification to skip.
+
+Several common chains are easier to remember together:
+
+| If these terms seem similar… | Keep this distinction in mind |
+|---|---|
+| event, trigger, workflow, run | An event is a saved fact; a trigger decides whether it enters a workflow; the workflow is the prepared process; a run is one recorded use of that process. |
+| session, sandbox, agent | A session is the bounded job identity; the sandbox is its temporary execution environment; the agent is the execution identity doing the work. |
+| task, dispatch, lease | A task describes planned Team work; a dispatch asks for execution; a lease records who currently owns that execution. |
+| capability, network route, approval | Permission, reachability, and a person's decision are separate checks. Having one does not imply the others. |
+| branch, commit SHA, release | A branch is a movable label; a commit SHA identifies one exact code version; a release publishes the approved version under controlled rules. |
+| canonical state, projection | Canonical state is the authoritative saved record; a projection is a useful view derived from it. |
+
+For a broad explanation, use the Subject Index to find the relevant chapter. The **Source trail** below also points to the chapter ranges and implementation references behind these definitions.
 
 ## A
 
@@ -5354,6 +7258,9 @@ Evander's supported operator GUI for health, execution, approvals, audit, workfl
 
 **Agent**<br>
 An execution identity capable of working inside an isolated session. In Team, an agent also has membership, responsibilities, model selection, availability, and potentially a reporting position.
+
+**Agent harness**<br>
+The program that coordinates an agent's work by sending prompts and context to the configured model, presenting tools, and applying model responses in the working session.
 
 **Agent Mail**<br>
 The Team UI's sent and received projections over the durable Team inbox collection. It is not a second independent mail transport or a pair of unrelated databases.
@@ -5415,6 +7322,12 @@ Durable provider progress used to avoid rereading or replaying external events. 
 
 ## D
 
+**Default-deny egress**<br>
+A network posture in which outbound traffic is blocked unless a specific route or destination has been allowed.
+
+**Defense in depth**<br>
+The use of several independent controls so that bypassing or misconfiguring one does not remove the others.
+
 **Deliverable**<br>
 A Team submission representing completed work, usually tied to a task and containing a Git candidate or published artifact references plus a summary.
 
@@ -5450,6 +7363,11 @@ The rule that Git publication must use the precise commit that passed review and
 **Execution backend**<br>
 The abstraction that creates, resumes, inspects, and terminates isolated execution. Current choices are `libvirt_vm` and the additive `container_worker_vm`.
 
+## F
+
+**Fail closed**<br>
+To deny an action when a check encounters an error or cannot reach a safe decision, rather than treating uncertainty as permission.
+
 ## G
 
 **Gate**<br>
@@ -5477,6 +7395,9 @@ A session-scoped relay for explicit external HTTP targets. It forwards guest-man
 
 ## I
 
+**Idempotency**<br>
+The property that repeating an operation has the same intended effect as performing it once. It depends on stable identity and an implementation that honors the retry contract.
+
 **Idempotency key**<br>
 A stable identity used to recognize that an event/effect/command has already been applied. It permits safe retry only when the operation's contract actually honors it.
 
@@ -5493,6 +7414,9 @@ A host-local typed event used to connect commands, schedules, Team transitions, 
 
 **Lease**<br>
 A time- or ownership-bounded claim that prevents conflicting workers or actors from safely performing the same mutable operation. Team work and Git release publication both use lease concepts, at different layers.
+
+**Least privilege**<br>
+The rule that each job receives only the access needed for its current purpose and duration.
 
 **libvirt VM backend**<br>
 The default execution backend using disposable overlays and libvirt domains on the control-plane host.
@@ -5545,6 +7469,9 @@ A read-oriented representation derived from canonical state, such as the Team Wo
 **Project**<br>
 A Team scope organizing goals, members, leads, tasks, plans, deliverables, and release activity.
 
+**Provenance**<br>
+Evidence of a result's origin and history, including the event, session, code version, decisions, and actions that produced it.
+
 **Provider**<br>
 A registered implementation that supplies triggers, gates, queries, effects, schemas, editor metadata, or other runtime behavior to the orchestration catalog.
 
@@ -5581,6 +7508,9 @@ A durable workflow evaluation/execution instance tied to an event and pack revis
 
 ## S
 
+**Sandbox**<br>
+The bounded execution environment used for an agent session: a disposable VM or a container on a worker VM, not an unrestricted host workspace.
+
 **Scheduled wake**<br>
 A durable request to resume an eligible session at/after a time. The dedicated wake worker also respects disabled-agent and terminal-session state.
 
@@ -5612,6 +7542,9 @@ An organizational domain object containing agents, responsibilities, roles, lead
 
 **Team Add-on**<br>
 The `evander_team_addon` package whose manifest ID is `team-addon` (its Python entry-point name is `team`). It contributes Team state, commands, providers, MCP tools, and an Admin Web area while preserving the core/add-on boundary.
+
+**TOCTOU race**<br>
+A time-of-check/time-of-use race: state validated during one step changes before a later action uses it.
 
 **Tool class**<br>
 A Team MCP exposure class. Current classes are ordinary, chat, ephemeral-worker, governance, and read; the active wake/session receives only the classes appropriate to its role and dispatch.
@@ -5669,6 +7602,7 @@ A detached temporary checkout beneath `runtime/git-worktrees/<managed-repo-id>/<
 - **add-on boundary** — [14. Semantic Memory, Model Usage, Skills, and Add-ons](#14-semantic-memory-model-usage-skills-and-add-ons), [16. Team Add-on Boundary and Domain Model](#16-team-add-on-boundary-and-domain-model).
 - **Admin API** — [15. Admin Operations, Observability, Backup, and Recovery](#15-admin-operations-observability-backup-and-recovery), [17. Enabling and Operating the Team Add-on](#17-enabling-and-operating-the-team-add-on).
 - **Admin Web** — [2. One Work Item, End to End](#2-one-work-item-end-to-end), [15. Admin Operations, Observability, Backup, and Recovery](#15-admin-operations-observability-backup-and-recovery), [28. System Reference](#28-system-reference).
+- **agent harness** — [3. Trust Model and Security Boundaries](#3-trust-model-and-security-boundaries), [9. Execution Backends](#9-execution-backends), [14. Semantic Memory, Model Usage, Skills, and Add-ons](#14-semantic-memory-model-usage-skills-and-add-ons).
 - **agent identity** — [6. Identity, Sessions, RBAC, and Policy](#6-identity-sessions-rbac-and-policy), [18. Organization, Projects, Tasks, and Cases](#18-organization-projects-tasks-and-cases).
 - **Agent Mail** — [21. Chat, Agent Mail, Voice, and Escalation](#21-chat-agent-mail-voice-and-escalation), [29. Troubleshooting Decision Tables](#29-troubleshooting-decision-tables).
 - **agent sessions** — [6. Identity, Sessions, RBAC, and Policy](#6-identity-sessions-rbac-and-policy), [9. Execution Backends](#9-execution-backends).
@@ -5702,6 +7636,8 @@ A detached temporary checkout beneath `runtime/git-worktrees/<managed-repo-id>/<
 ## D
 
 - **dark mode** — [17. Enabling and Operating the Team Add-on](#17-enabling-and-operating-the-team-add-on), [26. Engineering and Extension Guide](#26-engineering-and-extension-guide).
+- **default-deny egress** — [3. Trust Model and Security Boundaries](#3-trust-model-and-security-boundaries), [10. Networking, Relays, Packages, and Secrets](#10-networking-relays-packages-and-secrets).
+- **defense in depth** — [3. Trust Model and Security Boundaries](#3-trust-model-and-security-boundaries).
 - **deliverables** — [22. Deliverables, Reviews, and Decision Cascades](#22-deliverables-reviews-and-decision-cascades), [24. Team Git Promotion and Release Gates](#24-team-git-promotion-and-release-gates).
 - **design history** — [27. Design History and Compatibility Boundaries](#27-design-history-and-compatibility-boundaries).
 - **directories** — [5. Runtime Assembly, Configuration, and Directories](#5-runtime-assembly-configuration-and-directories), [6. Identity, Sessions, RBAC, and Policy](#6-identity-sessions-rbac-and-policy).
@@ -5721,6 +7657,7 @@ A detached temporary checkout beneath `runtime/git-worktrees/<managed-repo-id>/<
 - **extension points** — [14. Semantic Memory, Model Usage, Skills, and Add-ons](#14-semantic-memory-model-usage-skills-and-add-ons), [26. Engineering and Extension Guide](#26-engineering-and-extension-guide).
 ## F
 
+- **fail closed** — [3. Trust Model and Security Boundaries](#3-trust-model-and-security-boundaries), [27. Design History and Compatibility Boundaries](#27-design-history-and-compatibility-boundaries).
 - **failure recovery** — [15. Admin Operations, Observability, Backup, and Recovery](#15-admin-operations-observability-backup-and-recovery), [29. Troubleshooting Decision Tables](#29-troubleshooting-decision-tables).
 - **firewall** — [3. Trust Model and Security Boundaries](#3-trust-model-and-security-boundaries), [10. Networking, Relays, Packages, and Secrets](#10-networking-relays-packages-and-secrets), [28. System Reference](#28-system-reference).
 ## G
@@ -5738,7 +7675,7 @@ A detached temporary checkout beneath `runtime/git-worktrees/<managed-repo-id>/<
 - **HTTP target relay** — [10. Networking, Relays, Packages, and Secrets](#10-networking-relays-packages-and-secrets), [28. System Reference](#28-system-reference).
 ## I
 
-- **idempotency** — [8. Workflow Runtime and Orchestration](#8-workflow-runtime-and-orchestration), [19. Commands, Identity, Revisions, and the Durable Outbox](#19-commands-identity-revisions-and-the-durable-outbox), [24. Team Git Promotion and Release Gates](#24-team-git-promotion-and-release-gates).
+- **idempotency** — [2. One Work Item, End to End](#2-one-work-item-end-to-end), [8. Workflow Runtime and Orchestration](#8-workflow-runtime-and-orchestration), [19. Commands, Identity, Revisions, and the Durable Outbox](#19-commands-identity-revisions-and-the-durable-outbox), [24. Team Git Promotion and Release Gates](#24-team-git-promotion-and-release-gates).
 - **inbox** — [13. Communications, Meetings, Calls, and Wakes](#13-communications-meetings-calls-and-wakes), [20. Wakes, Leases, Context Rotation, and Stand-down](#20-wakes-leases-context-rotation-and-stand-down), [21. Chat, Agent Mail, Voice, and Escalation](#21-chat-agent-mail-voice-and-escalation).
 - **index** — [1. How to Read This Manual](#1-how-to-read-this-manual), [30. Glossary](#30-glossary).
 - **internal events** — [8. Workflow Runtime and Orchestration](#8-workflow-runtime-and-orchestration), [19. Commands, Identity, Revisions, and the Durable Outbox](#19-commands-identity-revisions-and-the-durable-outbox).
@@ -5746,6 +7683,7 @@ A detached temporary checkout beneath `runtime/git-worktrees/<managed-repo-id>/<
 ## L
 
 - **leases** — [20. Wakes, Leases, Context Rotation, and Stand-down](#20-wakes-leases-context-rotation-and-stand-down), [24. Team Git Promotion and Release Gates](#24-team-git-promotion-and-release-gates).
+- **least privilege** — [3. Trust Model and Security Boundaries](#3-trust-model-and-security-boundaries).
 - **libvirt** — [9. Execution Backends](#9-execution-backends), [28. System Reference](#28-system-reference).
 ## M
 
@@ -5779,6 +7717,7 @@ A detached temporary checkout beneath `runtime/git-worktrees/<managed-repo-id>/<
 - **policy** — [6. Identity, Sessions, RBAC, and Policy](#6-identity-sessions-rbac-and-policy), [7. MCP, Approvals, and Audit](#7-mcp-approvals-and-audit).
 - **ports** — [4. System Topology, Services, and Ports](#4-system-topology-services-and-ports), [28. System Reference](#28-system-reference).
 - **projects** — [18. Organization, Projects, Tasks, and Cases](#18-organization-projects-tasks-and-cases), [25. Governance, Memory, Cost, and Internals](#25-governance-memory-cost-and-internals).
+- **provenance** — [2. One Work Item, End to End](#2-one-work-item-end-to-end), [5. Runtime Assembly, Configuration, and Directories](#5-runtime-assembly-configuration-and-directories), [9. Execution Backends](#9-execution-backends), [11. Managed Git, Artifacts, and Code Consultations](#11-managed-git-artifacts-and-code-consultations).
 - **provider registry** — [8. Workflow Runtime and Orchestration](#8-workflow-runtime-and-orchestration), [26. Engineering and Extension Guide](#26-engineering-and-extension-guide).
 ## Q
 
@@ -5801,6 +7740,7 @@ A detached temporary checkout beneath `runtime/git-worktrees/<managed-repo-id>/<
 - **runtime stores** — [5. Runtime Assembly, Configuration, and Directories](#5-runtime-assembly-configuration-and-directories), [15. Admin Operations, Observability, Backup, and Recovery](#15-admin-operations-observability-backup-and-recovery), [28. System Reference](#28-system-reference).
 ## S
 
+- **sandbox** — [2. One Work Item, End to End](#2-one-work-item-end-to-end), [3. Trust Model and Security Boundaries](#3-trust-model-and-security-boundaries), [9. Execution Backends](#9-execution-backends), [11. Managed Git, Artifacts, and Code Consultations](#11-managed-git-artifacts-and-code-consultations).
 - **scheduled wakes** — [13. Communications, Meetings, Calls, and Wakes](#13-communications-meetings-calls-and-wakes), [20. Wakes, Leases, Context Rotation, and Stand-down](#20-wakes-leases-context-rotation-and-stand-down).
 - **screenshots** — [1. How to Read This Manual](#1-how-to-read-this-manual), [26. Engineering and Extension Guide](#26-engineering-and-extension-guide).
 - **secrets** — [3. Trust Model and Security Boundaries](#3-trust-model-and-security-boundaries), [10. Networking, Relays, Packages, and Secrets](#10-networking-relays-packages-and-secrets).
@@ -5818,6 +7758,7 @@ A detached temporary checkout beneath `runtime/git-worktrees/<managed-repo-id>/<
 - **Team state database** — [16. Team Add-on Boundary and Domain Model](#16-team-add-on-boundary-and-domain-model), [25. Governance, Memory, Cost, and Internals](#25-governance-memory-cost-and-internals), [28. System Reference](#28-system-reference).
 - **Team views** — [17. Enabling and Operating the Team Add-on](#17-enabling-and-operating-the-team-add-on), [28. System Reference](#28-system-reference).
 - **telephony** — [13. Communications, Meetings, Calls, and Wakes](#13-communications-meetings-calls-and-wakes), [21. Chat, Agent Mail, Voice, and Escalation](#21-chat-agent-mail-voice-and-escalation).
+- **TOCTOU race** — [3. Trust Model and Security Boundaries](#3-trust-model-and-security-boundaries).
 - **tool classes** — [21. Chat, Agent Mail, Voice, and Escalation](#21-chat-agent-mail-voice-and-escalation), [23. Ephemeral Delegation](#23-ephemeral-delegation), [25. Governance, Memory, Cost, and Internals](#25-governance-memory-cost-and-internals), [30. Glossary](#30-glossary).
 - **triggers** — [8. Workflow Runtime and Orchestration](#8-workflow-runtime-and-orchestration), [12. Issues and Provider Integrations](#12-issues-and-provider-integrations).
 - **troubleshooting** — [29. Troubleshooting Decision Tables](#29-troubleshooting-decision-tables).

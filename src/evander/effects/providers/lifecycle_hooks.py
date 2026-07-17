@@ -589,9 +589,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                             agent_provider=agent_harness,
                             resume_mode=getattr(record, "resume_mode", None),
                             mcp_gateway_url=mcp_gateway_url,
-                            web_search_enabled=bool(
-                                getattr(session, "web_search_enabled", False)
-                            ),
+                            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
                         ),
                         metadata={
                             "effect_type": "effect:agent:enqueue-prompt",
@@ -953,9 +951,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         }
         self._restore_workflow_context(input_payload=input_payload, record=record)
         execution_record = EffectExecutionRecord(
-            execution_id=(
-                f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"
-            ),
+            execution_id=(f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"),
             idempotency_key=idempotency_key,
             event_id=event_id,
             trace_id=f"queued-agent-prompt:{queue_key}",
@@ -1030,9 +1026,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
 
     @staticmethod
     def _restore_workflow_context(*, input_payload: dict[str, Any], record: Any) -> None:
-        workflow_context = AgentEnqueuePromptQueueDispatchHook._workflow_context_from_record(
-            record
-        )
+        workflow_context = AgentEnqueuePromptQueueDispatchHook._workflow_context_from_record(record)
         if workflow_context:
             input_payload[NODE_OUTPUTS_CONTEXT_KEY] = workflow_context
         workflow_for_execution_ids = (
@@ -1124,9 +1118,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             if not isinstance(metadata, dict):
                 metadata = {}
             merged_metadata = self._deep_merge_metadata(metadata, metadata_patch)
-            upsert_session(
-                session.model_copy(update={"metadata": merged_metadata})
-            )
+            upsert_session(session.model_copy(update={"metadata": merged_metadata}))
         except Exception:
             return
 
@@ -1143,9 +1135,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         )
 
     @classmethod
-    def _deep_merge_metadata(
-        cls, base: dict[str, Any], update: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _deep_merge_metadata(cls, base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
         merged = dict(base)
         for key, value in update.items():
             existing = merged.get(key)
@@ -1234,8 +1224,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             ensure_session_not_expired(session)
         except SessionExpiredError:
             logger.warning(
-                "AgentEnqueuePromptQueueDispatchHook skipped expired queued prompt "
-                "queue_key=%s %s",
+                "AgentEnqueuePromptQueueDispatchHook skipped expired queued prompt queue_key=%s %s",
                 queue_key,
                 session_expired_message(session),
             )

@@ -262,14 +262,17 @@ class VmAgentAdminSupport:
             }:
                 bootstrap_fields[name] = value.strip()
         public_key_body = bootstrap_fields.get("EVANDER_GIT_PUBLIC_KEY_BODY", "")
-        authorized_keys_path = bootstrap_fields.get(
-            "EVANDER_GIT_AUTHORIZED_KEYS_PATH", ""
-        )
+        authorized_keys_path = bootstrap_fields.get("EVANDER_GIT_AUTHORIZED_KEYS_PATH", "")
         access_mode = bootstrap_fields.get("EVANDER_GIT_AUTH_ACCESS", "")
-        if not public_key_body or not authorized_keys_path or access_mode not in {
-            "read-only",
-            "write",
-        }:
+        if (
+            not public_key_body
+            or not authorized_keys_path
+            or access_mode
+            not in {
+                "read-only",
+                "write",
+            }
+        ):
             raise RuntimeError(
                 "Git bootstrap did not return complete managed access lifecycle metadata"
             )
@@ -280,9 +283,7 @@ class VmAgentAdminSupport:
                 authorized_keys_path=authorized_keys_path,
                 public_key_body=public_key_body,
             )
-            raise RuntimeError(
-                f"Cannot record managed Git access for missing session {session_id}"
-            )
+            raise RuntimeError(f"Cannot record managed Git access for missing session {session_id}")
         current_metadata = session.metadata if isinstance(session.metadata, dict) else {}
         try:
             session_repository.upsert_session(
@@ -330,9 +331,7 @@ class VmAgentAdminSupport:
                 f'git -C "${{TARGET_DIR}}" config evander.issueNumber "{issue_number}"\n'
                 f'git -C "${{TARGET_DIR}}" config evander.destinationBranch "feature/issue-{issue_number}"\n'
             )
-        branch_suffix_line = (
-            'git -C "${TARGET_DIR}" config evander.branchSuffix "${VM_NAME}"\n'
-        )
+        branch_suffix_line = 'git -C "${TARGET_DIR}" config evander.branchSuffix "${VM_NAME}"\n'
         normalized_author_name = str(git_author_name or "").strip()
         normalized_author_email = str(git_author_email or "").strip()
         if bool(normalized_author_name) != bool(normalized_author_email):

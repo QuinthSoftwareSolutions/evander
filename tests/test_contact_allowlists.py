@@ -18,17 +18,13 @@ def _contacts() -> ContactDirectoryConfig:
                     "name": "Ops",
                     "description": "Ops contact",
                     "email_addresses": ["ops@example.com"],
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550001", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550001", "primary": True}],
                 },
                 "support": {
                     "name": "Support",
                     "description": "Support contact",
                     "email_addresses": ["support@example.com"],
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550002", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550002", "primary": True}],
                 },
             },
             "user_contact_links": {"agent": "ops"},
@@ -108,8 +104,11 @@ def test_require_allowed_contact_id_rejects_contacts_outside_allowlist() -> None
 
 
 def test_require_allowed_contact_id_allows_contact_when_allowlist_missing() -> None:
-    assert require_allowed_contact_id(
-        " support ",
-        None,
-        session_id="session-1",
-    ) == "support"
+    assert (
+        require_allowed_contact_id(
+            " support ",
+            None,
+            session_id="session-1",
+        )
+        == "support"
+    )

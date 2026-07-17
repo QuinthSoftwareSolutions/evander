@@ -323,9 +323,7 @@ class TeamCostService:
         self._request_attribution_cache: dict[tuple[str, str], TeamCostAttribution] = {}
 
     def costs_payload(self, *, backfill_transcripts: bool = False) -> dict[str, Any]:
-        backfill_result = (
-            self.backfill_claude_transcripts() if backfill_transcripts else None
-        )
+        backfill_result = self.backfill_claude_transcripts() if backfill_transcripts else None
         raw_events = self.usage_store.list_events()
         self._request_attribution_cache = self._request_attributions(raw_events)
         events = _dedupe_cost_events(raw_events)
@@ -378,9 +376,7 @@ class TeamCostService:
                     team_bucket["unattributed_costs"]
                 )
             else:
-                team_bucket["unattributed_costs"] = _finalize_bucket(
-                    _new_bucket(team_id=team_id)
-                )
+                team_bucket["unattributed_costs"] = _finalize_bucket(_new_bucket(team_id=team_id))
 
         coverage_reasons = set(root_bucket.get("_coverage_reasons", set()))
         if backfill_result is not None and backfill_result.coverage_status != "complete":
@@ -520,9 +516,7 @@ class TeamCostService:
                 ranks[request_key] = rank
         return attributions
 
-    def _dispatch_context_attribution(
-        self, dispatch_id: str
-    ) -> TeamCostAttribution | None:
+    def _dispatch_context_attribution(self, dispatch_id: str) -> TeamCostAttribution | None:
         context = self._dispatch_context(dispatch_id)
         if context is None:
             return None
@@ -536,9 +530,7 @@ class TeamCostService:
             project_confident=bool(context.project_id),
         )
 
-    def _dispatch_context(
-        self, dispatch_id: str
-    ) -> ModelUsageCorrelationContext | None:
+    def _dispatch_context(self, dispatch_id: str) -> ModelUsageCorrelationContext | None:
         if dispatch_id not in self._context_cache:
             try:
                 self._context_cache[dispatch_id] = self.usage_store.get_correlation_context(
@@ -564,7 +556,11 @@ class TeamCostService:
                 session_manifest=session,
                 agent_id=agent.id,
                 team_id=agent.team_id,
-                project_id=(agent_project_ids(self.state, agent.id)[0] if agent_project_ids(self.state, agent.id) else None),
+                project_id=(
+                    agent_project_ids(self.state, agent.id)[0]
+                    if agent_project_ids(self.state, agent.id)
+                    else None
+                ),
             )
         for assignment in self.state.ephemeral_assignments.values():
             session_id = _optional_text(assignment.session_id)
@@ -1245,9 +1241,7 @@ def _add_event_to_bucket(
     input_tokens = int(event.input_tokens or 0)
     output_tokens = int(event.output_tokens or 0)
     total_tokens = (
-        int(event.total_tokens)
-        if event.total_tokens is not None
-        else input_tokens + output_tokens
+        int(event.total_tokens) if event.total_tokens is not None else input_tokens + output_tokens
     )
     cached_input_tokens = int(extract_cached_input_tokens(event) or 0)
     cache_write_tokens = extract_cache_write_input_tokens(event).total
@@ -1315,9 +1309,7 @@ def _add_event_to_leaf(
     leaf["cache_write_input_tokens"] += extract_cache_write_input_tokens(event).total
     leaf["output_tokens"] += output_tokens
     leaf["total_tokens"] += (
-        int(event.total_tokens)
-        if event.total_tokens is not None
-        else input_tokens + output_tokens
+        int(event.total_tokens) if event.total_tokens is not None else input_tokens + output_tokens
     )
     _increment(leaf["source_counts"], source)
     _increment(leaf["cost_status_counts"], estimate.status)
@@ -1361,13 +1353,9 @@ def _finalize_team_bucket(bucket: dict[str, Any], *, team: Any | None) -> dict[s
     estimated = _optional_decimal(finalized.get("estimated_cost")) or Decimal("0")
     finalized["max_cost_usd"] = _decimal_to_float(max_cost)
     finalized["remaining_cost_usd"] = (
-        _decimal_to_float(max(max_cost - estimated, Decimal("0")))
-        if max_cost is not None
-        else None
+        _decimal_to_float(max(max_cost - estimated, Decimal("0"))) if max_cost is not None else None
     )
-    finalized["cost_limit_reached"] = bool(
-        max_cost is not None and estimated >= max_cost
-    )
+    finalized["cost_limit_reached"] = bool(max_cost is not None and estimated >= max_cost)
     finalized["cost_limit_basis"] = "lifetime"
     return finalized
 
@@ -1396,7 +1384,9 @@ def _governance_group_costs(
         for team_id in group.member_team_ids:
             team_cost = dict(team_cost_payloads.get(team_id) or {})
             if not team_cost and team_id in state.teams:
-                team_cost = _finalize_team_bucket(_new_bucket(team_id=team_id), team=state.teams[team_id])
+                team_cost = _finalize_team_bucket(
+                    _new_bucket(team_id=team_id), team=state.teams[team_id]
+                )
             if not team_cost:
                 continue
             member_team_costs[team_id] = team_cost
@@ -1538,13 +1528,9 @@ def _event_request_key(event: ModelInferenceUsageEvent) -> tuple[str, str] | Non
     session_id = _optional_text(event.session_id)
     request_id = _first_text(
         event.request_id,
-        _raw_metadata_text(
-            event.raw_usage_metadata, "response_metadata", "provider_request_id"
-        ),
+        _raw_metadata_text(event.raw_usage_metadata, "response_metadata", "provider_request_id"),
         _raw_metadata_text(event.raw_usage_metadata, "response_metadata", "request_id"),
-        _raw_metadata_text(
-            event.raw_usage_metadata, "request_metadata", "provider_request_id"
-        ),
+        _raw_metadata_text(event.raw_usage_metadata, "request_metadata", "provider_request_id"),
         _raw_metadata_text(event.raw_usage_metadata, "request_metadata", "request_id"),
     )
     if session_id is None or request_id is None:
@@ -1552,9 +1538,7 @@ def _event_request_key(event: ModelInferenceUsageEvent) -> tuple[str, str] | Non
     return (session_id, request_id)
 
 
-def _raw_metadata_text(
-    raw_usage_metadata: Mapping[str, Any], section: str, key: str
-) -> str | None:
+def _raw_metadata_text(raw_usage_metadata: Mapping[str, Any], section: str, key: str) -> str | None:
     payload = raw_usage_metadata.get(section)
     if not isinstance(payload, Mapping):
         return None

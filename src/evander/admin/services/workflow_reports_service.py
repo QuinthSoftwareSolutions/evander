@@ -176,9 +176,7 @@ class WorkflowReportsAdminService:
         return self._workflow_config_admin._workflow_config_snapshot_repository(*args, **kwargs)
 
     def _latest_resumable_failed_workflow_record(self, *args: Any, **kwargs: Any):
-        return self._workflow_config_admin._latest_resumable_failed_workflow_record(
-            *args, **kwargs
-        )
+        return self._workflow_config_admin._latest_resumable_failed_workflow_record(*args, **kwargs)
 
     def _communication_artifact_store(self) -> CommunicationArtifactStore:
         return CommunicationArtifactStore(self.config.runtime_dir)
@@ -592,7 +590,6 @@ class WorkflowReportsAdminService:
             },
             recent_node_activity=recent_node_activity,
         )
-
 
     def _read_workflow_run_search(
         self,
@@ -1044,7 +1041,6 @@ class WorkflowReportsAdminService:
             or (sqlite_has_more_candidates and not without_session),
         )
 
-
     def _read_workflow_graph_activity_report(
         self,
         *,
@@ -1376,7 +1372,6 @@ class WorkflowReportsAdminService:
             graphs=graphs,
         )
 
-
     def _read_workflow_failure_clusters_report(
         self,
         *,
@@ -1387,11 +1382,7 @@ class WorkflowReportsAdminService:
     ) -> WorkflowFailureClusterReportPayload:
         now = _utc_now()
         end_at = _as_utc(period_end) if period_end is not None else now
-        start_at = (
-            _as_utc(period_start)
-            if period_start is not None
-            else end_at - timedelta(days=1)
-        )
+        start_at = _as_utc(period_start) if period_start is not None else end_at - timedelta(days=1)
         if start_at > end_at:
             raise ValueError("Workflow failure cluster period_start must be before period_end.")
 
@@ -1579,10 +1570,9 @@ class WorkflowReportsAdminService:
             node_info = node_metadata.get(node_id, {})
             graph_id, graph_info = graph_context_for_node(node_id)
             raw_status = _coerce_optional_string(raw_record.get("status"))
-            node_type = (
-                _coerce_optional_string(raw_record.get(type_field))
-                or _coerce_optional_string(node_info.get("node_type"))
-            )
+            node_type = _coerce_optional_string(
+                raw_record.get(type_field)
+            ) or _coerce_optional_string(node_info.get("node_type"))
             display_name = _coerce_optional_string(node_info.get("display_name"))
             linked_payloads = payload_sources(raw_record)
             session_ids = collect_keyed_values(
@@ -1810,9 +1800,7 @@ class WorkflowReportsAdminService:
                 str(record["source_kind"]),
             )
             if record["success_activity"]:
-                latest_success_at_by_node_source.setdefault(
-                    node_source_key, record["activity_at"]
-                )
+                latest_success_at_by_node_source.setdefault(node_source_key, record["activity_at"])
             if not record["failure_candidate"]:
                 continue
 
@@ -1968,11 +1956,7 @@ class WorkflowReportsAdminService:
         for cluster in limited_clusters:
             cluster_payloads.append(
                 WorkflowFailureClusterPayload.model_validate(
-                    {
-                        key: value
-                        for key, value in cluster.items()
-                        if not key.startswith("_")
-                    }
+                    {key: value for key, value in cluster.items() if not key.startswith("_")}
                 )
             )
 
@@ -1985,7 +1969,6 @@ class WorkflowReportsAdminService:
             has_more=has_more,
             clusters=cluster_payloads,
         )
-
 
     def _read_conformance_reports(self) -> ConformanceReportsPayload:
         now = _utc_now()
@@ -2058,7 +2041,6 @@ class WorkflowReportsAdminService:
             output=output or None,
             reports=self._read_conformance_reports(),
         )
-
 
     def _read_conformance_report(
         self,
@@ -2224,7 +2206,6 @@ class WorkflowReportsAdminService:
             remediation_snippets=remediation_snippets,
         )
 
-
     def _workflow_run_search_sqlite_event_ids(
         self,
         stores: Mapping[str, Any],
@@ -2350,7 +2331,6 @@ class WorkflowReportsAdminService:
         ]
         return event_ids, matched_count, matched_count > len(event_ids)
 
-
     def _workflow_run_sqlite_records_for_event_ids(
         self,
         stores: Mapping[str, Any],
@@ -2424,7 +2404,6 @@ class WorkflowReportsAdminService:
                     add_payload(gate_records, row, key_field="execution_id")
 
         return queue_records, effect_records, gate_records
-
 
     def _workflow_run_detail_sqlite_records(
         self,
@@ -2574,7 +2553,6 @@ class WorkflowReportsAdminService:
                     add_payload(gate_records, row, key_field="execution_id")
 
         return queue_records, effect_records, gate_records
-
 
     def _read_workflow_run_detail(
         self,
@@ -3272,11 +3250,15 @@ class WorkflowReportsAdminService:
         node_session_ids_by_node: dict[str, set[str]] = {}
 
         def build_approval_link(request: ApprovalRequest) -> WorkflowRunApprovalLinkPayload:
+            arguments = request.payload.get("arguments")
+            connector_arguments = arguments if isinstance(arguments, dict) else {}
             return WorkflowRunApprovalLinkPayload(
                 request_id=request.request_id,
                 session_id=request.session_id,
                 action_type=request.action_type,
                 tool_name=request.tool_name,
+                connector_id=_coerce_optional_string(connector_arguments.get("connector_id")),
+                connector_operation=_coerce_optional_string(connector_arguments.get("operation")),
                 directory_path=request.directory_path,
                 payload_digest=request.payload_digest,
                 status=request.status.value,

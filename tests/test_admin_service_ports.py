@@ -33,7 +33,9 @@ class FakeWorkflowConfig:
     def read_worker_global_config(self, worker_id: str) -> dict[str, str]:
         return {"worker_id": worker_id}
 
-    def write_worker_global_config(self, worker_id: str, payload: dict[str, object], *, expected_revision: str | None = None) -> dict[str, object | None]:
+    def write_worker_global_config(
+        self, worker_id: str, payload: dict[str, object], *, expected_revision: str | None = None
+    ) -> dict[str, object | None]:
         return {"worker_id": worker_id, "payload": payload, "expected_revision": expected_revision}
 
     def read_workflow_editor_document(self, workflow_pack: str | None = None) -> dict[str, object]:
@@ -82,7 +84,9 @@ class FakeWorkflowConfig:
     def workflow_event_journal(self) -> object:
         return object()
 
-    def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]) -> dict[str, object]:
+    def upsert_trigger_config(
+        self, trigger_id: str, payload: dict[str, object]
+    ) -> dict[str, object]:
         return {"trigger_id": trigger_id, "payload": payload}
 
     def delete_trigger_config(self, trigger_id: str) -> dict[str, str]:
@@ -139,9 +143,7 @@ def test_vm_inventory_admin_uses_directory_port(monkeypatch) -> None:
     monkeypatch.setattr(vm_inventory_service.vm_helpers, "virsh_lines", lambda _args: [])
     inventory = VmInventoryAdminService(
         VmInventoryAdminDependencies(
-            runtime=SimpleNamespace(
-                session_repository=SimpleNamespace(list_sessions=lambda: [])
-            ),
+            runtime=SimpleNamespace(session_repository=SimpleNamespace(list_sessions=lambda: [])),
             agent_control_store=SimpleNamespace(status_for_vm=lambda _vm_name: "enabled"),
             directory_ownership=directory_ownership,
         )
@@ -170,7 +172,9 @@ def test_operations_service_uses_privileged_helper_port(tmp_path: Path) -> None:
     assert service.unlock_privileged_operations() == "Privileged operations unlocked."
     assert isinstance(privileged_helper.helper, FakeHelper)
     assert privileged_helper.helper.is_running()
-    assert factory.created == [{"python_executable": __import__("sys").executable, "project_dir": tmp_path}]
+    assert factory.created == [
+        {"python_executable": __import__("sys").executable, "project_dir": tmp_path}
+    ]
 
     service.lock_privileged_operations()
     assert privileged_helper.helper is None

@@ -86,9 +86,7 @@ def test_graph_teams_service_creates_one_on_one_chat_for_allowlisted_user(
         if request.url.path == "/v1.0/chats":
             payload = json.loads(request.content.decode("utf-8"))
             assert payload["chatType"] == "oneOnOne"
-            assert [
-                member["user@odata.bind"] for member in payload["members"]
-            ] == [
+            assert [member["user@odata.bind"] for member in payload["members"]] == [
                 "https://graph.microsoft.com/v1.0/users('sender-user-id')",
                 "https://graph.microsoft.com/v1.0/users('operator@example.com')",
             ]
@@ -155,7 +153,9 @@ def test_graph_teams_service_resolves_user_refs_to_graph_ids(tmp_path: Path) -> 
         "/v1.0/users/user-allowed",
         "/v1.0/users/operator@example.com",
     ]
-    assert all(request.url.params.get("$select") == "id,userPrincipalName,mail" for request in requests)
+    assert all(
+        request.url.params.get("$select") == "id,userPrincipalName,mail" for request in requests
+    )
 
 
 def test_graph_teams_service_resolves_mail_with_filter_fallback(tmp_path: Path) -> None:
@@ -164,11 +164,12 @@ def test_graph_teams_service_resolves_mail_with_filter_fallback(tmp_path: Path) 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if request.url.path == "/v1.0/users/primary@example.com":
-            return httpx.Response(404, json={"error": {"code": "Request_ResourceNotFound"}}, request=request)
+            return httpx.Response(
+                404, json={"error": {"code": "Request_ResourceNotFound"}}, request=request
+            )
         if request.url.path == "/v1.0/users":
             assert request.url.params.get("$filter") == (
-                "mail eq 'primary@example.com' or "
-                "userPrincipalName eq 'primary@example.com'"
+                "mail eq 'primary@example.com' or userPrincipalName eq 'primary@example.com'"
             )
             return httpx.Response(
                 200,
@@ -198,7 +199,9 @@ def test_graph_teams_service_resolves_mail_with_filter_fallback(tmp_path: Path) 
 def test_graph_teams_service_returns_none_for_unresolved_mail(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1.0/users/missing@example.com":
-            return httpx.Response(404, json={"error": {"code": "Request_ResourceNotFound"}}, request=request)
+            return httpx.Response(
+                404, json={"error": {"code": "Request_ResourceNotFound"}}, request=request
+            )
         if request.url.path == "/v1.0/users":
             return httpx.Response(200, json={"value": []}, request=request)
         raise AssertionError(f"Unexpected path: {request.url.path}")
@@ -220,7 +223,9 @@ def test_graph_teams_service_rejects_non_allowlisted_user_chat_creation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    transport = httpx.MockTransport(lambda request: pytest.fail(f"Unexpected request: {request.url}"))
+    transport = httpx.MockTransport(
+        lambda request: pytest.fail(f"Unexpected request: {request.url}")
+    )
     patch_httpx_client(monkeypatch, transport)
     store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
     service = GraphTeamsService(
@@ -954,9 +959,7 @@ def test_graph_teams_service_posts_status_with_mentions(
     assert posted_payloads == [
         {
             "body": {
-                "content": (
-                    '<p><at id="0">Research &amp; Ops</at></p><p>root status</p>'
-                ),
+                "content": ('<p><at id="0">Research &amp; Ops</at></p><p>root status</p>'),
                 "contentType": "html",
             },
             "mentions": [
@@ -1406,7 +1409,7 @@ def test_graph_teams_service_nests_bullets_inside_numbered_status_items(
 
     assert requests[0].content == (
         b'{"body":{"content":"<ol><li>Rubrik A<ul><li>detalj A</li></ul></li>'
-        b"<li>Rubrik B<ul><li>detalj B</li></ul></li></ol>\","
+        b'<li>Rubrik B<ul><li>detalj B</li></ul></li></ol>",'
         b'"contentType":"html"}}'
     )
 
@@ -1679,7 +1682,7 @@ def test_graph_teams_service_preserves_attachment_metadata_and_downloads_hosted_
                                     "contentType": "image/png",
                                     "contentUrl": "../hostedContents/hosted-1/$value",
                                     "contentBytes": "must-not-store",
-                                }
+                                },
                             ],
                         }
                     ]
@@ -1716,9 +1719,7 @@ def test_graph_teams_service_preserves_attachment_metadata_and_downloads_hosted_
     assert attachments[1]["attachment_kind"] == "hosted_content"
     assert attachments[1]["graph_attachment_id"] == "graph-hosted-1"
     assert "contentBytes" not in messages[0].metadata["message"]["attachments"][0]
-    downloaded = service.download_attachment(
-        "msg-1", "hosted-1", channel_target="team-a/channel-1"
-    )
+    downloaded = service.download_attachment("msg-1", "hosted-1", channel_target="team-a/channel-1")
     assert downloaded["content"] == b"png-bytes"
     assert downloaded["mime_type"] == "image/png"
     assert downloaded["filename"] == "inline.png"
@@ -1793,9 +1794,7 @@ def test_graph_teams_service_lists_hosted_content_on_demand_for_inline_images(
             "filename": "hosted-content-hosted-1.png",
         }
     ]
-    downloaded = service.download_attachment(
-        "msg-1", "hosted-1", channel_target="team-a/channel-1"
-    )
+    downloaded = service.download_attachment("msg-1", "hosted-1", channel_target="team-a/channel-1")
     assert downloaded["content"] == b"png-bytes"
     assert downloaded["mime_type"] == "image/png"
     assert downloaded["filename"] == "hosted-content-hosted-1.png"
@@ -2038,9 +2037,7 @@ def test_graph_teams_post_file_forms_share_link_reference_request(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        assert request.url.path.endswith(
-            "/teams/team-a/channels/channel-1/messages/root-1/replies"
-        )
+        assert request.url.path.endswith("/teams/team-a/channels/channel-1/messages/root-1/replies")
         payload = json.loads(request.read())
         assert payload["body"]["contentType"] == "html"
         assert payload["body"]["content"] == (
@@ -2121,8 +2118,7 @@ def test_graph_teams_post_file_inlines_image_hosted_content(
         requests.append(request)
         payload = json.loads(request.read())
         assert payload["body"]["content"] == (
-            '<p>image incoming</p><p><img src="../hostedContents/1/$value" '
-            'alt="photo.png"></p>'
+            '<p>image incoming</p><p><img src="../hostedContents/1/$value" alt="photo.png"></p>'
         )
         assert "attachments" not in payload
         assert payload["hostedContents"] == [
@@ -2217,8 +2213,7 @@ def test_graph_teams_post_file_links_non_image_control_plane_download(
                 "filename": "upload.txt",
                 "mime_type": "text/plain",
                 "download_url": (
-                    "https://control.example.test/public/communication-artifacts/"
-                    "comm_123?token=abc"
+                    "https://control.example.test/public/communication-artifacts/comm_123?token=abc"
                 ),
             }
         ],

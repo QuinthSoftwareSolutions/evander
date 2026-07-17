@@ -143,13 +143,9 @@ class ArtifactSpaceState(ArtifactSpaceModel):
                 errors.append(f"space {path} references missing parent {space.parent_path}")
         for version_id, version in self.versions.items():
             if version_id != version.id:
-                errors.append(
-                    f"version key {version_id} does not match record id {version.id}"
-                )
+                errors.append(f"version key {version_id} does not match record id {version.id}")
             if version.space_path not in self.spaces:
-                errors.append(
-                    f"version {version.id} references missing space {version.space_path}"
-                )
+                errors.append(f"version {version.id} references missing space {version.space_path}")
         if errors:
             raise ValueError("; ".join(errors))
         return self

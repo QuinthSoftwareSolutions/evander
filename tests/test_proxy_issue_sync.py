@@ -30,7 +30,8 @@ def _proxy_issue(
     updated_at: datetime | None = None,
 ) -> LocalIssueRecord:
     return LocalIssueRecord(
-        issue_id=issue_id or f"root/team::azure_devops::https://dev.azure.com/example::Project::{issue_number}",
+        issue_id=issue_id
+        or f"root/team::azure_devops::https://dev.azure.com/example::Project::{issue_number}",
         issue_number=issue_number,
         title=f"Local {issue_number}",
         body=f"Body {issue_number}",
@@ -71,7 +72,11 @@ class _BatchIssueService:
         return {
             "provider": kwargs["provider"],
             "project": kwargs.get("project"),
-            "items": {item_id: self.items[item_id] for item_id in kwargs["remote_issue_ids"] if item_id in self.items},
+            "items": {
+                item_id: self.items[item_id]
+                for item_id in kwargs["remote_issue_ids"]
+                if item_id in self.items
+            },
             "missing_ids": self.missing_ids,
         }
 
@@ -208,8 +213,7 @@ def test_upsert_ado_proxy_issue_reuses_local_issue_linked_from_approval_reason(
         metadata={
             "fields": {
                 "Reason": (
-                    "Committed after approval as Azure DevOps Bug 101: "
-                    "https://ado.example/101"
+                    "Committed after approval as Azure DevOps Bug 101: https://ado.example/101"
                 )
             }
         },
@@ -318,8 +322,7 @@ def test_upsert_ado_proxy_issue_prunes_generated_duplicate_when_local_issue_is_c
         metadata={
             "fields": {
                 "Reason": (
-                    "Committed after approval as Azure DevOps Bug 101: "
-                    "https://ado.example/101"
+                    "Committed after approval as Azure DevOps Bug 101: https://ado.example/101"
                 )
             }
         },

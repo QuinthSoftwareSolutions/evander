@@ -125,9 +125,7 @@ def test_pull_request_feedback_query_fetches_ado_feedback_with_cursor(
     assert output["next_cursor"] == "2026-05-22T09:00:00Z"
 
 
-def test_pull_request_feedback_query_uses_explicit_ado_project(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_pull_request_feedback_query_uses_explicit_ado_project(tmp_path: Path, monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
     class StubAdapter:

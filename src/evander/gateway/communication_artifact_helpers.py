@@ -101,11 +101,7 @@ class CommunicationArtifactHelpers:
             raise ToolError(str(exc)) from exc
 
     def artifact_to_model(self, record: Any) -> CommunicationFileArtifact:
-        payload = (
-            record.model_dump(mode="json")
-            if hasattr(record, "model_dump")
-            else dict(record)
-        )
+        payload = record.model_dump(mode="json") if hasattr(record, "model_dump") else dict(record)
         return CommunicationFileArtifact.model_validate(payload)
 
     def normalize_workspace_source_path(self, value: str) -> str:
@@ -284,10 +280,9 @@ class CommunicationArtifactHelpers:
         audit_links: list[dict[str, Any]] = []
         for artifact in artifacts:
             updated = dict(artifact)
-            if (
-                not self.artifact_is_inline_teams_image(updated)
-                and not self.artifact_has_teams_reference_url(updated)
-            ):
+            if not self.artifact_is_inline_teams_image(
+                updated
+            ) and not self.artifact_has_teams_reference_url(updated):
                 try:
                     link = issue_communication_artifact_download_link(
                         artifact_id=str(updated.get("artifact_id") or ""),
@@ -350,9 +345,7 @@ class CommunicationArtifactHelpers:
                 byte_count=int(artifact.get("byte_count") or 0),
             )
 
-    def ado_artifacts_for_ids(
-        self, session: Any, artifact_ids: list[str]
-    ) -> list[dict[str, Any]]:
+    def ado_artifacts_for_ids(self, session: Any, artifact_ids: list[str]) -> list[dict[str, Any]]:
         artifacts = self.artifact_payloads(artifact_ids)
         self.require_ado_artifact_send(session, artifacts)
         return artifacts

@@ -18,7 +18,9 @@ class IssueUpdateMetadataEffectProvider(EffectProviderBase):
         if patch is None and merge_patch is None:
             raise ValueError("effect:issue:update-metadata requires patch or merge_patch")
         if patch is not None and merge_patch is not None:
-            raise ValueError("effect:issue:update-metadata patch and merge_patch are mutually exclusive")
+            raise ValueError(
+                "effect:issue:update-metadata patch and merge_patch are mutually exclusive"
+            )
         if patch is not None and not isinstance(patch, Mapping):
             raise ValueError("effect:issue:update-metadata patch must resolve to an object")
         if merge_patch is not None and not isinstance(merge_patch, Mapping):

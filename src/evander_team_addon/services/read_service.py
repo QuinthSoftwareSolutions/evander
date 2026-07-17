@@ -259,7 +259,9 @@ class TeamReadService:
             and _matches(team_id, project.team_id)
             and _matches_enum(status, project.status)
         ]
-        rows = [self._project_row(project) for project in sorted(projects, key=lambda item: item.id)]
+        rows = [
+            self._project_row(project) for project in sorted(projects, key=lambda item: item.id)
+        ]
         return _page(rows, limit=limit, cursor=cursor, offset=offset)
 
     def get_project(self, project_id: str) -> dict[str, Any] | None:
@@ -412,16 +414,14 @@ class TeamReadService:
 
     def _deliverable_visible(self, deliverable: Deliverable) -> bool:
         task = self._state.tasks.get(deliverable.task_id)
-        return (
-            self._agent_visible(deliverable.producer_agent_id)
-            or (task is not None and self._task_visible(task))
+        return self._agent_visible(deliverable.producer_agent_id) or (
+            task is not None and self._task_visible(task)
         )
 
     def _review_request_visible(self, request: ReviewRequest) -> bool:
         deliverable = self._state.deliverables.get(request.deliverable_id)
-        return (
-            self._agent_visible(request.reviewer_agent_id)
-            or (deliverable is not None and self._deliverable_visible(deliverable))
+        return self._agent_visible(request.reviewer_agent_id) or (
+            deliverable is not None and self._deliverable_visible(deliverable)
         )
 
     def _release_visible(self, release: ReleasePackage) -> bool:
@@ -561,7 +561,9 @@ class TeamReadService:
                 "artifact_ref_count": len(deliverable.artifact_refs),
                 "git_refs": git_refs,
                 "verification_status": (
-                    deliverable.verification.status if deliverable.verification is not None else None
+                    deliverable.verification.status
+                    if deliverable.verification is not None
+                    else None
                 ),
                 "created_at": _json_value(deliverable.created_at),
             }
@@ -620,9 +622,13 @@ class TeamReadService:
                     for agent_id in agent.subordinate_agent_ids
                     if self._agent_visible(agent_id)
                 ],
-                "project_ids": [project_id for project_id in project_ids if self._project_visible(project_id)],
+                "project_ids": [
+                    project_id for project_id in project_ids if self._project_visible(project_id)
+                ],
                 "lead_project_ids": [
-                    project_id for project_id in lead_project_ids if self._project_visible(project_id)
+                    project_id
+                    for project_id in lead_project_ids
+                    if self._project_visible(project_id)
                 ],
             }
         )
@@ -912,7 +918,9 @@ def _without_none(value: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(item, Mapping):
             result[key] = _without_none(item)
         elif isinstance(item, list):
-            result[key] = [_without_none(entry) if isinstance(entry, Mapping) else entry for entry in item]
+            result[key] = [
+                _without_none(entry) if isinstance(entry, Mapping) else entry for entry in item
+            ]
         else:
             result[key] = item
     return result

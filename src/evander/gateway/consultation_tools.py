@@ -352,8 +352,7 @@ def register_consultation_tools(
                         )
                     except Exception as cleanup_exc:
                         raise RuntimeError(
-                            f"{setup_exc}; consultation cleanup setup also failed: "
-                            f"{cleanup_exc}"
+                            f"{setup_exc}; consultation cleanup setup also failed: {cleanup_exc}"
                         ) from cleanup_exc
                     raise
             record = _wait_for_record(

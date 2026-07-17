@@ -494,14 +494,8 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     )
     assert "AGENT_RUNNER_CODEX_LIB_B64" not in script_text
     assert "ensure_agent_enabled" in script_text
-    assert (
-        '[[ -z "${THREAD_ID_RESULT}" && "${RESUME_MODE}" == "new_context" ]]'
-        in script_text
-    )
-    assert (
-        '"${AGENT_PROVIDER}" == "codex" && "${RESUME_MODE}" == "new_context"'
-        not in script_text
-    )
+    assert '[[ -z "${THREAD_ID_RESULT}" && "${RESUME_MODE}" == "new_context" ]]' in script_text
+    assert '"${AGENT_PROVIDER}" == "codex" && "${RESUME_MODE}" == "new_context"' not in script_text
     assert 'write_state "running" "resume"' in script_text
     assert "trap on_exit_write_idle EXIT" in script_text
     assert 'STATE_PATH="${STATE_PATH}" \\' in script_text

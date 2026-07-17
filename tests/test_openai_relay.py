@@ -736,7 +736,9 @@ def test_relay_restores_local_openai_function_namespace_in_chunked_stream(
 
     assert response.status_code == 200
     assert captured["payload"]["tools"][0]["name"] == "evander__team_get_task"
-    data_lines = [line[len(b"data: ") :] for line in body.splitlines() if line.startswith(b"data: {")]
+    data_lines = [
+        line[len(b"data: ") :] for line in body.splitlines() if line.startswith(b"data: {")
+    ]
     event = json.loads(data_lines[0])
     assert event["item"]["name"] == "team_get_task"
     assert event["item"]["namespace"] == "evander"
@@ -1379,7 +1381,7 @@ class _CleanStream(httpx.AsyncByteStream):
 
 class _LocalOpenAIFunctionCallStream(httpx.AsyncByteStream):
     async def __aiter__(self):
-        yield b"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\","
+        yield b'event: response.output_item.added\ndata: {"type":"response.output_item.added",'
         yield (
             b'"item":{"type":"function_call","name":"evander:team_get_task",'
             b'"arguments":"","call_id":"call-1"}}\n\ndata: [DONE]\n\n'

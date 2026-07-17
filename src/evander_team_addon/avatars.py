@@ -240,9 +240,7 @@ class OpenAIAvatarGenerator:
 
     async def generate(self, *, prompt: str) -> bytes:
         if not self.api_key:
-            raise RuntimeError(
-                f"Host environment variable {self.api_key_source} is not set."
-            )
+            raise RuntimeError(f"Host environment variable {self.api_key_source} is not set.")
         try:
             async with httpx.AsyncClient(
                 timeout=self.timeout_seconds,
@@ -272,11 +270,15 @@ class OpenAIAvatarGenerator:
         try:
             encoded = payload["data"][0]["b64_json"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError("OpenAI image generation response did not include image data") from exc
+            raise RuntimeError(
+                "OpenAI image generation response did not include image data"
+            ) from exc
         try:
             return base64.b64decode(encoded)
         except ValueError as exc:
-            raise RuntimeError("OpenAI image generation returned invalid base64 image data") from exc
+            raise RuntimeError(
+                "OpenAI image generation returned invalid base64 image data"
+            ) from exc
 
 
 def openai_avatar_generator_from_config(config: Any) -> OpenAIAvatarGenerator:
@@ -285,8 +287,7 @@ def openai_avatar_generator_from_config(config: Any) -> OpenAIAvatarGenerator:
         or DEFAULT_OPENAI_API_KEY_ENV
     ).strip()
     base_url = str(
-        getattr(config, "openai_api_base_url", DEFAULT_OPENAI_BASE_URL)
-        or DEFAULT_OPENAI_BASE_URL
+        getattr(config, "openai_api_base_url", DEFAULT_OPENAI_BASE_URL) or DEFAULT_OPENAI_BASE_URL
     ).strip()
     timeout = float(getattr(config, "openai_relay_timeout_seconds", 120.0) or 120.0)
     return OpenAIAvatarGenerator(
@@ -348,10 +349,7 @@ def avatar_asset_url(asset_id: str) -> str:
 
 
 def avatar_preview_url(preview_id: str) -> str:
-    return (
-        "/api/addons/team-addon/avatar-previews/"
-        f"{validate_avatar_id(preview_id, 'preview_id')}"
-    )
+    return f"/api/addons/team-addon/avatar-previews/{validate_avatar_id(preview_id, 'preview_id')}"
 
 
 def avatar_payload(avatar: AgentAvatar | None) -> dict[str, Any] | None:
@@ -364,7 +362,10 @@ def avatar_payload(avatar: AgentAvatar | None) -> dict[str, Any] | None:
 
 def avatar_asset_referenced(state: TeamState, asset_id: str) -> bool:
     normalized = validate_avatar_id(asset_id, "asset_id")
-    return any(agent.avatar is not None and agent.avatar.asset_id == normalized for agent in state.agents.values())
+    return any(
+        agent.avatar is not None and agent.avatar.asset_id == normalized
+        for agent in state.agents.values()
+    )
 
 
 def validate_avatar_id(value: str, field_name: str) -> str:

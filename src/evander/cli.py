@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import json
 import inspect
 import logging
@@ -25,7 +26,7 @@ from evander.admin.services.issue_setup_helpers import (
     resolve_agent_model_for_manifest,
     resolve_effective_issue_setup_config,
 )
-from evander.audit import AuditEventType
+from evander.audit import AuditEventType, AuditLogger
 from evander.daemons.ado_issue_worker import run_worker_command
 from evander.bootstrap import (
     load_host_bootstrap_config,
@@ -34,6 +35,9 @@ from evander.bootstrap import (
     resolve_runtime_dir,
 )
 from evander.config import GatewayConfig, load_config
+from evander.communication_artifacts import CommunicationArtifactStore
+from evander.connectors.models import normalize_connector_id
+from evander.connectors.service import ConnectorService, connector_registry_from_addons
 from evander.provider_config import (
     MODEL_PROVIDER_MODE_METADATA_KEY,
     normalize_model_provider_mode_override,
@@ -74,6 +78,7 @@ from evander.repositories.audit_index import (
 )
 from evander.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from evander.models import (
+    AuditEvent,
     ApprovalStatus,
     DiscordCommandEnvelope,
     EmailMessage,
@@ -127,15 +132,14 @@ class GroupedHelpTyperGroup(TyperGroup):
         return sorted(self.commands, key=command_sort_key)
 
 
-app = typer.Typer(
-    help="Utilities for the Evander host control plane.", cls=GroupedHelpTyperGroup
-)
+app = typer.Typer(help="Utilities for the Evander host control plane.", cls=GroupedHelpTyperGroup)
 directories_app = typer.Typer(help="Directory management and directory-scoped config inspection.")
 git_repos_app = typer.Typer(help="Manage Evander-owned bare Git repositories.")
 wake_schedules_app = typer.Typer(help="Manage scheduled wake requests.")
 teams_auth_app = typer.Typer(help="Manage delegated Teams auth.")
 teams_meeting_app = typer.Typer(help="Manage live Teams meeting agent sessions.")
 execution_app = typer.Typer(help="Manual execution backend controls.")
+connectors_app = typer.Typer(help="Inspect, validate, and test directory-scoped connectors.")
 setup_app = typer.Typer(
     help="Guided first-run setup for the Evander control plane.",
     invoke_without_command=True,
@@ -146,6 +150,7 @@ app.add_typer(wake_schedules_app, name="wake-schedules")
 app.add_typer(teams_auth_app, name="teams-auth", rich_help_panel="Sessions and Feedback")
 app.add_typer(teams_meeting_app, name="teams-meeting", rich_help_panel="Sessions and Feedback")
 app.add_typer(execution_app, name="execution", rich_help_panel="VM Operations")
+app.add_typer(connectors_app, name="connectors", rich_help_panel="Health and State")
 app.add_typer(setup_app, name="setup", rich_help_panel="Health and State")
 
 CLI_DEFAULT_RUNTIME_DIR = Path("runtime")
@@ -286,6 +291,21 @@ def _echo_model_json(model: object) -> None:
         typer.echo(json.dumps(model.model_dump(mode="json"), indent=2, sort_keys=True))
         return
     typer.echo(json.dumps(model, indent=2, sort_keys=True))
+
+
+def _connector_service_for_option(config: Path) -> tuple[ConnectorService, GatewayConfig]:
+    cfg = _load_runtime_config_from_option(config)
+    runtime = build_runtime(cfg)
+    service = ConnectorService(
+        runtime_dir=cfg.runtime_dir,
+        provider_config=runtime.provider_config,
+        artifact_store_factory=lambda: CommunicationArtifactStore(cfg.runtime_dir),
+        registry=connector_registry_from_addons(
+            cfg.addon_loader,
+            base_dir=_project_dir_for_config_option(config),
+        ),
+    )
+    return service, cfg
 
 
 def _managed_git_jsonable(value: object) -> object:
@@ -835,9 +855,7 @@ def execution_list_container_worker_executions(
             list_all_ordered = getattr(repository, "list_all_ordered", None)
             if callable(list_all_ordered):
                 records = [
-                    record
-                    for record in list_all_ordered()
-                    if record.session_id == session_id
+                    record for record in list_all_ordered() if record.session_id == session_id
                 ]
             else:
                 records = [
@@ -1490,9 +1508,7 @@ def setup_doctor(
     ] = False,
 ) -> None:
     runtime_dir, _ = _bootstrap_inputs(config)
-    payload = setup_doctor_payload(
-        project_dir=project_dir, runtime_dir=runtime_dir
-    )
+    payload = setup_doctor_payload(project_dir=project_dir, runtime_dir=runtime_dir)
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -1510,9 +1526,7 @@ def setup_plan(
     ] = False,
 ) -> None:
     runtime_dir, _ = _bootstrap_inputs(config)
-    payload = setup_plan_payload(
-        project_dir=project_dir, runtime_dir=runtime_dir
-    )
+    payload = setup_plan_payload(project_dir=project_dir, runtime_dir=runtime_dir)
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -1533,6 +1547,140 @@ def directories_list(
     payload = result.data
     assert payload is not None
     typer.echo(json.dumps(payload.model_dump(mode="json"), indent=2, sort_keys=True))
+
+
+@connectors_app.command("list", short_help="List effective connectors for a directory.")
+def connectors_list(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory: Annotated[str, typer.Option("--directory")] = "root",
+) -> None:
+    service, _ = _connector_service_for_option(config)
+    connector_config = service.provider_config.resolve_connectors_for_directory(directory)
+    service.validate_config(connector_config)
+    _echo_model_json(
+        [
+            {
+                "connector_id": connector_id,
+                "display_name": connector.display_name,
+                "description": connector.description,
+                "driver": connector.driver,
+                "disabled": connector.disabled,
+                "operations": sorted(
+                    name
+                    for name, operation in connector.operations.items()
+                    if not operation.disabled
+                ),
+                "auth_status": service.auth_status(connector_config, connector),
+            }
+            for connector_id, connector in sorted(connector_config.connectors.items())
+        ]
+    )
+
+
+@connectors_app.command("show", short_help="Show one effective connector definition.")
+def connectors_show(
+    connector_id: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory: Annotated[str, typer.Option("--directory")] = "root",
+) -> None:
+    service, _ = _connector_service_for_option(config)
+    connector_config = service.provider_config.resolve_connectors_for_directory(directory)
+    normalized = normalize_connector_id(connector_id)
+    connector = connector_config.connectors.get(normalized)
+    if connector is None:
+        raise typer.BadParameter(f"unknown connector: {normalized}")
+    service.registry.require(connector.driver).validate_definition(connector)
+    _echo_model_json(
+        {
+            "connector_id": normalized,
+            **connector.model_dump(mode="json", exclude_none=True),
+            "auth_status": service.auth_status(connector_config, connector),
+        }
+    )
+
+
+@connectors_app.command("validate", short_help="Validate effective connector configuration.")
+def connectors_validate(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory: Annotated[str, typer.Option("--directory")] = "root",
+) -> None:
+    service, _ = _connector_service_for_option(config)
+    connector_config = service.provider_config.resolve_connectors_for_directory(directory)
+    service.validate_config(connector_config)
+    _echo_model_json(
+        {
+            "status": "ok",
+            "directory_path": directory,
+            "connector_count": len(connector_config.connectors),
+            "driver_names": list(service.registry.driver_names),
+        }
+    )
+
+
+@connectors_app.command("test", short_help="Run a connector's configured health operation.")
+def connectors_test(
+    connector_id: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory: Annotated[str, typer.Option("--directory")] = "root",
+) -> None:
+    service, cfg = _connector_service_for_option(config)
+    connector_config = service.provider_config.resolve_connectors_for_directory(directory)
+    normalized = normalize_connector_id(connector_id)
+    connector = connector_config.connectors.get(normalized)
+    if connector is None or connector.disabled:
+        raise typer.BadParameter(f"unknown or disabled connector: {normalized}")
+    if connector.health_operation is None:
+        raise typer.BadParameter("connector does not define health_operation")
+    session = SessionManifest(
+        session_id=f"cli-connector-test-{normalized}",
+        directory_path=directory,
+        allowed_tools=[ToolName.CALL_CONNECTOR],
+        connector_grants={normalized: [connector.health_operation]},
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    audit = AuditLogger(cfg.audit_log_path)
+    try:
+        result = asyncio.run(
+            service.invoke(
+                session=session,
+                connector_id=normalized,
+                operation_name=connector.health_operation,
+                arguments=dict(connector.health_arguments),
+            )
+        )
+    except Exception as exc:
+        audit.log(
+            AuditEvent(
+                event_type="connector_test",
+                session_id=session.session_id,
+                directory_path=directory,
+                tool_name=ToolName.CALL_CONNECTOR.value,
+                connector_id=normalized,
+                connector_operation=connector.health_operation,
+                actor_user_id="cli-operator",
+                decision="error",
+                result={"error_class": type(exc).__name__},
+            )
+        )
+        raise
+    audit.log(
+        AuditEvent(
+            event_type="connector_test",
+            session_id=session.session_id,
+            directory_path=directory,
+            tool_name=ToolName.CALL_CONNECTOR.value,
+            connector_id=normalized,
+            connector_operation=connector.health_operation,
+            actor_user_id="cli-operator",
+            decision="allowed",
+            result={
+                "result_mode": result.result_mode,
+                "upstream_status": result.upstream_status,
+                "duration_ms": result.duration_ms,
+            },
+        )
+    )
+    _echo_model_json(result)
 
 
 @directories_app.command("show", short_help="Show one directory and its ancestry.")
@@ -2043,7 +2191,9 @@ def migrate_orchestration_store(
             help="Completed history retention after import. Defaults to worker orchestration_retention_days.",
         ),
     ] = None,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable output.")] = False,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable output.")
+    ] = False,
 ) -> None:
     runtime_config = _load_runtime_config_from_option(config)
     project_dir = _project_dir_for_config_option(config)
@@ -2052,9 +2202,7 @@ def migrate_orchestration_store(
     )
     destination = database_path or worker_config.orchestration_store_path
     effective_retention_days = (
-        retention_days
-        if retention_days is not None
-        else worker_config.orchestration_retention_days
+        retention_days if retention_days is not None else worker_config.orchestration_retention_days
     )
     result = migrate_orchestration_store_to_sqlite(
         database_path=destination,
@@ -2130,7 +2278,9 @@ def rebuild_audit_index(
             help="Rebuild the index from the start instead of resuming saved import progress.",
         ),
     ] = True,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable output.")] = False,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable output.")
+    ] = False,
 ) -> None:
     runtime_config = _load_runtime_config_from_option(config)
     destination = database_path or audit_index_path_for_log_path(runtime_config.audit_log_path)
@@ -2680,7 +2830,9 @@ def migrate_vm_sessions_to_container(
     ] = False,
     dry_run: Annotated[
         bool,
-        typer.Option("--dry-run", help="Preview selected sessions without copying or rewriting state."),
+        typer.Option(
+            "--dry-run", help="Preview selected sessions without copying or rewriting state."
+        ),
     ] = False,
     copy_only: Annotated[
         bool,
@@ -2688,19 +2840,27 @@ def migrate_vm_sessions_to_container(
     ] = False,
     cutover: Annotated[
         bool,
-        typer.Option("--cutover", help="Rewrite selected session manifests to container_worker_vm."),
+        typer.Option(
+            "--cutover", help="Rewrite selected session manifests to container_worker_vm."
+        ),
     ] = False,
     verify_only: Annotated[
         bool,
-        typer.Option("--verify-only", help="Verify copied worker state without copying or cutting over."),
+        typer.Option(
+            "--verify-only", help="Verify copied worker state without copying or cutting over."
+        ),
     ] = False,
     rollback: Annotated[
         Path | None,
-        typer.Option("--rollback", help="Restore selected manifests from a migration backup directory."),
+        typer.Option(
+            "--rollback", help="Restore selected manifests from a migration backup directory."
+        ),
     ] = None,
     worker_root: Annotated[
         Path | None,
-        typer.Option("--worker-root", help="Container worker root. Defaults to local setup if present."),
+        typer.Option(
+            "--worker-root", help="Container worker root. Defaults to local setup if present."
+        ),
     ] = None,
     backup_root: Annotated[
         Path | None,
@@ -2842,7 +3002,9 @@ def migrate_vm_sessions_to_container(
         if failed_copies and cutover:
             if json_output:
                 typer.echo(json.dumps(report, indent=2, sort_keys=True))
-            raise typer.BadParameter("state copy failed for at least one session; refusing cutover.")
+            raise typer.BadParameter(
+                "state copy failed for at least one session; refusing cutover."
+            )
 
     if verify_only or cutover or copy_only:
         verifications = [
@@ -2885,9 +3047,7 @@ def migrate_vm_sessions_to_container(
     _echo_vm_to_container_report(report)
 
 
-def _echo_vm_to_container_plan(
-    plans: list[object], *, worker_root: Path
-) -> None:
+def _echo_vm_to_container_plan(plans: list[object], *, worker_root: Path) -> None:
     typer.echo(f"Worker root: {worker_root}")
     if not plans:
         typer.echo("No sessions selected.")
@@ -3452,9 +3612,7 @@ def add_issue_comment(
     ] = False,
 ) -> None:
     service = build_admin_runtime(config).issue_git_admin
-    payload = service.add_issue_comment(
-        issue_id, comment, sync_proxy_cache=sync_proxy_cache
-    )
+    payload = service.add_issue_comment(issue_id, comment, sync_proxy_cache=sync_proxy_cache)
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -3488,9 +3646,7 @@ def set_issue_state(
     ] = False,
 ) -> None:
     service = build_admin_runtime(config).issue_git_admin
-    payload = service.set_issue_state(
-        issue_id, state, sync_proxy_cache=sync_proxy_cache
-    )
+    payload = service.set_issue_state(issue_id, state, sync_proxy_cache=sync_proxy_cache)
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -4559,7 +4715,8 @@ def wake_schedule_edit(
         str | None, typer.Option("--resume-at", help="Updated one-time UTC timestamp (ISO-8601).")
     ] = None,
     cron: Annotated[
-        str | None, typer.Option("--cron", help="Updated recurring standard 5-field cron expression.")
+        str | None,
+        typer.Option("--cron", help="Updated recurring standard 5-field cron expression."),
     ] = None,
     mode: Annotated[
         str | None, typer.Option("--mode", help="Updated mode: same_context or new_context.")

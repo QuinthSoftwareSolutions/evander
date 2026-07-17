@@ -54,9 +54,7 @@ class VmAgentRuntimeMixin:
 
     @staticmethod
     def _control_ssh_users(vm_user: str) -> list[str]:
-        configured = (
-            os.environ.get("EVANDER_VM_ADMIN_USER", "agent-admin").strip() or "agent-admin"
-        )
+        configured = os.environ.get("EVANDER_VM_ADMIN_USER", "agent-admin").strip() or "agent-admin"
         users = [configured]
         if vm_user and vm_user not in users:
             users.append(vm_user)

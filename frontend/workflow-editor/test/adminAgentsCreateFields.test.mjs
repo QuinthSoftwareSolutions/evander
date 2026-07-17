@@ -165,6 +165,13 @@ test("create modal loads create-options for the selected directory", () => {
   assert.match(page, /setCreateOptions\(options\)/);
 });
 
+test("create modal clears directory-scoped grants when the selected directory changes", () => {
+  assert.match(
+    agentCreateDialog,
+    /useEffect\(\(\) => \{[\s\S]*?setCreateForm\(\(current\) => \(\{[\s\S]*?connectorGrants: \{\},[\s\S]*?\}\)\);[\s\S]*?loadAgentCreateOptions\(directoryPath\)[\s\S]*?\}, \[directoryPath\]\);/,
+  );
+});
+
 test("create modal always posts the selected page directory", () => {
   assert.match(agentCreateDialog, /directoryPath: string;/);
   assert.doesNotMatch(agentCreateShared, /createForm\.directoryPath/);

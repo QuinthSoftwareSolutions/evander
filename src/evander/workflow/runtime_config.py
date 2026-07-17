@@ -323,9 +323,7 @@ def _validate_communication_targets(
             runtime_dir=base_config.runtime_dir,
             directory_store=directory_store,
         )
-    validate_communication_target_refs(
-        payload=payload, known_target_ids=known_target_ids
-    )
+    validate_communication_target_refs(payload=payload, known_target_ids=known_target_ids)
     if base_config is None:
         return
 

@@ -44,7 +44,9 @@ def assigned_to_identity(value: object) -> dict[str, Any] | None:
         value.get("displayName"),
         value.get("name"),
     )
-    email = _first_email(value.get("uniqueName"), value.get("mailAddress"), value.get("signInAddress"))
+    email = _first_email(
+        value.get("uniqueName"), value.get("mailAddress"), value.get("signInAddress")
+    )
     if display_name is None and unique_name is None and email is None:
         return None
     return {

@@ -236,7 +236,6 @@ def extract_ado_field_inline_media_refs(
     return refs
 
 
-
 def _format_ado_html_field(value: str | None) -> str | None:
     if value is None:
         return None
@@ -350,12 +349,15 @@ def _ado_meaningful_update_fields(fields: dict[str, Any]) -> dict[str, Any]:
 
 
 def _artifact_filename(artifact: dict[str, Any]) -> str:
-    return str(
-        artifact.get("normalized_safe_filename")
-        or artifact.get("filename")
-        or artifact.get("original_filename")
+    return (
+        str(
+            artifact.get("normalized_safe_filename")
+            or artifact.get("filename")
+            or artifact.get("original_filename")
+            or "attachment"
+        ).strip()
         or "attachment"
-    ).strip() or "attachment"
+    )
 
 
 def _artifact_mime_type(artifact: dict[str, Any]) -> str | None:
@@ -375,7 +377,9 @@ def _artifact_bytes(artifact: dict[str, Any]) -> bytes:
     return Path(path).read_bytes()
 
 
-def _append_html_attachment_links(text: str | None, attachments: list[dict[str, Any]]) -> str | None:
+def _append_html_attachment_links(
+    text: str | None, attachments: list[dict[str, Any]]
+) -> str | None:
     if not attachments:
         return text
     rendered = _format_ado_html_field(text or "")
@@ -726,9 +730,7 @@ class AzureDevOpsIssueAdapter:
             if not cls._is_safe_wiql_field_reference(field_reference_name):
                 continue
             operator = "UNDER" if item.include_children else "="
-            clauses.append(
-                f"[{field_reference_name}] {operator} {cls._wiql_quote(item.value)}"
-            )
+            clauses.append(f"[{field_reference_name}] {operator} {cls._wiql_quote(item.value)}")
         if not clauses:
             return None
         return "(" + " OR ".join(clauses) + ")"
@@ -1139,9 +1141,9 @@ class AzureDevOpsIssueAdapter:
         configured_organization_url, configured_project, pat = self._resolve_connection(
             directory_path
         )
-        normalized_organization_url = str(
-            organization_url or configured_organization_url
-        ).rstrip("/")
+        normalized_organization_url = str(organization_url or configured_organization_url).rstrip(
+            "/"
+        )
         normalized_project = str(project or configured_project).strip()
         if not normalized_project:
             raise ValueError("project is required for Azure DevOps batch issue reads.")
@@ -1219,9 +1221,7 @@ class AzureDevOpsIssueAdapter:
         if not normalized_project:
             raise ValueError("project is required for Azure DevOps issue comments.")
         auth_header = self._auth_header(pat)
-        comments_url = (
-            f"{organization_url}/{normalized_project}/_apis/wit/workItems/{remote_issue_id}/comments"
-        )
+        comments_url = f"{organization_url}/{normalized_project}/_apis/wit/workItems/{remote_issue_id}/comments"
         with httpx.Client(timeout=self.timeout_seconds) as client:
             resolved_mentions = resolve_ado_mentions(
                 client=client,
@@ -1310,10 +1310,14 @@ class AzureDevOpsIssueAdapter:
         if not normalized_project:
             raise ValueError("project is required for Azure DevOps issue updates.")
         auth_header = self._auth_header(pat)
-        work_item_url = f"{organization_url}/{normalized_project}/_apis/wit/workitems/{remote_issue_id}"
+        work_item_url = (
+            f"{organization_url}/{normalized_project}/_apis/wit/workitems/{remote_issue_id}"
+        )
         uploaded_attachments: list[dict[str, Any]] = []
         operations: list[dict[str, Any]] = []
-        normalized_expected_state = str(expected_state).strip() if expected_state is not None else ""
+        normalized_expected_state = (
+            str(expected_state).strip() if expected_state is not None else ""
+        )
         if normalized_expected_state:
             operations.append(
                 {
@@ -1791,9 +1795,9 @@ class AzureDevOpsIssueAdapter:
         if "created" in activity_types:
             created_at = _parse_ado_datetime_optional(fields.get("System.CreatedDate"))
             created_by = fields.get("System.CreatedBy")
-            if _datetime_in_range(created_at, since=since, until=until) and _ado_activity_identity_matches(
-                actor, created_by
-            ):
+            if _datetime_in_range(
+                created_at, since=since, until=until
+            ) and _ado_activity_identity_matches(actor, created_by):
                 identity = assigned_to_identity(created_by) or {}
                 records.append(
                     {
@@ -1803,15 +1807,18 @@ class AzureDevOpsIssueAdapter:
                         "actor": self._normalize_assigned_to(created_by),
                         "actor_identity": identity,
                         "summary": "Work item created",
-                        "raw": {"field": "System.CreatedDate", "value": fields.get("System.CreatedDate")},
+                        "raw": {
+                            "field": "System.CreatedDate",
+                            "value": fields.get("System.CreatedDate"),
+                        },
                     }
                 )
         if "changed" in activity_types:
             changed_at = _parse_ado_datetime_optional(fields.get("System.ChangedDate"))
             changed_by = fields.get("System.ChangedBy")
-            if _datetime_in_range(changed_at, since=since, until=until) and _ado_activity_identity_matches(
-                actor, changed_by
-            ):
+            if _datetime_in_range(
+                changed_at, since=since, until=until
+            ) and _ado_activity_identity_matches(actor, changed_by):
                 identity = assigned_to_identity(changed_by) or {}
                 records.append(
                     {
@@ -1821,7 +1828,10 @@ class AzureDevOpsIssueAdapter:
                         "actor": self._normalize_assigned_to(changed_by),
                         "actor_identity": identity,
                         "summary": "Work item latest change",
-                        "raw": {"field": "System.ChangedDate", "value": fields.get("System.ChangedDate")},
+                        "raw": {
+                            "field": "System.ChangedDate",
+                            "value": fields.get("System.ChangedDate"),
+                        },
                     }
                 )
             for update in item.get("updates") or []:
@@ -2269,8 +2279,7 @@ class AzureDevOpsIssueAdapter:
                         "id": str(raw_item.get("id") or "").strip(),
                         "title": str(raw_fields.get("System.Title") or "").strip(),
                         "state": str(raw_fields.get("System.State") or "").strip() or None,
-                        "type": str(raw_fields.get("System.WorkItemType") or "").strip()
-                        or None,
+                        "type": str(raw_fields.get("System.WorkItemType") or "").strip() or None,
                         "iteration": str(raw_fields.get("System.IterationPath") or "").strip()
                         or None,
                         "area": str(raw_fields.get("System.AreaPath") or "").strip() or None,
@@ -2421,9 +2430,7 @@ class AzureDevOpsIssueAdapter:
         if not normalized_project:
             raise ValueError("project is required for Azure DevOps backlog item deletion.")
         auth_header = self._auth_header(pat)
-        delete_url = (
-            f"{organization_url}/{quote(normalized_project, safe='')}/_apis/wit/workItems/{remote_issue_id}"
-        )
+        delete_url = f"{organization_url}/{quote(normalized_project, safe='')}/_apis/wit/workItems/{remote_issue_id}"
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = client.delete(
                 delete_url,
@@ -2446,9 +2453,7 @@ class AzureDevOpsIssueAdapter:
             fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
             project_name = (
                 str(
-                    payload.get("project")
-                    or fields.get("System.TeamProject")
-                    or normalized_project
+                    payload.get("project") or fields.get("System.TeamProject") or normalized_project
                 ).strip()
                 or normalized_project
             )
@@ -2708,7 +2713,9 @@ class GitHubIssueAdapter:
             for item in raw_items
             if isinstance(item, dict)
             and not isinstance(item.get("pull_request"), dict)
-            and self._labels_match(item, labels_any_set=labels_any_set, labels_all_set=labels_all_set)
+            and self._labels_match(
+                item, labels_any_set=labels_any_set, labels_all_set=labels_all_set
+            )
         ]
         normalized_items = normalized_items[:normalized_top]
         returned_count = len(normalized_items)
@@ -2808,7 +2815,9 @@ class GitHubIssueAdapter:
             "direction": "desc",
         }
         if labels_all:
-            params["labels"] = ",".join(str(label).strip() for label in labels_all if str(label).strip())
+            params["labels"] = ",".join(
+                str(label).strip() for label in labels_all if str(label).strip()
+            )
         if assignee:
             params["assignee"] = str(assignee).strip()
         if author:
@@ -2954,9 +2963,7 @@ class GitHubIssueAdapter:
             payload = response.json()
             if isinstance(payload, list):
                 comments.extend(
-                    self._normalize_comment(item)
-                    for item in payload
-                    if isinstance(item, dict)
+                    self._normalize_comment(item) for item in payload if isinstance(item, dict)
                 )
             next_url = self._next_page_url(response)
             params = None
@@ -3039,7 +3046,9 @@ class GitHubIssueAdapter:
         labels_any_set: set[str],
         labels_all_set: set[str],
     ) -> bool:
-        issue_labels = {_match_text(label) for label in GitHubIssueAdapter._label_names(payload.get("labels"))}
+        issue_labels = {
+            _match_text(label) for label in GitHubIssueAdapter._label_names(payload.get("labels"))
+        }
         if labels_all_set and not labels_all_set.issubset(issue_labels):
             return False
         if labels_any_set and not labels_any_set.intersection(issue_labels):
@@ -3594,7 +3603,9 @@ def _canonicalize_remote_issue_item(
             item.get("closed_at"), fields.get("Microsoft.VSTS.Common.ClosedDate")
         ),
         "url": _first_non_empty(item.get("web_url"), item.get("url")),
-        "body": _first_non_empty(item.get("body"), item.get("description"), fields.get("System.Description")),
+        "body": _first_non_empty(
+            item.get("body"), item.get("description"), fields.get("System.Description")
+        ),
         "raw": {key: value for key, value in item.items() if key != "raw"},
         "work_item_id": remote_issue_id,
         "changed_at": updated_at,

@@ -17,6 +17,7 @@ from ...models import (
 )
 from ..domain.common import _optional_text
 
+
 def _team_command_priority(
     value: TeamInboxPriority | str | None,
     *,
@@ -33,6 +34,7 @@ def _team_command_priority(
         allowed = ", ".join(priority.value for priority in TeamInboxPriority)
         raise ValueError(f"{field_name} must be one of: {allowed}") from None
 
+
 def _require_command_agent(
     resolved: _ResolvedTeamCommandContext,
     tool_name: str,
@@ -43,6 +45,7 @@ def _require_command_agent(
             message=f"{tool_name} requires an active agent dispatch",
         )
     return resolved.agent
+
 
 def _required_command_text(
     value: object,
@@ -59,6 +62,7 @@ def _required_command_text(
         )
     return text
 
+
 def _team_command_validation_error_from_exception(
     exc: Exception,
     *,
@@ -70,6 +74,7 @@ def _team_command_validation_error_from_exception(
         message=str(exc),
         correction_context=correction_context,
     )
+
 
 def _require_command_agent_by_id(
     state: TeamState,
@@ -86,6 +91,7 @@ def _require_command_agent_by_id(
         )
     return agent
 
+
 def _validate_command_recipient_active(agent: PersistentAgent) -> None:
     if agent.status != AgentStatus.ACTIVE:
         raise TeamCommandValidationError(
@@ -93,6 +99,7 @@ def _validate_command_recipient_active(agent: PersistentAgent) -> None:
             message=f"recipient agent {agent.id} is {agent.status.value}",
             correction_context={"recipient_agent_id": agent.id, "status": agent.status.value},
         )
+
 
 def _validate_command_same_team(actor: PersistentAgent, recipient: PersistentAgent) -> None:
     if recipient.team_id != actor.team_id:
@@ -106,6 +113,7 @@ def _validate_command_same_team(actor: PersistentAgent, recipient: PersistentAge
                 "recipient_team_id": recipient.team_id,
             },
         )
+
 
 def _resolve_upward_command_recipient(
     state: TeamState,
@@ -151,6 +159,7 @@ def _resolve_upward_command_recipient(
     _validate_command_same_team(agent, recipient)
     return recipient
 
+
 def _validate_command_project_scope(
     state: TeamState,
     *,
@@ -176,6 +185,7 @@ def _validate_command_project_scope(
                 "caller_team_id": team_id,
             },
         )
+
 
 def _validate_command_task_scope(
     state: TeamState,
@@ -211,6 +221,7 @@ def _validate_command_task_scope(
             },
         )
 
+
 def _require_command_conversation(
     state: TeamState,
     *,
@@ -235,6 +246,7 @@ def _require_command_conversation(
             },
         )
     return conversation
+
 
 def _require_command_chat_message(
     state: TeamState,
@@ -261,17 +273,18 @@ def _require_command_chat_message(
         )
     return message
 
+
 __all__ = [
-    '_team_command_priority',
-    '_require_command_agent',
-    '_required_command_text',
-    '_team_command_validation_error_from_exception',
-    '_require_command_agent_by_id',
-    '_validate_command_recipient_active',
-    '_validate_command_same_team',
-    '_resolve_upward_command_recipient',
-    '_validate_command_project_scope',
-    '_validate_command_task_scope',
-    '_require_command_conversation',
-    '_require_command_chat_message',
+    "_team_command_priority",
+    "_require_command_agent",
+    "_required_command_text",
+    "_team_command_validation_error_from_exception",
+    "_require_command_agent_by_id",
+    "_validate_command_recipient_active",
+    "_validate_command_same_team",
+    "_resolve_upward_command_recipient",
+    "_validate_command_project_scope",
+    "_validate_command_task_scope",
+    "_require_command_conversation",
+    "_require_command_chat_message",
 ]

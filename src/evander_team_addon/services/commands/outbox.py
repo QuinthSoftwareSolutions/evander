@@ -21,6 +21,7 @@ from ..domain.ephemeral import (
 from ..domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from ..domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 
+
 def _team_event_outbox_records(
     events: Sequence[Mapping[str, Any]],
 ) -> list[TeamOutboxRecord]:
@@ -65,6 +66,7 @@ def _team_event_outbox_records(
         )
     return records
 
+
 def _team_command_outbox_records(
     apply_result: TeamCommandApplyResult,
 ) -> list[TeamOutboxRecord]:
@@ -81,11 +83,13 @@ def _team_command_outbox_records(
         seen.add(key)
     return records
 
+
 def _response_event_mappings(response_payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     events = response_payload.get("events")
     if not isinstance(events, Sequence) or isinstance(events, (str, bytes, bytearray)):
         return []
     return [event for event in events if isinstance(event, Mapping)]
+
 
 def _outbox_record_dedupe_key(record: TeamOutboxRecord) -> tuple[Any, ...]:
     if record.idempotency_key is not None:
@@ -96,6 +100,7 @@ def _outbox_record_dedupe_key(record: TeamOutboxRecord) -> tuple[Any, ...]:
         record.aggregate_type,
         record.aggregate_id,
     )
+
 
 def _append_response_outbox_record_ids(
     response: dict[str, Any],
@@ -113,10 +118,11 @@ def _append_response_outbox_record_ids(
             outbox_ids.append(record.id)
     response["outbox_record_ids"] = outbox_ids
 
+
 __all__ = [
-    '_team_event_outbox_records',
-    '_team_command_outbox_records',
-    '_response_event_mappings',
-    '_outbox_record_dedupe_key',
-    '_append_response_outbox_record_ids',
+    "_team_event_outbox_records",
+    "_team_command_outbox_records",
+    "_response_event_mappings",
+    "_outbox_record_dedupe_key",
+    "_append_response_outbox_record_ids",
 ]

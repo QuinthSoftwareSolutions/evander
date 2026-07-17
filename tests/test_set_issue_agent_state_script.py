@@ -121,10 +121,7 @@ printf 'state=disabled path=/home/agent/.evander/agent-control.state\\n'
         check=True,
     )
 
-    assert (
-        result.stdout.strip()
-        == "state=disabled path=/home/agent/.evander/agent-control.state"
-    )
+    assert result.stdout.strip() == "state=disabled path=/home/agent/.evander/agent-control.state"
     assert "CALLER_HOME: unbound variable" not in result.stderr
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("agent@192.168.122.11 true" in call for call in ssh_calls)
@@ -323,8 +320,6 @@ printf 'state=disabled path=/home/root/.evander/agent-control.state\\n'
         check=True,
     )
 
-    assert (
-        result.stdout.strip() == "state=disabled path=/home/root/.evander/agent-control.state"
-    )
+    assert result.stdout.strip() == "state=disabled path=/home/root/.evander/agent-control.state"
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("root@192.168.122.11 true" in call for call in ssh_calls)

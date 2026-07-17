@@ -111,7 +111,6 @@ class NotificationSendEffectProvider(EffectProviderBase):
         normalized = normalized.lower()
         if normalized not in {"info", "success", "warning", "error"}:
             raise ValueError(
-                "effect:notification:send severity must be one of: "
-                "info, success, warning, error"
+                "effect:notification:send severity must be one of: info, success, warning, error"
             )
         return normalized

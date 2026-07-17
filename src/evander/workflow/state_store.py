@@ -147,7 +147,9 @@ class WorkflowStateStore:
         expected = self._normalize_expected_version(expected_version)
         now = datetime.now(UTC)
 
-        def update(payload: dict[str, Any]) -> WorkflowStateMutationResult | _NoWrite[WorkflowStateMutationResult]:
+        def update(
+            payload: dict[str, Any],
+        ) -> WorkflowStateMutationResult | _NoWrite[WorkflowStateMutationResult]:
             current_record = self._get_record(payload, scope)
             current_version = current_record.version if current_record is not None else 0
             if expected is not None and expected != current_version:
@@ -200,7 +202,9 @@ class WorkflowStateStore:
         patch_payload = dict(patch)
         now = datetime.now(UTC)
 
-        def update(payload: dict[str, Any]) -> WorkflowStateMutationResult | _NoWrite[WorkflowStateMutationResult]:
+        def update(
+            payload: dict[str, Any],
+        ) -> WorkflowStateMutationResult | _NoWrite[WorkflowStateMutationResult]:
             current_record = self._get_record(payload, scope)
             current_version = current_record.version if current_record is not None else 0
             if expected is not None and expected != current_version:
@@ -250,7 +254,9 @@ class WorkflowStateStore:
         scope = self._normalize_scope(directory_path, graph_id, namespace, key)
         expected = self._normalize_expected_version(expected_version)
 
-        def update(payload: dict[str, Any]) -> WorkflowStateMutationResult | _NoWrite[WorkflowStateMutationResult]:
+        def update(
+            payload: dict[str, Any],
+        ) -> WorkflowStateMutationResult | _NoWrite[WorkflowStateMutationResult]:
             current_record = self._get_record(payload, scope)
             current_version = current_record.version if current_record is not None else 0
             if expected is not None and expected != current_version:

@@ -26,9 +26,7 @@ def _message(cursor: str, *, message_id: str | None = None) -> TeamsMessageEnvel
 
 def test_teams_records_db_path_derives_sqlite_path_from_legacy_json_path() -> None:
     assert teams_records_db_path(Path("teams_messages.json")) == Path("teams_messages.db")
-    assert teams_records_db_path(Path("teams_messages.sqlite3")) == Path(
-        "teams_messages.sqlite3"
-    )
+    assert teams_records_db_path(Path("teams_messages.sqlite3")) == Path("teams_messages.sqlite3")
 
 
 def test_sqlite_teams_records_repository_imports_legacy_json_store(tmp_path: Path) -> None:

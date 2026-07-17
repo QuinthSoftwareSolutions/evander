@@ -971,7 +971,9 @@ def main() -> None:
         help="Skip proxy records synced more recently than this many seconds unless --force is set.",
     )
     parser.add_argument("--once", action="store_true", help="Run one sync cycle and exit.")
-    parser.add_argument("--force", action="store_true", help="Sync records regardless of freshness.")
+    parser.add_argument(
+        "--force", action="store_true", help="Sync records regardless of freshness."
+    )
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
     args = parser.parse_args()
 

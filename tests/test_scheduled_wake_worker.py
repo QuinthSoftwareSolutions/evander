@@ -228,9 +228,7 @@ def test_reload_uses_last_known_good_config_when_new_payload_is_invalid(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"scheduled_wake_prefix_text": "Initial:"}), encoding="utf-8")
     base_config = GatewayConfig(runtime_dir=tmp_path / "runtime")
-    initial_config = _load_scheduled_wake_worker_global_config(
-        project_dir, base_config=base_config
-    )
+    initial_config = _load_scheduled_wake_worker_global_config(project_dir, base_config=base_config)
     reloader = ScheduledWakeWorkerGlobalConfigReloader(
         project_dir=project_dir,
         initial_config=initial_config,
@@ -252,9 +250,7 @@ def test_reload_now_applies_new_valid_payload(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"scheduled_wake_prefix_text": "Initial:"}), encoding="utf-8")
     base_config = GatewayConfig(runtime_dir=tmp_path / "runtime")
-    initial_config = _load_scheduled_wake_worker_global_config(
-        project_dir, base_config=base_config
-    )
+    initial_config = _load_scheduled_wake_worker_global_config(project_dir, base_config=base_config)
     reloader = ScheduledWakeWorkerGlobalConfigReloader(
         project_dir=project_dir,
         initial_config=initial_config,
@@ -670,7 +666,9 @@ def test_scheduled_wake_worker_marks_late_missing_session_request(
 ) -> None:
     worker = _build_worker(tmp_path, config_payload={"late_threshold_seconds": 60.0})
     due_at = datetime.now(UTC) - timedelta(minutes=2)
-    _schedule_one_time_request(worker, request_id="wake-missing", session_id="session-missing", due_at=due_at)
+    _schedule_one_time_request(
+        worker, request_id="wake-missing", session_id="session-missing", due_at=due_at
+    )
 
     result = worker.run_once()
 
@@ -691,9 +689,7 @@ def test_scheduled_wake_worker_records_failed_dispatch_for_expired_due_request(
     worker = _build_worker(tmp_path)
     _register_session(worker, expires_at=datetime.now(UTC) - timedelta(minutes=5))
     due_at = datetime.now(UTC) - timedelta(minutes=1)
-    _schedule_cron_request(
-        worker, request_id="wake-expired", session_id="session-a", due_at=due_at
-    )
+    _schedule_cron_request(worker, request_id="wake-expired", session_id="session-a", due_at=due_at)
     monkeypatch.setattr(
         "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
     )
@@ -735,7 +731,9 @@ def test_scheduled_wake_worker_retries_failed_one_time_request_with_backoff_and_
     )
     _register_session(worker)
     due_at = datetime.now(UTC) - timedelta(minutes=1)
-    _schedule_one_time_request(worker, request_id="wake-failed", session_id="session-a", due_at=due_at)
+    _schedule_one_time_request(
+        worker, request_id="wake-failed", session_id="session-a", due_at=due_at
+    )
 
     dispatch_calls: list[str] = []
     monkeypatch.setattr(
@@ -1121,7 +1119,9 @@ def test_scheduled_wake_worker_preserves_claude_queue_metadata_for_later_dispatc
     assert queued.metadata["wake_dispatch_id"] == latest.dispatch_id
 
     replay_backend = _ContainerBackendStub(active=False)
-    execution_store = JsonExecutionStore(tmp_path / "runtime" / "effect-orchestrator-executions.json")
+    execution_store = JsonExecutionStore(
+        tmp_path / "runtime" / "effect-orchestrator-executions.json"
+    )
     replay_config = GatewayConfig(
         runtime_dir=tmp_path / "runtime",
         execution_backend="container_worker_vm",
@@ -1136,7 +1136,9 @@ def test_scheduled_wake_worker_preserves_claude_queue_metadata_for_later_dispatc
         execution_store=execution_store,
         queued_agent_prompt_store=queue_store,
         agent_prompt_dispatch_port=object(),
-        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _session_id: replay_config),
+        provider_config_resolver=SimpleNamespace(
+            resolve_for_session_id=lambda _session_id: replay_config
+        ),
         provider_factory=SimpleNamespace(
             admin_service=SimpleNamespace(
                 runtime=SimpleNamespace(session_repository=worker.runtime.session_repository)
@@ -1271,7 +1273,9 @@ def test_scheduled_wake_worker_leaves_plain_no_vm_session_due(
         )
     )
     due_at = datetime.now(UTC) - timedelta(minutes=1)
-    _schedule_one_time_request(worker, request_id="wake-plain", session_id="session-plain", due_at=due_at)
+    _schedule_one_time_request(
+        worker, request_id="wake-plain", session_id="session-plain", due_at=due_at
+    )
 
     monkeypatch.setattr(
         "evander.messaging.scheduled_wake.probe_agent_dispatch_state",
@@ -1290,9 +1294,7 @@ def test_scheduled_wake_worker_leaves_plain_no_vm_session_due(
     assert refreshed.last_dispatched_at is None
 
 
-def test_scheduled_wake_worker_uses_find_due_requests_directly(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_scheduled_wake_worker_uses_find_due_requests_directly(tmp_path: Path, monkeypatch) -> None:
     worker = _build_worker(tmp_path)
     _register_session(worker)
     due_at = datetime.now(UTC) - timedelta(minutes=1)
@@ -1373,7 +1375,9 @@ def test_scheduled_wake_worker_ignores_cancelled_due_requests(
     worker = _build_worker(tmp_path)
     _register_session(worker)
     due_at = datetime.now(UTC) - timedelta(minutes=1)
-    _schedule_cron_request(worker, request_id="wake-cancelled", session_id="session-a", due_at=due_at)
+    _schedule_cron_request(
+        worker, request_id="wake-cancelled", session_id="session-a", due_at=due_at
+    )
 
     cancelled = worker.runtime.wake_store.cancel_request(
         "wake-cancelled",
@@ -1434,7 +1438,10 @@ def test_scheduled_wake_worker_dispatches_due_cron_range_request(
     assert refreshed.last_dispatch_id == "dispatch-cron-success"
     assert refreshed.last_dispatch_status == "dispatched"
     assert refreshed.last_dispatched_at is not None
-    assert worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-cron"].status == "dispatched"
+    assert (
+        worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-cron"].status
+        == "dispatched"
+    )
     cooldown_payload = json.loads(worker.worker_config.session_cooldown_path.read_text())
     assert "session-a" in cooldown_payload
 
@@ -1445,7 +1452,9 @@ def test_scheduled_wake_worker_leaves_due_cron_request_available_after_failed_di
     worker = _build_worker(tmp_path)
     _register_session(worker)
     due_at = datetime.now(UTC) - timedelta(minutes=1)
-    _schedule_cron_request(worker, request_id="wake-cron-failed", session_id="session-a", due_at=due_at)
+    _schedule_cron_request(
+        worker, request_id="wake-cron-failed", session_id="session-a", due_at=due_at
+    )
 
     monkeypatch.setattr(
         "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
@@ -1480,7 +1489,10 @@ def test_scheduled_wake_worker_leaves_due_cron_request_available_after_failed_di
     assert refreshed.enabled is True
     assert refreshed.next_run_at == due_at
     assert refreshed.last_dispatched_at is None
-    assert worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-cron-failed"].status == "failed"
+    assert (
+        worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-cron-failed"].status
+        == "failed"
+    )
     assert not worker.worker_config.session_cooldown_path.exists()
 
 
@@ -1540,7 +1552,9 @@ def test_scheduled_wake_worker_keeps_due_cron_request_unmodified_when_resume_scr
     worker = _build_worker(tmp_path)
     _register_session(worker)
     due_at = datetime.now(UTC) - timedelta(minutes=1)
-    _schedule_cron_request(worker, request_id="wake-cron-missing", session_id="session-a", due_at=due_at)
+    _schedule_cron_request(
+        worker, request_id="wake-cron-missing", session_id="session-a", due_at=due_at
+    )
 
     monkeypatch.setattr(
         "evander.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"

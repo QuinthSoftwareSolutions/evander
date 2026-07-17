@@ -20,6 +20,7 @@ from ..domain.common import (
     _string_list,
 )
 
+
 def _normalize_ephemeral_request_mapping(
     item: Mapping[str, Any],
     *,
@@ -44,6 +45,7 @@ def _normalize_ephemeral_request_mapping(
         "directory_path": _optional_text(item.get("directory_path")),
     }
 
+
 def _team_request_ephemeral_normalized_payload(
     *,
     assignments: Sequence[Mapping[str, Any]],
@@ -59,6 +61,7 @@ def _team_request_ephemeral_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _team_accept_ephemeral_result_normalized_payload(
     *,
@@ -78,6 +81,7 @@ def _team_accept_ephemeral_result_normalized_payload(
         "causation_id": _optional_text(causation_id),
     }
 
+
 def _team_reject_ephemeral_result_normalized_payload(
     *,
     assignment_id: str,
@@ -95,6 +99,7 @@ def _team_reject_ephemeral_result_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _team_report_ephemeral_result_normalized_payload(
     *,
@@ -118,6 +123,7 @@ def _team_report_ephemeral_result_normalized_payload(
         "causation_id": _optional_text(causation_id),
     }
 
+
 def _require_parent_assignment_owner(
     assignment: EphemeralAssignment,
     *,
@@ -137,6 +143,7 @@ def _require_parent_assignment_owner(
                 "caller_agent_id": agent.id,
             },
         )
+
 
 def _validate_ephemeral_result_report(
     assignment: EphemeralAssignment,
@@ -180,12 +187,13 @@ def _validate_ephemeral_result_report(
                 },
             )
 
+
 __all__ = [
-    '_normalize_ephemeral_request_mapping',
-    '_team_request_ephemeral_normalized_payload',
-    '_team_accept_ephemeral_result_normalized_payload',
-    '_team_reject_ephemeral_result_normalized_payload',
-    '_team_report_ephemeral_result_normalized_payload',
-    '_require_parent_assignment_owner',
-    '_validate_ephemeral_result_report',
+    "_normalize_ephemeral_request_mapping",
+    "_team_request_ephemeral_normalized_payload",
+    "_team_accept_ephemeral_result_normalized_payload",
+    "_team_reject_ephemeral_result_normalized_payload",
+    "_team_report_ephemeral_result_normalized_payload",
+    "_require_parent_assignment_owner",
+    "_validate_ephemeral_result_report",
 ]

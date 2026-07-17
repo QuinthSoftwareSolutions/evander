@@ -100,10 +100,10 @@ const DIRECTORY_TREE = directoryNode("root", "root", null, "root", [
 ]);
 
 const SESSION = {
-  session_id: "session-imani-telemetry",
-  vm_id: "vm-imani-telemetry",
+  session_id: "session-telemetry-implementation",
+  vm_id: "vm-telemetry-implementation",
   vm_provider: "libvirt",
-  vm_provider_id: "vm-imani-telemetry",
+  vm_provider_id: "vm-telemetry-implementation",
   model: "gpt-5.4",
   directory_path: DIRECTORY,
   allowed_tools: ["get_issue", "prompt_agent", "stage_artifact", "publish_artifact"],
@@ -169,9 +169,9 @@ const AGENT_CAPABILITIES = {
 
 const ADMIN_AGENTS = [
   {
-    agent_id: "agent-imani",
+    agent_id: "agent-implementation",
     backend: "libvirt_vm",
-    target_name: "Imani - telemetry implementer",
+    target_name: "Telemetry implementation agent",
     session_id: SESSION.session_id,
     directory_path: DIRECTORY,
     status: "running",
@@ -199,14 +199,14 @@ const ADMIN_AGENTS = [
       records: [
         {
           queue_key: "team:mission-control:telemetry-retry",
-          effect_id: "effect-prompt-imani",
+          effect_id: "effect-prompt-implementation",
           target: SESSION.session_id,
-          vm_name: "vm-imani-telemetry",
+          vm_name: SESSION.vm_id,
           session_id: SESSION.session_id,
           created_at: "2026-07-13T11:20:00Z",
           updated_at: TIMESTAMPS.updated,
           coalesced_count: 2,
-          prompt_preview: "Apply Rowan's retry-policy review notes and rerun focused tests.",
+          prompt_preview: "Apply the retry-policy review notes and rerun focused tests.",
           prompt_length: 64,
           metadata: {},
         },
@@ -216,10 +216,10 @@ const ADMIN_AGENTS = [
     },
   },
   {
-    agent_id: "agent-rowan",
+    agent_id: "agent-review",
     backend: "container_worker_vm",
-    target_name: "Rowan - telemetry reviewer",
-    session_id: "session-rowan-review",
+    target_name: "Telemetry review agent",
+    session_id: "session-telemetry-review",
     directory_path: DIRECTORY,
     status: "idle",
     started_at: "2026-07-13T09:25:00Z",
@@ -229,10 +229,10 @@ const ADMIN_AGENTS = [
     capabilities: { ...AGENT_CAPABILITIES, shutdown: false, resume: false, destroy: false },
   },
   {
-    agent_id: "agent-riley",
+    agent_id: "agent-release",
     backend: "container_worker_vm",
-    target_name: "Riley - release operator",
-    session_id: "session-riley-release",
+    target_name: "Release agent",
+    session_id: "session-telemetry-release",
     directory_path: DIRECTORY,
     status: "waiting",
     started_at: "2026-07-13T10:00:00Z",
@@ -282,10 +282,10 @@ const ISSUE = {
   url: null,
   tags: ["telemetry", "reliability", "retry"],
   comments: [
-    { author: "Priya", body: "Keep the change bounded to retry and terminal telemetry behavior." },
+    { author: "Project lead", body: "Keep the change bounded to retry and terminal telemetry behavior." },
   ],
   source: "local",
-  metadata: { owner: "Imani", reviewer: "Rowan", release_operator: "Riley" },
+  metadata: { owner: "Implementation agent", reviewer: "Review agent", release_operator: "Release agent" },
   created_at: TIMESTAMPS.created,
   updated_at: TIMESTAMPS.updated,
   remote_reference: null,
@@ -403,28 +403,28 @@ const WORKFLOW_DOCUMENT = {
       { id: "gate-mission-control", display_name: "Mission Control scope", type: "gate:filter" },
     ],
     effects: [
-      { id: "effect-create-imani", display_name: "Create Imani session", type: "effect:agent:create" },
+      { id: "effect-create-implementation", display_name: "Create implementation session", type: "effect:agent:create" },
       { id: "effect-ensure-repo", display_name: "Ensure managed repo", type: "effect:git:ensure-managed-repo" },
       { id: "effect-clone-repo", display_name: "Clone mission-control", type: "effect:agent:clone-repo" },
-      { id: "effect-prompt-imani", display_name: "Prompt telemetry retry work", type: "effect:agent:prompt" },
+      { id: "effect-prompt-implementation", display_name: "Prompt telemetry retry work", type: "effect:agent:prompt" },
     ],
     queries: [],
     edges: [
       { source_id: "trigger-ticket-created", target_id: "gate-mission-control", source_port: "completed" },
-      { source_id: "gate-mission-control", target_id: "effect-create-imani", source_port: "matched" },
-      { source_id: "effect-create-imani", target_id: "effect-ensure-repo", source_port: "completed" },
+      { source_id: "gate-mission-control", target_id: "effect-create-implementation", source_port: "matched" },
+      { source_id: "effect-create-implementation", target_id: "effect-ensure-repo", source_port: "completed" },
       { source_id: "effect-ensure-repo", target_id: "effect-clone-repo", source_port: "completed" },
-      { source_id: "effect-clone-repo", target_id: "effect-prompt-imani", source_port: "completed" },
+      { source_id: "effect-clone-repo", target_id: "effect-prompt-implementation", source_port: "completed" },
     ],
   },
   layout: {
     nodes: {
       "trigger-ticket-created": { x: 70, y: 170 },
       "gate-mission-control": { x: 330, y: 170 },
-      "effect-create-imani": { x: 590, y: 60 },
+      "effect-create-implementation": { x: 590, y: 60 },
       "effect-ensure-repo": { x: 590, y: 280 },
       "effect-clone-repo": { x: 850, y: 280 },
-      "effect-prompt-imani": { x: 1110, y: 280 },
+      "effect-prompt-implementation": { x: 1110, y: 280 },
     },
   },
   graphs: [
@@ -437,10 +437,10 @@ const WORKFLOW_DOCUMENT = {
       node_ids: [
         "trigger-ticket-created",
         "gate-mission-control",
-        "effect-create-imani",
+        "effect-create-implementation",
         "effect-ensure-repo",
         "effect-clone-repo",
-        "effect-prompt-imani",
+        "effect-prompt-implementation",
       ],
     },
   ],
@@ -474,7 +474,7 @@ const WORKFLOW_RUNS = {
       delivery_state: "delivered",
       occurred_at: TIMESTAMPS.started,
       latest_activity_at: TIMESTAMPS.updated,
-      active_nodes: [{ node_id: "effect-prompt-imani", status: "running", count: 1 }],
+      active_nodes: [{ node_id: "effect-prompt-implementation", status: "running", count: 1 }],
       resumable: true,
     },
     {
@@ -517,7 +517,7 @@ const GRAPH_ACTIVITY = {
       latest_activity_at: TIMESTAMPS.updated,
       nodes: [
         {
-          node_id: "effect-prompt-imani",
+          node_id: "effect-prompt-implementation",
           node_type: "effect:agent:prompt",
           display_name: "Prompt telemetry retry work",
           activity_count: 8,
@@ -550,13 +550,13 @@ const TOOL_CALLS = {
       directory_path: DIRECTORY,
       duration_ms: 138,
       role: "automation",
-      actor_user_id: "imani",
+      actor_user_id: "implementation-agent",
       request_id: "request-stage-retry-evidence",
       correlation_id: "correlation-northstar-248",
       approval_request_id: null,
       workflow_run_id: "run-telemetry-retry",
       trace_id: "trace-northstar-248",
-      agent_id: "agent-imani",
+      agent_id: "agent-implementation",
       vm_id: SESSION.vm_id,
       error_summary: null,
       redacted_args: { path: "reports/telemetry-retry-verification.json" },
@@ -576,13 +576,13 @@ const TOOL_CALLS = {
       directory_path: DIRECTORY,
       duration_ms: 21,
       role: "automation",
-      actor_user_id: "imani",
+      actor_user_id: "implementation-agent",
       request_id: "request-publish-retry-evidence",
       correlation_id: "correlation-northstar-248",
       approval_request_id: APPROVAL.request_id,
       workflow_run_id: "run-telemetry-retry",
       trace_id: "trace-northstar-248",
-      agent_id: "agent-imani",
+      agent_id: "agent-implementation",
       vm_id: SESSION.vm_id,
       error_summary: "Human approval required",
       redacted_args: { artifact_path: "reports/telemetry-retry-verification.json", token: "<redacted>" },
@@ -697,8 +697,8 @@ function tabSnapshot(tab) {
   const values = {
     people_communications: {
       contacts: {
-        mira: { name: "Mira", description: "Northstar manager", email_addresses: [], phone_numbers: [] },
-        priya: { name: "Priya", description: "Mission Control project lead", email_addresses: [], phone_numbers: [] },
+        "team-manager": { name: "Team manager", description: "Northstar manager", email_addresses: [], phone_numbers: [] },
+        "project-lead": { name: "Project lead", description: "Mission Control project lead", email_addresses: [], phone_numbers: [] },
       },
       approval_notification_target_ids: ["northstar-operators"],
     },
@@ -919,7 +919,7 @@ const TEAM_STATE = {
       summary: "Bounded retry implementation with focused tests and terminal metric evidence.",
       artifact_refs: ["northstar/mission-control/telemetry-retry-review"],
       git_refs: {
-        branch: "agents/session-imani-telemetry/telemetry-retry",
+        branch: "agents/session-telemetry-implementation/telemetry-retry",
         commit_sha: "c91e2a7",
         promotion_record_ids: ["promotion-telemetry-candidate"],
       },
@@ -1008,7 +1008,7 @@ const TEAM_STATE = {
       project_id: "mission-control",
       deliverable_ids: ["deliverable-telemetry-retry"],
       artifact_refs: ["northstar/mission-control/telemetry-retry-review"],
-      feature_branches: ["agents/session-imani-telemetry/telemetry-retry"],
+      feature_branches: ["agents/session-telemetry-implementation/telemetry-retry"],
       release_branch: "team/northstar-platform/releases/telemetry-retry",
       canonical_branch: "main",
       published_commit_sha: null,
@@ -1027,7 +1027,7 @@ const TEAM_STATE = {
       id: "promotion-telemetry-candidate",
       project_id: "mission-control",
       actor_agent_id: "imani",
-      source_branch: "agents/session-imani-telemetry/telemetry-retry",
+      source_branch: "agents/session-telemetry-implementation/telemetry-retry",
       target_branch: "team/northstar-platform/candidates/telemetry-retry",
       promotion_kind: "candidate",
       state: "succeeded",
@@ -1291,7 +1291,7 @@ const TEAM_TEMPLATE = {
 const ADMIN_CAPTURES = [
   { file: "manual-dashboard.png", hash: "#dashboard", title: "Admin dashboard", waitFor: ".dashboard-page" },
   { file: "manual-directory-chooser.png", hash: "#dashboard", title: "Directory chooser", waitFor: ".dashboard-page", prepare: openDirectoryChooser },
-  { file: "manual-agents.png", hash: "#agents?agent_id=agent-imani", title: "Agents", waitFor: ".agents-page" },
+  { file: "manual-agents.png", hash: "#agents?agent_id=agent-implementation", title: "Agents", waitFor: ".agents-page" },
   { file: "manual-approvals.png", hash: `#approvals?request_id=${APPROVAL.request_id}`, title: "Approvals", waitFor: ".approvals-page" },
   { file: "manual-artifacts.png", hash: "#artifacts", title: "Artifacts", waitFor: ".artifacts-page" },
   { file: "manual-skills.png", hash: "#skills", title: "Skills", waitFor: ".skills-page" },
@@ -1354,14 +1354,14 @@ function sessionList() {
       SESSION,
       {
         ...SESSION,
-        session_id: "session-rowan-review",
+        session_id: "session-telemetry-review",
         vm_id: null,
         model: "gpt-5.4",
-        metadata: { purpose: "Review telemetry retry behavior", reviewer: "Rowan" },
+        metadata: { purpose: "Review telemetry retry behavior", reviewer: "Review agent" },
       },
     ],
     counts: { total: 2, active: 2, expired: 0 },
-    status_ids: { active: [SESSION.session_id, "session-rowan-review"], expired: [] },
+    status_ids: { active: [SESSION.session_id, "session-telemetry-review"], expired: [] },
   };
 }
 
@@ -1372,10 +1372,10 @@ function adminUsers() {
     { group_id: "reviewer", display_name: "Reviewer", description: "Read workflows, runs, and approval evidence.", is_required: false, permissions: ["workflows.read", "workflow_runs.read"], created_at: TIMESTAMPS.created, updated_at: TIMESTAMPS.updated },
   ];
   const contact = (id, name, description) => ({ id, name, description, email_address_count: 0, phone_number_count: 0, primary_phone_label: null });
-  const contacts = [contact("mira", "Mira", "Northstar manager"), contact("priya", "Priya", "Mission Control project lead")];
+  const contacts = [contact("owner-operator", "Owner operator", "Northstar owner"), contact("project-operator", "Project operator", "Mission Control operator")];
   const user = (login, displayName, contactId, groupId) => ({
     login,
-    role: login === "mira" ? "admin" : "regular",
+    role: login === "owner-operator" ? "admin" : "regular",
     display_name: displayName,
     contact_id: contactId,
     contact: contacts.find((entry) => entry.id === contactId) ?? null,
@@ -1394,7 +1394,7 @@ function adminUsers() {
     contacts,
     groups,
     permission_catalog: PERMISSIONS,
-    users: [user("mira", "Mira", "mira", "owner"), user("priya", "Priya", "priya", "northstar-operator")],
+    users: [user("owner-operator", "Owner operator", "owner-operator", "owner"), user("project-operator", "Project operator", "project-operator", "northstar-operator")],
   };
 }
 
@@ -1589,12 +1589,12 @@ function handleApi(req, res, url, unknownRequests, openStreams) {
     return json(res, { items: [] }), true;
   }
   const agentLog = pathname.match(/^\/api\/admin\/agents\/([^/]+)\/log$/);
-  if (agentLog) return json(res, { agent_id: decodeURIComponent(agentLog[1]), backend: "libvirt_vm", view: "executions", lines: 200, text: "11:36 focused retry tests: 18 passed\n11:42 evidence bundle staged for Rowan\n", returned_lines: 2, total_lines: 2, has_more_before: false }), true;
-  if (pathname === "/api/operator-steering/context") return json(res, { session_id: url.searchParams.get("session_id"), directory_path: DIRECTORY, context: { session_id: SESSION.session_id, dispatch_id: "dispatch-telemetry-retry", workflow_run_id: "run-telemetry-retry", effect_id: "effect-prompt-imani", node_id: "effect-prompt-imani", agent_harness: "codex", execution_backend: "libvirt_vm", directory_path: DIRECTORY, model: "gpt-5.4", trace_id: "trace-northstar-248", started_at: TIMESTAMPS.started, expires_at: TIMESTAMPS.expires } }), true;
+  if (agentLog) return json(res, { agent_id: decodeURIComponent(agentLog[1]), backend: "libvirt_vm", view: "executions", lines: 200, text: "11:36 focused retry tests: 18 passed\n11:42 evidence bundle staged for review\n", returned_lines: 2, total_lines: 2, has_more_before: false }), true;
+  if (pathname === "/api/operator-steering/context") return json(res, { session_id: url.searchParams.get("session_id"), directory_path: DIRECTORY, context: { session_id: SESSION.session_id, dispatch_id: "dispatch-telemetry-retry", workflow_run_id: "run-telemetry-retry", effect_id: "effect-prompt-implementation", node_id: "effect-prompt-implementation", agent_harness: "codex", execution_backend: "libvirt_vm", directory_path: DIRECTORY, model: "gpt-5.4", trace_id: "trace-northstar-248", started_at: TIMESTAMPS.started, expires_at: TIMESTAMPS.expires } }), true;
   if (pathname === "/api/operator-steering/notes") return json(res, { session_id: url.searchParams.get("session_id"), dispatch_id: url.searchParams.get("dispatch_id"), directory_path: DIRECTORY, notes: [] }), true;
 
   if (pathname === "/api/admin/approvals") return json(res, { items: [APPROVAL], health: { total: 3, pending: 1, approved: 2, denied: 0, expired: 0, exhausted: 0, oldest_pending_age_seconds: 900 } }), true;
-  if (pathname === `/api/admin/approvals/${APPROVAL.request_id}`) return json(res, { request: APPROVAL, redacted_payload: APPROVAL.payload, audit_context: [{ event: "tool_call_guarded", agent_id: "agent-imani", trace_id: "trace-northstar-248" }], age_seconds: 900, expires_in_seconds: 2700, payload_summary: "Publish one sanitized telemetry retry verification report.", approval_diagnostics: { request_id: APPROVAL.request_id, status: "pending", action_type: APPROVAL.action_type, tool_name: APPROVAL.tool_name, payload_digest: APPROVAL.payload_digest, requested_payload: APPROVAL.payload, blocked_tool_call_diagnostics: [] } }), true;
+  if (pathname === `/api/admin/approvals/${APPROVAL.request_id}`) return json(res, { request: APPROVAL, redacted_payload: APPROVAL.payload, audit_context: [{ event: "tool_call_guarded", agent_id: "agent-implementation", trace_id: "trace-northstar-248" }], age_seconds: 900, expires_in_seconds: 2700, payload_summary: "Publish one sanitized telemetry retry verification report.", approval_diagnostics: { request_id: APPROVAL.request_id, status: "pending", action_type: APPROVAL.action_type, tool_name: APPROVAL.tool_name, payload_digest: APPROVAL.payload_digest, requested_payload: APPROVAL.payload, blocked_tool_call_diagnostics: [] } }), true;
 
   if (pathname === "/api/admin/artifact-spaces") return json(res, { success: true, revision: 3, count: 3, spaces: [{ path: "/", parent_path: null, display_name: "All artifacts", metadata: {} }, { path: "/northstar", parent_path: "/", display_name: "Northstar", metadata: {} }, { path: "/northstar/mission-control", parent_path: "/northstar", display_name: "Mission Control", metadata: {} }] }), true;
   if (pathname === "/api/admin/artifacts") return json(res, { items: ARTIFACTS, limit: 50, total: ARTIFACTS.length, next_cursor: null }), true;
@@ -1605,7 +1605,7 @@ function handleApi(req, res, url, unknownRequests, openStreams) {
   const skillDetail = pathname.match(/^\/api\/admin\/skills\/([^/]+)$/);
   if (skillDetail) return json(res, { skill: { name: decodeURIComponent(skillDetail[1]), size_bytes: 8_420, updated_at: TIMESTAMPS.updated, content: "# Northstar documentation fixture\n\nSanitized managed skill content." } }), true;
 
-  if (pathname === "/api/admin/vms") return json(res, { items: [{ vm_name: SESSION.vm_id, provider: "libvirt", issue_number: "MC-248", session_ids: [SESSION.session_id], labels: { fixture: "northstar", role: "implementer" }, directory_paths: [DIRECTORY], power_state: "running", libvirt_state: "running", ip_address: "192.0.2.41", agent: { state: "running", pid: 4242, dispatch_id: "dispatch-telemetry-retry", repo_names: ["mission-control"], preferred_repo_name: "mission-control" }, last_state_update_at: TIMESTAMPS.updated }, { vm_name: "vm-priya-lead", provider: "libvirt", issue_number: null, session_ids: ["session-priya"], labels: { fixture: "northstar", role: "lead" }, directory_paths: [DIRECTORY], power_state: "shut off", libvirt_state: "shut off", ip_address: null, agent: { state: "idle", pid: null, dispatch_id: null, repo_names: ["mission-control"], preferred_repo_name: "mission-control" }, last_state_update_at: TIMESTAMPS.reviewed }], directory_path: DIRECTORY, direct_only: true }), true;
+  if (pathname === "/api/admin/vms") return json(res, { items: [{ vm_name: SESSION.vm_id, provider: "libvirt", issue_number: "MC-248", session_ids: [SESSION.session_id], labels: { fixture: "northstar", role: "implementer" }, directory_paths: [DIRECTORY], power_state: "running", libvirt_state: "running", ip_address: "192.0.2.41", agent: { state: "running", pid: 4242, dispatch_id: "dispatch-telemetry-retry", repo_names: ["mission-control"], preferred_repo_name: "mission-control" }, last_state_update_at: TIMESTAMPS.updated }, { vm_name: "vm-project-lead", provider: "libvirt", issue_number: null, session_ids: ["session-project-lead"], labels: { fixture: "northstar", role: "lead" }, directory_paths: [DIRECTORY], power_state: "shut off", libvirt_state: "shut off", ip_address: null, agent: { state: "idle", pid: null, dispatch_id: null, repo_names: ["mission-control"], preferred_repo_name: "mission-control" }, last_state_update_at: TIMESTAMPS.reviewed }], directory_path: DIRECTORY, direct_only: true }), true;
 
   if (pathname === "/api/admin/issues") return json(res, { items: [ISSUE, { ...ISSUE, issue_id: "issue-retry-dashboard", issue_number: "MC-247", title: "Expose retry exhaustion on the operations dashboard", state: "accepted", updated_at: TIMESTAMPS.reviewed }], directory_path: DIRECTORY, direct_only: true }), true;
   if (pathname === `/api/admin/issues/${ISSUE.issue_id}`) return json(res, { ...ISSUE, raw: ISSUE }), true;
@@ -1613,8 +1613,8 @@ function handleApi(req, res, url, unknownRequests, openStreams) {
 
   if (pathname === "/api/admin/sessions/catalog") return json(res, { tool_options: [{ value: "get_issue", label: "Get issue" }, { value: "stage_artifact", label: "Stage artifact" }, { value: "publish_artifact", label: "Publish artifact" }, { value: "prompt_agent", label: "Prompt agent" }], model_options: [{ value: "gpt-5.4", label: "GPT-5.4" }], resume_mode_options: [{ value: "same_context", label: "Same context" }, { value: "fresh_context", label: "Fresh context" }], renew_extension_presets: ["1h", "1d", "7d"] }), true;
   if (pathname === "/api/admin/sessions") return json(res, sessionList()), true;
-  if (pathname === `/api/admin/sessions/${SESSION.session_id}`) return json(res, { session: SESSION, wake_schedules: [{ request_id: "wake-imani-status", session_id: SESSION.session_id, prompt: "Check Mission Control telemetry retry status.", cron: "*/30 * * * *", resume_at: null, resume_mode: "same_context", status: "scheduled", enabled: true, updated_at: TIMESTAMPS.updated, schedule_kind: "cron" }], summary_json: { work_item: "MC-248", workflow_run_id: "run-telemetry-retry", owner: "Imani" } }), true;
-  if (pathname === "/api/admin/scheduled-wakes") return json(res, { items: [{ request_id: "wake-imani-status", session_id: SESSION.session_id, source: "team-addon", next_run_at: "2026-07-13T12:15:00Z", schedule_cron: "*/30 * * * *", status: "pending", prompt_summary: "Check Mission Control telemetry retry status.", latest_dispatch: null, retry_available: false, enabled: true }] }), true;
+  if (pathname === `/api/admin/sessions/${SESSION.session_id}`) return json(res, { session: SESSION, wake_schedules: [{ request_id: "wake-implementation-status", session_id: SESSION.session_id, prompt: "Check Mission Control telemetry retry status.", cron: "*/30 * * * *", resume_at: null, resume_mode: "same_context", status: "scheduled", enabled: true, updated_at: TIMESTAMPS.updated, schedule_kind: "cron" }], summary_json: { work_item: "MC-248", workflow_run_id: "run-telemetry-retry", owner: "Implementation agent" } }), true;
+  if (pathname === "/api/admin/scheduled-wakes") return json(res, { items: [{ request_id: "wake-implementation-status", session_id: SESSION.session_id, source: "team-addon", next_run_at: "2026-07-13T12:15:00Z", schedule_cron: "*/30 * * * *", status: "pending", prompt_summary: "Check Mission Control telemetry retry status.", latest_dispatch: null, retry_available: false, enabled: true }] }), true;
 
   if (pathname === "/api/admin/tool-calls") return json(res, TOOL_CALLS), true;
   if (pathname === "/api/workers") return json(res, { workers: WORKERS }), true;

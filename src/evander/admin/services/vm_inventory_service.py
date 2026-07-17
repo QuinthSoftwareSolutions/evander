@@ -73,8 +73,8 @@ class VmInventoryAdminService:
         session_ids_by_vm = self._session_ids_by_vm()
         labels_by_vm = self._labels_by_vm()
         directory_paths_by_vm = self._directory_paths_by_vm()
-        normalized_directory_path = (
-            self._deps.directory_ownership.normalize_directory_path(directory_path)
+        normalized_directory_path = self._deps.directory_ownership.normalize_directory_path(
+            directory_path
         )
         owned_vm_ids = (
             self._deps.directory_ownership.direct_owned_entity_ids(
@@ -95,9 +95,7 @@ class VmInventoryAdminService:
                 continue
             libvirt_state = vm_helpers.dominfo_field(vm_name, "State") or "unknown"
             host_control_status = self._deps.agent_control_store.status_for_vm(vm_name)
-            ip_address = (
-                vm_helpers.resolve_vm_ip(vm_name) if libvirt_state == "running" else None
-            )
+            ip_address = vm_helpers.resolve_vm_ip(vm_name) if libvirt_state == "running" else None
             if libvirt_state != "running":
                 agent_state = "disabled" if host_control_status == "disabled" else "inactive_vm"
                 agent_pid = None

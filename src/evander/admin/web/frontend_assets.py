@@ -26,7 +26,9 @@ def missing_admin_frontend_assets(dist_dir: Path) -> list[Path]:
     ]
     if not references:
         return [dist_dir / "assets" / "*.js"]
-    return [dist_dir / reference for reference in references if not (dist_dir / reference).is_file()]
+    return [
+        dist_dir / reference for reference in references if not (dist_dir / reference).is_file()
+    ]
 
 
 def admin_frontend_assets_ready(dist_dir: Path) -> bool:
@@ -83,9 +85,9 @@ def _find_manifest_asset_file(
             asset_path = _safe_manifest_asset_path(asset)
             if asset_path is None:
                 continue
-            if _hashed_manifest_asset_matches(asset_path.name, asset_name) and _manifest_file_exists(
-                dist_dir, asset_path
-            ):
+            if _hashed_manifest_asset_matches(
+                asset_path.name, asset_name
+            ) and _manifest_file_exists(dist_dir, asset_path):
                 return asset_path
     return None
 

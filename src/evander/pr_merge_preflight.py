@@ -260,7 +260,9 @@ class GitMergePreflightEngine:
             )
 
         status = self._overall_status(checks=checks, warnings=warnings)
-        self._apply_participant_outcomes(participants, checks=checks, warnings=warnings, status=status)
+        self._apply_participant_outcomes(
+            participants, checks=checks, warnings=warnings, status=status
+        )
         summary_text = self._summary_text(
             mode=request.mode,
             status=status,
@@ -268,7 +270,11 @@ class GitMergePreflightEngine:
             target_commit=expected_target_commit,
             current_target_commit=current_target_commit,
             warnings=warnings,
-            errors=[check.explanation for check in checks if check.status not in {"clean", "stale_target_branch"}],
+            errors=[
+                check.explanation
+                for check in checks
+                if check.status not in {"clean", "stale_target_branch"}
+            ],
             checks=checks,
         )
         return MergePreflightReport(
@@ -281,7 +287,11 @@ class GitMergePreflightEngine:
             participants=participants,
             checks=checks,
             warnings=warnings,
-            errors=[check.explanation for check in checks if check.status not in {"clean", "stale_target_branch"}],
+            errors=[
+                check.explanation
+                for check in checks
+                if check.status not in {"clean", "stale_target_branch"}
+            ],
             summary_text=summary_text,
             generated_at=None,
         )
@@ -573,9 +583,7 @@ class GitMergePreflightEngine:
         mode: MergePreflightMode,
     ) -> MergePreflightCheck | None:
         for index, item in enumerate(requests, start=1):
-            if item["source_commit"] is not None and (
-                item["target_commit"] is not None
-            ):
+            if item["source_commit"] is not None and (item["target_commit"] is not None):
                 continue
             missing = []
             if item["request"].source_commit is None and item["request"].source_branch is None:
@@ -805,7 +813,9 @@ class GitMergePreflightEngine:
             return f"{mode} preflight repository error for PRs {pr_ids}: {errors[0]}"
         if status == "conflict" and checks:
             path_count = sum(len(check.conflicted_paths) for check in checks)
-            return f"{mode} preflight found conflict for PRs {pr_ids}: {path_count} conflicted paths."
+            return (
+                f"{mode} preflight found conflict for PRs {pr_ids}: {path_count} conflicted paths."
+            )
         if errors:
             return f"{mode} preflight reported {status} for PRs {pr_ids}: {errors[0]}"
         return f"{mode} preflight reported {status} for PRs {pr_ids}."

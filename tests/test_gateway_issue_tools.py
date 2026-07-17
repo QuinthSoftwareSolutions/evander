@@ -63,9 +63,7 @@ def call_tool(server, name: str, arguments: dict[str, object]):
 
 def read_audit_events(path: Path) -> list[dict[str, object]]:
     return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
 
 
@@ -123,7 +121,9 @@ def test_get_issue_reads_closed_issue_without_list_filters(tmp_path: Path) -> No
     server = create_server(context)
     admin = build_admin_runtime(context.config.runtime_dir)
     created = admin.issue_git_admin.create_local_issue(title="Rejected issue", body="x")
-    admin.issue_git_admin.update_issue(created.issue_number, state="Closed", fields={"Reason": "Out of scope"})
+    admin.issue_git_admin.update_issue(
+        created.issue_number, state="Closed", fields={"Reason": "Out of scope"}
+    )
 
     result = call_tool(
         server,
@@ -156,7 +156,9 @@ def test_list_issues_returns_rejected_closed_local_issue(tmp_path: Path) -> None
         body="x",
         directory_path="root/team-a",
     )
-    admin.issue_git_admin.update_issue(created.issue_number, state="Closed", fields={"Reason": "Out of scope"})
+    admin.issue_git_admin.update_issue(
+        created.issue_number, state="Closed", fields={"Reason": "Out of scope"}
+    )
 
     result = call_tool(
         server,

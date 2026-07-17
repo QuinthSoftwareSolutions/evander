@@ -120,11 +120,16 @@ class IssueListQueryProvider(QueryProviderBase):
         metadata_exists: Mapping[str, bool],
         metadata_prefix: Mapping[str, Any],
     ) -> bool:
-        if source is not None and self._normalize_optional_string(self._record_value(issue, "source")) != source:
+        if (
+            source is not None
+            and self._normalize_optional_string(self._record_value(issue, "source")) != source
+        ):
             return False
-        if source_type is not None and self._normalize_optional_string(
-            self._record_value(issue, "source_type")
-        ) != source_type:
+        if (
+            source_type is not None
+            and self._normalize_optional_string(self._record_value(issue, "source_type"))
+            != source_type
+        ):
             return False
 
         issue_tags = self._coerce_string_set(self._record_value(issue, "tags")) or set()
@@ -166,7 +171,9 @@ class IssueListQueryProvider(QueryProviderBase):
 
     def _issue_payload(self, issue: Any) -> dict[str, Any]:
         issue_id = self._normalize_optional_string(self._record_value(issue, "issue_id")) or ""
-        issue_number = self._normalize_optional_string(self._record_value(issue, "issue_number")) or ""
+        issue_number = (
+            self._normalize_optional_string(self._record_value(issue, "issue_number")) or ""
+        )
         title = self._record_value(issue, "title")
         body = self._record_value(issue, "body")
         description = self._record_value(issue, "description")
@@ -206,7 +213,9 @@ class IssueListQueryProvider(QueryProviderBase):
             "metadata": metadata,
             "created_at": created_at,
             "updated_at": updated_at,
-            "remote_reference": self._jsonable(remote_reference) if remote_reference is not None else None,
+            "remote_reference": self._jsonable(remote_reference)
+            if remote_reference is not None
+            else None,
             "can_edit": self._normalize_optional_string(source_type) == "local_manual",
             "can_delete": True,
             "can_create_vm": True,

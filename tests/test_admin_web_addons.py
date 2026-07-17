@@ -219,7 +219,9 @@ def test_admin_web_exposes_enabled_addon_routes_and_navigation(tmp_path: Path, m
     importlib.invalidate_caches()
     sys.modules.pop("admin_addon", None)
 
-    client = TestClient(create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon"))))
+    client = TestClient(
+        create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon")))
+    )
 
     state = client.get("/api/admin/state")
     assert state.status_code == 200
@@ -476,9 +478,7 @@ def test_admin_web_addon_runtime_workflow_pack_refresh_rejects_disabled_addon(
     )
 
     assert response.status_code == 400
-    assert "trigger-orchestrator addon_loader does not load that add-on" in response.json()[
-        "error"
-    ]
+    assert "trigger-orchestrator addon_loader does not load that add-on" in response.json()["error"]
     pack_payload = json.loads((packs_dir / "team-runtime.v1.json").read_text())
     assert pack_payload["description"] == "Operator edited runtime pack."
     trigger_config = json.loads(
@@ -654,9 +654,7 @@ def test_addon_management_uses_unlocked_worker_config_write_inside_outer_lock(
     assert saved["explicit_enabled_addon_ids"] == []
 
 
-def test_admin_web_addon_api_routes_follow_admin_auth(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_admin_web_addon_api_routes_follow_admin_auth(tmp_path: Path, monkeypatch) -> None:
     module_root = _write_admin_addon_module(tmp_path)
     monkeypatch.syspath_prepend(module_root)
     monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
@@ -665,7 +663,9 @@ def test_admin_web_addon_api_routes_follow_admin_auth(
     importlib.invalidate_caches()
     sys.modules.pop("admin_addon", None)
 
-    client = TestClient(create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon"))))
+    client = TestClient(
+        create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon")))
+    )
 
     response = client.get("/api/addons/team-addon/ping")
 
@@ -673,9 +673,7 @@ def test_admin_web_addon_api_routes_follow_admin_auth(
     assert response.json()["error"] == "Authentication required"
 
 
-def test_admin_web_addon_ui_routes_follow_admin_auth(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_admin_web_addon_ui_routes_follow_admin_auth(tmp_path: Path, monkeypatch) -> None:
     module_root = _write_admin_addon_module(tmp_path)
     monkeypatch.syspath_prepend(module_root)
     monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
@@ -684,7 +682,9 @@ def test_admin_web_addon_ui_routes_follow_admin_auth(
     importlib.invalidate_caches()
     sys.modules.pop("admin_addon", None)
 
-    client = TestClient(create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon"))))
+    client = TestClient(
+        create_app(build_admin_runtime(_write_config(tmp_path, module_name="admin_addon")))
+    )
 
     response = client.get("/addons/team-addon/")
 

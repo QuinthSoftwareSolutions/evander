@@ -41,11 +41,13 @@ def _active_stand_downs_for_agent(
         key=lambda item: (item.set_at, item.id),
     )
 
+
 def _stand_down_error_detail(stand_downs: list[AgentStandDown]) -> str:
     if not stand_downs:
         return "active stand-down"
     primary = stand_downs[-1]
     return f"{primary.source.value} stand-down on {primary.agent_id}: {primary.reason}"
+
 
 def _agent_subtree_ids(state: TeamState, agent_id: str) -> list[str]:
     if agent_id not in state.agents:
@@ -64,6 +66,7 @@ def _agent_subtree_ids(state: TeamState, agent_id: str) -> list[str]:
             continue
         stack.extend(reversed(agent.subordinate_agent_ids))
     return ordered
+
 
 def _apply_superior_stand_down(
     state: TeamState,
@@ -98,6 +101,7 @@ def _apply_superior_stand_down(
         runtime.updated_at = now
     return stand_down.id
 
+
 def _apply_superior_stand_down_revocation(
     state: TeamState,
     *,
@@ -129,6 +133,7 @@ def _apply_superior_stand_down_revocation(
             continue
         _mark_agent_work_due(state, agent_id=affected_id, now=now)
     return revoked_ids
+
 
 __all__ = [
     "_active_stand_downs_for_agent",

@@ -283,12 +283,9 @@ class CommunicationAttachmentHelpers:
         if len(unique) == 1:
             return unique[0]
         if not unique:
-            raise PolicyError(
-                f"Teams target is not allowlisted for session {session.session_id}"
-            )
+            raise PolicyError(f"Teams target is not allowlisted for session {session.session_id}")
         raise PolicyError(
-            f"Teams message {message_id} matches multiple allowlisted targets; "
-            "pass channel_target"
+            f"Teams message {message_id} matches multiple allowlisted targets; pass channel_target"
         )
 
     def resolve_teams_target_from_message(
@@ -305,7 +302,10 @@ class CommunicationAttachmentHelpers:
                 target = self.teams_target_for_message_record(record)
             except ValueError:
                 continue
-            if requested_channel_id and self.teams_target_channel_id(target) != requested_channel_id:
+            if (
+                requested_channel_id
+                and self.teams_target_channel_id(target) != requested_channel_id
+            ):
                 continue
             candidates.append(target)
         if candidates:
@@ -316,7 +316,9 @@ class CommunicationAttachmentHelpers:
             )
 
         if requested_channel_id:
-            for normalized in self.context.policy.policy_config.resolved_teams_channel_targets_for_session(
+            for (
+                normalized
+            ) in self.context.policy.policy_config.resolved_teams_channel_targets_for_session(
                 session,
                 capability="read",
             ):
@@ -343,9 +345,7 @@ class CommunicationAttachmentHelpers:
         if raw_target:
             cleaned_target = unquote(raw_target).strip().strip("/")
             try:
-                target = self.context.policy.require_teams_channel_target(
-                    session, cleaned_target
-                )
+                target = self.context.policy.require_teams_channel_target(session, cleaned_target)
                 requested_channel_id = self.clean_teams_channel_input(request.channel_id)
                 if (
                     requested_channel_id
@@ -462,9 +462,7 @@ class CommunicationAttachmentHelpers:
                 return self.coerce_attachment_refs(
                     provider,
                     request.message_id,
-                    service.list_attachments(
-                        mailbox_id=mailbox_id, message_id=request.message_id
-                    ),
+                    service.list_attachments(mailbox_id=mailbox_id, message_id=request.message_id),
                     mailbox_id=mailbox_id,
                 )
             if getattr(message, "attachments", None):
@@ -524,12 +522,7 @@ class CommunicationAttachmentHelpers:
                 return (
                     data_bytes,
                     str(raw.get("filename") or ref.filename),
-                    str(
-                        raw.get("mime_type")
-                        or raw.get("content_type")
-                        or ref.mime_type
-                        or ""
-                    )
+                    str(raw.get("mime_type") or raw.get("content_type") or ref.mime_type or "")
                     or None,
                 )
         raw_payload = ref.metadata.get("content_base64") or ref.metadata.get("content")
@@ -538,9 +531,7 @@ class CommunicationAttachmentHelpers:
                 return base64.b64decode(raw_payload), ref.filename, ref.mime_type
             except Exception:
                 return raw_payload.encode("utf-8"), ref.filename, ref.mime_type
-        raise ToolError(
-            "Attachment content is not available from the configured provider adapter"
-        )
+        raise ToolError("Attachment content is not available from the configured provider adapter")
 
     def stage_communication_artifact(
         self,

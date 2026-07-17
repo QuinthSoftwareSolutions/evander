@@ -161,8 +161,7 @@ def test_team_state_payload_embeds_activity_summaries() -> None:
     payload = team_state_payload(state)
 
     assert (
-        payload["agent_activity_summaries"]["agent"]["headline"]
-        == "Working on Checkout validation"
+        payload["agent_activity_summaries"]["agent"]["headline"] == "Working on Checkout validation"
     )
     assert (
         payload["agents"]["agent"]["activity_summary"]["headline"]
@@ -188,8 +187,7 @@ def test_filtered_team_state_payload_keeps_visible_activity_summary() -> None:
     )
 
     assert (
-        payload["agent_activity_summaries"]["agent"]["headline"]
-        == "Working on Checkout validation"
+        payload["agent_activity_summaries"]["agent"]["headline"] == "Working on Checkout validation"
     )
     assert (
         payload["agents"]["agent"]["activity_summary"]["headline"]

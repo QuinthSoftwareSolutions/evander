@@ -61,6 +61,7 @@ _MCP_TASK_UPDATE_STATE_VALUES = (
     TeamTaskState.FINISHED.value,
 )
 
+
 def _set_task_state(task: AgentTask, state: TeamTaskState, *, now: datetime | None = None) -> bool:
     if task.state == state:
         return False
@@ -69,26 +70,32 @@ def _set_task_state(task: AgentTask, state: TeamTaskState, *, now: datetime | No
     task.state_entered_at = effective_now
     return True
 
+
 def _require_present(collection: dict[str, Any], key: str, label: str) -> Any:
     if key not in collection:
         raise ValueError(f"{label} {key} does not exist")
     return collection[key]
 
+
 def _require_absent(collection: dict[str, Any], key: str, label: str) -> None:
     if key in collection:
         raise ValueError(f"{label} {key} already exists")
+
 
 def _append_unique(values: list[str], value: str) -> list[str]:
     if value in values:
         return values
     return [*values, value]
 
+
 _GENERATED_ID_PART_RE = re.compile(r"[^a-z0-9]+")
+
 
 def _slug_id_part(value: object, *, fallback: str) -> str:
     text = str(value or "").strip().lower()
     slug = _GENERATED_ID_PART_RE.sub("-", text).strip("-")
     return slug or fallback
+
 
 def _generated_id(
     *,
@@ -109,6 +116,7 @@ def _generated_id(
         suffix += 1
     return candidate
 
+
 def _unique_id_from_base(
     base: str,
     *,
@@ -121,6 +129,7 @@ def _unique_id_from_base(
         candidate = f"{base}-{suffix}"
         suffix += 1
     return candidate
+
 
 def _project_goals_with_generated_ids(
     goals: list[ProjectGoal | Mapping[str, Any]],
@@ -150,11 +159,14 @@ def _project_goals_with_generated_ids(
         normalized.append(ProjectGoal.model_validate(payload))
     return normalized
 
+
 def _remove_value(values: list[str], value: str) -> list[str]:
     return [item for item in values if item != value]
 
+
 def _mapping_or_empty(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
 
 def _decimal_or_none(value: object) -> Decimal | None:
     text = _optional_text(value)
@@ -165,8 +177,10 @@ def _decimal_or_none(value: object) -> Decimal | None:
     except (InvalidOperation, ValueError):
         return None
 
+
 def _decimal_or_zero(value: object) -> Decimal:
     return _decimal_or_none(value) or Decimal("0")
+
 
 def _priority_sort_value(priority: TeamInboxPriority) -> int:
     order = {
@@ -176,15 +190,18 @@ def _priority_sort_value(priority: TeamInboxPriority) -> int:
     }
     return order.get(priority, 1)
 
+
 def _mapping(value: object, field_name: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must be a JSON object")
     return dict(value)
 
+
 def _required_mapping(payload: Mapping[str, Any], field_name: str) -> dict[str, Any]:
     if field_name not in payload:
         raise ValueError(f"{field_name} is required")
     return _mapping(payload[field_name], field_name)
+
 
 def _materialize_role_inputs(
     template: TeamTemplate,
@@ -232,6 +249,7 @@ def _materialize_role_inputs(
         )
     return role_inputs
 
+
 def _project_git_config(value: object) -> ProjectGitConfig | None:
     if value is None:
         return None
@@ -239,12 +257,12 @@ def _project_git_config(value: object) -> ProjectGitConfig | None:
     managed_repo_id = _optional_text(git_payload.get("managed_repo_id"))
     if managed_repo_id is None:
         return None
-    return ProjectGitConfig.model_validate(
-        {**git_payload, "managed_repo_id": managed_repo_id}
-    )
+    return ProjectGitConfig.model_validate({**git_payload, "managed_repo_id": managed_repo_id})
+
 
 def _materialized_template_record_id(project_id: str, template_record_id: str) -> str:
     return f"{project_id}-{template_record_id}"
+
 
 def _ordered_template_roles(template: TeamTemplate) -> list[Any]:
     ordered: list[Any] = []
@@ -267,11 +285,13 @@ def _ordered_template_roles(template: TeamTemplate) -> list[Any]:
         )
     return ordered
 
+
 def _required_text(value: object, field_name: str) -> str:
     text = str(value or "").strip()
     if not text:
         raise ValueError(f"{field_name} must be a non-empty string")
     return text
+
 
 def _normalize_operator_user_id(
     value: object | None,
@@ -289,6 +309,7 @@ def _normalize_operator_user_id(
         text = "admin"
     return _required_text(text, "operator_user_id").casefold()
 
+
 def _operator_display_name_for_user(
     state: TeamState,
     operator_user_id: str,
@@ -303,11 +324,13 @@ def _operator_display_name_for_user(
             return conversation.operator_display_name or conversation.operator_user_id
     return None
 
+
 def _optional_text(value: object) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
     return text or None
+
 
 def _optional_cost_limit(value: object) -> Decimal | None:
     text = _optional_text(value)
@@ -321,6 +344,7 @@ def _optional_cost_limit(value: object) -> Decimal | None:
         raise ValueError("max_cost_usd must be a non-negative decimal")
     return amount
 
+
 def _optional_bool(value: object, field_name: str) -> bool | None:
     if value is None:
         return None
@@ -333,10 +357,12 @@ def _optional_bool(value: object, field_name: str) -> bool | None:
         return False
     raise ValueError(f"{field_name} must be a boolean")
 
+
 def _ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
 
 def _list_of_mappings(value: object, field_name: str) -> list[dict[str, Any]]:
     if value is None:
@@ -350,6 +376,7 @@ def _list_of_mappings(value: object, field_name: str) -> list[dict[str, Any]]:
         records.append(dict(item))
     return records
 
+
 def _string_list(value: object, field_name: str) -> list[str]:
     if value is None:
         return []
@@ -359,12 +386,14 @@ def _string_list(value: object, field_name: str) -> list[str]:
         raise ValueError(f"{field_name} must be a list of strings")
     return [str(item).strip() for item in value if str(item).strip()]
 
+
 def _optional_mapping(value: object, field_name: str) -> dict[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         raise ValueError(f"{field_name} must be a JSON object")
     return dict(value)
+
 
 def _bool_from_value(value: object, *, default: bool) -> bool:
     if value is None:
@@ -378,10 +407,12 @@ def _bool_from_value(value: object, *, default: bool) -> bool:
         return False
     raise ValueError("boolean value is required")
 
+
 def _json_dumps(value: Any) -> str:
     import json
 
     return json.dumps(value, sort_keys=True, indent=2)
+
 
 __all__ = [
     "ADDON_ID",

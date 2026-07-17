@@ -128,7 +128,6 @@ def _assistant_allowed_chat_thread(session: Any, thread_id: str) -> bool:
     return False
 
 
-
 def register_chat_tools(
     server: FastMCP,
     context: RuntimeContext,
@@ -185,9 +184,7 @@ def register_chat_tools(
             )
             return result
         except PolicyError as exc:
-            audit_failure(
-                resolved_session_id, ToolName.ASSISTANT_POST_CHAT_REPLY, args, str(exc)
-            )
+            audit_failure(resolved_session_id, ToolName.ASSISTANT_POST_CHAT_REPLY, args, str(exc))
             raise
         except Exception as exc:
             audit_failure(

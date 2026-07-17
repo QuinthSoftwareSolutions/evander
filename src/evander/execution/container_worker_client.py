@@ -258,10 +258,7 @@ class ContainerWorkerClient:
             "total_lines": _int_header(response, "x-evander-log-total-lines"),
             "start_line": _int_header(response, "x-evander-log-start-line"),
             "end_line": _int_header(response, "x-evander-log-end-line"),
-            "has_more_before": response.headers.get(
-                "x-evander-log-has-more-before"
-            )
-            == "true",
+            "has_more_before": response.headers.get("x-evander-log-has-more-before") == "true",
         }
         return response.text, metadata
 
@@ -302,8 +299,7 @@ class ContainerWorkerClient:
                 self._sleep(sleep_seconds)
             except httpx.HTTPError as exc:
                 raise ContainerWorkerClientError(
-                    f"container worker {method_normalized} {path} failed: "
-                    f"{sanitize_text(str(exc))}"
+                    f"container worker {method_normalized} {path} failed: {sanitize_text(str(exc))}"
                 ) from exc
         else:  # pragma: no cover - loop always returns or raises.
             raise ContainerWorkerClientError(

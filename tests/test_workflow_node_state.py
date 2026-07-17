@@ -12,9 +12,7 @@ def test_workflow_node_is_enabled_honors_top_level_false() -> None:
 
 
 def test_workflow_node_is_enabled_honors_nested_config_false() -> None:
-    assert workflow_node_is_enabled(
-        {"id": "trigger-1", "config": {"enabled": False}}
-    ) is False
+    assert workflow_node_is_enabled({"id": "trigger-1", "config": {"enabled": False}}) is False
 
 
 def test_workflow_node_is_enabled_only_boolean_false_disables() -> None:

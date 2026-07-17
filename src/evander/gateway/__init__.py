@@ -9,9 +9,9 @@ Canonical gateway modules are:
 
 from . import server as _server
 from .server import *  # noqa: F403
-from .app import create_app
-from .cli import main
-from .server import create_server
+from .app import create_app as create_app
+from .cli import main as main
+from .server import create_server as create_server
 
 # Preserve historical access to private helpers during the gateway module migration.
 for _name in dir(_server):

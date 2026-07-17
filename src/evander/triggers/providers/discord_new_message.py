@@ -59,7 +59,11 @@ class DiscordNewMessageTriggerProvider(TriggerProviderBase):
         events: list[TriggerEvent] = []
         for message in candidates:
             occurred_at = message.created_at.astimezone(UTC)
-            if cursor is not None and occurred_at == cursor and message.message_id in recent_message_id_set:
+            if (
+                cursor is not None
+                and occurred_at == cursor
+                and message.message_id in recent_message_id_set
+            ):
                 continue
             events.append(
                 TriggerEvent(

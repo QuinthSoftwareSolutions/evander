@@ -131,9 +131,13 @@ def _tool_call_audit_fields(
         trace_id = _first_string_in_payload(result, ("workflow_trace_id", "trace_id"))
     if trace_id is None:
         trace_id = (
-            str(metadata.get("workflow_trace_id") or metadata.get("trace_id") or "").strip()
-            or None
+            str(metadata.get("workflow_trace_id") or metadata.get("trace_id") or "").strip() or None
         )
+    connector_id = None
+    connector_operation = None
+    if current_tool_name == ToolName.CALL_CONNECTOR.value:
+        connector_id = _first_string_in_payload(args, ("connector_id",))
+        connector_operation = _first_string_in_payload(args, ("operation",))
     return {
         "request_id": request_id,
         "correlation_id": correlation_id,
@@ -142,6 +146,8 @@ def _tool_call_audit_fields(
         "workflow_run_id": workflow_run_id,
         "trace_id": trace_id,
         "duration_ms": _tool_call_duration_ms(current),
+        "connector_id": connector_id,
+        "connector_operation": connector_operation,
     }
 
 

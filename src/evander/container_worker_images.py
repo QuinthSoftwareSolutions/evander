@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import re
 
-_CONTAINER_WORKER_IMAGE_ALIAS_RE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
-)
+_CONTAINER_WORKER_IMAGE_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 def normalize_container_worker_images(value: object) -> dict[str, str]:
@@ -20,20 +18,15 @@ def normalize_container_worker_images(value: object) -> dict[str, str]:
             raise ValueError("container_worker_images aliases cannot be empty")
         if not _CONTAINER_WORKER_IMAGE_ALIAS_RE.fullmatch(alias):
             raise ValueError(
-                "container_worker_images aliases must match "
-                "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+                "container_worker_images aliases must match ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
             )
         if alias in normalized:
             raise ValueError(f"duplicate container_worker_images alias: {alias!r}")
         if not isinstance(raw_ref, str):
-            raise ValueError(
-                f"container_worker_images[{alias!r}] image refs must be strings"
-            )
+            raise ValueError(f"container_worker_images[{alias!r}] image refs must be strings")
         image_ref = raw_ref.strip()
         if not image_ref:
-            raise ValueError(
-                f"container_worker_images[{alias!r}] image refs cannot be empty"
-            )
+            raise ValueError(f"container_worker_images[{alias!r}] image refs cannot be empty")
         normalized[alias] = image_ref
     return normalized
 
