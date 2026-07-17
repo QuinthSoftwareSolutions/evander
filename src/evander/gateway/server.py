@@ -102,6 +102,8 @@ from evander.models import (
     AdoBacklogTitleUpdateRequest,
     AdoWorkItemActivityRequest,
     AdoWorkItemActivityResponse,
+    ApprovalGrantSettings,
+    ApprovalPayloadMode,
     ApprovalRequest,
     ApprovalStatus,
     AuditEvent,
@@ -1137,6 +1139,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
             arguments=sanitized_arguments,
         )
         grant_settings = context.policy.approval_grant_settings_for_tool(session, tool_name)
+        if connector_requires_approval:
+            grant_settings = ApprovalGrantSettings(
+                ttl_seconds=grant_settings.ttl_seconds,
+                max_uses=1,
+                payload_mode=ApprovalPayloadMode.EXACT,
+            )
         payload_digest = digest_payload(approval_payload)
         supplied_request_id = str(raw_arguments.get("approval_request_id") or "").strip()
         if not supplied_request_id:

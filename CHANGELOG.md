@@ -22,10 +22,18 @@
 
 ## 2026-07-17 - Connector And Bokio Review Hardening
 
-- Cleared omitted connector grants when an agent upsert moves a session into a different directory,
-  preventing directory-scoped connector capabilities from crossing trust boundaries.
+- Cleared omitted connector grants when either container or libvirt agent upserts move a session
+  into a different directory, and reset the Admin Web create dialog's grants when its directory
+  changes, preventing directory-scoped connector capabilities from crossing trust boundaries.
+- Rejected connector schemas that exclude object arguments or use remote references, disabled
+  runtime schema retrieval, and clamped operation-required approvals to exact single-use calls.
+- Preserved spaces and non-ASCII filesystem names without permitting placeholder traversal, and
+  limited connector-operation audit fallback metadata to actual connector calls.
+- Added one-time Admin Web reload recovery for lazy chunks made stale by a frontend deployment.
 - Kept definite pre-request Bokio journal-creation failures retryable and prevented delayed
   evidence failures from regressing an already completed operation.
+- Marked Bokio evidence associations failed when their retained blob cannot be opened, allowing a
+  deliberate retry after the evidence is restored.
 - Restored the tracked Admin Web entrypoint to the mainline bundle reference instead of retaining
   an unresolved generated hash.
 

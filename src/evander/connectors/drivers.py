@@ -63,6 +63,28 @@ def _render_path_template(template: str, arguments: dict[str, Any]) -> str:
     return rendered
 
 
+def _render_filesystem_path_template(template: str, arguments: dict[str, Any]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in arguments:
+            raise ConnectorInvocationError(f"missing path argument: {name}")
+        value = arguments[name]
+        if isinstance(value, (dict, list)) or value is None:
+            raise ConnectorInvocationError(f"path argument {name!r} must be a scalar")
+        text = str(value)
+        if text in {".", ".."} or "/" in text or "\\" in text or "\0" in text:
+            raise ConnectorInvocationError(
+                "connector file is outside the approved root: filesystem path arguments "
+                "must not contain path separators or traversal"
+            )
+        return text
+
+    rendered = _PATH_TEMPLATE_FIELD.sub(replace, template)
+    if "{" in rendered or "}" in rendered:
+        raise ConnectorInvocationError("path template contains an invalid placeholder")
+    return rendered
+
+
 class RestConnectorDriver:
     def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.transport = transport
@@ -317,7 +339,7 @@ class FilesystemConnectorDriver:
             root = configured_root.resolve(strict=True)
         except OSError as exc:
             raise ConnectorInvocationError("configured connector root is unavailable") from exc
-        rendered = _render_path_template(str(operation.config["path"]), arguments)
+        rendered = _render_filesystem_path_template(str(operation.config["path"]), arguments)
         relative = Path(rendered.replace("\\", "/"))
         if relative.is_absolute() or ".." in relative.parts:
             raise ConnectorInvocationError("connector file path must remain relative")

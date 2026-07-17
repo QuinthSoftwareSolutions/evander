@@ -935,6 +935,8 @@ def _libvirt_create_vm(
         policy_update: dict[str, Any] = {}
         if connector_grants is not None:
             policy_update["connector_grants"] = connector_grants
+        elif existing_session.directory_path != normalized_directory_path:
+            policy_update["connector_grants"] = {}
         if tool_argument_policies is not None:
             policy_update["tool_argument_policies"] = (
                 session_helpers.session_tool_argument_policies_from_payload(

@@ -308,6 +308,7 @@ export function AgentCreateDialog({
       containerImage: "",
       initialPolicy: {
         ...current.initialPolicy,
+        connectorGrants: {},
         communicationTargetIds: [],
       },
     }));

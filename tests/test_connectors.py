@@ -23,6 +23,7 @@ from evander.connectors.drivers import ConnectorInvocationError
 from evander.connectors.models import (
     ConnectorAuthProfile,
     ConnectorDirectoryConfig,
+    ConnectorInvocationResult,
     validate_connector_directory_overlay,
 )
 from evander.connectors.service import (
@@ -35,7 +36,13 @@ from evander.effects.providers.vm_create import (
     _validated_connector_grants as validate_vm_connector_grants,
 )
 from evander.gateway import create_server
-from evander.models import ApprovalStatus, SessionManifest, ToolName
+from evander.models import (
+    ApprovalGrantSettings,
+    ApprovalPayloadMode,
+    ApprovalStatus,
+    SessionManifest,
+    ToolName,
+)
 from evander.runtime import build_runtime
 
 
@@ -148,6 +155,27 @@ def test_connector_definition_rejects_reserved_headers_and_requires_explicit_app
         "requires_approval"
     ]
     with pytest.raises(ValidationError, match="requires_approval"):
+        ConnectorDirectoryConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize("keyword", ["$ref", "$dynamicRef"])
+def test_connector_definition_rejects_remote_input_schema_references(keyword: str) -> None:
+    payload = _config().model_dump(mode="json")
+    payload["connectors"]["documents"]["operations"]["get_document"][  # type: ignore[index]
+        "input_schema"
+    ] = {keyword: "https://schemas.example.test/connector-input.json"}
+
+    with pytest.raises(ValidationError, match="local fragment reference"):
+        ConnectorDirectoryConfig.model_validate(payload)
+
+
+def test_connector_definition_rejects_input_schema_that_excludes_objects() -> None:
+    payload = _config().model_dump(mode="json")
+    payload["connectors"]["documents"]["operations"]["get_document"][  # type: ignore[index]
+        "input_schema"
+    ] = {"type": "array", "items": {"type": "string"}}
+
+    with pytest.raises(ValidationError, match="must allow object arguments"):
         ConnectorDirectoryConfig.model_validate(payload)
 
 
@@ -343,6 +371,28 @@ def test_rest_connector_injects_host_auth_and_validates_arguments(tmp_path: Path
         service.require_operation(_session(grants={}), "documents", "get_document", {"id": "alpha"})
 
 
+def test_connector_runtime_schema_validation_never_retrieves_remote_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    config.connectors["documents"].operations["get_document"].input_schema = {
+        "$ref": "https://schemas.example.test/connector-input.json"
+    }
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_args, **_kwargs: pytest.fail("connector schemas must not be retrieved"),
+    )
+
+    with pytest.raises(ConnectorPolicyError, match="unsupported reference"):
+        _service(tmp_path, config).require_operation(
+            _session(),
+            "documents",
+            "get_document",
+            {"id": "alpha"},
+        )
+
+
 def test_rest_connector_follows_303_with_get_and_without_the_mutation_body(
     tmp_path: Path,
 ) -> None:
@@ -444,6 +494,7 @@ def test_filesystem_connector_stages_artifact_and_blocks_escape(
     root = tmp_path / "approved"
     root.mkdir()
     (root / "report.txt").write_text("approved report", encoding="utf-8")
+    (root / "rapport 2026 å.pdf").write_text("unicode report", encoding="utf-8")
     outside = tmp_path / "outside.txt"
     outside.write_text("outside", encoding="utf-8")
     config = ConnectorDirectoryConfig.model_validate(
@@ -489,6 +540,19 @@ def test_filesystem_connector_stages_artifact_and_blocks_escape(
     assert result.artifact is not None
     staged = CommunicationArtifactStore(tmp_path).get(result.artifact.artifact_id)
     assert staged.blob_path.read_text(encoding="utf-8") == "approved report"
+
+    unicode_result = asyncio.run(
+        service.invoke(
+            session=session,
+            connector_id="reports",
+            operation_name="get_report",
+            arguments={"name": "rapport 2026 å.pdf"},
+        )
+    )
+    assert unicode_result.artifact is not None
+    unicode_staged = CommunicationArtifactStore(tmp_path).get(unicode_result.artifact.artifact_id)
+    assert unicode_staged.blob_path.read_text(encoding="utf-8") == "unicode report"
+
     with pytest.raises(ConnectorInvocationError, match="approved root"):
         asyncio.run(
             service.invoke(
@@ -827,6 +891,98 @@ def test_gateway_registers_tools_and_operation_approval_precedes_network(tmp_pat
     assert approvals[0].payload["arguments"]["operation"] == "get_document"
 
 
+def test_required_connector_approval_is_exact_and_single_use_despite_loose_tool_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    config = _config(requires_approval=True, access="write", method="POST")
+    context.provider_config.resolve_connectors_for_directory = lambda _path: config  # type: ignore[method-assign]
+    context.session_repository.upsert_session(
+        _session().model_copy(
+            update={
+                "directory_path": "root",
+                "approval_tool_settings": {
+                    ToolName.CALL_CONNECTOR.value: ApprovalGrantSettings(
+                        ttl_seconds=7200,
+                        max_uses=None,
+                        payload_mode=ApprovalPayloadMode.ANY,
+                    )
+                },
+            }
+        )
+    )
+    server = create_server(context)
+    approved_arguments = {
+        "session_id": "session-connectors",
+        "connector_id": "documents",
+        "operation": "get_document",
+        "arguments": {"id": "alpha"},
+    }
+
+    with pytest.raises(ToolError, match="approval"):
+        asyncio.run(server.call_tool("call_connector", approved_arguments))
+
+    approval = next(iter(context.approvals.read_all().values()))
+    assert approval.approval_settings is not None
+    assert approval.approval_settings.ttl_seconds == 7200
+    assert approval.approval_settings.max_uses == 1
+    assert approval.approval_settings.payload_mode is ApprovalPayloadMode.EXACT
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+
+    with pytest.raises(ToolError, match="payload mismatch"):
+        asyncio.run(
+            server.call_tool(
+                "call_connector",
+                {
+                    **approved_arguments,
+                    "arguments": {"id": "beta"},
+                    "approval_request_id": approval.request_id,
+                },
+            )
+        )
+
+    async def fake_invoke(self: ConnectorService, **_kwargs: object) -> ConnectorInvocationResult:
+        return ConnectorInvocationResult(
+            connector_id="documents",
+            operation="get_document",
+            result_mode="json",
+            value={"ok": True},
+        )
+
+    monkeypatch.setattr(ConnectorService, "invoke", fake_invoke)
+    asyncio.run(
+        server.call_tool(
+            "call_connector",
+            {**approved_arguments, "approval_request_id": approval.request_id},
+        )
+    )
+    with pytest.raises(ToolError):
+        asyncio.run(
+            server.call_tool(
+                "call_connector",
+                {**approved_arguments, "approval_request_id": approval.request_id},
+            )
+        )
+    exhausted = context.approvals.get(approval.request_id)
+    assert exhausted is not None
+    assert exhausted.status is ApprovalStatus.EXHAUSTED
+
+
 def test_admin_connector_api_is_revisioned_privileged_and_validates_before_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -921,6 +1077,42 @@ def test_tool_call_audit_surfaces_connector_identity() -> None:
                 "operation": "get_document",
                 "arguments": {"id": "alpha"},
             },
+            "result": {"status": "success"},
+            "decision": "allowed",
+        }
+    )
+
+    assert entry is not None
+    assert entry.connector_id == "documents"
+    assert entry.connector_operation == "get_document"
+
+
+def test_tool_call_audit_does_not_treat_non_connector_operation_as_connector_metadata() -> None:
+    entry = tool_call_audit_entry_from_payload(
+        {
+            "event_type": "tool_call",
+            "created_at": "2026-07-17T10:00:00+00:00",
+            "session_id": "session-assistant",
+            "tool_name": "assistant_run_safe_operation",
+            "args": {"operation": "refresh_status"},
+            "result": {"status": "success"},
+            "decision": "allowed",
+        }
+    )
+
+    assert entry is not None
+    assert entry.connector_id is None
+    assert entry.connector_operation is None
+
+
+def test_tool_call_audit_accepts_operation_fallback_with_explicit_connector_id() -> None:
+    entry = tool_call_audit_entry_from_payload(
+        {
+            "event_type": "tool_call",
+            "created_at": "2026-07-17T10:00:00+00:00",
+            "session_id": "session-addon",
+            "tool_name": "addon_connector_proxy",
+            "args": {"connector_id": "documents", "operation": "get_document"},
             "result": {"status": "success"},
             "decision": "allowed",
         }

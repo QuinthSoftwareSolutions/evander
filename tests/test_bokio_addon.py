@@ -409,6 +409,54 @@ def test_bokio_mcp_retries_a_failed_attachment_only_when_requested(
     assert len(requests) == 2
 
 
+def test_bokio_mcp_marks_missing_evidence_blob_failed_so_attachment_can_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    store = BokioEvidenceStore(tmp_path)
+    evidence, _created = store.ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    evidence_id = evidence["evidence_id"]
+    blob_path = store.get_file(evidence_id).blob_path
+    blob_path.unlink()
+    server = _register_bokio_mcp(tmp_path, allowed_tools=["bokio_attach_evidence"])
+
+    with pytest.raises(FileNotFoundError, match="blob is missing"):
+        server.tools["bokio_attach_evidence"](
+            evidence_id=evidence_id,
+            journal_entry_id="journal-entry-1",
+            session_id="session-1",
+        )
+
+    failed = store.get(evidence_id)["associations"][0]
+    assert failed["status"] == "failed"
+    assert "blob is missing" in failed["error"]
+    blob_path.write_bytes(b"%PDF-1.7\nreceipt")
+
+    result = server.tools["bokio_attach_evidence"](
+        evidence_id=evidence_id,
+        journal_entry_id="journal-entry-1",
+        retry_if_failed=True,
+        session_id="session-1",
+    )
+
+    assert result["association"]["status"] == "attached"
+    assert len(requests) == 1
+
+
 def test_bokio_evidence_store_atomically_claims_one_failed_association_retry(
     tmp_path: Path,
 ) -> None:

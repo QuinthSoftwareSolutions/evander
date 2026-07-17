@@ -1009,10 +1009,10 @@ def tool_call_audit_entry_from_payload(
             connector_id = text
             break
     connector_operation = None
-    for candidate in (
-        payload.get("connector_operation"),
-        raw_args.get("operation"),
-    ):
+    operation_candidates = [payload.get("connector_operation")]
+    if tool_name == "call_connector" or connector_id is not None:
+        operation_candidates.append(raw_args.get("operation"))
+    for candidate in operation_candidates:
         text = str(candidate or "").strip()
         if text:
             connector_operation = text

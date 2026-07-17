@@ -29,6 +29,37 @@ import {
   type AdminTabDefinition,
 } from "./adminRouting";
 
+const STALE_CHUNK_RELOAD_STORAGE_KEY = "admin-web:stale-chunk-reload";
+let staleChunkReloadRequested = false;
+
+function recoverFromStaleViteChunk(event: Event) {
+  event.preventDefault();
+  if (staleChunkReloadRequested) return;
+  staleChunkReloadRequested = true;
+  try {
+    if (window.sessionStorage.getItem(STALE_CHUNK_RELOAD_STORAGE_KEY) === "true") return;
+    window.sessionStorage.setItem(STALE_CHUNK_RELOAD_STORAGE_KEY, "true");
+  } catch {
+    // Reload recovery still works when browser storage is unavailable.
+  }
+  window.location.reload();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("vite:preloadError", recoverFromStaleViteChunk);
+  window.addEventListener(
+    "load",
+    () => {
+      try {
+        window.sessionStorage.removeItem(STALE_CHUNK_RELOAD_STORAGE_KEY);
+      } catch {
+        // Browser storage is optional for the one-time reload guard.
+      }
+    },
+    { once: true },
+  );
+}
+
 const WorkflowEditorApp = lazy(() => import("./App"));
 const AddonsPage = lazy(() =>
   import("./features/addons/AddonsPage").then(({ AddonsPage }) => ({ default: AddonsPage })),

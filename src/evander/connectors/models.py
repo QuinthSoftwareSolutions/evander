@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, Field, field_validator, model_validator
+from referencing import Registry
 
 
 CONNECTOR_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -31,6 +32,33 @@ PROTECTED_CONNECTOR_HEADERS = frozenset(
         "evander-mcp-session-token",
     }
 )
+_NO_REMOTE_SCHEMA_REGISTRY = Registry()
+
+
+def _validate_input_schema_contract(value: dict[str, Any]) -> None:
+    declared_type = value.get("type")
+    if declared_type is not None:
+        declared_types = (
+            {declared_type}
+            if isinstance(declared_type, str)
+            else set(declared_type)
+            if isinstance(declared_type, list)
+            else set()
+        )
+        if "object" not in declared_types:
+            raise ValueError("input_schema must allow object arguments")
+
+    pending: list[Any] = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            for keyword in ("$ref", "$dynamicRef"):
+                reference = current.get(keyword)
+                if isinstance(reference, str) and reference and not reference.startswith("#"):
+                    raise ValueError(f"input_schema {keyword} must be a local fragment reference")
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
 
 
 def normalize_connector_id(value: object, *, field_name: str = "connector_id") -> str:
@@ -173,6 +201,7 @@ class ConnectorOperationDefinition(BaseModel):
             Draft202012Validator.check_schema(value)
         except SchemaError as exc:
             raise ValueError(f"input_schema is not valid JSON Schema: {exc.message}") from exc
+        _validate_input_schema_contract(value)
         return value
 
     @model_validator(mode="after")
@@ -249,7 +278,10 @@ class ConnectorDefinition(BaseModel):
             if operation.access != "read" or operation.requires_approval:
                 raise ValueError("health_operation must be an unapproved read operation")
             errors = sorted(
-                Draft202012Validator(operation.input_schema).iter_errors(self.health_arguments),
+                Draft202012Validator(
+                    operation.input_schema,
+                    registry=_NO_REMOTE_SCHEMA_REGISTRY,
+                ).iter_errors(self.health_arguments),
                 key=lambda error: list(error.absolute_path),
             )
             if errors:

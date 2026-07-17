@@ -435,8 +435,8 @@ def _attach_evidence(
     )
     if association["status"] == "attached":
         return {**association, "idempotent": True}
-    evidence = store.get_file(normalized_evidence_id)
     try:
+        evidence = store.get_file(normalized_evidence_id)
         result = _client(context).upload_document(
             file_path=evidence.blob_path,
             allowed_roots=[store.blob_root],

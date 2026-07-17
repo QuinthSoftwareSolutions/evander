@@ -14932,6 +14932,49 @@ def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
     assert manifest.web_search_enabled is False
 
 
+def test_create_vm_upsert_clears_omitted_connector_grants_when_directory_changes(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="team-a")
+    service.directory_admin.create_child(parent="root", name="team-b")
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.CALL_CONNECTOR],
+            connector_grants={"documents": ["get_document"]},
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.process_helpers.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    result = service.vm_agent_admin.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        directory_path="root/team-b",
+        allow_existing_session=True,
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.directory_path == "root/team-b"
+    assert manifest.connector_grants == {}
+
+
 def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

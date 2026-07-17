@@ -12,6 +12,8 @@ from typing import Any, Mapping
 
 import httpx
 from jsonschema import Draft202012Validator
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 
 from evander.connectors.drivers import (
     ConnectorInvocationError,
@@ -36,6 +38,7 @@ class ConnectorPolicyError(RuntimeError):
 
 
 _MAX_OAUTH_TOKEN_RESPONSE_BYTES = 64 * 1024
+_NO_REMOTE_SCHEMA_REGISTRY = Registry()
 
 
 @dataclass
@@ -195,10 +198,18 @@ class ConnectorService:
             )
         driver = self.registry.require(connector.driver)
         driver.validate_definition(connector)
-        errors = sorted(
-            Draft202012Validator(operation.input_schema).iter_errors(arguments),
-            key=lambda error: list(error.absolute_path),
-        )
+        try:
+            errors = sorted(
+                Draft202012Validator(
+                    operation.input_schema,
+                    registry=_NO_REMOTE_SCHEMA_REGISTRY,
+                ).iter_errors(arguments),
+                key=lambda error: list(error.absolute_path),
+            )
+        except Unresolvable as exc:
+            raise ConnectorPolicyError(
+                "connector input schema contains an unsupported reference"
+            ) from exc
         if errors:
             path = ".".join(str(part) for part in errors[0].absolute_path)
             prefix = f" at {path}" if path else ""
