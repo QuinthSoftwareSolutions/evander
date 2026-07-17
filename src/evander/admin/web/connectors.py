@@ -57,12 +57,22 @@ def connector_routes(
     )
 
     def _directory_path(request: Request) -> str:
-        return str(request.query_params.get("directory_path") or "root").strip() or "root"
+        requested = str(request.query_params.get("directory_path") or "root").strip() or "root"
+        return service.teams_admin.normalize_directory_reference(requested)
 
-    def _require_owner(request: Request, *, privileged: bool) -> dict[str, Any] | JSONResponse:
+    def _require_owner(
+        request: Request,
+        *,
+        directory_path: str,
+        privileged: bool,
+    ) -> dict[str, Any] | JSONResponse:
         try:
             session = auth.require(request)
-            auth.require_permission(request, ADMIN_OWNER_PERMISSION)
+            auth.require_permission(
+                request,
+                ADMIN_OWNER_PERMISSION,
+                directory_path=directory_path,
+            )
         except PermissionError as exc:
             return json_error(str(exc), status_code=403)
         if privileged and not request_has_privileged_operations(
@@ -118,19 +128,26 @@ def connector_routes(
         }
 
     async def get_connectors(request: Request) -> JSONResponse:
-        owner = _require_owner(request, privileged=False)
+        try:
+            directory_path = _directory_path(request)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        owner = _require_owner(request, directory_path=directory_path, privileged=False)
         if isinstance(owner, JSONResponse):
             return owner
         try:
-            return JSONResponse(_payload(_directory_path(request)))
+            return JSONResponse(_payload(directory_path))
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
 
     async def put_connectors(request: Request) -> JSONResponse:
-        owner = _require_owner(request, privileged=True)
+        try:
+            directory_path = _directory_path(request)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        owner = _require_owner(request, directory_path=directory_path, privileged=True)
         if isinstance(owner, JSONResponse):
             return owner
-        directory_path = _directory_path(request)
         try:
             payload = await _json_body(request)
         except ValueError as exc:
@@ -181,10 +198,13 @@ def connector_routes(
             return json_error(str(exc), status_code=400)
 
     async def test_connector(request: Request) -> JSONResponse:
-        owner = _require_owner(request, privileged=True)
+        try:
+            directory_path = _directory_path(request)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        owner = _require_owner(request, directory_path=directory_path, privileged=True)
         if isinstance(owner, JSONResponse):
             return owner
-        directory_path = _directory_path(request)
         try:
             connector_id = normalize_connector_id(request.path_params.get("connector_id"))
             config = service.runtime.provider_config.resolve_connectors_for_directory(

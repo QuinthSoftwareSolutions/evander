@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
@@ -35,8 +36,99 @@ PROTECTED_CONNECTOR_HEADERS = frozenset(
 _NO_REMOTE_SCHEMA_REGISTRY = Registry()
 
 
-def _validate_input_schema_contract(value: dict[str, Any]) -> None:
-    declared_type = value.get("type")
+@dataclass(frozen=True)
+class _ObjectSchemaCompatibility:
+    may_match: bool
+    matches_every_object: bool
+
+
+_OBJECT_SCHEMA_NONE = _ObjectSchemaCompatibility(False, False)
+_OBJECT_SCHEMA_SOME = _ObjectSchemaCompatibility(True, False)
+_OBJECT_SCHEMA_ALL = _ObjectSchemaCompatibility(True, True)
+
+
+def _object_schema_and(
+    left: _ObjectSchemaCompatibility,
+    right: _ObjectSchemaCompatibility,
+) -> _ObjectSchemaCompatibility:
+    if not left.may_match or not right.may_match:
+        return _OBJECT_SCHEMA_NONE
+    return _ObjectSchemaCompatibility(
+        may_match=True,
+        matches_every_object=left.matches_every_object and right.matches_every_object,
+    )
+
+
+def _object_schema_or(
+    left: _ObjectSchemaCompatibility,
+    right: _ObjectSchemaCompatibility,
+) -> _ObjectSchemaCompatibility:
+    return _ObjectSchemaCompatibility(
+        may_match=left.may_match or right.may_match,
+        matches_every_object=left.matches_every_object or right.matches_every_object,
+    )
+
+
+def _object_schema_not(
+    compatibility: _ObjectSchemaCompatibility,
+) -> _ObjectSchemaCompatibility:
+    return _ObjectSchemaCompatibility(
+        may_match=not compatibility.matches_every_object,
+        matches_every_object=not compatibility.may_match,
+    )
+
+
+def _resolve_local_schema_reference(root: dict[str, Any], reference: str) -> Any | None:
+    fragment = unquote(reference[1:])
+    if not fragment:
+        return root
+    if fragment.startswith("/"):
+        current: Any = root
+        for encoded_token in fragment[1:].split("/"):
+            token = encoded_token.replace("~1", "/").replace("~0", "~")
+            if isinstance(current, dict) and token in current:
+                current = current[token]
+            elif isinstance(current, list):
+                try:
+                    current = current[int(token)]
+                except (IndexError, ValueError):
+                    return None
+            else:
+                return None
+        return current
+
+    pending: list[Any] = [root]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            if current.get("$anchor") == fragment or current.get("$dynamicAnchor") == fragment:
+                return current
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return None
+
+
+def _schema_object_compatibility(
+    schema: Any,
+    *,
+    root: dict[str, Any],
+    resolving: frozenset[str] = frozenset(),
+) -> _ObjectSchemaCompatibility:
+    """Return conservative lower and upper bounds for object-shaped instances.
+
+    ``may_match=False`` is only returned when the complete schema proves that no object can
+    validate. ``matches_every_object=True`` is similarly reserved for schemas proven to accept
+    every object, which lets negation remain safe without rejecting schemas whose property-level
+    satisfiability is merely unknown.
+    """
+    if isinstance(schema, bool):
+        return _OBJECT_SCHEMA_ALL if schema else _OBJECT_SCHEMA_NONE
+    if not isinstance(schema, dict):
+        return _OBJECT_SCHEMA_SOME
+
+    compatibility = _OBJECT_SCHEMA_ALL
+    declared_type = schema.get("type")
     if declared_type is not None:
         declared_types = (
             {declared_type}
@@ -46,8 +138,137 @@ def _validate_input_schema_contract(value: dict[str, Any]) -> None:
             else set()
         )
         if "object" not in declared_types:
-            raise ValueError("input_schema must allow object arguments")
+            return _OBJECT_SCHEMA_NONE
 
+    if "const" in schema:
+        compatibility = _object_schema_and(
+            compatibility,
+            _OBJECT_SCHEMA_SOME if isinstance(schema["const"], dict) else _OBJECT_SCHEMA_NONE,
+        )
+    if "enum" in schema:
+        enum_allows_object = any(isinstance(item, dict) for item in schema["enum"])
+        compatibility = _object_schema_and(
+            compatibility,
+            _OBJECT_SCHEMA_SOME if enum_allows_object else _OBJECT_SCHEMA_NONE,
+        )
+
+    required = schema.get("required") or []
+    min_properties = int(schema.get("minProperties") or 0)
+    max_properties = schema.get("maxProperties")
+    if max_properties is not None and (
+        min_properties > int(max_properties) or len(set(required)) > int(max_properties)
+    ):
+        return _OBJECT_SCHEMA_NONE
+    if schema.get("propertyNames") is False and (min_properties or required):
+        return _OBJECT_SCHEMA_NONE
+
+    properties_restrict = any(
+        subschema not in ({}, True) for subschema in (schema.get("properties") or {}).values()
+    )
+    patterns_restrict = any(
+        subschema not in ({}, True)
+        for subschema in (schema.get("patternProperties") or {}).values()
+    )
+    additional_properties_restrict = schema.get("additionalProperties", True) not in ({}, True)
+    unevaluated_properties_restrict = schema.get("unevaluatedProperties", True) not in ({}, True)
+    property_names_restrict = schema.get("propertyNames", True) not in ({}, True)
+    dependent_required_restrict = any((schema.get("dependentRequired") or {}).values())
+    dependent_schemas_restrict = any(
+        subschema not in ({}, True) for subschema in (schema.get("dependentSchemas") or {}).values()
+    )
+    if (
+        min_properties
+        or max_properties is not None
+        or required
+        or properties_restrict
+        or patterns_restrict
+        or additional_properties_restrict
+        or unevaluated_properties_restrict
+        or property_names_restrict
+        or dependent_required_restrict
+        or dependent_schemas_restrict
+    ):
+        compatibility = _object_schema_and(compatibility, _OBJECT_SCHEMA_SOME)
+
+    for keyword in ("$ref", "$dynamicRef"):
+        reference = schema.get(keyword)
+        if not isinstance(reference, str) or not reference.startswith("#"):
+            continue
+        if reference in resolving:
+            referenced = _OBJECT_SCHEMA_SOME
+        else:
+            target = _resolve_local_schema_reference(root, reference)
+            referenced = (
+                _schema_object_compatibility(
+                    target,
+                    root=root,
+                    resolving=resolving | {reference},
+                )
+                if target is not None
+                else _OBJECT_SCHEMA_SOME
+            )
+        compatibility = _object_schema_and(compatibility, referenced)
+
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list):
+        for subschema in all_of:
+            compatibility = _object_schema_and(
+                compatibility,
+                _schema_object_compatibility(subschema, root=root, resolving=resolving),
+            )
+
+    any_of = schema.get("anyOf")
+    if isinstance(any_of, list):
+        any_compatibility = _OBJECT_SCHEMA_NONE
+        for subschema in any_of:
+            any_compatibility = _object_schema_or(
+                any_compatibility,
+                _schema_object_compatibility(subschema, root=root, resolving=resolving),
+            )
+        compatibility = _object_schema_and(compatibility, any_compatibility)
+
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list):
+        branch_compatibilities = [
+            _schema_object_compatibility(subschema, root=root, resolving=resolving)
+            for subschema in one_of
+        ]
+        possible_branches = [item for item in branch_compatibilities if item.may_match]
+        universal_branches = [item for item in branch_compatibilities if item.matches_every_object]
+        if not possible_branches or len(universal_branches) > 1:
+            one_compatibility = _OBJECT_SCHEMA_NONE
+        elif len(universal_branches) == 1 and len(possible_branches) == 1:
+            one_compatibility = _OBJECT_SCHEMA_ALL
+        else:
+            one_compatibility = _OBJECT_SCHEMA_SOME
+        compatibility = _object_schema_and(compatibility, one_compatibility)
+
+    if "not" in schema:
+        compatibility = _object_schema_and(
+            compatibility,
+            _object_schema_not(
+                _schema_object_compatibility(schema["not"], root=root, resolving=resolving)
+            ),
+        )
+
+    if "if" in schema:
+        condition = _schema_object_compatibility(schema["if"], root=root, resolving=resolving)
+        then_schema = _schema_object_compatibility(
+            schema.get("then", True), root=root, resolving=resolving
+        )
+        else_schema = _schema_object_compatibility(
+            schema.get("else", True), root=root, resolving=resolving
+        )
+        conditional = _object_schema_or(
+            _object_schema_and(condition, then_schema),
+            _object_schema_and(_object_schema_not(condition), else_schema),
+        )
+        compatibility = _object_schema_and(compatibility, conditional)
+
+    return compatibility
+
+
+def _validate_input_schema_contract(value: dict[str, Any]) -> None:
     pending: list[Any] = [value]
     while pending:
         current = pending.pop()
@@ -59,6 +280,9 @@ def _validate_input_schema_contract(value: dict[str, Any]) -> None:
             pending.extend(current.values())
         elif isinstance(current, list):
             pending.extend(current)
+
+    if not _schema_object_compatibility(value, root=value).may_match:
+        raise ValueError("input_schema must allow object arguments")
 
 
 def normalize_connector_id(value: object, *, field_name: str = "connector_id") -> str:

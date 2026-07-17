@@ -22,6 +22,10 @@
 
 ## 2026-07-17 - Connector And Bokio Review Hardening
 
+- Authorized connector reads, edits, and health checks against the resolved requested directory,
+  allowing child-directory owners to manage the connectors in their scope without root access.
+- Rejected composed connector input schemas whose references, boolean applicators, or negations
+  cannot accept the object-shaped arguments supplied by MCP.
 - Cleared omitted connector grants when either container or libvirt agent upserts move a session
   into a different directory, and reset the Admin Web create dialog's grants when its directory
   changes, preventing directory-scoped connector capabilities from crossing trust boundaries.

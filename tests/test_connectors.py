@@ -16,6 +16,7 @@ from starlette.testclient import TestClient
 from evander.addons import AddonRegistration, LoadedAddonCatalog
 from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
+from evander.admin.web.rbac import OWNER_GROUP_ID
 from evander.admin.services.approval_audit_service import tool_call_audit_entry_from_payload
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.config import GatewayConfig
@@ -169,14 +170,48 @@ def test_connector_definition_rejects_remote_input_schema_references(keyword: st
         ConnectorDirectoryConfig.model_validate(payload)
 
 
-def test_connector_definition_rejects_input_schema_that_excludes_objects() -> None:
+@pytest.mark.parametrize(
+    "input_schema",
+    [
+        {"type": "array", "items": {"type": "string"}},
+        {"oneOf": [{"type": "string"}]},
+        {"not": {"type": "object"}},
+        {"not": {"properties": {}}},
+        {"allOf": [{"type": "object"}, {"not": {"type": "object"}}]},
+        {"$defs": {"arguments": {"type": "string"}}, "$ref": "#/$defs/arguments"},
+    ],
+)
+def test_connector_definition_rejects_input_schema_that_excludes_objects(
+    input_schema: dict[str, object],
+) -> None:
     payload = _config().model_dump(mode="json")
     payload["connectors"]["documents"]["operations"]["get_document"][  # type: ignore[index]
         "input_schema"
-    ] = {"type": "array", "items": {"type": "string"}}
+    ] = input_schema
 
     with pytest.raises(ValidationError, match="must allow object arguments"):
         ConnectorDirectoryConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "input_schema",
+    [
+        {"oneOf": [{"type": "string"}, {"type": "object"}]},
+        {"$defs": {"arguments": {"type": "object"}}, "$ref": "#/$defs/arguments"},
+        {"not": {"type": "string"}},
+    ],
+)
+def test_connector_definition_accepts_object_compatible_composed_schema(
+    input_schema: dict[str, object],
+) -> None:
+    payload = _config().model_dump(mode="json")
+    payload["connectors"]["documents"]["operations"]["get_document"][  # type: ignore[index]
+        "input_schema"
+    ] = input_schema
+
+    config = ConnectorDirectoryConfig.model_validate(payload)
+
+    assert config.connectors["documents"].operations["get_document"].input_schema == input_schema
 
 
 @pytest.mark.parametrize(
@@ -1061,6 +1096,77 @@ def test_admin_connector_api_is_revisioned_privileged_and_validates_before_write
     assert saved.status_code == 200
     assert lock_entries == 1
     assert lock_held is False
+
+
+def test_admin_connector_api_authorizes_scoped_owner_at_requested_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = build_admin_runtime(_gateway_config_path(tmp_path))
+    created = service.directory_admin.create_child(parent="root", name="ops")
+    assert created.ok
+    config = _config()
+    connector = config.connectors["documents"]
+    connector.health_operation = "get_document"
+    connector.health_arguments = {"id": "health"}
+    configured = config.model_dump(mode="json", exclude_none=True)
+    assert service.operations_admin.write_directory_domain_config(
+        "root", "connectors", configured
+    ).ok
+
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.remove_user_group_assignment(
+        login="ops-owner@example.com",
+        group_id="operator",
+        directory_path="root",
+    )
+    store.assign_user_group(
+        login="ops-owner@example.com",
+        group_id=OWNER_GROUP_ID,
+        directory_path="root/ops",
+    )
+    store.set_local_password(login="ops-owner@example.com", password="ops-pass")
+    client = TestClient(app)
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={"username": "ops-owner@example.com", "password": "ops-pass"},
+        ).status_code
+        == 200
+    )
+    assert client.post("/api/admin/privileged/unlock").status_code == 200
+
+    state_response = client.get("/api/admin/connectors?directory_path=root/ops")
+    assert state_response.status_code == 200
+    assert client.get("/api/admin/connectors?directory_path=root").status_code == 403
+    state = state_response.json()
+    saved = client.put(
+        "/api/admin/connectors?directory_path=root/ops",
+        json={"expected_revision": state["revision"], "config": {}},
+    )
+    assert saved.status_code == 200
+
+    async def fake_invoke(
+        self: ConnectorService,
+        **_kwargs: object,
+    ) -> ConnectorInvocationResult:
+        return ConnectorInvocationResult(
+            connector_id="documents",
+            operation="get_document",
+            result_mode="json",
+            value={"ok": True},
+        )
+
+    monkeypatch.setattr(ConnectorService, "invoke", fake_invoke)
+    tested = client.post("/api/admin/connectors/documents/test?directory_path=root/ops")
+    assert tested.status_code == 200
+    assert tested.json()["status"] == "ok"
 
 
 def test_tool_call_audit_surfaces_connector_identity() -> None:
