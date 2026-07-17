@@ -485,12 +485,13 @@ def _create_journal_entry_with_evidence(
             retry_if_failed=retry_if_failed,
         )
     if operation["status"] == "pending_create":
+        client = _client(context)
         operation, claimed = store.claim_journal_entry_creation(
             operation_key=operation["operation_key"]
         )
         if claimed:
             try:
-                created = _client(context).create_journal_entry(payload)
+                created = client.create_journal_entry(payload)
                 journal_entry_id = str(created.get("id") or "").strip()
                 if not journal_entry_id:
                     raise BokioEvidenceError(
@@ -503,7 +504,9 @@ def _create_journal_entry_with_evidence(
                 )
             except Exception as exc:
                 store.mark_journal_entry_operation_needs_attention(
-                    operation_key=operation["operation_key"], error=exc
+                    operation_key=operation["operation_key"],
+                    error=exc,
+                    expected_status="creating",
                 )
                 raise
     if operation["status"] == "completed":
@@ -534,7 +537,9 @@ def _create_journal_entry_with_evidence(
         ]
     except Exception as exc:
         store.mark_journal_entry_operation_needs_attention(
-            operation_key=operation["operation_key"], error=exc
+            operation_key=operation["operation_key"],
+            error=exc,
+            expected_status="pending_evidence",
         )
         raise
     operation = store.mark_journal_entry_operation_completed(

@@ -401,7 +401,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             session_id=session_id,
             value=payload.get("connector_grants"),
         )
-        if connector_grants is None and existing_session is not None:
+        if (
+            connector_grants is None
+            and existing_session is not None
+            and existing_session.directory_path == directory_path
+        ):
             connector_grants = {
                 connector_id: list(operation_names)
                 for connector_id, operation_names in existing_session.connector_grants.items()

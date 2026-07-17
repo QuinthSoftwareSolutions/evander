@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-17 - Connector And Bokio Review Hardening
+
+- Cleared omitted connector grants when an agent upsert moves a session into a different directory,
+  preventing directory-scoped connector capabilities from crossing trust boundaries.
+- Kept definite pre-request Bokio journal-creation failures retryable and prevented delayed
+  evidence failures from regressing an already completed operation.
+- Restored the tracked Admin Web entrypoint to the mainline bundle reference instead of retaining
+  an unresolved generated hash.
+
 ## 2026-07-16 - Connector, Managed-Git, And Bokio Review Hardening
 
 - Followed REST `303 See Other` responses with bodyless GET requests, rejected protected API-key

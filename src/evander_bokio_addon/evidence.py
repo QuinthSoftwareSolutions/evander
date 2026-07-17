@@ -397,21 +397,27 @@ class BokioEvidenceStore:
             return self._operation_with_connection(connection, normalized_key)
 
     def mark_journal_entry_operation_needs_attention(
-        self, *, operation_key: str, error: Exception | str
+        self,
+        *,
+        operation_key: str,
+        error: Exception | str,
+        expected_status: str,
     ) -> dict[str, Any]:
         normalized_key = _required_text(operation_key, "operation_key")
+        normalized_expected_status = _required_text(expected_status, "expected_status")
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE journal_entry_operations
                 SET status = ?, error = ?, updated_at = ?
-                WHERE operation_key = ?
+                WHERE operation_key = ? AND status = ?
                 """,
                 (
                     "needs_attention",
                     str(error)[:2000],
                     _storage_datetime(datetime.now(UTC)),
                     normalized_key,
+                    normalized_expected_status,
                 ),
             )
             return self._operation_with_connection(connection, normalized_key)

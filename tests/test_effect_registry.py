@@ -5732,6 +5732,31 @@ def test_agent_create_container_upserts_when_session_exists(
     assert cleared is not None
     assert cleared.connector_grants == {}
 
+    session_repository.upsert_session(
+        cleared.model_copy(
+            update={
+                "directory_path": "root/team-a",
+                "connector_grants": {"team-a-documents": ["read"]},
+            }
+        )
+    )
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-move-directory",
+            display_name="Move directory",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            existing_agent_behavior="upsert",
+            directory_path="root/team-b",
+        )
+    ).execute()
+
+    moved = session_repository.get_session("session-1")
+    assert moved is not None
+    assert moved.directory_path == "root/team-b"
+    assert moved.connector_grants == {}
+
 
 def test_agent_create_container_upsert_preserves_omitted_allowed_contacts(
     tmp_path,

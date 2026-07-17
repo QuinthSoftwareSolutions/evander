@@ -612,6 +612,148 @@ def test_bokio_mcp_claims_journal_entry_creation_before_calling_bokio(
     assert create_requests == 1
 
 
+def test_bokio_mcp_keeps_pre_request_creation_failures_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BOKIO_COMPANY_ID", raising=False)
+    monkeypatch.delenv("BOKIO_INTEGRATION_TOKEN", raising=False)
+    evidence, _created = BokioEvidenceStore(tmp_path).ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    evidence_id = evidence["evidence_id"]
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_journal_entry_with_evidence"],
+    )
+    arguments = {
+        "payload": {"title": "OpenAI receipt", "items": []},
+        "evidence_ids": [evidence_id],
+        "operation_key": "retryable-pre-request-failure",
+        "session_id": "session-1",
+    }
+
+    with pytest.raises(BokioConfigError, match="company id is required"):
+        server.tools["bokio_create_journal_entry_with_evidence"](**arguments)
+
+    operation = BokioEvidenceStore(tmp_path).begin_journal_entry_operation(
+        operation_key="retryable-pre-request-failure",
+        payload=arguments["payload"],
+        evidence_ids=[evidence_id],
+    )
+    assert operation["status"] == "pending_create"
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/journal-entries"):
+            return httpx.Response(200, json={"id": "journal-entry-1"})
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+
+    result = server.tools["bokio_create_journal_entry_with_evidence"](**arguments)
+
+    assert result["operation"]["status"] == "completed"
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "journal-entries",
+        "uploads",
+    ]
+
+
+def test_bokio_mcp_late_duplicate_failure_cannot_regress_completed_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+    delayed_mark_started = threading.Event()
+    release_delayed_mark = threading.Event()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/journal-entries"):
+            return httpx.Response(200, json={"id": "journal-entry-1"})
+        upload_started.set()
+        if not release_upload.wait(timeout=5):
+            raise AssertionError("timed out waiting to release Bokio evidence upload")
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    original_mark_needs_attention = (
+        BokioEvidenceStore.mark_journal_entry_operation_needs_attention
+    )
+
+    def delayed_mark_needs_attention(
+        store: BokioEvidenceStore, **kwargs: object
+    ) -> dict[str, object]:
+        delayed_mark_started.set()
+        if not release_delayed_mark.wait(timeout=5):
+            raise AssertionError("timed out waiting to release delayed operation update")
+        return original_mark_needs_attention(store, **kwargs)
+
+    monkeypatch.setattr(
+        BokioEvidenceStore,
+        "mark_journal_entry_operation_needs_attention",
+        delayed_mark_needs_attention,
+    )
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    evidence, _created = BokioEvidenceStore(tmp_path).ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm_receipt",
+        mime_type="application/pdf",
+    )
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_journal_entry_with_evidence"],
+    )
+    arguments = {
+        "payload": {"title": "OpenAI receipt", "items": []},
+        "evidence_ids": [evidence["evidence_id"]],
+        "operation_key": "concurrent-evidence-operation",
+        "session_id": "session-1",
+    }
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        owner = executor.submit(
+            server.tools["bokio_create_journal_entry_with_evidence"], **arguments
+        )
+        assert upload_started.wait(timeout=5)
+        duplicate = executor.submit(
+            server.tools["bokio_create_journal_entry_with_evidence"], **arguments
+        )
+        assert delayed_mark_started.wait(timeout=5)
+        try:
+            release_upload.set()
+            owner_result = owner.result(timeout=5)
+        finally:
+            release_delayed_mark.set()
+            release_upload.set()
+        with pytest.raises(BokioEvidenceError, match="already pending"):
+            duplicate.result(timeout=5)
+
+    repeated = server.tools["bokio_create_journal_entry_with_evidence"](**arguments)
+
+    assert owner_result["operation"]["status"] == "completed"
+    assert repeated["operation"]["status"] == "completed"
+    assert repeated["operation"]["idempotent"] is True
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "journal-entries",
+        "uploads",
+    ]
+
+
 def test_bokio_mcp_resumes_evidence_after_entry_create_without_recreating_entry(
     tmp_path: Path, monkeypatch
 ) -> None:
