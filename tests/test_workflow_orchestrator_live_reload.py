@@ -41,9 +41,7 @@ class _RecordingEffectProvider:
 
 
 class _BlockingRecordingEffectProvider(_RecordingEffectProvider):
-    def __init__(
-        self, effect_id: str, calls: list[str], *, wait_on: Event | None = None
-    ) -> None:
+    def __init__(self, effect_id: str, calls: list[str], *, wait_on: Event | None = None) -> None:
         super().__init__(effect_id, calls)
         self._wait_on = wait_on
 
@@ -137,11 +135,7 @@ def _reload_worker_config(
                 if workflow_config_snapshot_store_path is not None
                 else {}
             ),
-            **(
-                {"effect_lock_path": effect_lock_path}
-                if effect_lock_path is not None
-                else {}
-            ),
+            **({"effect_lock_path": effect_lock_path} if effect_lock_path is not None else {}),
             "provider_loader": {
                 "provider_entry_points_enabled": False,
                 "provider_modules": provider_modules or [],
@@ -334,6 +328,7 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
     first_effect_cycle = effect_worker.run_once()
 
     assert _operator_trigger_ids(trigger_worker) == ["trigger-old"]
+    assert first_trigger_cycle.events_published == 1
     assert first_effect_cycle.effect_executions == 1
     assert executed_effect_ids == ["effect-old"]
 
@@ -363,6 +358,7 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
     second_effect_cycle = effect_worker.run_once()
 
     assert _operator_trigger_ids(trigger_worker) == ["trigger-new"]
+    assert second_trigger_cycle.events_published == 1
     assert second_effect_cycle.effect_executions >= 1
     assert executed_effect_ids == ["effect-old", "effect-new"]
     assert trigger_worker.worker_config.triggers[0].id == "trigger-new"
@@ -390,6 +386,7 @@ def test_trigger_worker_reloads_custom_provider_module(tmp_path: Path, monkeypat
 
     first_cycle = trigger_worker.run_once()
     assert _operator_trigger_ids(trigger_worker) == []
+    assert first_cycle.events_published == 0
 
     updated_config = _reload_worker_config(
         runtime_dir,
@@ -428,9 +425,7 @@ def test_trigger_worker_reloads_custom_provider_module(tmp_path: Path, monkeypat
     assert pending_events[0].trigger_type == "trigger:custom:reload"
 
 
-def test_effect_worker_reloads_custom_provider_module(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_effect_worker_reloads_custom_provider_module(tmp_path: Path, monkeypatch) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     initial_config = _reload_worker_config(runtime_dir)
@@ -526,9 +521,7 @@ def test_effect_worker_reloads_custom_provider_module(
         record.effect_type == "query:custom:reload" and record.status == "succeeded"
         for record in effect_records
     )
-    assert all(
-        "no_gate_provider_registered" not in (record.error or "") for record in gate_records
-    )
+    assert all("no_gate_provider_registered" not in (record.error or "") for record in gate_records)
     assert all(
         "no_effect_executor_registered" not in (record.error or "") for record in effect_records
     )

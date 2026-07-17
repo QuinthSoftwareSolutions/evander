@@ -70,7 +70,9 @@ def run_setup_tui(*, project_dir: Path, runtime_dir: Path = DEFAULT_RUNTIME_DIR)
     if not state.secret_storage_acknowledged:
         typer.echo("Evander keeps provider credentials on the control-plane host.")
         typer.echo(f"Secrets entered during setup will be stored in: {state.secret_file}")
-        typer.echo("Secret values are not written to agents, workflow files, prompts, or setup state.")
+        typer.echo(
+            "Secret values are not written to agents, workflow files, prompts, or setup state."
+        )
         if typer.confirm("Continue with this host secret file?", default=True):
             manager.acknowledge_secret_storage(state)
             state = manager.load_state()
@@ -99,10 +101,14 @@ def run_setup_tui(*, project_dir: Path, runtime_dir: Path = DEFAULT_RUNTIME_DIR)
 
         _clear_screen()
         _render_checklist(manager, state)
-        choice = typer.prompt(
-            "Select item number, L to launch when ready, P for plan, D for doctor, Q to quit",
-            default="q",
-        ).strip().lower()
+        choice = (
+            typer.prompt(
+                "Select item number, L to launch when ready, P for plan, D for doctor, Q to quit",
+                default="q",
+            )
+            .strip()
+            .lower()
+        )
         _clear_screen()
         if choice in {"q", "quit"}:
             return
@@ -388,7 +394,9 @@ def _select_multiple(
     default_values: list[str],
 ) -> list[str]:
     selected_index = 0
-    enabled = {value for value in default_values if any(option.value == value for option in options)}
+    enabled = {
+        value for value in default_values if any(option.value == value for option in options)
+    }
     message = ""
     while True:
         _clear_screen()
@@ -513,9 +521,7 @@ def _launch(manager: SetupManager, state):
     except Exception as exc:
         typer.echo("")
         typer.echo(f"Launch failed: {exc}")
-        typer.echo(
-            "Fix the failed step above, then rerun Launch and Admin Assistant verification."
-        )
+        typer.echo("Fix the failed step above, then rerun Launch and Admin Assistant verification.")
         return manager.load_state()
 
 

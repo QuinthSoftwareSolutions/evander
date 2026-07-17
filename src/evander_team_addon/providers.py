@@ -1771,9 +1771,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     raise
                 if project_repo is not None:
                     lease = {**lease, "project_repo": project_repo}
-                    conflict_retry_count = int(
-                        project_repo.get("state_conflict_retry_count") or 0
-                    )
+                    conflict_retry_count = int(project_repo.get("state_conflict_retry_count") or 0)
                     if conflict_retry_count:
                         transient_conflicts.append(
                             {
@@ -1789,9 +1787,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                                 "retry_scheduled": False,
                             }
                         )
-                    git_work_contexts.extend(
-                        _mapping_items(project_repo.get("git_work_contexts"))
-                    )
+                    git_work_contexts.extend(_mapping_items(project_repo.get("git_work_contexts")))
                     prepared_project_repos.append(
                         _project_repo_prepare_record(
                             agent=agent,
@@ -1835,9 +1831,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     state = _record_wake_failure(repo, lease=lease, error=error)
                     errors.append(f"{agent['id']}: {error}")
                     continue
-                delivered_action_feedback_dispatch_ids = _lease_action_feedback_dispatch_ids(
-                    lease
-                )
+                delivered_action_feedback_dispatch_ids = _lease_action_feedback_dispatch_ids(lease)
                 if delivered_action_feedback_dispatch_ids:
                     feedback_service = TeamAdminService(repo)
                     for source_dispatch_id in delivered_action_feedback_dispatch_ids:
@@ -3069,16 +3063,17 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
             payload.update(dict(resolved_config))
         release_id = _required_text(payload.get("release_package_id"), "release_package_id")
         run_id = _required_text(payload.get("verification_run_id"), "verification_run_id")
-        candidate_sha = _required_text(
-            payload.get("candidate_commit_sha"), "candidate_commit_sha"
-        )
+        candidate_sha = _required_text(payload.get("candidate_commit_sha"), "candidate_commit_sha")
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
         state = repo.read()
         release = state.release_packages.get(release_id)
         run = state.release_verification_runs.get(run_id)
         if release is None or run is None:
             raise ValueError("release package or verification run does not exist")
-        if release.candidate_commit_sha != candidate_sha or run.candidate_commit_sha != candidate_sha:
+        if (
+            release.candidate_commit_sha != candidate_sha
+            or run.candidate_commit_sha != candidate_sha
+        ):
             raise ValueError("release verification request does not match the pinned candidate")
         if run.state in {"passed", "failed", "timed_out"}:
             return {
@@ -3338,9 +3333,7 @@ class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
         try:
-            managed_repo_id = _required_text(
-                payload.get("managed_repo_id"), "managed_repo_id"
-            )
+            managed_repo_id = _required_text(payload.get("managed_repo_id"), "managed_repo_id")
             target_branch = validate_branch_name(
                 _required_text(payload.get("target_branch"), "target_branch")
             )
@@ -3446,9 +3439,7 @@ class TeamConsolidateGitBranchesEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
         try:
-            managed_repo_id = _required_text(
-                payload.get("managed_repo_id"), "managed_repo_id"
-            )
+            managed_repo_id = _required_text(payload.get("managed_repo_id"), "managed_repo_id")
             source_branches = [
                 validate_branch_name(branch)
                 for branch in _string_list(payload.get("source_branches"), "source_branches")
@@ -3709,8 +3700,7 @@ class TeamMemoryQueryProvider(QueryProviderBase):
             limit=limit or DEFAULT_MEMORY_LIMIT,
         )
         records = [
-            memory_record_payload(memory, include_body=False)
-            for memory in result.pop("records")
+            memory_record_payload(memory, include_body=False) for memory in result.pop("records")
         ]
         response = {
             "success": True,
@@ -4057,9 +4047,7 @@ def _publish_memory_artifact_bundle(
     safe_memory_id = _artifact_space_path_segment(memory_id, "memory_id")
     safe_dispatch_id = _artifact_space_path_segment(dispatch_id, "dispatch_id")
     safe_project_id = (
-        _artifact_space_path_segment(project_id, "project_id")
-        if project_id is not None
-        else None
+        _artifact_space_path_segment(project_id, "project_id") if project_id is not None else None
     )
     project_segment = f"/projects/{safe_project_id}" if safe_project_id is not None else ""
     project_key_segment = f"/{safe_project_id}" if safe_project_id is not None else ""
@@ -5247,9 +5235,7 @@ def _prepare_project_repo(
 
     agent_id = _required_text(agent.get("id"), "agent.id")
     session_id = _required_text(agent.get("session_id"), "session_id")
-    managed_repo_id = _required_text(
-        _value(git, "managed_repo_id"), "project.git.managed_repo_id"
-    )
+    managed_repo_id = _required_text(_value(git, "managed_repo_id"), "project.git.managed_repo_id")
     clone_branch = _optional_text(_value(git, "base_branch"))
     provider = AgentCloneRepoEffectProvider()
     provider.initialize(
@@ -5344,10 +5330,14 @@ def _create_project_repo_git_work_contexts(
 ) -> tuple[Any, list[dict[str, Any]], dict[str, int]]:
     target_dir = _optional_text(project_repo.get("target_dir"))
     if target_dir is None:
-        return state, [], {
-            "state_commit_attempt_count": 0,
-            "state_conflict_retry_count": 0,
-        }
+        return (
+            state,
+            [],
+            {
+                "state_commit_attempt_count": 0,
+                "state_conflict_retry_count": 0,
+            },
+        )
     rows: list[dict[str, Any]] = []
     admin = TeamAdminService(repo)
     state_commit_attempt_count = 0
@@ -5379,8 +5369,7 @@ def _create_project_repo_git_work_contexts(
             runtime = state.agent_runtimes.get(agent_id)
             if runtime is None or runtime.active_dispatch_id != dispatch_id:
                 raise RuntimeError(
-                    f"dispatch {dispatch_id} no longer owns the wake lease "
-                    f"for agent {agent_id}"
+                    f"dispatch {dispatch_id} no longer owns the wake lease for agent {agent_id}"
                 )
             existing = state.git_work_contexts.get(context_id)
             if existing is not None:
@@ -5414,10 +5403,14 @@ def _create_project_repo_git_work_contexts(
             raise last_conflict
         context_model = state.git_work_contexts[context_id]
         rows.append(_git_work_context_prompt_payload(context_model))
-    return state, rows, {
-        "state_commit_attempt_count": state_commit_attempt_count,
-        "state_conflict_retry_count": state_conflict_retry_count,
-    }
+    return (
+        state,
+        rows,
+        {
+            "state_commit_attempt_count": state_commit_attempt_count,
+            "state_conflict_retry_count": state_conflict_retry_count,
+        },
+    )
 
 
 def _project_repo_git_work_context_id(
@@ -5463,9 +5456,7 @@ def _validate_project_repo_git_work_context(
 def _project_repo_agent_branch(session_id: str, *, task_id: str) -> str:
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
-    return validate_branch_name(
-        f"agents/{session_id}/tasks/{task_slug}-{task_hash}"
-    )
+    return validate_branch_name(f"agents/{session_id}/tasks/{task_slug}-{task_hash}")
 
 
 def _prepare_project_repo_task_worktree(
@@ -5487,9 +5478,7 @@ def _prepare_project_repo_task_worktree(
         {"session_id": session_id},
         directory_path=directory_path,
     )
-    execution_backend = (
-        _optional_text(project_repo.get("execution_backend")) or selected_backend
-    )
+    execution_backend = _optional_text(project_repo.get("execution_backend")) or selected_backend
     if execution_backend == "container_worker_vm":
         record = container_backend(context, config).prepare_task_worktree(
             session_id=session_id,
@@ -7043,8 +7032,7 @@ def _filtered_team_state_payload(
     filtered["git_work_contexts"] = {
         key: value
         for key, value in filtered.get("git_work_contexts", {}).items()
-        if value.get("agent_id") in visible_agent_ids
-        and value.get("task_id") in visible_task_ids
+        if value.get("agent_id") in visible_agent_ids and value.get("task_id") in visible_task_ids
     }
     filtered["cases"] = {
         key: {

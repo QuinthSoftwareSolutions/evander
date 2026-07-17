@@ -179,9 +179,7 @@ class AdoWorkItemMatchingTriggerProvider(TriggerProviderBase):
         return str(result.get("project") or trigger.project or "").strip()
 
 
-def _acknowledge_work_item(
-    state: dict[str, Any], work_item_id: str, marker: str
-) -> dict[str, Any]:
+def _acknowledge_work_item(state: dict[str, Any], work_item_id: str, marker: str) -> dict[str, Any]:
     work_items = state.get("work_items")
     if not isinstance(work_items, dict):
         work_items = {}

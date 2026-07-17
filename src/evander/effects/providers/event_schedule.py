@@ -7,6 +7,4 @@ class EventScheduleEffectProvider(EffectProviderBase):
     """Registry placeholder; effect:event:schedule is executed by the core orchestrator."""
 
     def execute(self, *, resolved_config=None):
-        raise RuntimeError(
-            "effect:event:schedule must be executed by EventScheduleEffectExecutor"
-        )
+        raise RuntimeError("effect:event:schedule must be executed by EventScheduleEffectExecutor")

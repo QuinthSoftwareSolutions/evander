@@ -206,7 +206,9 @@ def test_direct_prompt_dispatch_registers_and_clears_correlation_context(
         _runtime_context(config, session_repository=session_repository, resumer=resumer),
     )
 
-    result = provider.execute(execution_context={"workflow_run_id": "workflow-1", "trace_id": "trace-1"})
+    result = provider.execute(
+        execution_context={"workflow_run_id": "workflow-1", "trace_id": "trace-1"}
+    )
 
     assert result["dispatch_id"].startswith("dispatch-")
     assert resumer.calls
@@ -274,7 +276,11 @@ def test_direct_container_prompt_registers_and_clears_correlation_context(
             prompt="Continue the task",
             model="gpt-5.2-codex",
         ),
-        _runtime_context(config, session_repository=session_repository, resumer=_ResumerStub(SimpleNamespace(success=True, thread_id="thread-1"))),
+        _runtime_context(
+            config,
+            session_repository=session_repository,
+            resumer=_ResumerStub(SimpleNamespace(success=True, thread_id="thread-1")),
+        ),
     )
 
     result = provider.execute(
@@ -415,11 +421,14 @@ def test_queued_libvirt_prompt_dispatch_registers_only_when_dispatched(
 
     assert dispatched == 0
     assert resume_calls == []
-    assert _usage_store(runtime_dir).get_active_correlation_context(
-        session_id="session-1",
-        agent_harness="codex",
-        execution_backend="libvirt_vm",
-    ) is None
+    assert (
+        _usage_store(runtime_dir).get_active_correlation_context(
+            session_id="session-1",
+            agent_harness="codex",
+            execution_backend="libvirt_vm",
+        )
+        is None
+    )
 
     worker.agent_run_status_port = SimpleNamespace(
         list_vm_summaries=lambda: [

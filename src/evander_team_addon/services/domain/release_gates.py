@@ -232,9 +232,7 @@ def record_release_verification_result(
             _block_release_gate(
                 release,
                 stage="verification",
-                kind=(
-                    "timeout" if normalized_failure_kind == "timeout" else "infrastructure"
-                ),
+                kind=("timeout" if normalized_failure_kind == "timeout" else "infrastructure"),
                 source_id=run.id,
                 error=message,
                 result=result,
@@ -320,9 +318,7 @@ def create_release_reviews_or_approve(
             candidate_commit_sha=candidate,
             reviewer_agent_id=reviewer.id,
             review_profile_id=profile.id,
-            criteria_snapshot=[
-                criterion.model_copy(deep=True) for criterion in profile.criteria
-            ],
+            criteria_snapshot=[criterion.model_copy(deep=True) for criterion in profile.criteria],
             reviewed_commit_sha=candidate,
             state=TeamRecordState.PENDING,
             instructions=(
@@ -455,20 +451,21 @@ def retry_release_gate(
             "infrastructure",
             "timeout",
         }:
-            raise ValueError(
-                "only infrastructure-failed or timed-out verification may be retried"
-            )
+            raise ValueError("only infrastructure-failed or timed-out verification may be retried")
         verification_commands = release.manifest.verification_commands
         if not verification_commands:
             raise ValueError("release manifest has no verification commands")
-        attempt_number = max(
-            (
-                state.release_verification_runs[run_id].attempt_number
-                for run_id in release.verification_run_ids
-                if run_id in state.release_verification_runs
-            ),
-            default=0,
-        ) + 1
+        attempt_number = (
+            max(
+                (
+                    state.release_verification_runs[run_id].attempt_number
+                    for run_id in release.verification_run_ids
+                    if run_id in state.release_verification_runs
+                ),
+                default=0,
+            )
+            + 1
+        )
         run = ReleaseVerificationRun(
             id=_verification_run_id(release.id, candidate, attempt_number),
             release_package_id=release.id,
@@ -526,9 +523,7 @@ def retry_release_gate(
         candidate_commit_sha=candidate,
         reviewer_agent_id=current.reviewer_agent_id,
         review_profile_id=current.review_profile_id,
-        criteria_snapshot=[
-            criterion.model_copy(deep=True) for criterion in profile.criteria
-        ],
+        criteria_snapshot=[criterion.model_copy(deep=True) for criterion in profile.criteria],
         reviewed_commit_sha=candidate,
         supersedes_review_request_id=current.id,
         retry_reason=normalized_reason,
@@ -559,17 +554,13 @@ def retry_release_gate(
             "retry_reason": normalized_reason,
             "retry_requested_by": normalized_requested_by,
             "release_manifest": (
-                release.manifest.model_dump(mode="json")
-                if release.manifest is not None
-                else None
+                release.manifest.model_dump(mode="json") if release.manifest is not None else None
             ),
             "review_profile": {
                 "id": profile.id,
                 "name": profile.name,
                 "description": profile.description,
-                "criteria": [
-                    criterion.model_dump(mode="json") for criterion in profile.criteria
-                ],
+                "criteria": [criterion.model_dump(mode="json") for criterion in profile.criteria],
             },
         },
         created_at=utc_now(),
@@ -740,9 +731,7 @@ def _append_verification_requested_event(
         {
             "event_type": RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE,
             "correlation_key": run.id,
-            "idempotency_key": (
-                f"team-addon:{RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE}:{run.id}"
-            ),
+            "idempotency_key": (f"team-addon:{RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE}:{run.id}"),
             "payload": {
                 "release_package_id": release.id,
                 "verification_run_id": run.id,
@@ -792,10 +781,7 @@ def _verification_run_id(
     candidate_commit_sha: str,
     attempt_number: int,
 ) -> str:
-    return (
-        f"release-verification-{release_id}-{candidate_commit_sha[:16]}-"
-        f"attempt-{attempt_number}"
-    )
+    return f"release-verification-{release_id}-{candidate_commit_sha[:16]}-attempt-{attempt_number}"
 
 
 def _block_release_gate(

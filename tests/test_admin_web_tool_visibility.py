@@ -100,7 +100,8 @@ def test_admin_web_tool_visibility_exposes_policy_binding_and_denial_summary(
     _write_denied_audit_log(service.config.audit_log_path)
 
     visible_tool_names = sorted(
-        visibility.tool.value for visibility in service.runtime.policy.visible_tools_for_session(session)
+        visibility.tool.value
+        for visibility in service.runtime.policy.visible_tools_for_session(session)
     )
     service.runtime.mcp_transport_bindings.record_visible_tools(
         transport_session_id="transport-1",
@@ -260,7 +261,8 @@ def test_admin_web_tool_visibility_reports_expired_session_and_binding_mismatch(
     service.runtime.session_repository.upsert_session(session_b)
 
     visible_tool_names = sorted(
-        visibility.tool.value for visibility in service.runtime.policy.visible_tools_for_session(session_a)
+        visibility.tool.value
+        for visibility in service.runtime.policy.visible_tools_for_session(session_a)
     )
     service.runtime.mcp_transport_bindings.record_visible_tools(
         transport_session_id="transport-1",

@@ -687,9 +687,7 @@ def test_bokio_mcp_late_duplicate_failure_cannot_regress_completed_operation(
             raise AssertionError("timed out waiting to release Bokio evidence upload")
         return httpx.Response(200, json={"uploadId": "upload-1"})
 
-    original_mark_needs_attention = (
-        BokioEvidenceStore.mark_journal_entry_operation_needs_attention
-    )
+    original_mark_needs_attention = BokioEvidenceStore.mark_journal_entry_operation_needs_attention
 
     def delayed_mark_needs_attention(
         store: BokioEvidenceStore, **kwargs: object

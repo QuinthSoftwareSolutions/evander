@@ -33,9 +33,7 @@ class _ForGateStateStoreAdapter:
     def get(self, key: str) -> ForGateStateRecord | None:
         return self.store.get(key)
 
-    def get_migrating_legacy_key(
-        self, *, key: str, legacy_key: str
-    ) -> ForGateStateRecord | None:
+    def get_migrating_legacy_key(self, *, key: str, legacy_key: str) -> ForGateStateRecord | None:
         if legacy_key == key:
             return self.get(key)
 
@@ -322,9 +320,7 @@ def _edge_source_port(edge: Any) -> str | None:
     return text or None
 
 
-def _has_reachable_loopback(
-    *, edges: list[Any], gate_id: str, start_node_ids: list[str]
-) -> bool:
+def _has_reachable_loopback(*, edges: list[Any], gate_id: str, start_node_ids: list[str]) -> bool:
     outbound_edges_by_source: dict[str, list[Any]] = {}
     for edge in edges:
         source_id = _edge_source_id(edge)

@@ -149,7 +149,10 @@ def test_compose_workflow_ir_rejects_cross_pack_edges(tmp_path: Path) -> None:
 
 
 def test_compose_workflow_ir_rejects_duplicate_pack_node_ids(tmp_path: Path) -> None:
-    for name, node_type in (("pack-a.v1.json", "trigger:cron"), ("pack-b.v1.json", "effect:event:emit")):
+    for name, node_type in (
+        ("pack-a.v1.json", "trigger:cron"),
+        ("pack-b.v1.json", "effect:event:emit"),
+    ):
         node = {
             "id": "shared-node",
             "display_name": "Shared",
@@ -556,9 +559,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     container_effects = {effect["id"]: effect for effect in container.effects}
     default_gates = {gate["id"]: gate for gate in default.gates}
     container_gates = {gate["id"]: gate for gate in container.gates}
-    container_edges = {
-        (edge["source_id"], edge["target_id"]): edge for edge in container.edges
-    }
+    container_edges = {(edge["source_id"], edge["target_id"]): edge for edge in container.edges}
     default_edges = {(edge["source_id"], edge["target_id"]): edge for edge in default.edges}
     default_queries = {query["id"]: query for query in default.queries}
     container_queries = {query["id"]: query for query in container.queries}
@@ -596,10 +597,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         "issue_owner": "${{gate-merge-1.issue_owner ?? null}}",
     }
     for queries in (default_queries, container_queries):
-        assert (
-            queries["query-session-list-active-issue-1"]["type"]
-            == "query:session:list"
-        )
+        assert queries["query-session-list-active-issue-1"]["type"] == "query:session:list"
         assert (
             queries["query-session-list-active-issue-1"]["config"]
             == expected_issue_session_guard_query
@@ -620,9 +618,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             == "gate-dedupe-issue-start-1"
         )
         assert (
-            edges[("gate-dedupe-issue-start-1", "query-session-list-active-issue-1")][
-                "target_id"
-            ]
+            edges[("gate-dedupe-issue-start-1", "query-session-list-active-issue-1")]["target_id"]
             == "query-session-list-active-issue-1"
         )
         assert (
@@ -635,15 +631,13 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             == "gate-filter-no-active-issue-session-1"
         )
     assert (
-        default_edges[
-            ("gate-filter-no-active-issue-session-1", "effect-vm-create-1")
-        ]["target_id"]
+        default_edges[("gate-filter-no-active-issue-session-1", "effect-vm-create-1")]["target_id"]
         == "effect-vm-create-1"
     )
     assert (
-        container_edges[
-            ("gate-filter-no-active-issue-session-1", "effect-agent-create-1")
-        ]["target_id"]
+        container_edges[("gate-filter-no-active-issue-session-1", "effect-agent-create-1")][
+            "target_id"
+        ]
         == "effect-agent-create-1"
     )
     assert (
@@ -673,8 +667,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         == "${{effect-agent-clone-repo-1.session_id}}"
     )
     assert (
-        container_effects["effect-agent-enqueue-prompt-1"]["type"]
-        == "effect:agent:enqueue-prompt"
+        container_effects["effect-agent-enqueue-prompt-1"]["type"] == "effect:agent:enqueue-prompt"
     )
     for effects in (default_effects, container_effects):
         teams_prompt = effects["effect-agent-enqueue-prompt-1"]["config"]["prompt"]
@@ -685,9 +678,10 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             "teams:${{trigger-teams-new-message-2.channel_target}}:"
             "${{trigger-teams-new-message-2.message_id ?? trigger-teams-new-message-2.cursor}}"
         )
-        assert effects["effect-agent-enqueue-prompt-1"]["config"][
-            "resume_thread_metadata_key"
-        ] == "teams:${{trigger-teams-new-message-2.channel_target}}:agent_thread_id"
+        assert (
+            effects["effect-agent-enqueue-prompt-1"]["config"]["resume_thread_metadata_key"]
+            == "teams:${{trigger-teams-new-message-2.channel_target}}:agent_thread_id"
+        )
         teams_dm_prompt = effects["effect-agent-enqueue-prompt-teams-dm-1"]["config"]["prompt"]
         assert "${{trigger-teams-direct-message-1.message.content}}" in teams_dm_prompt
         assert effects["effect-agent-enqueue-prompt-teams-dm-1"]["config"]["queue_key"] == (
@@ -695,24 +689,17 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             "${{trigger-teams-direct-message-1.message_id ?? "
             "trigger-teams-direct-message-1.cursor}}"
         )
-        assert effects["effect-agent-enqueue-prompt-teams-dm-1"]["config"][
-            "resume_thread_metadata_key"
-        ] == "teams:${{trigger-teams-direct-message-1.channel_target}}:agent_thread_id"
+        assert (
+            effects["effect-agent-enqueue-prompt-teams-dm-1"]["config"][
+                "resume_thread_metadata_key"
+            ]
+            == "teams:${{trigger-teams-direct-message-1.channel_target}}:agent_thread_id"
+        )
+    assert ("trigger-teams-direct-message-1", "query-session-context-teams-dm-1") in default_edges
+    assert ("trigger-teams-direct-message-1", "query-session-context-teams-dm-1") in container_edges
+    assert default_effects["effect-agent-enqueue-prompt-2"]["type"] == "effect:agent:enqueue-prompt"
     assert (
-        ("trigger-teams-direct-message-1", "query-session-context-teams-dm-1")
-        in default_edges
-    )
-    assert (
-        ("trigger-teams-direct-message-1", "query-session-context-teams-dm-1")
-        in container_edges
-    )
-    assert (
-        default_effects["effect-agent-enqueue-prompt-2"]["type"]
-        == "effect:agent:enqueue-prompt"
-    )
-    assert (
-        container_effects["effect-agent-enqueue-prompt-2"]["type"]
-        == "effect:agent:enqueue-prompt"
+        container_effects["effect-agent-enqueue-prompt-2"]["type"] == "effect:agent:enqueue-prompt"
     )
     for effects in (default_effects, container_effects):
         feedback_prompt = effects["effect-agent-enqueue-prompt-2"]["config"]["prompt"]
@@ -729,8 +716,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         == "completed"
     )
     assert (
-        "effect-session-update-metadata-3"
-        not in default_effects
+        "effect-session-update-metadata-3" not in default_effects
         and "effect-session-update-metadata-3" not in container_effects
     )
     assert (
@@ -782,10 +768,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     assert container_gates["gate-filter-8"]["config"]["when"] == {
         "all": [{"equals": False, "left": "${{effect-pr-create-1.success}}"}]
     }
-    assert (
-        default_edges[("effect-pr-create-1", "gate-filter-8")]["target_id"]
-        == "gate-filter-8"
-    )
+    assert default_edges[("effect-pr-create-1", "gate-filter-8")]["target_id"] == "gate-filter-8"
     assert (
         container_edges[("gate-filter-8", "effect-agent-enqueue-prompt-3")]["target_id"]
         == "effect-agent-enqueue-prompt-3"
@@ -823,10 +806,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     }
     for gates in (default_gates, container_gates):
         assert gates["gate-filter-issue-pr"]["config"]["when"] == expected_issue_pr_filter
-        assert (
-            gates["gate-filter-standalone-pr"]["config"]["when"]
-            == expected_standalone_pr_filter
-        )
+        assert gates["gate-filter-standalone-pr"]["config"]["when"] == expected_standalone_pr_filter
         assert (
             gates["gate-filter-standalone-pr-preflight"]["config"]["when"]
             == expected_standalone_preflight_filter
@@ -850,15 +830,11 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             == "gate-filter-standalone-pr"
         )
         assert (
-            edges[("gate-filter-standalone-pr", "query-git-pr-note-standalone")][
-                "target_id"
-            ]
+            edges[("gate-filter-standalone-pr", "query-git-pr-note-standalone")]["target_id"]
             == "query-git-pr-note-standalone"
         )
         assert (
-            edges[("query-git-pr-note-standalone", "effect-pr-create-standalone")][
-                "target_id"
-            ]
+            edges[("query-git-pr-note-standalone", "effect-pr-create-standalone")]["target_id"]
             == "effect-pr-create-standalone"
         )
         assert (
@@ -892,15 +868,11 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             standalone_pr["config"]["title"]
             == "${{query-session-context-1.metadata.pr_title ?? null}}"
         )
-        assert (
-            standalone_pr["config"]["fallback_title"] == expected_standalone_fallback_title
-        )
+        assert standalone_pr["config"]["fallback_title"] == expected_standalone_fallback_title
         assert standalone_pr["config"]["managed_repo_id"] == (
             "${{trigger-git-push-1.managed_repo_id}}"
         )
-        assert standalone_pr["config"]["source_ref"] == (
-            "${{trigger-git-push-1.review_branch}}"
-        )
+        assert standalone_pr["config"]["source_ref"] == ("${{trigger-git-push-1.review_branch}}")
         assert standalone_pr["config"]["expected_commit_sha"] == (
             "${{trigger-git-push-1.commit_hash}}"
         )
@@ -923,9 +895,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         )
         assert standalone_prompt["type"] == "effect:agent:enqueue-prompt"
         assert standalone_prompt["config"]["queue_key"] == expected_standalone_queue_key
-        assert (
-            standalone_prompt["config"]["target"] == "${{trigger-git-push-1.session_id}}"
-        )
+        assert standalone_prompt["config"]["target"] == "${{trigger-git-push-1.session_id}}"
     assert not any(effect["type"].startswith("effect:vm:") for effect in container.effects)
 
     assert container_effects["effect-agent-create-2"]["type"] == "effect:agent:create"
@@ -938,12 +908,11 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         == "http://10.0.0.4:11881/"
     )
     assert "npm_registry_url" not in container_effects["effect-agent-create-1"]["config"]
-    assert "npm_registry_url" not in container_effects[
-        "effect-agent-create-auto-dev-approval-caller-1"
-    ]["config"]
     assert (
-        container_effects["effect-agent-clone-repo-2"]["type"] == "effect:agent:clone-repo"
+        "npm_registry_url"
+        not in container_effects["effect-agent-create-auto-dev-approval-caller-1"]["config"]
     )
+    assert container_effects["effect-agent-clone-repo-2"]["type"] == "effect:agent:clone-repo"
     assert (
         container_effects["effect-agent-clone-repo-2"]["config"]["target"]
         == "${{effect-agent-create-2.session_id}}"
@@ -1002,10 +971,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     )
     assert "--no-restore" in container_effects["effect-agent-prompt-5"]["config"]["prompt"]
 
-    assert (
-        container_triggers["trigger-cron-auto-dev-1"]["config"]["expression"]
-        == "*/5 * * * *"
-    )
+    assert container_triggers["trigger-cron-auto-dev-1"]["config"]["expression"] == "*/5 * * * *"
     auto_dev_query = container_queries["query-ado-auto-dev-1"]
     assert auto_dev_query["type"] == "query:ado:work-items"
     assert auto_dev_query["config"]["directory_path"] == "root/example/truman"
@@ -1024,11 +990,11 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
                 "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? null}}",
             },
             {
-                "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? \"\"}}",
+                "left": '${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? ""}}',
                 "matches_regex": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
             },
             {
-                "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? \"\"}}",
+                "left": '${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? ""}}',
                 "not_equals": "truman@quinth.se",
             },
         ]
@@ -1044,9 +1010,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         "key": "auto-dev-missing-owner:${{gate-filter-auto-dev-missing-owner-1.current_element.id}}:${{gate-filter-auto-dev-missing-owner-1.current_element.rev ?? gate-filter-auto-dev-missing-owner-1.current_element.changed_at ?? gate-filter-auto-dev-missing-owner-1.current_index}}",
         "ttl": "PT168H",
     }
-    auto_dev_owner_comment = container_effects[
-        "effect-ado-post-work-item-comment-auto-dev-owner-1"
-    ]
+    auto_dev_owner_comment = container_effects["effect-ado-post-work-item-comment-auto-dev-owner-1"]
     assert auto_dev_owner_comment["type"] == "effect:ado:post-work-item-comment"
     assert (
         auto_dev_owner_comment["config"]["work_item_id"]
@@ -1066,9 +1030,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         == "gate-for-auto-dev-1"
     )
     assert (
-        container_edges[
-            ("gate-for-auto-dev-1", "gate-filter-auto-dev-has-owner-1")
-        ]["source_port"]
+        container_edges[("gate-for-auto-dev-1", "gate-filter-auto-dev-has-owner-1")]["source_port"]
         == "body"
     )
     assert (
@@ -1078,9 +1040,9 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         == "effect-ado-update-work-item-auto-dev-1"
     )
     assert (
-        container_edges[
-            ("gate-for-auto-dev-1", "gate-filter-auto-dev-missing-owner-1")
-        ]["source_port"]
+        container_edges[("gate-for-auto-dev-1", "gate-filter-auto-dev-missing-owner-1")][
+            "source_port"
+        ]
         == "body"
     )
     assert (
@@ -1110,9 +1072,9 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         is True
     )
     assert (
-        container_edges[
-            ("effect-ado-update-work-item-auto-dev-1", "gate-for-auto-dev-1")
-        ]["allow_cycle"]
+        container_edges[("effect-ado-update-work-item-auto-dev-1", "gate-for-auto-dev-1")][
+            "allow_cycle"
+        ]
         is True
     )
     assert (
@@ -1133,9 +1095,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         container_gates["gate-map-auto-dev-ticket-1"]["config"]["template"]["ticket"]
         == "${{effect-ado-update-work-item-auto-dev-1.ticket}}"
     )
-    assert container_gates["gate-map-auto-dev-ticket-1"]["config"]["template"][
-        "issue_owner"
-    ] == {
+    assert container_gates["gate-map-auto-dev-ticket-1"]["config"]["template"]["issue_owner"] == {
         "display_name": "${{effect-ado-update-work-item-auto-dev-1.remote_assigned_to_identity.display_name}}",
         "email": "${{effect-ado-update-work-item-auto-dev-1.remote_assigned_to_identity.email}}",
         "provider": "azure_devops",
@@ -1152,9 +1112,9 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         == "gate-merge-1"
     )
     assert (
-        container_edges[
-            ("gate-for-auto-dev-1", "effect-event-emit-auto-dev-scan-complete-1")
-        ]["source_port"]
+        container_edges[("gate-for-auto-dev-1", "effect-event-emit-auto-dev-scan-complete-1")][
+            "source_port"
+        ]
         == "done"
     )
     assert (
@@ -1167,9 +1127,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     assert "[System.Tags] CONTAINS 'auto-dev'" in approval_query["config"]["wiql"]
     assert "[System.Tags] NOT CONTAINS 'auto-dev-approved'" in approval_query["config"]["wiql"]
     assert "[System.State] IN ('New', 'To Do')" in approval_query["config"]["wiql"]
-    approval_threshold = container_gates[
-        "gate-filter-auto-dev-approval-backlog-threshold-1"
-    ]
+    approval_threshold = container_gates["gate-filter-auto-dev-approval-backlog-threshold-1"]
     assert approval_threshold["config"]["when"]["all"][1]["greater_than"] == 8
     approval_caller = container_effects["effect-agent-create-auto-dev-approval-caller-1"]
     assert approval_caller["config"]["session_id"] == (
@@ -1178,9 +1136,9 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     assert "make_phone_call" in approval_caller["config"]["allowed_tools"]
     assert "get_phone_call_result" in approval_caller["config"]["allowed_tools"]
     assert "update_ado_backlog_tags" in approval_caller["config"]["allowed_tools"]
-    approval_prompt = container_effects[
-        "effect-agent-enqueue-prompt-auto-dev-approval-caller-1"
-    ]["config"]["prompt"]
+    approval_prompt = container_effects["effect-agent-enqueue-prompt-auto-dev-approval-caller-1"][
+        "config"
+    ]["prompt"]
     assert "jonathan_quinth" in approval_prompt
     assert "auto-dev-approved" in approval_prompt
     assert (
@@ -1203,7 +1161,9 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         assert edge["source_id"] in all_node_ids
         assert edge["target_id"] in all_node_ids
 
-    layout_path = project_dir / "config" / "workflow-packs" / "agent-container-worker.v1.layout-example.json"
+    layout_path = (
+        project_dir / "config" / "workflow-packs" / "agent-container-worker.v1.layout-example.json"
+    )
     layout = json.loads(layout_path.read_text(encoding="utf-8"))
     assert set(layout["nodes"]).issubset(all_node_ids)
     for stale_node_id in {

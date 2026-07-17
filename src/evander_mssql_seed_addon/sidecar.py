@@ -90,8 +90,7 @@ class MssqlSeedRestoreService:
 
     def _read_backup_filelist(self, backup_path: str) -> list[tuple[str, str]]:
         output = self._run_sql_output(
-            "SET NOCOUNT ON; RESTORE FILELISTONLY FROM DISK = N"
-            f"{_sql_literal(backup_path)};"
+            f"SET NOCOUNT ON; RESTORE FILELISTONLY FROM DISK = N{_sql_literal(backup_path)};"
         )
         files = _parse_filelist_output(output)
         if not files:
@@ -125,9 +124,7 @@ class MssqlSeedRestoreService:
                 other_index += 1
                 suffix = f"_file{other_index}.ndf"
             target_path = f"{data_dir}/{request.database_name}{suffix}"
-            moves.append(
-                f"    MOVE N{_sql_literal(logical_name)} TO N{_sql_literal(target_path)}"
-            )
+            moves.append(f"    MOVE N{_sql_literal(logical_name)} TO N{_sql_literal(target_path)}")
         move_clause = ",\n".join(moves)
         return f"""
 SET NOCOUNT ON;
@@ -239,15 +236,40 @@ def create_app(*, service: MssqlSeedRestoreService, token: str | None) -> Starle
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the Evander MSSQL seed restore sidecar.")
-    parser.add_argument("--host", default=os.environ.get("EVANDER_MSSQL_SEED_SIDECAR_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("EVANDER_MSSQL_SEED_SIDECAR_PORT", "11990")))
-    parser.add_argument("--token-env", default=os.environ.get("EVANDER_MSSQL_SEED_SIDECAR_TOKEN_ENV", "EVANDER_MSSQL_SEED_SIDECAR_TOKEN"))
-    parser.add_argument("--mssql-admin-user", default=os.environ.get("EVANDER_WORKER_MSSQL_ADMIN_USER", "sa"))
-    parser.add_argument("--mssql-admin-password-env", default=os.environ.get("EVANDER_WORKER_MSSQL_ADMIN_PASSWORD_ENV", "EVANDER_WORKER_MSSQL_ADMIN_PASSWORD"))
-    parser.add_argument("--mssql-admin-host", default=os.environ.get("EVANDER_WORKER_MSSQL_ADMIN_HOST", "127.0.0.1"))
-    parser.add_argument("--mssql-port", type=int, default=int(os.environ.get("EVANDER_WORKER_MSSQL_PORT", "1433")))
-    parser.add_argument("--mssql-sqlcmd-path", default=os.environ.get("EVANDER_WORKER_MSSQL_SQLCMD_PATH", "sqlcmd"))
-    parser.add_argument("--mssql-data-dir", default=os.environ.get("EVANDER_MSSQL_SEED_DATA_DIR", "/var/opt/mssql/data"))
+    parser.add_argument(
+        "--host", default=os.environ.get("EVANDER_MSSQL_SEED_SIDECAR_HOST", "127.0.0.1")
+    )
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("EVANDER_MSSQL_SEED_SIDECAR_PORT", "11990"))
+    )
+    parser.add_argument(
+        "--token-env",
+        default=os.environ.get(
+            "EVANDER_MSSQL_SEED_SIDECAR_TOKEN_ENV", "EVANDER_MSSQL_SEED_SIDECAR_TOKEN"
+        ),
+    )
+    parser.add_argument(
+        "--mssql-admin-user", default=os.environ.get("EVANDER_WORKER_MSSQL_ADMIN_USER", "sa")
+    )
+    parser.add_argument(
+        "--mssql-admin-password-env",
+        default=os.environ.get(
+            "EVANDER_WORKER_MSSQL_ADMIN_PASSWORD_ENV", "EVANDER_WORKER_MSSQL_ADMIN_PASSWORD"
+        ),
+    )
+    parser.add_argument(
+        "--mssql-admin-host", default=os.environ.get("EVANDER_WORKER_MSSQL_ADMIN_HOST", "127.0.0.1")
+    )
+    parser.add_argument(
+        "--mssql-port", type=int, default=int(os.environ.get("EVANDER_WORKER_MSSQL_PORT", "1433"))
+    )
+    parser.add_argument(
+        "--mssql-sqlcmd-path", default=os.environ.get("EVANDER_WORKER_MSSQL_SQLCMD_PATH", "sqlcmd")
+    )
+    parser.add_argument(
+        "--mssql-data-dir",
+        default=os.environ.get("EVANDER_MSSQL_SEED_DATA_DIR", "/var/opt/mssql/data"),
+    )
     args = parser.parse_args(argv)
     token = os.environ.get(args.token_env, "").strip() or None
     admin_password = os.environ.get(args.mssql_admin_password_env, "")

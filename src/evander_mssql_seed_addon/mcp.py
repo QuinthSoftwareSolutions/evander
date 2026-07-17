@@ -105,7 +105,9 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             last_reset_at=(
                 now
                 if tool_name == RESET_DATABASE_TOOL
-                else None if previous is None else previous.last_reset_at
+                else None
+                if previous is None
+                else previous.last_reset_at
             ),
             reset_count=0 if previous is None else previous.reset_count,
         )

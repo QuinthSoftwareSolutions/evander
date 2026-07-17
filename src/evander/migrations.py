@@ -375,8 +375,7 @@ def migrate_issue_setup_env_to_root(
         git_host=_merged_env_value("EVANDER_GIT_HOST", env_values) or "192.168.250.1",
         git_user=_merged_env_value("EVANDER_GIT_USER", env_values)
         or os.environ.get("USER", "agent"),
-        git_ssh_alias=_merged_env_value("EVANDER_GIT_SSH_ALIAS", env_values)
-        or "evander-git-host",
+        git_ssh_alias=_merged_env_value("EVANDER_GIT_SSH_ALIAS", env_values) or "evander-git-host",
         default_model=_merged_env_value("AGENT_DEFAULT_MODEL", env_values) or None,
         post_exec_verification_prompt=_merged_env_value(
             "AGENT_POST_EXEC_VERIFICATION_PROMPT", env_values

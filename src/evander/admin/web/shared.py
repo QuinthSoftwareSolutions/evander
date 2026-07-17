@@ -149,8 +149,7 @@ def _env_workflow_event_machine_tokens() -> tuple["WorkflowEventMachineToken", .
     for value in values:
         if value.count(":") != 1:
             raise ValueError(
-                "EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS entries must use "
-                "source-name:token format"
+                "EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS entries must use source-name:token format"
             )
 
         source_name, token = (part.strip() for part in value.split(":", 1))
@@ -219,9 +218,7 @@ class AdminWebBrandingConfig:
     @classmethod
     def from_env(cls) -> "AdminWebBrandingConfig":
         page_title = _env_text("EVANDER_ADMIN_WEB_PAGE_TITLE", DEFAULT_ADMIN_WEB_PAGE_TITLE)
-        header_title = _env_text(
-            "EVANDER_ADMIN_WEB_HEADER_TITLE", DEFAULT_ADMIN_WEB_HEADER_TITLE
-        )
+        header_title = _env_text("EVANDER_ADMIN_WEB_HEADER_TITLE", DEFAULT_ADMIN_WEB_HEADER_TITLE)
         header_title_visible = _env_flag(
             "EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE",
             default=DEFAULT_ADMIN_WEB_HEADER_TITLE_VISIBLE,
@@ -439,14 +436,12 @@ class AdminWebConfig:
             "https://login.microsoftonline.com",
         ).rstrip("/")
         public_base_url = (
-            (
-                _env_optional_text_with_legacy(
-                    "EVANDER_ADMIN_WEB_PUBLIC_BASE_URL",
-                    "AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL",
-                )
-                or ""
-            ).rstrip("/")
-        )
+            _env_optional_text_with_legacy(
+                "EVANDER_ADMIN_WEB_PUBLIC_BASE_URL",
+                "AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL",
+            )
+            or ""
+        ).rstrip("/")
         redirect_uri = (
             _env_optional_text_with_legacy(
                 "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
@@ -788,10 +783,10 @@ class AdminWebAuth:
         normalized_login = normalize_admin_web_login(login)
         if normalized_login is None:
             return ()
-        if (
-            self.config.auth_mode in {"none", "local_password"}
-            and normalized_login == normalize_admin_web_login(self.config.username)
-        ):
+        if self.config.auth_mode in {
+            "none",
+            "local_password",
+        } and normalized_login == normalize_admin_web_login(self.config.username):
             return tuple(sorted(PERMISSION_CATALOG))
         if self.user_store is None:
             return ()

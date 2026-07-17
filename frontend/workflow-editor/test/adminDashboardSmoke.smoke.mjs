@@ -14,6 +14,11 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
+const transparentPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+
 async function assertDashboardFitsViewport(page, label) {
   const layout = await page.evaluate(() => {
     const viewportWidth = window.innerWidth;
@@ -89,6 +94,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     assert.equal(url.searchParams.get("include_inactive"), "true");
     assert.equal(url.searchParams.get("backend"), "all");
     assert.equal(url.searchParams.get("summary_only"), "true");
+    assert.equal(url.searchParams.get("_dashboard_agent_inventory"), "true");
     assert.equal(url.searchParams.get("reconcile_containers"), "false");
     assert.equal(url.searchParams.get("omit_vm_state"), "true");
     assertDashboardCacheParams(url);
@@ -950,6 +956,17 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
+    if (pathname.startsWith("/api/admin/branding/assets/")) {
+      await route.fulfill({ status: 200, contentType: "image/png", body: transparentPng });
+      return;
+    }
+
+    if (pathname === "/api/admin/user-notifications") {
+      assert.equal(url.searchParams.get("limit"), "20");
+      await route.fulfill(jsonResponse({ user_id: "admin", unread_count: 0, notifications: [] }));
+      return;
+    }
+
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse(sessionResponse));
       return;
@@ -985,18 +1002,18 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       const directoryPath = url.searchParams.get("directory_path");
       assert.equal(url.searchParams.get("include_inactive"), "true");
       assert.equal(url.searchParams.get("backend"), "all");
-      if (url.searchParams.has("_dashboard")) {
+      if (url.searchParams.get("_dashboard_agent_inventory") === "true") {
         dashboardAgentRequests.push(`${pathname}${url.search}`);
         assertDashboardAgentInventoryParams(url);
         await route.fulfill(jsonResponse(agentsResponse));
       } else {
-        assert.equal(directoryPath, "root/team");
+        assert.ok(["root", "root/team"].includes(directoryPath ?? ""));
         assert.equal(url.searchParams.get("direct_only"), "true");
         await route.fulfill(
           jsonResponse({
             ...agentsResponse,
-            items: agentsResponse.items.filter((agent) => agent.directory_path === "root/team"),
-            directory_path: "root/team",
+            items: agentsResponse.items.filter((agent) => agent.directory_path === directoryPath),
+            directory_path: directoryPath,
             direct_only: true,
           }),
         );
@@ -1004,15 +1021,17 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
-    if (pathname === "/api/admin/agents/agent-3/log") {
+    if (/^\/api\/admin\/agents\/[^/]+\/log$/.test(pathname)) {
+      const agentId = pathname.split("/")[4] ?? "agent";
+      const isChildAgent = agentId === "agent-3";
       await route.fulfill(
         jsonResponse({
-          agent_id: "agent-3",
-          backend: "container_worker_vm",
+          agent_id: agentId,
+          backend: url.searchParams.get("backend") ?? "libvirt_vm",
           lines: 200,
-          text: "child agent log\n",
-          returned_lines: 1,
-          total_lines: 1,
+          text: isChildAgent ? "child agent log\n" : "",
+          returned_lines: isChildAgent ? 1 : 0,
+          total_lines: isChildAgent ? 1 : 0,
           has_more_before: false,
         }),
       );
@@ -1217,6 +1236,14 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
           },
         }),
       );
+      return;
+    }
+
+    if (pathname === "/api/admin/agents/create-operations") {
+      assert.equal(route.request().method(), "GET");
+      assert.equal(url.searchParams.get("limit"), "30");
+      assert.ok(["root", "root/team"].includes(url.searchParams.get("directory_path") ?? ""));
+      await route.fulfill(jsonResponse({ items: [] }));
       return;
     }
 

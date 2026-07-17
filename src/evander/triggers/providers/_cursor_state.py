@@ -96,9 +96,7 @@ class TriggerCursorStore:
         owner_source = self.path if self.path.exists() else self.path.parent
         owner_stat = owner_source.stat()
         mode = (
-            stat.S_IMODE(self.path.stat().st_mode)
-            if self.path.exists()
-            else _default_file_mode()
+            stat.S_IMODE(self.path.stat().st_mode) if self.path.exists() else _default_file_mode()
         )
         fd, temp_name = tempfile.mkstemp(
             prefix=f".{self.path.name}.",

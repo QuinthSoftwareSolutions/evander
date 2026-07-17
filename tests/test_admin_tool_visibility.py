@@ -250,9 +250,7 @@ def test_admin_service_tool_visibility_payload_flags_stale_manifest(
         visible_tool_names=visible_tool_names,
     )
 
-    updated_session = initial_session.model_copy(
-        update={"allowed_tools": [ToolName.RUN_SCRIPT]}
-    )
+    updated_session = initial_session.model_copy(update={"allowed_tools": [ToolName.RUN_SCRIPT]})
     service.runtime.session_repository.upsert_session(updated_session)
 
     payload = service.approval_audit_admin.tool_visibility_payload(
@@ -261,7 +259,10 @@ def test_admin_service_tool_visibility_payload_flags_stale_manifest(
     )
 
     assert payload.binding_context.state is ToolVisibilityBindingState.BOUND
-    assert payload.binding_context.manifest_state is ToolVisibilityManifestState.STALE_MANIFEST_POSSIBLE
+    assert (
+        payload.binding_context.manifest_state
+        is ToolVisibilityManifestState.STALE_MANIFEST_POSSIBLE
+    )
     assert payload.binding_context.bound_session_id == "session-1"
     assert payload.binding_context.transport_session_id == "transport-1"
     assert payload.binding_context.last_tools_list_at is not None

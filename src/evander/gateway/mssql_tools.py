@@ -28,9 +28,7 @@ def register_mssql_tools(
         session = context.policy.get_session(session_id)
         config = context.provider_config.resolve_for_session_manifest(session)
         if config.execution_backend != "container_worker_vm":
-            raise ToolError(
-                "MSSQL provisioning is only supported for container_worker_vm sessions"
-            )
+            raise ToolError("MSSQL provisioning is only supported for container_worker_vm sessions")
         if not config.container_worker_mssql_enabled:
             raise ToolError("container worker MSSQL provisioning is not enabled")
         return ContainerWorkerVmExecutionBackend(config=config)

@@ -33,9 +33,7 @@ def test_template_catalog_exposes_validated_auto_dev_squad() -> None:
         "reviewer",
         "release_operator",
     ]
-    assert {
-        role["key"]: role.get("reports_to_role_key") for role in payload["roles"]
-    } == {
+    assert {role["key"]: role.get("reports_to_role_key") for role in payload["roles"]} == {
         "manager": None,
         "project_lead": "manager",
         "implementer": "project_lead",
@@ -58,9 +56,7 @@ def test_template_catalog_exposes_validated_auto_dev_squad() -> None:
     assert required_fields["project.git.managed_repo_id"]["required"] is False
     assert required_fields["release_operator.session_id"]["required"] is True
 
-    assert [goal["id"] for goal in payload["project_goals"]] == [
-        "auto-dev-reviewed-delivery"
-    ]
+    assert [goal["id"] for goal in payload["project_goals"]] == ["auto-dev-reviewed-delivery"]
     assert [task["id"] for task in payload["tasks"]] == [
         "implement-scoped-slice",
         "release-handoff",
@@ -92,9 +88,7 @@ def test_template_catalog_exposes_validated_accounting_department() -> None:
         "payment_preparer",
         "tax_compliance_reviewer",
     ]
-    assert {
-        role["key"]: role.get("reports_to_role_key") for role in payload["roles"]
-    } == {
+    assert {role["key"]: role.get("reports_to_role_key") for role in payload["roles"]} == {
         "manager": None,
         "project_lead": "manager",
         "bookkeeping_clerk": "project_lead",
@@ -102,9 +96,7 @@ def test_template_catalog_exposes_validated_accounting_department() -> None:
         "payment_preparer": "project_lead",
         "tax_compliance_reviewer": "project_lead",
     }
-    assert {
-        role["key"]: role["permissions"] for role in payload["roles"]
-    } == {
+    assert {role["key"]: role["permissions"] for role in payload["roles"]} == {
         "manager": ["create_root_task"],
         "project_lead": ["create_root_task", "prepare_bookkeeping_action"],
         "bookkeeping_clerk": ["prepare_bookkeeping_action"],
@@ -121,9 +113,7 @@ def test_template_catalog_exposes_validated_accounting_department() -> None:
     assert required_fields["bookkeeping_clerk.session_id"]["required"] is True
     assert required_fields["team.operator_communication_target_id"]["required"] is False
 
-    assert [goal["id"] for goal in payload["project_goals"]] == [
-        "bookkeeping-operations"
-    ]
+    assert [goal["id"] for goal in payload["project_goals"]] == ["bookkeeping-operations"]
     assert [task["id"] for task in payload["tasks"]] == [
         "process-inbox-receipts",
         "reconcile-supplier-invoices",

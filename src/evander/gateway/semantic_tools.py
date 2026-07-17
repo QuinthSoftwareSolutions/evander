@@ -20,8 +20,7 @@ SemanticPointIdsArgument = Annotated[
     int | str | list[int | str],
     PydanticField(
         description=(
-            "One or more point IDs. Each ID must be an unsigned 64-bit integer "
-            "or UUID string."
+            "One or more point IDs. Each ID must be an unsigned 64-bit integer or UUID string."
         )
     ),
 ]
@@ -168,9 +167,7 @@ def register_semantic_tools(
             "score_threshold": score_threshold,
         }
         try:
-            session = context.policy.require_tool(
-                resolved_session_id, ToolName.SEMANTIC_SEARCH
-            )
+            session = context.policy.require_tool(resolved_session_id, ToolName.SEMANTIC_SEARCH)
             result = semantic_adapter.search(
                 session=session,
                 collection_name=collection_name,
@@ -239,9 +236,7 @@ def register_semantic_tools(
             "point_ids": point_ids,
         }
         try:
-            session = context.policy.require_tool(
-                resolved_session_id, ToolName.SEMANTIC_GET_POINTS
-            )
+            session = context.policy.require_tool(resolved_session_id, ToolName.SEMANTIC_GET_POINTS)
             result = semantic_adapter.get_points(
                 session=session,
                 collection_name=collection_name,

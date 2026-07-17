@@ -458,9 +458,7 @@ def test_ado_work_items_query_provider_uses_wiql_and_directory_path(
                 },
             }
 
-    monkeypatch.setattr(
-        "evander.queries.providers.ado_work_items.IssueService", StubIssueService
-    )
+    monkeypatch.setattr("evander.queries.providers.ado_work_items.IssueService", StubIssueService)
     resolver = _ResolverStub()
     factory = QueryProviderFactory(
         provider_config_resolver=resolver,
@@ -511,9 +509,7 @@ def test_ado_work_items_query_provider_structured_mode_passes_filters(
             captured["request"] = kwargs
             return {"provider": "azure_devops", "items": [], "count": 0}
 
-    monkeypatch.setattr(
-        "evander.queries.providers.ado_work_items.IssueService", StubIssueService
-    )
+    monkeypatch.setattr("evander.queries.providers.ado_work_items.IssueService", StubIssueService)
     factory = QueryProviderFactory(
         provider_config_resolver=_ResolverStub(),
         admin_service=_AdminServiceStub(vms=[]),
@@ -603,9 +599,7 @@ def test_ado_work_items_query_provider_can_query_current_iteration(
                 "count": 0,
             }
 
-    monkeypatch.setattr(
-        "evander.queries.providers.ado_work_items.IssueService", StubIssueService
-    )
+    monkeypatch.setattr("evander.queries.providers.ado_work_items.IssueService", StubIssueService)
     factory = QueryProviderFactory(
         provider_config_resolver=_ResolverStub(),
         admin_service=_AdminServiceStub(vms=[]),
@@ -661,9 +655,7 @@ def test_remote_issues_query_provider_passes_github_filters(
                 "count": 1,
             }
 
-    monkeypatch.setattr(
-        "evander.queries.providers.remote_issues.IssueService", StubIssueService
-    )
+    monkeypatch.setattr("evander.queries.providers.remote_issues.IssueService", StubIssueService)
     resolver = _ResolverStub()
     factory = QueryProviderFactory(
         provider_config_resolver=resolver,
@@ -742,9 +734,7 @@ def test_remote_issues_query_provider_passes_ado_query_mode(
             captured["request"] = kwargs
             return {"provider": "azure_devops", "items": [], "count": 0}
 
-    monkeypatch.setattr(
-        "evander.queries.providers.remote_issues.IssueService", StubIssueService
-    )
+    monkeypatch.setattr("evander.queries.providers.remote_issues.IssueService", StubIssueService)
     factory = QueryProviderFactory(
         provider_config_resolver=_ResolverStub(),
         admin_service=_AdminServiceStub(vms=[]),

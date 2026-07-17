@@ -70,7 +70,9 @@ def _managed_codex_skills_root(deps: Any, skill_names: list[str] | None) -> Path
     return None
 
 
-def _libvirt_base_image_from_manifest_metadata(manifest: SessionManifest | Any | None) -> str | None:
+def _libvirt_base_image_from_manifest_metadata(
+    manifest: SessionManifest | Any | None,
+) -> str | None:
     metadata = getattr(manifest, "metadata", None)
     if not isinstance(metadata, Mapping):
         return None
@@ -378,9 +380,7 @@ class LibvirtVmProvider(VmProvider):
             provider_state = vm_helpers.dominfo_field(vm_name, "State") or "unknown"
             power_state = normalize_power_state(provider_state)
             host_control_status = deps.agent_control_store.status_for_vm(vm_name)
-            ip_address = (
-                vm_helpers.resolve_vm_ip(vm_name) if power_state == "running" else None
-            )
+            ip_address = vm_helpers.resolve_vm_ip(vm_name) if power_state == "running" else None
             if power_state != "running":
                 agent_state = "disabled" if host_control_status == "disabled" else "inactive_vm"
                 agent_pid = None
@@ -1014,9 +1014,7 @@ def _libvirt_create_vm(
             manifest.model = None
     manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
     session_repository.upsert_session(manifest)
-    sync_added_discord_session_cursors = getattr(
-        deps, "sync_added_discord_session_cursors", None
-    )
+    sync_added_discord_session_cursors = getattr(deps, "sync_added_discord_session_cursors", None)
     if callable(sync_added_discord_session_cursors):
         sync_added_discord_session_cursors(
             previous_session=existing_session,
@@ -1104,9 +1102,7 @@ def _libvirt_create_vm(
             completed = process_helpers.run_subprocess(
                 launch_step, capture_output=True, text=True, env=run_env
             )
-            message = process_helpers.combined_process_message(
-                completed.stdout, completed.stderr
-            )
+            message = process_helpers.combined_process_message(completed.stdout, completed.stderr)
             if completed.returncode != 0 and process_helpers.can_prompt_for_privileges():
                 launch_step = process_helpers.pkexec_env_command(
                     [str(setup_script), *setup_args], run_env, allowed_env_keys
@@ -1371,9 +1367,7 @@ def _libvirt_vm_copy_files(
             raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
         merge_strategy = _normalize_copy_merge_strategy(file_spec.get("merge_strategy"))
         section_id = str(file_spec.get("section_id") or "").strip()
-        remove_section_ids = _normalize_copy_remove_section_ids(
-            file_spec.get("remove_section_ids")
-        )
+        remove_section_ids = _normalize_copy_remove_section_ids(file_spec.get("remove_section_ids"))
         if merge_strategy == "managed_section":
             if source_path_raw:
                 raise ValueError(f"files[{index}] managed_section requires inline content")
@@ -1681,9 +1675,7 @@ def _ssh_copy_files(
             raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
         merge_strategy = _normalize_copy_merge_strategy(file_spec.get("merge_strategy"))
         section_id = str(file_spec.get("section_id") or "").strip()
-        remove_section_ids = _normalize_copy_remove_section_ids(
-            file_spec.get("remove_section_ids")
-        )
+        remove_section_ids = _normalize_copy_remove_section_ids(file_spec.get("remove_section_ids"))
         if merge_strategy == "managed_section":
             if source_path_raw:
                 raise ValueError(f"files[{index}] managed_section requires inline content")

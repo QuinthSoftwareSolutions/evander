@@ -314,9 +314,7 @@ def test_ado_activity_sync_indexes_work_item_activity(
         directory_path="root",
     )
     assert indexed["items"][0]["activity_kind"] == "work_item_changed"
-    assert indexed["items"][0]["changed_fields"] == {
-        "System.Tags": {"newValue": "review"}
-    }
+    assert indexed["items"][0]["changed_fields"] == {"System.Tags": {"newValue": "review"}}
     assert indexed["index"]["sync_state"][0]["complete_through"] == "2026-07-08T00:00:00.000000Z"
 
 

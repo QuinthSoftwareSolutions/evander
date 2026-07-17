@@ -177,12 +177,6 @@ def test_build_git_push_payloads_ignores_shared_notes_ref(
         capture_output=True,
         text=True,
     )
-    tip_sha = subprocess.run(
-        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
     subprocess.run(
         ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/heads/agents/session-1/topic"],
         check=True,

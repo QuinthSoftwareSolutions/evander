@@ -14,9 +14,7 @@ from evander.repositories.skills_library import (
 
 class SkillDeletionBlockedByWorkflowReferences(ValueError):
     def __init__(self, skill_name: str, references: list[dict[str, object]]) -> None:
-        super().__init__(
-            f"Cannot delete Codex skill {skill_name}: it is referenced by workflows."
-        )
+        super().__init__(f"Cannot delete Codex skill {skill_name}: it is referenced by workflows.")
         self.skill_name = skill_name
         self.references = references
 

@@ -123,9 +123,8 @@ def normalize_admin_web_directory_path(value: object | None, *, default: str = "
 def scope_matches(scope: object | None, directory_path: object | None = None) -> bool:
     normalized_scope = normalize_admin_web_directory_path(scope)
     normalized_directory_path = normalize_admin_web_directory_path(directory_path)
-    return (
-        normalized_directory_path == normalized_scope
-        or normalized_directory_path.startswith(f"{normalized_scope}/")
+    return normalized_directory_path == normalized_scope or normalized_directory_path.startswith(
+        f"{normalized_scope}/"
     )
 
 

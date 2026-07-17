@@ -99,13 +99,11 @@ class InlineMediaHelpers:
         )
         if source_kind == "ado_backlog":
             pat_env_name = (
-                str(resolved_config.azure_devops_pat_env or "").strip()
-                or "AZURE_DEVOPS_PAT"
+                str(resolved_config.azure_devops_pat_env or "").strip() or "AZURE_DEVOPS_PAT"
             )
         else:
             pat_env_name = (
-                str(resolved_config.azure_devops_pr_pat_env or "").strip()
-                or "AZURE_DEVOPS_PR_PAT"
+                str(resolved_config.azure_devops_pr_pat_env or "").strip() or "AZURE_DEVOPS_PR_PAT"
             )
         pat = os.environ.get(pat_env_name, "").strip()
         adapter_cls = _compat_gateway_attr(
@@ -119,9 +117,7 @@ class InlineMediaHelpers:
             pat_env_name=pat_env_name,
         )
 
-    def github_inline_media_provider(
-        self, session_id: str | None = None
-    ) -> GitHubFeedbackAdapter:
+    def github_inline_media_provider(self, session_id: str | None = None) -> GitHubFeedbackAdapter:
         resolved_config = (
             self.context.resolve_provider_config_for_session(session_id)
             if session_id is not None
@@ -252,9 +248,7 @@ class InlineMediaHelpers:
         tool_name: ToolName = ToolName.LIST_INLINE_MEDIA,
     ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
         session = self.context.policy.require_tool(request.session_id, tool_name)
-        self.context.policy.require_inline_media_receive_enabled(
-            session, source_kind="pr_feedback"
-        )
+        self.context.policy.require_inline_media_receive_enabled(session, source_kind="pr_feedback")
         allowed_streams = {
             (stream["provider"], stream["repo"], stream["pr_id"])
             for stream in self.context.policy.require_pr_feedback_streams(session)
@@ -322,9 +316,7 @@ class InlineMediaHelpers:
         tool_name: ToolName = ToolName.LIST_INLINE_MEDIA,
     ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
         session = self.context.policy.require_tool(request.session_id, tool_name)
-        self.context.policy.require_inline_media_receive_enabled(
-            session, source_kind="ado_backlog"
-        )
+        self.context.policy.require_inline_media_receive_enabled(session, source_kind="ado_backlog")
         issue_service = self.deps.issue_service_factory()
         payload = issue_service.get_remote_backlog_item_by_id(
             provider=normalize_inline_media_provider(request.provider),
@@ -393,11 +385,7 @@ class InlineMediaHelpers:
                 mime_type=item.mime_type,
                 byte_count=item.byte_count,
                 url=(
-                    str(
-                        item.metadata.get("url")
-                        or item.metadata.get("download_url")
-                        or ""
-                    ).strip()
+                    str(item.metadata.get("url") or item.metadata.get("download_url") or "").strip()
                     or None
                 ),
                 metadata=sanitize_inline_media_metadata(item.metadata),
@@ -513,7 +501,9 @@ class InlineMediaHelpers:
                 allowed_hosts=self.allowed_inline_media_hosts_for_request(request, ref),
             )
             return content, ref.filename, mime_type or ref.mime_type
-        raise ToolError("Inline media content is not available from the configured provider metadata")
+        raise ToolError(
+            "Inline media content is not available from the configured provider metadata"
+        )
 
     def stage_inline_media_artifact(
         self,
@@ -549,13 +539,9 @@ class InlineMediaHelpers:
             "provider": normalize_inline_media_provider(str(request.provider or "")),
         }
         if source_kind == "pr_feedback":
-            raw_feedback = self.context.pr_feedback_service.store.read_raw().get(
-                "feedback", {}
-            )
+            raw_feedback = self.context.pr_feedback_service.store.read_raw().get("feedback", {})
             raw_item = (
-                raw_feedback.get(request.resource_id)
-                if isinstance(raw_feedback, dict)
-                else None
+                raw_feedback.get(request.resource_id) if isinstance(raw_feedback, dict) else None
             )
             if isinstance(raw_item, dict):
                 fields.update(

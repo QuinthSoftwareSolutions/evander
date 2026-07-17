@@ -46,9 +46,7 @@ def compile_trigger_orchestrator_config_with_diagnostics(
     addon_base_dir: str | Path | None = None,
 ) -> tuple[TriggerOrchestratorWorkerGlobalConfig, list[WorkflowValidationDiagnostic]]:
     compiled = compile_trigger_orchestrator_config(worker_config, transforms=transforms)
-    return compiled, collect_domain_validation_diagnostics(
-        compiled, addon_base_dir=addon_base_dir
-    )
+    return compiled, collect_domain_validation_diagnostics(compiled, addon_base_dir=addon_base_dir)
 
 
 def collect_domain_validation_diagnostics(

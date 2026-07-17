@@ -540,6 +540,7 @@ class VmAgentChatAssistantMixin:
             },
         )
         from evander.effects.providers.agent_session import build_container_session_files
+
         session = self._session_repository().get_session(session_id)
         mcp_session_token = session_mcp_auth_token(session) if session is not None else None
 

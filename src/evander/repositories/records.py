@@ -238,8 +238,7 @@ class SqliteTeamsRecordsRepository:
                 if not records:
                     return
                 rows = [
-                    self._row_for_record(cursor, envelope)
-                    for cursor, envelope in records.items()
+                    self._row_for_record(cursor, envelope) for cursor, envelope in records.items()
                 ]
                 self._put_rows(connection, rows)
 

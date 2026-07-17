@@ -23,6 +23,7 @@ from ..domain.case_task import (
 )
 from ..domain.common import _UNSET, _optional_text
 
+
 def _team_create_case_normalized_payload(
     *,
     case_id: str | None,
@@ -59,6 +60,7 @@ def _team_create_case_normalized_payload(
         "causation_id": _optional_text(causation_id),
     }
 
+
 def _normalize_case_update_command_fields(**fields: object) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for name, value in fields.items():
@@ -71,6 +73,7 @@ def _normalize_case_update_command_fields(**fields: object) -> dict[str, Any]:
         elif name in {"tags", "task_ids"}:
             normalized[name] = _unique_text_list(value, name)
     return normalized
+
 
 def _case_command_fingerprint(state: TeamState, case_id: str) -> dict[str, Any]:
     case = state.cases.get(case_id)
@@ -89,6 +92,7 @@ def _case_command_fingerprint(state: TeamState, case_id: str) -> dict[str, Any]:
         "task_links": sorted(task_links, key=lambda item: item["task_id"]),
     }
 
+
 def _team_case_status_value(
     value: TeamCaseStatus | str | None,
     *,
@@ -97,6 +101,7 @@ def _team_case_status_value(
     raw = value.value if isinstance(value, TeamCaseStatus) else value
     return _optional_text(raw) or default.value
 
+
 def _team_case_priority_value(
     value: TeamInboxPriority | str | None,
     *,
@@ -104,6 +109,7 @@ def _team_case_priority_value(
 ) -> str:
     raw = value.value if isinstance(value, TeamInboxPriority) else value
     return _optional_text(raw) or default.value
+
 
 def _normalize_task_creation_command_payload(
     *,
@@ -134,6 +140,7 @@ def _normalize_task_creation_command_payload(
         field_name="task",
     )
 
+
 def _normalize_task_creation_mapping(
     item: Mapping[str, Any],
     *,
@@ -157,6 +164,7 @@ def _normalize_task_creation_mapping(
         ),
     }
 
+
 def _team_create_task_normalized_payload(
     *,
     creation: Mapping[str, Any],
@@ -172,6 +180,7 @@ def _team_create_task_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _command_plan_task_creation(
     state: TeamState,
@@ -203,6 +212,7 @@ def _command_plan_task_creation(
         )
     return plan
 
+
 def _normalize_task_update_command_fields(**fields: object) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for name, value in fields.items():
@@ -220,9 +230,11 @@ def _normalize_task_update_command_fields(**fields: object) -> dict[str, Any]:
             normalized[name] = _unique_text_list(value, "dependency_task_ids")
     return normalized
 
+
 def _team_record_state_value(value: TeamRecordState | str) -> str:
     raw = value.value if isinstance(value, TeamRecordState) else value
     return _optional_text(raw) or ""
+
 
 def _task_graph_correction_context(
     state: TeamState,
@@ -246,6 +258,7 @@ def _task_graph_correction_context(
             referenced_task_ids=referenced_task_ids,
         ),
     }
+
 
 def _task_graph_correction_context_for_plans(
     state: TeamState,
@@ -281,6 +294,7 @@ def _task_graph_correction_context_for_plans(
         ),
     }
 
+
 def _task_graph_current_tasks(
     state: TeamState,
     *,
@@ -303,19 +317,20 @@ def _task_graph_current_tasks(
         )
     return sorted(rows, key=lambda item: item["task_id"])
 
+
 __all__ = [
-    '_team_create_case_normalized_payload',
-    '_normalize_case_update_command_fields',
-    '_case_command_fingerprint',
-    '_team_case_status_value',
-    '_team_case_priority_value',
-    '_normalize_task_creation_command_payload',
-    '_normalize_task_creation_mapping',
-    '_team_create_task_normalized_payload',
-    '_command_plan_task_creation',
-    '_normalize_task_update_command_fields',
-    '_team_record_state_value',
-    '_task_graph_correction_context',
-    '_task_graph_correction_context_for_plans',
-    '_task_graph_current_tasks',
+    "_team_create_case_normalized_payload",
+    "_normalize_case_update_command_fields",
+    "_case_command_fingerprint",
+    "_team_case_status_value",
+    "_team_case_priority_value",
+    "_normalize_task_creation_command_payload",
+    "_normalize_task_creation_mapping",
+    "_team_create_task_normalized_payload",
+    "_command_plan_task_creation",
+    "_normalize_task_update_command_fields",
+    "_team_record_state_value",
+    "_task_graph_correction_context",
+    "_task_graph_correction_context_for_plans",
+    "_task_graph_current_tasks",
 ]

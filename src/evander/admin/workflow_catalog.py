@@ -40,6 +40,8 @@ _GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
 _EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
 _QUERY_DEFINITION_ADAPTER = TypeAdapter(QueryDefinitionDiscriminated)
 _EDGE_DEFINITION_ADAPTER = TypeAdapter(EdgeDefinition)
+
+
 def _strip_default_edge_fields(payload: dict[str, object]) -> dict[str, object]:
     edges = payload.get("edges")
     if not isinstance(edges, list):
@@ -909,8 +911,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("area_path", "Area path", "string"),
             _field("states", "States", "string_list", description="Structured filters mode only."),
             _field("types", "Types", "string_list", description="Structured filters mode only."),
-            _field("tags_any", "Tags any", "string_list", description="Structured filters mode only."),
-            _field("text_search", "Text search", "string", description="Structured filters mode only."),
+            _field(
+                "tags_any", "Tags any", "string_list", description="Structured filters mode only."
+            ),
+            _field(
+                "text_search", "Text search", "string", description="Structured filters mode only."
+            ),
             _field("top", "Top", "number"),
         ],
     ),
@@ -939,10 +945,30 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("team", "Team", "string"),
             _field("iteration", "Iteration path", "string"),
             _field("area_path", "Area path", "string"),
-            _field("states", "States", "string_list", default_value=[], description="Structured filters mode only."),
-            _field("types", "Types", "string_list", default_value=[], description="Structured filters mode only."),
-            _field("tags_any", "Tags any", "string_list", default_value=[], description="Structured filters mode only."),
-            _field("text_search", "Text search", "string", description="Structured filters mode only."),
+            _field(
+                "states",
+                "States",
+                "string_list",
+                default_value=[],
+                description="Structured filters mode only.",
+            ),
+            _field(
+                "types",
+                "Types",
+                "string_list",
+                default_value=[],
+                description="Structured filters mode only.",
+            ),
+            _field(
+                "tags_any",
+                "Tags any",
+                "string_list",
+                default_value=[],
+                description="Structured filters mode only.",
+            ),
+            _field(
+                "text_search", "Text search", "string", description="Structured filters mode only."
+            ),
             _field("top", "Top", "number", default_value=50),
             _field(
                 "comment_contains",
@@ -3419,10 +3445,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:git:promote-agent-branch",
         label="Promote agent branch",
         fields=[
-            _field("managed_repo_id", "Managed repository ID", "string", required=True, bindable=True),
+            _field(
+                "managed_repo_id", "Managed repository ID", "string", required=True, bindable=True
+            ),
             _field("agent_branch", "Agent branch", "string", required=True, bindable=True),
             _field("target_branch", "Target branch", "string", required=True, bindable=True),
-            _field("expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True),
+            _field(
+                "expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -3430,11 +3460,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:git:push-branch",
         label="Push git branch",
         fields=[
-            _field("managed_repo_id", "Managed repository ID", "string", required=True, bindable=True),
+            _field(
+                "managed_repo_id", "Managed repository ID", "string", required=True, bindable=True
+            ),
             _field("directory_path", "Directory path", "string", bindable=True),
             _field("source_ref", "Source ref", "string", required=True, bindable=True),
-            _field("expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True),
-            _field("destination_branch", "Destination branch", "string", required=True, bindable=True),
+            _field(
+                "expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True
+            ),
+            _field(
+                "destination_branch", "Destination branch", "string", required=True, bindable=True
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -3442,10 +3478,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:pr:create",
         label="PR create",
         fields=[
-            _field("managed_repo_id", "Managed repository ID", "string", required=True, bindable=True),
+            _field(
+                "managed_repo_id", "Managed repository ID", "string", required=True, bindable=True
+            ),
             _field("source_ref", "Source ref", "string", required=True, bindable=True),
-            _field("expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True),
-            _field("destination_branch", "Destination branch", "string", required=True, bindable=True),
+            _field(
+                "expected_commit_sha", "Expected commit SHA", "string", required=True, bindable=True
+            ),
+            _field(
+                "destination_branch", "Destination branch", "string", required=True, bindable=True
+            ),
             _field(
                 "fallback_destination_branch",
                 "Fallback destination branch",
@@ -3553,7 +3595,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="query:git:pr-note",
         label="Git PR note",
         fields=[
-            _field("managed_repo_id", "Managed repository ID", "string", required=True, bindable=True),
+            _field(
+                "managed_repo_id", "Managed repository ID", "string", required=True, bindable=True
+            ),
             _field("commit_sha", "Commit SHA", "string", required=True, bindable=True),
             _field("notes_ref", "Notes ref", "string", required=True, bindable=True),
         ],
@@ -4090,8 +4134,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("area_path", "Area path", "string", bindable=True),
             _field("states", "States", "string_list", description="Structured filters mode only."),
             _field("types", "Types", "string_list", description="Structured filters mode only."),
-            _field("tags_any", "Tags any", "string_list", description="Structured filters mode only."),
-            _field("text_search", "Text search", "string", bindable=True, description="Structured filters mode only."),
+            _field(
+                "tags_any", "Tags any", "string_list", description="Structured filters mode only."
+            ),
+            _field(
+                "text_search",
+                "Text search",
+                "string",
+                bindable=True,
+                description="Structured filters mode only.",
+            ),
             _field("top", "Top", "number", bindable=True),
             _field("skip", "Skip", "number", bindable=True),
         ],

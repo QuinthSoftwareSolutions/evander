@@ -165,7 +165,9 @@ class TriggerDeliveryStore:
                 normalized_item = _normalize_source_item(item)
                 if normalized_item.source_occurred_at > initialized_at:
                     continue
-                delivery_key = _delivery_key(normalized_subscription, normalized_item.source_item_id)
+                delivery_key = _delivery_key(
+                    normalized_subscription, normalized_item.source_item_id
+                )
                 deliveries[delivery_key] = TriggerDeliveryRecord(
                     delivery_key=delivery_key,
                     subscription_key=normalized_subscription.key,

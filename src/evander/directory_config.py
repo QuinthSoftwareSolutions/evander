@@ -468,8 +468,7 @@ class EffectiveContactDirectoryConfig(ContactDirectoryConfig):
         )
         if unknown_contacts:
             raise ValueError(
-                "user_contact_links reference unknown contacts: "
-                + ", ".join(unknown_contacts)
+                "user_contact_links reference unknown contacts: " + ", ".join(unknown_contacts)
             )
         return self
 
@@ -758,9 +757,7 @@ class DirectoryConfigStore:
                 "directory config domain 'providers' does not allow fields: "
                 + ", ".join(unknown_fields)
             )
-        provider_payload = {
-            key: value for key, value in payload.items() if key in allowed_fields
-        }
+        provider_payload = {key: value for key, value in payload.items() if key in allowed_fields}
         validated = GatewayConfig.model_validate(
             provider_payload,
             context={

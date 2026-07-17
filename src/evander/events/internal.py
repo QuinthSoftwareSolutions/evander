@@ -106,6 +106,7 @@ class InternalEventBus:
         )
         published = False
         with self._lock:
+
             def update(items: dict[str, InternalEvent]) -> InternalEvent:
                 nonlocal published
                 if normalized_idempotency is not None:

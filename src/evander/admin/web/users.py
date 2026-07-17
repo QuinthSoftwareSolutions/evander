@@ -55,8 +55,7 @@ def _user_payload(
         auth is not None
         and auth.config.auth_mode == "local_password"
         and auth.config.password is not None
-        and normalize_admin_web_login(user.login)
-        == normalize_admin_web_login(auth.config.username)
+        and normalize_admin_web_login(user.login) == normalize_admin_web_login(auth.config.username)
     )
     payload["local_password_enabled"] = credential is not None or legacy_local_password_enabled
     payload["password_last_changed_at"] = (
@@ -188,11 +187,7 @@ def _normalized_workflow_tutorial_ids(value: object) -> list[str]:
         if not isinstance(entry, str):
             continue
         tutorial_id = entry.strip()
-        if (
-            not tutorial_id
-            or tutorial_id not in WORKFLOW_TUTORIAL_IDS
-            or tutorial_id in seen
-        ):
+        if not tutorial_id or tutorial_id not in WORKFLOW_TUTORIAL_IDS or tutorial_id in seen:
             continue
         seen.add(tutorial_id)
         result.append(tutorial_id)
@@ -242,9 +237,7 @@ def _contacts_config_for_directory(
     return ContactDirectoryConfig.model_validate(result.data.resolution.effective_config)
 
 
-def _normalize_contact_update(
-    contacts_config: ContactDirectoryConfig, value: object
-) -> str | None:
+def _normalize_contact_update(contacts_config: ContactDirectoryConfig, value: object) -> str | None:
     if value is None:
         return None
     contact_id = str(value).strip()
@@ -266,7 +259,9 @@ def _write_user_contact_link(
         raise ValueError(
             "directory-scoped config is disabled; user contact attachments are read-only"
         )
-    existing_result = service.operations_admin.read_directory_domain_config(directory_path, "contacts")
+    existing_result = service.operations_admin.read_directory_domain_config(
+        directory_path, "contacts"
+    )
     existing_config = (
         dict(existing_result.data.config)
         if existing_result.ok
@@ -284,9 +279,13 @@ def _write_user_contact_link(
         existing_config["user_contact_links"] = links
     else:
         existing_config.pop("user_contact_links", None)
-    result = service.operations_admin.write_directory_domain_config(directory_path, "contacts", existing_config)
+    result = service.operations_admin.write_directory_domain_config(
+        directory_path, "contacts", existing_config
+    )
     if not result.ok:
-        raise ValueError(result.errors[0].message if result.errors else "Unable to save contact link")
+        raise ValueError(
+            result.errors[0].message if result.errors else "Unable to save contact link"
+        )
 
 
 def admin_user_routes(
@@ -531,9 +530,7 @@ def admin_user_routes(
                 group_id=group_id,
                 display_name=payload.get("display_name", existing.display_name),
                 description=(
-                    payload.get("description")
-                    if "description" in payload
-                    else existing.description
+                    payload.get("description") if "description" in payload else existing.description
                 ),
             )
             if "permissions" in payload:

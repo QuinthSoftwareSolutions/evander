@@ -38,10 +38,10 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "container_worker_guest_pypi_index_url" in docs
     assert "container_worker_guest_npm_registry_url" in docs
     assert "container_worker_images" in docs
-    assert "claude: \"evander-runner-claude:latest\"" in docs
+    assert 'claude: "evander-runner-claude:latest"' in docs
     assert "dotnet-playwright" in docs
     assert "container_worker_guest_anthropic_base_url" in docs
-    assert "model_provider_mode: \"anthropic\"" in docs
+    assert 'model_provider_mode: "anthropic"' in docs
     assert "select the `claude` image alias" in docs
     assert "`container_worker_default_image` is the fallback" in docs
     assert "does not pull or build images" in docs
@@ -91,9 +91,9 @@ def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() ->
     assert "backend-aware `effect:agent:*` workflow nodes" in docs
     assert "evander_worker_egress_policy_enabled: true" in docs
     assert "container_worker_images" in docs
-    assert "claude: \"evander-runner-claude:latest\"" in docs
+    assert 'claude: "evander-runner-claude:latest"' in docs
     assert "container_worker_guest_anthropic_base_url" in docs
-    assert "model_provider_mode: \"anthropic\"" in docs
+    assert 'model_provider_mode: "anthropic"' in docs
     assert "stored image" in docs
     assert "## Remaining Migration Work" in docs
     assert "Phase 5" in docs

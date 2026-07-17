@@ -60,7 +60,9 @@ class ArtifactSpaceListQueryProvider(QueryProviderBase):
                 for version in state.versions.values()
                 if version.space_path in readable_paths
             ]
-            versions.sort(key=lambda item: (item["space_path"], item["artifact_id"], item["version"]))
+            versions.sort(
+                key=lambda item: (item["space_path"], item["artifact_id"], item["version"])
+            )
 
         spaces.sort(key=lambda item: item["path"])
         return {
@@ -169,4 +171,3 @@ def _optional_bool(value: object, *, default: bool) -> bool:
     if text in {"0", "false", "no", "off"}:
         return False
     raise ValueError("boolean value is required")
-

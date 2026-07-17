@@ -6234,6 +6234,19 @@ export default function App() {
       restoredDocument.validation_diagnostics ?? [],
       { nodeEditOrigins: entry.nodeEditOrigins },
     );
+    const restoredInspectorNodeId =
+      selectedNodeId && restoredNodeIds.has(selectedNodeId)
+        ? selectedNodeId
+        : nextSelectedNodeIds[0] ?? null;
+    const restoredInspectorNode = restoredInspectorNodeId
+      ? nodeById(restoredDocument.config, restoredInspectorNodeId)
+      : undefined;
+    hydrateInspectorDraftFromNode(
+      restoredInspectorNode,
+      restoredInspectorNode
+        ? getCatalogEntry(catalog, restoredInspectorNode.type)
+        : undefined,
+    );
     setSelectedEdgeId((currentEdgeId) => (
       currentEdgeId && restoredDocument.config.edges.some((edge) => edgeId(edge) === currentEdgeId)
         ? currentEdgeId
@@ -6862,10 +6875,6 @@ export default function App() {
       compactCanvasTouchModeRef.current = "multi-touch-pan";
       return;
     }
-    if (!workflowMutationLocked && eventTargetInsideWorkflowNodeDragSurface(event.target)) {
-      compactCanvasTouchModeRef.current = "node-drag";
-      return;
-    }
     if (compactCanvasMode === "pan") {
       compactCanvasTouchModeRef.current = "pane-pan";
       const touch = event.touches[0];
@@ -6878,6 +6887,10 @@ export default function App() {
           }
         : null;
       event.stopPropagation();
+      return;
+    }
+    if (!workflowMutationLocked && eventTargetInsideWorkflowNodeDragSurface(event.target)) {
+      compactCanvasTouchModeRef.current = "node-drag";
       return;
     }
     compactPanePanRef.current = null;

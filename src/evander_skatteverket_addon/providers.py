@@ -71,15 +71,32 @@ def _entry(
 
 
 _CATALOG_ENTRIES = (
-    _entry("query", "query:skatteverket:catalog", "Skatteverket catalog", "List known Skatteverket APIs exposed by the add-on.", []),
-    _entry("query", "query:skatteverket:connection-status", "Skatteverket connection status", "Report host-side Skatteverket connection and secret readiness.", []),
+    _entry(
+        "query",
+        "query:skatteverket:catalog",
+        "Skatteverket catalog",
+        "List known Skatteverket APIs exposed by the add-on.",
+        [],
+    ),
+    _entry(
+        "query",
+        "query:skatteverket:connection-status",
+        "Skatteverket connection status",
+        "Report host-side Skatteverket connection and secret readiness.",
+        [],
+    ),
     _entry(
         "query",
         "query:skatteverket:skattekonto",
         "Read Skattekonto",
         "Prepare a host-side tax account read through the configured Skatteverket adapter.",
         [
-            _field("subject_id", "Subject", "text", description="Optional organisation or principal identifier."),
+            _field(
+                "subject_id",
+                "Subject",
+                "text",
+                description="Optional organisation or principal identifier.",
+            ),
             _field("period", "Period", "text", description="Optional reporting period."),
         ],
     ),
@@ -89,7 +106,12 @@ _CATALOG_ENTRIES = (
         "Read Skatteverket events",
         "Prepare a host-side customer event read through the configured Skatteverket adapter.",
         [
-            _field("subject_id", "Subject", "text", description="Optional organisation or principal identifier."),
+            _field(
+                "subject_id",
+                "Subject",
+                "text",
+                description="Optional organisation or principal identifier.",
+            ),
             _field("period", "Period", "text", description="Optional reporting period."),
         ],
     ),
@@ -99,11 +121,32 @@ _CATALOG_ENTRIES = (
         "Create Skatteverket draft",
         "Create a draft filing payload in add-on-owned state.",
         [
-            _field("api_name", "API name", "text", required=True, description="Skatteverket API name such as momsdeklaration."),
+            _field(
+                "api_name",
+                "API name",
+                "text",
+                required=True,
+                description="Skatteverket API name such as momsdeklaration.",
+            ),
             _field("period", "Period", "text", description="Reporting period for the draft."),
-            _field("subject_id", "Subject", "text", description="Organisation or principal identifier."),
-            _field("payload", "Payload", "json", required=True, multiline=True, json_value_type="object", description="Draft JSON payload."),
-            _field("source_session_id", "Source session", "text", description="Optional session that prepared the draft."),
+            _field(
+                "subject_id", "Subject", "text", description="Organisation or principal identifier."
+            ),
+            _field(
+                "payload",
+                "Payload",
+                "json",
+                required=True,
+                multiline=True,
+                json_value_type="object",
+                description="Draft JSON payload.",
+            ),
+            _field(
+                "source_session_id",
+                "Source session",
+                "text",
+                description="Optional session that prepared the draft.",
+            ),
         ],
     ),
     _entry(
@@ -111,7 +154,15 @@ _CATALOG_ENTRIES = (
         "effect:skatteverket:validate-draft",
         "Validate Skatteverket draft",
         "Validate a stored draft before approval and submission.",
-        [_field("draft_id", "Draft ID", "text", required=True, description="Stored Skatteverket draft id.")],
+        [
+            _field(
+                "draft_id",
+                "Draft ID",
+                "text",
+                required=True,
+                description="Stored Skatteverket draft id.",
+            )
+        ],
     ),
     _entry(
         "effect",
@@ -119,8 +170,15 @@ _CATALOG_ENTRIES = (
         "Request Skatteverket submission approval",
         "Create an operator approval request for a validated draft revision when policy context is available.",
         [
-            _field("draft_id", "Draft ID", "text", required=True, description="Validated draft id."),
-            _field("session_id", "Session ID", "text", description="Session that should own the approval request."),
+            _field(
+                "draft_id", "Draft ID", "text", required=True, description="Validated draft id."
+            ),
+            _field(
+                "session_id",
+                "Session ID",
+                "text",
+                description="Session that should own the approval request.",
+            ),
         ],
     ),
     _entry(
@@ -129,8 +187,16 @@ _CATALOG_ENTRIES = (
         "Submit approved Skatteverket draft",
         "Submit a draft after exact approval has been granted.",
         [
-            _field("draft_id", "Draft ID", "text", required=True, description="Validated draft id."),
-            _field("approval_request_id", "Approval request", "text", required=True, description="Approved exact submission request id."),
+            _field(
+                "draft_id", "Draft ID", "text", required=True, description="Validated draft id."
+            ),
+            _field(
+                "approval_request_id",
+                "Approval request",
+                "text",
+                required=True,
+                description="Approved exact submission request id.",
+            ),
         ],
     ),
     _entry(
@@ -139,9 +205,24 @@ _CATALOG_ENTRIES = (
         "Record Skatteverket submission result",
         "Record an externally submitted Skatteverket response against a draft.",
         [
-            _field("draft_id", "Draft ID", "text", required=True, description="Validated draft id."),
-            _field("approval_request_id", "Approval request", "text", required=True, description="Approval request used for the submission."),
-            _field("response", "Response", "json", multiline=True, json_value_type="object", description="Sanitized Skatteverket response payload."),
+            _field(
+                "draft_id", "Draft ID", "text", required=True, description="Validated draft id."
+            ),
+            _field(
+                "approval_request_id",
+                "Approval request",
+                "text",
+                required=True,
+                description="Approval request used for the submission.",
+            ),
+            _field(
+                "response",
+                "Response",
+                "json",
+                multiline=True,
+                json_value_type="object",
+                description="Sanitized Skatteverket response payload.",
+            ),
         ],
     ),
 )
@@ -332,7 +413,11 @@ class SkatteverketSubmitApprovedDraftEffectProvider(EffectProviderBase):
             response=response,
             idempotency_key=idempotency_key,
         )
-        return {"status": submission["status"], "submission_id": submission["submission_id"], "submission": submission}
+        return {
+            "status": submission["status"],
+            "submission_id": submission["submission_id"],
+            "submission": submission,
+        }
 
 
 class SkatteverketRecordSubmissionResultEffectProvider(EffectProviderBase):
@@ -363,7 +448,11 @@ class SkatteverketRecordSubmissionResultEffectProvider(EffectProviderBase):
             )
         except SkatteverketStateError as exc:
             return {"status": "error", "submission_id": None, "error": str(exc)}
-        return {"status": submission["status"], "submission_id": submission["submission_id"], "submission": submission}
+        return {
+            "status": submission["status"],
+            "submission_id": submission["submission_id"],
+            "submission": submission,
+        }
 
 
 def register_providers() -> ProviderPluginRegistration:
@@ -409,7 +498,9 @@ def register_providers() -> ProviderPluginRegistration:
                 lambda node: _materialize(SkatteverketValidateDraftEffectDefinition, node)
             ),
             "effect:skatteverket:request-submission-approval": (
-                lambda node: _materialize(SkatteverketRequestSubmissionApprovalEffectDefinition, node)
+                lambda node: _materialize(
+                    SkatteverketRequestSubmissionApprovalEffectDefinition, node
+                )
             ),
             "effect:skatteverket:submit-approved-draft": (
                 lambda node: _materialize(SkatteverketSubmitApprovedDraftEffectDefinition, node)

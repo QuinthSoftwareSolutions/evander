@@ -48,9 +48,7 @@ EOF
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["EVANDER_MCP_GATEWAY_URL"] = (
-        "http://gateway.test:8000/mcp?session_id=session-1"
-    )
+    env["EVANDER_MCP_GATEWAY_URL"] = "http://gateway.test:8000/mcp?session_id=session-1"
     command = (
         f"source '{ROOT / 'scripts' / 'lib' / 'agent_runner_claude.sh'}'; "
         "agent_runner_claude_exec --model claude-test 'Continue'"
@@ -79,9 +77,7 @@ EOF
         str(home / ".claude" / "evander-mcp-config.json"),
     ]
     mcp_config = json.loads(
-        (home / ".claude" / "evander-mcp-config.json").read_text(
-            encoding="utf-8"
-        )
+        (home / ".claude" / "evander-mcp-config.json").read_text(encoding="utf-8")
     )
     assert mcp_config["mcpServers"]["evander"]["url"] == (
         "http://gateway.test:8000/mcp?session_id=session-1"

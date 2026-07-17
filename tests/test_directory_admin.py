@@ -179,9 +179,7 @@ def test_directory_admin_service_validates_approval_notification_targets_on_writ
     assert non_notify_target.ok is False
     assert "without notify capability: ops-read" in non_notify_target.errors[0].message
 
-    policy_path = (
-        config.runtime_dir / "directory-config" / "root" / "team" / "policy.json"
-    )
+    policy_path = config.runtime_dir / "directory-config" / "root" / "team" / "policy.json"
     policy_payload = json.loads(policy_path.read_text(encoding="utf-8"))
     policy_payload["approval_notification_target_ids"] = ["missing-target"]
     policy_path.write_text(
@@ -277,9 +275,7 @@ def test_directory_admin_service_surfaces_validation_diagnostics_and_config_writ
 
     team = admin.create_child(parent="root", name="team").data.details.directory
 
-    invalid_write = admin.write_domain_config(
-        team.id, domain="wake", payload={"unexpected": True}
-    )
+    invalid_write = admin.write_domain_config(team.id, domain="wake", payload={"unexpected": True})
     assert invalid_write.ok is False
     assert invalid_write.errors[0].message.startswith(
         "directory config domain 'wake' does not allow fields"

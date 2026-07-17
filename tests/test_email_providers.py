@@ -481,9 +481,7 @@ def test_gmail_create_draft_generates_mime_attachment_payload(
         body="See attached",
         recipients=["recipient@example.com"],
         attachments=[
-            EmailDraftAttachment(
-                filename="note.txt", content=b"hello", mime_type="text/plain"
-            )
+            EmailDraftAttachment(filename="note.txt", content=b"hello", mime_type="text/plain")
         ],
     )
 
@@ -616,9 +614,7 @@ def test_graph_create_draft_embeds_small_attachment_payload(
         body="See attached",
         recipients=["recipient@example.com"],
         attachments=[
-            EmailDraftAttachment(
-                filename="note.txt", content=b"hello", mime_type="text/plain"
-            )
+            EmailDraftAttachment(filename="note.txt", content=b"hello", mime_type="text/plain")
         ],
     )
 
@@ -682,9 +678,7 @@ def test_graph_create_draft_uses_upload_session_for_large_attachment(
     assert draft.metadata["large_attachment_count"] == 1
     assert GraphEmailProvider._upload_chunk_size % (320 * 1024) == 0
     assert len(upload_puts) == 2
-    assert int(upload_puts[0].headers["content-length"]) == (
-        GraphEmailProvider._upload_chunk_size
-    )
+    assert int(upload_puts[0].headers["content-length"]) == (GraphEmailProvider._upload_chunk_size)
     assert upload_puts[0].headers["content-range"] == (
         f"bytes 0-{GraphEmailProvider._upload_chunk_size - 1}/"
         f"{GraphEmailProvider._upload_chunk_size + 1}"

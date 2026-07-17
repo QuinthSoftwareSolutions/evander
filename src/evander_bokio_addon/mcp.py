@@ -142,7 +142,9 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         _require_tool(session_id, ctx, LIST_INVOICES_TOOL)
-        return {"result": _client(context).list_invoices(page=page, page_size=page_size, query=query)}
+        return {
+            "result": _client(context).list_invoices(page=page, page_size=page_size, query=query)
+        }
 
     @server.tool(
         name=LIST_EVIDENCE_TOOL,
@@ -468,7 +470,9 @@ def _create_journal_entry_with_evidence(
     normalized_evidence_ids = [validate_evidence_id(item) for item in evidence_ids]
     generated_key = sha256(
         json.dumps(
-            {"payload": payload, "evidence_ids": normalized_evidence_ids}, sort_keys=True, default=str
+            {"payload": payload, "evidence_ids": normalized_evidence_ids},
+            sort_keys=True,
+            default=str,
         ).encode("utf-8")
     ).hexdigest()
     store = _evidence_store(context)

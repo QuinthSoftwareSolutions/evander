@@ -132,24 +132,20 @@ def test_install_systemd_units_no_longer_requires_removed_per_service_env_files(
 def test_service_templates_use_optional_shared_secrets_env() -> None:
     repo = Path(__file__).resolve().parents[1]
 
-    gateway = (repo / "systemd" / "evander-gateway.service.template").read_text(
-        encoding="utf-8"
-    )
+    gateway = (repo / "systemd" / "evander-gateway.service.template").read_text(encoding="utf-8")
     openai = (repo / "systemd" / "evander-openai-relay.service.template").read_text(
         encoding="utf-8"
     )
-    nuget = (repo / "systemd" / "evander-nuget-relay.service.template").read_text(
+    nuget = (repo / "systemd" / "evander-nuget-relay.service.template").read_text(encoding="utf-8")
+    npm_audit_facade = (repo / "systemd" / "evander-npm-audit-facade.service.template").read_text(
         encoding="utf-8"
     )
-    npm_audit_facade = (
-        repo / "systemd" / "evander-npm-audit-facade.service.template"
-    ).read_text(encoding="utf-8")
     http_target = (repo / "systemd" / "evander-http-target-relay.service.template").read_text(
         encoding="utf-8"
     )
-    didww_sip_bridge = (
-        repo / "systemd" / "evander-didww-sip-bridge.service.template"
-    ).read_text(encoding="utf-8")
+    didww_sip_bridge = (repo / "systemd" / "evander-didww-sip-bridge.service.template").read_text(
+        encoding="utf-8"
+    )
     discord_wake = (repo / "systemd" / "evander-discord-wake.service.template").read_text(
         encoding="utf-8"
     )
@@ -162,9 +158,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     discord_ingest = (repo / "systemd" / "evander-discord-ingest.service.template").read_text(
         encoding="utf-8"
     )
-    proxy_issue_sync = (
-        repo / "systemd" / "evander-proxy-issue-sync.service.template"
-    ).read_text(encoding="utf-8")
+    proxy_issue_sync = (repo / "systemd" / "evander-proxy-issue-sync.service.template").read_text(
+        encoding="utf-8"
+    )
     trigger_orchestrator = (
         repo / "systemd" / "evander-trigger-orchestrator.service.template"
     ).read_text(encoding="utf-8")
@@ -220,9 +216,7 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
         repo / "systemd" / "evander-ado-worker.service.template"
     ).read_text(encoding="utf-8")
     assert "Environment=PROXY_ISSUE_SYNC_LOG_LEVEL=INFO" in proxy_issue_sync
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-proxy-issue-sync" in (
-        proxy_issue_sync
-    )
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-proxy-issue-sync" in (proxy_issue_sync)
     assert "--log-level ${PROXY_ISSUE_SYNC_LOG_LEVEL}" in proxy_issue_sync
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in proxy_issue_sync
     assert "Environment=TRIGGER_ORCHESTRATOR_LOG_LEVEL=INFO" in trigger_orchestrator
@@ -237,9 +231,9 @@ def test_wake_service_templates_run_as_operator_user_and_load_shared_secrets() -
     discord_wake = (repo / "systemd" / "evander-discord-wake.service.template").read_text(
         encoding="utf-8"
     )
-    scheduled_wake = (
-        repo / "systemd" / "evander-scheduled-wake.service.template"
-    ).read_text(encoding="utf-8")
+    scheduled_wake = (repo / "systemd" / "evander-scheduled-wake.service.template").read_text(
+        encoding="utf-8"
+    )
 
     assert discord_wake.count("\nUser=__RUN_USER__\n") == 1
     assert scheduled_wake.count("\nUser=__RUN_USER__\n") == 1

@@ -52,9 +52,7 @@ def test_session_expiry_message_uses_utc_and_does_not_mutate_manifest() -> None:
 
 
 def test_session_expiry_guard_raises_consistent_error_message() -> None:
-    manifest = _manifest(
-        expires_at=datetime(2030, 1, 1, 12, 30, tzinfo=timezone.utc)
-    )
+    manifest = _manifest(expires_at=datetime(2030, 1, 1, 12, 30, tzinfo=timezone.utc))
 
     with pytest.raises(
         SessionExpiredError,

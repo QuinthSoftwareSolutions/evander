@@ -306,9 +306,7 @@ class WorkflowConfigAdminService:
     ) -> WorkflowSkillReferenceSearchResult:
         normalized_skill_name = validate_skill_name(skill_name)
         with self.admin_config_mutation_lock():
-            return self._find_managed_codex_skill_references_unlocked(
-                normalized_skill_name
-            )
+            return self._find_managed_codex_skill_references_unlocked(normalized_skill_name)
 
     def create_workflow_pack(
         self,
@@ -659,9 +657,7 @@ class WorkflowConfigAdminService:
     @staticmethod
     def _managed_codex_skill_reference_count(value: object, skill_name: str) -> int:
         if isinstance(value, list):
-            return sum(
-                1 for item in value if isinstance(item, str) and item.strip() == skill_name
-            )
+            return sum(1 for item in value if isinstance(item, str) and item.strip() == skill_name)
         if isinstance(value, str) and "${{" not in value and value.strip() == skill_name:
             return 1
         return 0
@@ -839,7 +835,9 @@ class WorkflowConfigAdminService:
                 "Workflow pack list changed before save. Reload the workflow before saving again.",
                 details={
                     "current_revision": current_revision,
-                    "current": self._read_composed_workflow_editor_document().model_dump(mode="json"),
+                    "current": self._read_composed_workflow_editor_document().model_dump(
+                        mode="json"
+                    ),
                 },
             )
 
@@ -946,9 +944,7 @@ class WorkflowConfigAdminService:
         self,
         workflow_pack: str,
     ) -> WorkflowPackMigrationDocument:
-        _config_path, _config_exists, raw_config = (
-            self._workflow_editor_read_raw_worker_config()
-        )
+        _config_path, _config_exists, raw_config = self._workflow_editor_read_raw_worker_config()
         selected_reference = self._workflow_editor_selected_pack_reference(
             raw_config,
             workflow_pack,
@@ -957,9 +953,7 @@ class WorkflowConfigAdminService:
             raise ValueError("Workflow pack is required for managed Git migration")
         pack_path = self._workflow_editor_pack_path(selected_reference)
         if not pack_path.is_file():
-            raise ValueError(
-                f"workflow pack {selected_reference!r} does not exist at {pack_path}"
-            )
+            raise ValueError(f"workflow pack {selected_reference!r} does not exist at {pack_path}")
         content = pack_path.read_bytes()
         try:
             payload = json.loads(content.decode("utf-8"))
@@ -1008,9 +1002,7 @@ class WorkflowConfigAdminService:
                     "current_revision": current.revision,
                 },
             )
-        config_path, _config_exists, _raw_config = (
-            self._workflow_editor_read_raw_worker_config()
-        )
+        config_path, _config_exists, _raw_config = self._workflow_editor_read_raw_worker_config()
         layout_path = self._workflow_editor_pack_layout_path(current.reference)
         before_files = self._workflow_pack_history_files(
             config_path=config_path,
@@ -1034,9 +1026,11 @@ class WorkflowConfigAdminService:
                 after_files=after_files,
             )
         except BaseException:
-            if current.path.is_file() and hashlib.sha256(
-                current.path.read_bytes()
-            ).hexdigest() == hashlib.sha256(content).hexdigest():
+            if (
+                current.path.is_file()
+                and hashlib.sha256(current.path.read_bytes()).hexdigest()
+                == hashlib.sha256(content).hexdigest()
+            ):
                 self._write_file_bytes_atomic(current.path, current.content)
             raise
         return WorkflowPackMigrationDocument(

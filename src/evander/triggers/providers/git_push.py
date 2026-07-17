@@ -38,9 +38,7 @@ class GitPushTriggerProvider(TriggerProviderBase):
             return None
         owner_directory = repo_metadata.get("directory_path")
         workflow_directory = str(
-            (self.runtime_context.metadata if self.runtime_context else {}).get(
-                "directory_path"
-            )
+            (self.runtime_context.metadata if self.runtime_context else {}).get("directory_path")
             or "root"
         )
         if not owner_directory or not (

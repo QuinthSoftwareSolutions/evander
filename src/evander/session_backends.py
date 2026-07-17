@@ -13,7 +13,9 @@ def normalize_optional_string(value: Any) -> str | None:
     return text or None
 
 
-def effective_execution_backend_for_session(session: Any | None, *, fallback_backend: str | None = None) -> str:
+def effective_execution_backend_for_session(
+    session: Any | None, *, fallback_backend: str | None = None
+) -> str:
     provider = normalize_optional_string(getattr(session, "vm_provider", None))
     if provider is None:
         metadata = getattr(session, "metadata", {}) if session is not None else {}

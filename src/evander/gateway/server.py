@@ -1,3 +1,7 @@
+# This module intentionally retains legacy imports as compatibility exports through
+# ``evander.gateway``. Keep F401 disabled until that compatibility surface is retired.
+# ruff: noqa: F401
+
 from __future__ import annotations
 
 import base64
@@ -259,8 +263,6 @@ from evander.gateway.tool_audit import (
     _TOOL_CALL_AUDIT_CONTEXT,
     _ToolCallAuditContext,
     _mark_tool_call_audited,
-    _redact_args,
-    _redact_nested_value,
     _tool_call_arguments_dict,
     _tool_call_audit_fields,
     _tool_call_context,

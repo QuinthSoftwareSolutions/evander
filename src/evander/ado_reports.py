@@ -76,9 +76,7 @@ def build_ado_daily_status_report_data(
         state = _string_or_none(item.get("state")) or _field_string(item, "System.State") or ""
         state_counts[state or "Unspecified"] += 1
         state_key = _state_key(state)
-        item_type = _string_or_none(item.get("type")) or _field_string(
-            item, "System.WorkItemType"
-        )
+        item_type = _string_or_none(item.get("type")) or _field_string(item, "System.WorkItemType")
         if item_type:
             type_counts[item_type] += 1
 
@@ -111,8 +109,7 @@ def build_ado_daily_status_report_data(
     resolved_report_date = _date_string(report_date, fallback=generated_at.date())
     elapsed_calculation_mode = str(elapsed_time_mode or DEFAULT_ELAPSED_TIME_MODE).strip().lower()
     manual_elapsed_override_requested = (
-        elapsed_sprint_percent is not None
-        and elapsed_calculation_mode in MANUAL_ELAPSED_TIME_MODES
+        elapsed_sprint_percent is not None and elapsed_calculation_mode in MANUAL_ELAPSED_TIME_MODES
     )
     configured_elapsed_time_mode = (
         DEFAULT_ELAPSED_TIME_MODE
@@ -269,9 +266,7 @@ def _item_has_pull_request_relation(item: Mapping[str, Any]) -> bool:
         rel = str(relation.get("rel") or "").casefold()
         url = str(relation.get("url") or "")
         attrs = (
-            relation.get("attributes")
-            if isinstance(relation.get("attributes"), Mapping)
-            else {}
+            relation.get("attributes") if isinstance(relation.get("attributes"), Mapping) else {}
         )
         attr_values = " ".join(str(value or "") for value in attrs.values()).casefold()
         if "pullrequestid" in url.casefold() or "pull request" in attr_values:
@@ -418,7 +413,9 @@ def _parse_sprint_boundary(value: str | None, *, tz: ZoneInfo, end_of_day: bool)
     text = str(value or "").strip()
     if not text:
         return None
-    date_match = re.match(r"^(?P<date>\d{4}-\d{2}-\d{2})(?:[T ]00:00:00(?:\.0+)?(?:Z|[+-]\d{2}:\d{2})?)?$", text)
+    date_match = re.match(
+        r"^(?P<date>\d{4}-\d{2}-\d{2})(?:[T ]00:00:00(?:\.0+)?(?:Z|[+-]\d{2}:\d{2})?)?$", text
+    )
     if date_match:
         parsed_date = date.fromisoformat(date_match.group("date"))
         boundary_time = time.max if end_of_day else time.min
@@ -475,9 +472,7 @@ def _swedish_working_seconds_between(
     return seconds
 
 
-def _is_swedish_working_day(
-    value: date, *, include_common_swedish_non_working_days: bool
-) -> bool:
+def _is_swedish_working_day(value: date, *, include_common_swedish_non_working_days: bool) -> bool:
     if value.weekday() >= 5:
         return False
     return value not in _swedish_non_working_dates(

@@ -39,9 +39,7 @@ def normalize_model_provider_mode_override(value: object) -> str | None:
         return None
     if text not in MODEL_PROVIDER_MODE_VALUES:
         allowed = ", ".join(sorted(MODEL_PROVIDER_MODE_VALUES))
-        raise ValueError(
-            f"{MODEL_PROVIDER_MODE_METADATA_KEY} must be one of: {allowed}"
-        )
+        raise ValueError(f"{MODEL_PROVIDER_MODE_METADATA_KEY} must be one of: {allowed}")
     return text
 
 
@@ -202,17 +200,13 @@ class ProviderConfigResolver:
             payload.update(resolution.effective_config)
         return GatewayConfig.model_validate(payload)
 
-    def resolve_contacts_for_directory(
-        self, directory_path: str | None
-    ) -> ContactDirectoryConfig:
+    def resolve_contacts_for_directory(self, directory_path: str | None) -> ContactDirectoryConfig:
         normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
         resolution = self.resolver.resolve_domain(
             normalized_path,
             domain="contacts",
             base_config=get_domain_base_config(self.config, "contacts"),
-            validator=lambda candidate: validate_effective_domain_payload(
-                "contacts", candidate
-            ),
+            validator=lambda candidate: validate_effective_domain_payload("contacts", candidate),
         )
         return ContactDirectoryConfig.model_validate(resolution.effective_config)
 
@@ -224,9 +218,7 @@ class ProviderConfigResolver:
             normalized_path,
             domain="connectors",
             base_config=get_domain_base_config(self.config, "connectors"),
-            validator=lambda candidate: validate_effective_domain_payload(
-                "connectors", candidate
-            ),
+            validator=lambda candidate: validate_effective_domain_payload("connectors", candidate),
         )
         return ConnectorDirectoryConfig.model_validate(resolution.effective_config)
 
@@ -251,9 +243,7 @@ class ProviderConfigResolver:
         )
         return self.resolve_contacts_for_directory(normalized_path)
 
-    def resolve_effective_contacts_for_session_id(
-        self, session_id: str
-    ) -> ContactDirectoryConfig:
+    def resolve_effective_contacts_for_session_id(self, session_id: str) -> ContactDirectoryConfig:
         session = self.session_store.get_session(session_id)
         if session is None:
             session = self.provider_session_store.get(session_id)

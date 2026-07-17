@@ -81,11 +81,15 @@ def settings_from_context(context: Any | None = None) -> BokioConnectionSettings
         or ""
     ).strip()
     integration_token = str(os.environ.get(token_env) or "").strip()
-    api_base_url = str(
-        os.environ.get("BOKIO_API_BASE_URL")
-        or bokio_config.get("api_base_url")
-        or DEFAULT_BOKIO_API_BASE_URL
-    ).strip().rstrip("/")
+    api_base_url = (
+        str(
+            os.environ.get("BOKIO_API_BASE_URL")
+            or bokio_config.get("api_base_url")
+            or DEFAULT_BOKIO_API_BASE_URL
+        )
+        .strip()
+        .rstrip("/")
+    )
     timeout_seconds = float(bokio_config.get("timeout_seconds") or 30.0)
     return BokioConnectionSettings(
         company_id=company_id,
@@ -127,9 +131,7 @@ class BokioClient:
     def create_journal_entry(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post("/journal-entries", json=payload)
 
-    def list_invoices(
-        self, *, page: int = 1, page_size: int = 25, query: str | None = None
-    ) -> Any:
+    def list_invoices(self, *, page: int = 1, page_size: int = 25, query: str | None = None) -> Any:
         return self.get("/invoices", params=_page_params(page, page_size, query))
 
     def create_invoice(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -143,9 +145,7 @@ class BokioClient:
     def create_supplier_invoice(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post("/supplier-invoices", json=payload)
 
-    def list_uploads(
-        self, *, page: int = 1, page_size: int = 25, query: str | None = None
-    ) -> Any:
+    def list_uploads(self, *, page: int = 1, page_size: int = 25, query: str | None = None) -> Any:
         return self.get("/uploads", params=_page_params(page, page_size, query))
 
     def upload_document(
@@ -182,7 +182,9 @@ class BokioClient:
         return result
 
     def download_sie(self, fiscal_year_id: str) -> bytes:
-        return self.request("GET", f"/sie/{_required(fiscal_year_id, 'fiscal_year_id')}/download").content
+        return self.request(
+            "GET", f"/sie/{_required(fiscal_year_id, 'fiscal_year_id')}/download"
+        ).content
 
     def get(self, path: str, *, params: dict[str, Any] | None = None) -> Any:
         return self._json_response(self.request("GET", path, params=params))
@@ -195,9 +197,7 @@ class BokioClient:
         data: dict[str, str] | None = None,
         files: dict[str, Any] | None = None,
     ) -> Any:
-        return self._json_response(
-            self.request("POST", path, json=json, data=data, files=files)
-        )
+        return self._json_response(self.request("POST", path, json=json, data=data, files=files))
 
     def request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         url = f"{self.settings.api_base_url}/companies/{self.settings.company_id}{path}"

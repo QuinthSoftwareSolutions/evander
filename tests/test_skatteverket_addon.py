@@ -141,7 +141,7 @@ def test_skatteverket_static_ui_exposes_connection_editor() -> None:
     assert "OAuth2 Client secret env help" in index_html
     assert "APIgw Client secret env help" in index_html
     assert "Skatteverket access tokens" in index_html
-    assert 'fetch(`${apiBase}/connections`' in ui_js
+    assert "fetch(`${apiBase}/connections`" in ui_js
     assert 'method: "POST"' in ui_js
     assert "enabled_api_names" in ui_js
     assert ".skv-api-picker" in ui_css
@@ -218,7 +218,10 @@ def test_skatteverket_addon_loads_admin_and_workflow_surfaces() -> None:
     assert "query:skatteverket:catalog" in providers.query_providers
     assert "effect:skatteverket:submit-approved-draft" in providers.effect_providers
     assert "effect:skatteverket:submit-approved-draft" in providers.node_definition_resolvers
-    assert any(entry.type == "effect:skatteverket:create-draft" for entry in providers.workflow_editor_catalog_entries)
+    assert any(
+        entry.type == "effect:skatteverket:create-draft"
+        for entry in providers.workflow_editor_catalog_entries
+    )
 
 
 def test_skatteverket_repository_tracks_draft_validation_and_submission(tmp_path: Path) -> None:

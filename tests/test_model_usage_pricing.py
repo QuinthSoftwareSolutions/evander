@@ -215,9 +215,7 @@ def test_openai_pricing_rejects_rule_currency_mismatches() -> None:
         )
 
 
-def test_default_model_pricing_catalog_reloads_when_file_changes(
-    tmp_path, monkeypatch
-) -> None:
+def test_default_model_pricing_catalog_reloads_when_file_changes(tmp_path, monkeypatch) -> None:
     catalog_path = tmp_path / "pricing.json"
     catalog_path.write_text(
         json.dumps(_pricing_catalog_payload(version="cache-initial", model="test-model")),

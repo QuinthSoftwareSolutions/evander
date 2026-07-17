@@ -170,9 +170,7 @@ def _outputs_from_exception(exc: BaseException) -> dict[str, Any]:
     return {}
 
 
-_PROMPT_FAILURE_EFFECT_TYPES = frozenset(
-    {"effect:agent:prompt", "effect:agent:enqueue-prompt"}
-)
+_PROMPT_FAILURE_EFFECT_TYPES = frozenset({"effect:agent:prompt", "effect:agent:enqueue-prompt"})
 _PROMPT_FAILURE_DEFAULT_PHASE = "dispatch"
 
 
@@ -582,7 +580,9 @@ class EffectOrchestratorWorker:
         if callable(preflight):
             preflight()
         cleanup = getattr(managed_git, "cleanup_active_worktrees", None)
-        if callable(cleanup) and all(existing != cleanup for existing in self._managed_git_cleanups):
+        if callable(cleanup) and all(
+            existing != cleanup for existing in self._managed_git_cleanups
+        ):
             self._managed_git_cleanups.append(cleanup)
         self._managed_git_reconciler = getattr(
             admin_service,
@@ -598,8 +598,7 @@ class EffectOrchestratorWorker:
         now = time.monotonic()
         if (
             not force
-            and now - self._last_managed_git_reconcile_at
-            < _MANAGED_GIT_RECONCILE_INTERVAL_SECONDS
+            and now - self._last_managed_git_reconcile_at < _MANAGED_GIT_RECONCILE_INTERVAL_SECONDS
         ):
             return
         self._last_managed_git_reconcile_at = now
@@ -1703,9 +1702,7 @@ class EffectOrchestratorWorker:
         )
 
     @staticmethod
-    def _guaranteed_context_node_ids_for(
-        *, graph: ExecutionGraph, node_id: str
-    ) -> set[str]:
+    def _guaranteed_context_node_ids_for(*, graph: ExecutionGraph, node_id: str) -> set[str]:
         return _guaranteed_context_node_ids(graph=graph, node_id=node_id)
 
     def claim_dedupe_key(
@@ -2154,13 +2151,11 @@ class EffectOrchestratorWorker:
                             record.effect_type,
                             AGENT_PROMPT_ERROR_PORT,
                         )
-                        published_event_id = (
-                            self._publish_effect_completion_event_or_fail(
-                                record=record,
-                                outputs=outputs,
-                                branch_port=AGENT_PROMPT_ERROR_PORT,
-                                finished_at=finished_at,
-                            )
+                        published_event_id = self._publish_effect_completion_event_or_fail(
+                            record=record,
+                            outputs=outputs,
+                            branch_port=AGENT_PROMPT_ERROR_PORT,
+                            finished_at=finished_at,
                         )
                         if published_event_id is None:
                             continue

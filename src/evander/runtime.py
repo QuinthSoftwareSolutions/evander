@@ -288,12 +288,10 @@ class RuntimeContext:
                     policy_config=self.policy_config,
                 )
             ),
-            allowed_user_targets_provider=lambda: (
-                _resolve_allowed_teams_user_targets_for_session(
-                    self.session_repository,
-                    session_id,
-                    policy_config=self.policy_config,
-                )
+            allowed_user_targets_provider=lambda: _resolve_allowed_teams_user_targets_for_session(
+                self.session_repository,
+                session_id,
+                policy_config=self.policy_config,
             ),
             user_chat_cache=self.teams_user_chat_cache,
         )
@@ -315,9 +313,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(
         config.runtime_dir
     )
-    mcp_transport_bindings = JsonMcpTransportBindingRepository.from_runtime_dir(
-        config.runtime_dir
-    )
+    mcp_transport_bindings = JsonMcpTransportBindingRepository.from_runtime_dir(config.runtime_dir)
     drafts = JsonStore(config.draft_store_path, DraftMessage)
     emails = JsonEmailRecordsRepository(config.email_store_path)
     email_cursors = JsonEmailCursorRepository(config.email_cursor_store_path)

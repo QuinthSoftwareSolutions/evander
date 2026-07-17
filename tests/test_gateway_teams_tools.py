@@ -57,10 +57,7 @@ class FakeTeamsService:
                 message
                 for message in messages
                 if message.metadata.get("target") == channel_target
-                or (
-                    message.chat_id is not None
-                    and f"chat:{message.chat_id}" == channel_target
-                )
+                or (message.chat_id is not None and f"chat:{message.chat_id}" == channel_target)
                 or f"{message.team_id}/{message.channel_id}" == channel_target
             ]
         if before_cursor is not None:
@@ -928,9 +925,7 @@ def test_add_message_reaction_allows_chat_allowlist_entries(tmp_path: Path) -> N
         },
     )
 
-    assert context.teams_service.reaction_calls == [
-        ("chat:chat-1", "msg-3", "heart", "session-1")
-    ]
+    assert context.teams_service.reaction_calls == [("chat:chat-1", "msg-3", "heart", "session-1")]
     assert result["status"] == "reacted"
 
 

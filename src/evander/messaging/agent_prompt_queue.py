@@ -152,9 +152,7 @@ class AgentPromptRetryLedgerStore:
             nonlocal exceeded
             existing = records.get(retry_key)
             retry_count = (existing.retry_count if existing is not None else 0) + 1
-            first_attempted_at = (
-                existing.first_attempted_at if existing is not None else now
-            )
+            first_attempted_at = existing.first_attempted_at if existing is not None else now
             exhausted_at = existing.exhausted_at if existing is not None else None
             if retry_count > normalized_max_retries:
                 exhausted_at = now

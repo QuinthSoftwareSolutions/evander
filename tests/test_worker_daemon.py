@@ -612,10 +612,7 @@ def test_worker_clone_repo_uses_session_home_for_git_ssh(
     daemon.clone_repo(
         "session-1",
         WorkerRepoCloneRequest(
-            repo_source=(
-                "ssh://evander-git-host/runtime/managed-git/"
-                "mr_0123456789abcdefabcd.git"
-            ),
+            repo_source=("ssh://evander-git-host/runtime/managed-git/mr_0123456789abcdefabcd.git"),
             clone_branch="main",
             repo_name="repo",
         ),
@@ -643,9 +640,7 @@ def test_worker_reconciles_existing_checkout_remote_without_recloning(
             cwd=source,
             check=True,
         )
-        subprocess.run(
-            ["git", "config", "user.name", "Worker Test"], cwd=source, check=True
-        )
+        subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
         (source / "README.md").write_text(content, encoding="utf-8")
         subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=source, check=True)
@@ -661,9 +656,7 @@ def test_worker_reconciles_existing_checkout_remote_without_recloning(
         "session-1",
         WorkerRepoCloneRequest(repo_source=str(first_source), repo_name="repo"),
     )
-    checkout = WorkerSessionPaths.resolve(
-        daemon.worker_root, "session-1"
-    ).repo_root / "repo"
+    checkout = WorkerSessionPaths.resolve(daemon.worker_root, "session-1").repo_root / "repo"
     (checkout / "unpublished.txt").write_text("keep me\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="not a checkout for requested source"):
@@ -966,9 +959,9 @@ def test_worker_provisions_dotted_git_write_key_name(
     assert (ssh_dir / "foo.bar.pub").is_file()
     assert record.git_ssh_alias == "evander-git-host-write"
     assert "IdentityFile ~/.ssh/foo.bar" in (ssh_dir / "config").read_text(encoding="utf-8")
-    assert f"IdentityFile {ssh_dir / 'foo.bar'}" in (
-        paths.root / "host-ssh" / "config"
-    ).read_text(encoding="utf-8")
+    assert f"IdentityFile {ssh_dir / 'foo.bar'}" in (paths.root / "host-ssh" / "config").read_text(
+        encoding="utf-8"
+    )
     assert not list(ssh_dir.glob(".foo.bar-*"))
 
 

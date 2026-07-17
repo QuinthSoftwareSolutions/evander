@@ -37,7 +37,7 @@ def _make_service(
     tmp_path: Path,
     *,
     workflow_reports_admin: object | None = None,
-    admin_config_mutation_lock= None,
+    admin_config_mutation_lock=None,
 ) -> WorkflowConfigAdminService:
     return WorkflowConfigAdminService(
         WorkflowConfigAdminDependencies(
@@ -105,18 +105,27 @@ def test_resolve_path_setting_preserves_home_and_relative_expansion(
     fallback = tmp_path / "fallback-runtime"
     monkeypatch.setenv("HOME", str(home_dir))
 
-    assert resolve_path_setting(
-        base_dir=project_dir,
-        value="~/agent-runtime",
-        fallback=fallback,
-    ) == (home_dir / "agent-runtime").resolve()
-    assert resolve_path_setting(
-        base_dir=project_dir,
-        value="custom-workflow-runtime",
-        fallback=fallback,
-    ) == (project_dir / "custom-workflow-runtime").resolve()
-    assert resolve_path_setting(
-        base_dir=project_dir,
-        value="",
-        fallback=fallback,
-    ) == fallback.resolve()
+    assert (
+        resolve_path_setting(
+            base_dir=project_dir,
+            value="~/agent-runtime",
+            fallback=fallback,
+        )
+        == (home_dir / "agent-runtime").resolve()
+    )
+    assert (
+        resolve_path_setting(
+            base_dir=project_dir,
+            value="custom-workflow-runtime",
+            fallback=fallback,
+        )
+        == (project_dir / "custom-workflow-runtime").resolve()
+    )
+    assert (
+        resolve_path_setting(
+            base_dir=project_dir,
+            value="",
+            fallback=fallback,
+        )
+        == fallback.resolve()
+    )

@@ -139,9 +139,7 @@ def _write_config(
                         "refresh_source": "test://team-project",
                         "refresh_source_kind": "remote",
                         "internal_bare_path": str(
-                            runtime_dir
-                            / "managed-git"
-                            / "mr_0123456789abcdefabcd.git"
+                            runtime_dir / "managed-git" / "mr_0123456789abcdefabcd.git"
                         ),
                         "host_commit_identity": {
                             "name": "Evander Control Plane",
@@ -3916,9 +3914,7 @@ def test_team_addon_admin_api_imports_project_git_repo(tmp_path: Path) -> None:
         },
     )
     assert created_project.status_code == 201
-    assert created_project.json()["projects"]["project"]["git"]["directory_path"] == (
-        "root/team-a"
-    )
+    assert created_project.json()["projects"]["project"]["git"]["directory_path"] == ("root/team-a")
     assert service.managed_git_admin.get_repository(managed_repo_id)["bindings_by_kind"] == {
         "team_projects": ["project"]
     }
@@ -4402,9 +4398,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             changed_paths=["src/backend.py"],
         )
         current.review_requests["review"].reviewed_commit_sha = "reviewed-commit"
-        current.projects["project"].release_policy = ProjectReleasePolicy(
-            allow_ungated=True
-        )
+        current.projects["project"].release_policy = ProjectReleasePolicy(allow_ungated=True)
         return current
 
     repo.update(_attach_feature_branch)

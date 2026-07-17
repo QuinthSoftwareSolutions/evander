@@ -177,9 +177,7 @@ class MailboxConfig(BaseModel):
     folder_allowlist_defaults: list[str] = Field(default_factory=lambda: ["inbox", "drafts"])
 
 
-AssistantCapabilityProfileName = Literal[
-    "", "read-only", "operator-limited", "full-admin"
-]
+AssistantCapabilityProfileName = Literal["", "read-only", "operator-limited", "full-admin"]
 
 
 class AssistantSettingsConfig(BaseModel):
@@ -204,7 +202,10 @@ class AssistantSettingsConfig(BaseModel):
         return payload
 
     @field_validator(
-        "default_model", "workflow_generation_model", "default_profile", "custom_system_instructions"
+        "default_model",
+        "workflow_generation_model",
+        "default_profile",
+        "custom_system_instructions",
     )
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
@@ -217,9 +218,9 @@ class AgentConsultationProfile(BaseModel):
     execution_backend: Literal["container_worker_vm"] = "container_worker_vm"
     agent_provider: str = Field(default="codex", min_length=1)
     model: str = Field(min_length=1)
-    model_provider_mode: Literal[
-        "openai_public", "azure_openai", "anthropic", "local_openai"
-    ] | None = None
+    model_provider_mode: (
+        Literal["openai_public", "azure_openai", "anthropic", "local_openai"] | None
+    ) = None
     container_image: str | None = None
     timeout_seconds: int = Field(default=180, ge=15, le=3600)
     max_concurrency: int = Field(default=1, ge=1, le=32)
@@ -474,9 +475,7 @@ class GatewayConfig(BaseModel):
     agent_prompt_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
     agent_prompt_token_ttl_seconds: int = Field(default=3600, ge=1)
     agent_prompt_queue_max_retries: int = Field(default=3, ge=1)
-    agent_consultation_profiles: dict[str, AgentConsultationProfile] = Field(
-        default_factory=dict
-    )
+    agent_consultation_profiles: dict[str, AgentConsultationProfile] = Field(default_factory=dict)
     agent_consultation_default_profile: str | None = None
     agent_consultation_max_wait_seconds: int = Field(default=60, ge=0, le=300)
     agent_consultation_retention_days: int = Field(default=30, ge=1, le=3650)
@@ -511,17 +510,11 @@ class GatewayConfig(BaseModel):
         default=600.0,
         gt=0,
     )
-    wake_session_cooldown_path: Path = Path(
-        "/var/lib/evander/wake-session-cooldown.json"
-    )
-    host_agent_control_state_path: Path = Path(
-        "/var/lib/evander/host-agent-control-state.json"
-    )
+    wake_session_cooldown_path: Path = Path("/var/lib/evander/wake-session-cooldown.json")
+    host_agent_control_state_path: Path = Path("/var/lib/evander/host-agent-control-state.json")
     host_busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
     host_resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
-    wake_dispatch_state_path: Path = Path(
-        "/var/lib/evander/wake-dispatch-state.json"
-    )
+    wake_dispatch_state_path: Path = Path("/var/lib/evander/wake-dispatch-state.json")
     pr_feedback_resume_prompt: str = (
         "You have unread PR comments. Please fetch them with list_unread_feedback."
     )
@@ -606,9 +599,7 @@ class GatewayConfig(BaseModel):
         if not isinstance(value, str):
             return value
         if _contains_url_control_character(value):
-            raise ValueError(
-                f"{info.field_name} must be a valid http(s) URL, got {value!r}"
-            )
+            raise ValueError(f"{info.field_name} must be a valid http(s) URL, got {value!r}")
         normalized = value.strip().rstrip("/")
         if not normalized:
             raise ValueError(f"{info.field_name} cannot be empty")
@@ -626,9 +617,7 @@ class GatewayConfig(BaseModel):
 
     @field_validator("tool_argument_policies", mode="before")
     @classmethod
-    def normalize_tool_argument_policies_field(
-        cls, value: object
-    ) -> dict[str, list[object]]:
+    def normalize_tool_argument_policies_field(cls, value: object) -> dict[str, list[object]]:
         return normalize_tool_argument_policies(value, field_name="tool_argument_policies")
 
     @field_validator("tool_argument_policies")
@@ -723,9 +712,7 @@ class GatewayConfig(BaseModel):
             return value
         text = str(value).strip()
         if text != "api_key":
-            raise ValueError(
-                "azure_openai_auth_mode currently supports only 'api_key'"
-            )
+            raise ValueError("azure_openai_auth_mode currently supports only 'api_key'")
         return text
 
     @field_validator("azure_openai_api_key_env", mode="before")
@@ -780,13 +767,9 @@ class GatewayConfig(BaseModel):
             if not model_name:
                 raise ValueError("azure_openai_model_deployments keys cannot be empty")
             if not deployment_name:
-                raise ValueError(
-                    f"azure_openai_model_deployments[{model_name!r}] cannot be empty"
-                )
+                raise ValueError(f"azure_openai_model_deployments[{model_name!r}] cannot be empty")
             if model_name in normalized:
-                raise ValueError(
-                    f"duplicate azure_openai_model_deployments key: {model_name!r}"
-                )
+                raise ValueError(f"duplicate azure_openai_model_deployments key: {model_name!r}")
             normalized[model_name] = deployment_name
         return normalized
 
@@ -827,9 +810,7 @@ class GatewayConfig(BaseModel):
         return text or None
 
     @model_validator(mode="after")
-    def validate_agent_consultation_default_profile(
-        self, info: ValidationInfo
-    ) -> "GatewayConfig":
+    def validate_agent_consultation_default_profile(self, info: ValidationInfo) -> "GatewayConfig":
         if (info.context or {}).get("validation_scope") == "overlay":
             return self
         default_profile = self.agent_consultation_default_profile
@@ -1008,9 +989,10 @@ class GatewayConfig(BaseModel):
     @model_validator(mode="after")
     def validate_azure_openai_provider_config(self, info) -> GatewayConfig:
         context = getattr(info, "context", None) or {}
-        if context.get("directory_config_domain") == "providers" and context.get(
-            "validation_scope"
-        ) == "overlay":
+        if (
+            context.get("directory_config_domain") == "providers"
+            and context.get("validation_scope") == "overlay"
+        ):
             return self
         if self.model_provider_mode != "azure_openai":
             return self
@@ -1034,9 +1016,10 @@ class GatewayConfig(BaseModel):
     @model_validator(mode="after")
     def validate_local_openai_provider_config(self, info) -> GatewayConfig:
         context = getattr(info, "context", None) or {}
-        if context.get("directory_config_domain") == "providers" and context.get(
-            "validation_scope"
-        ) == "overlay":
+        if (
+            context.get("directory_config_domain") == "providers"
+            and context.get("validation_scope") == "overlay"
+        ):
             return self
         if self.model_provider_mode != "local_openai":
             return self
@@ -1437,8 +1420,8 @@ class OrchestrationCoreConfig(BaseModel):
         if self.internal_event_store_path is None:
             self.internal_event_store_path = self.runtime_dir / "internal-events.json"
         if self.scheduled_internal_event_store_path is None:
-            self.scheduled_internal_event_store_path = (
-                runtime_scheduled_internal_event_store_path(self.runtime_dir)
+            self.scheduled_internal_event_store_path = runtime_scheduled_internal_event_store_path(
+                self.runtime_dir
             )
         if self.gate_execution_store_path is None:
             self.gate_execution_store_path = self.runtime_dir / "gate-orchestrator-executions.json"

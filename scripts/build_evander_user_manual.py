@@ -180,7 +180,12 @@ def _render_index(heading_map: dict[str, str]) -> str:
             )
         normalized.append(entry)
     normalized.sort(key=lambda item: item["term"].casefold())
-    lines = ["# 31. Subject Index", "", "> **At a glance.** Use this linked index when you know the concept but not the subsystem that owns it.", ""]
+    lines = [
+        "# 31. Subject Index",
+        "",
+        "> **At a glance.** Use this linked index when you know the concept but not the subsystem that owns it.",
+        "",
+    ]
     initial = ""
     for entry in normalized:
         next_initial = entry["term"][0].upper()
@@ -486,9 +491,7 @@ def _check() -> None:
             output = DIAGRAM_ASSETS / f"{source.stem}{suffix}"
             if not output.is_file():
                 raise BuildError(f"missing rendered diagram: {output.relative_to(ROOT)}")
-    print(
-        f"Evander manual outputs are current (source fingerprint {fingerprint[:12]})."
-    )
+    print(f"Evander manual outputs are current (source fingerprint {fingerprint[:12]}).")
 
 
 def _build() -> None:

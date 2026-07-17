@@ -14,8 +14,6 @@ def register_addon() -> AddonRegistration:
         mcp_tools=register_mcp_tools,
         workflow_providers=register_providers,
         metadata={
-            "description": (
-                "Durable Azure DevOps activity indexing for exhaustive weekly scans."
-            ),
+            "description": ("Durable Azure DevOps activity indexing for exhaustive weekly scans."),
         },
     )

@@ -6,7 +6,10 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-import { ensureSectionsExpanded } from "./adminShellHelpers.mjs";
+import {
+  ensureSectionsExpanded,
+  fulfillAdminShellBackgroundApiRequest,
+} from "./adminShellHelpers.mjs";
 
 function jsonResponse(payload, status = 200) {
   return {
@@ -81,9 +84,7 @@ async function expectWorkflowViewportTransform(page, expectedTransform, message)
 
 async function clickWorkflowNode(page, nodeId) {
   const node = page.locator(`.react-flow__node[data-id="${nodeId}"]`);
-  const nodeBox = await node.boundingBox();
-  assert.ok(nodeBox, `expected ${nodeId} node bounds`);
-  await page.mouse.click(nodeBox.x + nodeBox.width / 2, nodeBox.y + nodeBox.height / 2);
+  await node.click();
 }
 
 test("workflow editor stages unsaved changes, resets them, and guards tab and directory navigation", async (t) => {
@@ -281,6 +282,10 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
     const url = new URL(route.request().url());
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
+
+    if (await fulfillAdminShellBackgroundApiRequest(route, pathname)) {
+      return;
+    }
 
     if (pathname === "/api/admin/branding") {
       await route.fulfill(jsonResponse({}));
@@ -499,6 +504,10 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.ok(outputsFieldBox.y > promptFieldBox.y, "expected Outputs to render after selected-node configuration fields");
   const changedViewportTransform = await workflowViewportTransform(page);
   await displayNameInput.fill("Dispatch agent v2");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")]
+      .some((element) => element.textContent?.trim() === "Dispatch agent v2"),
+  );
   const promptInput = promptField.locator("input");
   await promptInput.fill("Handle escalations");
   await expectWorkflowViewportTransform(
@@ -542,6 +551,10 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await undoButton.isDisabled(), true);
 
   await displayNameInput.fill("Dispatch agent v2");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")]
+      .some((element) => element.textContent?.trim() === "Dispatch agent v2"),
+  );
   await promptInput.fill("Handle escalations");
   await page.waitForFunction(
     (nextTitle) => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === nextTitle),
@@ -577,6 +590,10 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await clickWorkflowNode(page, "effect-1");
   await page.waitForTimeout(250);
   await displayNameInput.fill("Dispatch agent v2");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")]
+      .some((element) => element.textContent?.trim() === "Dispatch agent v2"),
+  );
   await promptInput.fill("Handle escalations");
   await page.waitForFunction(
     (nextTitle) => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === nextTitle),
@@ -618,6 +635,10 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await promptInput.inputValue(), "Handle escalations");
 
   await displayNameInput.fill("Dispatch agent v3");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")]
+      .some((element) => element.textContent?.trim() === "Dispatch agent v3"),
+  );
   await promptInput.fill("Handle renewals");
   await page.waitForFunction(
     () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v3"),

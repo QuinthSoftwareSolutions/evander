@@ -68,9 +68,7 @@ class TeamStateSqliteStore:
     def __init__(self, runtime_dir: str | Path) -> None:
         self.runtime_dir = Path(runtime_dir)
         self.path = addon_storage_path(self.runtime_dir, ADDON_ID, STATE_DB_FILE)
-        self.legacy_json_path = addon_storage_path(
-            self.runtime_dir, ADDON_ID, LEGACY_STATE_FILE
-        )
+        self.legacy_json_path = addon_storage_path(self.runtime_dir, ADDON_ID, LEGACY_STATE_FILE)
         self._lock = RLock()
         self.ensure_schema()
         self._import_legacy_json_or_initialize()
@@ -191,10 +189,7 @@ class TeamStateSqliteStore:
         if limit is not None:
             query += " LIMIT ?"
             params.append(max(0, int(limit)))
-        return [
-            cls._dispatch_activity_from_row(row)
-            for row in connection.execute(query, params)
-        ]
+        return [cls._dispatch_activity_from_row(row) for row in connection.execute(query, params)]
 
     def check_idempotency_replay(
         self,
@@ -309,8 +304,7 @@ class TeamStateSqliteStore:
         with self._lock:
             with self._connect() as connection:
                 return [
-                    self._outbox_record_from_row(row)
-                    for row in connection.execute(query, params)
+                    self._outbox_record_from_row(row) for row in connection.execute(query, params)
                 ]
 
     def claim_outbox_records(
@@ -332,8 +326,7 @@ class TeamStateSqliteStore:
         expires_at = effective_now + timedelta(seconds=max(1, int(claim_ttl_seconds)))
         expires_at_text = _datetime_text(expires_at)
         normalized_intent_types = [
-            _required_text(intent_type, "intent_type")
-            for intent_type in (intent_types or [])
+            _required_text(intent_type, "intent_type") for intent_type in (intent_types or [])
         ]
 
         with self._lock:
@@ -1237,9 +1230,7 @@ class TeamStateSqliteStore:
         self._write_conversations(connection, payload["conversations"])
         self._write_conversation_messages(connection, payload["conversation_messages"])
         self._write_release_packages(connection, payload["release_packages"])
-        self._write_release_verification_runs(
-            connection, payload["release_verification_runs"]
-        )
+        self._write_release_verification_runs(connection, payload["release_verification_runs"])
         self._write_ephemeral_assignments(connection, payload["ephemeral_assignments"])
         self._write_git_promotions(connection, payload["git_promotions"])
         self._write_git_work_contexts(connection, payload["git_work_contexts"])
@@ -1461,7 +1452,9 @@ class TeamStateSqliteStore:
         connection: sqlite3.Connection,
         payload: dict[str, Any],
     ) -> None:
-        for row in connection.execute("SELECT * FROM team_governance_runtimes ORDER BY governance_group_id"):
+        for row in connection.execute(
+            "SELECT * FROM team_governance_runtimes ORDER BY governance_group_id"
+        ):
             payload["governance_runtimes"][row["governance_group_id"]] = {
                 "governance_group_id": row["governance_group_id"],
                 "wake_leased_until": row["wake_leased_until"],
@@ -1801,9 +1794,7 @@ class TeamStateSqliteStore:
                 "last_progress_at": row["last_progress_at"],
                 "low_priority_batch_started_at": row["low_priority_batch_started_at"],
                 "low_priority_batch_cycle_count": row["low_priority_batch_cycle_count"],
-                "low_priority_batch_due_after_cycles": row[
-                    "low_priority_batch_due_after_cycles"
-                ],
+                "low_priority_batch_due_after_cycles": row["low_priority_batch_due_after_cycles"],
                 "context_clearing_policy": row["context_clearing_policy"],
                 "auto_context_clearing_enabled": _bool(row["auto_context_clearing_enabled"]),
                 "context_rotation_pending": _bool(row["context_rotation_pending"]),
@@ -1818,9 +1809,7 @@ class TeamStateSqliteStore:
             }
 
     @staticmethod
-    def _write_agent_runtimes(
-        connection: sqlite3.Connection, runtimes: dict[str, Any]
-    ) -> None:
+    def _write_agent_runtimes(connection: sqlite3.Connection, runtimes: dict[str, Any]) -> None:
         for runtime in runtimes.values():
             connection.execute(
                 """
@@ -1935,7 +1924,9 @@ class TeamStateSqliteStore:
                 "case_id": row["case_id"],
                 "priority": row["priority"],
                 "state": row["state"],
-                "state_entered_at": row["state_entered_at"] or row["updated_at"] or row["created_at"],
+                "state_entered_at": row["state_entered_at"]
+                or row["updated_at"]
+                or row["created_at"],
                 "title": row["title"],
                 "description": row["description"],
                 "created_by_agent_id": row["created_by_agent_id"],
@@ -2046,9 +2037,7 @@ class TeamStateSqliteStore:
             }
 
     @staticmethod
-    def _write_deliverables(
-        connection: sqlite3.Connection, deliverables: dict[str, Any]
-    ) -> None:
+    def _write_deliverables(connection: sqlite3.Connection, deliverables: dict[str, Any]) -> None:
         for deliverable in deliverables.values():
             git_refs = deliverable.get("git_refs", {})
             connection.execute(
@@ -2121,9 +2110,7 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
-    def _read_review_profiles(
-        connection: sqlite3.Connection, payload: dict[str, Any]
-    ) -> None:
+    def _read_review_profiles(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         roles = _grouped_values(
             connection,
             "SELECT profile_id AS owner_id, role_id AS value FROM team_review_profile_roles ORDER BY profile_id, position",
@@ -2157,9 +2144,7 @@ class TeamStateSqliteStore:
             }
 
     @staticmethod
-    def _write_review_profiles(
-        connection: sqlite3.Connection, profiles: dict[str, Any]
-    ) -> None:
+    def _write_review_profiles(connection: sqlite3.Connection, profiles: dict[str, Any]) -> None:
         for profile in profiles.values():
             connection.execute(
                 """
@@ -2206,9 +2191,7 @@ class TeamStateSqliteStore:
                 )
 
     @staticmethod
-    def _read_review_requests(
-        connection: sqlite3.Connection, payload: dict[str, Any]
-    ) -> None:
+    def _read_review_requests(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         findings = _grouped_values(
             connection,
             "SELECT review_request_id AS owner_id, finding AS value FROM team_review_request_findings ORDER BY review_request_id, position",
@@ -2244,12 +2227,8 @@ class TeamStateSqliteStore:
                 "instructions": row["instructions"],
                 "criteria": criteria.get(row["id"], []),
                 "reviewed_commit_sha": row["reviewed_commit_sha"],
-                "supersedes_review_request_id": row[
-                    "supersedes_review_request_id"
-                ],
-                "superseded_by_review_request_id": row[
-                    "superseded_by_review_request_id"
-                ],
+                "supersedes_review_request_id": row["supersedes_review_request_id"],
+                "superseded_by_review_request_id": row["superseded_by_review_request_id"],
                 "retry_reason": row["retry_reason"],
                 "retry_requested_by": row["retry_requested_by"],
                 "created_at": row["created_at"],
@@ -2257,9 +2236,7 @@ class TeamStateSqliteStore:
             }
 
     @staticmethod
-    def _write_review_requests(
-        connection: sqlite3.Connection, requests: dict[str, Any]
-    ) -> None:
+    def _write_review_requests(connection: sqlite3.Connection, requests: dict[str, Any]) -> None:
         for request in requests.values():
             connection.execute(
                 """
@@ -2367,9 +2344,7 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
-    def _read_action_records(
-        connection: sqlite3.Connection, payload: dict[str, Any]
-    ) -> None:
+    def _read_action_records(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         for row in connection.execute("SELECT * FROM team_action_records ORDER BY id"):
             payload["action_records"][row["id"]] = {
                 "id": row["id"],
@@ -2383,15 +2358,11 @@ class TeamStateSqliteStore:
                 "dismissed_by": row["dismissed_by"],
                 "dismissed_reason": row["dismissed_reason"],
                 "feedback_delivered_at": row["feedback_delivered_at"],
-                "feedback_delivered_by_dispatch_id": row[
-                    "feedback_delivered_by_dispatch_id"
-                ],
+                "feedback_delivered_by_dispatch_id": row["feedback_delivered_by_dispatch_id"],
             }
 
     @staticmethod
-    def _write_action_records(
-        connection: sqlite3.Connection, records: dict[str, Any]
-    ) -> None:
+    def _write_action_records(connection: sqlite3.Connection, records: dict[str, Any]) -> None:
         for record in records.values():
             connection.execute(
                 """
@@ -2567,7 +2538,9 @@ class TeamStateSqliteStore:
         connection: sqlite3.Connection,
         payload: dict[str, Any],
     ) -> None:
-        for row in connection.execute("SELECT * FROM team_conversation_messages ORDER BY created_at, id"):
+        for row in connection.execute(
+            "SELECT * FROM team_conversation_messages ORDER BY created_at, id"
+        ):
             payload["conversation_messages"][row["id"]] = {
                 "id": row["id"],
                 "conversation_id": row["conversation_id"],
@@ -2617,9 +2590,7 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
-    def _read_release_packages(
-        connection: sqlite3.Connection, payload: dict[str, Any]
-    ) -> None:
+    def _read_release_packages(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         deliverables = _grouped_values(
             connection,
             "SELECT package_id AS owner_id, deliverable_id AS value FROM team_release_deliverables ORDER BY package_id, position",
@@ -2674,9 +2645,7 @@ class TeamStateSqliteStore:
             }
 
     @staticmethod
-    def _write_release_packages(
-        connection: sqlite3.Connection, packages: dict[str, Any]
-    ) -> None:
+    def _write_release_packages(connection: sqlite3.Connection, packages: dict[str, Any]) -> None:
         for package in packages.values():
             connection.execute(
                 """
@@ -2762,9 +2731,7 @@ class TeamStateSqliteStore:
         for row in connection.execute(
             "SELECT id, payload_json FROM team_release_verification_runs ORDER BY id"
         ):
-            payload["release_verification_runs"][row["id"]] = _json_loads(
-                row["payload_json"]
-            )
+            payload["release_verification_runs"][row["id"]] = _json_loads(row["payload_json"])
 
     @staticmethod
     def _write_release_verification_runs(
@@ -2872,9 +2839,7 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
-    def _read_git_promotions(
-        connection: sqlite3.Connection, payload: dict[str, Any]
-    ) -> None:
+    def _read_git_promotions(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         for row in connection.execute("SELECT * FROM team_git_promotions ORDER BY id"):
             payload["git_promotions"][row["id"]] = {
                 "id": row["id"],
@@ -2896,9 +2861,7 @@ class TeamStateSqliteStore:
             }
 
     @staticmethod
-    def _write_git_promotions(
-        connection: sqlite3.Connection, promotions: dict[str, Any]
-    ) -> None:
+    def _write_git_promotions(connection: sqlite3.Connection, promotions: dict[str, Any]) -> None:
         for promotion in promotions.values():
             connection.execute(
                 """
@@ -2930,9 +2893,7 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
-    def _read_git_work_contexts(
-        connection: sqlite3.Connection, payload: dict[str, Any]
-    ) -> None:
+    def _read_git_work_contexts(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         for row in connection.execute("SELECT * FROM team_git_work_contexts ORDER BY id"):
             payload["git_work_contexts"][row["id"]] = {
                 "id": row["id"],
@@ -2950,9 +2911,7 @@ class TeamStateSqliteStore:
             }
 
     @staticmethod
-    def _write_git_work_contexts(
-        connection: sqlite3.Connection, contexts: dict[str, Any]
-    ) -> None:
+    def _write_git_work_contexts(connection: sqlite3.Connection, contexts: dict[str, Any]) -> None:
         for context in contexts.values():
             connection.execute(
                 """
@@ -3147,8 +3106,7 @@ def _outbox_status_value(status: TeamOutboxStatus | str) -> str:
 
 def _ensure_team_agents_nullable_membership(connection: sqlite3.Connection) -> None:
     columns = {
-        str(row["name"]): row
-        for row in connection.execute("PRAGMA table_info(team_agents)")
+        str(row["name"]): row for row in connection.execute("PRAGMA table_info(team_agents)")
     }
     if not columns:
         return
@@ -3209,8 +3167,7 @@ def _ensure_project_assignments_from_legacy(connection: sqlite3.Connection) -> N
         return
     now = utc_now().isoformat()
     agent_columns = {
-        str(row["name"])
-        for row in connection.execute("PRAGMA table_info(team_agents)")
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(team_agents)")
     }
     has_agent_project_id = "project_id" in agent_columns
     for row in connection.execute(
@@ -3270,14 +3227,11 @@ def _ensure_project_assignments_from_legacy(connection: sqlite3.Connection) -> N
 
 def _ensure_team_conversations_operator_scope(connection: sqlite3.Connection) -> None:
     columns = {
-        str(row["name"]): row
-        for row in connection.execute("PRAGMA table_info(team_conversations)")
+        str(row["name"]): row for row in connection.execute("PRAGMA table_info(team_conversations)")
     }
     if not columns:
         return
-    has_operator_columns = (
-        "operator_user_id" in columns and "operator_display_name" in columns
-    )
+    has_operator_columns = "operator_user_id" in columns and "operator_display_name" in columns
     needs_rebuild = not has_operator_columns or _team_conversations_has_agent_unique_index(
         connection
     )
@@ -3391,8 +3345,7 @@ def _team_conversations_has_agent_unique_index(connection: sqlite3.Connection) -
             continue
         index_name = str(index["name"])
         columns = [
-            str(row["name"])
-            for row in connection.execute(f"PRAGMA index_info({index_name})")
+            str(row["name"]) for row in connection.execute(f"PRAGMA index_info({index_name})")
         ]
         if columns == ["agent_id"]:
             return True
@@ -3407,14 +3360,11 @@ def _ensure_column(
     definition: str,
 ) -> None:
     existing_columns = {
-        str(row["name"])
-        for row in connection.execute(f"PRAGMA table_info({table_name})")
+        str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table_name})")
     }
     if column_name in existing_columns:
         return
-    connection.execute(
-        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
-    )
+    connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
 def _insert_position_values(

@@ -35,7 +35,9 @@ class AdoPostWorkItemCommentEffectProvider(EffectProviderBase):
             project=project,
             comment=comment,
         )
-        comment_payload = result.get("comment") if isinstance(result.get("comment"), Mapping) else {}
+        comment_payload = (
+            result.get("comment") if isinstance(result.get("comment"), Mapping) else {}
+        )
         return {
             "success": True,
             "provider": str(result.get("provider") or "azure_devops"),

@@ -182,9 +182,7 @@ class GraphEmailProvider:
             metadata={"graph_message_id": draft_id},
         )
 
-    def list_attachments(
-        self, mailbox_id: str, message_id: str
-    ) -> list[EmailAttachmentMetadata]:
+    def list_attachments(self, mailbox_id: str, message_id: str) -> list[EmailAttachmentMetadata]:
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = request_with_retries(
                 client=client,
@@ -286,8 +284,7 @@ class GraphEmailProvider:
             subject=str(payload.get("subject", "")),
             body_text=str(body.get("content", "")),
             attachments=[
-                self._attachment_metadata(item)
-                for item in self._expanded_attachment_items(payload)
+                self._attachment_metadata(item) for item in self._expanded_attachment_items(payload)
             ],
         )
 

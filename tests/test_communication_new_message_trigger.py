@@ -59,7 +59,9 @@ def _write_targets(runtime_dir: Path, *, include_discord: bool = True) -> None:
     repository.write_overlay("root", {"targets": targets})
 
 
-def _trigger_definition(*, target_ids: list[str], **extra: object) -> CommunicationNewMessageTriggerDefinition:
+def _trigger_definition(
+    *, target_ids: list[str], **extra: object
+) -> CommunicationNewMessageTriggerDefinition:
     return CommunicationNewMessageTriggerDefinition.model_validate(
         {
             "id": "comm-trigger",
@@ -197,9 +199,7 @@ def test_communication_trigger_polls_email_target(tmp_path: Path) -> None:
     context = _runtime_context(tmp_path)
     runtime_dir = context.resolved_config.runtime_dir
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    repository = SqliteCommunicationTargetsRepository(
-        communication_targets_db_path(runtime_dir)
-    )
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
     repository.write_overlay(
         "root",
         {
@@ -256,9 +256,7 @@ def test_communication_trigger_polls_email_target(tmp_path: Path) -> None:
 
     provider.acknowledge_published_event(event)
     cursor_state = _read_cursor_state(runtime_dir)
-    assert cursor_state["comm-trigger"]["recent_message_ids"] == [
-        "email:email-ops:email-msg-1"
-    ]
+    assert cursor_state["comm-trigger"]["recent_message_ids"] == ["email:email-ops:email-msg-1"]
 
 
 def test_communication_trigger_resolves_full_email_config_without_provider_cursor(
@@ -364,9 +362,7 @@ def test_communication_trigger_matches_teams_chat_and_bare_discord_channel_targe
     context = _runtime_context(tmp_path)
     runtime_dir = context.resolved_config.runtime_dir
 
-    repository = SqliteCommunicationTargetsRepository(
-        communication_targets_db_path(runtime_dir)
-    )
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
     repository.write_overlay(
         "root",
         {
@@ -455,9 +451,7 @@ def test_communication_trigger_provider_rejects_teams_user_targets(
 ) -> None:
     context = _runtime_context(tmp_path)
     runtime_dir = context.resolved_config.runtime_dir
-    repository = SqliteCommunicationTargetsRepository(
-        communication_targets_db_path(runtime_dir)
-    )
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
     repository.write_overlay(
         "root",
         {

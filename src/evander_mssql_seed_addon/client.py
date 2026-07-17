@@ -51,7 +51,9 @@ class MssqlSeedSidecarClient:
             },
         )
 
-    def _request(self, method: str, path: str, *, json: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request(
+        self, method: str, path: str, *, json: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         token = os.environ.get(self.token_env, "").strip()
         if not token:
             raise MssqlSeedSidecarClientError(

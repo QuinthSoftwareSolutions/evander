@@ -409,7 +409,8 @@ class TeamAdminService:
         normalized_project_id = _optional_text(project_id)
         normalized_agent_id = _optional_text(agent_id)
         normalized_scope = TeamMemoryScope(
-            _optional_text(scope) or _default_memory_scope(normalized_project_id, normalized_agent_id)
+            _optional_text(scope)
+            or _default_memory_scope(normalized_project_id, normalized_agent_id)
         )
         normalized_kind = TeamMemoryKind(_required_text(kind, "kind"))
         normalized_title = _required_text(title, "title")
@@ -1125,9 +1126,7 @@ class TeamAdminService:
         status: ProjectStatus | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
-        next_managed_repo_id = (
-            git.managed_repo_id if set_git and git is not None else None
-        )
+        next_managed_repo_id = git.managed_repo_id if set_git and git is not None else None
 
         def _mutate(state: TeamState) -> TeamState:
             project = _require_present(state.projects, project_id, "project")
@@ -1170,9 +1169,7 @@ class TeamAdminService:
         normalized_context_id = _optional_text(context_id)
         normalized_agent_id = _required_text(agent_id, "agent_id")
         normalized_task_id = _required_text(task_id, "task_id")
-        normalized_agent_branch = validate_branch_name(
-            _required_text(agent_branch, "agent_branch")
-        )
+        normalized_agent_branch = validate_branch_name(_required_text(agent_branch, "agent_branch"))
         normalized_base_branch = _optional_text(base_branch)
         if normalized_base_branch is not None:
             normalized_base_branch = validate_branch_name(normalized_base_branch)
@@ -1187,9 +1184,7 @@ class TeamAdminService:
             agent = _require_present(state.agents, normalized_agent_id, "agent")
             task = _require_present(state.tasks, normalized_task_id, "task")
             if task.owner_agent_id != agent.id:
-                raise ValueError(
-                    f"agent {agent.id} cannot own Git work context for task {task.id}"
-                )
+                raise ValueError(f"agent {agent.id} cannot own Git work context for task {task.id}")
             if agent.team_id is None:
                 raise ValueError(f"agent {agent.id} is not assigned to a team")
             project = _require_present(state.projects, task.project_id, "project")
@@ -2824,9 +2819,7 @@ class TeamAdminService:
             if criteria is not None
             else None
         )
-        normalized_finding_resolutions = [
-            dict(item) for item in (finding_resolutions or [])
-        ]
+        normalized_finding_resolutions = [dict(item) for item in (finding_resolutions or [])]
 
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(state_model.review_requests, normalized_id, "review request")
@@ -2919,9 +2912,7 @@ class TeamAdminService:
             "deliverable_ids": list(deliverable_ids),
             "release_branch": _optional_text(release_branch),
             "canonical_branch": _optional_text(canonical_branch),
-            "verification_waivers": [
-                dict(item) for item in (verification_waivers or [])
-            ],
+            "verification_waivers": [dict(item) for item in (verification_waivers or [])],
             "waiver_actor_kind": "operator",
             "waiver_actor_id": _required_text(operator_actor_id, "operator_actor_id"),
         }

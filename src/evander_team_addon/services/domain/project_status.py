@@ -69,6 +69,7 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         project.status = new_status
         project.updated_at = utc_now()
 
+
 __all__ = [
     "_recalculate_project_status",
 ]

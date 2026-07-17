@@ -53,7 +53,9 @@ def operator_steering_routes(service: AdminRuntimeComponents, auth: AdminWebAuth
         try:
             auth.require(request)
             session_id = str(request.query_params.get("session_id") or "").strip()
-            context = service.model_usage_admin.active_operator_steering_context(session_id=session_id)
+            context = service.model_usage_admin.active_operator_steering_context(
+                session_id=session_id
+            )
             directory_path = service.model_usage_admin.operator_steering_directory_path(
                 session_id=session_id,
                 dispatch_id=context.dispatch_id if context is not None else None,

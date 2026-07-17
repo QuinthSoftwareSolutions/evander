@@ -132,9 +132,7 @@ class GroupedHelpTyperGroup(TyperGroup):
         return sorted(self.commands, key=command_sort_key)
 
 
-app = typer.Typer(
-    help="Utilities for the Evander host control plane.", cls=GroupedHelpTyperGroup
-)
+app = typer.Typer(help="Utilities for the Evander host control plane.", cls=GroupedHelpTyperGroup)
 directories_app = typer.Typer(help="Directory management and directory-scoped config inspection.")
 git_repos_app = typer.Typer(help="Manage Evander-owned bare Git repositories.")
 wake_schedules_app = typer.Typer(help="Manage scheduled wake requests.")
@@ -857,9 +855,7 @@ def execution_list_container_worker_executions(
             list_all_ordered = getattr(repository, "list_all_ordered", None)
             if callable(list_all_ordered):
                 records = [
-                    record
-                    for record in list_all_ordered()
-                    if record.session_id == session_id
+                    record for record in list_all_ordered() if record.session_id == session_id
                 ]
             else:
                 records = [
@@ -1512,9 +1508,7 @@ def setup_doctor(
     ] = False,
 ) -> None:
     runtime_dir, _ = _bootstrap_inputs(config)
-    payload = setup_doctor_payload(
-        project_dir=project_dir, runtime_dir=runtime_dir
-    )
+    payload = setup_doctor_payload(project_dir=project_dir, runtime_dir=runtime_dir)
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -1532,9 +1526,7 @@ def setup_plan(
     ] = False,
 ) -> None:
     runtime_dir, _ = _bootstrap_inputs(config)
-    payload = setup_plan_payload(
-        project_dir=project_dir, runtime_dir=runtime_dir
-    )
+    payload = setup_plan_payload(project_dir=project_dir, runtime_dir=runtime_dir)
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -1574,7 +1566,9 @@ def connectors_list(
                 "driver": connector.driver,
                 "disabled": connector.disabled,
                 "operations": sorted(
-                    name for name, operation in connector.operations.items() if not operation.disabled
+                    name
+                    for name, operation in connector.operations.items()
+                    if not operation.disabled
                 ),
                 "auth_status": service.auth_status(connector_config, connector),
             }
@@ -2197,7 +2191,9 @@ def migrate_orchestration_store(
             help="Completed history retention after import. Defaults to worker orchestration_retention_days.",
         ),
     ] = None,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable output.")] = False,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable output.")
+    ] = False,
 ) -> None:
     runtime_config = _load_runtime_config_from_option(config)
     project_dir = _project_dir_for_config_option(config)
@@ -2206,9 +2202,7 @@ def migrate_orchestration_store(
     )
     destination = database_path or worker_config.orchestration_store_path
     effective_retention_days = (
-        retention_days
-        if retention_days is not None
-        else worker_config.orchestration_retention_days
+        retention_days if retention_days is not None else worker_config.orchestration_retention_days
     )
     result = migrate_orchestration_store_to_sqlite(
         database_path=destination,
@@ -2284,7 +2278,9 @@ def rebuild_audit_index(
             help="Rebuild the index from the start instead of resuming saved import progress.",
         ),
     ] = True,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable output.")] = False,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable output.")
+    ] = False,
 ) -> None:
     runtime_config = _load_runtime_config_from_option(config)
     destination = database_path or audit_index_path_for_log_path(runtime_config.audit_log_path)
@@ -2834,7 +2830,9 @@ def migrate_vm_sessions_to_container(
     ] = False,
     dry_run: Annotated[
         bool,
-        typer.Option("--dry-run", help="Preview selected sessions without copying or rewriting state."),
+        typer.Option(
+            "--dry-run", help="Preview selected sessions without copying or rewriting state."
+        ),
     ] = False,
     copy_only: Annotated[
         bool,
@@ -2842,19 +2840,27 @@ def migrate_vm_sessions_to_container(
     ] = False,
     cutover: Annotated[
         bool,
-        typer.Option("--cutover", help="Rewrite selected session manifests to container_worker_vm."),
+        typer.Option(
+            "--cutover", help="Rewrite selected session manifests to container_worker_vm."
+        ),
     ] = False,
     verify_only: Annotated[
         bool,
-        typer.Option("--verify-only", help="Verify copied worker state without copying or cutting over."),
+        typer.Option(
+            "--verify-only", help="Verify copied worker state without copying or cutting over."
+        ),
     ] = False,
     rollback: Annotated[
         Path | None,
-        typer.Option("--rollback", help="Restore selected manifests from a migration backup directory."),
+        typer.Option(
+            "--rollback", help="Restore selected manifests from a migration backup directory."
+        ),
     ] = None,
     worker_root: Annotated[
         Path | None,
-        typer.Option("--worker-root", help="Container worker root. Defaults to local setup if present."),
+        typer.Option(
+            "--worker-root", help="Container worker root. Defaults to local setup if present."
+        ),
     ] = None,
     backup_root: Annotated[
         Path | None,
@@ -2996,7 +3002,9 @@ def migrate_vm_sessions_to_container(
         if failed_copies and cutover:
             if json_output:
                 typer.echo(json.dumps(report, indent=2, sort_keys=True))
-            raise typer.BadParameter("state copy failed for at least one session; refusing cutover.")
+            raise typer.BadParameter(
+                "state copy failed for at least one session; refusing cutover."
+            )
 
     if verify_only or cutover or copy_only:
         verifications = [
@@ -3039,9 +3047,7 @@ def migrate_vm_sessions_to_container(
     _echo_vm_to_container_report(report)
 
 
-def _echo_vm_to_container_plan(
-    plans: list[object], *, worker_root: Path
-) -> None:
+def _echo_vm_to_container_plan(plans: list[object], *, worker_root: Path) -> None:
     typer.echo(f"Worker root: {worker_root}")
     if not plans:
         typer.echo("No sessions selected.")
@@ -3606,9 +3612,7 @@ def add_issue_comment(
     ] = False,
 ) -> None:
     service = build_admin_runtime(config).issue_git_admin
-    payload = service.add_issue_comment(
-        issue_id, comment, sync_proxy_cache=sync_proxy_cache
-    )
+    payload = service.add_issue_comment(issue_id, comment, sync_proxy_cache=sync_proxy_cache)
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -3642,9 +3646,7 @@ def set_issue_state(
     ] = False,
 ) -> None:
     service = build_admin_runtime(config).issue_git_admin
-    payload = service.set_issue_state(
-        issue_id, state, sync_proxy_cache=sync_proxy_cache
-    )
+    payload = service.set_issue_state(issue_id, state, sync_proxy_cache=sync_proxy_cache)
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -4713,7 +4715,8 @@ def wake_schedule_edit(
         str | None, typer.Option("--resume-at", help="Updated one-time UTC timestamp (ISO-8601).")
     ] = None,
     cron: Annotated[
-        str | None, typer.Option("--cron", help="Updated recurring standard 5-field cron expression.")
+        str | None,
+        typer.Option("--cron", help="Updated recurring standard 5-field cron expression."),
     ] = None,
     mode: Annotated[
         str | None, typer.Option("--mode", help="Updated mode: same_context or new_context.")

@@ -37,7 +37,9 @@ def _admin_result_payload_or_raise(
 
 def _assistant_require_writable_scope(session: Any, requested_scope: str) -> None:
     metadata = getattr(session, "metadata", {}) if session is not None else {}
-    mutation_policy = metadata.get("assistant_mutation_policy") if isinstance(metadata, dict) else None
+    mutation_policy = (
+        metadata.get("assistant_mutation_policy") if isinstance(metadata, dict) else None
+    )
     if not isinstance(mutation_policy, dict):
         raise PolicyError(
             f"Session {getattr(session, 'session_id', '<unknown>')} is missing metadata.assistant_mutation_policy"
@@ -149,11 +151,7 @@ def register_admin_tools(
             agents = [
                 record.model_dump(mode="json", exclude={"prompt_queue"})
                 if hasattr(record, "model_dump")
-                else {
-                    key: value
-                    for key, value in dict(record).items()
-                    if key != "prompt_queue"
-                }
+                else {key: value for key, value in dict(record).items() if key != "prompt_queue"}
                 for record in records
             ]
             result = {
@@ -242,9 +240,7 @@ def register_admin_tools(
         )
         args = {"session_id": resolved_session_id, "include_runs": include_runs}
         try:
-            context.policy.require_tool(
-                resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS
-            )
+            context.policy.require_tool(resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS)
             runtime = _admin_runtime()
             document = runtime.workflow_config_admin.read_workflow_editor_document()
             result = {
@@ -263,9 +259,7 @@ def register_admin_tools(
             )
             return result
         except PolicyError as exc:
-            audit_failure(
-                resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS, args, str(exc)
-            )
+            audit_failure(resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS, args, str(exc))
             raise
         except Exception as exc:
             audit_failure(
@@ -338,19 +332,13 @@ def register_admin_tools(
                     payload_from_result,
                 )
                 effective_data = (
-                    effective_payload.get("data")
-                    if isinstance(effective_payload, dict)
-                    else None
+                    effective_payload.get("data") if isinstance(effective_payload, dict) else None
                 )
                 resolution = (
-                    effective_data.get("resolution")
-                    if isinstance(effective_data, dict)
-                    else None
+                    effective_data.get("resolution") if isinstance(effective_data, dict) else None
                 )
                 effective_config = (
-                    resolution.get("effective_config")
-                    if isinstance(resolution, dict)
-                    else None
+                    resolution.get("effective_config") if isinstance(resolution, dict) else None
                 )
                 snapshot["effective"] = {
                     "config": effective_config,
@@ -384,9 +372,7 @@ def register_admin_tools(
                         "config": operations.read_assistant_settings(),
                     }
                 elif target_domain == "host":
-                    host_config = load_host_bootstrap_config(
-                        runtime_dir=runtime.config.runtime_dir
-                    )
+                    host_config = load_host_bootstrap_config(runtime_dir=runtime.config.runtime_dir)
                     result = {
                         "scope": "global",
                         "domain": target_domain,
@@ -416,12 +402,10 @@ def register_admin_tools(
             if normalized_scope == "worker_global":
                 target_worker_id = str(worker_id or normalized_domain or "").strip()
                 if not target_worker_id:
-                    raise ValueError(
-                        "worker_id is required for worker_global config reads"
-                    )
-                payload = workflow_config.read_worker_global_config(
-                    target_worker_id
-                ).model_dump(mode="json")
+                    raise ValueError("worker_id is required for worker_global config reads")
+                payload = workflow_config.read_worker_global_config(target_worker_id).model_dump(
+                    mode="json"
+                )
                 result = {"scope": "worker_global", **payload}
                 audit_success(
                     resolved_session_id,
@@ -617,9 +601,7 @@ def register_admin_tools(
             )
             return result
         except PolicyError as exc:
-            audit_failure(
-                resolved_session_id, ToolName.ASSISTANT_CREATE_WORKFLOW, args, str(exc)
-            )
+            audit_failure(resolved_session_id, ToolName.ASSISTANT_CREATE_WORKFLOW, args, str(exc))
             raise
         except Exception as exc:
             audit_failure(

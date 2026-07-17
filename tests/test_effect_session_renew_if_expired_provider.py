@@ -76,9 +76,7 @@ def test_session_renew_if_expired_extends_expired_session(tmp_path: Path) -> Non
             extend_by="6h",
         ),
     )
-    repository.upsert_session(
-        _manifest(expires_at=datetime.now(UTC) - timedelta(minutes=5))
-    )
+    repository.upsert_session(_manifest(expires_at=datetime.now(UTC) - timedelta(minutes=5)))
     before = datetime.now(UTC)
 
     output = provider.execute()
@@ -138,9 +136,7 @@ def test_session_renew_if_expired_can_resolve_vm_name(tmp_path: Path) -> None:
             extend_by="PT30M",
         ),
     )
-    repository.upsert_session(
-        _manifest(expires_at=datetime.now(UTC) - timedelta(minutes=5))
-    )
+    repository.upsert_session(_manifest(expires_at=datetime.now(UTC) - timedelta(minutes=5)))
 
     output = provider.execute()
 

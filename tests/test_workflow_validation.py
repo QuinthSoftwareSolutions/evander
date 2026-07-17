@@ -67,7 +67,7 @@ def test_semantic_management_outputs_are_bindable() -> None:
                 "type": "effect:semantic:delete",
                 "collection_name": "${{semantic-ensure-1.collection_name}}",
                 "point_ids": ["00000000-0000-4000-8000-000000000001"],
-            }
+            },
         ],
         "queries": [
             {
@@ -90,7 +90,7 @@ def test_semantic_management_outputs_are_bindable() -> None:
                 "type": "query:semantic:get",
                 "collection_name": "${{semantic-upsert-1.collection_name}}",
                 "point_ids": "${{semantic-delete-1.point_ids}}",
-            }
+            },
         ],
         "edges": [
             {"source_id": "trigger-cron-1", "target_id": "semantic-ensure-1"},
@@ -397,9 +397,7 @@ def test_binding_diagnostics_accept_filter_derived_outputs() -> None:
     output_schemas = derive_workflow_output_schemas(config)
     diagnostics = validate_workflow_binding_diagnostics(config)
 
-    assert output_schemas["gate-filter-1"]["ticket"]["properties"]["body"] == {
-        "type": "string"
-    }
+    assert output_schemas["gate-filter-1"]["ticket"]["properties"]["body"] == {"type": "string"}
     assert diagnostics == []
 
 
@@ -463,9 +461,7 @@ def test_binding_diagnostics_accept_switch_derived_outputs_with_duplicate_case_p
     output_schemas = derive_workflow_output_schemas(config)
     diagnostics = validate_workflow_binding_diagnostics(config)
 
-    assert output_schemas["gate-switch-1"]["ticket"]["properties"]["body"] == {
-        "type": "string"
-    }
+    assert output_schemas["gate-switch-1"]["ticket"]["properties"]["body"] == {"type": "string"}
     assert diagnostics == []
 
 
@@ -808,8 +804,7 @@ def test_output_schema_derivation_infers_deserialize_outputs_from_literal_yaml()
                 "type": "effect:agent:prompt",
                 "session_id": "session-1",
                 "prompt": (
-                    "Review ${{gate-deserialize-1.title}} "
-                    "${{gate-deserialize-1.metadata.priority}}"
+                    "Review ${{gate-deserialize-1.title}} ${{gate-deserialize-1.metadata.priority}}"
                 ),
             }
         ],

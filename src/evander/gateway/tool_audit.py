@@ -131,8 +131,7 @@ def _tool_call_audit_fields(
         trace_id = _first_string_in_payload(result, ("workflow_trace_id", "trace_id"))
     if trace_id is None:
         trace_id = (
-            str(metadata.get("workflow_trace_id") or metadata.get("trace_id") or "").strip()
-            or None
+            str(metadata.get("workflow_trace_id") or metadata.get("trace_id") or "").strip() or None
         )
     connector_id = None
     connector_operation = None

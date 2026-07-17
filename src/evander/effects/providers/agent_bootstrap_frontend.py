@@ -111,7 +111,9 @@ class AgentBootstrapFrontendEffectProvider(EffectProviderBase):
             "vm_name": None,
         }
 
-    def _execute_libvirt(self, payload: dict[str, Any], *, execution_backend: str) -> dict[str, Any]:
+    def _execute_libvirt(
+        self, payload: dict[str, Any], *, execution_backend: str
+    ) -> dict[str, Any]:
         context = self._context()
         bootstrapper = getattr(context.vm_frontend_bootstrapper, "bootstrap_frontend_in_vm", None)
         if not callable(bootstrapper):

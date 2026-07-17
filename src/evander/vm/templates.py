@@ -23,8 +23,7 @@ def normalize_libvirt_vm_templates(value: object) -> dict[str, str]:
             raise ValueError("libvirt_vm_templates aliases cannot be empty")
         if not _LIBVIRT_VM_TEMPLATE_ALIAS_RE.fullmatch(alias):
             raise ValueError(
-                "libvirt_vm_templates aliases must match "
-                "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+                "libvirt_vm_templates aliases must match ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
             )
         if alias in normalized:
             raise ValueError(f"duplicate libvirt_vm_templates alias: {alias!r}")

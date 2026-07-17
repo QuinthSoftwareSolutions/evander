@@ -1,15 +1,15 @@
 {
   "edition": "1.0",
-  "generated_at": "2026-07-16T15:36:30.358074+00:00",
+  "generated_at": "2026-07-17T04:33:33.622438+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "47d9387f1c49242dc7a2bad1951ababb1f453621f89c0358361d31f3fef8da36",
+    "docs/evander-user-manual.docx": "7838c311f1f7196f1810909ad9e84405ea8e0353efa038e05df9b16a7e2774e3",
     "docs/evander-user-manual.html": "b15696737b4a9bf4182f01d007a8a553498bcf1dd7fecf1f325e7c1033f3ef72",
     "docs/evander-user-manual.md": "63646232c141105a435eef0444b9f020a2fe84e6d6d0bd41643c5d94388beb99",
-    "docs/evander-user-manual.pdf": "3aad5d0c65801eb585b766c263d72e8613bd881d6a535ed316662ceaacdbf091"
+    "docs/evander-user-manual.pdf": "990de9fee1bafae1aad6f5e269f3b3cc0a43f7f96bc4f86d306b8d105ec38ef3"
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "4678d3f2c51f49fd9dfb99c1e28f77a4c8b9cd345a7a144b0d2caa910fb0e544",
+  "source_fingerprint": "4c41865401a90e13f54a44569369519a426b8fa12a61e895f77ea11c4dfa43c8",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -115,7 +115,7 @@
     "docs/evander-user-manual/package-lock.json": "eee79c44f29953dca7edcd340fcc36b6fae771acd6eacc7a50d805b585ad3c7d",
     "docs/evander-user-manual/package.json": "a285163e89b29586f0ba15f21f9aec4151345645fb9a3ee1a925c8f5b4686ef9",
     "docs/evander-user-manual/puppeteer-config.json": "b16ddabf21f4ff900bba14c58d95438dff962b427f323e48d4867c4ee9184e14",
-    "scripts/build_evander_user_manual.py": "704268c524e685a9ef87f8129f8a01406d7473f60b2c2c74362b1f3baab5c6b0",
+    "scripts/build_evander_user_manual.py": "f85054739e33a20a49c88323e19361f0f1e6cf8ff6d30fd64ce30098b7993b5c",
     "scripts/capture_evander_user_manual_screenshots.mjs": "1205ee23ad25bcbca3286f3489e5eaa6b279658bd841f77e74355c2227e7dbe5"
   },
   "title": "Evander Technical Manual",

@@ -517,7 +517,7 @@ def test_github_query_provider_get_pull_request_paginates_optional_collections(
                     headers={
                         "Link": (
                             "<https://api.github.test/repos/org/repo/pulls/17/commits"
-                            "?page=2&per_page=100>; rel=\"next\""
+                            '?page=2&per_page=100>; rel="next"'
                         )
                     },
                     json=[
@@ -547,7 +547,7 @@ def test_github_query_provider_get_pull_request_paginates_optional_collections(
                     headers={
                         "Link": (
                             "<https://api.github.test/repos/org/repo/pulls/17/reviews"
-                            "?page=2&per_page=100>; rel=\"next\""
+                            '?page=2&per_page=100>; rel="next"'
                         )
                     },
                     json=[
@@ -980,7 +980,10 @@ def test_azure_query_provider_lists_pr_comment_activity_by_author_and_date(
                         {
                             "id": 501,
                             "status": "active",
-                            "threadContext": {"filePath": "/src/app.py", "rightFileStart": {"line": 12}},
+                            "threadContext": {
+                                "filePath": "/src/app.py",
+                                "rightFileStart": {"line": 12},
+                            },
                             "comments": [
                                 {
                                     "id": 1,

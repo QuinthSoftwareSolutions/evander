@@ -143,13 +143,7 @@ def test_verify_worker_session_state_and_codex_state_mirror(tmp_path: Path) -> N
 
     assert warnings == []
     assert (
-        paths.agent_home
-        / ".config"
-        / "evander"
-        / "codex"
-        / "sessions"
-        / "2026"
-        / "thread.jsonl"
+        paths.agent_home / ".config" / "evander" / "codex" / "sessions" / "2026" / "thread.jsonl"
     ).read_text(encoding="utf-8") == '{"type":"message"}\n'
     assert verified.ok
     assert {path.name for path in verified.codex_session_roots} == {"sessions"}
@@ -176,16 +170,16 @@ def test_refresh_container_session_files_preserves_original_profile(tmp_path: Pa
 
     preserved = agent_home / ".evander" / "migration-originals" / ".profile"
     assert preserved.read_text(encoding="utf-8") == "original profile\n"
-    assert "EVANDER_SESSION_ID=session-1" in (
-        agent_home / ".evander" / "session.env"
-    ).read_text(encoding="utf-8")
+    assert "EVANDER_SESSION_ID=session-1" in (agent_home / ".evander" / "session.env").read_text(
+        encoding="utf-8"
+    )
     assert "evander_openai_relay" in (
         agent_home / ".config" / "evander" / "codex" / "config.toml"
     ).read_text(encoding="utf-8")
     assert "non_prefixed_mcp_tool_names" not in (
         agent_home / ".config" / "evander" / "codex" / "config.toml"
     ).read_text(encoding="utf-8")
-    assert "non_prefixed_mcp_tool_names" not in (
-        agent_home / ".codex" / "config.toml"
-    ).read_text(encoding="utf-8")
+    assert "non_prefixed_mcp_tool_names" not in (agent_home / ".codex" / "config.toml").read_text(
+        encoding="utf-8"
+    )
     assert any("preserved original" in warning for warning in warnings)

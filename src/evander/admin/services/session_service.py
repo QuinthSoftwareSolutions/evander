@@ -50,8 +50,8 @@ class SessionAdminService:
             raise ValueError("include_expired and expired_only cannot both be true")
 
         now = session_helpers.utc_now()
-        normalized_directory_path = (
-            self._deps.directory_ownership.normalize_directory_path(directory_path)
+        normalized_directory_path = self._deps.directory_ownership.normalize_directory_path(
+            directory_path
         )
         owned_session_ids = (
             self._deps.directory_ownership.direct_owned_entity_ids(
@@ -92,9 +92,8 @@ class SessionAdminService:
             target, self._sessions_by_id()
         )
         previous_expires_at = manifest.expires_at
-        manifest.expires_at = (
-            session_helpers.utc_now()
-            + session_helpers.parse_session_extension(extension)
+        manifest.expires_at = session_helpers.utc_now() + session_helpers.parse_session_extension(
+            extension
         )
         self._session_repository().upsert_session(manifest)
         return SessionActionResult(
@@ -146,10 +145,7 @@ class SessionAdminService:
             success=True,
             session_id=session_id,
             action="delete_session",
-            message=(
-                f"Deleted session {session_id} "
-                f"git_access_revoked={int(git_access_revoked)}"
-            ),
+            message=(f"Deleted session {session_id} git_access_revoked={int(git_access_revoked)}"),
         )
 
     def set_session_allowed_tools(
@@ -210,9 +206,7 @@ class SessionAdminService:
             message=f"Updated allowed script names for session {session_id}",
         )
 
-    def update_session_policy(
-        self, target: str, payload: dict[str, Any]
-    ) -> SessionActionResult:
+    def update_session_policy(self, target: str, payload: dict[str, Any]) -> SessionActionResult:
         session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )

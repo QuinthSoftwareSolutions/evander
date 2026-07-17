@@ -211,10 +211,7 @@ def load_model_pricing_catalog_payload(
     if not isinstance(rules_payload, list) or not rules_payload:
         raise ValueError("model pricing catalog requires a non-empty rules array")
 
-    rules = tuple(
-        _parse_pricing_rule(entry, default_currency=currency)
-        for entry in rules_payload
-    )
+    rules = tuple(_parse_pricing_rule(entry, default_currency=currency) for entry in rules_payload)
     for rule in rules:
         if rule.currency != currency:
             raise ValueError("model pricing rule currency must match catalog currency")

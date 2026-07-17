@@ -27,7 +27,9 @@ class ScheduledInternalEvent(BaseModel):
     idempotency_key: str | None = None
     source: InternalEventSource | None = None
 
-    @field_validator("schedule_id", "published_event_id", "correlation_key", "idempotency_key", mode="before")
+    @field_validator(
+        "schedule_id", "published_event_id", "correlation_key", "idempotency_key", mode="before"
+    )
     @classmethod
     def normalize_optional_string(cls, value: object) -> str | None:
         if value is None:
@@ -158,6 +160,7 @@ class ScheduledInternalEventStore:
         normalized_published_at = _normalize_datetime(published_at)
 
         with self._lock:
+
             def update(items: dict[str, ScheduledInternalEvent]) -> ScheduledInternalEvent:
                 event = items.get(normalized_schedule_id)
                 if event is None:

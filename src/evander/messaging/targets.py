@@ -346,7 +346,9 @@ class CommunicationTargetsDirectoryResolver:
         overlay = self._repository.read_overlay(directory.id)
         return directory, overlay.as_config_payload() if overlay is not None else None
 
-    def write_overlay(self, reference: str, payload: dict[str, Any]) -> tuple[DirectoryInfo, dict[str, Any]]:
+    def write_overlay(
+        self, reference: str, payload: dict[str, Any]
+    ) -> tuple[DirectoryInfo, dict[str, Any]]:
         directory = self._service.show(reference).directory
         overlay = self._repository.write_overlay(directory.id, payload)
         return directory, overlay.as_config_payload()
@@ -406,9 +408,7 @@ def load_communication_targets_config(
     directory_path: str = "root",
 ) -> CommunicationTargetsConfig:
     repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
-    resolver = CommunicationTargetsDirectoryResolver(
-        directory_store, repository=repository
-    )
+    resolver = CommunicationTargetsDirectoryResolver(directory_store, repository=repository)
     return resolver.resolve_config(directory_path)
 
 
@@ -424,11 +424,15 @@ def resolve_communication_target_ref(
     normalized_ref = str(reference or "").strip().lower()
     if not normalized_ref:
         return None
-    target = load_communication_targets_config(
-        runtime_dir=runtime_dir,
-        directory_store=directory_store,
-        directory_path=directory_path,
-    ).by_id().get(normalized_ref)
+    target = (
+        load_communication_targets_config(
+            runtime_dir=runtime_dir,
+            directory_store=directory_store,
+            directory_path=directory_path,
+        )
+        .by_id()
+        .get(normalized_ref)
+    )
     if target is None:
         return None
     if provider is not None and target.provider != provider:

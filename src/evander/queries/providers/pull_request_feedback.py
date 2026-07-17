@@ -83,9 +83,7 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
         config = self._resolve_directory_config(directory_path)
         timeout_seconds = float(getattr(config, "email_provider_timeout_seconds", 30.0) or 30.0)
         if provider_name == "github":
-            token_env = self._normalize_optional_string(
-                getattr(config, "github_token_env", None)
-            )
+            token_env = self._normalize_optional_string(getattr(config, "github_token_env", None))
             token = self._context().resolve_secret(token_env) if token_env else None
             return GitHubFeedbackAdapter(token=token), project, timeout_seconds
 
@@ -98,16 +96,12 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
         configured_project = self._normalize_optional_string(
             getattr(config, "azure_devops_project", None)
         )
-        resolved_project = (
-            project or configured_project or self._project_from_composite_repo(repo)
-        )
+        resolved_project = project or configured_project or self._project_from_composite_repo(repo)
         if not resolved_organization_url:
             raise ValueError(f"{self.NODE_TYPE} requires organization_url for Azure DevOps")
         if not resolved_project:
             raise ValueError(f"{self.NODE_TYPE} requires project for Azure DevOps")
-        pat_env = self._normalize_optional_string(
-            getattr(config, "azure_devops_pr_pat_env", None)
-        )
+        pat_env = self._normalize_optional_string(getattr(config, "azure_devops_pr_pat_env", None))
         if not pat_env:
             raise ValueError(f"{self.NODE_TYPE} requires azure_devops_pr_pat_env")
         pat = self._context().resolve_secret(pat_env)
@@ -130,7 +124,9 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
             raise RuntimeError(f"{self.NODE_TYPE} provider_config_resolver is not available")
         resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
         if not callable(resolve_for_directory):
-            raise RuntimeError(f"{self.NODE_TYPE} provider_config_resolver cannot resolve directories")
+            raise RuntimeError(
+                f"{self.NODE_TYPE} provider_config_resolver cannot resolve directories"
+            )
         return resolve_for_directory(directory_path)
 
     def _context(self):

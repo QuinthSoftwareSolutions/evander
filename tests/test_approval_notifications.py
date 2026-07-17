@@ -187,8 +187,7 @@ def test_approval_notifications_send_safe_message_to_configured_targets(
     assert "evander-cli show-approval" in message
     assert f"evander-cli show-approval {approval.request_id}" in message
     assert (
-        f"evander-cli approve {approval.request_id} <approver> --approve|--deny --reason"
-        in message
+        f"evander-cli approve {approval.request_id} <approver> --approve|--deny --reason" in message
     )
     assert "payload:" not in message.lower()
     assert approval.notification_status == ApprovalNotificationStatus.DELIVERED
@@ -287,7 +286,9 @@ def test_approval_notifications_read_public_base_url_from_admin_web_env_file(
 
     assert len(send_calls) == 1
     message = str(send_calls[0]["message"])
-    assert f"https://admin.example.com/control/#approvals?request_id={approval.request_id}" in message
+    assert (
+        f"https://admin.example.com/control/#approvals?request_id={approval.request_id}" in message
+    )
     assert "http://127.0.0.1:8100" not in message
     assert "decision=approve" in message
     assert "decision=deny" in message
@@ -318,7 +319,9 @@ def test_approval_creation_survives_legacy_missing_notification_target(
     assert approval.notification_deliveries[0].status == ApprovalNotificationDeliveryStatus.FAILED
 
 
-def test_approval_notifications_ignore_guest_allowlists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_approval_notifications_ignore_guest_allowlists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     _write_targets(
         tmp_path,

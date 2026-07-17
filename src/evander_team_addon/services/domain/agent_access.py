@@ -42,8 +42,10 @@ def _default_role_id(
     scope = project_id or team_id
     return f"{scope}__{_role_id_part(role_key)}"
 
+
 def _role_id_part(value: str) -> str:
     return _required_text(value, "role_key").replace("_", "-")
+
 
 def _project_assignment_id(
     project_id: str,
@@ -56,6 +58,7 @@ def _project_assignment_id(
         f"{project_id}__{agent_id}__{kind.value}",
         existing_ids=existing_ids,
     )
+
 
 def _normalize_role_permissions(
     permissions: list[RolePermission | str] | None,
@@ -72,6 +75,7 @@ def _normalize_role_permissions(
         if item not in normalized:
             normalized.append(item)
     return normalized
+
 
 def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> list[str]:
     if agent.team_id is None:
@@ -124,6 +128,7 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
         blockers.append(f"active dispatch {runtime.active_dispatch_id}")
     return list(dict.fromkeys(blockers))
 
+
 def _validate_role_assignment(
     role: TeamRole,
     *,
@@ -137,11 +142,13 @@ def _validate_role_assignment(
     if role.project_id is not None and role.project_id not in project_ids:
         raise ValueError(f"role {role.id} does not belong to any assigned project")
 
+
 def _validate_role_filter_assignment(role: TeamRole, *, profile: ReviewProfile) -> None:
     if role.team_id != profile.team_id:
         raise ValueError(f"role {role.id} does not belong to team {profile.team_id}")
     if role.project_id is not None and role.project_id != profile.project_id:
         raise ValueError(f"role {role.id} does not apply to project {profile.project_id}")
+
 
 def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
     payload = agent.model_dump(mode="json", exclude=AGENT_OPERATOR_ONLY_FIELDS)
@@ -158,6 +165,7 @@ def _agent_payload(state: TeamState, agent: PersistentAgent) -> dict[str, Any]:
     payload["lead_project_ids"] = agent_lead_project_ids(state, agent.id)
     return payload
 
+
 def _subordinate_agent_payloads(state: TeamState, agent: PersistentAgent) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     for subordinate_id in agent.subordinate_agent_ids:
@@ -167,17 +175,20 @@ def _subordinate_agent_payloads(state: TeamState, agent: PersistentAgent) -> lis
         payloads.append(_agent_payload(state, subordinate))
     return payloads
 
+
 def _is_active_deliverable_work(deliverable: Deliverable) -> bool:
     return (
         deliverable.state in _ACTIVE_DELIVERABLE_WORK_STATES
         and deliverable.superseded_by_deliverable_id is None
     )
 
+
 def _task_has_active_deliverable_work(state: TeamState, task_id: str) -> bool:
     return any(
         deliverable.task_id == task_id and _is_active_deliverable_work(deliverable)
         for deliverable in state.deliverables.values()
     )
+
 
 def _team_ids_with_open_work(state: TeamState) -> set[str]:
     team_ids: set[str] = set()
@@ -202,6 +213,7 @@ def _team_ids_with_open_work(state: TeamState) -> set[str]:
             team_ids.add(owner.team_id)
     return team_ids
 
+
 def _visible_project_ids_for_agent(state: TeamState, agent: PersistentAgent) -> set[str]:
     project_ids = set(agent_project_ids(state, agent.id))
     role = state.roles.get(agent.role_id) if agent.role_id is not None else None
@@ -218,6 +230,7 @@ def _visible_project_ids_for_agent(state: TeamState, agent: PersistentAgent) -> 
                 project_ids.add(project.id)
     return project_ids
 
+
 def _resolve_action_agent(
     state: TeamState,
     *,
@@ -231,20 +244,24 @@ def _resolve_action_agent(
         return _agent_for_session(state, session_id=session_id)
     raise ValueError("agent action requires agent_id or a known session_id")
 
+
 def _agent_for_session(state: TeamState, *, session_id: str) -> PersistentAgent:
     for agent in state.agents.values():
         if agent.session_id == session_id:
             return agent
     raise ValueError(f"no team agent found for session_id {session_id}")
 
+
 def _is_direct_subordinate(actor: PersistentAgent, agent_id: str) -> bool:
     return agent_id in actor.subordinate_agent_ids
+
 
 def _is_team_manager(state: TeamState, actor: PersistentAgent) -> bool:
     if actor.reports_to_agent_id is not None:
         return False
     team = state.teams.get(actor.team_id)
     return team is not None and team.manager_agent_id == actor.id
+
 
 def _agent_governs_team(state: TeamState, *, agent_id: str, team_id: str) -> bool:
     agent = state.agents.get(agent_id)
@@ -257,8 +274,10 @@ def _agent_governs_team(state: TeamState, *, agent_id: str, team_id: str) -> boo
         for group in state.governance_groups.values()
     )
 
+
 def _is_project_lead_for(state: TeamState, agent_id: str, project_id: str) -> bool:
     return project_lead_agent_id(state, project_id) == agent_id
+
 
 def _agent_has_role_permission_for_project(
     state: TeamState,
@@ -275,9 +294,11 @@ def _agent_has_role_permission_for_project(
         return True
     return permission in effective_role_permissions(state, actor, project_id=project_id)
 
+
 def _agent_in_project_hierarchy(state: TeamState, agent_id: str, project_id: str) -> bool:
     agent = state.agents.get(agent_id)
     return agent is not None and agent_has_project_assignment(state, agent_id, project_id)
+
 
 def _supervises(state: TeamState, supervisor_id: str, agent_id: str) -> bool:
     """Return True if supervisor_id is an ancestor of agent_id in the reporting chain."""
@@ -293,6 +314,7 @@ def _supervises(state: TeamState, supervisor_id: str, agent_id: str) -> bool:
             return True
         current = state.agents.get(superior_id)
     return False
+
 
 __all__ = [
     "_default_role_id",

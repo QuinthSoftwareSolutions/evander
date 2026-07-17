@@ -77,9 +77,7 @@ def connector_routes(
         )
         raw = (
             dict(raw_result.data.config)
-            if raw_result.ok
-            and raw_result.data is not None
-            and raw_result.data.config is not None
+            if raw_result.ok and raw_result.data is not None and raw_result.data.config is not None
             else {}
         )
         effective_result = service.operations_admin.compute_directory_effective_config(
@@ -175,9 +173,7 @@ def connector_routes(
                 )
                 if not result.ok:
                     message = (
-                        result.errors[0].message
-                        if result.errors
-                        else "Unable to save connectors"
+                        result.errors[0].message if result.errors else "Unable to save connectors"
                     )
                     raise ValueError(message)
                 return JSONResponse(_payload(directory_path))

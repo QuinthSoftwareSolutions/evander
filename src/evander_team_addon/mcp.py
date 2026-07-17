@@ -2371,8 +2371,7 @@ def _register_read_tools(
             offset=offset,
         )
         records = [
-            memory_record_payload(memory, include_body=False)
-            for memory in result.pop("records")
+            memory_record_payload(memory, include_body=False) for memory in result.pop("records")
         ]
         return team_mcp_success(
             revision=caller.state.revision,

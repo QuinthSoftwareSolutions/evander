@@ -101,7 +101,9 @@ class ApprovalPendingCreatedTriggerProvider(TriggerProviderBase):
             raise RuntimeError("ApprovalPendingCreatedTriggerProvider has no runtime context")
         runtime_dir = getattr(self._resolved_config(), "runtime_dir", None)
         if runtime_dir is None:
-            raise RuntimeError("ApprovalPendingCreatedTriggerProvider runtime config has no runtime_dir")
+            raise RuntimeError(
+                "ApprovalPendingCreatedTriggerProvider runtime config has no runtime_dir"
+            )
         return Path(runtime_dir)
 
     def _resolved_config(self) -> object:
@@ -109,7 +111,9 @@ class ApprovalPendingCreatedTriggerProvider(TriggerProviderBase):
             raise RuntimeError("ApprovalPendingCreatedTriggerProvider has no runtime context")
         return self.runtime_context.resolved_config
 
-    def _matching_requests(self, trigger: ApprovalPendingCreatedTriggerDefinition) -> list[ApprovalRequest]:
+    def _matching_requests(
+        self, trigger: ApprovalPendingCreatedTriggerDefinition
+    ) -> list[ApprovalRequest]:
         requests = [
             request
             for request in self._store().read_all().values()

@@ -92,15 +92,12 @@ def test_worker_job_store_uses_expected_sqlite_schema(tmp_path: Path) -> None:
     with sqlite3.connect(store.path) as connection:
         tables = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         columns = [row[1] for row in connection.execute("PRAGMA table_info(worker_jobs)")]
         indexes = {
             row[1]: tuple(
-                info_row[2]
-                for info_row in connection.execute(f"PRAGMA index_info({row[1]!r})")
+                info_row[2] for info_row in connection.execute(f"PRAGMA index_info({row[1]!r})")
             )
             for row in connection.execute("PRAGMA index_list(worker_jobs)")
             if not str(row[1]).startswith("sqlite_autoindex")

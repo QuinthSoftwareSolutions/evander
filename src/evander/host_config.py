@@ -34,9 +34,7 @@ class HostConfig(BaseModel):
     discord_command_store_path: Path = Path("/var/lib/evander/discord_commands.json")
     directories_store_path: Path = Path("/var/lib/evander/directories.json")
     pr_map_path: Path = Path("/var/lib/evander/pr-map.json")
-    host_agent_control_state_path: Path = Path(
-        "/var/lib/evander/host-agent-control-state.json"
-    )
+    host_agent_control_state_path: Path = Path("/var/lib/evander/host-agent-control-state.json")
     addon_loader: AddonLoaderConfig = Field(default_factory=AddonLoaderConfig)
     enable_directory_scoped_config: bool = True
 

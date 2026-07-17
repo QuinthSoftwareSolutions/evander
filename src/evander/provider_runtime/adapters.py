@@ -264,14 +264,10 @@ class AdminRuntimeProviderAdapter:
         )
 
     def push_branch(self, **kwargs: Any) -> Any:
-        return self._call_required(
-            self._managed_git_method("push_branch"), "push_branch", **kwargs
-        )
+        return self._call_required(self._managed_git_method("push_branch"), "push_branch", **kwargs)
 
     def pr_create(self, **kwargs: Any) -> Any:
-        return self._call_required(
-            self._managed_git_method("pr_create"), "pr_create", **kwargs
-        )
+        return self._call_required(self._managed_git_method("pr_create"), "pr_create", **kwargs)
 
     def git_pr_note_query(self, **kwargs: Any) -> Any:
         return self._call_required(

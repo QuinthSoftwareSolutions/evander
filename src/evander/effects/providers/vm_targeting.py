@@ -42,9 +42,7 @@ def resolve_vm_target(
     if vm_name:
         return ResolvedVmTarget(
             vm_name=vm_name,
-            session_id=resolve_session_id_from_vm_name(
-                context, vm_name, effect_type=effect_type
-            ),
+            session_id=resolve_session_id_from_vm_name(context, vm_name, effect_type=effect_type),
             operation_target=vm_name,
             source="vm_name",
         )

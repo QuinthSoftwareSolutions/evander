@@ -311,6 +311,7 @@ def _reopen_accepted_deliverable_for_pending_review(
         projects_to_recalc.add(task.project_id)
     return reopened
 
+
 def _active_review_request_for_reviewer(
     state: TeamState,
     *,
@@ -334,8 +335,10 @@ def _active_review_request_for_reviewer(
     )
     return matches[0]
 
+
 def _review_request_was_created(result: Mapping[str, Any], review_request_id: str) -> bool:
     return review_request_id not in set(result.get("existing_review_request_ids") or [])
+
 
 def _apply_review_decision(
     state: TeamState,
@@ -361,8 +364,7 @@ def _apply_review_decision(
     if review.decision_at is not None:
         retry_guidance = (
             " Use team_retry_release_gate for an eligible process-blocked release review."
-            if review.release_package_id is not None
-            and review.state == TeamRecordState.BLOCKED
+            if review.release_package_id is not None and review.state == TeamRecordState.BLOCKED
             else ""
         )
         result["errors"].append(
@@ -442,6 +444,7 @@ def _apply_review_decision(
         result=result,
     )
     return review.id
+
 
 def _build_criterion_results(
     state: TeamState,
@@ -530,8 +533,7 @@ def _review_decision_policy_error(
         not_passed = [
             criterion.id
             for criterion in criterion_definitions
-            if criterion.required
-            and by_id[criterion.id].state != "passed"
+            if criterion.required and by_id[criterion.id].state != "passed"
         ]
         if not_passed:
             return (
@@ -565,9 +567,7 @@ def _review_decision_policy_error(
         finding_id = _optional_text(resolution.get("finding_id"))
         explanation = _optional_text(resolution.get("resolution"))
         if finding_id is None or explanation is None:
-            return (
-                f"finding_resolutions[{index}] requires finding_id and a non-empty resolution"
-            )
+            return f"finding_resolutions[{index}] requires finding_id and a non-empty resolution"
         if finding_id in resolution_ids:
             return f"finding_resolutions contains duplicate finding_id {finding_id}"
         resolution_ids.append(finding_id)
@@ -594,9 +594,8 @@ def _review_decision_policy_error(
         }
         missing_resolutions = sorted(owned_open_ids - set(resolution_ids))
         if missing_resolutions:
-            return (
-                f"accepted review {review.id} must resolve its carried findings: "
-                + ", ".join(missing_resolutions)
+            return f"accepted review {review.id} must resolve its carried findings: " + ", ".join(
+                missing_resolutions
             )
     return None
 
@@ -686,12 +685,14 @@ def _record_open_review_findings(
         )
         existing.add(key)
 
+
 def _is_review_decision_state(decision_state: TeamRecordState) -> bool:
     return decision_state in {
         TeamRecordState.ACCEPTED,
         TeamRecordState.REJECTED,
         TeamRecordState.BLOCKED,
     }
+
 
 def _cascade_review_decision(
     state: TeamState,
@@ -869,6 +870,7 @@ def _cascade_release_review_decision(
             )
     release.updated_at = utc_now()
     projects_to_recalc.add(release.project_id)
+
 
 __all__ = [
     "_review_profile_for_request",

@@ -207,8 +207,10 @@ class PrMapStore:
                 entry["pr_status_updated_at"] = timestamp
 
             completed_ready = False
-            if trigger_id and is_pr_completed(entry) and not completion_event_published(
-                entry, trigger_id
+            if (
+                trigger_id
+                and is_pr_completed(entry)
+                and not completion_event_published(entry, trigger_id)
             ):
                 completed_ready = True
 

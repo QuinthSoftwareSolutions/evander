@@ -104,18 +104,10 @@ _APPROVAL_NOTIFICATION_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
 _APPROVAL_REQUIRED_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
     ("policy", "approval_required_tools"),
 )
-_MCP_TOOL_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
-    ("policy", "mcp_tool_policies"),
-)
-_TOOL_ARGUMENT_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
-    ("policy", "tool_argument_policies"),
-)
-_AUDIT_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
-    ("policy", "redacted_keys"),
-)
-_PR_REPLY_POLICY_FIELDS: tuple[tuple[str, str], ...] = (
-    ("policy", "pr_reply_require_approval"),
-)
+_MCP_TOOL_POLICY_FIELDS: tuple[tuple[str, str], ...] = (("policy", "mcp_tool_policies"),)
+_TOOL_ARGUMENT_POLICY_FIELDS: tuple[tuple[str, str], ...] = (("policy", "tool_argument_policies"),)
+_AUDIT_POLICY_FIELDS: tuple[tuple[str, str], ...] = (("policy", "redacted_keys"),)
+_PR_REPLY_POLICY_FIELDS: tuple[tuple[str, str], ...] = (("policy", "pr_reply_require_approval"),)
 _AGENT_PROMPT_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "agent_prompt_token_secret_env"),
     ("providers", "agent_prompt_token_ttl_seconds"),
@@ -152,9 +144,7 @@ _CONTAINER_WORKER_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "container_worker_mssql_host"),
     ("providers", "container_worker_mssql_port"),
 )
-_GITHUB_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
-    ("providers", "github_token_env"),
-)
+_GITHUB_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (("providers", "github_token_env"),)
 _HTTP_TARGET_RELAY_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "http_target_relay_timeout_seconds"),
 )
@@ -214,9 +204,7 @@ _PHONE_CALL_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "didww_from_number"),
     ("providers", "inbound_phone_routes"),
 )
-_PROVIDER_STATE_FIELDS: tuple[tuple[str, str], ...] = (
-    ("providers", "provider_state"),
-)
+_PROVIDER_STATE_FIELDS: tuple[tuple[str, str], ...] = (("providers", "provider_state"),)
 _VM_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("vm", "provider"),
     ("vm", "provider_defaults"),
@@ -226,12 +214,8 @@ _VM_LIBVIRT_TEMPLATE_FIELDS: tuple[tuple[str, str], ...] = (
     ("vm", "libvirt_vm_default_template"),
     ("vm", "libvirt_vm_templates"),
 )
-_VM_NETWORK_FIELDS: tuple[tuple[str, str], ...] = (
-    ("vm", "bind_network_cidr"),
-)
-_VM_GATEWAY_FIELDS: tuple[tuple[str, str], ...] = (
-    ("vm", "gateway_url"),
-)
+_VM_NETWORK_FIELDS: tuple[tuple[str, str], ...] = (("vm", "bind_network_cidr"),)
+_VM_GATEWAY_FIELDS: tuple[tuple[str, str], ...] = (("vm", "gateway_url"),)
 _VM_HTTP_TARGET_RELAY_FIELDS: tuple[tuple[str, str], ...] = (
     ("vm", "http_target_relay_host"),
     ("vm", "http_target_relay_port"),
@@ -268,20 +252,14 @@ _ADO_WORKER_FILTER_FIELDS: tuple[tuple[str, str], ...] = (
     ("ado_worker", "ado_area_filters"),
     ("ado_worker", "ado_team_filters"),
 )
-_ADO_WORKER_REPO_FIELDS: tuple[tuple[str, str], ...] = (
-    ("ado_worker", "ado_repo_source"),
-)
-_AUTOMATION_CAPACITY_FIELDS: tuple[tuple[str, str], ...] = (
-    ("automation", "approved_issue_cap"),
-)
+_ADO_WORKER_REPO_FIELDS: tuple[tuple[str, str], ...] = (("ado_worker", "ado_repo_source"),)
+_AUTOMATION_CAPACITY_FIELDS: tuple[tuple[str, str], ...] = (("automation", "approved_issue_cap"),)
 _AUTOMATION_ROLE_FIELDS: tuple[tuple[str, str], ...] = (
     ("automation", "originator_roles"),
     ("automation", "prioritizer_roles"),
     ("automation", "worker_roles"),
 )
-_PR_TEMPLATE_FIELDS: tuple[tuple[str, str], ...] = (
-    ("pr_template", "pr_template_markdown"),
-)
+_PR_TEMPLATE_FIELDS: tuple[tuple[str, str], ...] = (("pr_template", "pr_template_markdown"),)
 _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
     "default_profile": "assistant capability profile",
 }
@@ -309,9 +287,7 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "openai_realtime_api_key_env"): "OpenAI Realtime API key env",
     ("providers", "openai_realtime_api_base_url"): "OpenAI Realtime API base URL",
     ("providers", "container_worker_images"): "Approved container image catalog",
-    ("providers", "container_worker_guest_openai_base_url"): (
-        "Container-visible OpenAI base URL"
-    ),
+    ("providers", "container_worker_guest_openai_base_url"): ("Container-visible OpenAI base URL"),
     ("providers", "communication_artifact_public_base_url"): (
         "Communication artifact public base URL"
     ),
@@ -427,9 +403,7 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
         *_AUTOMATION_CAPACITY_FIELDS,
         *_AUTOMATION_ROLE_FIELDS,
     ),
-    "advanced_raw": (
-        *_PROVIDER_STATE_FIELDS,
-    ),
+    "advanced_raw": (*_PROVIDER_STATE_FIELDS,),
 }
 _DIRECTORY_CONFIG_UI_TAB_TITLES: dict[str, str] = {
     "people_communications": "People & Communications",
@@ -555,9 +529,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
         ("Capacity", _AUTOMATION_CAPACITY_FIELDS, ()),
         ("Roles", _AUTOMATION_ROLE_FIELDS, ()),
     ),
-    "advanced_raw": (
-        ("Provider state", _PROVIDER_STATE_FIELDS, ()),
-    ),
+    "advanced_raw": (("Provider state", _PROVIDER_STATE_FIELDS, ()),),
 }
 _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS: tuple[str, ...] = (
     *DIRECTORY_CONFIG_DOMAIN_FILENAMES.keys(),
@@ -777,9 +749,7 @@ def _field_value_hint(kind: str, options: tuple[str, ...]) -> str:
     if kind == "float":
         return "Value: number; decimals are allowed."
     if kind == "literal":
-        rendered_options = ", ".join(
-            "default" if option == "" else option for option in options
-        )
+        rendered_options = ", ".join("default" if option == "" else option for option in options)
         return f"Value: one of {rendered_options}."
     if kind == "multiline_text":
         return "Value: free-form multi-line text."
@@ -963,12 +933,14 @@ def _directory_config_field_metadata(
     if source_domain == "policy" and field_name == "approval_notification_target_ids":
         options = _approval_notification_target_options(service, directory_path)
     label = (
-        _ASSISTANT_SETTINGS_FIELD_LABELS.get(field_name)
-        if source_domain == _ASSISTANT_SETTINGS_DOMAIN
-        else None
-    ) or _DIRECTORY_CONFIG_FIELD_LABELS.get(
-        (source_domain, field_name)
-    ) or _config_field_display_name(field_name, prefixes=prefixes)
+        (
+            _ASSISTANT_SETTINGS_FIELD_LABELS.get(field_name)
+            if source_domain == _ASSISTANT_SETTINGS_DOMAIN
+            else None
+        )
+        or _DIRECTORY_CONFIG_FIELD_LABELS.get((source_domain, field_name))
+        or _config_field_display_name(field_name, prefixes=prefixes)
+    )
     return {
         "source_domain": source_domain,
         "field_name": field_name,
@@ -1033,9 +1005,13 @@ def _directory_tab_metadata(
     }
 
 
-def _domain_snapshot(service: AdminRuntimeComponents, directory_path: str, domain: str) -> dict[str, Any]:
+def _domain_snapshot(
+    service: AdminRuntimeComponents, directory_path: str, domain: str
+) -> dict[str, Any]:
     raw_result = service.operations_admin.read_directory_domain_config(directory_path, domain)
-    effective_result = service.operations_admin.compute_directory_effective_config(directory_path, domain)
+    effective_result = service.operations_admin.compute_directory_effective_config(
+        directory_path, domain
+    )
     parent_directory_path = _parent_directory_path(directory_path)
     parent_result = (
         service.operations_admin.compute_directory_effective_config(parent_directory_path, domain)
@@ -1353,9 +1329,7 @@ def worker_config_routes(
         if not auth.privileged_for_request(request):
             return _error_response("Privileged operations are locked.", status_code=403)
         try:
-            auth.require_permission(
-                request, ADMIN_OWNER_PERMISSION, directory_path=directory_path
-            )
+            auth.require_permission(request, ADMIN_OWNER_PERMISSION, directory_path=directory_path)
         except PermissionError as exc:
             return _error_response(str(exc), status_code=403)
         return None
@@ -1383,7 +1357,9 @@ def worker_config_routes(
             return _error_response("lines must be an integer", status_code=400)
         try:
             detail = _worker_detail(service, worker_id)
-            text = service.operations_admin.get_background_worker_log_snapshot(worker_id, lines=lines)
+            text = service.operations_admin.get_background_worker_log_snapshot(
+                worker_id, lines=lines
+            )
         except ValueError as exc:
             return _error_response(str(exc), status_code=404)
         return JSONResponse(
@@ -1486,9 +1462,7 @@ def worker_config_routes(
             "domains": list(_DIRECTORY_CONFIG_SNAPSHOT_DOMAINS),
             "tabs": tabs,
             "tab_snapshots": tab_snapshots,
-            "directory_overrides": _directory_overrides_snapshot(
-                selected_path, domain_snapshots
-            ),
+            "directory_overrides": _directory_overrides_snapshot(selected_path, domain_snapshots),
             "snapshots": domain_snapshots,
         }
         if tree_result.ok and tree_result.data is not None:
@@ -1528,9 +1502,7 @@ def worker_config_routes(
         except ValueError as exc:
             return _error_response(str(exc), status_code=400)
         parent_path = str(payload.get("parent_path") or "root").strip() or "root"
-        access_error = _require_config_mutation_access(
-            request, directory_path=parent_path
-        )
+        access_error = _require_config_mutation_access(request, directory_path=parent_path)
         if access_error is not None:
             return access_error
         name = str(payload.get("name") or "").strip()
@@ -1542,9 +1514,7 @@ def worker_config_routes(
 
     async def delete_directory(request: Request) -> JSONResponse:
         directory_path = _directory_path_from_request(request)
-        access_error = _require_config_mutation_access(
-            request, directory_path=directory_path
-        )
+        access_error = _require_config_mutation_access(request, directory_path=directory_path)
         if access_error is not None:
             return access_error
         result = service.directory_admin.delete(directory_path, recursive=False)
@@ -1554,9 +1524,7 @@ def worker_config_routes(
     async def write_directory_domain(request: Request) -> JSONResponse:
         domain = str(request.path_params.get("domain") or "").strip()
         directory_path = _directory_path_from_request(request)
-        access_error = _require_config_mutation_access(
-            request, directory_path=directory_path
-        )
+        access_error = _require_config_mutation_access(request, directory_path=directory_path)
         if access_error is not None:
             return access_error
         try:
@@ -1584,9 +1552,7 @@ def worker_config_routes(
                     source_domain: _domain_snapshot(service, directory_path, source_domain)
                     for source_domain in _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS
                 }
-                domain_snapshots[_ASSISTANT_SETTINGS_DOMAIN] = _assistant_settings_snapshot(
-                    service
-                )
+                domain_snapshots[_ASSISTANT_SETTINGS_DOMAIN] = _assistant_settings_snapshot(service)
                 current_tab_snapshot = _aggregate_tab_snapshot(
                     service, directory_path, domain, domain_snapshots
                 )
@@ -1687,7 +1653,9 @@ def worker_config_routes(
                         "snapshot": current_snapshot,
                     },
                 )
-            result = service.operations_admin.write_directory_domain_config(directory_path, domain, config)
+            result = service.operations_admin.write_directory_domain_config(
+                directory_path, domain, config
+            )
             status_code = 200 if result.ok else 400
             response_payload = {
                 "write_result": _normalize_admin_result(result),

@@ -241,9 +241,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
 
     @field_validator("npm_registry_url", mode="before")
     @classmethod
-    def validate_npm_registry_url(
-        cls, value: ConfigValue | None
-    ) -> ConfigValue | None:
+    def validate_npm_registry_url(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None:
             return None
         if isinstance(value, str) and "${{" in value:
@@ -698,9 +696,7 @@ def _validate_allowed_source_roots(
         raise ValueError(f"{effect_type} allowed_source_roots must be a string list or binding")
     for item in value:
         if not isinstance(item, str) or not item.strip():
-            raise ValueError(
-                f"{effect_type} allowed_source_roots must be a string list or binding"
-            )
+            raise ValueError(f"{effect_type} allowed_source_roots must be a string list or binding")
     return value
 
 
@@ -1085,9 +1081,7 @@ class SessionRenewIfExpiredEffectDefinition(EffectDefinition):
 
     @field_validator("renew_if_expires_within")
     @classmethod
-    def validate_renew_if_expires_within(
-        cls, value: ConfigValue | None
-    ) -> ConfigValue | None:
+    def validate_renew_if_expires_within(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None:
             return None
         if isinstance(value, str) and "${{" in value:

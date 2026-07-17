@@ -148,42 +148,129 @@ def test_operations_admin_service_delegates_teams_methods(
         (
             "list_sessions",
             (),
-            {"include_expired": True, "expired_only": True, "directory_path": "root/team", "direct_only": True},
+            {
+                "include_expired": True,
+                "expired_only": True,
+                "directory_path": "root/team",
+                "direct_only": True,
+            },
             "list_sessions",
             (),
-            {"include_expired": True, "expired_only": True, "directory_path": "root/team", "direct_only": True},
+            {
+                "include_expired": True,
+                "expired_only": True,
+                "directory_path": "root/team",
+                "direct_only": True,
+            },
         ),
-        ("renew_session", ("s1",), {"extension": "2d"}, "renew_session", ("s1",), {"extension": "2d"}),
+        (
+            "renew_session",
+            ("s1",),
+            {"extension": "2d"},
+            "renew_session",
+            ("s1",),
+            {"extension": "2d"},
+        ),
         ("revoke_session", ("s1",), {}, "revoke_session", ("s1",), {}),
         ("delete_session", ("s1",), {}, "delete_session", ("s1",), {}),
-        ("set_session_allowed_tools", ("s1", ["shell"]), {}, "set_session_allowed_tools", ("s1", ["shell"]), {}),
-        ("set_session_allowed_script_names", ("s1", ["build"]), {}, "set_session_allowed_script_names", ("s1", ["build"]), {}),
-        ("update_session_policy", ("s1", {"model": "gpt"}), {}, "update_session_policy", ("s1", {"model": "gpt"}), {}),
+        (
+            "set_session_allowed_tools",
+            ("s1", ["shell"]),
+            {},
+            "set_session_allowed_tools",
+            ("s1", ["shell"]),
+            {},
+        ),
+        (
+            "set_session_allowed_script_names",
+            ("s1", ["build"]),
+            {},
+            "set_session_allowed_script_names",
+            ("s1", ["build"]),
+            {},
+        ),
+        (
+            "update_session_policy",
+            ("s1", {"model": "gpt"}),
+            {},
+            "update_session_policy",
+            ("s1", {"model": "gpt"}),
+            {},
+        ),
         ("set_session_model", ("s1", "gpt"), {}, "set_session_model", ("s1", "gpt"), {}),
     ],
 )
-def test_operations_admin_service_delegates_session_methods(method_name, args, kwargs, domain_method, expected_args, expected_kwargs) -> None:
+def test_operations_admin_service_delegates_session_methods(
+    method_name, args, kwargs, domain_method, expected_args, expected_kwargs
+) -> None:
     session = RecordingDomain()
     service = _service(session_admin=session)
 
-    assert getattr(service, method_name)(*args, **kwargs) == {"method": domain_method, "args": expected_args, "kwargs": expected_kwargs}
+    assert getattr(service, method_name)(*args, **kwargs) == {
+        "method": domain_method,
+        "args": expected_args,
+        "kwargs": expected_kwargs,
+    }
     assert session.calls == [(domain_method, expected_args, expected_kwargs)]
 
 
 @pytest.mark.parametrize(
     ("method_name", "args", "kwargs", "domain_method", "expected_args", "expected_kwargs"),
     [
-        ("list_wake_schedules", (), {"session_id": "s1", "include_disabled": False}, "list_wake_schedules", (), {"session_id": "s1", "include_disabled": False}),
-        ("create_wake_schedule", (), {"session_id": "s1", "prompt": "wake", "cron": "0 * * * *", "metadata": {"k": "v"}}, "create_wake_schedule", (), {"session_id": "s1", "prompt": "wake", "resume_at": None, "cron": "0 * * * *", "resume_mode": "same_context", "enabled": True, "request_id": None, "source": "admin_cli", "metadata": {"k": "v"}}),
-        ("edit_wake_schedule", ("req-1",), {"prompt": "new", "enabled": False}, "edit_wake_schedule", ("req-1",), {"resume_at": None, "cron": None, "prompt": "new", "resume_mode": None, "enabled": False}),
+        (
+            "list_wake_schedules",
+            (),
+            {"session_id": "s1", "include_disabled": False},
+            "list_wake_schedules",
+            (),
+            {"session_id": "s1", "include_disabled": False},
+        ),
+        (
+            "create_wake_schedule",
+            (),
+            {"session_id": "s1", "prompt": "wake", "cron": "0 * * * *", "metadata": {"k": "v"}},
+            "create_wake_schedule",
+            (),
+            {
+                "session_id": "s1",
+                "prompt": "wake",
+                "resume_at": None,
+                "cron": "0 * * * *",
+                "resume_mode": "same_context",
+                "enabled": True,
+                "request_id": None,
+                "source": "admin_cli",
+                "metadata": {"k": "v"},
+            },
+        ),
+        (
+            "edit_wake_schedule",
+            ("req-1",),
+            {"prompt": "new", "enabled": False},
+            "edit_wake_schedule",
+            ("req-1",),
+            {
+                "resume_at": None,
+                "cron": None,
+                "prompt": "new",
+                "resume_mode": None,
+                "enabled": False,
+            },
+        ),
         ("delete_wake_schedule", ("req-1",), {}, "delete_wake_schedule", ("req-1",), {}),
     ],
 )
-def test_operations_admin_service_delegates_wake_methods(method_name, args, kwargs, domain_method, expected_args, expected_kwargs) -> None:
+def test_operations_admin_service_delegates_wake_methods(
+    method_name, args, kwargs, domain_method, expected_args, expected_kwargs
+) -> None:
     wake = RecordingDomain()
     service = _service(wake_schedule_admin=wake)
 
-    assert getattr(service, method_name)(*args, **kwargs) == {"method": domain_method, "args": expected_args, "kwargs": expected_kwargs}
+    assert getattr(service, method_name)(*args, **kwargs) == {
+        "method": domain_method,
+        "args": expected_args,
+        "kwargs": expected_kwargs,
+    }
     assert wake.calls == [(domain_method, expected_args, expected_kwargs)]
 
 
@@ -191,16 +278,29 @@ def test_operations_admin_service_delegates_wake_methods(method_name, args, kwar
     ("method_name", "args", "kwargs", "domain_method", "expected_args", "expected_kwargs"),
     [
         ("list_background_workers", (), {}, "list_background_workers", (), {}),
-        ("get_background_worker_log_snapshot", ("worker",), {"lines": 50}, "get_background_worker_log_snapshot", ("worker",), {"lines": 50}),
+        (
+            "get_background_worker_log_snapshot",
+            ("worker",),
+            {"lines": 50},
+            "get_background_worker_log_snapshot",
+            ("worker",),
+            {"lines": 50},
+        ),
         ("start_background_worker", ("worker",), {}, "start_background_worker", ("worker",), {}),
         ("stop_background_worker", ("worker",), {}, "stop_background_worker", ("worker",), {}),
     ],
 )
-def test_operations_admin_service_delegates_worker_methods(method_name, args, kwargs, domain_method, expected_args, expected_kwargs) -> None:
+def test_operations_admin_service_delegates_worker_methods(
+    method_name, args, kwargs, domain_method, expected_args, expected_kwargs
+) -> None:
     worker = RecordingDomain()
     service = _service(worker_control_admin=worker)
 
-    assert getattr(service, method_name)(*args, **kwargs) == {"method": domain_method, "args": expected_args, "kwargs": expected_kwargs}
+    assert getattr(service, method_name)(*args, **kwargs) == {
+        "method": domain_method,
+        "args": expected_args,
+        "kwargs": expected_kwargs,
+    }
     assert worker.calls == [(domain_method, expected_args, expected_kwargs)]
 
 
@@ -212,10 +312,26 @@ def test_operations_admin_service_delegates_directory_methods_with_normalized_pa
     directory_result = service.get_directory("team")
     assert directory_result.ok is True
     assert directory_result.data.details.directory.path == "canonical/team"
-    assert service.create_directory_child("team", "child") == {"method": "create_child", "args": (), "kwargs": {"parent": "canonical/team", "name": "child"}}
-    assert service.read_directory_domain_config("team", "providers") == {"method": "read_domain_config", "args": ("canonical/team",), "kwargs": {"domain": "providers"}}
-    assert service.write_directory_domain_config("team", "providers", {"mode": "test"}) == {"method": "write_domain_config", "args": ("canonical/team",), "kwargs": {"domain": "providers", "payload": {"mode": "test"}}}
-    assert service.compute_directory_effective_config("team", "providers") == {"method": "compute_effective_config", "args": ("canonical/team",), "kwargs": {"domain": "providers"}}
+    assert service.create_directory_child("team", "child") == {
+        "method": "create_child",
+        "args": (),
+        "kwargs": {"parent": "canonical/team", "name": "child"},
+    }
+    assert service.read_directory_domain_config("team", "providers") == {
+        "method": "read_domain_config",
+        "args": ("canonical/team",),
+        "kwargs": {"domain": "providers"},
+    }
+    assert service.write_directory_domain_config("team", "providers", {"mode": "test"}) == {
+        "method": "write_domain_config",
+        "args": ("canonical/team",),
+        "kwargs": {"domain": "providers", "payload": {"mode": "test"}},
+    }
+    assert service.compute_directory_effective_config("team", "providers") == {
+        "method": "compute_effective_config",
+        "args": ("canonical/team",),
+        "kwargs": {"domain": "providers"},
+    }
 
 
 def test_operations_admin_service_manages_privileged_helper_lifecycle() -> None:

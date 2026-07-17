@@ -22,10 +22,12 @@ def _mark_agent_work_due(
     _clear_low_priority_batch(runtime)
     runtime.updated_at = now
 
+
 def _clear_low_priority_batch(runtime: AgentRuntime) -> None:
     runtime.low_priority_batch_started_at = None
     runtime.low_priority_batch_cycle_count = 0
     runtime.low_priority_batch_due_after_cycles = None
+
 
 def _advance_low_priority_batch(
     runtime: AgentRuntime,
@@ -39,6 +41,7 @@ def _advance_low_priority_batch(
     runtime.low_priority_batch_cycle_count += 1
     runtime.low_priority_batch_due_after_cycles = due_after_cycles
     return runtime.low_priority_batch_cycle_count >= due_after_cycles
+
 
 __all__ = [
     "_mark_agent_work_due",

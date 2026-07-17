@@ -164,15 +164,11 @@ def test_repository_json_constructor_uses_sibling_db_and_imports_legacy_json_onc
     with sqlite3.connect(repo.path) as connection:
         table_names = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         index_names = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'index'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
         }
 
     assert "container_worker_executions" in table_names
@@ -288,7 +284,9 @@ def test_repository_resolve_and_targeted_listings_are_ordered(tmp_path: Path) ->
         "exec-b",
         "exec-d",
     ]
-    assert [record.execution_id for record in repo.list_active_by_session("session-shared", ["running"])] == [
+    assert [
+        record.execution_id for record in repo.list_active_by_session("session-shared", ["running"])
+    ] == [
         "exec-a",
         "exec-b",
     ]

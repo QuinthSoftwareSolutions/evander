@@ -440,8 +440,7 @@ class SetupManager:
             provider_summary = ", ".join(state.ai_providers)
         elif state.ai_providers:
             provider_summary = (
-                f"{', '.join(state.ai_providers)}; "
-                f"missing secrets: {', '.join(provider_missing)}"
+                f"{', '.join(state.ai_providers)}; missing secrets: {', '.join(provider_missing)}"
             )
         items.append(
             ChecklistItem(
@@ -744,9 +743,7 @@ class SetupManager:
         if not self.required_ready(state):
             raise ValueError("Setup checklist is not ready to launch")
         self._write_config_files(state)
-        self._ensure_admin_frontend_assets(
-            approve_nodejs_npm_install=approve_nodejs_npm_install
-        )
+        self._ensure_admin_frontend_assets(approve_nodejs_npm_install=approve_nodejs_npm_install)
         subprocess.run(
             [
                 "sudo",
@@ -899,7 +896,9 @@ class SetupManager:
 
     def _write_config_files(self, state: SetupState) -> None:
         self._ensure_container_worker_secret(state)
-        build_runtime(load_runtime_gateway_config(runtime_dir=self.runtime_dir)).directories.ensure_root()
+        build_runtime(
+            load_runtime_gateway_config(runtime_dir=self.runtime_dir)
+        ).directories.ensure_root()
         _copy_if_missing(
             self.project_dir / "config" / "firewall.env.example",
             self.project_dir / "config" / "firewall.env",
@@ -946,9 +945,7 @@ class SetupManager:
         root_owned = self._secret_file_requires_root(state)
         existing_values = _read_env_for_update(secret_path, root_owned=root_owned)
         token = (
-            existing_values.get(token_env)
-            or os.environ.get(token_env)
-            or secrets.token_urlsafe(32)
+            existing_values.get(token_env) or os.environ.get(token_env) or secrets.token_urlsafe(32)
         )
         if existing_values.get(token_env) != token:
             _upsert_env_file(secret_path, {token_env: token}, root_owned=root_owned)
@@ -962,7 +959,10 @@ class SetupManager:
             f"Environment=EVANDER_SECRETS_ENV_FILE={secret_file}\n"
             f"EnvironmentFile=-{secret_file}\n"
         )
-        tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"evander-secret-dropin-{secrets.token_hex(8)}.conf"
+        tmp = (
+            Path(os.environ.get("TMPDIR", "/tmp"))
+            / f"evander-secret-dropin-{secrets.token_hex(8)}.conf"
+        )
         tmp.write_text(content, encoding="utf-8")
         try:
             for service in ESSENTIAL_SERVICES:
@@ -1212,7 +1212,8 @@ class SetupManager:
             )
             payload.setdefault(
                 "container_worker_token_env",
-                state.execution.get("container_worker_token_env") or DEFAULT_CONTAINER_WORKER_TOKEN_ENV,
+                state.execution.get("container_worker_token_env")
+                or DEFAULT_CONTAINER_WORKER_TOKEN_ENV,
             )
             payload.setdefault("container_worker_default_image", "evander-runner:latest")
             payload.setdefault(
@@ -1289,9 +1290,7 @@ def _admin_auth_label(value: str) -> str:
 def _setup_install_env(state: SetupState) -> dict[str, str]:
     return {
         "EVANDER_SERVICE_PROFILE": SETUP_SERVICE_PROFILE,
-        "EVANDER_SETUP_EXECUTION_BACKEND": str(
-            state.execution.get("execution_backend") or ""
-        ),
+        "EVANDER_SETUP_EXECUTION_BACKEND": str(state.execution.get("execution_backend") or ""),
         "EVANDER_SETUP_EXECUTION_MODEL": str(state.execution.get("model") or ""),
     }
 

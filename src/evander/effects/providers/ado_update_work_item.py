@@ -116,9 +116,9 @@ class AdoUpdateWorkItemEffectProvider(EffectProviderBase):
                 remote_fields.get("System.AssignedTo")
             )
             output["remote_work_item_rev"] = remote_payload.get("rev")
-            output["state"] = self._normalize_optional_string(remote_payload.get("state")) or output[
-                "state"
-            ]
+            output["state"] = (
+                self._normalize_optional_string(remote_payload.get("state")) or output["state"]
+            )
             ticket = upsert_ado_proxy_issue_from_remote_payload(
                 runtime_dir=self._runtime_dir(),
                 directory_path=directory_path,
@@ -218,9 +218,7 @@ class AdoUpdateWorkItemEffectProvider(EffectProviderBase):
                 return True
             if normalized in {"false", "0", "no", "off"}:
                 return False
-        raise ValueError(
-            "effect:ado:update-work-item sync_proxy_cache must resolve to a boolean"
-        )
+        raise ValueError("effect:ado:update-work-item sync_proxy_cache must resolve to a boolean")
 
     @staticmethod
     def _coerce_result(result: Any) -> dict[str, Any]:

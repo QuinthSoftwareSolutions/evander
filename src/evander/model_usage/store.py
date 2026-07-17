@@ -51,15 +51,10 @@ def _ensure_columns(
     table_name: str,
     columns: dict[str, str],
 ) -> None:
-    existing = {
-        str(row["name"])
-        for row in connection.execute(f"PRAGMA table_info({table_name})")
-    }
+    existing = {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table_name})")}
     for column_name, column_type in columns.items():
         if column_name not in existing:
-            connection.execute(
-                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
-            )
+            connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
 
 class ModelUsageStore:
@@ -466,9 +461,7 @@ class ModelUsageStore:
         if not clauses:
             return 0
 
-        statement = (
-            "DELETE FROM model_usage_correlation_contexts WHERE " + " AND ".join(clauses)
-        )
+        statement = "DELETE FROM model_usage_correlation_contexts WHERE " + " AND ".join(clauses)
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(statement, params)

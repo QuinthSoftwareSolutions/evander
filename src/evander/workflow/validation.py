@@ -183,8 +183,7 @@ def validate_workflow_binding_diagnostics(
                     node_id=node_id,
                     node_type=node_type,
                     declared_outputs=declared_outputs,
-                    guaranteed_node_ids=dominators_by_node.get(node_id, {node_id})
-                    - {node_id},
+                    guaranteed_node_ids=dominators_by_node.get(node_id, {node_id}) - {node_id},
                     all_node_ids=all_node_ids,
                 )
             )
@@ -276,11 +275,7 @@ def _derive_workflow_node_output_schema(
             for upstream_id in _collect_direct_upstream_node_ids(edges, node_id)
             if upstream_id in nodes_by_id
         ]
-        schema = (
-            merge_output_schema_intersection(*upstream_schemas)
-            if upstream_schemas
-            else {}
-        )
+        schema = merge_output_schema_intersection(*upstream_schemas) if upstream_schemas else {}
     elif node_type == "gate:await-agent":
         schema = effective_node_output_schema({"type": "trigger:agent:run:completed"})
     else:
@@ -318,11 +313,7 @@ def _collect_direct_upstream_node_ids(edges: list[Any], node_id: str) -> tuple[s
 def _copy_output_schema(
     schema: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    return {
-        str(key): dict(value)
-        for key, value in schema.items()
-        if isinstance(value, Mapping)
-    }
+    return {str(key): dict(value) for key, value in schema.items() if isinstance(value, Mapping)}
 
 
 def _iter_workflow_nodes(config: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[str, Any]]]:
@@ -596,9 +587,7 @@ def _resolve_available_reference(
     return reference_node_id, output_path
 
 
-def _compute_dominators(
-    edges: list[Any], node_ids: set[str]
-) -> dict[str, set[str]]:
+def _compute_dominators(edges: list[Any], node_ids: set[str]) -> dict[str, set[str]]:
     """Return node -> nodes that are guaranteed to execute before it on acyclic paths."""
 
     predecessors: dict[str, set[str]] = {node_id: set() for node_id in node_ids}

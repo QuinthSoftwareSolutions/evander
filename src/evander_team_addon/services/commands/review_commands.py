@@ -205,9 +205,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 "state": state,
                 "findings": list(findings or []),
                 "criteria": [dict(item) for item in criteria or []],
-                "finding_resolutions": [
-                    dict(item) for item in finding_resolutions or []
-                ],
+                "finding_resolutions": [dict(item) for item in finding_resolutions or []],
                 "override_routing_gap_reason": override_routing_gap_reason,
             },
             field_name="review_decision",
@@ -305,16 +303,12 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 _recalculate_project_status(command_state, project_id)
             decided_review = command_state.review_requests[decided_id]
             if decided_review.release_package_id is not None:
-                release = command_state.release_packages[
-                    decided_review.release_package_id
-                ]
+                release = command_state.release_packages[decided_review.release_package_id]
                 return TeamCommandApplyResult(
                     response_payload={
                         "review_request_id": decided_id,
                         "decided_review_request_ids": [decided_id],
-                        "created_inbox_item_ids": list(
-                            decision_result["created_inbox_item_ids"]
-                        ),
+                        "created_inbox_item_ids": list(decision_result["created_inbox_item_ids"]),
                         "review": decided_review.model_dump(mode="json"),
                         "release_package": release.model_dump(mode="json"),
                         "release_package_id": release.id,

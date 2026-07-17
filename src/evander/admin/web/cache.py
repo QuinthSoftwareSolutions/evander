@@ -118,7 +118,9 @@ class AdminWebJsonResponseCache:
                 self._entries[key] = entry
             if future is not None and not future.done():
                 future.set_result(entry)
-            if not bypass and _request_etag_matches(request.headers.get("if-none-match"), entry.etag):
+            if not bypass and _request_etag_matches(
+                request.headers.get("if-none-match"), entry.etag
+            ):
                 return _not_modified_json_response(entry, cache_state="miss")
             response.headers["X-Admin-Web-Cache"] = "refresh" if bypass else "miss"
             response.headers.setdefault("Cache-Control", "no-store")

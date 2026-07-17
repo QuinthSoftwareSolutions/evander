@@ -172,7 +172,9 @@ class StateUpdateEffectProvider(EffectProviderBase):
         except (TypeError, ValueError) as exc:
             raise ValueError("effect:state:update expected_version must be an integer") from exc
         if version < 0:
-            raise ValueError("effect:state:update expected_version must be greater than or equal to zero")
+            raise ValueError(
+                "effect:state:update expected_version must be greater than or equal to zero"
+            )
         return version
 
     @staticmethod

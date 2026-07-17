@@ -36,7 +36,10 @@ def test_operator_field_help_inventory_is_structured_and_discoverable() -> None:
 
     assert "# Operator Field Help Inventory" in contents
     assert "## Inventory" in contents
-    assert "| Screen / component | Field / control name | Current behavior | User confusion or risk | Recommended help treatment | Priority | Source evidence |" in contents
+    assert (
+        "| Screen / component | Field / control name | Current behavior | User confusion or risk | Recommended help treatment | Priority | Source evidence |"
+        in contents
+    )
 
     for label in sorted(TREATMENTS):
         assert f"`{label}`" in contents

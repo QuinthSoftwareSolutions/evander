@@ -292,9 +292,7 @@ def test_derive_team_timeline_covers_mixed_entries_and_missing_timestamps() -> N
     assert timeline["audit_log"] is False
     assert timeline["timestampless_count"] == 3
     assert len(entries) == 15
-    assert {
-        entry["type"] for entry in entries
-    } == {
+    assert {entry["type"] for entry in entries} == {
         "task",
         "inbox_item",
         "deliverable",
@@ -415,16 +413,12 @@ def test_derive_team_timeline_keeps_dismissed_failed_action_out_of_attention() -
     attention_view = derive_team_timeline(state, attention_needed=True)
     all_entries = derive_team_timeline(state)
     action_entry = next(
-        entry
-        for entry in all_entries["entries"]
-        if entry["id"] == "action:alpha-action:created"
+        entry for entry in all_entries["entries"] if entry["id"] == "action:alpha-action:created"
     )
 
     assert action_entry["status"] == "failed"
     assert action_entry["attention_needed"] is False
-    assert "action:alpha-action:created" not in [
-        entry["id"] for entry in attention_view["entries"]
-    ]
+    assert "action:alpha-action:created" not in [entry["id"] for entry in attention_view["entries"]]
 
 
 def test_derive_team_timeline_normalizes_naive_timestamps_for_sorting() -> None:
@@ -455,14 +449,12 @@ def test_derive_team_timeline_uses_current_promotion_state_for_requested_entries
     assert requested["attention_needed"] is False
 
     attention_ids = [
-        entry["id"]
-        for entry in derive_team_timeline(state, attention_needed=True)["entries"]
+        entry["id"] for entry in derive_team_timeline(state, attention_needed=True)["entries"]
     ]
     assert "git-promotion:alpha-promotion:requested" not in attention_ids
     assert "git-promotion:alpha-promotion:result" not in attention_ids
 
     pending_ids = [
-        entry["id"]
-        for entry in derive_team_timeline(state, statuses="pending")["entries"]
+        entry["id"] for entry in derive_team_timeline(state, statuses="pending")["entries"]
     ]
     assert "git-promotion:alpha-promotion:requested" not in pending_ids

@@ -195,7 +195,9 @@ def addon_storage_path(runtime_dir: str | Path, addon_id: str, *parts: str | Pat
     try:
         resolved_path.relative_to(resolved_root)
     except ValueError as exc:
-        raise ValueError("add-on storage path must remain within the add-on runtime directory") from exc
+        raise ValueError(
+            "add-on storage path must remain within the add-on runtime directory"
+        ) from exc
     return path
 
 
@@ -516,9 +518,7 @@ def _display_package_dir(package_dir: Path, *, base_path: Path | None) -> str:
     return package_dir.as_posix()
 
 
-def _addon_package_might_be_enabled(
-    spec: _AddonRegistrationSpec, enabled_filter: set[str]
-) -> bool:
+def _addon_package_might_be_enabled(spec: _AddonRegistrationSpec, enabled_filter: set[str]) -> bool:
     if spec.manifest_path is None:
         return True
     try:
@@ -681,9 +681,7 @@ def _addon_package_module_location(
 
 
 def _addon_package_import_root(package_dir: Path) -> str:
-    digest = hashlib.sha256(
-        str(package_dir.resolve(strict=False)).encode("utf-8")
-    ).hexdigest()[:16]
+    digest = hashlib.sha256(str(package_dir.resolve(strict=False)).encode("utf-8")).hexdigest()[:16]
     return f"_evander_addon_package_{digest}"
 
 

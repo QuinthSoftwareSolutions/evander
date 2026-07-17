@@ -293,7 +293,9 @@ def test_mcp_seed_provision_uses_core_mssql_provisioning_before_restore(
     FakeBackend.calls = []
     FakeSidecarClient.calls = []
     FakeSidecarClient.timeouts = []
-    monkeypatch.setattr("evander_mssql_seed_addon.mcp.ContainerWorkerVmExecutionBackend", FakeBackend)
+    monkeypatch.setattr(
+        "evander_mssql_seed_addon.mcp.ContainerWorkerVmExecutionBackend", FakeBackend
+    )
     monkeypatch.setattr("evander_mssql_seed_addon.mcp.MssqlSeedSidecarClient", FakeSidecarClient)
 
     register_mcp_tools(

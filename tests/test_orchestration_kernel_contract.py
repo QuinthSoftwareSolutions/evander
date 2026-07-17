@@ -169,12 +169,8 @@ def test_polling_kernel_run_once_with_lock_propagates_exceptions() -> None:
 def test_compute_next_sleep_seconds_uses_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kernels.random, "uniform", lambda lower, upper: 0.25)
 
-    assert kernels.compute_next_sleep_seconds(
-        poll_interval_seconds=3.0, jitter_seconds=2.0
-    ) == 3.25
-    assert kernels.compute_next_sleep_seconds(
-        poll_interval_seconds=3.0, jitter_seconds=0.0
-    ) == 3.0
+    assert kernels.compute_next_sleep_seconds(poll_interval_seconds=3.0, jitter_seconds=2.0) == 3.25
+    assert kernels.compute_next_sleep_seconds(poll_interval_seconds=3.0, jitter_seconds=0.0) == 3.0
 
 
 def test_wake_socket_path_is_derived_from_lock_path(tmp_path: Path) -> None:

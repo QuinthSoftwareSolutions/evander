@@ -55,11 +55,13 @@ def _governance_goals_with_generated_ids(
         normalized.append(GovernanceGoal.model_validate(payload))
     return normalized
 
+
 def _governance_group_payload(state: TeamState, group: GovernanceGroup) -> dict[str, Any]:
     payload = group.model_dump(mode="json")
     manager = state.agents.get(group.manager_agent_id)
     payload["manager"] = _agent_payload(state, manager) if manager is not None else None
     return payload
+
 
 def _record_governance_membership_change_agenda(
     state: TeamState,
@@ -125,11 +127,13 @@ def _record_governance_membership_change_agenda(
         runtime.next_wake_at = None
         runtime.updated_at = now
 
+
 def _team_reference_label(state: TeamState, team_id: str) -> str:
     team = state.teams.get(team_id)
     if team is None:
         return team_id
     return f"{team.name} ({team.id})"
+
 
 def _governance_member_team_payload(
     state: TeamState,
@@ -152,6 +156,7 @@ def _governance_member_team_payload(
         "cost": dict(team_costs.get(team_id) or {}),
     }
 
+
 def _pending_governance_agenda_for_group(
     state: TeamState,
     governance_group_id: str,
@@ -171,6 +176,7 @@ def _pending_governance_agenda_for_group(
     )
     return items
 
+
 def _governance_groups_for_team(
     state: TeamState,
     team_id: str,
@@ -183,6 +189,7 @@ def _governance_groups_for_team(
         ],
         key=lambda group: group.id,
     )
+
 
 def _governance_agenda_effective_team_id(
     state: TeamState,
@@ -199,6 +206,7 @@ def _governance_agenda_effective_team_id(
         if agent is not None:
             return agent.team_id
     return None
+
 
 def _governance_cost_signals(
     state: TeamState,
@@ -249,11 +257,13 @@ def _governance_cost_signals(
     )
     return signals
 
+
 def _governance_cost_signal_fingerprints(signals: list[dict[str, Any]]) -> list[str]:
     return sorted(
         f"{_optional_text(signal.get('team_id')) or ''}:{_optional_text(signal.get('type')) or ''}"
         for signal in signals
     )
+
 
 def _governance_blocked_team_signals(
     state: TeamState,
@@ -291,6 +301,7 @@ def _governance_blocked_team_signals(
     signals.sort(key=lambda item: item["team_id"])
     return signals
 
+
 def _governance_blocked_signal_fingerprints(signals: list[dict[str, Any]]) -> list[str]:
     fingerprints: list[str] = []
     for signal in signals:
@@ -305,6 +316,7 @@ def _governance_blocked_signal_fingerprints(signals: list[dict[str, Any]]) -> li
             f"projects={blocked_projects}:tasks={blocked_tasks}"
         )
     return sorted(fingerprints)
+
 
 __all__ = [
     "_governance_goals_with_generated_ids",

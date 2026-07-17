@@ -142,9 +142,7 @@ def resolve_session_ttl(
     return default_session_ttl(policy)
 
 
-def matching_issue_session_ids(
-    issue_number: str, sessions: dict[str, SessionManifest]
-) -> set[str]:
+def matching_issue_session_ids(issue_number: str, sessions: dict[str, SessionManifest]) -> set[str]:
     vm_name = f"vm-{issue_number}"
     prefix = issue_session_id_prefix(issue_number)
     matches: set[str] = set()
@@ -611,9 +609,7 @@ def session_policy_update_from_payload(
             payload.get("tool_argument_policies"),
         )
     if "connector_grants" in payload:
-        update["connector_grants"] = normalize_connector_grants(
-            payload.get("connector_grants")
-        )
+        update["connector_grants"] = normalize_connector_grants(payload.get("connector_grants"))
 
     discord_field = (
         "discord_channel_allowlist"

@@ -612,14 +612,13 @@ def test_ado_mapping_exposes_thread_authors_and_mentions_for_filters() -> None:
                                 "id": 1,
                                 "author": {"displayName": "Dev Two"},
                                 "content": (
-                                    "@<C74221CB-EE08-6A83-9055-AF01C3333112> "
-                                    "can you make the fix?"
+                                    "@<C74221CB-EE08-6A83-9055-AF01C3333112> can you make the fix?"
                                 ),
                                 "publishedDate": "2026-03-21T01:00:02Z",
                                 "isDeleted": False,
                             },
                         ],
-                    }
+                    },
                 ]
             }
 

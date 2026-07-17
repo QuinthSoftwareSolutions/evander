@@ -3,9 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def normalize_approval_notification_target_ids(
-    value: object, *, field_name: str
-) -> list[str]:
+def normalize_approval_notification_target_ids(value: object, *, field_name: str) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
@@ -72,8 +70,7 @@ def resolve_approval_notification_target_ids_for_directory(
                 + ", ".join(non_notify_target_ids)
             )
         raise ValueError(
-            f"{field_name} for directory {directory_path!r} is invalid: "
-            + "; ".join(message_parts)
+            f"{field_name} for directory {directory_path!r} is invalid: " + "; ".join(message_parts)
         )
 
     return resolved_target_ids

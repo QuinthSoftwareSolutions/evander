@@ -222,9 +222,7 @@ class RemoteIssueCommentCreatedTriggerProvider(TriggerProviderBase):
         return self.runtime_context
 
     def _trigger(self) -> RemoteIssueCommentCreatedTriggerDefinition:
-        if not isinstance(
-            self.trigger_definition, RemoteIssueCommentCreatedTriggerDefinition
-        ):
+        if not isinstance(self.trigger_definition, RemoteIssueCommentCreatedTriggerDefinition):
             raise RuntimeError(
                 "RemoteIssueCommentCreatedTriggerProvider initialized with wrong definition"
             )
@@ -268,7 +266,9 @@ def _comment_event_payload(
     return payload
 
 
-def _normalize_comments(*, remote_issue_id: str, issue: Mapping[str, Any]) -> list[_NormalizedComment]:
+def _normalize_comments(
+    *, remote_issue_id: str, issue: Mapping[str, Any]
+) -> list[_NormalizedComment]:
     comments = issue.get("comments")
     if not isinstance(comments, list):
         return []
@@ -360,9 +360,7 @@ def _baseline_stream_state(comments: list[_NormalizedComment]) -> dict[str, Any]
     if not comments:
         return {"last_comment_created_at": None, "recent_comment_keys": []}
     latest_created_at = max(comment.created_at for comment in comments)
-    recent_keys = [
-        comment.key for comment in comments if comment.created_at == latest_created_at
-    ]
+    recent_keys = [comment.key for comment in comments if comment.created_at == latest_created_at]
     return {
         "last_comment_created_at": latest_created_at.astimezone(UTC)
         .isoformat()
@@ -435,9 +433,7 @@ def _scope_from_item(item: Mapping[str, Any], *, provider: str) -> str:
     return str(item.get("project") or "").strip()
 
 
-def _stream_key(
-    *, provider: str, directory_path: str, scope: str, remote_issue_id: str
-) -> str:
+def _stream_key(*, provider: str, directory_path: str, scope: str, remote_issue_id: str) -> str:
     return "|".join([provider, directory_path, scope, remote_issue_id])
 
 

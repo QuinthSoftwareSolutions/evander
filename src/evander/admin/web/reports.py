@@ -160,7 +160,9 @@ def report_routes(
     async def run_conformance(request: Request) -> JSONResponse:
         kind = request.path_params["kind"]
         try:
-            payload = await run_in_threadpool(service.workflow_reports_admin.run_conformance_report, kind)
+            payload = await run_in_threadpool(
+                service.workflow_reports_admin.run_conformance_report, kind
+            )
         except ValueError as exc:
             return json_error(str(exc))
         except RuntimeError as exc:

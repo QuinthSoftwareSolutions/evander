@@ -77,15 +77,15 @@ def user_notification_routes(service: AdminRuntimeComponents, auth: AdminWebAuth
                 user_id=user_id,
                 source=raw_source,
                 source_ids=[
-                    str(item or "").strip()
-                    for item in raw_source_ids
-                    if str(item or "").strip()
+                    str(item or "").strip() for item in raw_source_ids if str(item or "").strip()
                 ],
             )
         else:
             if not isinstance(raw_ids, list):
                 return json_error("notification_ids must be a list unless all is true")
-            notification_ids = [str(item or "").strip() for item in raw_ids if str(item or "").strip()]
+            notification_ids = [
+                str(item or "").strip() for item in raw_ids if str(item or "").strip()
+            ]
             marked_ids = store.mark_read(user_id=user_id, notification_ids=notification_ids)
         notifications, unread_count = store.list_unread(user_id=user_id, limit=20)
         return JSONResponse(

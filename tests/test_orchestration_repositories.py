@@ -303,9 +303,7 @@ def test_sqlite_execution_repository_supports_indexed_queries(tmp_path: Path) ->
     assert execution_store.find_execution_by_idempotency_key("idem-1") == running
     assert execution_store.get_execution("exec-1") == running
     assert execution_store.has_running_execution_for_event("evt-1") is True
-    assert [record.execution_id for record in execution_store.list_active_records()] == [
-        "exec-1"
-    ]
+    assert [record.execution_id for record in execution_store.list_active_records()] == ["exec-1"]
     assert gate_store.find_latest_execution_for_gate("merge-1") == newer_gate
 
     with connect_orchestration_db(tmp_path / "orchestration.db") as connection:
@@ -461,8 +459,7 @@ def test_sqlite_execution_repository_dismisses_failed_records_for_node(tmp_path:
     )
     assert json.loads(after_payloads["exec-failed-1"])["dismissed_at"] == "2026-04-23T13:00:00Z"
     assert {
-        execution_id: after_payloads[execution_id]
-        for execution_id in unchanged_before
+        execution_id: after_payloads[execution_id] for execution_id in unchanged_before
     } == unchanged_before
 
 
@@ -564,12 +561,18 @@ def test_sqlite_gate_execution_repository_dismisses_failed_records_for_node(
 
     assert updated == 2
     assert gate_store.get_execution("gate-failed-1").dismissed_at == dismissed_at
-    assert gate_store.get_execution("gate-failed-1").dismiss_reason == "manual_dismiss_node_failures"
+    assert (
+        gate_store.get_execution("gate-failed-1").dismiss_reason == "manual_dismiss_node_failures"
+    )
     assert gate_store.get_execution("gate-failed-2").dismissed_at == dismissed_at
-    assert gate_store.get_execution("gate-failed-2").dismiss_reason == "manual_dismiss_node_failures"
+    assert (
+        gate_store.get_execution("gate-failed-2").dismiss_reason == "manual_dismiss_node_failures"
+    )
     assert gate_store.get_execution("gate-running").dismissed_at is None
     assert gate_store.get_execution("gate-succeeded").dismissed_at is None
-    assert gate_store.get_execution("gate-dismissed").dismiss_reason == "manual_dismiss_node_failures"
+    assert (
+        gate_store.get_execution("gate-dismissed").dismiss_reason == "manual_dismiss_node_failures"
+    )
     assert gate_store.get_execution("gate-other-failed").dismissed_at is None
 
     assert after_payloads["gate-failed-1"] != before_payloads["gate-failed-1"]
@@ -581,8 +584,7 @@ def test_sqlite_gate_execution_repository_dismisses_failed_records_for_node(
     )
     assert json.loads(after_payloads["gate-failed-1"])["dismissed_at"] == "2026-04-23T13:00:00Z"
     assert {
-        execution_id: after_payloads[execution_id]
-        for execution_id in unchanged_before
+        execution_id: after_payloads[execution_id] for execution_id in unchanged_before
     } == unchanged_before
 
 
@@ -622,17 +624,14 @@ def test_execution_repositories_list_waiting_and_completion_pending_records(
 
         assert [
             record.execution_id
-            for record in execution_store.list_waiting_records(
-                "effect:agent:enqueue-prompt"
-            )
+            for record in execution_store.list_waiting_records("effect:agent:enqueue-prompt")
         ] == [waiting_target.execution_id]
         assert {record.execution_id for record in execution_store.list_waiting_records()} == {
             waiting_target.execution_id,
             waiting_other.execution_id,
         }
         assert [
-            record.execution_id
-            for record in execution_store.list_completion_pending_records()
+            record.execution_id for record in execution_store.list_completion_pending_records()
         ] == [pending.execution_id]
 
 
@@ -672,8 +671,7 @@ def test_gate_execution_repositories_list_waiting_and_completion_pending_records
             gate_store.record_execution(record)
 
         assert [
-            record.execution_id
-            for record in gate_store.list_waiting_records("gate:await-agent")
+            record.execution_id for record in gate_store.list_waiting_records("gate:await-agent")
         ] == [waiting_target.execution_id]
         assert {record.execution_id for record in gate_store.list_waiting_records()} == {
             waiting_target.execution_id,
@@ -720,9 +718,7 @@ def test_sqlite_gate_execution_repository_treats_completion_pending_as_active(
     gate_store.record_execution(pending)
 
     assert gate_store.has_running_execution_for_event("evt-1") is True
-    assert [record.execution_id for record in gate_store.list_active_records()] == [
-        "gate-1"
-    ]
+    assert [record.execution_id for record in gate_store.list_active_records()] == ["gate-1"]
 
     cleared = gate_store.clear_event_records(
         "evt-1",
@@ -779,9 +775,7 @@ def test_sqlite_execution_repository_clears_target_event_without_full_file_store
 ) -> None:
     execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     target = _effect_record(execution_id="exec-1", idempotency_key="idem-1")
-    other = _effect_record(
-        execution_id="exec-2", idempotency_key="idem-2", event_id="evt-other"
-    )
+    other = _effect_record(execution_id="exec-2", idempotency_key="idem-2", event_id="evt-other")
     execution_store.record_execution(target)
     execution_store.record_execution(other)
 
@@ -802,9 +796,7 @@ def test_workflow_config_snapshot_repository_supports_json_and_sqlite_backends(
     tmp_path: Path,
 ) -> None:
     snapshot = _workflow_config_snapshot_payload()
-    json_repo = JsonWorkflowConfigSnapshotRepository(
-        tmp_path / "workflow-config-snapshots.json"
-    )
+    json_repo = JsonWorkflowConfigSnapshotRepository(tmp_path / "workflow-config-snapshots.json")
     sqlite_repo = SqliteWorkflowConfigSnapshotRepository(tmp_path / "orchestration.db")
 
     json_repo.put_snapshot(snapshot)

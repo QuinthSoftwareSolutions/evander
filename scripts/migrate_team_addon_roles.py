@@ -232,9 +232,7 @@ def _role_record(
         "description": "",
         "permissions": _role_permissions(normalized_key),
         "ephemeral_policy": (
-            ephemeral_policy
-            if isinstance(ephemeral_policy, dict)
-            else {"max_concurrent": 0}
+            ephemeral_policy if isinstance(ephemeral_policy, dict) else {"max_concurrent": 0}
         ),
         "archived": False,
         "created_at": now,
@@ -264,10 +262,7 @@ def _role_key_from_id(role_id: str) -> str:
 
 
 def _role_name(value: str) -> str:
-    return " ".join(
-        part.capitalize()
-        for part in value.replace("_", " ").replace("-", " ").split()
-    )
+    return " ".join(part.capitalize() for part in value.replace("_", " ").replace("-", " ").split())
 
 
 def _object_map(payload: dict[str, Any], field: str) -> dict[str, Any]:

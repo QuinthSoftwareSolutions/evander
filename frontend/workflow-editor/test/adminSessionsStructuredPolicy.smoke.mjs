@@ -112,6 +112,11 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
     const url = new URL(route.request().url());
     const { pathname } = url;
 
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
+
     if (pathname === "/api/auth/session") {
       await route.fulfill(
         jsonResponse({
@@ -272,7 +277,8 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
   const metadataLabelsRow = metadataSection.locator(".structured-input-json-row").nth(1);
   const metadataValue = metadataLabelsRow.locator("textarea").first();
   await metadataValue.fill("{bad");
-  await page.getByRole("button", { name: "Save changes" }).click();
+  const saveButton = page.getByRole("button", { name: "Save changes" });
+  await saveButton.click();
   await metadataSection.locator(".structured-input-error").waitFor({ state: "visible" });
   await page.locator(".callout.error-callout").filter({ hasText: "Metadata row 2 contains invalid JSON" }).first().waitFor({ state: "visible" });
   assert.equal(policyBodies.length, 0);
@@ -283,14 +289,17 @@ test("sessions structured policy round-trips allowed tools, metadata, and extens
   const allowedExtensionsInput = allowedExtensionsSection.locator(".string-list-selector-row input").first();
   await allowedExtensionsInput.fill("txt");
   await allowedExtensionsSection.locator(".structured-input-error").filter({ hasText: "Extension must start with a leading dot." }).waitFor({ state: "visible" });
-  await page.getByRole("button", { name: "Save changes" }).click();
+  await saveButton.click();
   await page.locator(".callout.error-callout").filter({ hasText: "Allowed extensions row 1 must start with a leading dot." }).first().waitFor({ state: "visible" });
   assert.equal(policyBodies.length, 0);
   await allowedExtensionsInput.fill(".txt");
   await allowedExtensionsSection.locator(".structured-input-error").waitFor({ state: "hidden" });
 
-  await page.getByRole("button", { name: "Save changes" }).click();
-  await page.locator(".session-tools-panel .success-box").first().waitFor({ state: "visible" });
+  await saveButton.click();
+  await page
+    .locator(".callout.success-callout")
+    .filter({ hasText: "Tools and policy saved." })
+    .waitFor({ state: "visible" });
 
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions?session_id=session-1");
   assert.equal(allowedToolBodies.length, 1);

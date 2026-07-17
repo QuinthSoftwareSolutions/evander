@@ -133,7 +133,10 @@ class AdminUserNotificationStore:
                 and notification.get("user_id") == normalized_user_id
                 and not notification.get("read_at")
             ]
-        unread.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")), reverse=True)
+        unread.sort(
+            key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")),
+            reverse=True,
+        )
         return unread[:bounded_limit], len(unread)
 
     def mark_read(self, *, user_id: object, notification_ids: list[str] | None = None) -> list[str]:
@@ -165,7 +168,9 @@ class AdminUserNotificationStore:
                 self._write(payload)
         return marked
 
-    def mark_source_read(self, *, user_id: object, source: object, source_ids: list[str]) -> list[str]:
+    def mark_source_read(
+        self, *, user_id: object, source: object, source_ids: list[str]
+    ) -> list[str]:
         normalized_user_id = normalize_admin_notification_user_id(user_id)
         if normalized_user_id is None:
             return []
@@ -259,5 +264,7 @@ class AdminUserNotificationStore:
                 str(item[1].get("id") or ""),
             )
         )
-        for notification_id, _notification in user_items[: len(user_items) - MAX_NOTIFICATIONS_PER_USER]:
+        for notification_id, _notification in user_items[
+            : len(user_items) - MAX_NOTIFICATIONS_PER_USER
+        ]:
             notifications.pop(notification_id, None)

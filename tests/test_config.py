@@ -918,17 +918,13 @@ def test_bind_network_cidr_rejects_invalid_values_with_clear_error(value: str) -
 def test_wake_session_cooldown_path_follows_runtime_dir_default() -> None:
     config = GatewayConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert (
-        str(config.wake_session_cooldown_path)
-        == "/tmp/evander-runtime/wake-session-cooldown.json"
+        str(config.wake_session_cooldown_path) == "/tmp/evander-runtime/wake-session-cooldown.json"
     )
 
 
 def test_wake_dispatch_state_path_follows_runtime_dir_default() -> None:
     config = GatewayConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
-    assert (
-        str(config.wake_dispatch_state_path)
-        == "/tmp/evander-runtime/wake-dispatch-state.json"
-    )
+    assert str(config.wake_dispatch_state_path) == "/tmp/evander-runtime/wake-dispatch-state.json"
 
 
 def test_host_agent_control_state_path_follows_runtime_dir_default() -> None:
@@ -954,9 +950,7 @@ def test_wake_completion_confirmation_retry_policy_defaults_are_conservative() -
 
 
 def test_discord_wake_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = DiscordWakeWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/evander-runtime"}
-    )
+    config = DiscordWakeWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert str(config.lock_path) == "/tmp/evander-runtime/discord-wake.lock"
     assert (
         str(config.session_cooldown_path)
@@ -978,9 +972,7 @@ def test_discord_wake_worker_global_config_directory_paths_are_normalized() -> N
 
 
 def test_scheduled_wake_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = ScheduledWakeWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/evander-runtime"}
-    )
+    config = ScheduledWakeWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert str(config.lock_path) == "/tmp/evander-runtime/scheduled-wake.lock"
     assert config.backoff_seconds == 60.0
     assert (
@@ -1057,9 +1049,7 @@ def test_scheduled_wake_worker_global_config_accepts_retry_policy_overrides() ->
 
 
 def test_discord_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = DiscordIngestWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/evander-runtime"}
-    )
+    config = DiscordIngestWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert str(config.lock_path) == "/tmp/evander-runtime/discord-ingest.lock"
     assert config.directories == []
 
@@ -1075,9 +1065,7 @@ def test_discord_ingest_worker_global_config_directory_paths_are_normalized() ->
 
 
 def test_teams_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = TeamsIngestWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/evander-runtime"}
-    )
+    config = TeamsIngestWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert str(config.lock_path) == "/tmp/evander-runtime/teams-ingest.lock"
     assert config.directories == []
 
@@ -1144,10 +1132,7 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         str(config.event_queue_cursor_store_path)
         == "/tmp/evander-runtime/trigger-orchestrator-cursors.json"
     )
-    assert (
-        str(config.workflow_event_journal_path)
-        == "/tmp/evander-runtime/workflow-events.jsonl"
-    )
+    assert str(config.workflow_event_journal_path) == "/tmp/evander-runtime/workflow-events.jsonl"
     assert (
         str(config.scheduled_internal_event_store_path)
         == "/tmp/evander-runtime/scheduled-internal-events.json"
@@ -1157,8 +1142,7 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         == "/tmp/evander-runtime/gate-orchestrator-executions.json"
     )
     assert (
-        str(config.gate_cursor_store_path)
-        == "/tmp/evander-runtime/gate-orchestrator-cursors.json"
+        str(config.gate_cursor_store_path) == "/tmp/evander-runtime/gate-orchestrator-cursors.json"
     )
     assert (
         str(config.effect_execution_store_path)

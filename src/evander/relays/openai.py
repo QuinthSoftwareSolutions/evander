@@ -396,9 +396,7 @@ class OpenAIRelay:
                     timeout_seconds=request_context.config.openai_relay_timeout_seconds,
                     provider_name=openai_compatible_upstream.provider_name,
                     operator_steering_note=steering_injection.note,
-                    function_namespaces=(
-                        local_openai_tool_compatibility.function_namespaces
-                    ),
+                    function_namespaces=(local_openai_tool_compatibility.function_namespaces),
                     top_level_function_names=(
                         local_openai_tool_compatibility.top_level_function_names
                     ),
@@ -446,9 +444,7 @@ class OpenAIRelay:
                     )
                 response_content = relay._rewrite_local_openai_function_calls_response(
                     upstream_response.content,
-                    function_namespaces=(
-                        local_openai_tool_compatibility.function_namespaces
-                    ),
+                    function_namespaces=(local_openai_tool_compatibility.function_namespaces),
                     top_level_function_names=(
                         local_openai_tool_compatibility.top_level_function_names
                     ),

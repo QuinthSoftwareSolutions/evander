@@ -105,9 +105,7 @@ def test_artifact_space_implicit_parents_inherit_restricted_ancestor_grants(
     )
 
     assert state.spaces["/teams/team"].grants.manage_subjects == ["team-addon:agent:lead"]
-    assert state.spaces["/teams/team/projects"].grants.manage_subjects == [
-        "team-addon:agent:lead"
-    ]
+    assert state.spaces["/teams/team/projects"].grants.manage_subjects == ["team-addon:agent:lead"]
     with pytest.raises(ArtifactSpacePermissionError):
         store.ensure_space(
             path="/teams/team/projects/frontend",

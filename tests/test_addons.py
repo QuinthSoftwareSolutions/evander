@@ -160,9 +160,7 @@ def test_discover_addons_preserves_imported_bundled_package_alias(monkeypatch) -
         if record.registration is not None
     }
 
-    assert discovered["mssql-seed-addon"].registration.display_name == (
-        "Patched MSSQL Seed Add-on"
-    )
+    assert discovered["mssql-seed-addon"].registration.display_name == ("Patched MSSQL Seed Add-on")
     assert sys.modules["evander_mssql_seed_addon"] is public_module
     assert sys.modules["evander_mssql_seed_addon.mcp"] is public_mcp_module
 
@@ -563,9 +561,7 @@ def register_addon():
 
 
 def test_discover_addons_reports_load_errors() -> None:
-    records = discover_addons(
-        AddonLoaderConfig(modules=["missing_addon_module"], package_dirs=[])
-    )
+    records = discover_addons(AddonLoaderConfig(modules=["missing_addon_module"], package_dirs=[]))
 
     assert len(records) == 1
     assert records[0].registration is None
@@ -585,9 +581,7 @@ def test_load_addons_supports_entry_points(monkeypatch) -> None:
                 display_name="Entry Add-on",
             )
 
-    monkeypatch.setattr(
-        "evander.addons._iter_addon_entry_points", lambda: (_EntryPointStub(),)
-    )
+    monkeypatch.setattr("evander.addons._iter_addon_entry_points", lambda: (_EntryPointStub(),))
 
     catalog = load_addons(AddonLoaderConfig(enabled_entry_points=True))
 
@@ -767,11 +761,7 @@ def test_bundled_team_addon_workflow_providers_are_optional() -> None:
     assert catalog_entries["effect:team:wake-due-agents"].label == "Wake Team agents"
     assert catalog_entries["effect:team:create-case"].label == "Create Team case"
     assert catalog_entries["effect:team:wake-due-agents"].description
-    assert all(
-        field.description
-        for entry in catalog_entries.values()
-        for field in entry.fields
-    )
+    assert all(field.description for entry in catalog_entries.values() for field in entry.fields)
 
 
 def test_workflow_provider_loader_uses_addon_base_dir_for_scanned_addons(

@@ -29,13 +29,11 @@ def build_pull_request_provider(
         raise RuntimeError(f"{node_type} provider_config_resolver cannot resolve directories")
 
     config = resolve_for_directory(directory_path)
-    resolved_organization_url = (
-        _normalize_optional_string(organization_url)
-        or _normalize_optional_string(getattr(config, "azure_devops_organization_url", None))
-    )
-    resolved_project = (
-        _normalize_optional_string(project)
-        or _normalize_optional_string(getattr(config, "azure_devops_project", None))
+    resolved_organization_url = _normalize_optional_string(
+        organization_url
+    ) or _normalize_optional_string(getattr(config, "azure_devops_organization_url", None))
+    resolved_project = _normalize_optional_string(project) or _normalize_optional_string(
+        getattr(config, "azure_devops_project", None)
     )
     if not resolved_organization_url:
         raise ValueError(f"{node_type} requires organization_url for Azure DevOps")

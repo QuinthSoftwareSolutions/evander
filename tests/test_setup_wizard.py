@@ -73,9 +73,7 @@ def test_setup_secret_status_uses_sudo_aware_read_for_default_secret_file(
     assert status["required"]["openai"]["set"] is True
 
 
-def test_setup_root_owned_secret_grants_git_ssh_user_acl(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_setup_root_owned_secret_grants_git_ssh_user_acl(tmp_path: Path, monkeypatch) -> None:
     calls: list[list[str]] = []
     tmp_dir = tmp_path / "tmp"
     tmp_dir.mkdir()
@@ -368,8 +366,7 @@ def test_setup_local_container_worker_unit_uses_secret_and_worker_root(tmp_path:
     assert "--worker-root /var/lib/agent-worker" in unit
     assert "--container-user " in unit
     assert (
-        "--allowed-git-source-prefix "
-        f"ssh://evander-git-host{tmp_path / 'runtime' / 'managed-git'}/"
+        f"--allowed-git-source-prefix ssh://evander-git-host{tmp_path / 'runtime' / 'managed-git'}/"
     ) in unit
     assert (
         "--allowed-git-source-prefix "

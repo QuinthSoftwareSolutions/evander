@@ -302,7 +302,9 @@ class AdoActivityIndexService:
         return {**total, "pages": pages, "complete": complete}
 
     def _pr_query_service(self, directory_path: str) -> PrQueryService:
-        resolve_for_directory = getattr(self.provider_config_resolver, "resolve_for_directory", None)
+        resolve_for_directory = getattr(
+            self.provider_config_resolver, "resolve_for_directory", None
+        )
         if not callable(resolve_for_directory):
             raise RuntimeError("ADO PR activity sync requires resolve_for_directory")
         config = resolve_for_directory(directory_path)

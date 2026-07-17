@@ -74,16 +74,16 @@ def _write_audit_log(path: Path) -> None:
                         "token": "attempted-secret",
                         "nested": {"password": "attempted-nested-secret"},
                     },
-                            "differences": {
-                                "changed": [
-                                    {
-                                        "path": "payload.token",
-                                        "approved_value": "<redacted>",
-                                        "attempted_value": "<redacted>",
-                                    }
-                                ]
-                            },
-                        },
+                    "differences": {
+                        "changed": [
+                            {
+                                "path": "payload.token",
+                                "approved_value": "<redacted>",
+                                "attempted_value": "<redacted>",
+                            }
+                        ]
+                    },
+                },
             },
             "created_at": "2026-05-18T10:00:00+00:00",
         },
@@ -154,7 +154,9 @@ def test_admin_service_lists_tool_call_audit_entries_with_filters_and_redaction(
     _write_audit_log(service.config.audit_log_path)
 
     default_page = service.approval_audit_admin.list_tool_call_audit_entries(limit=2)
-    team_page = service.approval_audit_admin.list_tool_call_audit_entries(directory_path="root/team")
+    team_page = service.approval_audit_admin.list_tool_call_audit_entries(
+        directory_path="root/team"
+    )
     team_direct_page = service.approval_audit_admin.list_tool_call_audit_entries(
         directory_path="root/team", direct_only=True
     )
@@ -167,9 +169,7 @@ def test_admin_service_lists_tool_call_audit_entries_with_filters_and_redaction(
         created_after=datetime(2026, 5, 18, 10, 1, tzinfo=UTC),
         created_before=datetime(2026, 5, 18, 10, 3, tzinfo=UTC),
     )
-    correlation_page = service.approval_audit_admin.list_tool_call_audit_entries(
-        q="correlation-2"
-    )
+    correlation_page = service.approval_audit_admin.list_tool_call_audit_entries(q="correlation-2")
     redaction_search_page = service.approval_audit_admin.list_tool_call_audit_entries(
         q="super-secret"
     )
@@ -192,8 +192,14 @@ def test_admin_service_lists_tool_call_audit_entries_with_filters_and_redaction(
     assert team_page.items[1].approval_diagnostic is not None
     assert team_page.items[1].approval_diagnostic["approval_request_id"] == "approval-1"
     assert team_page.items[1].approval_diagnostic["attempted_payload"]["token"] == "<redacted>"
-    assert team_page.items[1].approval_diagnostic["attempted_payload"]["nested"]["password"] == "<redacted>"
-    assert team_page.items[1].approval_diagnostic["differences"]["changed"][0]["attempted_value"] == "<redacted>"
+    assert (
+        team_page.items[1].approval_diagnostic["attempted_payload"]["nested"]["password"]
+        == "<redacted>"
+    )
+    assert (
+        team_page.items[1].approval_diagnostic["differences"]["changed"][0]["attempted_value"]
+        == "<redacted>"
+    )
     assert default_page.items[1].status == "denied"
     assert default_page.items[1].error_summary == "blocked"
     assert default_page.items[1].args["secret"] == "<redacted>"

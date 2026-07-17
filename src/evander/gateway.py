@@ -8,8 +8,8 @@ Canonical gateway modules are:
 """
 
 from evander.gateway.server import *  # noqa: F403
-from evander.gateway.app import create_app
-from evander.gateway.cli import main
-from evander.gateway.server import create_server
+from evander.gateway.app import create_app as create_app
+from evander.gateway.cli import main as main
+from evander.gateway.server import create_server as create_server
 
 __all__ = [name for name in globals() if not name.startswith("_")]

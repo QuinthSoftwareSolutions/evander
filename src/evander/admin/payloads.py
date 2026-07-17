@@ -17,6 +17,7 @@ from evander.models import DirectoryPath
 from evander.published_artifacts import PublishedArtifactMetadata
 from evander.worker.models import WorkerTelemetryPayload
 
+
 class WorkerGlobalConfigPayload(BaseModel):
     worker_id: str
     path: str

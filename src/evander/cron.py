@@ -16,8 +16,7 @@ def validate_cron_expression(expression: str) -> str:
     normalized = normalize_cron_expression(expression)
     if len(normalized.split()) != 5:
         raise ValueError(
-            "Expected 5 fields (minute hour day month weekday), "
-            "for example: '*/15 * * * *'."
+            "Expected 5 fields (minute hour day month weekday), for example: '*/15 * * * *'."
         )
     if not croniter.is_valid(normalized):
         raise ValueError(f"Unsupported cron expression syntax: {normalized!r}.")

@@ -14,6 +14,11 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
+const transparentPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+
 test("admin shell release and capacity panels show missing states without inventing data", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -235,6 +240,22 @@ test("admin shell release and capacity panels show missing states without invent
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
 
+    if (pathname === "/api/admin/branding") {
+      await route.fulfill(jsonResponse({}));
+      return;
+    }
+
+    if (pathname.startsWith("/api/admin/branding/assets/")) {
+      await route.fulfill({ status: 200, contentType: "image/png", body: transparentPng });
+      return;
+    }
+
+    if (pathname === "/api/admin/user-notifications") {
+      assert.equal(url.searchParams.get("limit"), "20");
+      await route.fulfill(jsonResponse({ user_id: "admin", unread_count: 0, notifications: [] }));
+      return;
+    }
+
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse(sessionResponse));
       return;
@@ -264,9 +285,10 @@ test("admin shell release and capacity panels show missing states without invent
 
     if (pathname === "/api/admin/agents") {
       assert.equal(url.searchParams.get("directory_path"), "root");
-      assert.equal(url.searchParams.get("direct_only"), "true");
+      assert.equal(url.searchParams.get("direct_only"), "false");
       assert.equal(url.searchParams.get("include_inactive"), "true");
       assert.equal(url.searchParams.get("backend"), "all");
+      assert.equal(url.searchParams.get("_dashboard_agent_inventory"), "true");
       await route.fulfill(jsonResponse(agentsResponse));
       return;
     }

@@ -91,8 +91,8 @@ class VmAgentContainerSessionPolicyMixin:
     ) -> dict[str, Any] | None:
         if session is None:
             return None
-        effective_policy = effective_policy or self.runtime.policy_config.resolve_for_session_manifest(
-            session
+        effective_policy = (
+            effective_policy or self.runtime.policy_config.resolve_for_session_manifest(session)
         )
         if tool_summary is None:
             tool_summary = self.runtime.policy.allowed_tool_summary_for_session(

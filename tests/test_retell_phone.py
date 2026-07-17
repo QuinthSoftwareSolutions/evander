@@ -62,15 +62,11 @@ def _contacts() -> ContactDirectoryConfig:
             "contacts": {
                 "ops": {
                     "name": "Ops Duty",
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550000002", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550000002", "primary": True}],
                 },
                 "support": {
                     "name": "Support",
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550000003", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550000003", "primary": True}],
                 },
             }
         }

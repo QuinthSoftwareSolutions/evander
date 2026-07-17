@@ -361,9 +361,7 @@ def test_collect_domain_validation_diagnostics_reports_invalid_for_gate_port(
     diagnostics = collect_domain_validation_diagnostics(worker_config)
 
     assert any(item.code == "node_capability" for item in diagnostics)
-    assert any(
-        "uses invalid source_port value(s): other" in item.message for item in diagnostics
-    )
+    assert any("uses invalid source_port value(s): other" in item.message for item in diagnostics)
 
 
 def test_collect_domain_validation_diagnostics_reports_body_for_gate_without_loopback(
@@ -516,9 +514,7 @@ def test_collect_domain_validation_diagnostics_reports_switch_bad_inbound_count(
                     "id": "gate-switch-1",
                     "display_name": "Route work",
                     "type": "gate:switch",
-                    "cases": [
-                        {"port": "ready", "when": {"left": "ready", "equals": "ready"}}
-                    ],
+                    "cases": [{"port": "ready", "when": {"left": "ready", "equals": "ready"}}],
                 }
             ],
             "effects": [

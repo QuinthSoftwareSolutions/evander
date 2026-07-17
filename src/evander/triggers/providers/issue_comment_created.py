@@ -22,9 +22,7 @@ class IssueCommentCreatedTriggerProvider(TriggerProviderBase):
 
         issues_store = JsonStore(self._runtime_dir() / "local-issues.json", LocalIssueRecord)
         issues = [
-            issue
-            for issue in issues_store.read_all().values()
-            if _matches_trigger(issue, trigger)
+            issue for issue in issues_store.read_all().values() if _matches_trigger(issue, trigger)
         ]
         issues.sort(key=lambda issue: (issue.updated_at, issue.issue_id))
 

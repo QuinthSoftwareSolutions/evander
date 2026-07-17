@@ -34,9 +34,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     assert "Assert non-none worker Docker networking has egress policy" in worker
     assert "evander_worker_docker_network=none for isolated containers" in worker
     assert "Assert worker egress allowlist endpoints are concrete" in worker
-    assert worker.index("- role: container_worker_runtime") < worker.index(
-        "- role: worker_mssql"
-    )
+    assert worker.index("- role: container_worker_runtime") < worker.index("- role: worker_mssql")
     assert worker.index("- role: worker_mssql") < worker.index(
         "- role: worker_container_egress_policy"
     )
@@ -185,9 +183,9 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
 
 
 def test_worker_defaults_derive_control_plane_identity_from_hostvars() -> None:
-    worker_defaults = (
-        ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml"
-    ).read_text(encoding="utf-8")
+    worker_defaults = (ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "evander_install_azure_cli: false" in worker_defaults
     assert "evander_git_user" in worker_defaults
@@ -202,9 +200,9 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     azure_inventory = (ROOT / "ansible" / "inventory" / "azure.example.yml").read_text(
         encoding="utf-8"
     )
-    worker_defaults = (
-        ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml"
-    ).read_text(encoding="utf-8")
+    worker_defaults = (ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert 'evander_worker_docker_network: "none"' in worker_defaults
     assert "evander_worker_egress_policy_enabled: false" in worker_defaults
@@ -240,13 +238,11 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
 
 def test_worker_container_egress_policy_role_applies_docker_user_default_deny() -> None:
     role = ROOT / "ansible" / "roles" / "worker_container_egress_policy"
-    worker_defaults = (
-        ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml"
-    ).read_text(encoding="utf-8")
-    tasks = (role / "tasks" / "main.yml").read_text(encoding="utf-8")
-    script = (role / "templates" / "evander-worker-egress-policy.sh.j2").read_text(
+    worker_defaults = (ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
         encoding="utf-8"
     )
+    tasks = (role / "tasks" / "main.yml").read_text(encoding="utf-8")
+    script = (role / "templates" / "evander-worker-egress-policy.sh.j2").read_text(encoding="utf-8")
     unit = (role / "templates" / "evander-worker-egress-policy.service.j2").read_text(
         encoding="utf-8"
     )
@@ -305,9 +301,7 @@ def test_worker_container_egress_policy_script_escapes_jinja_comment_sequences()
 def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     role = ROOT / "ansible" / "roles" / "container_worker_service"
     tasks = (role / "tasks" / "main.yml").read_text(encoding="utf-8")
-    unit = (role / "templates" / "evander-worker-daemon.service.j2").read_text(
-        encoding="utf-8"
-    )
+    unit = (role / "templates" / "evander-worker-daemon.service.j2").read_text(encoding="utf-8")
     env = (role / "templates" / "worker-daemon.env.j2").read_text(encoding="utf-8")
 
     assert "config/worker-daemon.env" in tasks
@@ -317,9 +311,7 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     assert "evander_worker_env_render.changed" in tasks
     assert "{{ key }}={{ value | string | quote }}" in env
     assert "Requires=docker.service" in unit
-    assert (
-        "SupplementaryGroups={{ evander_run_user_supplementary_groups | join(' ') }}" in unit
-    )
+    assert "SupplementaryGroups={{ evander_run_user_supplementary_groups | join(' ') }}" in unit
     assert "EnvironmentFile={{ evander_deploy_path }}/config/worker-daemon.env" in unit
     assert ".venv/bin/evander-worker-daemon" in unit
     assert "--worker-root {{ evander_worker_root }}" in unit
@@ -333,7 +325,7 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     assert "--read-only-rootfs" in unit
     assert "--container-user {{ evander_effective_worker_container_user }}" in unit
     assert "--readonly-mount {{ mount }}" in unit
-    assert "{% endfor %}{{ \"\" }}\nRestart=on-failure" in unit
+    assert '{% endfor %}{{ "" }}\nRestart=on-failure' in unit
 
 
 def test_worker_service_role_installs_optional_mssql_seed_sidecar() -> None:
@@ -343,9 +335,9 @@ def test_worker_service_role_installs_optional_mssql_seed_sidecar() -> None:
         encoding="utf-8"
     )
     env = (role / "templates" / "mssql-seed-sidecar.env.j2").read_text(encoding="utf-8")
-    defaults = (
-        ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml"
-    ).read_text(encoding="utf-8")
+    defaults = (ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
+        encoding="utf-8"
+    )
     worker_playbook = (ROOT / "ansible" / "worker.yml").read_text(encoding="utf-8")
 
     assert "evander_worker_mssql_seed_sidecar_active" in tasks
@@ -373,12 +365,12 @@ def test_worker_service_role_installs_optional_mssql_seed_sidecar() -> None:
 
 
 def test_worker_mssql_role_installs_sql_server_and_verifies_sqlcmd() -> None:
-    role = (
-        ROOT / "ansible" / "roles" / "worker_mssql" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
-    defaults = (
-        ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml"
-    ).read_text(encoding="utf-8")
+    role = (ROOT / "ansible" / "roles" / "worker_mssql" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    defaults = (ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "evander_worker_mssql_accept_eula" in role
     assert "evander_worker_use_apt_proxy | bool" in role
@@ -412,17 +404,12 @@ def test_python_env_role_accepts_private_package_index_environment() -> None:
 
     assert "evander_python_install_env: {}" in defaults
     assert "uv pip install" in role
-    assert "environment: \"{{ evander_python_install_env | default({}) }}\"" in role
+    assert 'environment: "{{ evander_python_install_env | default({}) }}"' in role
 
 
 def test_worker_package_cache_preflight_checks_private_pypi_asset_access() -> None:
     role = (
-        ROOT
-        / "ansible"
-        / "roles"
-        / "worker_package_cache_preflight"
-        / "tasks"
-        / "main.yml"
+        ROOT / "ansible" / "roles" / "worker_package_cache_preflight" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
     defaults = (ROOT / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
@@ -472,11 +459,8 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "Resolve MSSQL seed sidecar verification host" in verification
     assert "evander_worker_mssql_seed_sidecar_probe_host" in verification
     assert "evander_worker_mssql_seed_sidecar_probe_url_host" in verification
-    assert (
-        "evander_worker_mssql_seed_sidecar_bind_host in ['', '0.0.0.0', '::']"
-        in verification
-    )
-    assert "host: \"{{ evander_worker_mssql_seed_sidecar_probe_host }}\"" in verification
+    assert "evander_worker_mssql_seed_sidecar_bind_host in ['', '0.0.0.0', '::']" in verification
+    assert 'host: "{{ evander_worker_mssql_seed_sidecar_probe_host }}"' in verification
     assert (
         "http://{{ evander_worker_mssql_seed_sidecar_probe_url_host }}:"
         "{{ evander_worker_mssql_seed_sidecar_port }}/healthz"
@@ -554,7 +538,7 @@ def test_worker_dotnet_toolchain_role_seeds_and_verifies_runner_dotnet_cache() -
     assert "dotnet --info" in role
     assert "dotnet ef --version" in role
     assert "dotnet-ef --version" in role
-    assert "dotnet restore \"$smoke_dir/restore-smoke.csproj\"" in role
+    assert 'dotnet restore "$smoke_dir/restore-smoke.csproj"' in role
     assert "evander_worker_dotnet_restore_support_package_id" in role
     assert "DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE" in role
     assert "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE" in role
@@ -604,8 +588,7 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert "Authorize worker deployment-mirror key on the control plane" in role
     assert "git_ssh_command_wrapper.sh" in role
     assert (
-        "EVANDER_GIT_ROOT_B64={{ (evander_worker_repo_mirror_path | dirname) | b64encode }}"
-        in role
+        "EVANDER_GIT_ROOT_B64={{ (evander_worker_repo_mirror_path | dirname) | b64encode }}" in role
     )
     assert "EVANDER_GIT_AUTH_ACCESS=read-only" in role
     assert "EVANDER_GIT_AUTH_REPO_B64={{ evander_worker_repo_mirror_path | b64encode }}" in role
@@ -621,7 +604,7 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert "refs/heads/deploy/evander" in role
     assert "evander_control_plane_repo_revision_check.stdout" in role
     assert "Use private control-plane mirror for worker repo checkout" in role
-    assert "evander_repo_url: \"{{ evander_worker_repo_checkout_url }}\"" in role
+    assert 'evander_repo_url: "{{ evander_worker_repo_checkout_url }}"' in role
     assert "Deploy the control plane first, then rerun ansible/worker.yml" in role
     assert "not the literal <control-plane-private-ip> placeholder" in role
 
@@ -649,7 +632,7 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "allowed Git source prefix" in ansible_docs
     assert "GitHub/Azure DevOps egress" in ansible_docs
     assert "evander_worker_egress_policy_enabled: true" in ansible_docs
-    assert "evander_worker_docker_network: \"bridge\"" in ansible_docs
+    assert 'evander_worker_docker_network: "bridge"' in ansible_docs
     assert "evander-worker-egress-policy.service" in ansible_docs
     assert "sudo systemctl status evander-worker-egress-policy.service" in ansible_docs
     assert "sudo iptables -S DOCKER-USER" in ansible_docs

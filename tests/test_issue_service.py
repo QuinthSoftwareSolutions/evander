@@ -186,9 +186,7 @@ def test_create_issue_uploads_description_artifact_and_links_relation(
                     "System.Description": "<p>See screenshot</p>",
                 },
                 "_links": {
-                    "web": {
-                        "href": "https://dev.azure.com/example/project-x/_workitems/edit/77"
-                    }
+                    "web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/77"}
                 },
             },
         ),
@@ -267,7 +265,9 @@ def test_post_comment_formats_markdownish_body_as_explicit_ado_html(
         comment="Summary\n- First item",
     )
 
-    assert calls[0]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    assert (
+        calls[0]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    )
     assert calls[0]["params"] == {"api-version": "7.1-preview.4", "format": "html"}
     assert calls[0]["json"]["text"] == "<p>Summary</p><ul><li>First item</li></ul>"
 
@@ -323,7 +323,9 @@ def test_post_comment_uploads_artifact_appends_image_and_links_relation(
     )
 
     assert calls[0]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/attachments"
-    assert calls[1]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    assert (
+        calls[1]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    )
     assert calls[1]["params"] == {"api-version": "7.1-preview.4", "format": "html"}
     assert calls[1]["json"]["text"].startswith("<p>Comment</p>")
     assert (
@@ -382,7 +384,9 @@ def test_post_comment_resolves_ado_mentions_before_posting(
     assert calls[0]["method"] == "GET"
     assert calls[0]["url"] == "https://vssps.dev.azure.com/example/_apis/identities"
     assert calls[0]["params"]["filterValue"] == "ada@example.com"
-    assert calls[1]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    assert (
+        calls[1]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    )
     assert calls[1]["params"] == {"api-version": "7.1-preview.4", "format": "html"}
     assert calls[1]["json"]["text"] == (
         '<p><a href="#" data-vss-mention="version:2.0,'
@@ -1218,7 +1222,10 @@ def test_get_backlog_item_extracts_inline_media_from_fields_comments_and_relatio
     item = adapter.get_backlog_item_by_id(directory_path="root", backlog_item_id="101")
 
     assert calls[0]["url"] == "https://dev.azure.com/example/My%20Project/_apis/wit/workitems/101"
-    assert calls[1]["url"] == "https://dev.azure.com/example/My Project/_apis/wit/workItems/101/comments"
+    assert (
+        calls[1]["url"]
+        == "https://dev.azure.com/example/My Project/_apis/wit/workItems/101/comments"
+    )
     assert len(item["inline_media"]) == 3
     assert [media["filename"] for media in item["inline_media"]] == [
         "desc.png",
@@ -1782,7 +1789,9 @@ def test_delete_issue_permanent_destroy_sets_destroy_true_and_falls_back_to_requ
         destroy=True,
     )
 
-    assert calls[0]["url"] == "https://dev.azure.com/example/Example%20Project/_apis/wit/workItems/102"
+    assert (
+        calls[0]["url"] == "https://dev.azure.com/example/Example%20Project/_apis/wit/workItems/102"
+    )
     assert calls[0]["params"] == {"api-version": "7.1", "destroy": "true"}
     assert result["work_item_id"] == "102"
     assert result["project"] == "Example Project"

@@ -215,9 +215,7 @@ class VoiceSessionStore:
                 created_at=now,
                 updated_at=now,
             )
-            _ensure_mapping(payload, "sessions")[voice_session_id] = record.model_dump(
-                mode="json"
-            )
+            _ensure_mapping(payload, "sessions")[voice_session_id] = record.model_dump(mode="json")
             request_index[normalized_request_id] = voice_session_id
             self._atomic_write(payload)
             return record, True
@@ -375,10 +373,14 @@ class VoiceSessionStore:
             if summary is not None:
                 record.summary = _optional_text(summary)
             if decisions is not None:
-                record.decisions = [_normalize_list_text(item) for item in decisions if _normalize_list_text(item)]
+                record.decisions = [
+                    _normalize_list_text(item) for item in decisions if _normalize_list_text(item)
+                ]
             if action_items is not None:
                 record.action_items = [
-                    _normalize_list_text(item) for item in action_items if _normalize_list_text(item)
+                    _normalize_list_text(item)
+                    for item in action_items
+                    if _normalize_list_text(item)
                 ]
             if error is not None:
                 record.error = _optional_text(error)
@@ -506,9 +508,7 @@ class VoiceSessionStore:
                 if _normalize_list_text(item)
             ]
             record.confidence = _optional_text(confidence)
-            record.metadata = sanitize_voice_metadata(
-                {**record.metadata, **dict(metadata or {})}
-            )
+            record.metadata = sanitize_voice_metadata({**record.metadata, **dict(metadata or {})})
             record.answered_at = datetime.now(UTC)
 
         return self._mutate_query(query_id, update)
@@ -751,9 +751,7 @@ class VoiceProjectionService:
                 "authoritative_first_turn_state": True,
                 "complete_objective": complete_objective,
                 "policy": (
-                    "start_from_objective"
-                    if complete_objective
-                    else "ask_caller_clarification"
+                    "start_from_objective" if complete_objective else "ask_caller_clarification"
                 ),
                 "forbid_origin_query_for": [
                     "same script",
@@ -1030,9 +1028,7 @@ class VoiceMediaBridgeClient:
         if self.token_env is not None:
             token = os.environ.get(self.token_env, "").strip()
             if not token:
-                raise RuntimeError(
-                    f"DIDWW SIP bridge token env var {self.token_env!r} is not set"
-                )
+                raise RuntimeError(f"DIDWW SIP bridge token env var {self.token_env!r} is not set")
             headers["Authorization"] = f"Bearer {token}"
         url = f"{self.base_url}{path}"
         try:
@@ -1197,16 +1193,17 @@ class OpenAIRealtimePhoneCallService:
         if not normalized_request_id and not normalized_call_id:
             raise ValueError("request_id or call_id is required")
         record = (
-            self.store.get_by_request_id(normalized_request_id)
-            if normalized_request_id
-            else None
+            self.store.get_by_request_id(normalized_request_id) if normalized_request_id else None
         )
         if normalized_call_id:
-            by_call_id = (
-                self.store.get_by_voice_session_id(normalized_call_id)
-                or self.store.get_by_bridge_session_id(normalized_call_id)
-            )
-            if record is not None and by_call_id is not None and by_call_id.request_id != record.request_id:
+            by_call_id = self.store.get_by_voice_session_id(
+                normalized_call_id
+            ) or self.store.get_by_bridge_session_id(normalized_call_id)
+            if (
+                record is not None
+                and by_call_id is not None
+                and by_call_id.request_id != record.request_id
+            ):
                 raise ValueError("request_id and call_id refer to different phone calls")
             record = record or by_call_id
         if record is None:
@@ -1220,7 +1217,10 @@ class OpenAIRealtimePhoneCallService:
         record: VoiceSessionRecord,
         session: SessionManifest,
     ) -> None:
-        if record.origin_session_id != session.session_id or record.directory_path != session.directory_path:
+        if (
+            record.origin_session_id != session.session_id
+            or record.directory_path != session.directory_path
+        ):
             raise ValueError("Phone call request is outside this session scope")
 
     def _resolve_contact(
@@ -1448,9 +1448,7 @@ def realtime_session_config(config: Any) -> dict[str, Any]:
         "provider": "openai_realtime",
         "model": getattr(config, "openai_realtime_model", "gpt-realtime-2"),
         "media_controller_url": getattr(config, "voice_media_controller_url", None),
-        "media_controller_token_env": getattr(
-            config, "voice_media_controller_token_env", None
-        ),
+        "media_controller_token_env": getattr(config, "voice_media_controller_token_env", None),
         "media_controller_request_timeout_seconds": getattr(
             config, "voice_media_controller_request_timeout_seconds", None
         ),
@@ -1475,9 +1473,7 @@ def voice_phone_call_result_payload(record: VoiceSessionRecord) -> dict[str, Any
         "contact_display_name": record.contact_display_name,
         "status": record.status,
         "transcript": record.transcript,
-        "transcript_events": [
-            event.model_dump(mode="json") for event in record.transcript_events
-        ],
+        "transcript_events": [event.model_dump(mode="json") for event in record.transcript_events],
         "summary": record.summary,
         "decisions": list(record.decisions),
         "action_items": list(record.action_items),
@@ -1611,9 +1607,7 @@ def normalize_voice_session_status(
 def _apply_bridge_payload(record: VoiceSessionRecord, payload: dict[str, Any]) -> None:
     now = datetime.now(UTC)
     record.status = normalize_voice_session_status(payload.get("status"), default=record.status)
-    record.bridge_session_id = (
-        _bridge_session_id_from_payload(payload) or record.bridge_session_id
-    )
+    record.bridge_session_id = _bridge_session_id_from_payload(payload) or record.bridge_session_id
     record.bridge_metadata = sanitize_voice_metadata({**record.bridge_metadata, **payload})
     raw_realtime = payload.get("realtime")
     if isinstance(raw_realtime, dict):
@@ -1655,7 +1649,9 @@ def _apply_bridge_payload(record: VoiceSessionRecord, payload: dict[str, Any]) -
         record.summary = summary.strip()
     decisions = payload.get("decisions")
     if isinstance(decisions, list):
-        record.decisions = [_normalize_list_text(item) for item in decisions if _normalize_list_text(item)]
+        record.decisions = [
+            _normalize_list_text(item) for item in decisions if _normalize_list_text(item)
+        ]
     action_items = payload.get("action_items")
     if isinstance(action_items, list):
         record.action_items = [

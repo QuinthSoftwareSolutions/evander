@@ -62,6 +62,7 @@ from ..domain.project_status import _recalculate_project_status
 from ..domain.review import _review_profile_for_request
 from ..domain.work_due import _mark_agent_work_due
 
+
 def _normalize_deliverable_submission_mapping(
     item: Mapping[str, Any],
     *,
@@ -98,6 +99,7 @@ def _normalize_deliverable_submission_mapping(
         normalized["verification"] = verification
     return normalized
 
+
 def _normalize_review_request_mapping(
     item: Mapping[str, Any],
     *,
@@ -114,6 +116,7 @@ def _normalize_review_request_mapping(
         "review_profile_id": _optional_text(payload.get("review_profile_id")),
         "instructions": _optional_text(payload.get("instructions")),
     }
+
 
 def _normalize_review_decision_mapping(
     item: Mapping[str, Any],
@@ -155,6 +158,7 @@ def _normalize_review_decision_mapping(
         "override_routing_gap_reason": _optional_text(payload.get("override_routing_gap_reason")),
     }
 
+
 def _team_submit_deliverable_normalized_payload(
     *,
     deliverable: Mapping[str, Any],
@@ -170,6 +174,7 @@ def _team_submit_deliverable_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _team_submit_deliverable_for_review_normalized_payload(
     *,
@@ -189,6 +194,7 @@ def _team_submit_deliverable_for_review_normalized_payload(
         "causation_id": _optional_text(causation_id),
     }
 
+
 def _team_request_review_normalized_payload(
     *,
     review: Mapping[str, Any],
@@ -205,6 +211,7 @@ def _team_request_review_normalized_payload(
         "causation_id": _optional_text(causation_id),
     }
 
+
 def _team_decide_review_normalized_payload(
     *,
     decision: Mapping[str, Any],
@@ -220,6 +227,7 @@ def _team_decide_review_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _command_deliverable_task_for_submission(
     state: TeamState,
@@ -241,6 +249,7 @@ def _command_deliverable_task_for_submission(
         )
     return task
 
+
 def _command_deliverable_id(
     state: TeamState,
     *,
@@ -255,6 +264,7 @@ def _command_deliverable_id(
         labels=[deliverable.get("task_id"), request_id],
         existing_ids=state.deliverables,
     )
+
 
 def _command_review_request_id(
     state: TeamState,
@@ -277,6 +287,7 @@ def _command_review_request_id(
         ],
         existing_ids=existing_ids if existing_ids is not None else state.review_requests,
     )
+
 
 def _plan_command_review_requests_for_deliverable(
     state: TeamState,
@@ -348,6 +359,7 @@ def _plan_command_review_requests_for_deliverable(
         )
     return planned
 
+
 def _publish_command_deliverable_artifacts(
     state: TeamState,
     *,
@@ -403,6 +415,7 @@ def _publish_command_deliverable_artifacts(
             },
         )
     return [record_payload]
+
 
 def _validate_command_deliverable_submission_pre_publication(
     state: TeamState,
@@ -473,6 +486,7 @@ def _validate_command_deliverable_submission_pre_publication(
             },
         ) from None
 
+
 def _safe_deliverable_artifact_paths(paths: Sequence[str]) -> list[str]:
     normalized = _unique_text_list(paths, "artifact_paths")
     for value in normalized:
@@ -493,6 +507,7 @@ def _safe_deliverable_artifact_paths(paths: Sequence[str]) -> list[str]:
                 correction_context={"artifact_path": value},
             )
     return [value.replace("\\", "/") for value in normalized]
+
 
 def _apply_command_deliverable_submission(
     state: TeamState,
@@ -603,6 +618,7 @@ def _apply_command_deliverable_submission(
         _mark_agent_work_due(state, agent_id=agent.reports_to_agent_id, now=now)
     return created_inbox_ids
 
+
 def _command_deliverable_artifact_refs(
     deliverable: Mapping[str, Any],
     *,
@@ -618,6 +634,7 @@ def _command_deliverable_artifact_refs(
             _required_text(record.get("artifact_ref"), "artifact_ref"),
         )
     return refs
+
 
 def _review_decision_correction_context(
     state: TeamState,
@@ -638,22 +655,23 @@ def _review_decision_correction_context(
         ),
     }
 
+
 __all__ = [
-    '_normalize_deliverable_submission_mapping',
-    '_normalize_review_request_mapping',
-    '_normalize_review_decision_mapping',
-    '_team_submit_deliverable_normalized_payload',
-    '_team_submit_deliverable_for_review_normalized_payload',
-    '_team_request_review_normalized_payload',
-    '_team_decide_review_normalized_payload',
-    '_command_deliverable_task_for_submission',
-    '_command_deliverable_id',
-    '_command_review_request_id',
-    '_plan_command_review_requests_for_deliverable',
-    '_publish_command_deliverable_artifacts',
-    '_validate_command_deliverable_submission_pre_publication',
-    '_safe_deliverable_artifact_paths',
-    '_apply_command_deliverable_submission',
-    '_command_deliverable_artifact_refs',
-    '_review_decision_correction_context',
+    "_normalize_deliverable_submission_mapping",
+    "_normalize_review_request_mapping",
+    "_normalize_review_decision_mapping",
+    "_team_submit_deliverable_normalized_payload",
+    "_team_submit_deliverable_for_review_normalized_payload",
+    "_team_request_review_normalized_payload",
+    "_team_decide_review_normalized_payload",
+    "_command_deliverable_task_for_submission",
+    "_command_deliverable_id",
+    "_command_review_request_id",
+    "_plan_command_review_requests_for_deliverable",
+    "_publish_command_deliverable_artifacts",
+    "_validate_command_deliverable_submission_pre_publication",
+    "_safe_deliverable_artifact_paths",
+    "_apply_command_deliverable_submission",
+    "_command_deliverable_artifact_refs",
+    "_review_decision_correction_context",
 ]

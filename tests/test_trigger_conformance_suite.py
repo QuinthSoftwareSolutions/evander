@@ -2248,9 +2248,7 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
         raise RuntimeError("stop-loop")
 
     monkeypatch.setattr(worker._kernel._sleeper, "sleep", _fake_sleep)
-    monkeypatch.setattr(
-        "evander.daemons.trigger_orchestrator.random.uniform", lambda _a, _b: 1.25
-    )
+    monkeypatch.setattr("evander.daemons.trigger_orchestrator.random.uniform", lambda _a, _b: 1.25)
 
     with pytest.raises(RuntimeError, match="stop-loop"):
         worker.run_forever()

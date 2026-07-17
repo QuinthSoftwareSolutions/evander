@@ -124,13 +124,9 @@ def _dist_dir() -> Path:
     return admin_frontend_dist_dir(Path(__file__).resolve().parents[4])
 
 
-def _fallback_html(
-    dist_dir: Path, *, page_title: str, branding_payload: dict[str, object]
-) -> str:
+def _fallback_html(dist_dir: Path, *, page_title: str, branding_payload: dict[str, object]) -> str:
     bootstrap_script = (
-        "<script>"
-        f"window.__ADMIN_WEB_BRANDING__={_script_json(branding_payload)};"
-        "</script>"
+        f"<script>window.__ADMIN_WEB_BRANDING__={_script_json(branding_payload)};</script>"
     )
     return f"""<!doctype html>
 <html lang="en">
@@ -196,9 +192,7 @@ def _index_html(dist_dir: Path, *, branding_payload: dict[str, object]) -> str:
     html = index_path.read_text(encoding="utf-8")
     title = f"<title>{escape(page_title)}</title>"
     bootstrap_script = (
-        "<script>"
-        f"window.__ADMIN_WEB_BRANDING__={_script_json(branding_payload)};"
-        "</script>"
+        f"<script>window.__ADMIN_WEB_BRANDING__={_script_json(branding_payload)};</script>"
     )
     if re.search(r"<title>.*?</title>", html, flags=re.IGNORECASE | re.DOTALL):
         html = re.sub(
@@ -422,9 +416,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
                 "username": auth.config.username if not auth.config.auth_required else None,
                 "display_name": auth.config.username if not auth.config.auth_required else None,
                 "role": (
-                    _role_for_permissions(permissions)
-                    if not auth.config.auth_required
-                    else None
+                    _role_for_permissions(permissions) if not auth.config.auth_required else None
                 ),
                 "can_manage_users": not auth.config.auth_required,
                 "permissions": permissions,
@@ -465,7 +457,9 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             {
                 "selected_directory_path": selected_directory_path,
                 "directory_scoped_config_enabled": service.config.enable_directory_scoped_config,
-                "execution_backend": service.vm_agent_admin.effective_execution_backend(selected_directory_path),
+                "execution_backend": service.vm_agent_admin.effective_execution_backend(
+                    selected_directory_path
+                ),
                 "role": _role_for_permissions(permissions) if session else None,
                 "can_manage_users": auth.can_manage_users(
                     session, directory_path=selected_directory_path
@@ -478,7 +472,9 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
                         assistant_settings.get("show_launcher_when_disabled")
                     ),
                 },
-                "deployment": service.operations_admin.read_deployment_status().model_dump(mode="json"),
+                "deployment": service.operations_admin.read_deployment_status().model_dump(
+                    mode="json"
+                ),
                 "addons": addon_admin_navigation_payloads(addon_catalog),
                 "privileged_operations": {
                     "unlocked": privileged_operations_unlocked_for_request(request)
@@ -487,7 +483,9 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         )
 
     async def get_deployment_status(_: Request) -> JSONResponse:
-        return JSONResponse(service.operations_admin.read_deployment_status().model_dump(mode="json"))
+        return JSONResponse(
+            service.operations_admin.read_deployment_status().model_dump(mode="json")
+        )
 
     async def get_branding(_: Request) -> JSONResponse:
         return JSONResponse(branding_payload())
@@ -517,7 +515,9 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         except ValueError as exc:
             return json_error(str(exc))
         return JSONResponse(
-            service.operations_admin.read_release_info(news_index=news_index).model_dump(mode="json")
+            service.operations_admin.read_release_info(news_index=news_index).model_dump(
+                mode="json"
+            )
         )
 
     async def get_news_asset(request: Request) -> FileResponse | JSONResponse:

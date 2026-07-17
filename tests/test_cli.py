@@ -3685,8 +3685,7 @@ def test_destroy_issue_vm_cleans_issue_state_but_retains_managed_repo(
     assert set(feedback_store["feedback"]) == {"github:issue_comment:2"}
 
     assert any(
-        any(part.endswith("/scripts/destroy_agent_vm.sh") for part in cmd)
-        and cmd[-1] == "vm-1234"
+        any(part.endswith("/scripts/destroy_agent_vm.sh") for part in cmd) and cmd[-1] == "vm-1234"
         for cmd in captured_cmds
     )
     assert not any("remote" in cmd and "remove" in cmd for cmd in captured_cmds)
@@ -3717,8 +3716,7 @@ def test_destroy_issue_vm_accepts_vm_name_target(tmp_path: Path, monkeypatch) ->
 
     assert result.exit_code == 0
     assert any(
-        any(part.endswith("/scripts/destroy_agent_vm.sh") for part in cmd)
-        and cmd[-1] == "vm-1234"
+        any(part.endswith("/scripts/destroy_agent_vm.sh") for part in cmd) and cmd[-1] == "vm-1234"
         for cmd in captured_cmds
     )
 

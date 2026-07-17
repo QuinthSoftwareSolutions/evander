@@ -50,9 +50,7 @@ class SwitchGateProvider(GateProviderBase):
             diagnostics.append(
                 WorkflowValidationDiagnostic(
                     code="node_capability",
-                    message=(
-                        f"gate:switch {gate_id} outbound edges require source_port"
-                    ),
+                    message=(f"gate:switch {gate_id} outbound edges require source_port"),
                     node_id=gate_id,
                     node_type="gate:switch",
                 )
@@ -232,11 +230,7 @@ def _merge_binding_traces(
     trace_parts: list[BindingResolutionTrace],
 ) -> BindingResolutionTrace:
     consumed_output_keys = sorted(
-        {
-            output_key
-            for trace in trace_parts
-            for output_key in trace.consumed_output_keys
-        }
+        {output_key for trace in trace_parts for output_key in trace.consumed_output_keys}
     )
     entries = tuple(entry for trace in trace_parts for entry in trace.entries)
     return BindingResolutionTrace(

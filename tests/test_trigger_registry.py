@@ -121,9 +121,7 @@ def test_factory_rejects_non_read_communication_targets_during_provider_setup(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    repository = SqliteCommunicationTargetsRepository(
-        communication_targets_db_path(runtime_dir)
-    )
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
     repository.write_overlay(
         "root",
         {

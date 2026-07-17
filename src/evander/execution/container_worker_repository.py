@@ -119,10 +119,7 @@ class ContainerWorkerExecutionRepository:
             )
 
     def read_all(self) -> dict[str, ContainerWorkerExecutionRecord]:
-        return {
-            record.execution_id: record
-            for record in self.list_all_ordered()
-        }
+        return {record.execution_id: record for record in self.list_all_ordered()}
 
     def list_all_ordered(self) -> list[ContainerWorkerExecutionRecord]:
         self._ensure_ready()
@@ -321,9 +318,7 @@ class ContainerWorkerExecutionRepository:
             ),
         )
 
-    def _record_from_row(
-        self, row: sqlite3.Row | None
-    ) -> ContainerWorkerExecutionRecord | None:
+    def _record_from_row(self, row: sqlite3.Row | None) -> ContainerWorkerExecutionRecord | None:
         if row is None:
             return None
         payload = row["payload_json"]

@@ -133,10 +133,7 @@ class DiscordIngestWorker:
 
     def _log_cycle_success(self, result: DiscordIngestCycleResult) -> None:
         logger.debug(
-            (
-                "Discord ingest worker cycle complete directories=%d sessions=%d "
-                "sleep_seconds=%.3f"
-            ),
+            ("Discord ingest worker cycle complete directories=%d sessions=%d sleep_seconds=%.3f"),
             result.directories_polled,
             result.sessions_seen,
             result.next_sleep_seconds,
@@ -176,9 +173,7 @@ class DiscordIngestWorker:
                 capability="read",
             )
         }
-        for trigger_directory, trigger_channel_ids in (
-            communication_trigger_targets or {}
-        ).items():
+        for trigger_directory, trigger_channel_ids in (communication_trigger_targets or {}).items():
             if _directory_is_within_scope(trigger_directory, directory_path):
                 channel_ids.update(trigger_channel_ids)
         return sorted(channel_id for channel_id in channel_ids if channel_id)

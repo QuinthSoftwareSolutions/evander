@@ -184,9 +184,7 @@ def test_reload_preserves_custom_directory_store_for_communication_triggers(
     runtime_dir = tmp_path / "runtime"
     project_dir = tmp_path
     directories_store_path = tmp_path / "state" / "directories.json"
-    ops = DirectoryService(DirectoryStore(directories_store_path)).create(
-        parent="root", name="ops"
-    )
+    ops = DirectoryService(DirectoryStore(directories_store_path)).create(parent="root", name="ops")
     _write_communication_targets(
         runtime_dir,
         [

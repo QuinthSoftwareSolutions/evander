@@ -38,6 +38,7 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ),
 )
 
+
 def _load_optional_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}

@@ -33,35 +33,38 @@ def _message(
 
 def _seed_store(path: Path) -> DiscordInboxStore:
     store = DiscordInboxStore(path)
-    assert store.add_messages_if_new(
-        [
-            _message(
-                "discord:1",
-                channel_id="chan-a",
-                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-                content="First",
-                author_id="user-a",
-                author_name="Alice",
-            ),
-            _message(
-                "discord:2",
-                channel_id="chan-a",
-                created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
-                content="Second",
-                author_id="user-b",
-                author_name="Bob",
-                in_reply_to="discord:1",
-            ),
-            _message(
-                "discord:3",
-                channel_id="chan-b",
-                created_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
-                content="Other channel",
-                author_id="user-c",
-                author_name="Cara",
-            ),
-        ]
-    ) == 3
+    assert (
+        store.add_messages_if_new(
+            [
+                _message(
+                    "discord:1",
+                    channel_id="chan-a",
+                    created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    content="First",
+                    author_id="user-a",
+                    author_name="Alice",
+                ),
+                _message(
+                    "discord:2",
+                    channel_id="chan-a",
+                    created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+                    content="Second",
+                    author_id="user-b",
+                    author_name="Bob",
+                    in_reply_to="discord:1",
+                ),
+                _message(
+                    "discord:3",
+                    channel_id="chan-b",
+                    created_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+                    content="Other channel",
+                    author_id="user-c",
+                    author_name="Cara",
+                ),
+            ]
+        )
+        == 3
+    )
     return store
 
 
@@ -165,32 +168,35 @@ def test_list_unread_discord_messages_skips_messages_posted_by_same_session(
 ) -> None:
     store_path = tmp_path / "discord-inbox-store.json"
     store = DiscordInboxStore(store_path)
-    assert store.add_messages_if_new(
-        [
-            _message(
-                "discord:1",
-                channel_id="chan-a",
-                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-                content="Self echo",
-                author_id="bot-user",
-                author_name="Bot",
-                raw={
-                    "id": "discord:1",
-                    "source": "discord_bot_api_status",
-                    "session_id": "session-1",
-                },
-            ),
-            _message(
-                "discord:2",
-                channel_id="chan-a",
-                created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
-                content="Human reply",
-                author_id="user-a",
-                author_name="Alice",
-                raw={"id": "discord:2", "source": "discord_bot_api"},
-            ),
-        ]
-    ) == 2
+    assert (
+        store.add_messages_if_new(
+            [
+                _message(
+                    "discord:1",
+                    channel_id="chan-a",
+                    created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    content="Self echo",
+                    author_id="bot-user",
+                    author_name="Bot",
+                    raw={
+                        "id": "discord:1",
+                        "source": "discord_bot_api_status",
+                        "session_id": "session-1",
+                    },
+                ),
+                _message(
+                    "discord:2",
+                    channel_id="chan-a",
+                    created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+                    content="Human reply",
+                    author_id="user-a",
+                    author_name="Alice",
+                    raw={"id": "discord:2", "source": "discord_bot_api"},
+                ),
+            ]
+        )
+        == 2
+    )
     service = DiscordInboxService(store_path)
 
     response = service.list_unread_discord_messages(

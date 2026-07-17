@@ -136,7 +136,9 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
 
         events: list[TriggerEvent] = []
         for run in runs:
-            if _run_is_behind_cursor(last_completed_at, run.completed_at, run.run_key, recent_run_keys):
+            if _run_is_behind_cursor(
+                last_completed_at, run.completed_at, run.run_key, recent_run_keys
+            ):
                 continue
             events.append(
                 TriggerEvent(
@@ -211,8 +213,10 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
                     run = self._normalize_github_run(trigger=trigger, raw=raw, branch=branch)
                     if run is None:
                         continue
-                    if workflow and not include_direct and not _github_run_matches_workflow(
-                        raw, workflow
+                    if (
+                        workflow
+                        and not include_direct
+                        and not _github_run_matches_workflow(raw, workflow)
                     ):
                         continue
                     if run.conclusion not in trigger.conclusions:
@@ -221,7 +225,9 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
 
         return sorted(selected_runs.values(), key=lambda run: run.sort_key)
 
-    def _discover_ado_runs(self, trigger: CiRunCompletedTriggerDefinition) -> list[_NormalizedCiRun]:
+    def _discover_ado_runs(
+        self, trigger: CiRunCompletedTriggerDefinition
+    ) -> list[_NormalizedCiRun]:
         context = self._context()
         config = self._resolve_directory_config()
         organization_url = _normalize_text(trigger.organization_url) or _normalize_text(
@@ -232,9 +238,7 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
         )
         pat_env = _normalize_text(getattr(config, "azure_devops_pr_pat_env", None))
         if not organization_url:
-            raise ValueError(
-                "trigger:ci:run:completed requires organization_url for Azure DevOps"
-            )
+            raise ValueError("trigger:ci:run:completed requires organization_url for Azure DevOps")
         if not project:
             raise ValueError("trigger:ci:run:completed requires project for Azure DevOps")
         if not pat_env:
@@ -424,11 +428,7 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
         repository = raw.get("repository") if isinstance(raw.get("repository"), dict) else {}
         raw_repo = repository if isinstance(repository, dict) else {}
         repo = _normalize_text(
-            raw_repo.get("name")
-            or raw_repo.get("id")
-            or raw_repo.get("url")
-            or trigger.repo
-            or ""
+            raw_repo.get("name") or raw_repo.get("id") or raw_repo.get("url") or trigger.repo or ""
         )
         if not repo:
             return None
@@ -493,9 +493,7 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
 
     def _trigger(self) -> CiRunCompletedTriggerDefinition:
         if not isinstance(self.trigger_definition, CiRunCompletedTriggerDefinition):
-            raise RuntimeError(
-                "CiRunCompletedTriggerProvider initialized with wrong definition"
-            )
+            raise RuntimeError("CiRunCompletedTriggerProvider initialized with wrong definition")
         return self.trigger_definition
 
     def _resolve_directory_config(self):
@@ -652,7 +650,9 @@ def _normalize_conclusion(value: object, *, provider: str) -> str | None:
     token = _normalize_conclusion_token(value)
     if token is None:
         return None
-    alias_map = _GITHUB_CONCLUSION_ALIASES if provider == "github_actions" else _ADO_CONCLUSION_ALIASES
+    alias_map = (
+        _GITHUB_CONCLUSION_ALIASES if provider == "github_actions" else _ADO_CONCLUSION_ALIASES
+    )
     return alias_map.get(token)
 
 

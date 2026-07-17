@@ -85,9 +85,7 @@ def test_pr_map_store_updates_status_and_tracks_completion_publication(
 
 
 def test_pr_terminal_state_detection_includes_closed_and_abandoned() -> None:
-    assert is_pr_completed(
-        {"provider": "azure_devops", "status": "abandoned", "merged": False}
-    )
+    assert is_pr_completed({"provider": "azure_devops", "status": "abandoned", "merged": False})
     assert is_pr_completed({"provider": "github", "status": "closed", "merged": False})
     assert is_pr_completed({"provider": "local", "status": "closed", "merged": False})
     assert not is_pr_completed({"provider": "azure_devops", "status": "active", "merged": False})

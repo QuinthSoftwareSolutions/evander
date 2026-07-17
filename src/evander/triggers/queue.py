@@ -67,6 +67,7 @@ class TriggerEventQueue:
         trace_id = self._normalize_trace_id(event.trace_id)
         published = False
         with self._lock:
+
             def update(items: dict[str, TriggerQueueRecord]) -> TriggerQueueRecord:
                 nonlocal published
                 if normalized_key is not None:
@@ -152,6 +153,7 @@ class TriggerEventQueue:
 
         delivered = False
         with self._lock:
+
             def update(items: dict[str, TriggerQueueRecord]) -> bool:
                 nonlocal delivered
                 record = items.get(normalized_event_id)
@@ -186,6 +188,7 @@ class TriggerEventQueue:
 
         marked = False
         with self._lock:
+
             def update(items: dict[str, TriggerQueueRecord]) -> bool:
                 nonlocal marked
                 record = items.get(normalized_event_id)
@@ -214,6 +217,7 @@ class TriggerEventQueue:
 
     def reset_inflight(self) -> int:
         with self._lock:
+
             def update(items: dict[str, TriggerQueueRecord]) -> int:
                 reset_count = 0
                 for event_id, record in items.items():
@@ -277,9 +281,7 @@ class SqliteTriggerEventQueue:
         with self._lock:
             with connect_orchestration_db(self.path) as connection:
                 if normalized_key is not None:
-                    existing = self._fetch_record_by_idempotency_key(
-                        connection, normalized_key
-                    )
+                    existing = self._fetch_record_by_idempotency_key(connection, normalized_key)
                     if existing is not None:
                         return existing
                 existing = self._fetch_record(connection, event.event_id)
@@ -303,9 +305,7 @@ class SqliteTriggerEventQueue:
                 except Exception:
                     existing = self._fetch_record(connection, event.event_id)
                     if existing is None and normalized_key is not None:
-                        existing = self._fetch_record_by_idempotency_key(
-                            connection, normalized_key
-                        )
+                        existing = self._fetch_record_by_idempotency_key(connection, normalized_key)
                     if existing is not None:
                         return existing
                     raise

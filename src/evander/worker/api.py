@@ -144,9 +144,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             return JSONResponse({"error": str(exc)}, status_code=502)
         except subprocess.CalledProcessError as exc:
             return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
-        return JSONResponse(
-            {"deleted": deleted, "session_id": request.path_params["session_id"]}
-        )
+        return JSONResponse({"deleted": deleted, "session_id": request.path_params["session_id"]})
 
     async def provision_mssql_database(request: Request) -> JSONResponse:
         try:
@@ -240,7 +238,9 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                 if page["end_line"] is not None:
                     headers["x-evander-log-end-line"] = str(page["end_line"])
                 return PlainTextResponse(str(page["text"]), headers=headers)
-            text = daemon.get_logs(record, mode=str(request.query_params.get("mode") or "augmented"))
+            text = daemon.get_logs(
+                record, mode=str(request.query_params.get("mode") or "augmented")
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return PlainTextResponse(text)

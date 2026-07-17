@@ -229,7 +229,9 @@ class JsonObjectStore(_JsonFileStoreBase, Generic[U]):
             return json.loads(text)
         raw = json.loads(text)
         if not isinstance(raw, dict):
-            raise ValueError(f"JSON object store at {self.path} must contain an object at the top level")
+            raise ValueError(
+                f"JSON object store at {self.path} must contain an object at the top level"
+            )
         return raw
 
     def _write_object_unlocked(self, payload: dict[str, Any]) -> None:

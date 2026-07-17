@@ -119,7 +119,6 @@ def register_ado_tools(
     if transport_session_map is None:
         transport_session_map = getattr(server, "_evander_transport_session_map", {})
 
-
     def _fetch_ado_current_iteration_report_pages(
         issue_service: IssueService,
         *,
@@ -440,14 +439,10 @@ def register_ado_tools(
                 destroy=request_model.destroy,
             )
             payload_source = remote_payload if isinstance(remote_payload, dict) else {}
-            normalized_destroy = bool(
-                payload_source.get("destroy", request_model.destroy)
-            )
+            normalized_destroy = bool(payload_source.get("destroy", request_model.destroy))
             response_model = AdoBacklogDeleteResponse.model_validate(
                 {
-                    "provider": str(
-                        payload_source.get("provider") or "azure_devops"
-                    ).strip()
+                    "provider": str(payload_source.get("provider") or "azure_devops").strip()
                     or "azure_devops",
                     "work_item_id": str(
                         payload_source.get("work_item_id")
@@ -464,11 +459,7 @@ def register_ado_tools(
                     "destroy": normalized_destroy,
                     "delete_kind": str(
                         payload_source.get("delete_kind")
-                        or (
-                            "permanent_destroy"
-                            if normalized_destroy
-                            else "soft_delete"
-                        )
+                        or ("permanent_destroy" if normalized_destroy else "soft_delete")
                     ).strip(),
                 }
             )
@@ -555,9 +546,7 @@ def register_ado_tools(
                 fields["Microsoft.VSTS.Common.AcceptanceCriteria"] = (
                     request_model.acceptance_criteria or ""
                 )
-                field_attachments["Microsoft.VSTS.Common.AcceptanceCriteria"] = (
-                    acceptance_artifacts
-                )
+                field_attachments["Microsoft.VSTS.Common.AcceptanceCriteria"] = acceptance_artifacts
             result = deps.issue_service_factory().update_remote_issue(
                 provider="azure_devops",
                 remote_issue_id=request_model.id,
@@ -612,9 +601,7 @@ def register_ado_tools(
         )
         args = {"session_id": session_id, **request_model.model_dump(mode="json")}
         try:
-            session = context.policy.require_tool(
-                session_id, ToolName.UPDATE_ADO_BACKLOG_TITLE
-            )
+            session = context.policy.require_tool(session_id, ToolName.UPDATE_ADO_BACKLOG_TITLE)
             result = deps.issue_service_factory().update_remote_issue(
                 provider="azure_devops",
                 remote_issue_id=request_model.id,
@@ -1182,9 +1169,7 @@ def register_ado_tools(
                 elapsed_time_mode=elapsed_time_mode,
                 workday_start=workday_start,
                 workday_end=workday_end,
-                include_common_swedish_non_working_days=(
-                    include_common_swedish_non_working_days
-                ),
+                include_common_swedish_non_working_days=(include_common_swedish_non_working_days),
                 done_states=done_states or [],
                 in_progress_states=in_progress_states or [],
                 effort_fields=effort_fields or [],
@@ -1216,8 +1201,7 @@ def register_ado_tools(
                     request_model.include_common_swedish_non_working_days
                 ),
                 done_states=request_model.done_states or DEFAULT_DONE_STATES,
-                in_progress_states=request_model.in_progress_states
-                or DEFAULT_IN_PROGRESS_STATES,
+                in_progress_states=request_model.in_progress_states or DEFAULT_IN_PROGRESS_STATES,
                 effort_fields=request_model.effort_fields or DEFAULT_EFFORT_FIELDS,
                 truncated=truncated,
                 page_count=page_count,
@@ -1255,7 +1239,6 @@ def register_ado_tools(
                 error_class="unexpected_error",
             )
             raise
-
 
     @server.tool()
     def resolve_ado_identity(
@@ -1343,9 +1326,7 @@ def register_ado_tools(
         )
         args = request.model_dump(mode="json")
         try:
-            context.policy.require_tool(
-                request.session_id, ToolName.LIST_ADO_PR_COMMENT_ACTIVITY
-            )
+            context.policy.require_tool(request.session_id, ToolName.LIST_ADO_PR_COMMENT_ACTIVITY)
             response = context.pr_query_service_for_session(
                 request.session_id
             ).list_ado_pr_comment_activity(
@@ -1370,9 +1351,7 @@ def register_ado_tools(
             )
             return result
         except PolicyError as exc:
-            audit_failure(
-                request.session_id, ToolName.LIST_ADO_PR_COMMENT_ACTIVITY, args, str(exc)
-            )
+            audit_failure(request.session_id, ToolName.LIST_ADO_PR_COMMENT_ACTIVITY, args, str(exc))
             raise
         except (httpx.HTTPError, ValueError) as exc:
             audit_failure(
@@ -1424,9 +1403,7 @@ def register_ado_tools(
         )
         args = request.model_dump(mode="json")
         try:
-            context.policy.require_tool(
-                request.session_id, ToolName.LIST_ADO_PR_COMMIT_ACTIVITY
-            )
+            context.policy.require_tool(request.session_id, ToolName.LIST_ADO_PR_COMMIT_ACTIVITY)
             response = context.pr_query_service_for_session(
                 request.session_id
             ).list_ado_pr_commit_activity(
@@ -1450,9 +1427,7 @@ def register_ado_tools(
             )
             return result
         except PolicyError as exc:
-            audit_failure(
-                request.session_id, ToolName.LIST_ADO_PR_COMMIT_ACTIVITY, args, str(exc)
-            )
+            audit_failure(request.session_id, ToolName.LIST_ADO_PR_COMMIT_ACTIVITY, args, str(exc))
             raise
         except (httpx.HTTPError, ValueError) as exc:
             audit_failure(

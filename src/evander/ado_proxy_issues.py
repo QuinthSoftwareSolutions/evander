@@ -113,9 +113,7 @@ def normalize_ado_work_item_payload(item: dict[str, Any]) -> dict[str, Any]:
             str(fields.get("System.Description") or ""),
             repro_steps=str(fields.get("Microsoft.VSTS.TCM.ReproSteps") or ""),
             system_info=str(fields.get("Microsoft.VSTS.TCM.SystemInfo") or ""),
-            acceptance_criteria=str(
-                fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or ""
-            ),
+            acceptance_criteria=str(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or ""),
         )
 
     payload: dict[str, Any] = {

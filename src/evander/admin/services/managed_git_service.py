@@ -1988,15 +1988,11 @@ class ManagedGitAdminService:
             return {"work_item_linked": False}
         repository = pr.get("repository")
         repository_id = (
-            str(repository.get("id") or "").strip()
-            if isinstance(repository, Mapping)
-            else ""
+            str(repository.get("id") or "").strip() if isinstance(repository, Mapping) else ""
         )
         project_info = repository.get("project") if isinstance(repository, Mapping) else None
         project_id = (
-            str(project_info.get("id") or "").strip()
-            if isinstance(project_info, Mapping)
-            else ""
+            str(project_info.get("id") or "").strip() if isinstance(project_info, Mapping) else ""
         )
         pr_id = str(pr.get("pullRequestId") or "").strip()
         if not repository_id or not project_id or not pr_id:

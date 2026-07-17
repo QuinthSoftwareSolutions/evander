@@ -114,8 +114,7 @@ _END_CALL_TOOL_NAME = "end_call"
 _ORIGIN_QUERY_IDLE_PROMPT_INSTRUCTIONS = "Still waiting on that, thanks for holding."
 _PROJECTED_TASK_RESPONSE_KEY = "projection:calling_task"
 _PROJECTED_TASK_RESPONSE_INSTRUCTIONS = (
-    "Answer the caller from the projected calling task now. "
-    "Do not say you are checking internally."
+    "Answer the caller from the projected calling task now. Do not say you are checking internally."
 )
 _MISSING_TASK_CLARIFICATION_RESPONSE_KEY = "projection:missing_task_clarification"
 _MISSING_TASK_CLARIFICATION_INSTRUCTIONS = (
@@ -126,9 +125,7 @@ _CALLER_TURN_COMPLETION_INSTRUCTIONS = (
     "Briefly acknowledge or answer the caller's latest turn. "
     "Do not use or mention the queued lookup result yet."
 )
-_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX = (
-    "bridge:interrupted_assistant_resume"
-)
+_INTERRUPTED_ASSISTANT_RESUME_RESPONSE_KEY_PREFIX = "bridge:interrupted_assistant_resume"
 _INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS = (
     "Continue the assistant response that was interrupted. "
     "Do not restart it, do not acknowledge the interruption, and do not switch to a new "
@@ -201,9 +198,7 @@ class DidwwSipBridgeConfig(BaseModel):
     bridge_token_env: str = Field(default="DIDWW_SIP_BRIDGE_TOKEN", min_length=1)
     enable_inbound_phone_calls: bool = False
     inbound_gateway_url: str | None = None
-    inbound_gateway_token_env: str = Field(
-        default="VOICE_MEDIA_CONTROLLER_TOKEN", min_length=1
-    )
+    inbound_gateway_token_env: str = Field(default="VOICE_MEDIA_CONTROLLER_TOKEN", min_length=1)
     openai_api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
     openai_realtime_model: str = Field(default="gpt-realtime-2", min_length=1)
     openai_realtime_api_base_url: str = "https://api.openai.com/v1"
@@ -318,8 +313,7 @@ class DidwwSipBridgeConfig(BaseModel):
         expected_sample_rate = int(audio_format["sample_rate_hz"])
         if self.sample_rate_hz != expected_sample_rate:
             raise ValueError(
-                f"media_format={self.media_format!r} requires "
-                f"sample_rate_hz={expected_sample_rate}"
+                f"media_format={self.media_format!r} requires sample_rate_hz={expected_sample_rate}"
             )
         return self
 
@@ -612,9 +606,7 @@ class DidwwBridgeCallRecord(BaseModel):
             "transcript_events": [
                 event.model_dump(mode="json") for event in self.transcript_events
             ],
-            "debug_events": [
-                event.model_dump(mode="json") for event in self.debug_events
-            ],
+            "debug_events": [event.model_dump(mode="json") for event in self.debug_events],
             "audio_quality": self.audio_quality.model_dump(mode="json")
             if self.audio_quality is not None
             else None,
@@ -855,10 +847,14 @@ class DidwwBridgeStore:
             if sanitized_summary is not None:
                 record.summary = sanitized_summary
             if decisions is not None:
-                record.decisions = [_normalize_list_item(item) for item in decisions if _normalize_list_item(item)]
+                record.decisions = [
+                    _normalize_list_item(item) for item in decisions if _normalize_list_item(item)
+                ]
             if action_items is not None:
                 record.action_items = [
-                    _normalize_list_item(item) for item in action_items if _normalize_list_item(item)
+                    _normalize_list_item(item)
+                    for item in action_items
+                    if _normalize_list_item(item)
                 ]
             if error is not None:
                 record.error = _debug_snippet(error)
@@ -1222,8 +1218,8 @@ def _rtp_bytes_per_sample(media_format: str) -> int:
 
 
 _G711_SILENCE_BYTES = {
-    "alaw": b"\xD5",
-    "ulaw": b"\xFF",
+    "alaw": b"\xd5",
+    "ulaw": b"\xff",
 }
 
 
@@ -1480,9 +1476,9 @@ class OpenAIRealtimeSession:
     def _session_payload(self, model: str) -> dict[str, Any]:
         instructions = projection_to_instructions(self.projection)
         openai_audio_format = _openai_audio_format(self.config.media_format)
-        noise_reduction_type = str(
-            self.config.openai_realtime_input_noise_reduction_type
-        ).strip().lower()
+        noise_reduction_type = (
+            str(self.config.openai_realtime_input_noise_reduction_type).strip().lower()
+        )
         turn_detection_type = str(self.config.openai_realtime_turn_detection_type).strip().lower()
         turn_detection: dict[str, Any]
         if turn_detection_type == "semantic_vad":
@@ -1584,27 +1580,28 @@ class OpenAIRealtimeSession:
         removed_features: list[str] = []
         include_noise_reduction = True
         turn_detection_type = str(self.config.openai_realtime_turn_detection_type).strip().lower()
-        if any(
-            marker in text
-            for marker in (
-                "noise_reduction",
-                "noise reduction",
-                "input_audio_noise_reduction",
-            )
-        ) and str(self.config.openai_realtime_input_noise_reduction_type).strip().lower() != "disabled":
-            include_noise_reduction = False
-            removed_features.append("audio.input.noise_reduction")
         if (
-            turn_detection_type == "semantic_vad"
-            and any(
+            any(
                 marker in text
                 for marker in (
-                    "turn_detection",
-                    "turn detection",
-                    "semantic_vad",
-                    "semantic vad",
-                    "vad",
+                    "noise_reduction",
+                    "noise reduction",
+                    "input_audio_noise_reduction",
                 )
+            )
+            and str(self.config.openai_realtime_input_noise_reduction_type).strip().lower()
+            != "disabled"
+        ):
+            include_noise_reduction = False
+            removed_features.append("audio.input.noise_reduction")
+        if turn_detection_type == "semantic_vad" and any(
+            marker in text
+            for marker in (
+                "turn_detection",
+                "turn detection",
+                "semantic_vad",
+                "semantic vad",
+                "vad",
             )
         ):
             turn_detection_type = "server_vad"
@@ -1709,7 +1706,9 @@ class DidwwAudioQualityTracker:
     queue_depth_max: int = 0
     windows: list[DidwwAudioQualityWindow] = field(default_factory=list)
     anomaly_events: list[DidwwAudioQualityEvent] = field(default_factory=list)
-    _window: DidwwAudioQualityWindow = field(default_factory=DidwwAudioQualityWindow, init=False, repr=False)
+    _window: DidwwAudioQualityWindow = field(
+        default_factory=DidwwAudioQualityWindow, init=False, repr=False
+    )
     _last_inbound_monotonic: float | None = field(default=None, init=False, repr=False)
     _last_inbound_timestamp: int | None = field(default=None, init=False, repr=False)
     _last_outbound_monotonic: float | None = field(default=None, init=False, repr=False)
@@ -1727,9 +1726,7 @@ class DidwwAudioQualityTracker:
         if self.route_id is not None:
             self.route_id = str(self.route_id).strip() or None
         if self.asterisk_pjsip_endpoint is not None:
-            self.asterisk_pjsip_endpoint = (
-                str(self.asterisk_pjsip_endpoint).strip() or None
-            )
+            self.asterisk_pjsip_endpoint = str(self.asterisk_pjsip_endpoint).strip() or None
         self.carrier = _debug_snippet(self.carrier)
         self.region = _debug_snippet(self.region)
         self._window.started_at = self.started_at
@@ -1773,8 +1770,7 @@ class DidwwAudioQualityTracker:
                 "rtp.packet.payload_type_mismatch",
                 severity="warning",
                 message=(
-                    f"expected payload type {self.rtp_payload_type}, "
-                    f"received {packet.payload_type}"
+                    f"expected payload type {self.rtp_payload_type}, received {packet.payload_type}"
                 ),
                 metadata={
                     "expected_payload_type": self.rtp_payload_type,
@@ -2125,7 +2121,9 @@ class VoiceMediaControllerClient:
     ) -> VoiceMediaControllerClient:
         timeout = realtime.get("media_controller_request_timeout_seconds")
         try:
-            timeout_seconds = float(timeout) if timeout is not None else config.request_timeout_seconds
+            timeout_seconds = (
+                float(timeout) if timeout is not None else config.request_timeout_seconds
+            )
         except (TypeError, ValueError):
             timeout_seconds = config.request_timeout_seconds
         return cls(
@@ -2417,9 +2415,7 @@ class DidwwSipBridgeService:
         *,
         store: DidwwBridgeStore | None = None,
         ari_client: AsteriskAriClient | None = None,
-        realtime_factory: Callable[
-            [dict[str, Any], dict[str, Any]], OpenAIRealtimeSession
-        ]
+        realtime_factory: Callable[[dict[str, Any], dict[str, Any]], OpenAIRealtimeSession]
         | None = None,
         rtp_endpoint_factory: Callable[[], RtpUdpEndpoint] | None = None,
         start_background_tasks: bool = True,
@@ -2688,8 +2684,7 @@ class DidwwSipBridgeService:
         await self._flush_audio_quality_tracker(attachment.voice_session_id)
         if (
             attachment.created_tracker
-            and self._audio_quality_trackers.get(attachment.voice_session_id)
-            is attachment.tracker
+            and self._audio_quality_trackers.get(attachment.voice_session_id) is attachment.tracker
         ):
             self._audio_quality_trackers.pop(attachment.voice_session_id, None)
         if not attachment.assigned_rtp_tracker:
@@ -2756,7 +2751,9 @@ class DidwwSipBridgeService:
         did = str(context.get("did") or "").strip()
         route_id = str(context.get("route_id") or "").strip() or None
         caller_number = str(context.get("caller_number") or "").strip()
-        sip_headers = context.get("sip_headers") if isinstance(context.get("sip_headers"), dict) else {}
+        sip_headers = (
+            context.get("sip_headers") if isinstance(context.get("sip_headers"), dict) else {}
+        )
         if not asterisk_channel_id:
             return
         request_payload: dict[str, Any] = {
@@ -2959,7 +2956,9 @@ class DidwwSipBridgeService:
                             ari_events=ari_events,
                         )
             except Exception as exc:
-                logger.exception("didww_bridge_call_failed voice_session_id=%s", record.voice_session_id)
+                logger.exception(
+                    "didww_bridge_call_failed voice_session_id=%s", record.voice_session_id
+                )
                 self.store.complete(record.voice_session_id, status="failed", error=str(exc))
             finally:
                 if tracker_attachment is not None:
@@ -3007,7 +3006,9 @@ class DidwwSipBridgeService:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
-                self.store.complete(voice_session_id, status="ended", summary="Call reached max duration.")
+                self.store.complete(
+                    voice_session_id, status="ended", summary="Call reached max duration."
+                )
             stop_event.set()
             await asyncio.gather(*pending, return_exceptions=True)
             for task in done:
@@ -3122,8 +3123,7 @@ class DidwwSipBridgeService:
             except (TypeError, ValueError):
                 return False
             return "on_samples_sent" in parameters or any(
-                parameter.kind is inspect.Parameter.VAR_KEYWORD
-                for parameter in parameters.values()
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
             )
 
         rtp_send_supports_sample_callback = send_payload_accepts_sample_callback()
@@ -3161,8 +3161,7 @@ class DidwwSipBridgeService:
                     and last_assistant_audio_at is not None
                     and any(key not in audio_response_finished for key in audio_response_started_at)
                     and waited_seconds
-                    > (self.config.frame_duration_ms / 1000.0)
-                    * _AUDIO_QUALITY_FRAME_GAP_TOLERANCE
+                    > (self.config.frame_duration_ms / 1000.0) * _AUDIO_QUALITY_FRAME_GAP_TOLERANCE
                     and hasattr(tracker, "record_buffer_underrun")
                 ):
                     tracker.record_buffer_underrun(wait_ms=waited_seconds * 1000.0)
@@ -3171,9 +3170,7 @@ class DidwwSipBridgeService:
                     if rtp_send_supports_sample_callback:
                         await rtp.send_payload(
                             frame.payload,
-                            on_samples_sent=lambda samples: mark_frame_samples_sent(
-                                frame, samples
-                            ),
+                            on_samples_sent=lambda samples: mark_frame_samples_sent(frame, samples),
                         )
                     else:
                         result = await rtp.send_payload(frame.payload)
@@ -3257,9 +3254,7 @@ class DidwwSipBridgeService:
 
         def discard_pending_response_key(key: str) -> int:
             before = len(pending_responses)
-            pending_responses[:] = [
-                pending for pending in pending_responses if pending.key != key
-            ]
+            pending_responses[:] = [pending for pending in pending_responses if pending.key != key]
             removed = before - len(pending_responses)
             if removed:
                 pending_response_keys.discard(key)
@@ -3425,9 +3420,7 @@ class DidwwSipBridgeService:
                             "bridge.goodbye_idle.executing",
                             metadata={
                                 "reason": reason,
-                                "timeout_ms": int(
-                                    self.config.goodbye_idle_hangup_seconds * 1000
-                                ),
+                                "timeout_ms": int(self.config.goodbye_idle_hangup_seconds * 1000),
                             },
                         )
                         await perform_end_call(reason, None)
@@ -3436,9 +3429,7 @@ class DidwwSipBridgeService:
                             "bridge.goodbye_idle.completed",
                             metadata={
                                 "reason": reason,
-                                "timeout_ms": int(
-                                    self.config.goodbye_idle_hangup_seconds * 1000
-                                ),
+                                "timeout_ms": int(self.config.goodbye_idle_hangup_seconds * 1000),
                             },
                         )
                         return
@@ -3672,8 +3663,7 @@ class DidwwSipBridgeService:
                 while not stop_event.is_set() and caller_turn_incomplete:
                     elapsed = loop.time() - recovery_started_at
                     remaining = (
-                        _INTERRUPTED_ASSISTANT_NO_TRANSCRIPT_RECOVERY_GRACE_SECONDS
-                        - elapsed
+                        _INTERRUPTED_ASSISTANT_NO_TRANSCRIPT_RECOVERY_GRACE_SECONDS - elapsed
                     )
                     if remaining <= 0:
                         break
@@ -3768,9 +3758,7 @@ class DidwwSipBridgeService:
                 * 1000
             )
             truncate_item_id = last_played_audio_item_id
-            truncate_audio_end_ms = (
-                played_audio_end_ms(truncate_item_id) if truncate_item_id else 0
-            )
+            truncate_audio_end_ms = played_audio_end_ms(truncate_item_id) if truncate_item_id else 0
             cancel_response_id = (
                 active_response_id if active_response_id and response_active else None
             )
@@ -4157,9 +4145,7 @@ class DidwwSipBridgeService:
                     await request_bridge_response(
                         _INTERRUPTED_ASSISTANT_RESUME_INSTRUCTIONS,
                         reason="backchannel_resume",
-                        key=_interrupted_assistant_resume_response_key(
-                            current_caller_utterance_id
-                        ),
+                        key=_interrupted_assistant_resume_response_key(current_caller_utterance_id),
                     )
                 if (
                     blocked_origin_response_index is not None
@@ -4219,8 +4205,7 @@ class DidwwSipBridgeService:
                     if (
                         interruption_recovery_cancel_requested_key
                         and last_response_request is not None
-                        and last_response_request.key
-                        == interruption_recovery_cancel_requested_key
+                        and last_response_request.key == interruption_recovery_cancel_requested_key
                     )
                     else None
                 )
@@ -4600,21 +4585,25 @@ class DidwwSipBridgeService:
         cancel_goodbye_idle_timer: Callable[..., bool] | None = None,
     ) -> None:
         if request_response is None:
+
             async def request_response(
                 instructions: str | None = None,
                 **_: Any,
             ) -> None:
                 await realtime.request_response(instructions)
+
         if origin_queries_by_question is None:
             origin_queries_by_question = {}
         if origin_queries_by_id is None:
             origin_queries_by_id = {}
         if discard_response_keys is None:
+
             async def discard_response_keys(
                 keys: set[str],
                 **_: Any,
             ) -> int:
                 return 0
+
         if function_call.name != "query_origin_agent":
             await realtime.send_tool_output(
                 call_id=function_call.call_id,
@@ -4623,9 +4612,7 @@ class DidwwSipBridgeService:
             await request_response("Tell the caller that tool is unavailable.")
             return
         question = str(
-            function_call.arguments.get("question")
-            or function_call.arguments.get("query")
-            or ""
+            function_call.arguments.get("question") or function_call.arguments.get("query") or ""
         ).strip()
         record = self.store.get(voice_session_id)
         projection = record.projection if record is not None else {}
@@ -4825,7 +4812,9 @@ class DidwwSipBridgeService:
                 query,
                 realtime,
                 request_response=request_response,
-                event_type="origin_query.answered" if status != "timeout" else "origin_query.timeout",
+                event_type="origin_query.answered"
+                if status != "timeout"
+                else "origin_query.timeout",
                 started_at=asyncio.get_running_loop().time(),
             )
             return
@@ -4865,11 +4854,13 @@ class DidwwSipBridgeService:
         request_response: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         if request_response is None:
+
             async def request_response(
                 instructions: str | None = None,
                 **_: Any,
             ) -> None:
                 await realtime.request_response(instructions)
+
         loop = asyncio.get_running_loop()
         started_at = loop.time()
         backend_deadline = started_at + self.config.voice_query_timeout_seconds
@@ -5319,7 +5310,8 @@ def create_app(
     *,
     store: DidwwBridgeStore | None = None,
     ari_client: AsteriskAriClient | None = None,
-    realtime_factory: Callable[[dict[str, Any], dict[str, Any]], OpenAIRealtimeSession] | None = None,
+    realtime_factory: Callable[[dict[str, Any], dict[str, Any]], OpenAIRealtimeSession]
+    | None = None,
     rtp_endpoint_factory: Callable[[], RtpUdpEndpoint] | None = None,
     start_background_tasks: bool = True,
 ) -> Starlette:
@@ -5381,9 +5373,7 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
         asterisk_ari_password_env=_env("ASTERISK_ARI_PASSWORD_ENV", "ASTERISK_ARI_PASSWORD"),
         asterisk_ari_app=_env("ASTERISK_ARI_APP", "evander_didww"),
         asterisk_pjsip_endpoint=_env("ASTERISK_PJSIP_ENDPOINT", "didww"),
-        asterisk_endpoint_template=_env(
-            "ASTERISK_ENDPOINT_TEMPLATE", "PJSIP/{number}@{trunk}"
-        ),
+        asterisk_endpoint_template=_env("ASTERISK_ENDPOINT_TEMPLATE", "PJSIP/{number}@{trunk}"),
         external_media_host=_env("DIDWW_SIP_BRIDGE_EXTERNAL_MEDIA_HOST", "127.0.0.1"),
         rtp_bind_host=_env("DIDWW_SIP_BRIDGE_RTP_BIND_HOST", "127.0.0.1"),
         rtp_port_min=_env_int("DIDWW_SIP_BRIDGE_RTP_PORT_MIN", 41000),
@@ -5407,9 +5397,7 @@ def load_config(runtime_dir: Path | None = None) -> DidwwSipBridgeConfig:
         ),
         barge_in_delay_ms=_env_int("DIDWW_SIP_BRIDGE_BARGE_IN_DELAY_MS", 700),
         barge_in_fade_ms=_env_int("DIDWW_SIP_BRIDGE_BARGE_IN_FADE_MS", 120),
-        goodbye_idle_hangup_seconds=_env_float(
-            "DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", 0.0
-        ),
+        goodbye_idle_hangup_seconds=_env_float("DIDWW_SIP_BRIDGE_GOODBYE_IDLE_HANGUP_SECONDS", 0.0),
         backchannel_max_words=_env_int("DIDWW_SIP_BRIDGE_BACKCHANNEL_MAX_WORDS", 3),
         backchannel_fuzzy_threshold=_env_float(
             "DIDWW_SIP_BRIDGE_BACKCHANNEL_FUZZY_THRESHOLD",
@@ -5506,7 +5494,9 @@ def projection_to_instructions(projection: dict[str, Any]) -> str:
     ]
     origin = projection.get("origin")
     if isinstance(origin, dict):
-        instructions.append(f"Origin: {json.dumps(sanitize_voice_metadata(origin), sort_keys=True)}")
+        instructions.append(
+            f"Origin: {json.dumps(sanitize_voice_metadata(origin), sort_keys=True)}"
+        )
     prompt = projection.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
         instructions.append(f"Current task: {prompt.strip()}")
@@ -5561,7 +5551,9 @@ def _inbound_projection_to_instructions(projection: dict[str, Any]) -> str:
     ]
     origin = projection.get("origin")
     if isinstance(origin, dict):
-        instructions.append(f"Origin: {json.dumps(sanitize_voice_metadata(origin), sort_keys=True)}")
+        instructions.append(
+            f"Origin: {json.dumps(sanitize_voice_metadata(origin), sort_keys=True)}"
+        )
     caller_metadata = projection.get("caller_metadata")
     if isinstance(caller_metadata, dict):
         instructions.append(
@@ -5578,7 +5570,10 @@ def _inbound_projection_to_instructions(projection: dict[str, Any]) -> str:
 
 def _projection_is_inbound(projection: dict[str, Any]) -> bool:
     caller_metadata = projection.get("caller_metadata")
-    if isinstance(caller_metadata, dict) and str(caller_metadata.get("direction") or "").strip() == "inbound":
+    if (
+        isinstance(caller_metadata, dict)
+        and str(caller_metadata.get("direction") or "").strip() == "inbound"
+    ):
         return True
     metadata = projection.get("metadata")
     if isinstance(metadata, dict) and str(metadata.get("direction") or "").strip() == "inbound":
@@ -5758,9 +5753,7 @@ def _is_backchannel_transcript(
     if not normalized or _word_count(normalized) > max_words:
         return False
     normalized_phrases = {
-        phrase
-        for phrase in (_normalize_backchannel_phrase(item) for item in phrases)
-        if phrase
+        phrase for phrase in (_normalize_backchannel_phrase(item) for item in phrases) if phrase
     }
     if normalized in normalized_phrases:
         return True
@@ -6081,8 +6074,8 @@ def _extract_inbound_stasis_context(event: dict[str, Any]) -> dict[str, Any] | N
     channel_id = _optional_text(channel.get("id")) or _optional_text(event.get("channel_id"))
     if not channel_id:
         return None
-    channelvars_candidate = channel.get("channelvars") or channel.get("variables") or event.get(
-        "channelvars"
+    channelvars_candidate = (
+        channel.get("channelvars") or channel.get("variables") or event.get("channelvars")
     )
     channelvars = channelvars_candidate if isinstance(channelvars_candidate, dict) else {}
     args = _ari_event_args(event)
@@ -6135,9 +6128,7 @@ def _extract_inbound_stasis_context(event: dict[str, Any]) -> dict[str, Any] | N
     caller_number: str | None = None
     caller = channel.get("caller")
     if isinstance(caller, dict):
-        caller_number = _normalize_inbound_phone_number(
-            caller.get("number") or caller.get("name")
-        )
+        caller_number = _normalize_inbound_phone_number(caller.get("number") or caller.get("name"))
     if caller_number is None:
         for key in ("CALLERID(num)", "CALLER_NUMBER", "caller_number", "callerid_num"):
             caller_number = _normalize_inbound_phone_number(channelvars.get(key))
@@ -6316,11 +6307,15 @@ def _realtime_transcript_metadata(event: dict[str, Any], transcript_text: str) -
 def _realtime_vad_event(event: dict[str, Any]) -> bool:
     event_type = str(event.get("type") or "")
     lowered = event_type.lower()
-    return event_type in {
-        "input_audio_buffer.speech_started",
-        "input_audio_buffer.speech_stopped",
-        "input_audio_buffer.timeout_triggered",
-    } or "vad" in lowered
+    return (
+        event_type
+        in {
+            "input_audio_buffer.speech_started",
+            "input_audio_buffer.speech_stopped",
+            "input_audio_buffer.timeout_triggered",
+        }
+        or "vad" in lowered
+    )
 
 
 def _realtime_vad_metadata(event: dict[str, Any]) -> dict[str, Any]:
@@ -6366,10 +6361,14 @@ def _realtime_function_call(event: dict[str, Any]) -> RealtimeFunctionCall | Non
     item_type = str(item.get("type") or "")
     if event_type == "response.output_item.done" and item_type != "function_call":
         return None
-    if event_type not in {
-        "response.output_item.done",
-        "response.function_call_arguments.done",
-    } and item_type != "function_call":
+    if (
+        event_type
+        not in {
+            "response.output_item.done",
+            "response.function_call_arguments.done",
+        }
+        and item_type != "function_call"
+    ):
         return None
     name = str(item.get("name") or event.get("name") or "").strip()
     call_id = str(item.get("call_id") or event.get("call_id") or item.get("id") or "").strip()

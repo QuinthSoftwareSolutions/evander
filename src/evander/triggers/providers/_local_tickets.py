@@ -132,9 +132,7 @@ def seed_new_ticket_created_trigger_cursors(
 
     cursor_path = ticket_cursor_path(runtime_dir, "created")
     cursor_payload = (
-        ticket_cursor_store(runtime_dir, "created").read_object()
-        if cursor_path.exists()
-        else {}
+        ticket_cursor_store(runtime_dir, "created").read_object() if cursor_path.exists() else {}
     )
     changed = False
     for trigger in new_triggers:

@@ -6,6 +6,8 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+import { fulfillAdminShellBackgroundApiRequest } from "./adminShellHelpers.mjs";
+
 function jsonResponse(payload, status = 200) {
   return {
     status,
@@ -265,6 +267,10 @@ test("workflow editor modifier-click multi-selects nodes and copy/paste preserve
     const { pathname } = url;
     requestedEndpoints.push(`${pathname}${url.search}`);
 
+    if (await fulfillAdminShellBackgroundApiRequest(route, pathname)) {
+      return;
+    }
+
     if (pathname === "/api/auth/session") {
       await route.fulfill(jsonResponse(sessionResponse));
       return;
@@ -408,7 +414,6 @@ test("workflow editor modifier-click multi-selects nodes and copy/paste preserve
       consoleErrors.push(message.text());
     }
   });
-
   await page.goto(`http://127.0.0.1:${address.port}/#workflow`, {
     waitUntil: "domcontentloaded",
   });

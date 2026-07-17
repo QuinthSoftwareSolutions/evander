@@ -143,9 +143,7 @@ def _parse_session_duration(
     field_name: str,
     allow_blank: bool,
 ) -> timedelta | None:
-    duration_type_error = (
-        f"effect:session:renew-if-expired {field_name} must be a duration string such as 8h, 2d, or PT8H"
-    )
+    duration_type_error = f"effect:session:renew-if-expired {field_name} must be a duration string such as 8h, 2d, or PT8H"
     if value is None:
         if allow_blank:
             return None
@@ -184,9 +182,7 @@ def _parse_session_duration(
     except GateRuntimeError as exc:
         raise ValueError(str(exc)) from exc
     if duration.total_seconds() <= 0:
-        raise ValueError(
-            f"effect:session:renew-if-expired {field_name} must be greater than zero"
-        )
+        raise ValueError(f"effect:session:renew-if-expired {field_name} must be greater than zero")
     return duration
 
 

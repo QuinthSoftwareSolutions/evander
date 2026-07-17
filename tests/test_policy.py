@@ -82,7 +82,9 @@ def write_root_policy_overlay(config: GatewayConfig, payload: dict[str, object])
     )
 
 
-def write_root_communication_targets(config: GatewayConfig, targets: list[dict[str, object]]) -> None:
+def write_root_communication_targets(
+    config: GatewayConfig, targets: list[dict[str, object]]
+) -> None:
     directory_store = DirectoryStore(config.directories_store_path)
     directory_store.ensure_root()
     repository = SqliteCommunicationTargetsRepository(
@@ -366,9 +368,10 @@ def test_run_scoped_tool_approval_lease_can_be_limited_by_use_count(
         mcp_tool_approval_lease_id=lease.lease_id,
     )
 
-    assert engine.tool_approval_leases.get_lease(lease.lease_id).used_counts[
-        ToolName.RUN_SCRIPT.value
-    ] == 1
+    assert (
+        engine.tool_approval_leases.get_lease(lease.lease_id).used_counts[ToolName.RUN_SCRIPT.value]
+        == 1
+    )
     with pytest.raises(PolicyError, match="not usable"):
         engine.consume_tool_approval_lease_use(
             session_id="s1",
@@ -540,9 +543,7 @@ def test_tool_visibility_supports_registered_addon_tool_names(tmp_path: Path) ->
     assert visibility.available is True
     assert visibility.visible is True
     assert visibility.requires_approval is True
-    assert "bokio_get_company" in {
-        item["tool_name"] for item in summary["available_tools"]
-    }
+    assert "bokio_get_company" in {item["tool_name"] for item in summary["available_tools"]}
     assert "bokio_get_company" in summary["approval_required_tools"]
 
 
@@ -592,9 +593,7 @@ def test_delete_ado_backlog_item_approval_settings_force_exact_single_use(
     )
     engine.session_store.upsert_session(session)
 
-    settings = engine.approval_grant_settings_for_tool(
-        session, ToolName.DELETE_ADO_BACKLOG_ITEM
-    )
+    settings = engine.approval_grant_settings_for_tool(session, ToolName.DELETE_ADO_BACKLOG_ITEM)
 
     assert settings.ttl_seconds == 900
     assert settings.max_uses == 1
@@ -1089,9 +1088,7 @@ def test_require_approved_attaches_payload_mismatch_diagnostic(tmp_path: Path) -
     assert diagnostic["attempted_payload_digest"] == digest_payload(attempted)
     assert diagnostic["approved_payload_summary"]["arguments"]["token"] == "<redacted>"
     assert diagnostic["attempted_payload_summary"]["arguments"]["token"] == "<redacted>"
-    changed = {
-        entry["path"]: entry for entry in diagnostic["differences"]["changed"]["entries"]
-    }
+    changed = {entry["path"]: entry for entry in diagnostic["differences"]["changed"]["entries"]}
     assert changed["arguments.script_name"] == {
         "path": "arguments.script_name",
         "approved_value": "one",
@@ -1648,9 +1645,7 @@ def test_build_payload_diagnostic_reports_changed_missing_and_extra_fields() -> 
             "attempted_value": "gamma",
         },
     }
-    assert missing == {
-        "details.owner": {"path": "details.owner", "approved_value": "alice"}
-    }
+    assert missing == {"details.owner": {"path": "details.owner", "approved_value": "alice"}}
     assert extra == {
         "tags[2]": {"path": "tags[2]", "attempted_value": "delta"},
         "extra": {"path": "extra", "attempted_value": "value"},
@@ -2623,9 +2618,7 @@ def test_require_teams_targets_allow_communication_target_refs(tmp_path: Path) -
 
     assert engine.require_teams_channel_target(session, "teams-ops") == "team-a/channel-1"
     assert engine.require_teams_send_target(session, "teams-ops") == "team-a/channel-1"
-    assert engine.require_teams_send_target(session, "teams-user") == (
-        "user:operator@example.com"
-    )
+    assert engine.require_teams_send_target(session, "teams-user") == ("user:operator@example.com")
     assert engine.require_teams_send_target(session, "team-a/channel-1") == "team-a/channel-1"
 
 
@@ -2976,9 +2969,7 @@ def test_communication_file_policy_requires_send_approval_when_enabled(tmp_path:
     }
 
     with pytest.raises(PolicyError, match="requires approval"):
-        engine.require_communication_file_send_approval(
-            session, request_id=None, payload=payload
-        )
+        engine.require_communication_file_send_approval(session, request_id=None, payload=payload)
 
     approval = engine.create_approval(
         session.session_id,

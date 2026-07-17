@@ -105,9 +105,7 @@ def _run_launch(
 
 
 @pytest.mark.parametrize("case", ["default", "relative", "absolute"])
-def test_launch_agent_vm_uses_selected_or_default_base_image(
-    tmp_path: Path, case: str
-) -> None:
+def test_launch_agent_vm_uses_selected_or_default_base_image(tmp_path: Path, case: str) -> None:
     vm_storage_dir = tmp_path / "storage"
     selected_env: dict[str, str] = {}
     expected_base_image: Path
@@ -155,5 +153,8 @@ def test_launch_agent_vm_fails_before_qemu_when_selected_image_is_missing(
     )
 
     assert result.returncode != 0
-    assert f"Missing base image: {vm_storage_dir / 'images' / 'missing-template.qcow2'}" in result.stderr
+    assert (
+        f"Missing base image: {vm_storage_dir / 'images' / 'missing-template.qcow2'}"
+        in result.stderr
+    )
     assert not qemu_log.exists() or qemu_log.read_text(encoding="utf-8").strip() == ""

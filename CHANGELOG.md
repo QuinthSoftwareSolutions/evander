@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-07-17 - Repository Readiness And Admin Frontend Reliability
+
+- Restored a clean repository-wide Ruff lint and formatting baseline, while preserving the
+  historical gateway compatibility exports and strengthening previously unchecked workflow
+  reload assertions.
+- Kept the trigger-cursor cross-process serialization regression concurrent while using spawned,
+  synchronized workers instead of forking the multithreaded test runner.
+- Updated Admin Web browser-smoke fixtures and selectors for branding, session policy labels,
+  connector-aware navigation, and current success feedback so the suite exercises the current UI
+  contract without ambiguous or stale expectations.
+- Made the Sessions policy and wake-schedule panels stack at constrained content widths so the
+  neighboring panel cannot cover the policy Save button.
+- Resynchronized workflow inspector drafts after undo and made compact-canvas Pan mode take
+  precedence over node dragging, keeping restored values and touch gestures consistent with the
+  selected controls.
+- Split Admin Web operational views into lazy-loaded route bundles, reducing the initial JavaScript
+  payload below the Vite warning threshold without suppressing the warning.
+- Refreshed the generated technical-manual publication metadata and binary editions after
+  formatting the checked-in publication generator.
+
 ## 2026-07-17 - Connector And Bokio Review Hardening
 
 - Cleared omitted connector grants when an agent upsert moves a session into a different directory,

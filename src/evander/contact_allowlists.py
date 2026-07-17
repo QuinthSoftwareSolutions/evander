@@ -66,9 +66,7 @@ def resolve_effective_contact_directory(
         directory_path=directory_path,
     )
     if normalized_allowed_contact_ids is None:
-        return ContactDirectoryConfig.model_validate(
-            contacts_config.model_dump(mode="json")
-        )
+        return ContactDirectoryConfig.model_validate(contacts_config.model_dump(mode="json"))
 
     contacts = {
         contact_id: contacts_config.contacts[contact_id].model_dump(mode="json")

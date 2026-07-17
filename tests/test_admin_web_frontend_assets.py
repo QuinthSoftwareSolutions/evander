@@ -66,7 +66,7 @@ def test_admin_web_index_falls_back_when_dist_index_references_missing_assets(
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
     (dist_dir / "index.html").write_text(
-        '<html><head><title>old</title></head><body>'
+        "<html><head><title>old</title></head><body>"
         '<script type="module" src="/assets/index-missing.js"></script>'
         "</body></html>",
         encoding="utf-8",

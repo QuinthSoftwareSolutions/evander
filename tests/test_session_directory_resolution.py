@@ -253,16 +253,12 @@ def test_provider_config_resolver_resolves_effective_contacts_for_session_id(
                 "ops": {
                     "name": "Ops",
                     "email_addresses": ["ops@example.com"],
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550001", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550001", "primary": True}],
                 },
                 "support": {
                     "name": "Support",
                     "email_addresses": ["support@example.com"],
-                    "phone_numbers": [
-                        {"label": "main", "number": "+15550002", "primary": True}
-                    ],
+                    "phone_numbers": [{"label": "main", "number": "+15550002", "primary": True}],
                 },
             },
             "user_contact_links": {"agent": "ops"},

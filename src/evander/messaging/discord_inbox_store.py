@@ -165,9 +165,7 @@ class DiscordInboxStore:
                     if channel_row is not None and channel_row["cursor"]
                     else None
                 )
-                latest_cursor = self._max_cursors(
-                    (message_cursor, channel_cursor, seed_cursor)
-                )
+                latest_cursor = self._max_cursors((message_cursor, channel_cursor, seed_cursor))
                 next_cursor = self._advance_session_cursor_in_connection(
                     connection,
                     session_id,
@@ -219,9 +217,7 @@ class DiscordInboxStore:
             }
             normalized_cursors = {
                 channel_id: (
-                    self._storage_cursor(effective_cursor)
-                    if effective_cursor is not None
-                    else None
+                    self._storage_cursor(effective_cursor) if effective_cursor is not None else None
                 )
                 for channel_id, effective_cursor in effective_cursors.items()
             }
@@ -276,9 +272,7 @@ class DiscordInboxStore:
         if limit is not None:
             messages = messages[:limit]
         next_cursor = (
-            messages[-1].created_at.isoformat().replace("+00:00", "Z")
-            if messages
-            else None
+            messages[-1].created_at.isoformat().replace("+00:00", "Z") if messages else None
         )
         return DiscordInboxListResult(messages=messages, next_cursor=next_cursor)
 
@@ -307,9 +301,7 @@ class DiscordInboxStore:
             ).fetchall()
 
         return {
-            "cursors": {
-                str(row["channel_id"]): str(row["cursor"]) for row in cursor_rows
-            },
+            "cursors": {str(row["channel_id"]): str(row["cursor"]) for row in cursor_rows},
             "messages": {
                 str(row["message_id"]): DiscordMessageEnvelope.model_validate_json(
                     row["payload_json"]
@@ -476,9 +468,7 @@ class DiscordInboxStore:
             FROM discord_inbox_cursors
             """
         ).fetchall()
-        cursor_by_channel = {
-            str(row["channel_id"]): str(row["cursor"]) for row in cursor_rows
-        }
+        cursor_by_channel = {str(row["channel_id"]): str(row["cursor"]) for row in cursor_rows}
         message_rows = connection.execute(
             """
             SELECT message_id, channel_id, created_at
@@ -697,7 +687,5 @@ class DiscordInboxStore:
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return (
-            value.astimezone(timezone.utc)
-            .isoformat(timespec="microseconds")
-            .replace("+00:00", "Z")
+            value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
         )

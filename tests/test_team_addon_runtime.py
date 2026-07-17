@@ -199,9 +199,7 @@ def test_team_project_managed_repository_bindings_follow_state_and_rollback(
             set_git=True,
             expected_revision=1,
         )
-    assert repository.read().projects["project"].git == ProjectGitConfig(
-        managed_repo_id=first_id
-    )
+    assert repository.read().projects["project"].git == ProjectGitConfig(managed_repo_id=first_id)
     assert managed_git.bindings[first_id] == {("team_projects", "project")}
     assert managed_git.bindings[second_id] == set()
 
@@ -339,7 +337,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
 
     service = build_admin_runtime(tmp_path / "runtime")
     document = service.workflow_config_admin.read_workflow_editor_document()
-    assert service.workflow_config_admin.read_workflow_editor_document().revision == document.revision
+    assert (
+        service.workflow_config_admin.read_workflow_editor_document().revision == document.revision
+    )
     assert document.output_schemas["team-route-completed-session"]["persistent"] == {
         "type": "boolean"
     }
@@ -360,15 +360,11 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert document.output_schemas["team-wake-due-agents"]["transient_conflicts"] == {
         "type": "array"
     }
-    assert document.output_schemas["team-wake-due-agents"]["retry_event_ids"] == {
-        "type": "array"
-    }
+    assert document.output_schemas["team-wake-due-agents"]["retry_event_ids"] == {"type": "array"}
     assert document.output_schemas["team-wake-due-agents"]["retry_scheduled_count"] == {
         "type": "integer"
     }
-    assert document.output_schemas["team-wake-due-agents"]["git_work_contexts"] == {
-        "type": "array"
-    }
+    assert document.output_schemas["team-wake-due-agents"]["git_work_contexts"] == {"type": "array"}
     assert document.output_schemas["team-wake-due-agents"]["review_artifact_imports"] == {
         "type": "array"
     }
@@ -384,9 +380,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert document.output_schemas["team-consolidate-feature-branches"]["commit_sha"] == {
         "type": ["string", "null"]
     }
-    assert document.output_schemas["team-verify-release-candidate"][
-        "verification_state"
-    ] == {"type": "string"}
+    assert document.output_schemas["team-verify-release-candidate"]["verification_state"] == {
+        "type": "string"
+    }
     graphs = [
         graph.model_dump(mode="json") if hasattr(graph, "model_dump") else graph
         for graph in document.graphs
@@ -3403,14 +3399,10 @@ def test_wake_due_agents_provider_delivers_latest_action_feedback(
             "created_at": "2026-01-01T00:00:00+00:00",
             "error": "agent backend cannot deliver task other-task",
             "action_fields": ["deliverables"],
-            "correction_hints": [
-                "Only the task owner can create deliverables for that task."
-            ],
+            "correction_hints": ["Only the task owner can create deliverables for that task."],
         }
     ]
-    assert result["dispatches"][0]["delivered_action_feedback_dispatch_ids"] == [
-        failed_dispatch_id
-    ]
+    assert result["dispatches"][0]["delivered_action_feedback_dispatch_ids"] == [failed_dispatch_id]
     reread = TeamStateRepository(tmp_path).read()
     record = reread.action_records["action-feedback"]
     assert record.feedback_delivered_at is not None
@@ -3964,8 +3956,9 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert session_store.calls[2]["metadata"]["team_addon"]["agent_id"] == "backend"
     reread = TeamStateRepository(tmp_path).read()
     assert set(reread.git_work_contexts) == {project_repo["branch_context_id"]}
-    assert reread.git_work_contexts[project_repo["branch_context_id"]].dispatch_id == (
-        result["dispatches"][0]["dispatch_id"]
+    assert (
+        reread.git_work_contexts[project_repo["branch_context_id"]].dispatch_id
+        == (result["dispatches"][0]["dispatch_id"])
     )
 
 
@@ -4161,12 +4154,12 @@ def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_fail
     assert runtime.no_progress_count == 0
     assert reread.action_records == {}
     assert len(reread.git_work_contexts) == 1
-    assert {
-        context.state for context in reread.git_work_contexts.values()
-    } == {GitWorkContextState.ABANDONED}
-    assert {
-        context.dispatch_id for context in reread.git_work_contexts.values()
-    } == {result["transient_conflicts"][0]["dispatch_id"]}
+    assert {context.state for context in reread.git_work_contexts.values()} == {
+        GitWorkContextState.ABANDONED
+    }
+    assert {context.dispatch_id for context in reread.git_work_contexts.values()} == {
+        result["transient_conflicts"][0]["dispatch_id"]
+    }
     scheduled = json.loads(
         scheduled_internal_event_store_path(tmp_path).read_text(encoding="utf-8")
     )
@@ -5862,9 +5855,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     # review -> publish-review-branch -> record-git-promotion
     promote = effects["team-git-promote-review-branch"]
     assert promote["type"] == "effect:team:publish-review-branch"
-    assert promote["source_branch"] == (
-        "${{team-git-promotion-requested.payload.source_branch}}"
-    )
+    assert promote["source_branch"] == ("${{team-git-promotion-requested.payload.source_branch}}")
     assert promote["managed_repo_id"] == (
         "${{team-git-promotion-requested.payload.managed_repo_id}}"
     )
@@ -5955,9 +5946,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     # canonical_push -> push-branch -> record-git-promotion -> mark-release-published
     push = effects["team-push-canonical-branch"]
     assert push["type"] == "effect:git:push-branch"
-    assert push["managed_repo_id"] == (
-        "${{team-git-promotion-requested.payload.managed_repo_id}}"
-    )
+    assert push["managed_repo_id"] == ("${{team-git-promotion-requested.payload.managed_repo_id}}")
     assert push["directory_path"] == (
         "${{team-git-promotion-requested.payload.directory_path ?? null}}"
     )
@@ -5965,9 +5954,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert push["expected_commit_sha"] == (
         "${{team-git-promotion-requested.payload.expected_commit_sha}}"
     )
-    assert push["destination_branch"] == (
-        "${{team-git-promotion-requested.payload.target_branch}}"
-    )
+    assert push["destination_branch"] == ("${{team-git-promotion-requested.payload.target_branch}}")
     record_canonical = effects["team-record-canonical-promotion"]
     assert record_canonical["type"] == "effect:team:record-git-promotion"
     assert record_canonical["promotion_id"] == (
@@ -6011,16 +5998,12 @@ def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:
     # ephemeral/review/feature branches must never reach effect:git:push-branch.
     assert [node["id"] for node in push_nodes] == ["team-push-canonical-branch"]
     push = push_nodes[0]
-    assert push["managed_repo_id"] == (
-        "${{team-git-promotion-requested.payload.managed_repo_id}}"
-    )
+    assert push["managed_repo_id"] == ("${{team-git-promotion-requested.payload.managed_repo_id}}")
     assert push["source_ref"] == "${{team-git-promotion-requested.payload.source_branch}}"
     assert push["expected_commit_sha"] == (
         "${{team-git-promotion-requested.payload.expected_commit_sha}}"
     )
-    assert push["destination_branch"] == (
-        "${{team-git-promotion-requested.payload.target_branch}}"
-    )
+    assert push["destination_branch"] == ("${{team-git-promotion-requested.payload.target_branch}}")
 
     edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
     assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges

@@ -37,9 +37,7 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")
 
     assert "evander_service_profile in ['full', 'control_plane_only']" in site
-    assert (
-        "evander_services.firewall must be false for control_plane_only deployments" in site
-    )
+    assert "evander_services.firewall must be false for control_plane_only deployments" in site
     assert "evander_runtime_dir == evander_expected_runtime_dir" in site
     assert "- role: host_prereqs" in site
     assert "- role: apt_cache_relay" in site
@@ -71,15 +69,15 @@ def test_ansible_admin_web_caddy_role_proxies_branded_entrypoints() -> None:
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    tasks = (
-        repo / "ansible" / "roles" / "admin_web_caddy" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    tasks = (repo / "ansible" / "roles" / "admin_web_caddy" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
     caddyfile = (
         repo / "ansible" / "roles" / "admin_web_caddy" / "templates" / "Caddyfile.j2"
     ).read_text(encoding="utf-8")
-    verification = (
-        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    verification = (repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "evander_admin_web_frontend_dist_dir" in defaults
     assert "evander_admin_web_caddy_enabled: false" in defaults
@@ -112,7 +110,7 @@ def test_ansible_admin_web_caddy_role_proxies_branded_entrypoints() -> None:
     assert "--connect-timeout" in verification
     assert "evander_admin_web_caddy_verification_max_time_seconds" in verification
     assert "register: evander_admin_web_caddy_frontend_probe" in verification
-    assert "retries: \"{{ evander_admin_web_caddy_verification_retries | int }}\"" in verification
+    assert 'retries: "{{ evander_admin_web_caddy_verification_retries | int }}"' in verification
     assert "until: evander_admin_web_caddy_frontend_probe.rc == 0" in verification
     assert "https://${host}/index.html" in verification
     assert 'find "${dist_dir}/assets"' in verification
@@ -136,8 +134,8 @@ def test_ansible_admin_web_branding_assets_can_be_copied() -> None:
     assert "Ensure Admin Web branding asset directory exists" in service_config
     assert "Ensure Admin Web branding asset subdirectories exist" in service_config
     assert "Copy Admin Web branding assets" in service_config
-    assert "src: \"{{ item.source_path }}\"" in service_config
-    assert "dest: \"{{ evander_admin_web_branding_asset_dir }}/{{ item.path }}\"" in service_config
+    assert 'src: "{{ item.source_path }}"' in service_config
+    assert 'dest: "{{ evander_admin_web_branding_asset_dir }}/{{ item.path }}"' in service_config
     assert "mode: \"{{ item.mode | default('0644') }}\"" in service_config
     assert "evander_admin_web_branding_asset_copy" in service_config
 
@@ -150,30 +148,31 @@ def test_ansible_asterisk_didww_role_is_opt_in_and_matches_bridge_contract() -> 
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(
+    azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(encoding="utf-8")
+    vault_example = (repo / "ansible" / "group_vars" / "all" / "vault.yml.example").read_text(
         encoding="utf-8"
     )
-    vault_example = (
-        repo / "ansible" / "group_vars" / "all" / "vault.yml.example"
-    ).read_text(encoding="utf-8")
-    tasks = (
-        repo / "ansible" / "roles" / "asterisk_didww" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    tasks = (repo / "ansible" / "roles" / "asterisk_didww" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
     pjsip = (
         repo / "ansible" / "roles" / "asterisk_didww" / "templates" / "pjsip.conf.j2"
     ).read_text(encoding="utf-8")
     extensions = (
         repo / "ansible" / "roles" / "asterisk_didww" / "templates" / "extensions.conf.j2"
     ).read_text(encoding="utf-8")
-    verification = (
-        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    verification = (repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
     docs = (repo / "ansible" / "README.md").read_text(encoding="utf-8")
 
     assert "evander_asterisk_didww_enabled: false" in defaults
     assert "evander_didww_sip_bridge_enable_inbound_phone_calls: false" in defaults
     assert 'evander_didww_sip_bridge_ari_user: "{{ evander_run_user }}"' in defaults
-    assert "DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS: \"{{ (evander_didww_sip_bridge_enable_inbound_phone_calls | bool) | ternary('true', 'false') }}\"" in defaults
+    assert (
+        "DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS: \"{{ (evander_didww_sip_bridge_enable_inbound_phone_calls | bool) | ternary('true', 'false') }}\""
+        in defaults
+    )
     assert "evander_asterisk_ari_user:" in defaults
     assert "evander_didww_sip_bridge_env.get('ASTERISK_ARI_USER'" in defaults
     assert "evander_shared_secrets_env.get('ASTERISK_ARI_PASSWORD'" in defaults
@@ -185,11 +184,14 @@ def test_ansible_asterisk_didww_role_is_opt_in_and_matches_bridge_contract() -> 
     assert "evander_asterisk_didww_enabled: false" in azure
     assert "vault_didww_sip_username" in azure
     assert "vault_didww_sip_password" in azure
-    assert "vault_didww_sip_identify_matches | default(['46.19.208.0/21', '185.238.172.0/22'], true)" in azure
+    assert (
+        "vault_didww_sip_identify_matches | default(['46.19.208.0/21', '185.238.172.0/22'], true)"
+        in azure
+    )
     assert "vault_didww_inbound_route_id" in azure
-    assert "ASTERISK_ARI_PASSWORD: \"{{ vault_asterisk_ari_password }}\"" in azure
-    assert "DIDWW_SIP_BRIDGE_TOKEN: \"{{ vault_didww_sip_bridge_token }}\"" in azure
-    assert "VOICE_MEDIA_CONTROLLER_TOKEN: \"{{ vault_voice_media_controller_token }}\"" in azure
+    assert 'ASTERISK_ARI_PASSWORD: "{{ vault_asterisk_ari_password }}"' in azure
+    assert 'DIDWW_SIP_BRIDGE_TOKEN: "{{ vault_didww_sip_bridge_token }}"' in azure
+    assert 'VOICE_MEDIA_CONTROLLER_TOKEN: "{{ vault_voice_media_controller_token }}"' in azure
     assert "vault_didww_sip_username" in vault_example
     assert "vault_didww_sip_password" in vault_example
     assert 'vault_didww_sip_identify_matches: ""' in vault_example
@@ -205,7 +207,7 @@ def test_ansible_asterisk_didww_role_is_opt_in_and_matches_bridge_contract() -> 
     assert "external_signaling_address={{ evander_asterisk_public_address }}" in pjsip
     assert "external_media_address={{ evander_asterisk_public_address }}" in pjsip
     assert "local_net={{ local_net }}" in pjsip
-    assert "allow={{ evander_asterisk_didww_codecs | join(\",\") }}" in pjsip
+    assert 'allow={{ evander_asterisk_didww_codecs | join(",") }}' in pjsip
     assert "direct_media=no" in pjsip
     assert "rewrite_contact=yes" in pjsip
     assert "force_rport=yes" in pjsip
@@ -214,9 +216,7 @@ def test_ansible_asterisk_didww_role_is_opt_in_and_matches_bridge_contract() -> 
 
     assert "Set(INBOUND_PHONE_CALL=1)" in extensions
     assert "Set(INBOUND_ROUTE_ID={{ evander_asterisk_didww_inbound_route_id }})" in extensions
-    dialed_did_extension = extensions.split("exten => _X.,1", 1)[1].split(
-        "exten => s,1", 1
-    )[0]
+    dialed_did_extension = extensions.split("exten => _X.,1", 1)[1].split("exten => s,1", 1)[0]
     fallback_extension = extensions.split("exten => s,1", 1)[1]
     assert (
         "Stasis({{ evander_asterisk_ari_app }},inbound:${EXTEN}:{{ evander_asterisk_didww_inbound_route_id }})"
@@ -278,7 +278,9 @@ def test_ansible_runtime_bootstrap_repairs_managed_service_lock_ownership() -> N
     ]:
         assert lock_name in defaults
 
-    assert "Ensure managed runtime service lock files are owned by the run user" in runtime_bootstrap
+    assert (
+        "Ensure managed runtime service lock files are owned by the run user" in runtime_bootstrap
+    )
     assert 'path: "{{ evander_runtime_dir }}/{{ item }}"' in runtime_bootstrap
     assert 'owner: "{{ evander_run_user }}"' in runtime_bootstrap
     assert 'group: "{{ evander_run_user }}"' in runtime_bootstrap
@@ -426,9 +428,9 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    tasks = (
-        repo / "ansible" / "roles" / "package_cache_nexus" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    tasks = (repo / "ansible" / "roles" / "package_cache_nexus" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
     unit = (
         repo
         / "ansible"
@@ -448,10 +450,7 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert 'evander_nexus_pypi_group_repository: "pypi-all"' in defaults
     assert 'evander_nexus_npm_proxy_repository: "npm-proxy"' in defaults
     assert 'evander_nexus_npm_group_repository: "npm-all"' in defaults
-    assert (
-        'evander_nexus_anonymous_reader_role: "evander-package-cache-reader"'
-        in defaults
-    )
+    assert 'evander_nexus_anonymous_reader_role: "evander-package-cache-reader"' in defaults
     assert (
         'evander_nexus_pypi_probe_asset_path: "packages/wheel/0.47.0/wheel-0.47.0-py3-none-any.whl"'
         in defaults
@@ -474,33 +473,18 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert "no_log: true\n\n    - name: Ensure Nexus service group exists" not in tasks
     assert "Download pinned Nexus archive" in tasks
     assert "evander-nexus.service" in tasks
-    assert "/service/rest/v1/security/users\"" in tasks
-    assert "/service/rest/v1/security/user\"" not in tasks
+    assert '/service/rest/v1/security/users"' in tasks
+    assert '/service/rest/v1/security/user"' not in tasks
     assert "service/rest/v1/security/anonymous" in tasks
-    assert (
-        "service/rest/v1/security/roles/{{ evander_nexus_anonymous_reader_role }}"
-        in tasks
-    )
+    assert "service/rest/v1/security/roles/{{ evander_nexus_anonymous_reader_role }}" in tasks
     assert "service/rest/v1/security/users/anonymous" in tasks
     assert "Probe anonymous Nexus PyPI asset access" in tasks
     assert "evander_nexus_pypi_probe_asset_path" in tasks
     assert "Nexus anonymous PyPI asset access is working" in tasks
-    assert (
-        "nx-repository-view-pypi-{{ evander_nexus_pypi_group_repository }}-read"
-        in tasks
-    )
-    assert (
-        "nx-repository-view-pypi-{{ evander_nexus_pypi_proxy_repository }}-read"
-        in tasks
-    )
-    assert (
-        "nx-repository-view-npm-{{ evander_nexus_npm_group_repository }}-read"
-        in tasks
-    )
-    assert (
-        "nx-repository-view-npm-{{ evander_nexus_npm_proxy_repository }}-read"
-        in tasks
-    )
+    assert "nx-repository-view-pypi-{{ evander_nexus_pypi_group_repository }}-read" in tasks
+    assert "nx-repository-view-pypi-{{ evander_nexus_pypi_proxy_repository }}-read" in tasks
+    assert "nx-repository-view-npm-{{ evander_nexus_npm_group_repository }}-read" in tasks
+    assert "nx-repository-view-npm-{{ evander_nexus_npm_proxy_repository }}-read" in tasks
     assert "source=default" in tasks
     assert "repositories/pypi/proxy" in tasks
     assert "repositories/pypi/group" in tasks
@@ -523,9 +507,9 @@ def test_ansible_npm_audit_facade_defaults_and_role_contract() -> None:
     service_runtime = (
         repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
-    verification = (
-        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    verification = (repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "npm_audit_facade: true" in defaults
     assert "evander_npm_audit_facade_port: 11881" in defaults
@@ -549,12 +533,12 @@ def test_ansible_apt_cache_relay_defaults_and_role_contract() -> None:
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    tasks = (
-        repo / "ansible" / "roles" / "apt_cache_relay" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
-    verification = (
-        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    tasks = (repo / "ansible" / "roles" / "apt_cache_relay" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    verification = (repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "apt_cache: true" in defaults
     assert "evander_apt_cache_port: 3142" in defaults
@@ -586,9 +570,9 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    tasks = (
-        repo / "ansible" / "roles" / "semantic_store_qdrant" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    tasks = (repo / "ansible" / "roles" / "semantic_store_qdrant" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
     unit = (
         repo
         / "ansible"
@@ -597,9 +581,9 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
         / "templates"
         / "evander-qdrant.service.j2"
     ).read_text(encoding="utf-8")
-    verification = (
-        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    verification = (repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "semantic_store: true" in defaults
     assert 'evander_qdrant_image: "qdrant/qdrant:v1.18.0"' in defaults
@@ -623,10 +607,7 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
 
     assert "Requires=docker.service" in unit
     assert "docker run --name evander-qdrant" in unit
-    assert (
-        "--publish {{ evander_qdrant_bind_host }}:{{ evander_qdrant_port }}:6333"
-        in unit
-    )
+    assert "--publish {{ evander_qdrant_bind_host }}:{{ evander_qdrant_port }}:6333" in unit
     assert "--volume {{ evander_qdrant_data_dir }}:/qdrant/storage" in unit
 
     assert "evander-qdrant.service" in verification
@@ -634,24 +615,17 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
     assert "evander_services[item.key]" not in verification
     assert "evander_qdrant_bind_host" in verification
     assert "evander_qdrant_port" in verification
-    assert (
-        "http://{{ evander_qdrant_bind_host }}:{{ evander_qdrant_port }}/healthz"
-        in verification
-    )
+    assert "http://{{ evander_qdrant_bind_host }}:{{ evander_qdrant_port }}/healthz" in verification
 
 
 def test_ansible_azure_inventory_maps_nexus_password_from_vault() -> None:
     repo = Path(__file__).resolve().parents[1]
-    azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(
-        encoding="utf-8"
-    )
-    inventory = (repo / "ansible" / "inventory" / "azure.example.yml").read_text(
-        encoding="utf-8"
-    )
+    azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(encoding="utf-8")
+    inventory = (repo / "ansible" / "inventory" / "azure.example.yml").read_text(encoding="utf-8")
     docs = (repo / "ansible" / "README.md").read_text(encoding="utf-8")
 
     assert (
-        'evander_nexus_admin_password: "{{ vault_evander_nexus_admin_password | default(\'\') }}"'
+        "evander_nexus_admin_password: \"{{ vault_evander_nexus_admin_password | default('') }}\""
         in azure
     )
     assert 'evander_control_plane_private_ip: "10.0.0.4"' in azure
@@ -664,12 +638,10 @@ def test_ansible_worker_egress_policy_defaults_are_private_control_plane_endpoin
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    worker_defaults = (
-        repo / "ansible" / "group_vars" / "evander_worker_hosts.yml"
-    ).read_text(encoding="utf-8")
-    azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(
+    worker_defaults = (repo / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
         encoding="utf-8"
     )
+    azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(encoding="utf-8")
     azure_inventory = (repo / "ansible" / "inventory" / "azure.example.yml").read_text(
         encoding="utf-8"
     )
@@ -711,19 +683,14 @@ def test_worker_apt_proxy_runs_before_host_prereqs_and_can_be_disabled() -> None
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    worker_defaults = (
-        repo / "ansible" / "group_vars" / "evander_worker_hosts.yml"
-    ).read_text(encoding="utf-8")
-    tasks = (
-        repo / "ansible" / "roles" / "worker_apt_proxy" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    worker_defaults = (repo / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
+        encoding="utf-8"
+    )
+    tasks = (repo / "ansible" / "roles" / "worker_apt_proxy" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
     template = (
-        repo
-        / "ansible"
-        / "roles"
-        / "worker_apt_proxy"
-        / "templates"
-        / "01evander-proxy.j2"
+        repo / "ansible" / "roles" / "worker_apt_proxy" / "templates" / "01evander-proxy.j2"
     ).read_text(encoding="utf-8")
 
     assert "- role: worker_apt_proxy" in worker
@@ -847,7 +814,7 @@ def test_ansible_uv_bootstrap_uses_python_install_environment() -> None:
     )
 
     assert "Install uv for repo bootstrap" in host_prereqs
-    assert "environment: \"{{ evander_python_install_env | default({}) }}\"" in host_prereqs
+    assert 'environment: "{{ evander_python_install_env | default({}) }}"' in host_prereqs
     assert "PIP_INDEX_URL" in worker_defaults
     assert "evander_worker_pypi_index_url" in worker_defaults
 
@@ -857,12 +824,12 @@ def test_ansible_manages_current_optional_systemd_units() -> None:
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    runtime = (
-        repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
-    verification = (
-        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    runtime = (repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    verification = (repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
     runtime_bootstrap = (
         repo / "ansible" / "roles" / "runtime_bootstrap" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
@@ -949,9 +916,9 @@ def test_ansible_manages_proxy_issue_sync_service() -> None:
     service_runtime = (
         repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
-    verification = (
-        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    verification = (repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "proxy_issue_sync: true" in defaults
     assert "key: proxy_issue_sync" in service_runtime
@@ -972,9 +939,9 @@ def test_ansible_systemd_install_passes_service_profile() -> None:
 
 def test_ansible_verification_checks_nexus_package_cache() -> None:
     repo = Path(__file__).resolve().parents[1]
-    verification = (
-        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
-    ).read_text(encoding="utf-8")
+    verification = (repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "evander-nexus.service" in verification
     assert "evander_nexus_port" in verification

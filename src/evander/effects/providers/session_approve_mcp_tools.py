@@ -186,7 +186,9 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
                 )
         return settings
 
-    def _approval_notification_target_ids(self, *, session: Any, payload: Mapping[str, Any]) -> list[str]:
+    def _approval_notification_target_ids(
+        self, *, session: Any, payload: Mapping[str, Any]
+    ) -> list[str]:
         target_ids = payload.get("approval_notification_target_ids")
         if target_ids is None:
             return []
@@ -250,9 +252,7 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
     def _workflow_run_id(self, execution_context: Mapping[str, Any] | None) -> str:
         for key in ("workflow_run_id", "workflow_trace_id", "trace_id"):
             candidate = (
-                execution_context.get(key)
-                if isinstance(execution_context, Mapping)
-                else None
+                execution_context.get(key) if isinstance(execution_context, Mapping) else None
             )
             text = self._normalize_optional_string(candidate)
             if text:

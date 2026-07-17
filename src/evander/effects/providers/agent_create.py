@@ -165,9 +165,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 execution_backend=execution_backend,
                 vm_name=existing_session.vm_id or vm_name,
                 vm_image=vm_image_selection["image_ref"] if vm_image_selection else None,
-                vm_image_alias=vm_image_selection["template_alias"]
-                if vm_image_selection
-                else None,
+                vm_image_alias=vm_image_selection["template_alias"] if vm_image_selection else None,
             )
         vm_image_selection: dict[str, str | None] | None = None
         record_vm_image_selection = False
@@ -609,9 +607,7 @@ def _agent_communication_allowlists(
                 selected_teams_channels.append(target.id)
             continue
         if target.provider == "email":
-            missing_capabilities = sorted(
-                {"read", "write"} - set(target.policy.capabilities)
-            )
+            missing_capabilities = sorted({"read", "write"} - set(target.policy.capabilities))
             if missing_capabilities:
                 raise ValueError(
                     "effect:agent:create email communication target "

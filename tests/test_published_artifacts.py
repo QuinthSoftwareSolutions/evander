@@ -67,8 +67,7 @@ def test_published_artifact_store_lists_by_time_with_cursor_inputs(tmp_path: Pat
 
     assert [item.key for item in store.list_metadata()] == ["new", "old"]
     assert [
-        item.key
-        for item in store.list_metadata(published_after=new - timedelta(seconds=1))
+        item.key for item in store.list_metadata(published_after=new - timedelta(seconds=1))
     ] == ["new"]
     assert [item.key for item in store.list_metadata(key="old")] == ["old"]
 

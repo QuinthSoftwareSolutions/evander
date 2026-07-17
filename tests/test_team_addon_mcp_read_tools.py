@@ -232,8 +232,7 @@ def _seed_team(
         name="Developer",
         description=(
             f"{team_id.title()} developer role owns implementation details, "
-            "coordination boundaries, and exact acceptance criteria. "
-            + ("role-detail " * 80)
+            "coordination boundaries, and exact acceptance criteria. " + ("role-detail " * 80)
         ),
         permissions=[RolePermission.REQUEST_PAYMENT_PREPARATION],
         expected_revision=repo.read().revision,
@@ -311,9 +310,7 @@ def _seed_read_records(repo: TeamStateRepository) -> None:
                 state=TeamRecordState.PENDING,
                 instructions=f"{team_id} review instructions " + ("z" * 4000),
             )
-            state.deliverables[f"{team_id}-deliverable"].review_request_ids = [
-                f"{team_id}-review"
-            ]
+            state.deliverables[f"{team_id}-deliverable"].review_request_ids = [f"{team_id}-review"]
             state.inbox[f"{team_id}-inbox"] = AgentInboxItem(
                 id=f"{team_id}-inbox",
                 recipient_agent_id=f"{team_id}-dev",

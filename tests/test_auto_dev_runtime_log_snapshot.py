@@ -32,7 +32,7 @@ def test_auto_dev_runtime_log_snapshot_redacts_secret_shapes(tmp_path: Path) -> 
     )
     _write_executable(
         fake_bin / "jq",
-        "printf '%s\\n' '{\"snapshot_path\":\"test\",\"redaction\":\"enabled\"}'\n",
+        'printf \'%s\\n\' \'{"snapshot_path":"test","redaction":"enabled"}\'\n',
     )
 
     (runtime_dir / "audit.jsonl").write_text(

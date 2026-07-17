@@ -109,15 +109,16 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
             return
 
         payload = event.payload if isinstance(event.payload, dict) else {}
-        message_payload = (
-            payload.get("message") if isinstance(payload.get("message"), dict) else {}
+        message_payload = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+        provider = _normalized_lookup_key(
+            payload.get("provider") or message_payload.get("provider")
         )
-        provider = _normalized_lookup_key(payload.get("provider") or message_payload.get("provider"))
         communication_target_id = _normalized_lookup_key(
-            payload.get("communication_target_id")
-            or message_payload.get("communication_target_id")
+            payload.get("communication_target_id") or message_payload.get("communication_target_id")
         )
-        message_id = _normalized_message_id(payload.get("message_id") or message_payload.get("message_id"))
+        message_id = _normalized_message_id(
+            payload.get("message_id") or message_payload.get("message_id")
+        )
         occurred_at = _parse_dt(payload.get("created_at") or message_payload.get("created_at"))
         if occurred_at is None:
             occurred_at = event.occurred_at
@@ -153,7 +154,9 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         if self._directories_store_path is not None:
             directories_store_path = self._directories_store_path
         elif self.runtime_context is not None:
-            directories_store_path = Path(self.runtime_context.resolved_config.directories_store_path)
+            directories_store_path = Path(
+                self.runtime_context.resolved_config.directories_store_path
+            )
         else:
             raise RuntimeError("CommunicationNewMessageTriggerProvider has no runtime context")
 
@@ -247,9 +250,7 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         if not self._teams_targets_by_address:
             return []
 
-        inbox_store = JsonTeamsInboxCursorRepository(
-            self._runtime_dir() / "teams-inbox-store.json"
-        )
+        inbox_store = JsonTeamsInboxCursorRepository(self._runtime_dir() / "teams-inbox-store.json")
         raw_messages = inbox_store.list_all_messages(
             channel_targets=list(self._teams_targets_by_address),
             created_at_from=cursor,

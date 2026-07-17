@@ -127,7 +127,6 @@ def test_ado_comment_tool_schemas_describe_mentions(tmp_path: Path) -> None:
         assert "plain @name text" in mentions["description"]
 
 
-
 def test_create_server_registers_extracted_communication_tools(tmp_path: Path) -> None:
     server = create_server(make_context(tmp_path))
     registered_tool_names = {tool.name for tool in server._tool_manager.list_tools()}
@@ -168,6 +167,7 @@ def test_create_server_registers_extracted_communication_tools(tmp_path: Path) -
     }
 
     assert expected_tool_names <= registered_tool_names
+
 
 def workspace_file_stdout(
     *,
@@ -248,9 +248,7 @@ def test_communication_copy_artifact_to_workspace_uses_agent_copy_effect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     FakeAgentCopyFilesEffectProvider.calls = []
-    monkeypatch.setattr(
-        gateway, "AgentCopyFilesEffectProvider", FakeAgentCopyFilesEffectProvider
-    )
+    monkeypatch.setattr(gateway, "AgentCopyFilesEffectProvider", FakeAgentCopyFilesEffectProvider)
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -468,9 +466,7 @@ def test_inline_media_pr_feedback_downloads_and_copies_artifact(
     from evander.pr_feedback import FeedbackEnvelope
 
     FakeAgentCopyFilesEffectProvider.calls = []
-    monkeypatch.setattr(
-        gateway, "AgentCopyFilesEffectProvider", FakeAgentCopyFilesEffectProvider
-    )
+    monkeypatch.setattr(gateway, "AgentCopyFilesEffectProvider", FakeAgentCopyFilesEffectProvider)
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -485,9 +481,7 @@ def test_inline_media_pr_feedback_downloads_and_copies_artifact(
             communication_file_allowed_mime_types=["image/png"],
             communication_file_allowed_extensions=[".png"],
             metadata={
-                "pr_feedback_streams": [
-                    {"provider": "github", "repo": "org/repo", "pr_id": "17"}
-                ]
+                "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
             },
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
@@ -557,9 +551,7 @@ def test_inline_media_pr_feedback_downloads_and_copies_artifact(
         json.loads(line)
         for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    list_event = next(
-        event for event in audit_events if event["event_type"] == "inline_media_list"
-    )
+    list_event = next(event for event in audit_events if event["event_type"] == "inline_media_list")
     assert list_event["provider"] == "github"
     assert list_event["pr_id"] == "17"
     assert list_event["result"]["media"][0]["comment_id"] == "comment-1"
@@ -585,8 +577,10 @@ def test_inline_media_pr_feedback_downloads_and_copies_artifact(
     )
 
     assert copied["destination_path"] == "/home/agent/communication-artifacts/review.png"
-    assert FakeAgentCopyFilesEffectProvider.calls[0].files[0].source_path.endswith(
-        f"{artifact['artifact_id']}.bin"
+    assert (
+        FakeAgentCopyFilesEffectProvider.calls[0]
+        .files[0]
+        .source_path.endswith(f"{artifact['artifact_id']}.bin")
     )
 
 
@@ -782,9 +776,7 @@ def test_pr_feedback_inline_media_rejects_mime_before_staging(tmp_path: Path) ->
             communication_file_allowed_mime_types=["image/png"],
             communication_file_allowed_extensions=[".png"],
             metadata={
-                "pr_feedback_streams": [
-                    {"provider": "github", "repo": "org/repo", "pr_id": "17"}
-                ]
+                "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
             },
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
@@ -867,9 +859,7 @@ def test_ado_backlog_inline_media_rejects_oversize_before_staging(
                                 "filename": "screen.png",
                                 "mime_type": "image/png",
                                 "byte_count": len(b"too-large"),
-                                "content_base64": base64.b64encode(b"too-large").decode(
-                                    "ascii"
-                                ),
+                                "content_base64": base64.b64encode(b"too-large").decode("ascii"),
                             }
                         ],
                     }
@@ -932,9 +922,7 @@ def test_pr_feedback_inline_media_requires_receive_permission(tmp_path: Path) ->
             session_id="session-1",
             allowed_tools=[ToolName.DOWNLOAD_INLINE_MEDIA],
             metadata={
-                "pr_feedback_streams": [
-                    {"provider": "github", "repo": "org/repo", "pr_id": "17"}
-                ]
+                "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
             },
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),

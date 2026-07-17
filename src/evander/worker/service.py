@@ -249,8 +249,7 @@ class WorkerDaemon:
         if terminal and (oom_killed or runtime_error):
             metadata["worker_terminal_kind"] = "infrastructure"
             record.error = (
-                runtime_error
-                or "container was terminated after exceeding its memory limit"
+                runtime_error or "container was terminated after exceeding its memory limit"
             )
         elif terminal and raw_exit_code is not None:
             try:
@@ -822,9 +821,7 @@ class WorkerDaemon:
         return WorkerTaskWorktreeRecord(
             session_id=session_id,
             repo_name=request.repo_name,
-            target_dir=(
-                f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"
-            ),
+            target_dir=(f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"),
             branch=request.branch,
             commit_sha=self._git_commit_sha(target_dir, paths.agent_home),
             created=created,
@@ -1719,12 +1716,16 @@ class WorkerDaemon:
         required: bool,
     ) -> None:
         target_dir = paths.agent_home / ".ssh"
-        if required and self._managed_regular_file_exists_no_follow(
-            target_dir / "config",
-            label="SSH config",
-        ) and any(
-            self._managed_regular_file_exists_no_follow(target_dir / key_name, label="Git key")
-            for key_name in ("evander-git-write", "evander-git")
+        if (
+            required
+            and self._managed_regular_file_exists_no_follow(
+                target_dir / "config",
+                label="SSH config",
+            )
+            and any(
+                self._managed_regular_file_exists_no_follow(target_dir / key_name, label="Git key")
+                for key_name in ("evander-git-write", "evander-git")
+            )
         ):
             return
         if self.git_ssh_source_dir is None:

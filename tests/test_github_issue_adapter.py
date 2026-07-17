@@ -115,11 +115,7 @@ def test_github_issue_adapter_scans_until_labels_any_matches(monkeypatch) -> Non
                     "html_url": "https://github.com/owner/repo/issues/41",
                 }
             ],
-            links={
-                "next": {
-                    "url": "https://api.github.test/repos/owner/repo/issues?page=2"
-                }
-            },
+            links={"next": {"url": "https://api.github.test/repos/owner/repo/issues?page=2"}},
         ),
         _Response(
             [

@@ -79,7 +79,9 @@ class _ContainerBackendStub:
         return SimpleNamespace(status=ExecutionStatusKind.RUNNING)
 
 
-def _build_dispatcher(tmp_path: Path) -> tuple[
+def _build_dispatcher(
+    tmp_path: Path,
+) -> tuple[
     HostWakeDispatcher,
     GatewayConfig,
     JsonSessionManifestRepository,
@@ -149,17 +151,20 @@ def test_container_target_name_prefers_metadata_then_provider_then_session_id() 
     assert HostWakeDispatcher._container_target_name(session=session, session_id="session-1") == (
         "metadata-target"
     )
-    assert HostWakeDispatcher._container_target_name(
-        session=SessionManifest(
+    assert (
+        HostWakeDispatcher._container_target_name(
+            session=SessionManifest(
+                session_id="session-2",
+                vm_id=None,
+                vm_provider="container_worker_vm",
+                vm_provider_id="provider-target",
+                allowed_tools=[ToolName.SCHEDULE_RESUME],
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
             session_id="session-2",
-            vm_id=None,
-            vm_provider="container_worker_vm",
-            vm_provider_id="provider-target",
-            allowed_tools=[ToolName.SCHEDULE_RESUME],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-        session_id="session-2",
-    ) == "provider-target"
+        )
+        == "provider-target"
+    )
     assert HostWakeDispatcher._container_target_name(session=None, session_id="session-3") == (
         "session-3"
     )

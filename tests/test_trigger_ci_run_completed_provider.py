@@ -314,9 +314,7 @@ def test_github_ci_runs_skip_unknown_conclusions_when_filtering(
     provider.initialize(trigger, _context(runtime_dir))
 
     events = provider.poll()
-    assert [event.event_id for event in events] == [
-        "ci-trigger:github_actions:owner/repo:151:1"
-    ]
+    assert [event.event_id for event in events] == ["ci-trigger:github_actions:owner/repo:151:1"]
     assert events[0].payload["conclusion"] == "failure"
 
 
@@ -477,9 +475,7 @@ def test_github_ci_runs_initialize_empty_first_poll_before_emitting_new_runs(
     ]
 
     events = provider.poll()
-    assert [event.event_id for event in events] == [
-        "ci-trigger:github_actions:owner/repo:251:1"
-    ]
+    assert [event.event_id for event in events] == ["ci-trigger:github_actions:owner/repo:251:1"]
     assert events[0].payload["completed_at"] == "2026-04-03T12:10:00Z"
 
 
@@ -509,9 +505,16 @@ def test_ado_ci_runs_use_directory_config_fallback_and_normalize_results(
             "sourceVersion": "commit-success",
             "definition": {"id": 9001, "name": "nightly"},
             "requestedFor": {"displayName": "Ada"},
-            "repository": {"id": "repo-id", "name": "repo", "url": "https://dev.azure.com/example/Sandbox/_git/repo"},
+            "repository": {
+                "id": "repo-id",
+                "name": "repo",
+                "url": "https://dev.azure.com/example/Sandbox/_git/repo",
+            },
             "webUrl": "https://dev.azure.com/example/Sandbox/_build/results?buildId=301",
-            "triggerInfo": {"pr.number": "17", "pr.url": "https://dev.azure.com/example/Sandbox/_git/repo/pullrequest/17"},
+            "triggerInfo": {
+                "pr.number": "17",
+                "pr.url": "https://dev.azure.com/example/Sandbox/_git/repo/pullrequest/17",
+            },
         },
         {
             "id": 302,
@@ -525,7 +528,11 @@ def test_ado_ci_runs_use_directory_config_fallback_and_normalize_results(
             "sourceVersion": "commit-failure",
             "definition": {"id": 9001, "name": "nightly"},
             "requestedFor": {"displayName": "Bob"},
-            "repository": {"id": "repo-id", "name": "repo", "url": "https://dev.azure.com/example/Sandbox/_git/repo"},
+            "repository": {
+                "id": "repo-id",
+                "name": "repo",
+                "url": "https://dev.azure.com/example/Sandbox/_git/repo",
+            },
             "webUrl": "https://dev.azure.com/example/Sandbox/_build/results?buildId=302",
         },
         {
@@ -540,7 +547,11 @@ def test_ado_ci_runs_use_directory_config_fallback_and_normalize_results(
             "sourceVersion": "commit-cancelled",
             "definition": {"id": 9001, "name": "nightly"},
             "requestedBy": {"displayName": "Carol"},
-            "repository": {"id": "repo-id", "name": "repo", "url": "https://dev.azure.com/example/Sandbox/_git/repo"},
+            "repository": {
+                "id": "repo-id",
+                "name": "repo",
+                "url": "https://dev.azure.com/example/Sandbox/_git/repo",
+            },
             "webUrl": "https://dev.azure.com/example/Sandbox/_build/results?buildId=303",
         },
         {
@@ -555,7 +566,11 @@ def test_ado_ci_runs_use_directory_config_fallback_and_normalize_results(
             "sourceVersion": "commit-timeout",
             "definition": {"id": 9001, "name": "nightly"},
             "requestedFor": {"displayName": "Dana"},
-            "repository": {"id": "repo-id", "name": "repo", "url": "https://dev.azure.com/example/Sandbox/_git/repo"},
+            "repository": {
+                "id": "repo-id",
+                "name": "repo",
+                "url": "https://dev.azure.com/example/Sandbox/_git/repo",
+            },
             "webUrl": "https://dev.azure.com/example/Sandbox/_build/results?buildId=304",
         },
         {
@@ -570,7 +585,11 @@ def test_ado_ci_runs_use_directory_config_fallback_and_normalize_results(
             "sourceVersion": "commit-other",
             "definition": {"id": 9002, "name": "other"},
             "requestedFor": {"displayName": "Eve"},
-            "repository": {"id": "repo-id", "name": "repo", "url": "https://dev.azure.com/example/Sandbox/_git/repo"},
+            "repository": {
+                "id": "repo-id",
+                "name": "repo",
+                "url": "https://dev.azure.com/example/Sandbox/_git/repo",
+            },
             "webUrl": "https://dev.azure.com/example/Sandbox/_build/results?buildId=305",
         },
     ]
@@ -598,7 +617,9 @@ def test_ado_ci_runs_use_directory_config_fallback_and_normalize_results(
         include_existing=True,
     )
     provider = CiRunCompletedTriggerProvider()
-    provider.initialize(trigger, _context(runtime_dir, env={"ADO_PAT": "ado-secret"}, resolver=resolver))
+    provider.initialize(
+        trigger, _context(runtime_dir, env={"ADO_PAT": "ado-secret"}, resolver=resolver)
+    )
 
     events = provider.poll()
     assert resolver.calls == ["root/team-a", "root/team-a"]

@@ -169,9 +169,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 repo_name=repo_name,
                 reconcile_existing_remote=bool(
                     isinstance(getattr(session, "metadata", None), Mapping)
-                    and session.metadata.get(
-                        "managed_git_remote_reconciliation_required"
-                    )
+                    and session.metadata.get("managed_git_remote_reconciliation_required")
                 ),
             )
             self._write_container_git_helpers(
@@ -206,9 +204,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                     git_committer_identity=git_committer_identity,
                     timeout_seconds=container_job_timeout_seconds,
                 )
-            bind_repository = getattr(
-                context.admin_service, "bind_managed_git_repository", None
-            )
+            bind_repository = getattr(context.admin_service, "bind_managed_git_repository", None)
             if callable(bind_repository):
                 bind_repository(
                     managed_repo_id=managed_repo_id,
@@ -319,15 +315,12 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             except Exception:
                 failures.append("session Git access metadata cleanup failed")
             if not metadata_cleared and not any(
-                failure == "session Git access metadata cleanup failed"
-                for failure in failures
+                failure == "session Git access metadata cleanup failed" for failure in failures
             ):
                 failures.append("session Git access metadata changed during cleanup")
 
         if host_access_revoked and worker_key_files_removed and metadata_cleared:
-            unbind = getattr(
-                context.admin_service, "unbind_managed_git_repositories", None
-            )
+            unbind = getattr(context.admin_service, "unbind_managed_git_repositories", None)
             if callable(unbind):
                 try:
                     unbind(kind="authorized_sessions", binding_id=session_id)
@@ -424,9 +417,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             )
         try:
             _record_session_git_write_access(context, session_id, metadata)
-            bind_repository = getattr(
-                context.admin_service, "bind_managed_git_repository", None
-            )
+            bind_repository = getattr(context.admin_service, "bind_managed_git_repository", None)
             if callable(bind_repository):
                 bind_repository(
                     managed_repo_id=managed_repo_id,

@@ -18,6 +18,7 @@ from ..domain.common import (
     _string_list,
 )
 
+
 def _team_publish_review_branch_normalized_payload(
     *,
     assignment_id: str | None,
@@ -39,6 +40,7 @@ def _team_publish_review_branch_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _team_update_feature_branch_normalized_payload(
     *,
@@ -62,6 +64,7 @@ def _team_update_feature_branch_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _team_request_release_normalized_payload(
     *,
@@ -102,6 +105,7 @@ def _team_request_release_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _team_recover_release_normalized_payload(
     *,
@@ -157,6 +161,7 @@ def _team_retry_release_gate_normalized_payload(
         "causation_id": _optional_text(causation_id),
     }
 
+
 def _empty_git_command_result() -> dict[str, Any]:
     return {
         "errors": [],
@@ -167,6 +172,7 @@ def _empty_git_command_result() -> dict[str, Any]:
         "created_deliverable_ids": [],
         "updated_deliverable_ids": [],
     }
+
 
 def _git_command_validation_error(
     result: Mapping[str, Any],
@@ -184,6 +190,7 @@ def _git_command_validation_error(
         message=message,
         correction_context={"errors": messages},
     )
+
 
 def _release_command_next_action_hints(
     state: TeamState,
@@ -212,13 +219,14 @@ def _release_command_next_action_hints(
         "Git promotion intent recorded; wait for async effect completion before taking the next release step."
     ]
 
+
 __all__ = [
-    '_team_publish_review_branch_normalized_payload',
-    '_team_update_feature_branch_normalized_payload',
-    '_team_request_release_normalized_payload',
-    '_team_recover_release_normalized_payload',
-    '_team_retry_release_gate_normalized_payload',
-    '_empty_git_command_result',
-    '_git_command_validation_error',
-    '_release_command_next_action_hints',
+    "_team_publish_review_branch_normalized_payload",
+    "_team_update_feature_branch_normalized_payload",
+    "_team_request_release_normalized_payload",
+    "_team_recover_release_normalized_payload",
+    "_team_retry_release_gate_normalized_payload",
+    "_empty_git_command_result",
+    "_git_command_validation_error",
+    "_release_command_next_action_hints",
 ]

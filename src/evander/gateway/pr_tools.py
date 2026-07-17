@@ -9,10 +9,6 @@ from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field as PydanticField
 
-from evander.pr_feedback.providers import (
-    AzureDevOpsFeedbackAdapter,
-    GitHubFeedbackAdapter,
-)
 from evander.models import (
     CancelScheduledWakeResponse,
     GetPullRequestRequest,
@@ -972,9 +968,7 @@ def register_pr_tools(
             }
             inline_resolved_mentions = result.get("inline_resolved_mentions") or []
             if any(inline_resolved_mentions):
-                audit_result["inline_resolved_mentions"] = result.get(
-                    "inline_resolved_mentions"
-                )
+                audit_result["inline_resolved_mentions"] = result.get("inline_resolved_mentions")
             audit_success(
                 request.session_id,
                 ToolName.POST_PR_INLINE_COMMENT,
@@ -1087,9 +1081,7 @@ def register_pr_tools(
                 audit_result["resolved_mentions"] = result.get("resolved_mentions")
             inline_resolved_mentions = result.get("inline_resolved_mentions") or []
             if any(inline_resolved_mentions):
-                audit_result["inline_resolved_mentions"] = result.get(
-                    "inline_resolved_mentions"
-                )
+                audit_result["inline_resolved_mentions"] = result.get("inline_resolved_mentions")
             audit_success(
                 request.session_id,
                 ToolName.SUBMIT_PR_REVIEW,

@@ -19,8 +19,7 @@ def validate_environment_variable_name(name: object) -> str:
     normalized = str(name)
     if not _ENVIRONMENT_VARIABLE_NAME_PATTERN.fullmatch(normalized):
         raise ValueError(
-            "Invalid environment variable name "
-            f"{normalized!r}; expected ^[A-Za-z_][A-Za-z0-9_]*$"
+            f"Invalid environment variable name {normalized!r}; expected ^[A-Za-z_][A-Za-z0-9_]*$"
         )
     return normalized
 

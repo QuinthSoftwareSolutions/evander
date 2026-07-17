@@ -958,9 +958,7 @@ def test_approval_pending_created_trigger_output_schema_exposes_approval_payload
         "type": "string"
     }
     assert schema["approval_request"]["properties"]["request_id"] == {"type": "string"}
-    assert schema["approval_request"]["properties"]["notification_status"] == {
-        "type": "string"
-    }
+    assert schema["approval_request"]["properties"]["notification_status"] == {"type": "string"}
 
 
 def test_await_agent_gate_requires_session_id_or_vm_name() -> None:

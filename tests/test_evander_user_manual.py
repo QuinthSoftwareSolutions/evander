@@ -42,9 +42,7 @@ def test_manual_manifest_covers_thirty_ordered_chapters() -> None:
     assert manifest["title"] == "Evander Technical Manual"
     assert manifest["subtitle"] == "Core Platform and Team Add-on"
     assert len(rows) == 30
-    assert [int(title.split(".", 1)[0]) for _part, _path, title in rows] == list(
-        range(1, 31)
-    )
+    assert [int(title.split(".", 1)[0]) for _part, _path, title in rows] == list(range(1, 31))
     assert len({path.name for _part, path, _title in rows}) == 30
 
 
@@ -254,12 +252,8 @@ def test_design_history_is_explicitly_non_normative() -> None:
 def test_northstar_names_are_reserved_for_team_chapters() -> None:
     introduction = (CHAPTERS / "01-reading-paths.md").read_text(encoding="utf-8")
     paths = sorted(CHAPTERS.glob("*.md"))
-    core_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in paths[:15]
-    )
-    team_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in paths[15:25]
-    )
+    core_text = "\n".join(path.read_text(encoding="utf-8") for path in paths[:15])
+    team_text = "\n".join(path.read_text(encoding="utf-8") for path in paths[15:25])
     chapter_text = f"{core_text}\n{team_text}"
 
     assert "In Chapters 1–15, agents are described by what they do" in introduction

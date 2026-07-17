@@ -120,9 +120,7 @@ def test_teams_meeting_config_defaults_follow_runtime_dir_and_normalize_bridge_u
 
     assert config.teams_meeting_media_bridge_url == "https://bridge.example"
     assert config.teams_meeting_default_voice == "en-US-JennyNeural"
-    assert str(config.teams_meeting_store_path) == (
-        "/tmp/evander-runtime/teams-meetings.json"
-    )
+    assert str(config.teams_meeting_store_path) == ("/tmp/evander-runtime/teams-meetings.json")
 
 
 def test_teams_meeting_ingest_worker_config_defaults_follow_runtime_dir() -> None:
@@ -289,9 +287,9 @@ def test_teams_meeting_start_projects_origin_session_into_realtime_bridge(
 
     context = make_context(tmp_path, teams_meeting_media_bridge_url="https://bridge.example")
     context.session_repository.upsert_session(
-            SessionManifest(
-                session_id="origin-session",
-                directory_path="root",
+        SessionManifest(
+            session_id="origin-session",
+            directory_path="root",
             model="gpt-5.4",
             allowed_tools=[ToolName.TEAMS_MEETING_GET_EVENTS],
             metadata={"agent_thread_id": "thread-keep"},
@@ -327,8 +325,7 @@ def test_teams_meeting_start_projects_origin_session_into_realtime_bridge(
         for item in join_call["projection"]["tool_summary"]["available_tools"]
     )
     assert any(
-        item["tool_name"] == ToolName.TEAMS_MEETING_SPEAK.value
-        and "not allowed" in item["reason"]
+        item["tool_name"] == ToolName.TEAMS_MEETING_SPEAK.value and "not allowed" in item["reason"]
         for item in join_call["projection"]["tool_summary"]["unavailable_tools"]
     )
     assert "Available MCP tools: teams_meeting_get_events" in join_call["projection"]["context"]
@@ -443,7 +440,9 @@ def test_teams_meeting_ingest_worker_polls_new_bridge_events_once(tmp_path: Path
 
     assert first.events_ingested == 2
     assert second.events_ingested == 0
-    assert [event.text for event in context.teams_meeting_store.list_events_for_session("session-1")] == [
+    assert [
+        event.text for event in context.teams_meeting_store.list_events_for_session("session-1")
+    ] == [
         "hello",
         "second",
     ]
@@ -506,7 +505,9 @@ def test_teams_meeting_ingest_worker_uses_shared_lock_and_busy_message(
 
 
 def test_teams_meeting_transcript_trigger_emits_transcripts_once(tmp_path: Path) -> None:
-    config = GatewayConfig(runtime_dir=tmp_path, teams_meeting_store_path=tmp_path / "meetings.json")
+    config = GatewayConfig(
+        runtime_dir=tmp_path, teams_meeting_store_path=tmp_path / "meetings.json"
+    )
     store = TeamsMeetingStore(config.teams_meeting_store_path)
     store.upsert_binding(TeamsMeetingBinding(meeting_id="meeting-1", session_id="session-1"))
     store.append_bridge_events(
@@ -544,15 +545,15 @@ def test_teams_meeting_transcript_trigger_emits_transcripts_once(tmp_path: Path)
     cursor_payload = json.loads(
         (tmp_path / "trigger-cursors-teams-meeting.json").read_text(encoding="utf-8")
     )
-    assert cursor_payload["meeting-trigger"] == {
-        "last_sequences_by_meeting": {"meeting-1": 1}
-    }
+    assert cursor_payload["meeting-trigger"] == {"last_sequences_by_meeting": {"meeting-1": 1}}
 
 
 def test_teams_meeting_transcript_trigger_uses_monotonic_sequence_cursor(
     tmp_path: Path,
 ) -> None:
-    config = GatewayConfig(runtime_dir=tmp_path, teams_meeting_store_path=tmp_path / "meetings.json")
+    config = GatewayConfig(
+        runtime_dir=tmp_path, teams_meeting_store_path=tmp_path / "meetings.json"
+    )
     store = TeamsMeetingStore(config.teams_meeting_store_path)
     store.upsert_binding(TeamsMeetingBinding(meeting_id="meeting-1", session_id="session-1"))
     store.append_bridge_events(
@@ -592,6 +593,4 @@ def test_teams_meeting_transcript_trigger_uses_monotonic_sequence_cursor(
     cursor_payload = json.loads(
         (tmp_path / "trigger-cursors-teams-meeting.json").read_text(encoding="utf-8")
     )
-    assert cursor_payload["meeting-trigger"] == {
-        "last_sequences_by_meeting": {"meeting-1": 600}
-    }
+    assert cursor_payload["meeting-trigger"] == {"last_sequences_by_meeting": {"meeting-1": 600}}

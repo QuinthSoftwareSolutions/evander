@@ -7128,6 +7128,8 @@ select {
 
 .sessions-page .feature-grid {
   gap: 1.15rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(34rem, 100%), 1fr));
+  align-items: start;
 }
 
 .sessions-filter-grid {

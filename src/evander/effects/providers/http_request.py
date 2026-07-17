@@ -114,9 +114,7 @@ class HttpRequestEffectProvider(EffectProviderBase):
         if self._url_requires_explicit_allowlist(resolved_config_map):
             self._enforce_explicit_bound_url_allowlist(
                 allowed_url_patterns=allowed_url_patterns,
-                explicit_allowlist=self._allowed_url_patterns_was_explicit(
-                    resolved_config_map
-                ),
+                explicit_allowlist=self._allowed_url_patterns_was_explicit(resolved_config_map),
             )
         self._enforce_allowed_url(url, allowed_url_patterns)
         approved_destination = self._enforce_destination_policy(
@@ -300,18 +298,12 @@ class HttpRequestEffectProvider(EffectProviderBase):
         explicit_allowlist: bool,
     ) -> None:
         if not explicit_allowlist:
-            raise ValueError(
-                f"{NODE_TYPE} bound urls require explicit allowed_url_patterns"
-            )
+            raise ValueError(f"{NODE_TYPE} bound urls require explicit allowed_url_patterns")
         global_patterns = [
-            pattern
-            for pattern in allowed_url_patterns
-            if cls._pattern_allows_any_host(pattern)
+            pattern for pattern in allowed_url_patterns if cls._pattern_allows_any_host(pattern)
         ]
         if global_patterns:
-            raise ValueError(
-                f"{NODE_TYPE} bound urls require host-restricted allowed_url_patterns"
-            )
+            raise ValueError(f"{NODE_TYPE} bound urls require host-restricted allowed_url_patterns")
 
     @staticmethod
     def _pattern_allows_any_host(pattern: str) -> bool:
@@ -355,8 +347,7 @@ class HttpRequestEffectProvider(EffectProviderBase):
             return _ApprovedDestination()
         if not allow_private_networks and cls._is_localhost_name(normalized_host):
             raise ValueError(
-                f"{NODE_TYPE} url targets a blocked private, loopback, "
-                "or link-local destination"
+                f"{NODE_TYPE} url targets a blocked private, loopback, or link-local destination"
             )
         resolved_addresses = cls._resolve_host_addresses(
             normalized_host, parsed.port or cls._default_port(parsed.scheme)
@@ -446,9 +437,7 @@ class HttpRequestEffectProvider(EffectProviderBase):
         address = cls._parse_ip_address(normalized)
         if address is not None:
             normalized = str(cls._canonical_address_for_policy(address))
-        return normalized in _METADATA_HOSTS or normalized.endswith(
-            ".metadata.google.internal"
-        )
+        return normalized in _METADATA_HOSTS or normalized.endswith(".metadata.google.internal")
 
     @staticmethod
     def _url_match_candidates(url: str) -> dict[str, str]:

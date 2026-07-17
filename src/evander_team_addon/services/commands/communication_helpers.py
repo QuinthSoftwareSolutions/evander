@@ -13,6 +13,7 @@ from ..domain.common import (
     _required_text,
 )
 
+
 def _team_record_note_normalized_payload(
     *,
     body: str,
@@ -28,6 +29,7 @@ def _team_record_note_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _team_communication_normalized_payload(
     *,
@@ -57,6 +59,7 @@ def _team_communication_normalized_payload(
         "causation_id": _optional_text(causation_id),
     }
 
+
 def _team_chat_reply_normalized_payload(
     *,
     conversation_id: str,
@@ -74,6 +77,7 @@ def _team_chat_reply_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _team_operator_chat_normalized_payload(
     *,
@@ -94,6 +98,7 @@ def _team_operator_chat_normalized_payload(
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
     }
+
 
 def _team_operator_escalation_normalized_payload(
     *,
@@ -119,10 +124,11 @@ def _team_operator_escalation_normalized_payload(
         "causation_id": _optional_text(causation_id),
     }
 
+
 __all__ = [
-    '_team_record_note_normalized_payload',
-    '_team_communication_normalized_payload',
-    '_team_chat_reply_normalized_payload',
-    '_team_operator_chat_normalized_payload',
-    '_team_operator_escalation_normalized_payload',
+    "_team_record_note_normalized_payload",
+    "_team_communication_normalized_payload",
+    "_team_chat_reply_normalized_payload",
+    "_team_operator_chat_normalized_payload",
+    "_team_operator_escalation_normalized_payload",
 ]

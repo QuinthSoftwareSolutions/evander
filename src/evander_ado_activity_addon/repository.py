@@ -456,10 +456,7 @@ def _record_key(record: Mapping[str, Any]) -> str:
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
-    return {
-        str(row["name"])
-        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    }
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
 
 def _row_to_item(row: sqlite3.Row, *, include_raw: bool) -> dict[str, Any]:

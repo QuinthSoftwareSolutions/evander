@@ -54,9 +54,7 @@ def test_didww_sip_bridge_imports_with_deprecation_warnings_as_errors() -> None:
     existing_pythonpath = os.environ.get("PYTHONPATH")
     env = os.environ.copy()
     env["PYTHONPATH"] = (
-        src_path
-        if not existing_pythonpath
-        else os.pathsep.join([src_path, existing_pythonpath])
+        src_path if not existing_pythonpath else os.pathsep.join([src_path, existing_pythonpath])
     )
 
     result = subprocess.run(
@@ -501,10 +499,7 @@ def test_debug_events_are_exposed_without_changing_transcript_events(
     )
     stored = store.get("voice-1")
     assert stored is not None
-    before = [
-        event.model_dump(mode="json")
-        for event in stored.transcript_events
-    ]
+    before = [event.model_dump(mode="json") for event in stored.transcript_events]
 
     store.append_debug_event(
         "voice-1",
@@ -989,7 +984,9 @@ def test_voice_media_controller_client_provisions_and_syncs_inbound_call(
         "/voice-sessions/inbound-phone-calls",
         "/voice-sessions/voice-inbound-1/bridge-result",
     ]
-    assert all(request.headers["authorization"] == "Bearer controller-token" for request in requests)
+    assert all(
+        request.headers["authorization"] == "Bearer controller-token" for request in requests
+    )
 
 
 def test_asterisk_ari_client_waits_for_stasis_before_bridge_add(
@@ -1425,8 +1422,8 @@ def test_rtp_endpoint_reports_zero_samples_without_remote_address(tmp_path: Path
 @pytest.mark.parametrize(
     ("media_format", "source_byte", "silence_byte"),
     [
-        ("alaw", b"\x11", b"\xD5"),
-        ("ulaw", b"\x55", b"\xFF"),
+        ("alaw", b"\x11", b"\xd5"),
+        ("ulaw", b"\x55", b"\xff"),
     ],
 )
 def test_barge_in_fade_payload_fades_g711_audio_to_codec_silence(
@@ -1457,8 +1454,8 @@ def test_barge_in_fade_payload_fades_g711_audio_to_codec_silence(
 @pytest.mark.parametrize(
     ("media_format", "source_byte", "silence_byte"),
     [
-        ("alaw", b"\x11", b"\xD5"),
-        ("ulaw", b"\x55", b"\xFF"),
+        ("alaw", b"\x11", b"\xd5"),
+        ("ulaw", b"\x55", b"\xff"),
     ],
 )
 def test_barge_in_fade_payload_pads_short_audio_with_codec_silence(
@@ -1514,7 +1511,7 @@ def test_realtime_function_call_parser_accepts_output_item_done() -> None:
                 "type": "function_call",
                 "call_id": "call-tool-1",
                 "name": "query_origin_agent",
-                "arguments": "{\"question\":\"What changed?\"}",
+                "arguments": '{"question":"What changed?"}',
             },
         }
     )
@@ -1705,11 +1702,14 @@ def test_backchannel_classifier_accepts_fuzzy_asr_corruption_and_rejects_substan
     transcript: str,
     expected: bool,
 ) -> None:
-    assert didww_sip_bridge._is_backchannel_transcript(
-        transcript,
-        phrases=list(didww_sip_bridge._DEFAULT_BACKCHANNEL_PHRASES),
-        max_words=3,
-    ) is expected
+    assert (
+        didww_sip_bridge._is_backchannel_transcript(
+            transcript,
+            phrases=list(didww_sip_bridge._DEFAULT_BACKCHANNEL_PHRASES),
+            max_words=3,
+        )
+        is expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -1723,12 +1723,15 @@ def test_backchannel_classifier_threshold_controls_fuzzy_matching(
     fuzzy_threshold: float,
     expected: bool,
 ) -> None:
-    assert didww_sip_bridge._is_backchannel_transcript(
-        "okey",
-        phrases=list(didww_sip_bridge._DEFAULT_BACKCHANNEL_PHRASES),
-        max_words=3,
-        fuzzy_threshold=fuzzy_threshold,
-    ) is expected
+    assert (
+        didww_sip_bridge._is_backchannel_transcript(
+            "okey",
+            phrases=list(didww_sip_bridge._DEFAULT_BACKCHANNEL_PHRASES),
+            max_words=3,
+            fuzzy_threshold=fuzzy_threshold,
+        )
+        is expected
+    )
 
 
 def test_realtime_config_defaults_and_env_overrides(
@@ -1907,7 +1910,9 @@ def test_realtime_session_config_error_retries_once_for_unsupported_optional_fie
     assert "error" in event_types
     assert "realtime.session_config_fallback" in event_types
     fallback_event = next(
-        event for event in latest.debug_events if event.event_type == "realtime.session_config_fallback"
+        event
+        for event in latest.debug_events
+        if event.event_type == "realtime.session_config_fallback"
     )
     assert fallback_event.metadata["removed_features"] == [
         "audio.input.noise_reduction",
@@ -2359,7 +2364,12 @@ def test_inbound_phone_call_provisioning_and_bridge_use_route_specific_greeting(
         )
         record = store.get("voice-inbound-1")
         assert record is not None
-        return events, record, gateway_client.requests, service.store.get("voice-inbound-1").response_payload()
+        return (
+            events,
+            record,
+            gateway_client.requests,
+            service.store.get("voice-inbound-1").response_payload(),
+        )
 
     events, record, gateway_requests, response_payload = asyncio.run(run())
 
@@ -2393,10 +2403,19 @@ def test_inbound_phone_call_provisioning_and_bridge_use_route_specific_greeting(
         "rtp_close",
     ]
     assert record.response_payload()["metadata"]["to_number"] == "***0100"
-    assert "thanks for calling ops." in initial_inbound_call_instructions(
-        {"route_prompt": "Answer inbound calls for ops.", "startup_text": "Thanks for calling ops."},
-        {"prompt": "Answer inbound calls for ops.", "caller_metadata": {"direction": "inbound"}},
-    ).lower()
+    assert (
+        "thanks for calling ops."
+        in initial_inbound_call_instructions(
+            {
+                "route_prompt": "Answer inbound calls for ops.",
+                "startup_text": "Thanks for calling ops.",
+            },
+            {
+                "prompt": "Answer inbound calls for ops.",
+                "caller_metadata": {"direction": "inbound"},
+            },
+        ).lower()
+    )
 
 
 def test_inbound_call_tracks_startup_rtp_before_initial_response(
@@ -2726,9 +2745,7 @@ def test_realtime_idle_prompt_is_cancelled_when_caller_speaks_during_countdown(
     assert realtime.responses == []
     latest = store.get("voice-1")
     assert latest is not None
-    assert "bridge.idle_prompt.cancelled" in [
-        event.event_type for event in latest.debug_events
-    ]
+    assert "bridge.idle_prompt.cancelled" in [event.event_type for event in latest.debug_events]
 
 
 def test_realtime_tool_response_cancels_pending_idle_prompt(
@@ -2834,9 +2851,7 @@ def test_realtime_tool_response_cancels_pending_idle_prompt(
 
     realtime = asyncio.run(run())
 
-    assert realtime.responses == [
-        didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS
-    ]
+    assert realtime.responses == [didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS]
     answer_text = didww_sip_bridge._ORIGIN_QUERY_ANSWER_RESPONSE_INSTRUCTIONS.lower()
     assert "earlier question" in answer_text
     assert (
@@ -3264,9 +3279,7 @@ def test_realtime_end_call_waits_for_rtp_drain_before_hangup(
 
     realtime = asyncio.run(run())
 
-    assert realtime.tool_outputs == [
-        {"call_id": "tool-call-1", "output": {"status": "ended"}}
-    ]
+    assert realtime.tool_outputs == [{"call_id": "tool-call-1", "output": {"status": "ended"}}]
     assert order.index("send_done") < order.index("hangup:media-didww-test")
     assert order.index("hangup:media-didww-test") < order.index("tool_output:tool-call-1")
     latest = store.get(record.voice_session_id)
@@ -3377,9 +3390,7 @@ def test_realtime_end_call_waits_for_caller_turn_completion_before_hangup(
 
     realtime = asyncio.run(run())
 
-    assert realtime.tool_outputs == [
-        {"call_id": "tool-call-1", "output": {"status": "ended"}}
-    ]
+    assert realtime.tool_outputs == [{"call_id": "tool-call-1", "output": {"status": "ended"}}]
     assert order.index("conversation.item.input_audio_transcription.completed") < order.index(
         "hangup:media-didww-test"
     )
@@ -3479,9 +3490,7 @@ def test_realtime_end_call_waits_for_response_done_before_hangup(
 
     realtime = asyncio.run(run())
 
-    assert realtime.tool_outputs == [
-        {"call_id": "tool-call-1", "output": {"status": "ended"}}
-    ]
+    assert realtime.tool_outputs == [{"call_id": "tool-call-1", "output": {"status": "ended"}}]
     assert order.index("response.done") < order.index("hangup:media-didww-test")
     assert order.index("hangup:media-didww-test") < order.index("tool_output:tool-call-1")
     latest = store.get(record.voice_session_id)
@@ -3604,9 +3613,7 @@ def test_realtime_end_call_duplicates_do_not_duplicate_cleanup(
 
     realtime = asyncio.run(run())
 
-    assert realtime.tool_outputs == [
-        {"call_id": "tool-call-1", "output": {"status": "ended"}}
-    ]
+    assert realtime.tool_outputs == [{"call_id": "tool-call-1", "output": {"status": "ended"}}]
     assert order.count("hangup:media-didww-test") == 1
     assert order.count("hangup:call-didww-test") == 1
     assert order.count("destroy:bridge-didww-test") == 1
@@ -3616,9 +3623,7 @@ def test_realtime_end_call_duplicates_do_not_duplicate_cleanup(
 
 
 def test_goodbye_transcript_does_not_treat_inbound_greetings_as_closings() -> None:
-    assert not didww_sip_bridge._is_goodbye_transcript(
-        "Thanks for calling, how can I help?"
-    )
+    assert not didww_sip_bridge._is_goodbye_transcript("Thanks for calling, how can I help?")
     assert not didww_sip_bridge._is_goodbye_transcript(
         "Thank you for calling Truman support. How may I direct your call?"
     )
@@ -4758,7 +4763,11 @@ def test_substantive_speech_during_assistant_audio_sends_one_cancel(
         def __init__(self) -> None:
             self.events: list[dict[str, Any]] = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
-                {"type": "response.output_audio.delta", "response_id": "resp-1", "delta": audio_delta},
+                {
+                    "type": "response.output_audio.delta",
+                    "response_id": "resp-1",
+                    "delta": audio_delta,
+                },
                 {"type": "input_audio_buffer.speech_started", "audio_start_ms": 100},
                 {"type": "__sleep__", "seconds": 0.05},
                 {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 1200},
@@ -5429,9 +5438,7 @@ def test_barge_in_cancel_fades_queued_rtp_audio_before_later_response(
 
     async def run() -> tuple[FakeRealtime, FakeRtp]:
         service = DidwwSipBridgeService(
-            _config(tmp_path).model_copy(
-                update={"barge_in_delay_ms": 10, "barge_in_fade_ms": 40}
-            ),
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10, "barge_in_fade_ms": 40}),
             store=store,
             start_background_tasks=False,
         )
@@ -5570,9 +5577,7 @@ def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
 
     async def run() -> tuple[FakeRealtime, FakeRtp]:
         service = DidwwSipBridgeService(
-            _config(
-                tmp_path
-            ).model_copy(update={"barge_in_delay_ms": 10, "barge_in_fade_ms": 0}),
+            _config(tmp_path).model_copy(update={"barge_in_delay_ms": 10, "barge_in_fade_ms": 0}),
             store=store,
             start_background_tasks=False,
         )
@@ -6009,11 +6014,15 @@ def test_realtime_function_call_creates_pending_origin_query_and_injects_answer(
     assert "origin_query.answered" in event_types
     assert "origin_query.result_injected" in event_types
     assert "origin_query.response_requested" in event_types
-    created = next(event for event in latest.debug_events if event.event_type == "origin_query.created")
+    created = next(
+        event for event in latest.debug_events if event.event_type == "origin_query.created"
+    )
     assert created.metadata["query_id"] == "voice-query-1"
     assert created.metadata["question_snippet"] == "What changed?"
     requested = next(
-        event for event in latest.debug_events if event.event_type == "origin_query.response_requested"
+        event
+        for event in latest.debug_events
+        if event.event_type == "origin_query.response_requested"
     )
     assert requested.metadata["reason"] == "query_result"
     assert len(requested.metadata["instruction_sha256"]) == 64
@@ -7524,7 +7533,13 @@ def test_origin_query_caller_patience_keeps_query_pending_for_reuse(
                 "error": "Timed out while calling +15551234567 for help.",
             }
 
-    async def run() -> tuple[FakeRealtime, FakeController, float, dict[str, didww_sip_bridge.OriginQueryState], dict[str, didww_sip_bridge.OriginQueryState]]:
+    async def run() -> tuple[
+        FakeRealtime,
+        FakeController,
+        float,
+        dict[str, didww_sip_bridge.OriginQueryState],
+        dict[str, didww_sip_bridge.OriginQueryState],
+    ]:
         service = DidwwSipBridgeService(
             _config(tmp_path).model_copy(
                 update={
@@ -7774,11 +7789,15 @@ def test_origin_query_timeout_persists_debug_events(tmp_path: Path) -> None:
     assert "origin_query.timeout" in event_types
     assert "origin_query.result_injected" in event_types
     assert "origin_query.response_requested" in event_types
-    timeout_event = next(event for event in latest.debug_events if event.event_type == "origin_query.timeout")
+    timeout_event = next(
+        event for event in latest.debug_events if event.event_type == "origin_query.timeout"
+    )
     assert timeout_event.metadata["query_id"] == "voice-query-timeout"
     assert timeout_event.metadata["reason"] == "timeout"
     requested = next(
-        event for event in latest.debug_events if event.event_type == "origin_query.response_requested"
+        event
+        for event in latest.debug_events
+        if event.event_type == "origin_query.response_requested"
     )
     assert requested.metadata["reason"] == "query_timeout"
     debug_json = json.dumps(
@@ -8028,7 +8047,9 @@ def test_realtime_active_response_error_requeues_response_request(
     assert len(queued.metadata["instruction_sha256"]) == 64
     assert "heard back on the earlier question" in queued.metadata["instruction_snippet"]
     assert "origin agent" not in queued.metadata["instruction_snippet"].lower()
-    requeued = next(event for event in latest.debug_events if event.event_type == "bridge.response.requeued")
+    requeued = next(
+        event for event in latest.debug_events if event.event_type == "bridge.response.requeued"
+    )
     assert requeued.metadata["reason"] == "conversation_already_has_active_response"
     error_event = next(event for event in latest.debug_events if event.event_type == "error")
     assert error_event.metadata["reason"] == "conversation_already_has_active_response"

@@ -107,7 +107,6 @@ def sanitize_inline_media_metadata(value: Any) -> Any:
     return value
 
 
-
 def require_provider_media_url(
     *,
     provider: str,

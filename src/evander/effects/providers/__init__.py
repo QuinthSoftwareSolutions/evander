@@ -92,9 +92,7 @@ _EXPORT_MODULES = {
     "SemanticUpsertEffectProvider": ".semantic_upsert",
     "StateUpdateEffectProvider": ".state_update",
     "SessionApproveMcpToolsForRunEffectProvider": ".session_approve_mcp_tools",
-    "SessionRevokeMcpToolApprovalLeaseEffectProvider": (
-        ".session_revoke_mcp_tool_approval_lease"
-    ),
+    "SessionRevokeMcpToolApprovalLeaseEffectProvider": (".session_revoke_mcp_tool_approval_lease"),
     "SessionRenewIfExpiredEffectProvider": ".session_renew_if_expired",
     "VmCopyFilesEffectProvider": ".vm_copy_files",
     "VmCreateEffectProvider": ".vm_create",

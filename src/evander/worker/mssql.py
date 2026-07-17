@@ -81,8 +81,10 @@ class WorkerMssqlProvisioner:
         normalized_session_id = _validate_session_id(session_id)
         self._ensure_enabled()
         state = self.store.get(normalized_session_id)
-        databases = [] if state is None else sorted(
-            state.databases.values(), key=lambda item: item.logical_name
+        databases = (
+            []
+            if state is None
+            else sorted(state.databases.values(), key=lambda item: item.logical_name)
         )
         return WorkerMssqlDatabaseListRecord(
             session_id=normalized_session_id,

@@ -29,9 +29,7 @@ def main() -> None:
     parser.add_argument(
         "--unsafe-allow-host-network",
         action="store_true",
-        default=os.environ.get("EVANDER_WORKER_UNSAFE_ALLOW_HOST_NETWORK", "")
-        .strip()
-        .lower()
+        default=os.environ.get("EVANDER_WORKER_UNSAFE_ALLOW_HOST_NETWORK", "").strip().lower()
         in {"1", "true", "yes", "on"},
         help=(
             "Allow --docker-network host for single-host local experiments. "

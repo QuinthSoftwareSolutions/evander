@@ -109,9 +109,7 @@ def test_ado_update_work_item_skips_when_current_state_is_not_expected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = _IssueServiceStub(
-        read_payloads=[{"remote_issue_id": "123", "state": "In Progress"}]
-    )
+    service = _IssueServiceStub(read_payloads=[{"remote_issue_id": "123", "state": "In Progress"}])
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
@@ -191,9 +189,7 @@ def test_ado_update_work_item_returns_proxy_ticket_without_duplicates(
     }
     assert first["remote_work_item_rev"] == 7
     assert second["ticket"]["title"] == "Claimed auto-dev item updated"
-    stored = JsonStore(
-        tmp_path / "runtime" / "local-issues.json", LocalIssueRecord
-    ).read_all()
+    stored = JsonStore(tmp_path / "runtime" / "local-issues.json", LocalIssueRecord).read_all()
     assert len(stored) == 1
     ticket = next(iter(stored.values()))
     assert ticket.issue_number == "123"

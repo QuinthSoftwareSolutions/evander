@@ -110,9 +110,7 @@ def test_ado_work_item_comment_trigger_baselines_existing_comments(
     assert _IssueServiceStub.calls[0]["states"] == ["New"]
     assert _IssueServiceStub.calls[0]["tags_any"] == ["spec-tag"]
     cursor_payload = json.loads(
-        (tmp_path / "trigger-cursors-ado-work-item-comments.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "trigger-cursors-ado-work-item-comments.json").read_text(encoding="utf-8")
     )
     stream_state = cursor_payload["ado-comment"]["streams"]["azure_devops|root/team-a|APP|101"]
     assert stream_state["recent_comment_keys"] == ["c1"]

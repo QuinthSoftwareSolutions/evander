@@ -311,9 +311,7 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
 
     @field_validator("expected_source_commits")
     @classmethod
-    def validate_expected_source_commits(
-        cls, value: ConfigValue | None
-    ) -> ConfigValue | None:
+    def validate_expected_source_commits(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None or isinstance(value, (Mapping, str)):
             return value
         raise ValueError(
@@ -322,9 +320,7 @@ class TeamConsolidateGitBranchesEffectDefinition(EffectDefinition):
 
     @field_validator("allowed_changed_paths")
     @classmethod
-    def validate_allowed_changed_paths(
-        cls, value: ConfigValue | None
-    ) -> ConfigValue | None:
+    def validate_allowed_changed_paths(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None or isinstance(value, (list, str)):
             return value
         raise ValueError(

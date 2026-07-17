@@ -46,9 +46,7 @@ class SemanticGetQueryProvider(QueryProviderBase):
         )
         qdrant_api_key = resolve_qdrant_api_key(context, settings)
         with QdrantClient(settings.qdrant_base_url, api_key=qdrant_api_key) as client:
-            collection = require_collection_exists(
-                client, collection_name, node_type=NODE_TYPE
-            )
+            collection = require_collection_exists(client, collection_name, node_type=NODE_TYPE)
             points = client.retrieve_points(collection.name, point_ids=point_ids)
 
         output_points = [point_to_output(point) for point in points]

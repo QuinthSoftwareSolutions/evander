@@ -121,11 +121,7 @@ class VmAgentCreateRequestMixin:
                 ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
                 allowed_tools=self._agent_string_list(payload, "allowed_tools"),
-                **(
-                    {"connector_grants": connector_grants}
-                    if "connector_grants" in payload
-                    else {}
-                ),
+                **({"connector_grants": connector_grants} if "connector_grants" in payload else {}),
                 **(
                     {"tool_argument_policies": payload["tool_argument_policies"]}
                     if "tool_argument_policies" in payload

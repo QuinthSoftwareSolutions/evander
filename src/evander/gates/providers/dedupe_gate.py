@@ -116,11 +116,7 @@ class DedupeGateProvider(GateProviderBase):
             status="dropped",
             started_at=started_at,
             resolved_config=resolved_config,
-            outputs=(
-                _passthrough_outputs(queue_record.payload)
-                if publish_dropped_event
-                else {}
-            ),
+            outputs=(_passthrough_outputs(queue_record.payload) if publish_dropped_event else {}),
             inputs_by_source=inputs_by_source,
             input_event_ids_by_source=input_event_ids_by_source,
             input_occurred_at_by_source=input_occurred_at_by_source,
@@ -146,16 +142,11 @@ def _passthrough_outputs(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _has_outbound_source_port(
-    *, graph: Any, gate_id: str, source_port: str
-) -> bool:
+def _has_outbound_source_port(*, graph: Any, gate_id: str, source_port: str) -> bool:
     outbound_index = getattr(graph, "outbound_index", {})
     if not isinstance(outbound_index, dict):
         return False
-    return any(
-        _edge_source_port(edge) == source_port
-        for edge in outbound_index.get(gate_id, ())
-    )
+    return any(_edge_source_port(edge) == source_port for edge in outbound_index.get(gate_id, ()))
 
 
 def _edge_source_port(edge: Any) -> str | None:

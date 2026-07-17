@@ -55,7 +55,9 @@ class AddonAdminService:
 
     def read_addon_state(self) -> dict[str, Any]:
         host_config = self._read_host_config()
-        worker_payload = self.workflow_config_admin.read_worker_global_config("trigger-orchestrator")
+        worker_payload = self.workflow_config_admin.read_worker_global_config(
+            "trigger-orchestrator"
+        )
         host_loader = host_config.addon_loader
         worker_loader = self._worker_addon_loader(worker_payload.config)
         worker_runtime_addon_ids, worker_runtime_loader_error = (
@@ -100,7 +102,9 @@ class AddonAdminService:
                     "has_admin_api": bool(registration and registration.admin_api_routes),
                     "has_mcp_tools": has_mcp_tools,
                     "has_connector_drivers": has_connector_drivers,
-                    "has_workflow_providers": bool(registration and registration.workflow_providers),
+                    "has_workflow_providers": bool(
+                        registration and registration.workflow_providers
+                    ),
                     "workflow_node_types": sorted(node_types),
                     "referenced_workflow_node_types": referenced_node_types,
                     "runtime_workflow_pack": self._runtime_workflow_pack_status(
@@ -158,8 +162,7 @@ class AddonAdminService:
 
         restart_required = any(item["restart_required"] for item in addons)
         has_gateway_change = any(
-            item["restart_required"]
-            and (item["has_mcp_tools"] or item["has_connector_drivers"])
+            item["restart_required"] and (item["has_mcp_tools"] or item["has_connector_drivers"])
             for item in addons
         )
         return {
@@ -604,11 +607,7 @@ class AddonAdminService:
         workflow_packs = worker_config.get("workflow_packs")
         if not isinstance(workflow_packs, list):
             return worker_config
-        remaining = [
-            item
-            for item in workflow_packs
-            if str(item or "").strip() not in references
-        ]
+        remaining = [item for item in workflow_packs if str(item or "").strip() not in references]
         if len(remaining) == len(workflow_packs):
             return worker_config
         updated = dict(worker_config)

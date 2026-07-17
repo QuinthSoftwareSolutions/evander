@@ -487,7 +487,9 @@ def _latest_binding_for_session(service: Any, session_id: str) -> Any | None:
         all_bindings = list(bindings.read_all().values())
     except Exception:
         return None
-    session_bindings = [binding for binding in all_bindings if _binding_matches_session(binding, session_id)]
+    session_bindings = [
+        binding for binding in all_bindings if _binding_matches_session(binding, session_id)
+    ]
     if not session_bindings:
         return None
     return max(session_bindings, key=_binding_sort_key)
@@ -569,7 +571,8 @@ def _binding_context_message(
 
     bound_session_id = str(getattr(binding, "bound_session_id", "") or "").strip() or None
     transport_session_id = (
-        str(getattr(binding, "transport_session_id", "") or "").strip() or normalized_transport_session_id
+        str(getattr(binding, "transport_session_id", "") or "").strip()
+        or normalized_transport_session_id
     )
     if state is ToolVisibilityBindingState.MISMATCH:
         if bound_session_id:
@@ -609,9 +612,9 @@ def _binding_context_payload(
     )
     manifest_state = ToolVisibilityManifestState.UNKNOWN
     if binding is not None and policy_error is None and current_visible_tool_names is not None:
-        last_fingerprint = str(
-            getattr(binding, "last_visible_tool_fingerprint", "") or ""
-        ).strip() or None
+        last_fingerprint = (
+            str(getattr(binding, "last_visible_tool_fingerprint", "") or "").strip() or None
+        )
         if last_fingerprint is not None:
             manifest_state = (
                 ToolVisibilityManifestState.CURRENT
@@ -754,9 +757,7 @@ def build_tool_visibility_payload(
     mcp_tool_approval_lease_id: str | None = None,
 ) -> ToolVisibilityPayload:
     normalized_workflow_run_id = str(workflow_run_id or "").strip() or None
-    normalized_mcp_tool_approval_lease_id = (
-        str(mcp_tool_approval_lease_id or "").strip() or None
-    )
+    normalized_mcp_tool_approval_lease_id = str(mcp_tool_approval_lease_id or "").strip() or None
     query_context = ToolVisibilityQueryContextPayload(
         workflow_run_id=normalized_workflow_run_id,
         mcp_tool_approval_lease_id=normalized_mcp_tool_approval_lease_id,
@@ -831,7 +832,9 @@ def build_tool_visibility_payload(
         notices.append(_stale_client_manifest_notice())
 
     try:
-        latest_denied_by_tool, denied_count = _tool_visibility_denied_execution_summary(service, session)
+        latest_denied_by_tool, denied_count = _tool_visibility_denied_execution_summary(
+            service, session
+        )
     except Exception:
         latest_denied_by_tool = {}
         denied_count = 0

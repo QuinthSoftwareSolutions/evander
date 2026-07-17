@@ -224,9 +224,7 @@ def _build_registration(
         source=source, mapping=trigger_providers
     )
     normalized_gate_providers = _coerce_provider_mapping(source=source, mapping=gate_providers)
-    normalized_effect_providers = _coerce_provider_mapping(
-        source=source, mapping=effect_providers
-    )
+    normalized_effect_providers = _coerce_provider_mapping(source=source, mapping=effect_providers)
     normalized_query_providers = _coerce_provider_mapping(source=source, mapping=query_providers)
     normalized_node_definition_resolvers = _coerce_node_definition_resolvers(
         source=source, mapping=node_definition_resolvers

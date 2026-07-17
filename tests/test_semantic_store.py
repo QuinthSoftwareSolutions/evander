@@ -51,7 +51,9 @@ def _collection_payload(*, size: int = 1536, distance: str = "Cosine") -> dict[s
 
 
 def test_qdrant_health_success() -> None:
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, text="healthz check passed"))
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, text="healthz check passed")
+    )
     client = QdrantClient("http://qdrant.test", transport=transport)
 
     health = client.health()

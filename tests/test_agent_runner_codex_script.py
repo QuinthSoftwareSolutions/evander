@@ -55,8 +55,8 @@ EOF
     assert result.stdout == "session id: codex-thread-1\nDone.\n"
     args = args_log.read_text(encoding="utf-8").splitlines()
     assert args[:2] == ["exec", "-c"]
-    assert "web_search=\"disabled\"" in args
-    assert "mcp_servers.evander.url=\"http://gateway.test:8000/mcp?session_id=session-1\"" in args
+    assert 'web_search="disabled"' in args
+    assert 'mcp_servers.evander.url="http://gateway.test:8000/mcp?session_id=session-1"' in args
     assert "--enable" in args
     assert "non_prefixed_mcp_tool_names" in args
     assert "--json" in args
@@ -101,6 +101,6 @@ EOF
 
     assert result.stdout == "Done.\n"
     args = args_log.read_text(encoding="utf-8").splitlines()
-    assert "mcp_servers.evander.url=\"http://gateway.test:8000/mcp?session_id=session-1\"" in args
+    assert 'mcp_servers.evander.url="http://gateway.test:8000/mcp?session_id=session-1"' in args
     assert "--enable" not in args
     assert "non_prefixed_mcp_tool_names" not in args

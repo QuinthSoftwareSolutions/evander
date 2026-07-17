@@ -1927,11 +1927,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "vm_name",
         "managed_repo_id",
         "clone_branch",
-            "vm_user",
-            "git_access_mode",
-            "pinned_ref",
-            "pinned_commit_sha",
-            "git_author_name",
+        "vm_user",
+        "git_access_mode",
+        "pinned_ref",
+        "pinned_commit_sha",
+        "git_author_name",
         "git_author_email",
         "git_committer_name",
         "git_committer_email",
@@ -3083,9 +3083,7 @@ def test_admin_web_delete_skill_blocks_inline_workflow_references(
     agent_create = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create"
     )
-    codex_skills = next(
-        field for field in agent_create["fields"] if field["key"] == "codex_skills"
-    )
+    codex_skills = next(field for field in agent_create["fields"] if field["key"] == "codex_skills")
     assert codex_skills["options"] == [
         {"value": "demo.skill", "label": "demo.skill"},
         {"value": "keep.skill", "label": "keep.skill"},

@@ -557,9 +557,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
             ).fetchall()
         return [self._record_from_row(row) for row in rows]
 
-    def list_activity_between(
-        self, *, start_at: datetime, end_at: datetime
-    ) -> list[TRecord]:
+    def list_activity_between(self, *, start_at: datetime, end_at: datetime) -> list[TRecord]:
         start_text = datetime_to_storage(start_at)
         end_text = datetime_to_storage(end_at)
         with self._lock, connect_orchestration_db(self.path) as connection:
@@ -647,9 +645,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
             with connect_orchestration_db(self.path) as connection:
                 existing_ids = set(
                     row["execution_id"]
-                    for row in connection.execute(
-                        f"SELECT execution_id FROM {self.table_name}"
-                    )
+                    for row in connection.execute(f"SELECT execution_id FROM {self.table_name}")
                 )
                 next_ids = set(records)
                 for execution_id in existing_ids - next_ids:

@@ -178,9 +178,10 @@ def test_locked_owner_cannot_mutate_worker_or_directory_configuration(
     )
 
     assert action_calls == []
-    assert service.workflow_config_admin.read_worker_global_config(
-        "trigger-orchestrator"
-    ).exists is False
+    assert (
+        service.workflow_config_admin.read_worker_global_config("trigger-orchestrator").exists
+        is False
+    )
     assert service.directory_admin.get("root/blocked").ok is False
     assert service.directory_admin.get("root/ops").ok is True
     assert _root_providers_config(service) == providers_before
@@ -234,12 +235,8 @@ def test_unlocked_non_owner_cannot_mutate_worker_or_directory_configuration(
             json=_worker_config_payload(non_owner),
         )
     )
-    _assert_permission_forbidden(
-        non_owner.post("/api/workers/trigger-orchestrator/actions/start")
-    )
-    _assert_permission_forbidden(
-        non_owner.post("/api/workers/trigger-orchestrator/actions/stop")
-    )
+    _assert_permission_forbidden(non_owner.post("/api/workers/trigger-orchestrator/actions/start"))
+    _assert_permission_forbidden(non_owner.post("/api/workers/trigger-orchestrator/actions/stop"))
     _assert_permission_forbidden(
         non_owner.post(
             "/api/configuration/directories",
@@ -257,9 +254,10 @@ def test_unlocked_non_owner_cannot_mutate_worker_or_directory_configuration(
     )
 
     assert action_calls == []
-    assert service.workflow_config_admin.read_worker_global_config(
-        "trigger-orchestrator"
-    ).exists is False
+    assert (
+        service.workflow_config_admin.read_worker_global_config("trigger-orchestrator").exists
+        is False
+    )
     assert service.directory_admin.get("root/blocked").ok is False
     assert service.directory_admin.get("root/ops").ok is True
     assert _root_providers_config(service) == providers_before

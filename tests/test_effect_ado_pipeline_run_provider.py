@@ -53,9 +53,7 @@ def _install_mock_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.MockT
         kwargs["transport"] = transport
         return original_client(*args, **kwargs)
 
-    monkeypatch.setattr(
-        "evander.effects.providers.ado_pipeline_run.httpx.Client", _client_factory
-    )
+    monkeypatch.setattr("evander.effects.providers.ado_pipeline_run.httpx.Client", _client_factory)
 
 
 def test_ado_pipeline_run_queues_and_polls_to_success(

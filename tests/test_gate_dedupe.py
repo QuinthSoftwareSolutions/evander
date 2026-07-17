@@ -14,9 +14,7 @@ from evander.events.models import GateDedupeDefinition, TriggerEvent
 from evander.triggers.queue import TriggerQueueRecord
 
 
-def _edge(
-    source_id: str, target_id: str, *, source_port: str | None = None
-) -> dict[str, object]:
+def _edge(source_id: str, target_id: str, *, source_port: str | None = None) -> dict[str, object]:
     edge: dict[str, object] = {"source_id": source_id, "target_id": target_id}
     if source_port is not None:
         edge["source_port"] = source_port
@@ -83,16 +81,12 @@ def _worker_config(
     )
 
 
-def _worker(
-    tmp_path: Path, *, include_dropped_edge: bool = False
-) -> EffectOrchestratorWorker:
+def _worker(tmp_path: Path, *, include_dropped_edge: bool = False) -> EffectOrchestratorWorker:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     return EffectOrchestratorWorker(
         config=config,
-        worker_config=_worker_config(
-            runtime_dir, include_dropped_edge=include_dropped_edge
-        ),
+        worker_config=_worker_config(runtime_dir, include_dropped_edge=include_dropped_edge),
         runtime=None,  # type: ignore[arg-type]
     )
 

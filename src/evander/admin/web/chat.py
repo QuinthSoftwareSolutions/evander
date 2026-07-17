@@ -306,7 +306,10 @@ class ChatStore:
             if before_id:
                 end_index = 0
                 for index, message in enumerate(messages):
-                    if isinstance(message, dict) and str(message.get("id") or "").strip() == before_id:
+                    if (
+                        isinstance(message, dict)
+                        and str(message.get("id") or "").strip() == before_id
+                    ):
                         end_index = index
                         break
             effective_limit = _transcript_limit(limit)
@@ -327,9 +330,7 @@ class ChatStore:
                 "has_older": start_index > 0,
                 "oldest_message_id": oldest_message_id,
                 "newest_message_id": newest_message_id,
-                "assistant_session": _normalize_assistant_session(
-                    thread.get("assistant_session")
-                ),
+                "assistant_session": _normalize_assistant_session(thread.get("assistant_session")),
                 "updated_at": thread.get("updated_at"),
             }
 
