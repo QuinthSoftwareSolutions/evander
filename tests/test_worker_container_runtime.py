@@ -225,7 +225,7 @@ def test_strict_profile_adds_read_only_tmpfs_and_default_pids_limit(tmp_path: Pa
     args = runtime._build_run_args(request=request, record=_record(paths), paths=paths)  # noqa: SLF001
 
     assert "--read-only" in args
-    assert args[args.index("--tmpfs") + 1] == "/tmp:rw,noexec,nosuid,size=512m"
+    assert args[args.index("--tmpfs") + 1] == "/tmp:rw,noexec,nosuid,size=4g"
     assert args[args.index("--security-opt") + 1] == "no-new-privileges"
     assert args[args.index("--pids-limit") + 1] == "512"
 

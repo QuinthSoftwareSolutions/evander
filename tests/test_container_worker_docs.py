@@ -23,7 +23,7 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "Authorization: Bearer <EVANDER_WORKER_TOKEN>" in docs
     assert "--security-opt no-new-privileges" in docs
     assert "--sandbox-profile strict" in docs
-    assert "--tmpfs /tmp:rw,noexec,nosuid,size=512m" in docs
+    assert "--tmpfs /tmp:rw,noexec,nosuid,size=4g" in docs
     assert "Phase 5 first slice" in docs
     assert "single-worker" in docs
     assert "evander_worker_egress_policy_enabled" in docs

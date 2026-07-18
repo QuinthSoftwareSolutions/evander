@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-17 - Strict Worker Temporary Storage
+
+- Raised the strict container-worker profile's bounded noexec `/tmp` tmpfs from 512 MiB to 4 GiB,
+  so dependency-heavy browser and full-stack validation can complete without consuming the host
+  filesystem or weakening the strict sandbox boundary.
+
 ## 2026-07-17 - Repository Readiness And Admin Frontend Reliability
 
 - Restored a clean repository-wide Ruff lint and formatting baseline, while preserving the

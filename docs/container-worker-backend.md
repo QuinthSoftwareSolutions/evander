@@ -613,7 +613,7 @@ customer or shared deployments.
 The `strict` sandbox profile keeps the default profile behavior and also adds:
 
 - `--read-only`
-- `--tmpfs /tmp:rw,noexec,nosuid,size=512m`
+- `--tmpfs /tmp:rw,noexec,nosuid,size=4g`
 - `--pids-limit 512` when the job did not provide its own pids limit
 
 Operators can tune worker daemon container flags with `--read-only-rootfs`, repeated `--tmpfs`, and `--container-user`. `--docker-network` and `EVANDER_WORKER_DOCKER_NETWORK` override the selected profile network, but `host` remains rejected.
