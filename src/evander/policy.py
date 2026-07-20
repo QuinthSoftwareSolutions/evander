@@ -19,6 +19,8 @@ from evander.models import (
     ApprovalRequest,
     ApprovalStatus,
     DiscordCommandEnvelope,
+    EmailMailboxAccess,
+    EmailMailboxGrant,
     McpToolName,
     McpToolPolicyRule,
     SessionManifest,
@@ -1316,13 +1318,60 @@ class PolicyEngine:
         if folder not in session.email_folder_allowlist:
             raise PolicyError(f"Email folder is not allowlisted for session {session.session_id}")
 
-    def require_email_mailbox(self, session: SessionManifest, mailbox_id: str) -> None:
-        mailbox_allowlist = (
-            session.email_mailbox_allowlist
-            or self.effective_policy_for_session(session).email_mailbox_allowlist
+    @staticmethod
+    def _email_access_rank(access: EmailMailboxAccess) -> int:
+        return {
+            EmailMailboxAccess.READ: 0,
+            EmailMailboxAccess.DRAFT: 1,
+            EmailMailboxAccess.SEND: 2,
+        }[access]
+
+    @staticmethod
+    def _email_mailbox_grant(session: SessionManifest, mailbox_id: str) -> EmailMailboxGrant | None:
+        if session.email_mailbox_grants is None:
+            return None
+        normalized_mailbox_id = str(mailbox_id or "").strip()
+        return next(
+            (
+                grant
+                for grant in session.email_mailbox_grants
+                if grant.mailbox_id == normalized_mailbox_id
+            ),
+            None,
         )
-        if mailbox_id not in mailbox_allowlist:
-            raise PolicyError(f"Email mailbox is not allowlisted for session {session.session_id}")
+
+    def require_email_mailbox_access(
+        self,
+        session: SessionManifest,
+        mailbox_id: str,
+        required_access: EmailMailboxAccess,
+    ) -> EmailMailboxGrant | None:
+        normalized_mailbox_id = str(mailbox_id or "").strip()
+        if session.email_mailbox_grants is None:
+            mailbox_allowlist = (
+                session.email_mailbox_allowlist
+                or self.effective_policy_for_session(session).email_mailbox_allowlist
+            )
+            if normalized_mailbox_id not in mailbox_allowlist:
+                raise PolicyError(
+                    f"Email mailbox is not allowlisted for session {session.session_id}"
+                )
+            return None
+        grant = self._email_mailbox_grant(session, normalized_mailbox_id)
+        if grant is None:
+            raise PolicyError(f"Email mailbox is not granted for session {session.session_id}")
+        if self._email_access_rank(grant.access) < self._email_access_rank(required_access):
+            raise PolicyError(
+                f"Email mailbox {normalized_mailbox_id!r} requires {required_access.value} "
+                f"access for session {session.session_id}"
+            )
+        return grant
+
+    def require_email_mailbox(self, session: SessionManifest, mailbox_id: str) -> None:
+        self.require_email_mailbox_access(session, mailbox_id, EmailMailboxAccess.READ)
+
+    def require_email_draft_enabled(self, session: SessionManifest, mailbox_id: str) -> None:
+        self.require_email_mailbox_access(session, mailbox_id, EmailMailboxAccess.DRAFT)
 
     def require_email_folder_for_mailbox(
         self,
@@ -1330,6 +1379,14 @@ class PolicyEngine:
         mailbox_id: str,
         folder: str,
     ) -> None:
+        if session.email_mailbox_grants is not None:
+            grant = self.require_email_mailbox_access(session, mailbox_id, EmailMailboxAccess.READ)
+            if grant is not None and folder in grant.folders:
+                return
+            raise PolicyError(
+                f"Email folder {folder!r} is not granted for mailbox {mailbox_id!r} "
+                f"in session {session.session_id}"
+            )
         mailbox_folders = (
             session.email_folder_allowlist_by_mailbox
             or self.effective_policy_for_session(session).email_folder_allowlist_by_mailbox
@@ -1340,10 +1397,60 @@ class PolicyEngine:
         # Backward compatibility for older manifests that only had global folder allowlists.
         self.require_email_folder(session, folder)
 
-    def require_email_send_enabled(self, session: SessionManifest) -> None:
+    def require_email_send_enabled(
+        self, session: SessionManifest, mailbox_id: str | None = None
+    ) -> None:
         effective_policy = self.effective_policy_for_session(session)
         if not (session.email_send_enabled or effective_policy.email_send_enabled):
             raise PolicyError(f"Email send is disabled for session {session.session_id}")
+        if mailbox_id is not None:
+            self.require_email_mailbox_access(session, mailbox_id, EmailMailboxAccess.SEND)
+
+    def require_email_send_targets(
+        self,
+        session: SessionManifest,
+        mailbox_id: str,
+        recipients: list[str],
+    ) -> list[str]:
+        if session.communication_target_ids is None:
+            return []
+        normalized_mailbox_id = str(mailbox_id or "").strip()
+        normalized_recipients = {
+            str(recipient or "").strip().casefold()
+            for recipient in recipients
+            if str(recipient or "").strip()
+        }
+        matched_recipients: set[str] = set()
+        matched_target_ids: list[str] = []
+        for target_id in session.communication_target_ids:
+            try:
+                target = self.policy_config.resolve_communication_target_reference_for_session(
+                    session,
+                    target_id,
+                    provider="email",
+                    capability="write",
+                )
+            except ValueError:
+                continue
+            if target is None:
+                continue
+            auth_profile_ref = str(target.policy.auth_profile_ref or "").strip()
+            if auth_profile_ref.startswith("email."):
+                auth_profile_ref = auth_profile_ref.removeprefix("email.")
+            if auth_profile_ref != normalized_mailbox_id:
+                continue
+            address = target.address.strip().casefold()
+            if address not in normalized_recipients:
+                continue
+            matched_recipients.add(address)
+            matched_target_ids.append(target.id)
+        missing_recipients = sorted(normalized_recipients - matched_recipients)
+        if missing_recipients:
+            raise PolicyError(
+                "Email send recipients are not granted communication targets for mailbox "
+                f"{normalized_mailbox_id!r}: {', '.join(missing_recipients)}"
+            )
+        return matched_target_ids
 
     def _communication_file_policy_value(self, session: SessionManifest, name: str) -> Any:
         session_value = getattr(session, name)

@@ -2156,7 +2156,7 @@ class WorkflowConfigAdminService:
                 ):
                     continue
                 if provider == "email":
-                    if not {"read", "write"}.issubset(capabilities):
+                    if "write" not in capabilities:
                         continue
                 elif not capabilities.intersection({"read", "write", "reply"}):
                     continue

@@ -27,6 +27,8 @@ from evander.admin.services.vm_agent.common_models import (
     _ASSISTANT_AGENTS_TEMPLATE_NAME,
 )
 from evander.git_ssh_authorized_keys import remove_git_authorized_key_by_public_key_body
+from evander.admin.services.session_helpers import normalize_email_mailbox_grants
+from evander.models import EmailMailboxAccess, EmailMailboxGrant
 
 
 def _deep_merge_mapping(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
@@ -233,6 +235,10 @@ def _admin_agent_communication_allowlists(
         payload.get("email_folders") if "email_folders" in payload else None,
         field_name="email_folders",
     )
+    has_communication_target_ids = "communication_target_ids" in payload
+    communication_target_ids_are_legacy = (
+        has_communication_target_ids and payload.get("communication_target_ids") is None
+    )
     communication_target_ids = [
         target_id.lower()
         for target_id in _normalize_plain_string_list(
@@ -244,6 +250,11 @@ def _admin_agent_communication_allowlists(
     ]
     if not communication_target_ids:
         return {
+            "communication_target_ids": (
+                None
+                if not has_communication_target_ids or communication_target_ids_are_legacy
+                else []
+            ),
             "discord_channels": discord_channels or None,
             "teams_channel_allowlist": teams_channel_allowlist or None,
             "teams_chat_allowlist": teams_chat_allowlist or None,
@@ -261,7 +272,6 @@ def _admin_agent_communication_allowlists(
     selected_teams_channels: list[str] = []
     selected_teams_chats: list[str] = []
     selected_teams_users: list[str] = []
-    selected_email_mailboxes: list[str] = []
     for target_id in communication_target_ids:
         target = targets_by_id.get(target_id)
         if target is None:
@@ -282,17 +292,13 @@ def _admin_agent_communication_allowlists(
                 selected_teams_channels.append(target.id)
             continue
         if target.provider == "email":
-            missing_capabilities = sorted({"read", "write"} - set(target.policy.capabilities))
-            if missing_capabilities:
+            if "write" not in set(target.policy.capabilities):
                 raise ValueError(
-                    "email communication target "
-                    f"{target.id!r} requires both read and write capabilities"
+                    f"email communication target {target.id!r} requires write capability"
                 )
-            selected_email_mailboxes.append(
-                _email_mailbox_id_from_auth_profile_ref(
-                    target.policy.auth_profile_ref,
-                    target_id=target.id,
-                )
+            _email_mailbox_id_from_auth_profile_ref(
+                target.policy.auth_profile_ref,
+                target_id=target.id,
             )
             continue
         raise ValueError(
@@ -301,6 +307,7 @@ def _admin_agent_communication_allowlists(
         )
 
     return {
+        "communication_target_ids": communication_target_ids,
         "discord_channels": _append_unique_string_values(
             discord_channels, selected_discord_channels
         )
@@ -320,10 +327,54 @@ def _admin_agent_communication_allowlists(
             selected_teams_users,
         )
         or None,
-        "email_mailboxes": _append_unique_string_values(email_mailboxes, selected_email_mailboxes)
-        or None,
+        "email_mailboxes": email_mailboxes or None,
         "email_folders": email_folders or None,
     }
+
+
+def _admin_agent_email_mailbox_grants(
+    payload: Mapping[str, Any],
+    *,
+    runtime: RuntimeContext,
+    directory_path: str,
+) -> list[EmailMailboxGrant] | None:
+    if "email_mailbox_grants" not in payload:
+        return None
+    grants = normalize_email_mailbox_grants(payload.get("email_mailbox_grants"))
+    if grants is None:
+        return None
+
+    config = runtime.provider_config.resolve_for_directory(directory_path)
+    policy = runtime.policy_config.resolve_for_directory(directory_path)
+    mailboxes = {mailbox.mailbox_id: mailbox for mailbox in config.email_mailboxes}
+    allowed_mailbox_ids = set(policy.email_mailbox_allowlist)
+    validated: list[EmailMailboxGrant] = []
+    for grant in grants:
+        mailbox = mailboxes.get(grant.mailbox_id)
+        if mailbox is None or grant.mailbox_id not in allowed_mailbox_ids:
+            raise ValueError(
+                f"email_mailbox_grants contains unavailable mailbox {grant.mailbox_id!r} "
+                f"for directory {directory_path!r}"
+            )
+        folders = list(grant.folders or mailbox.folder_allowlist_defaults)
+        allowed_folders = set(
+            policy.email_folder_allowlist_by_mailbox.get(
+                grant.mailbox_id, mailbox.folder_allowlist_defaults
+            )
+        )
+        unavailable_folders = sorted(set(folders) - allowed_folders)
+        if unavailable_folders:
+            raise ValueError(
+                f"email_mailbox_grants contains unavailable folders for mailbox "
+                f"{grant.mailbox_id!r}: {', '.join(unavailable_folders)}"
+            )
+        if grant.access == EmailMailboxAccess.SEND and not policy.email_send_enabled:
+            raise ValueError(
+                f"email send is disabled for directory {directory_path!r}; "
+                f"mailbox {grant.mailbox_id!r} cannot receive send access"
+            )
+        validated.append(grant.model_copy(update={"folders": folders}))
+    return validated
 
 
 def _resolve_session_approval_notification_target_ids(
@@ -430,6 +481,7 @@ def _source_project_dir() -> Path:
 
 __all__ = [
     "_admin_agent_communication_allowlists",
+    "_admin_agent_email_mailbox_grants",
     "_agent_provider_from_session",
     "_append_unique_string_values",
     "_assistant_agents_md_content",

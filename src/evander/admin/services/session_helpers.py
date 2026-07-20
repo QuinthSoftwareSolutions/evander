@@ -17,6 +17,8 @@ from evander.contact_allowlists import validate_allowed_contact_ids_for_director
 from evander.connectors.models import normalize_connector_grants
 from evander.models import (
     ApprovalGrantSettings,
+    EmailMailboxAccess,
+    EmailMailboxGrant,
     McpToolName,
     SessionManifest,
     ToolName,
@@ -275,6 +277,26 @@ def normalize_plain_string_list(value: object, *, field_name: str) -> list[str]:
     return normalized
 
 
+def normalize_email_mailbox_grants(value: object) -> list[EmailMailboxGrant] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("email_mailbox_grants must be a JSON array or null")
+    try:
+        grants = [EmailMailboxGrant.model_validate(item) for item in value]
+    except ValidationError as exc:
+        raise ValueError(f"invalid email_mailbox_grants: {exc}") from exc
+    mailbox_ids = [grant.mailbox_id for grant in grants]
+    duplicates = sorted(
+        mailbox_id for mailbox_id in set(mailbox_ids) if mailbox_ids.count(mailbox_id) > 1
+    )
+    if duplicates:
+        raise ValueError(
+            "email_mailbox_grants contains duplicate mailbox IDs: " + ", ".join(duplicates)
+        )
+    return grants
+
+
 def normalize_teams_channel_allowlist(value: object, *, field_name: str) -> list[str]:
     return normalize_teams_channel_or_target_refs(
         normalize_plain_string_list(value, field_name=field_name)
@@ -307,6 +329,8 @@ def build_issue_session_manifest(
     teams_user_allowlist: list[str] | None = None,
     email_mailboxes: list[str],
     email_folders: list[str],
+    communication_target_ids: list[str] | None = None,
+    email_mailbox_grants: list[EmailMailboxGrant] | None = None,
     communication_file_receive_enabled: bool | None = None,
     communication_file_send_enabled: bool | None = None,
     communication_file_max_bytes: int | None = None,
@@ -330,26 +354,51 @@ def build_issue_session_manifest(
             ]
         )
 
-    email_requested = bool(email_mailboxes or email_folders)
-    resolved_email_mailboxes = email_mailboxes or (
-        policy.email_mailbox_allowlist if email_requested else []
+    email_requested = (
+        bool(email_mailbox_grants)
+        if email_mailbox_grants is not None
+        else bool(email_mailboxes or email_folders)
     )
-    resolved_email_folders = email_folders or (
-        sorted(
-            {
-                folder
-                for folders in policy.email_folder_allowlist_by_mailbox.values()
-                for folder in folders
-            }
+    if email_mailbox_grants is not None:
+        resolved_email_mailboxes = [grant.mailbox_id for grant in email_mailbox_grants]
+        resolved_email_folders_by_mailbox = {
+            grant.mailbox_id: list(grant.folders) for grant in email_mailbox_grants
+        }
+        resolved_email_folders = sorted(
+            {folder for grant in email_mailbox_grants for folder in grant.folders}
         )
-        if email_requested
-        else []
-    )
+    else:
+        resolved_email_mailboxes = email_mailboxes or (
+            policy.email_mailbox_allowlist if email_requested else []
+        )
+        resolved_email_folders = email_folders or (
+            sorted(
+                {
+                    folder
+                    for folders in policy.email_folder_allowlist_by_mailbox.values()
+                    for folder in folders
+                }
+            )
+            if email_requested
+            else []
+        )
+        resolved_email_folders_by_mailbox = policy.email_folder_allowlist_by_mailbox
     if email_requested:
         resolved_allowed_tools.extend(
-            [ToolName.EMAIL_LIST_UNREAD, ToolName.EMAIL_GET_MESSAGE, ToolName.EMAIL_CREATE_DRAFT]
+            [
+                ToolName.EMAIL_LIST_UNREAD,
+                ToolName.EMAIL_GET_MESSAGE,
+            ]
         )
-        if policy.email_send_enabled:
+        if email_mailbox_grants is None or any(
+            grant.access in {EmailMailboxAccess.DRAFT, EmailMailboxAccess.SEND}
+            for grant in email_mailbox_grants
+        ):
+            resolved_allowed_tools.append(ToolName.EMAIL_CREATE_DRAFT)
+        if policy.email_send_enabled and (
+            email_mailbox_grants is None
+            or any(grant.access == EmailMailboxAccess.SEND for grant in email_mailbox_grants)
+        ):
             resolved_allowed_tools.extend([ToolName.EMAIL_SEND, ToolName.EMAIL_SEND_APPROVED])
 
     metadata = {"issue_number": issue_number} if issue_number is not None else {}
@@ -378,6 +427,7 @@ def build_issue_session_manifest(
         tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=normalize_allowed_script_names(allowed_script_names or []),
         allowed_contact_ids=allowed_contact_ids,
+        communication_target_ids=communication_target_ids,
         discord_channel_allowlist=discord_channels,
         teams_channel_allowlist=normalize_teams_channel_allowlist(
             teams_channel_allowlist or [], field_name="teams_channel_allowlist"
@@ -388,7 +438,8 @@ def build_issue_session_manifest(
         ),
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
-        email_folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
+        email_folder_allowlist_by_mailbox=resolved_email_folders_by_mailbox,
+        email_mailbox_grants=email_mailbox_grants,
         email_draft_recipient_allowlist=policy.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=policy.email_draft_domain_allowlist,
         email_send_enabled=policy.email_send_enabled,
@@ -551,6 +602,8 @@ def session_policy_update_from_payload(
         "connector_grants",
         "allowed_script_names",
         "allowed_contact_ids",
+        "communication_target_ids",
+        "email_mailbox_grants",
         "discord_channel_allowlist",
         "discord_channels",
         "teams_channel_allowlist",
@@ -566,6 +619,28 @@ def session_policy_update_from_payload(
         raise ValueError("Unsupported session policy fields: " + ", ".join(unsupported))
 
     update: dict[str, Any] = {}
+    if "communication_target_ids" in payload:
+        raw_target_ids = payload.get("communication_target_ids")
+        if raw_target_ids is None:
+            update["communication_target_ids"] = None
+        else:
+            update["communication_target_ids"] = [
+                target_id.lower()
+                for target_id in normalize_plain_string_list(
+                    raw_target_ids, field_name="communication_target_ids"
+                )
+            ]
+    if "email_mailbox_grants" in payload:
+        grants = normalize_email_mailbox_grants(payload.get("email_mailbox_grants"))
+        update["email_mailbox_grants"] = grants
+        if grants is not None:
+            update["email_mailbox_allowlist"] = [grant.mailbox_id for grant in grants]
+            update["email_folder_allowlist_by_mailbox"] = {
+                grant.mailbox_id: list(grant.folders) for grant in grants
+            }
+            update["email_folder_allowlist"] = sorted(
+                {folder for grant in grants for folder in grant.folders}
+            )
     if "allowed_script_names" in payload:
         update["allowed_script_names"] = normalize_allowed_script_names(
             normalize_plain_string_list(

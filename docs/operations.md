@@ -2372,6 +2372,18 @@ evander-cli directories config-set \
 evander-cli create-session real-session --runtime-dir runtime
 ```
 
+Admin Web exposes two independent session controls:
+
+- **Email mailbox access** selects mailbox accounts, folders, and `read`, `draft`, or `send`
+  capability. Prefer `read` for agents that only inspect mail.
+- **Communication targets** selects Teams/Discord destinations and outbound email recipients. These
+  targets do not grant mailbox access.
+
+Email send requires both a `send` mailbox grant and a write-capable recipient target bound to the
+same mailbox auth profile. Draft creation requires `draft` access but no recipient target. Existing
+sessions with nullable canonical fields remain on their legacy allowlists until the operator clicks
+**Convert to managed grants**; explicit empty canonical lists mean no access.
+
 ## Host-Side NuGet Access
 
 - The scaffold includes `evander-nuget-relay`, a host-side relay that proxies `nuget.org` and private Azure Artifacts feeds.

@@ -22,6 +22,7 @@ import { AgentCreateDialog } from "./AgentCreateDialog";
 import {
   createOperationIsActive,
   createOperationMessage,
+  loadAgentCreateOptions,
   loadAgentCreateOperations,
   submitAgentCreateOperation,
   type AgentCreateSubmitMeta,
@@ -30,6 +31,8 @@ import type {
   AgentActionResponse,
   AgentBackend,
   AgentCreateOperation,
+  AgentCreateCommunicationTargetOption,
+  AgentCreateEmailMailboxOption,
   AgentCreateRequest,
   AgentExecutionRecord,
   AgentListResponse,
@@ -39,10 +42,15 @@ import type {
   AgentRecord,
   AgentPolicyUpdateRequest,
   AgentSessionPolicy,
+  EmailMailboxGrant,
   SkillLibraryItem,
   SkillListResponse,
   RuntimeImageInfo,
 } from "../admin/types";
+import {
+  CommunicationTargetCheckboxTable,
+  EmailMailboxGrantEditor,
+} from "../communications/SessionGrantEditors";
 
 type ActionLogEntry = {
   at: string;
@@ -124,6 +132,8 @@ type AgentPolicyFormState = {
   connectorGrants: Record<string, unknown>;
   allowedScriptNames: string;
   approvalNotificationTargetIds: string[];
+  communicationTargetIds: string[] | null;
+  emailMailboxGrants: EmailMailboxGrant[] | null;
   discordChannels: string;
   teamsChannels: string;
   emailMailboxes: string;
@@ -184,6 +194,8 @@ function emptyPolicyForm(): AgentPolicyFormState {
     connectorGrants: {},
     allowedScriptNames: "",
     approvalNotificationTargetIds: [],
+    communicationTargetIds: null,
+    emailMailboxGrants: null,
     discordChannels: "",
     teamsChannels: "",
     emailMailboxes: "",
@@ -665,6 +677,23 @@ function installedCodexSkillsForAgent(agent: AgentRecord | null): string[] {
   return skills.length > 0 ? skills : hostStringList(policyMetadata, "codex_skills");
 }
 
+function emailMailboxGrants(value: unknown): EmailMailboxGrant[] | null {
+  if (value == null) return null;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const candidate = item as Record<string, unknown>;
+    if (typeof candidate.mailbox_id !== "string"
+      || !["read", "draft", "send"].includes(String(candidate.access))
+      || !Array.isArray(candidate.folders)) return [];
+    return [{
+      mailbox_id: candidate.mailbox_id,
+      access: candidate.access as EmailMailboxGrant["access"],
+      folders: candidate.folders.filter((folder): folder is string => typeof folder === "string"),
+    }];
+  });
+}
+
 function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | null {
   const rawPolicy = hostRecord(agent?.host, "session_policy");
   if (!rawPolicy) return null;
@@ -693,6 +722,9 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
           },
         )
       : [],
+    communication_target_ids: rawPolicy.communication_target_ids == null
+      ? null
+      : hostStringList(rawPolicy, "communication_target_ids"),
     web_search_enabled: Boolean(rawPolicy.web_search_enabled),
     allowed_script_names: hostStringList(rawPolicy, "allowed_script_names"),
     discord_channels: hostStringList(rawPolicy, "discord_channels"),
@@ -701,6 +733,7 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     metadata: hostRecord(rawPolicy, "metadata") ?? {},
     email_mailboxes: hostStringList(rawPolicy, "email_mailboxes"),
     email_folders: hostStringList(rawPolicy, "email_folders"),
+    email_mailbox_grants: emailMailboxGrants(rawPolicy.email_mailbox_grants),
     labels: Object.fromEntries(recordEntries(hostRecord(rawPolicy, "labels"))),
   };
 }
@@ -722,6 +755,12 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     connectorGrants: { ...(policy?.connector_grants ?? {}) },
     allowedScriptNames: formatList(policy?.allowed_script_names),
     approvalNotificationTargetIds: dedupeStrings(policy?.approval_notification_target_ids ?? []),
+    communicationTargetIds: policy?.communication_target_ids == null
+      ? null
+      : dedupeStrings(policy.communication_target_ids),
+    emailMailboxGrants: policy?.email_mailbox_grants == null
+      ? null
+      : policy.email_mailbox_grants.map((grant) => ({ ...grant, folders: dedupeStrings(grant.folders) })),
     discordChannels: formatList(policy?.discord_channel_allowlist.length ? policy.discord_channel_allowlist : policy?.discord_channels),
     teamsChannels: formatList(policy?.teams_channel_allowlist),
     emailMailboxes: formatList(policy?.email_mailboxes),
@@ -738,11 +777,17 @@ function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateReques
     connector_grants: form.connectorGrants,
     allowed_script_names: parseList(form.allowedScriptNames),
     approval_notification_target_ids: dedupeStrings(form.approvalNotificationTargetIds),
-    discord_channels: parseList(form.discordChannels),
-    teams_channel_allowlist: parseList(form.teamsChannels),
-    email_mailboxes: parseList(form.emailMailboxes),
-    email_folders: parseList(form.emailFolders),
+    communication_target_ids: form.communicationTargetIds,
+    email_mailbox_grants: form.emailMailboxGrants,
   };
+  if (form.communicationTargetIds === null) {
+    payload.discord_channels = parseList(form.discordChannels);
+    payload.teams_channel_allowlist = parseList(form.teamsChannels);
+  }
+  if (form.emailMailboxGrants === null) {
+    payload.email_mailboxes = parseList(form.emailMailboxes);
+    payload.email_folders = parseList(form.emailFolders);
+  }
   if (form.ttlHours.trim()) {
     payload.ttl_hours = optionalNumber(form.ttlHours);
   }
@@ -829,6 +874,12 @@ export function AgentsPage() {
   const [skillOptions, setSkillOptions] = useState<SkillLibraryItem[]>([]);
   const [showEditForm, setShowEditForm] = useState(false);
   const [editForm, setEditForm] = useState<AgentPolicyFormState>(() => emptyPolicyForm());
+  const [editCommunicationTargetOptions, setEditCommunicationTargetOptions] = useState<
+    AgentCreateCommunicationTargetOption[]
+  >([]);
+  const [editEmailMailboxOptions, setEditEmailMailboxOptions] = useState<
+    AgentCreateEmailMailboxOption[]
+  >([]);
   const [showSkillInstallForm, setShowSkillInstallForm] = useState(false);
   const [skillInstallForm, setSkillInstallForm] = useState<AgentSkillInstallFormState>(() =>
     emptySkillInstallForm(),
@@ -1554,6 +1605,17 @@ export function AgentsPage() {
       return;
     }
     setEditForm(policyFormFromAgent(selectedAgent));
+    setEditCommunicationTargetOptions([]);
+    setEditEmailMailboxOptions([]);
+    void loadAgentCreateOptions(selectedAgent.directory_path)
+      .then((options) => {
+        setEditCommunicationTargetOptions(options.communication_targets);
+        setEditEmailMailboxOptions(options.email_mailboxes);
+      })
+      .catch(() => {
+        setEditCommunicationTargetOptions([]);
+        setEditEmailMailboxOptions([]);
+      });
     setConnectorGrantsValidationError(null);
     setShowEditForm(true);
     setShowPromptForm(false);
@@ -1574,6 +1636,30 @@ export function AgentsPage() {
     setShowEditForm(false);
     setShowPromptForm(false);
     setInlineValidation("");
+  }
+
+  function convertLegacyAgentCommunicationPolicy() {
+    if (!selectedAgentPolicy) return;
+    setEditForm((current) => {
+      const canSend = selectedAgentPolicy.allowed_tools.includes("email_send");
+      const canDraft = canSend || selectedAgentPolicy.allowed_tools.includes("email_create_draft");
+      return {
+        ...current,
+        communicationTargetIds: current.communicationTargetIds ?? dedupeStrings([
+          ...selectedAgentPolicy.discord_channel_allowlist,
+          ...selectedAgentPolicy.teams_channel_allowlist,
+        ]),
+        emailMailboxGrants: current.emailMailboxGrants ?? selectedAgentPolicy.email_mailboxes.map(
+          (mailboxId) => ({
+            mailbox_id: mailboxId,
+            access: canSend ? "send" : canDraft ? "draft" : "read",
+            folders: canDraft
+              ? dedupeStrings([...selectedAgentPolicy.email_folders, "drafts"])
+              : dedupeStrings(selectedAgentPolicy.email_folders),
+          }),
+        ),
+      };
+    });
   }
 
   function openPromptForm() {
@@ -2319,50 +2405,36 @@ export function AgentsPage() {
                       })}
                     </div>
                   </div>
-                  <div className="field-stack">
-                    <span>Discord channels or targets</span>
-                    <StringListEditor
-                      values={parseList(editForm.discordChannels)}
-                      onChange={(nextValues) => setEditForm((current) => ({ ...current, discordChannels: formatList(nextValues) }))}
-                      addLabel="Add Discord target"
-                      itemLabel="Discord target"
-                      placeholder="channel-id or communication-target-id"
-                      emptyState="No Discord targets are allowlisted."
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Teams targets</span>
-                    <StringListEditor
-                      values={parseList(editForm.teamsChannels)}
-                      onChange={(nextValues) => setEditForm((current) => ({ ...current, teamsChannels: formatList(nextValues) }))}
-                      addLabel="Add Teams target"
-                      itemLabel="Teams target"
-                      placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
-                      emptyState="No Teams targets are allowlisted."
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Email mailboxes</span>
-                    <StringListEditor
-                      values={parseList(editForm.emailMailboxes)}
-                      onChange={(nextValues) => setEditForm((current) => ({ ...current, emailMailboxes: formatList(nextValues) }))}
-                      addLabel="Add mailbox"
-                      itemLabel="Mailbox"
-                      placeholder="ops"
-                      emptyState="No email mailboxes are allowlisted."
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Email folders</span>
-                    <StringListEditor
-                      values={parseList(editForm.emailFolders)}
-                      onChange={(nextValues) => setEditForm((current) => ({ ...current, emailFolders: formatList(nextValues) }))}
-                      addLabel="Add folder"
-                      itemLabel="Folder"
-                      placeholder="Inbox"
-                      emptyState="No email folders are allowlisted."
-                    />
-                  </div>
+                  {editForm.communicationTargetIds === null || editForm.emailMailboxGrants === null ? (
+                    <div className="field-stack wide-field">
+                      <div className="callout">This agent session uses legacy communication allowlists. They remain unchanged until you explicitly convert them.</div>
+                      <button type="button" className="admin-action-button compact" onClick={convertLegacyAgentCommunicationPolicy}>Convert to managed grants</button>
+                    </div>
+                  ) : null}
+                  {editForm.communicationTargetIds === null ? (
+                    <>
+                      <div className="field-stack"><span>Legacy Discord allowlist</span><StringListEditor values={parseList(editForm.discordChannels)} onChange={(nextValues) => setEditForm((current) => ({ ...current, discordChannels: formatList(nextValues) }))} addLabel="Add Discord target" itemLabel="Discord target" placeholder="channel-id or communication-target-id" emptyState="No Discord targets are allowlisted." /></div>
+                      <div className="field-stack"><span>Legacy Teams allowlist</span><StringListEditor values={parseList(editForm.teamsChannels)} onChange={(nextValues) => setEditForm((current) => ({ ...current, teamsChannels: formatList(nextValues) }))} addLabel="Add Teams target" itemLabel="Teams target" placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>" emptyState="No Teams targets are allowlisted." /></div>
+                    </>
+                  ) : (
+                    <div className="field-stack wide-field agent-communication-targets-field">
+                      <span>Communication targets</span>
+                      <p className="field-description">Teams and Discord destinations plus outbound email recipients. Email targets do not grant mailbox access.</p>
+                      <CommunicationTargetCheckboxTable values={editForm.communicationTargetIds} options={editCommunicationTargetOptions} onChange={(nextValues) => setEditForm((current) => ({ ...current, communicationTargetIds: nextValues }))} emptyState="No communication targets are granted." />
+                    </div>
+                  )}
+                  {editForm.emailMailboxGrants === null ? (
+                    <>
+                      <div className="field-stack"><span>Legacy email mailboxes</span><StringListEditor values={parseList(editForm.emailMailboxes)} onChange={(nextValues) => setEditForm((current) => ({ ...current, emailMailboxes: formatList(nextValues) }))} addLabel="Add mailbox" itemLabel="Mailbox" placeholder="ops" emptyState="No email mailboxes are allowlisted." /></div>
+                      <div className="field-stack"><span>Legacy email folders</span><StringListEditor values={parseList(editForm.emailFolders)} onChange={(nextValues) => setEditForm((current) => ({ ...current, emailFolders: formatList(nextValues) }))} addLabel="Add folder" itemLabel="Folder" placeholder="inbox" emptyState="No email folders are allowlisted." /></div>
+                    </>
+                  ) : (
+                    <div className="field-stack wide-field agent-communication-targets-field">
+                      <span>Email mailbox access</span>
+                      <p className="field-description">Read-only is the default. Draft and send access are explicit and separate from recipients.</p>
+                      <EmailMailboxGrantEditor grants={editForm.emailMailboxGrants} options={editEmailMailboxOptions} onChange={(nextGrants) => setEditForm((current) => ({ ...current, emailMailboxGrants: nextGrants }))} emptyState="No mailbox accounts are granted." />
+                    </div>
+                  )}
                 </div>
                 <div className="inline-actions compact-actions">
                   <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || busyAction === "edit-agent"} onClick={() => void handleEditAgent()}>

@@ -6,7 +6,6 @@ import { StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInpu
 import type {
   AgentBackend,
   AgentCreateConnectorOption,
-  AgentCreateCommunicationTargetOption,
   AgentCreateOptionsResponse,
   AgentCreateRequest,
 } from "../admin/types";
@@ -20,6 +19,10 @@ import {
   type AgentCreateFormState,
   type AgentCreateSubmitMeta,
 } from "./agentCreateShared";
+import {
+  CommunicationTargetCheckboxTable,
+  EmailMailboxGrantEditor,
+} from "../communications/SessionGrantEditors";
 
 type AgentCreateDialogProps = {
   directoryPath: string;
@@ -50,141 +53,6 @@ function CreateFieldLabel({ children, tooltip }: { children: ReactNode; tooltip:
         <span className="config-field-tooltip-icon" aria-hidden="true">i</span>
       </Tooltip>
     </span>
-  );
-}
-
-function metadataString(option: AgentCreateCommunicationTargetOption, key: string): string {
-  const value = option.metadata?.[key];
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function metadataStringList(option: AgentCreateCommunicationTargetOption, key: string): string[] {
-  const value = option.metadata?.[key];
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-    .filter(Boolean);
-}
-
-function formatCommunicationTargetToken(value: string, fallback = "Unknown"): string {
-  const trimmed = value.trim();
-  if (!trimmed) return fallback;
-  return trimmed
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function communicationTargetDetail(option: AgentCreateCommunicationTargetOption): string | null {
-  const description = option.description?.trim();
-  if (description) return description;
-  const label = option.label.trim();
-  const value = option.value.trim();
-  if (label && label !== value && !label.startsWith(`${value} (`)) {
-    return label;
-  }
-  return null;
-}
-
-type CommunicationTargetCheckboxTableProps = {
-  values: readonly string[];
-  options: readonly AgentCreateCommunicationTargetOption[];
-  onChange: (nextValues: string[]) => void;
-  emptyState: string;
-};
-
-function CommunicationTargetCheckboxTable({
-  values,
-  options,
-  onChange,
-  emptyState,
-}: CommunicationTargetCheckboxTableProps) {
-  const normalizedValues = dedupeStrings([...values]);
-  const selectedValues = new Set(normalizedValues);
-  const knownValues = new Set(options.map((option) => option.value));
-  const unknownValues = normalizedValues.filter((value) => !knownValues.has(value));
-  const rows = [
-    ...options.map((option) => ({
-      value: option.value,
-      detail: communicationTargetDetail(option),
-      provider: formatCommunicationTargetToken(metadataString(option, "provider")),
-      shape: formatCommunicationTargetToken(metadataString(option, "target_shape")),
-      capabilities: metadataStringList(option, "policy_capabilities"),
-      unknown: false,
-    })),
-    ...unknownValues.map((value) => ({
-      value,
-      detail: "Selected target is no longer in the directory options.",
-      provider: "Unknown",
-      shape: "Unknown",
-      capabilities: [],
-      unknown: true,
-    })),
-  ];
-
-  function setTargetChecked(value: string, checked: boolean) {
-    const nextValues = checked
-      ? [...normalizedValues.filter((entry) => entry !== value), value]
-      : normalizedValues.filter((entry) => entry !== value);
-    onChange(nextValues);
-  }
-
-  return (
-    <div className="agent-communication-target-selector">
-      {rows.length > 0 ? (
-        <div className="agent-communication-target-table-wrap">
-          <table className="agent-communication-target-table">
-            <thead>
-              <tr>
-                <th scope="col">Select</th>
-                <th scope="col">Target</th>
-                <th scope="col">Provider</th>
-                <th scope="col">Shape</th>
-                <th scope="col">Capabilities</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const checked = selectedValues.has(row.value);
-                return (
-                  <tr key={row.value} className={checked ? "selected" : ""}>
-                    <td className="agent-communication-target-select-cell">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(event) => setTargetChecked(row.value, event.target.checked)}
-                        aria-label={`Allow communication target ${row.value}`}
-                      />
-                    </td>
-                    <td>
-                      <div className="agent-communication-target-name">
-                        <strong>{row.value}</strong>
-                        {row.detail ? <span>{row.detail}</span> : null}
-                        {row.unknown ? <span className="agent-communication-target-warning">Unknown target</span> : null}
-                      </div>
-                    </td>
-                    <td>{row.provider}</td>
-                    <td>{row.shape}</td>
-                    <td>
-                      {row.capabilities.length > 0 ? (
-                        <span className="agent-communication-target-capabilities">
-                          {row.capabilities.map((capability) => (
-                            <span key={capability}>{capability}</span>
-                          ))}
-                        </span>
-                      ) : (
-                        <span className="muted-text">None</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-      {normalizedValues.length === 0 ? <div className="empty-state">{emptyState}</div> : null}
-    </div>
   );
 }
 
@@ -310,6 +178,7 @@ export function AgentCreateDialog({
         ...current.initialPolicy,
         connectorGrants: {},
         communicationTargetIds: [],
+        emailMailboxGrants: [],
       },
     }));
     const refresh = async () => {
@@ -335,6 +204,7 @@ export function AgentCreateDialog({
   const showCreateModelProviderMode =
     !createForm.agentProvider || createForm.agentProvider === "codex";
   const createCommunicationTargetOptions = createOptions?.communication_targets ?? [];
+  const createEmailMailboxOptions = createOptions?.email_mailboxes ?? [];
 
   async function handleSubmit() {
     if (createForm.backend === "libvirt_vm" && !createForm.vmName.trim()) {
@@ -777,6 +647,26 @@ export function AgentCreateDialog({
                   createCommunicationTargetOptions.length
                     ? "No communication targets selected."
                     : "No session-capable communication targets are registered for this directory."
+                }
+              />
+            </div>
+            <div className="field-stack wide-field agent-communication-targets-field">
+              <CreateFieldLabel tooltip="Mailbox account access is separate from outbound destinations. Read-only is the default; draft and send access must be granted explicitly.">
+                Email mailbox access
+              </CreateFieldLabel>
+              <EmailMailboxGrantEditor
+                grants={createForm.initialPolicy.emailMailboxGrants}
+                options={createEmailMailboxOptions}
+                onChange={(nextGrants) =>
+                  setCreateForm((current) => ({
+                    ...current,
+                    initialPolicy: { ...current.initialPolicy, emailMailboxGrants: nextGrants },
+                  }))
+                }
+                emptyState={
+                  createEmailMailboxOptions.length
+                    ? "No mailbox accounts selected."
+                    : "No mailbox accounts are configured for this directory."
                 }
               />
             </div>

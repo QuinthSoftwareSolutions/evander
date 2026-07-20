@@ -586,7 +586,7 @@ Type-specific keys:
 | `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
-| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `communication_target_ids`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
+| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
@@ -1821,17 +1821,24 @@ that feeds `trigger:teams:new-message` for both channel threads and group chats,
 `trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids,
 UPNs, or mail addresses.
 
-Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or
-directory-scoped communication target IDs in their communication allowlists. Declared target IDs are
+Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or the
+canonical nullable `communication_target_ids` field. Declared target IDs are
 resolved at use time from the session directory, take precedence over raw IDs when a value collides,
 and must expose the capability required by the operation: `read` for message reads, inbound
 trigger polling, and attachment list/download; `write` for top-level sends; and `reply` for thread
 replies and reactions. Raw legacy IDs keep the existing allowlist behavior.
-`effect:agent:create.communication_target_ids` is an additive shorthand for known Teams, Discord,
-and mailbox-backed email targets in the session directory. The workflow editor presents it as a
-catalogue-backed multi-select, and execution maps the selected target IDs into the existing Discord,
-Teams channel/chat/user, or email mailbox allowlist fields. Email target folders still resolve from
-the effective email policy defaults unless `email_folders` is provided directly.
+`communication_target_ids` grants messaging destinations: Teams and Discord targets plus outbound
+email recipient targets. An email target does not grant access to the mailbox named by its auth
+profile. `email_mailbox_grants` grants mailbox-account access separately. Each entry contains
+`mailbox_id`, `access` (`read`, `draft`, or `send`), and `folders`; draft/send grants require the
+logical `drafts` folder. Sending email requires a send-capable mailbox grant and a write-capable
+email target for every recipient whose auth profile names that same mailbox. Creating a draft needs
+the mailbox grant but no send target, so an agent can prepare a draft for human handoff.
+
+Both canonical fields are nullable for compatibility. Missing or `null` retains the legacy
+allowlist behavior; an explicit empty list grants no targets or mailboxes. Existing sessions are not
+converted implicitly. Admin Web labels legacy sessions and converts them only after an explicit
+operator action.
 
 Teams channel targets can still be declared directly with `teams_channel_allowlist`, Teams chat
 targets with `teams_chat_allowlist`, and one-on-one user send targets with

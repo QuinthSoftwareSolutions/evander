@@ -1742,6 +1742,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "tool_argument_policies",
         "allowed_script_names",
         "communication_target_ids",
+        "email_mailbox_grants",
         "discord_channels",
         "teams_channel_allowlist",
         "teams_chat_allowlist",
@@ -2289,6 +2290,7 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     assert set(trigger_read_ops) == set(message_read_ops)
     assert set(agent_create_root) == {
         "mail-read-write",
+        "mail-write",
         "root-chat",
         "root-discord-reply-only",
         "root-read-chat",
@@ -2296,6 +2298,7 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     }
     assert set(agent_create_ops) == {
         "mail-read-write",
+        "mail-write",
         "root-discord-reply-only",
         "root-read-chat",
         "root-read-discord",
@@ -2311,7 +2314,7 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
         "communication_target_ids",
     )
     assert agent_create_targets_field["kind"] == "string_list"
-    assert "directory communication target catalogue" in agent_create_targets_field["description"]
+    assert "does not grant mailbox account access" in agent_create_targets_field["description"]
 
     root_chat = send_root["root-chat"]
     assert root_chat["metadata"]["provider"] == "teams"
@@ -14309,7 +14312,9 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1", "ops-teams"],
         "teams_chat_allowlist": None,
         "teams_user_allowlist": None,
-        "email_mailboxes": ["default", "ops"],
+        "communication_target_ids": ["ops-teams", "ops-email"],
+        "email_mailbox_grants": None,
+        "email_mailboxes": ["default"],
         "email_folders": ["inbox"],
         "communication_file_receive_enabled": True,
         "communication_file_send_enabled": True,
@@ -14334,19 +14339,12 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
     }
 
 
-@pytest.mark.parametrize(
-    ("target_id", "capabilities"),
-    [
-        ("ops-email-read", ["read"]),
-        ("ops-email-write", ["write"]),
-    ],
-)
-def test_admin_web_agents_create_rejects_capability_limited_email_targets(
+def test_admin_web_agents_create_rejects_read_only_email_target(
     tmp_path: Path,
     monkeypatch,
-    target_id: str,
-    capabilities: list[str],
 ) -> None:
+    target_id = "ops-email-read"
+    capabilities = ["read"]
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     service.directory_admin.create_child(parent="root", name="team-a")
     communication_targets_write = service.operations_admin.write_directory_domain_config(
@@ -14396,7 +14394,7 @@ def test_admin_web_agents_create_rejects_capability_limited_email_targets(
 
     assert response.status_code == 400
     assert target_id in response.json()["error"]
-    assert "requires both read and write capabilities" in response.json()["error"]
+    assert "requires write capability" in response.json()["error"]
     assert create_vm_calls == []
 
 
@@ -14432,6 +14430,16 @@ def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path
     assert body["container_worker"]["default_image"] == "evander-runner:latest"
     assert body["container_worker"]["images"] == []
     assert body["communication_targets"] == []
+    assert body["email_mailboxes"] == [
+        {
+            "mailbox_id": "default",
+            "provider": "json_store",
+            "account_identifier": "default",
+            "folders": ["inbox", "drafts"],
+            "default_folders": ["inbox", "drafts"],
+            "send_enabled": False,
+        }
+    ]
 
 
 def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: Path) -> None:
@@ -14538,10 +14546,18 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
         },
     ]
     communication_targets = {target["value"]: target for target in body["communication_targets"]}
-    assert set(communication_targets) == {"ops-teams", "ops-discord", "ops-email"}
+    assert set(communication_targets) == {
+        "ops-teams",
+        "ops-discord",
+        "ops-email",
+        "ops-email-write",
+    }
     assert communication_targets["ops-teams"]["metadata"]["provider"] == "teams"
     assert communication_targets["ops-discord"]["metadata"]["provider"] == "discord"
     assert communication_targets["ops-email"]["metadata"]["provider"] == "email"
+    assert communication_targets["ops-email-write"]["metadata"]["required_capabilities"] == [
+        "write"
+    ]
 
 
 def test_admin_web_agents_create_vm_duplicate_session_returns_409(

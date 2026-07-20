@@ -126,7 +126,9 @@ class _EmailListCursorCodec:
 
     @staticmethod
     def _query_digest(query: EmailMessageSearchQuery) -> str:
-        serialized = json.dumps(query.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        serialized = json.dumps(
+            query.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        )
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def issue(
@@ -147,9 +149,13 @@ class _EmailListCursorCodec:
             "query_digest": self._query_digest(query),
             "provider_cursor": provider_cursor,
         }
-        encoded = base64.urlsafe_b64encode(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).decode("ascii").rstrip("=")
+        encoded = (
+            base64.urlsafe_b64encode(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            )
+            .decode("ascii")
+            .rstrip("=")
+        )
         signature = hmac.new(self._secret, encoded.encode("ascii"), hashlib.sha256).hexdigest()
         return f"{encoded}.{signature}"
 
@@ -1438,7 +1444,9 @@ def register_communication_tools(
             )
             return result
         except (ValueError, ValidationError) as exc:
-            args = locals().get("args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder})
+            args = locals().get(
+                "args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder}
+            )
             audit_failure(
                 session_id,
                 ToolName.EMAIL_LIST_MESSAGES,
@@ -1449,11 +1457,15 @@ def register_communication_tools(
             )
             raise ToolError(str(exc)) from exc
         except PolicyError as exc:
-            args = locals().get("args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder})
+            args = locals().get(
+                "args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder}
+            )
             audit_failure(session_id, ToolName.EMAIL_LIST_MESSAGES, args, str(exc))
             raise
         except (httpx.HTTPError, ProviderRequestError) as exc:
-            args = locals().get("args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder})
+            args = locals().get(
+                "args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder}
+            )
             audit_failure(
                 session_id,
                 ToolName.EMAIL_LIST_MESSAGES,
@@ -1464,7 +1476,9 @@ def register_communication_tools(
             )
             raise
         except Exception as exc:
-            args = locals().get("args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder})
+            args = locals().get(
+                "args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder}
+            )
             audit_failure(
                 session_id,
                 ToolName.EMAIL_LIST_MESSAGES,
@@ -1532,7 +1546,7 @@ def register_communication_tools(
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_CREATE_DRAFT)
-            context.policy.require_email_mailbox(session, mailbox_id)
+            context.policy.require_email_draft_enabled(session, mailbox_id)
             context.policy.require_email_folder_for_mailbox(session, mailbox_id, "drafts")
             normalized_recipients = recipients or []
             context.policy.require_draft_recipients(session, normalized_recipients)
@@ -2460,7 +2474,7 @@ def register_communication_tools(
             session = context.policy.require_tool(
                 session_id, ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS
             )
-            context.policy.require_email_mailbox(session, mailbox_id)
+            context.policy.require_email_draft_enabled(session, mailbox_id)
             context.policy.require_email_folder_for_mailbox(session, mailbox_id, "drafts")
             normalized_recipients = recipients or []
             context.policy.require_draft_recipients(session, normalized_recipients)
@@ -2630,8 +2644,7 @@ def register_communication_tools(
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_SEND_WITH_ATTACHMENTS)
-            context.policy.require_email_send_enabled(session)
-            context.policy.require_email_mailbox(session, mailbox_id)
+            context.policy.require_email_send_enabled(session, mailbox_id)
             artifacts = _artifact_payloads(artifact_ids)
             args["artifacts"] = _artifact_audit_summaries(artifact_ids)
             context.policy.require_communication_file_artifacts(
@@ -2718,8 +2731,7 @@ def register_communication_tools(
             session = context.policy.require_tool(
                 session_id, ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS
             )
-            context.policy.require_email_send_enabled(session)
-            context.policy.require_email_mailbox(session, str(payload.get("mailbox_id", "")))
+            context.policy.require_email_send_enabled(session, str(payload.get("mailbox_id", "")))
             recipients = draft_recipients_from_payload(payload)
             context.policy.require_draft_recipients(session, recipients)
             artifacts = _artifact_payloads(artifact_ids)
@@ -2799,8 +2811,7 @@ def register_communication_tools(
         args = {"session_id": session_id, "request_id": request_id, "payload": payload}
         try:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_SEND_APPROVED)
-            context.policy.require_email_send_enabled(session)
-            context.policy.require_email_mailbox(session, str(payload.get("mailbox_id", "")))
+            context.policy.require_email_send_enabled(session, str(payload.get("mailbox_id", "")))
             recipients = draft_recipients_from_payload(payload)
             context.policy.require_draft_recipients(session, recipients)
             approval = context.policy.require_approved(request_id, payload)

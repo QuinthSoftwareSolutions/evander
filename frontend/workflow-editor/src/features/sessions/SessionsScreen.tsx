@@ -6,7 +6,16 @@ import { JsonObjectKeyValueEditor, StringListEditor } from "../admin/StructuredP
 import { CleanupIcon, DeleteIcon, ExtendIcon, RevokeIcon, SettingsIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
-import type { RuntimeImageInfo } from "../admin/types";
+import type {
+  AgentCreateCommunicationTargetOption,
+  AgentCreateEmailMailboxOption,
+  EmailMailboxGrant,
+  RuntimeImageInfo,
+} from "../admin/types";
+import {
+  CommunicationTargetCheckboxTable,
+  EmailMailboxGrantEditor,
+} from "../communications/SessionGrantEditors";
 import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
 import {
   canToggleWakeScheduleEnabled,
@@ -50,10 +59,18 @@ type SessionRecord = {
   approval_tool_settings?: Record<string, ApprovalGrantSettings>;
   approval_notification_target_ids?: string[];
   approval_notification_target_options?: Array<{ value: string; label: string }>;
+  communication_target_ids?: string[] | null;
+  communication_target_options?: AgentCreateCommunicationTargetOption[];
   effective_tool_policy?: EffectiveToolPolicy | null;
   allowed_script_names?: string[];
   discord_channel_allowlist?: string[];
   teams_channel_allowlist?: string[];
+  email_mailbox_allowlist?: string[];
+  email_folder_allowlist?: string[];
+  email_folder_allowlist_by_mailbox?: Record<string, string[]>;
+  email_mailbox_grants?: EmailMailboxGrant[] | null;
+  email_mailbox_options?: AgentCreateEmailMailboxOption[];
+  email_send_enabled?: boolean;
   communication_file_receive_enabled?: boolean;
   communication_file_send_enabled?: boolean;
   communication_file_max_bytes?: number | null;
@@ -196,6 +213,8 @@ type SessionPolicyDraft = {
   approvalRequiredTools: string[];
   approvalToolSettings: Record<string, ApprovalGrantSettings>;
   approvalNotificationTargetIds: string[];
+  communicationTargetIds: string[] | null;
+  emailMailboxGrants: EmailMailboxGrant[] | null;
   discordChannelAllowlist: string[];
   teamsChannelAllowlist: string[];
   communicationFileReceiveEnabled: boolean;
@@ -365,6 +384,17 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     approvalRequiredTools: sortTools(session.approval_required_tools ?? []),
     approvalToolSettings: normalizeApprovalToolSettings(session.approval_tool_settings),
     approvalNotificationTargetIds: dedupeStrings(session.approval_notification_target_ids ?? []),
+    communicationTargetIds:
+      session.communication_target_ids == null
+        ? null
+        : dedupeStrings(session.communication_target_ids),
+    emailMailboxGrants:
+      session.email_mailbox_grants == null
+        ? null
+        : session.email_mailbox_grants.map((grant) => ({
+            ...grant,
+            folders: dedupeStrings(grant.folders),
+          })),
     discordChannelAllowlist: dedupeStrings(session.discord_channel_allowlist ?? []),
     teamsChannelAllowlist: dedupeStrings(session.teams_channel_allowlist ?? []),
     communicationFileReceiveEnabled: Boolean(session.communication_file_receive_enabled),
@@ -1145,6 +1175,8 @@ export function SessionsScreen() {
     approvalRequiredTools: [],
     approvalToolSettings: {},
     approvalNotificationTargetIds: [],
+    communicationTargetIds: null,
+    emailMailboxGrants: null,
     discordChannelAllowlist: [],
     teamsChannelAllowlist: [],
     communicationFileReceiveEnabled: false,
@@ -1610,6 +1642,39 @@ export function SessionsScreen() {
     setStatus(null);
   }
 
+  function convertLegacyCommunicationPolicy() {
+    if (!selectedSession) return;
+    const next: Partial<SessionPolicyDraft> = {};
+    if (policyDraft.communicationTargetIds === null) {
+      next.communicationTargetIds = dedupeStrings([
+        ...(selectedSession.discord_channel_allowlist ?? []),
+        ...(selectedSession.teams_channel_allowlist ?? []),
+      ]);
+    }
+    if (policyDraft.emailMailboxGrants === null) {
+      const canSend = Boolean(selectedSession.email_send_enabled)
+        && (selectedSession.allowed_tools ?? []).includes("email_send");
+      const canDraft = canSend || (selectedSession.allowed_tools ?? []).includes("email_create_draft");
+      next.emailMailboxGrants = (selectedSession.email_mailbox_allowlist ?? []).map((mailboxId) => {
+        const configured = (selectedSession.email_mailbox_options ?? []).find(
+          (option) => option.mailbox_id === mailboxId,
+        );
+        const folders = dedupeStrings(
+          selectedSession.email_folder_allowlist_by_mailbox?.[mailboxId]
+            ?? selectedSession.email_folder_allowlist
+            ?? configured?.default_folders
+            ?? [],
+        );
+        return {
+          mailbox_id: mailboxId,
+          access: canSend ? "send" : canDraft ? "draft" : "read",
+          folders: canDraft ? dedupeStrings([...folders, "drafts"]) : folders,
+        };
+      });
+    }
+    updatePolicyDraft(next);
+  }
+
   function updateApprovalNotificationTargets(nextTargets: string[]) {
     updatePolicyDraft({ approvalNotificationTargetIds: dedupeStrings(nextTargets) });
   }
@@ -1820,6 +1885,8 @@ export function SessionsScreen() {
             method: "PATCH",
             body: JSON.stringify({
               allowed_script_names: policyDraft.allowedScriptNames,
+              communication_target_ids: policyDraft.communicationTargetIds,
+              email_mailbox_grants: policyDraft.emailMailboxGrants,
               discord_channel_allowlist: policyDraft.discordChannelAllowlist,
               teams_channel_allowlist: policyDraft.teamsChannelAllowlist,
               communication_file_receive_enabled: policyDraft.communicationFileReceiveEnabled,
@@ -2335,36 +2402,54 @@ export function SessionsScreen() {
                     </p>
                     {renderApprovalNotificationTargetEditor()}
                   </div>
-                  <div className="field-stack">
-                    <span>Discord channel or target allowlist</span>
-                    <p className="field-description">
-                      One channel or communication target id per row. Blank rows are ignored and duplicates are
-                      removed.
-                    </p>
-                    <StringListEditor
-                      values={policyDraft.discordChannelAllowlist}
-                      onChange={(nextValues) => updatePolicyDraft({ discordChannelAllowlist: nextValues })}
-                      disabled={mutationLocked}
-                      itemLabel="Target id"
-                      addLabel="Add allowlist row"
-                      placeholder="channel-id or communication-target-id"
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Teams target allowlist</span>
-                    <p className="field-description">
-                      One communication target id, team-id/channel-id pair, or chat:chat-id per row. Blank rows are
-                      ignored and duplicates are removed.
-                    </p>
-                    <StringListEditor
-                      values={policyDraft.teamsChannelAllowlist}
-                      onChange={(nextValues) => updatePolicyDraft({ teamsChannelAllowlist: nextValues })}
-                      disabled={mutationLocked}
-                      itemLabel="Target id"
-                      addLabel="Add allowlist row"
-                      placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
-                    />
-                  </div>
+                  {policyDraft.communicationTargetIds === null || policyDraft.emailMailboxGrants === null ? (
+                    <div className="field-stack wide-field">
+                      <div className="callout">
+                        This session uses the legacy communication policy. It remains unchanged until you explicitly
+                        convert it to managed communication targets and mailbox grants.
+                      </div>
+                      <button type="button" className="admin-action-button compact" disabled={mutationLocked} onClick={convertLegacyCommunicationPolicy}>
+                        Convert to managed grants
+                      </button>
+                    </div>
+                  ) : null}
+                  {policyDraft.communicationTargetIds === null ? (
+                    <>
+                      <div className="field-stack">
+                        <span>Legacy Discord allowlist</span>
+                        <StringListEditor values={policyDraft.discordChannelAllowlist} onChange={(nextValues) => updatePolicyDraft({ discordChannelAllowlist: nextValues })} disabled={mutationLocked} itemLabel="Target id" addLabel="Add allowlist row" placeholder="channel-id or communication-target-id" />
+                      </div>
+                      <div className="field-stack">
+                        <span>Legacy Teams allowlist</span>
+                        <StringListEditor values={policyDraft.teamsChannelAllowlist} onChange={(nextValues) => updatePolicyDraft({ teamsChannelAllowlist: nextValues })} disabled={mutationLocked} itemLabel="Target id" addLabel="Add allowlist row" placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>" />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="field-stack wide-field agent-communication-targets-field">
+                      <span>Communication targets</span>
+                      <p className="field-description">Teams and Discord destinations plus outbound email recipients. These grants do not grant mailbox access.</p>
+                      <CommunicationTargetCheckboxTable
+                        values={policyDraft.communicationTargetIds}
+                        options={selectedSession?.communication_target_options ?? []}
+                        onChange={(nextValues) => updatePolicyDraft({ communicationTargetIds: nextValues })}
+                        disabled={mutationLocked}
+                        emptyState="No communication targets are granted to this session."
+                      />
+                    </div>
+                  )}
+                  {policyDraft.emailMailboxGrants !== null ? (
+                    <div className="field-stack wide-field agent-communication-targets-field">
+                      <span>Email mailbox access</span>
+                      <p className="field-description">Read-only access is independent of send destinations. Draft and send access are explicit mailbox capabilities.</p>
+                      <EmailMailboxGrantEditor
+                        grants={policyDraft.emailMailboxGrants}
+                        options={selectedSession?.email_mailbox_options ?? []}
+                        onChange={(nextGrants) => updatePolicyDraft({ emailMailboxGrants: nextGrants })}
+                        disabled={mutationLocked}
+                        emptyState="No mailbox accounts are granted to this session."
+                      />
+                    </div>
+                  ) : null}
                   <label className="checkbox-row">
                     <input
                       type="checkbox"

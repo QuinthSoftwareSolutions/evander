@@ -5382,6 +5382,23 @@ select {
   font-weight: 700;
 }
 
+.mailbox-grant-table select {
+  min-width: 10rem;
+}
+
+.mailbox-folder-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+}
+
+.mailbox-folder-options label {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
 .agent-execution-list {
   display: grid;
   gap: 0;

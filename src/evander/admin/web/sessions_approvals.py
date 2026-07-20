@@ -624,6 +624,12 @@ def _session_payload(
         option.model_dump(mode="json")
         for option in service.vm_agent_admin.approval_notification_target_options(summary)
     ]
+    try:
+        grant_options = service.vm_agent_admin.agent_create_options(summary.directory_path)
+    except ValueError:
+        grant_options = {"communication_targets": [], "email_mailboxes": []}
+    payload["communication_target_options"] = grant_options["communication_targets"]
+    payload["email_mailbox_options"] = grant_options["email_mailboxes"]
     payload["runtime_image"] = service.vm_agent_admin.session_runtime_image_payload(summary)
     return payload
 
@@ -685,17 +691,13 @@ def session_approval_routes(
 ) -> list[BaseRoute]:
     policy_summary_cache = _SessionPolicySummaryCache()
     addon_tool_options = (
-        addon_mcp_tool_catalog_payloads(addon_catalog)
-        if addon_catalog is not None
-        else []
+        addon_mcp_tool_catalog_payloads(addon_catalog) if addon_catalog is not None else []
     )
     addon_tool_options_by_name = {item["value"]: item for item in addon_tool_options}
     core_tool_names = {tool.value for tool in ToolName}
     collisions = sorted(core_tool_names.intersection(addon_tool_options_by_name))
     if collisions:
-        raise ValueError(
-            "add-on MCP tool names collide with core tools: " + ", ".join(collisions)
-        )
+        raise ValueError("add-on MCP tool names collide with core tools: " + ", ".join(collisions))
     merged_tool_options = [
         *[_tool_option(tool) for tool in ToolName],
         *addon_tool_options,

@@ -26,6 +26,8 @@ from evander.execution import (
     build_execution_backend,
 )
 from evander.models import (
+    EmailMailboxAccess,
+    EmailMailboxGrant,
     McpToolName,
     SessionManifest,
     ToolName,
@@ -459,6 +461,8 @@ def build_container_session_manifest(
     teams_channel_allowlist: list[str] | None = None,
     teams_chat_allowlist: list[str] | None = None,
     teams_user_allowlist: list[str] | None = None,
+    communication_target_ids: list[str] | None = None,
+    email_mailbox_grants: list[EmailMailboxGrant] | None = None,
     email_mailboxes: list[str] | None,
     email_folders: list[str] | None,
     communication_file_receive_enabled: bool | None = None,
@@ -487,16 +491,28 @@ def build_container_session_manifest(
         ):
             if tool not in resolved_tools:
                 resolved_tools.append(tool)
-    email_requested = bool(email_mailboxes or email_folders)
+    email_requested = (
+        bool(email_mailbox_grants)
+        if email_mailbox_grants is not None
+        else bool(email_mailboxes or email_folders)
+    )
     if email_requested:
         for tool in (
             ToolName.EMAIL_LIST_UNREAD,
             ToolName.EMAIL_GET_MESSAGE,
-            ToolName.EMAIL_CREATE_DRAFT,
         ):
             if tool not in resolved_tools:
                 resolved_tools.append(tool)
-        if config.email_send_enabled:
+        if email_mailbox_grants is None or any(
+            grant.access in {EmailMailboxAccess.DRAFT, EmailMailboxAccess.SEND}
+            for grant in email_mailbox_grants
+        ):
+            if ToolName.EMAIL_CREATE_DRAFT not in resolved_tools:
+                resolved_tools.append(ToolName.EMAIL_CREATE_DRAFT)
+        if config.email_send_enabled and (
+            email_mailbox_grants is None
+            or any(grant.access == EmailMailboxAccess.SEND for grant in email_mailbox_grants)
+        ):
             for tool in (ToolName.EMAIL_SEND, ToolName.EMAIL_SEND_APPROVED):
                 if tool not in resolved_tools:
                     resolved_tools.append(tool)
@@ -504,19 +520,31 @@ def build_container_session_manifest(
     resolved_teams_channel_allowlist = normalize_teams_channel_allowlist(teams_channel_allowlist)
     resolved_teams_chat_allowlist = normalize_teams_chat_allowlist(teams_chat_allowlist)
     resolved_teams_user_allowlist = normalize_teams_user_allowlist(teams_user_allowlist)
-    resolved_email_mailboxes = email_mailboxes or (
-        config.email_mailbox_allowlist if email_requested else []
+    resolved_email_mailboxes = (
+        [grant.mailbox_id for grant in email_mailbox_grants]
+        if email_mailbox_grants is not None
+        else email_mailboxes or (config.email_mailbox_allowlist if email_requested else [])
     )
-    resolved_email_folders = email_folders or (
-        sorted(
-            {
-                folder
-                for folders in config.email_folder_allowlist_by_mailbox.values()
-                for folder in folders
-            }
+    resolved_email_folder_map = (
+        {grant.mailbox_id: list(grant.folders) for grant in email_mailbox_grants}
+        if email_mailbox_grants is not None
+        else config.email_folder_allowlist_by_mailbox
+    )
+    resolved_email_folders = (
+        sorted({folder for grant in email_mailbox_grants for folder in grant.folders})
+        if email_mailbox_grants is not None
+        else email_folders
+        or (
+            sorted(
+                {
+                    folder
+                    for folders in config.email_folder_allowlist_by_mailbox.values()
+                    for folder in folders
+                }
+            )
+            if email_requested
+            else []
         )
-        if email_requested
-        else []
     )
     return SessionManifest(
         session_id=session_id,
@@ -534,9 +562,11 @@ def build_container_session_manifest(
         teams_channel_allowlist=resolved_teams_channel_allowlist,
         teams_chat_allowlist=resolved_teams_chat_allowlist,
         teams_user_allowlist=resolved_teams_user_allowlist,
+        communication_target_ids=communication_target_ids,
+        email_mailbox_grants=email_mailbox_grants,
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
-        email_folder_allowlist_by_mailbox=config.email_folder_allowlist_by_mailbox,
+        email_folder_allowlist_by_mailbox=resolved_email_folder_map,
         email_draft_recipient_allowlist=config.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=config.email_draft_domain_allowlist,
         email_send_enabled=config.email_send_enabled,

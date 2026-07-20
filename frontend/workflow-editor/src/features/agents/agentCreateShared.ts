@@ -6,6 +6,7 @@ import type {
   AgentCreateOperationResponse,
   AgentCreateOptionsResponse,
   AgentCreateRequest,
+  EmailMailboxGrant,
 } from "../admin/types";
 
 export type AgentCreateFormState = {
@@ -36,6 +37,7 @@ export type AgentInitialPolicyFormState = {
   connectorGrants: Record<string, string[]>;
   allowedScriptNames: string[];
   communicationTargetIds: string[];
+  emailMailboxGrants: EmailMailboxGrant[];
 };
 
 export type AgentCreateSubmitMeta = {
@@ -74,6 +76,7 @@ export function emptyInitialPolicyForm(): AgentInitialPolicyFormState {
     connectorGrants: {},
     allowedScriptNames: [],
     communicationTargetIds: [],
+    emailMailboxGrants: [],
   };
 }
 
@@ -181,7 +184,12 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   const allowedScriptNames = dedupeStrings(initialPolicy.allowedScriptNames);
   if (allowedScriptNames.length > 0) payload.allowed_script_names = allowedScriptNames;
   const communicationTargetIds = dedupeStrings(initialPolicy.communicationTargetIds);
-  if (communicationTargetIds.length > 0) payload.communication_target_ids = communicationTargetIds;
+  payload.communication_target_ids = communicationTargetIds;
+  payload.email_mailbox_grants = initialPolicy.emailMailboxGrants.map((grant) => ({
+    mailbox_id: grant.mailbox_id,
+    access: grant.access,
+    folders: dedupeStrings(grant.folders),
+  }));
   return payload;
 }
 

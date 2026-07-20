@@ -1026,19 +1026,19 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
     ]
     assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == ["teams-chat"]
     assert admin_service.create_vm_calls[0]["teams_user_allowlist"] == ["teams-user"]
-    assert admin_service.create_vm_calls[0]["email_mailboxes"] == ["default", "ops"]
+    assert admin_service.create_vm_calls[0]["email_mailboxes"] == ["default"]
+    assert admin_service.create_vm_calls[0]["communication_target_ids"] == [
+        "teams-channel",
+        "teams-chat",
+        "teams-user",
+        "discord-ops",
+        "ops-email",
+    ]
 
 
-@pytest.mark.parametrize(
-    ("target_id", "capabilities"),
-    [
-        ("ops-email-read", ["read"]),
-        ("ops-email-write", ["write"]),
-    ],
-)
-def test_agent_create_provider_rejects_capability_limited_email_targets(
-    tmp_path: Path, target_id: str, capabilities: list[str]
-) -> None:
+def test_agent_create_provider_rejects_read_only_email_target(tmp_path: Path) -> None:
+    target_id = "ops-email-read"
+    capabilities = ["read"]
     config = GatewayConfig(runtime_dir=tmp_path)
     _write_root_communication_targets(
         config,
@@ -1077,7 +1077,7 @@ def test_agent_create_provider_rejects_capability_limited_email_targets(
         admin_service=admin_service,
     )
 
-    with pytest.raises(ValueError, match="requires both read and write capabilities"):
+    with pytest.raises(ValueError, match="requires write capability"):
         factory.build(effect).execute()
 
     assert admin_service.create_vm_calls == []

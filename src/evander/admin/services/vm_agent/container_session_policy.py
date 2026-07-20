@@ -45,6 +45,11 @@ class VmAgentContainerSessionPolicyMixin:
             "allowed_contact_ids": (
                 None if session.allowed_contact_ids is None else list(session.allowed_contact_ids)
             ),
+            "communication_target_ids": (
+                None
+                if session.communication_target_ids is None
+                else list(session.communication_target_ids)
+            ),
             "discord_channels": list(session.discord_channel_allowlist),
             "discord_channel_allowlist": list(session.discord_channel_allowlist),
             "teams_channel_allowlist": list(session.teams_channel_allowlist),
@@ -52,6 +57,11 @@ class VmAgentContainerSessionPolicyMixin:
             "teams_user_allowlist": list(session.teams_user_allowlist),
             "email_mailboxes": list(session.email_mailbox_allowlist),
             "email_folders": list(session.email_folder_allowlist),
+            "email_mailbox_grants": (
+                None
+                if session.email_mailbox_grants is None
+                else [grant.model_dump(mode="json") for grant in session.email_mailbox_grants]
+            ),
             "communication_file_receive_enabled": session.communication_file_receive_enabled,
             "communication_file_send_enabled": session.communication_file_send_enabled,
             "communication_file_max_bytes": session.communication_file_max_bytes,

@@ -1318,6 +1318,24 @@ evander-cli directories config-set \
 evander-cli create-session real-session --runtime-dir runtime
 ```
 
+For new Admin Web/API-created agent sessions, mailbox-account access and messaging destinations are
+separate grants:
+
+```json
+{
+  "communication_target_ids": ["teams-ops", "email-finance-recipient"],
+  "email_mailbox_grants": [
+    {"mailbox_id": "finance-graph", "access": "read", "folders": ["inbox"]}
+  ]
+}
+```
+
+The mailbox grant above lets the agent read the finance inbox; it does not let the agent send mail.
+Email recipients belong in `communication_target_ids` and matter only when a mailbox has `send`
+access. A `draft` grant permits host-side draft creation without granting a recipient target. For
+both canonical fields, `null`/missing preserves legacy behavior while `[]` explicitly grants no
+access.
+
 ## Communication File Transfer
 
 Communication file transfer is intentionally host-mediated. Guests never receive Discord, Teams,

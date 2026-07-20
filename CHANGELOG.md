@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-20 - Session Communication And Mailbox Grants
+
+- Added durable, nullable session `communication_target_ids` and structured
+  `email_mailbox_grants`, keeping missing/null manifests on legacy behavior while treating explicit
+  empty lists as no access.
+- Separated mailbox read/draft/send capability from Teams, Discord, and outbound email recipient
+  destinations. Email send now requires a send-capable mailbox grant plus a write-capable recipient
+  target bound to the same mailbox profile; draft-only access needs no send target.
+- Added shared Agent/Sessions editors, secret-free mailbox option catalogs, explicit legacy-session
+  conversion, workflow support, audit target IDs, and policy/API regression coverage.
+
 ## 2026-07-20 - Structured Email Mailbox Configuration
 
 - Replaced the raw JSON editor for Admin Web email-mailbox configuration with a row-based editor

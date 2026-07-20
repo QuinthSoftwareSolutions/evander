@@ -271,9 +271,14 @@ class PolicyConfigResolver:
             session_id=session.session_id,
             directory_path=session.directory_path,
         )
+        refs = (
+            session.communication_target_ids
+            if session.communication_target_ids is not None
+            else session.discord_channel_allowlist
+        )
         return self._discord_channel_ids_from_refs(
             directory_path,
-            session.discord_channel_allowlist,
+            refs,
             capability=capability,
             strict_target_capability=False,
         )
@@ -289,8 +294,11 @@ class PolicyConfigResolver:
             session_id=session.session_id,
             directory_path=session.directory_path,
         )
-        refs = list(session.teams_channel_allowlist or []) + list(
-            session.teams_chat_allowlist or []
+        refs = (
+            list(session.communication_target_ids)
+            if session.communication_target_ids is not None
+            else list(session.teams_channel_allowlist or [])
+            + list(session.teams_chat_allowlist or [])
         )
         return self._teams_channel_targets_from_refs(
             directory_path,
@@ -310,9 +318,14 @@ class PolicyConfigResolver:
             session_id=session.session_id,
             directory_path=session.directory_path,
         )
+        refs = (
+            session.communication_target_ids
+            if session.communication_target_ids is not None
+            else session.teams_user_allowlist
+        )
         return self._teams_user_targets_from_refs(
             directory_path,
-            session.teams_user_allowlist,
+            refs,
             capability=capability,
             strict_target_capability=False,
         )

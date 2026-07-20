@@ -210,6 +210,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     allowed_script_names: list[str] | None = None
     allowed_contact_ids: list[str] | None = None
     communication_target_ids: list[str] | None = None
+    email_mailbox_grants: ConfigValue | None = None
     discord_channels: list[str] | None = None
     teams_channel_allowlist: list[str] | None = None
     teams_chat_allowlist: list[str] | None = None

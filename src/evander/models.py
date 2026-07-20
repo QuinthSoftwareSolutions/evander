@@ -523,6 +523,52 @@ class ApprovalNotificationDeliveryStatus(str, Enum):
     FAILED = "failed"
 
 
+class EmailMailboxAccess(str, Enum):
+    READ = "read"
+    DRAFT = "draft"
+    SEND = "send"
+
+
+class EmailMailboxGrant(BaseModel):
+    mailbox_id: str
+    access: EmailMailboxAccess = EmailMailboxAccess.READ
+    folders: list[str] = Field(default_factory=list)
+
+    @field_validator("mailbox_id", mode="before")
+    @classmethod
+    def normalize_mailbox_id(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("mailbox_id must be a non-empty string")
+        return normalized
+
+    @field_validator("folders", mode="before")
+    @classmethod
+    def normalize_folders(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("folders must be a list of strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            folder = str(item or "").strip()
+            if not folder or folder in seen:
+                continue
+            seen.add(folder)
+            normalized.append(folder)
+        return normalized
+
+    @model_validator(mode="after")
+    def require_drafts_folder_for_writes(self) -> "EmailMailboxGrant":
+        if self.access in {EmailMailboxAccess.DRAFT, EmailMailboxAccess.SEND}:
+            if "drafts" not in self.folders:
+                raise ValueError("draft and send mailbox grants require the 'drafts' folder")
+        return self
+
+
 class SessionManifest(BaseModel):
     session_id: str
     vm_id: str | None = None
@@ -537,6 +583,7 @@ class SessionManifest(BaseModel):
     approval_notification_target_ids: list[str] = Field(default_factory=list)
     allowed_contact_ids: list[str] | None = None
     allowed_script_names: list[str] = Field(default_factory=list)
+    communication_target_ids: list[str] | None = None
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     teams_channel_allowlist: list[str] = Field(default_factory=list)
     teams_chat_allowlist: list[str] = Field(default_factory=list)
@@ -544,6 +591,7 @@ class SessionManifest(BaseModel):
     email_folder_allowlist: list[str] = Field(default_factory=list)
     email_mailbox_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(default_factory=dict)
+    email_mailbox_grants: list[EmailMailboxGrant] | None = None
     email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
     email_draft_domain_allowlist: list[str] = Field(default_factory=list)
     email_send_enabled: bool = False
@@ -613,6 +661,39 @@ class SessionManifest(BaseModel):
         return normalize_approval_notification_target_ids(
             value, field_name="approval_notification_target_ids"
         )
+
+    @field_validator("communication_target_ids", mode="before")
+    @classmethod
+    def normalize_communication_target_ids(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("communication_target_ids must be a list of strings or null")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            target_id = str(item or "").strip().lower()
+            if not target_id or target_id in seen:
+                continue
+            seen.add(target_id)
+            normalized.append(target_id)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_unique_email_mailbox_grants(self) -> "SessionManifest":
+        if self.email_mailbox_grants is None:
+            return self
+        mailbox_ids = [grant.mailbox_id for grant in self.email_mailbox_grants]
+        duplicates = sorted(
+            mailbox_id for mailbox_id, count in Counter(mailbox_ids).items() if count > 1
+        )
+        if duplicates:
+            raise ValueError(
+                "email_mailbox_grants contains duplicate mailbox IDs: " + ", ".join(duplicates)
+            )
+        return self
 
     @field_validator("allowed_contact_ids", mode="before")
     @classmethod

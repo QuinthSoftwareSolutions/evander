@@ -14,7 +14,11 @@ const agentCreateShared = readFileSync(
   new URL("../src/features/agents/agentCreateShared.ts", import.meta.url),
   "utf8",
 );
-const page = [agentsPage, agentCreateDialog, agentCreateShared].join("\n");
+const sessionGrantEditors = readFileSync(
+  new URL("../src/features/communications/SessionGrantEditors.tsx", import.meta.url),
+  "utf8",
+);
+const page = [agentsPage, agentCreateDialog, agentCreateShared, sessionGrantEditors].join("\n");
 const types = readFileSync(
   new URL("../src/features/admin/types.ts", import.meta.url),
   "utf8",
@@ -38,7 +42,7 @@ function sourceBetween(startMarker, endMarker) {
 }
 
 function createModalSource() {
-  return agentCreateDialog;
+  return [agentCreateDialog, sessionGrantEditors].join("\n");
 }
 
 function buildCreatePayloadSource() {
@@ -144,6 +148,7 @@ test("buildCreatePayload gates provider and image fields by backend", () => {
     "allowed_tools",
     "allowed_script_names",
     "communication_target_ids",
+    "email_mailbox_grants",
   ]) {
     assert.match(source, new RegExp(`payload\\.${field}`));
   }
@@ -255,6 +260,7 @@ test("create modal exposes model override and structured initial policy controls
     "Allowed tools",
     "Allowed scripts",
     "Communication targets",
+    "Email mailbox access",
     "Capabilities",
     "Web search",
     "Model",

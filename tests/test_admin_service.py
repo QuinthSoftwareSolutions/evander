@@ -12725,6 +12725,62 @@ def test_update_session_policy_updates_allowlists_and_metadata(
         )
 
 
+def test_update_session_policy_validates_canonical_communication_and_mailbox_grants(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    communication_targets = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(service.config.runtime_dir)
+    )
+    communication_targets.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "ops-email",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "ops@example.com",
+                    "policy": {
+                        "capabilities": ["write"],
+                        "auth_profile_ref": "email.default",
+                    },
+                }
+            ]
+        },
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="canonical-session",
+            allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    service.operations_admin.update_session_policy(
+        "canonical-session",
+        {
+            "communication_target_ids": ["OPS-EMAIL"],
+            "email_mailbox_grants": [
+                {"mailbox_id": "default", "access": "read", "folders": ["inbox"]}
+            ],
+        },
+    )
+
+    updated = service.runtime.session_repository.get_session("canonical-session")
+    assert updated is not None
+    assert updated.communication_target_ids == ["ops-email"]
+    assert updated.email_mailbox_grants is not None
+    assert updated.email_mailbox_grants[0].access.value == "read"
+    assert updated.email_mailbox_allowlist == ["default"]
+    assert updated.email_folder_allowlist_by_mailbox == {"default": ["inbox"]}
+
+    with pytest.raises(ValueError, match="unknown target"):
+        service.operations_admin.update_session_policy(
+            "canonical-session", {"communication_target_ids": ["missing"]}
+        )
+
+
 def test_update_session_policy_fast_forwards_added_discord_target_cursor(
     tmp_path: Path,
 ) -> None:

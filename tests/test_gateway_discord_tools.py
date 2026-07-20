@@ -27,6 +27,7 @@ from evander.models import (
     ApprovalStatus,
     DiscordCommandEnvelope,
     DiscordMessageEnvelope,
+    EmailMailboxGrant,
     LocalIssueRecord,
     SessionManifest,
     WakeDispatchRecord,
@@ -2339,6 +2340,83 @@ def test_email_send_sends_recorded_draft(tmp_path: Path) -> None:
     assert snapshot is not None
     assert snapshot.send_status == "local_sent"
     assert snapshot.sent_at is not None
+
+
+def test_canonical_email_send_requires_granted_recipient_target(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    write_root_communication_targets(
+        context,
+        [
+            {
+                "id": "primary-approved",
+                "provider": "email",
+                "kind": "email",
+                "address": "approved@example.com",
+                "policy": {"capabilities": ["write"], "auth_profile_ref": "email.primary"},
+            }
+        ],
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.EMAIL_CREATE_DRAFT, ToolName.EMAIL_SEND],
+            communication_target_ids=["primary-approved"],
+            email_mailbox_grants=[
+                EmailMailboxGrant(mailbox_id="primary", access="send", folders=["drafts"])
+            ],
+            email_draft_recipient_allowlist=["approved@example.com"],
+            email_send_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    server = create_server(context)
+
+    draft = call_tool(
+        server,
+        "email_create_draft",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+        },
+    )
+    result = call_tool(
+        server,
+        "email_send",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "draft_id": draft["draft_id"],
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+        },
+    )
+
+    assert result["communication_target_ids"] == ["primary-approved"]
+
+
+def test_read_only_mailbox_grant_cannot_create_draft(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.EMAIL_CREATE_DRAFT],
+            email_mailbox_grants=[
+                EmailMailboxGrant(mailbox_id="primary", access="read", folders=["inbox"])
+            ],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="requires draft access"):
+        call_tool(
+            server,
+            "email_create_draft",
+            {"session_id": "session-1", "mailbox_id": "primary", "body": "draft"},
+        )
 
 
 def test_email_send_rejects_recipient_mismatch(tmp_path: Path) -> None:
