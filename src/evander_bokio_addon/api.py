@@ -206,10 +206,10 @@ def _execute_prepared_action(
     )
     if not claimed:
         return {"action": action, "result": action.get("result"), "idempotent": True}
-    kind = str(action.get("kind") or "").strip()
-    payload = _object(action.get("payload"), "payload")
-    client = _client(context)
     try:
+        kind = str(action.get("kind") or "").strip()
+        payload = _object(action.get("payload"), "payload")
+        client = _client(context)
         if kind == "journal_entry":
             result = client.create_journal_entry(payload)
         elif kind == "supplier_invoice":

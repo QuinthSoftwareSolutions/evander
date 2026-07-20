@@ -1003,6 +1003,75 @@ def test_bokio_mcp_approved_write_tool_checks_policy_before_client_access(
     assert requests[0].headers["authorization"] == "Bearer secret-token"
 
 
+def test_bokio_mcp_marks_prepared_action_failed_when_client_setup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BOKIO_COMPANY_ID", raising=False)
+    monkeypatch.delenv("BOKIO_INTEGRATION_TOKEN", raising=False)
+    store = PreparedActionStore(tmp_path)
+    action = store.create_action(
+        kind="supplier_invoice",
+        payload={"supplierId": "supplier-1"},
+        source="session-1",
+    )
+    store.approve_action(action["action_id"])
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_approved_supplier_invoice"],
+    )
+
+    with pytest.raises(BokioConfigError, match="company id is required"):
+        server.tools["bokio_create_approved_supplier_invoice"](
+            prepared_action_id=action["action_id"],
+            session_id="session-1",
+        )
+
+    failed = store.get_action(action["action_id"])
+    assert failed is not None
+    assert failed["status"] == "failed"
+    assert failed["error"]["error_class"] == "BokioConfigError"
+    retried, owns_retry = store.claim_execution(action["action_id"], retry=True)
+    assert owns_retry is True
+    assert retried["status"] == "executing"
+
+
+def test_bokio_mcp_marks_prepared_action_failed_when_stored_payload_is_invalid(
+    tmp_path: Path,
+) -> None:
+    store = PreparedActionStore(tmp_path)
+    action = store.create_action(
+        kind="supplier_invoice",
+        payload={"supplierId": "supplier-1"},
+        source="session-1",
+    )
+    store.approve_action(action["action_id"])
+
+    def corrupt_payload(root: dict[str, object]) -> None:
+        actions = root["actions"]
+        assert isinstance(actions, dict)
+        stored = actions[action["action_id"]]
+        assert isinstance(stored, dict)
+        stored["payload"] = []
+
+    store.store.update_object(corrupt_payload)
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_approved_supplier_invoice"],
+    )
+
+    with pytest.raises(ValueError, match="payload must be a JSON object"):
+        server.tools["bokio_create_approved_supplier_invoice"](
+            prepared_action_id=action["action_id"],
+            session_id="session-1",
+        )
+
+    failed = store.get_action(action["action_id"])
+    assert failed is not None
+    assert failed["status"] == "failed"
+    assert failed["error"]["error_class"] == "ValueError"
+
+
 def test_bokio_mcp_creates_supplier_invoice_once_for_an_exact_operation_key_repeat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

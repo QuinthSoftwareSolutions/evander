@@ -41,6 +41,8 @@
   left in `executing`, while keeping ordinary concurrent calls blocked.
 - Treated unparsable successful write responses as uncertain, while keeping DNS, TCP-connect, and
   connection-establishment timeout failures on the explicit retry path.
+- Kept prepared actions on the explicit retry path when payload validation or Bokio client setup
+  fails locally before any remote request can occur.
 - Kept the mounted Bokio review frame synchronized with live privileged-operation lock changes and
   exposed confirmed recovery for interrupted prepared actions.
 
