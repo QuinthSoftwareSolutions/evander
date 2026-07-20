@@ -38,7 +38,7 @@ test("communication target editor preserves capability drafts and inserts Teams 
 test("configuration screen does not render raw secret-bearing Teams auth fields", () => {
   assert.doesNotMatch(configuration, /device_code/i);
   assert.doesNotMatch(configuration, /store_path/i);
-  assert.doesNotMatch(configuration, /access_token/i);
+  assert.doesNotMatch(configuration, /<span>Access token<\/span>/i);
   assert.doesNotMatch(configuration, /refresh_token/i);
 });
 

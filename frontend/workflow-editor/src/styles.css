@@ -6652,6 +6652,18 @@ select {
   gap: 0.85rem;
 }
 
+.email-mailbox-folder-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 0.8fr) minmax(12rem, 1fr) auto auto;
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.email-mailbox-allowed-folder {
+  min-height: 2.9rem;
+  padding-bottom: 0.15rem;
+}
+
 .communication-target-address-field {
   grid-column: span 2;
 }
@@ -9637,6 +9649,7 @@ button.mobile-record-card:focus-visible,
 
   .contact-editor-grid,
   .communication-target-grid,
+  .email-mailbox-folder-row,
   .string-list-selector-row,
   .structured-input-row,
   .structured-input-unknown-row,

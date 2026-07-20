@@ -20,6 +20,18 @@ import {
   type ModelPricingRuleDraft,
   type ModelPricingRuleSummary,
 } from "./modelPricingDraft";
+import {
+  EMAIL_MAILBOX_PROVIDERS,
+  defaultEmailMailboxFolders,
+  emailMailboxDraftEntriesToConfig,
+  emailMailboxDraftValue,
+  emailMailboxEntriesFromConfig,
+  emptyEmailMailboxDraftEntry,
+  parseEmailMailboxDraftValue,
+  type EmailMailboxDraftEntry,
+  type EmailMailboxFolderDraft,
+  type EmailMailboxProvider,
+} from "./emailMailboxDraft";
 
 type Diagnostic = { code: string; message: string; field?: string | null };
 
@@ -124,6 +136,8 @@ const CONTACTS_TAB_KEY = "contacts";
 const CONTACTS_FIELD_NAME = "contacts";
 const COMMUNICATION_TARGETS_DOMAIN = "communication_targets";
 const COMMUNICATION_TARGETS_FIELD_NAME = "targets";
+const EMAIL_DOMAIN = "email";
+const EMAIL_MAILBOXES_FIELD_NAME = "email_mailboxes";
 const COMMUNICATION_TARGET_PROVIDERS = ["teams", "discord", "email", "github", "ado", "jira", "linear"];
 const COMMUNICATION_TARGET_KINDS = ["teams", "discord", "email", "pull-request", "ticket"];
 const COMMUNICATION_TARGET_KINDS_BY_PROVIDER: Record<string, string[]> = {
@@ -257,6 +271,10 @@ function isContactsConfigField(field: ConfigurationField): boolean {
 
 function isCommunicationTargetsConfigField(field: ConfigurationField): boolean {
   return field.source_domain === COMMUNICATION_TARGETS_DOMAIN && field.field_name === COMMUNICATION_TARGETS_FIELD_NAME;
+}
+
+function isEmailMailboxesConfigField(field: ConfigurationField): boolean {
+  return field.source_domain === EMAIL_DOMAIN && field.field_name === EMAIL_MAILBOXES_FIELD_NAME;
 }
 
 function isApprovalNotificationTargetField(field: ConfigurationField): boolean {
@@ -619,6 +637,9 @@ function normalizeFieldValue(field: ConfigurationField, value: unknown): string 
   if (isCommunicationTargetsConfigField(field)) {
     return JSON.stringify(communicationTargetEntriesFromConfig(value), null, 2);
   }
+  if (isEmailMailboxesConfigField(field)) {
+    return emailMailboxDraftValue(emailMailboxEntriesFromConfig(value));
+  }
   if (field.kind === "string_list") {
     return Array.isArray(value) ? value.map((item) => String(item)).join("\n") : value == null ? "" : String(value);
   }
@@ -683,6 +704,13 @@ function parseFieldValue(field: ConfigurationField, rawValue: string | boolean):
       throw new Error(`${field.label} contains an invalid draft payload: ${parsed.error}`);
     }
     return communicationTargetDraftEntriesToConfig(parsed.entries);
+  }
+  if (isEmailMailboxesConfigField(field)) {
+    const parsed = parseEmailMailboxDraftValue(rawValue);
+    if (parsed.error) {
+      throw new Error(`${field.label} contains an invalid draft payload: ${parsed.error}`);
+    }
+    return emailMailboxDraftEntriesToConfig(parsed.entries);
   }
   if (field.kind === "int") {
     const text = String(rawValue).trim();
@@ -1577,6 +1605,14 @@ export function ConfigurationScreen() {
     });
   }
 
+  function updateEmailMailboxesField(fieldName: string, nextEntries: EmailMailboxDraftEntry[]) {
+    updateFieldState(fieldName, {
+      include: true,
+      clear: false,
+      value: emailMailboxDraftValue(nextEntries),
+    });
+  }
+
   function mutateCommunicationTargetsField(
     field: ConfigurationField,
     fieldState: DraftFieldState,
@@ -1600,6 +1636,53 @@ export function ConfigurationScreen() {
   ) {
     mutateCommunicationTargetsField(field, fieldState, (entries) =>
       entries.map((entry, index) => (index === targetIndex ? nextTarget : entry)),
+    );
+  }
+
+  function mutateEmailMailboxesField(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    mutate: (entries: EmailMailboxDraftEntry[]) => EmailMailboxDraftEntry[],
+  ): boolean {
+    const parsed = parseEmailMailboxDraftValue(fieldState.value);
+    if (parsed.error) {
+      setError(`Unable to edit email mailboxes: ${parsed.error}`);
+      return false;
+    }
+    updateEmailMailboxesField(field.field_name, mutate(parsed.entries));
+    setError(null);
+    return true;
+  }
+
+  function updateEmailMailboxEntry(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    mailboxIndex: number,
+    nextMailbox: EmailMailboxDraftEntry,
+  ) {
+    mutateEmailMailboxesField(field, fieldState, (entries) =>
+      entries.map((entry, index) => (index === mailboxIndex ? nextMailbox : entry)),
+    );
+  }
+
+  function updateEmailMailboxFolder(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    mailboxIndex: number,
+    folderIndex: number,
+    nextFolder: EmailMailboxFolderDraft,
+  ) {
+    mutateEmailMailboxesField(field, fieldState, (entries) =>
+      entries.map((entry, index) =>
+        index === mailboxIndex
+          ? {
+              ...entry,
+              folders: entry.folders.map((folder, currentIndex) =>
+                currentIndex === folderIndex ? nextFolder : folder,
+              ),
+            }
+          : entry,
+      ),
     );
   }
 
@@ -1893,6 +1976,239 @@ export function ConfigurationScreen() {
                 </div>
               </div>
             ))
+          : null}
+      </div>
+    );
+  }
+
+  function renderEmailMailboxesEditor(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    disabled: boolean,
+  ) {
+    const parsed = parseEmailMailboxDraftValue(fieldState.value);
+    const entries = parsed.entries;
+    return (
+      <div className="email-mailboxes-editor contacts-editor">
+        <div className="contacts-editor-header">
+          <p className="muted-text">
+            Define the mailbox identity and host secret reference once. Access tokens stay in the host environment and are never entered here.
+          </p>
+          <div className="inline-actions contacts-editor-actions">
+            <button
+              type="button"
+              onClick={() =>
+                mutateEmailMailboxesField(field, fieldState, (current) => [
+                  ...current,
+                  emptyEmailMailboxDraftEntry(),
+                ])
+              }
+              disabled={disabled}
+            >
+              Add mailbox
+            </button>
+          </div>
+        </div>
+        {parsed.error ? (
+          <div className="callout error-callout">Email mailbox draft could not be read: {parsed.error}</div>
+        ) : null}
+        {!parsed.error && entries.length === 0 ? (
+          <div className="empty-state">No email mailboxes are configured for this override.</div>
+        ) : null}
+        {!parsed.error
+          ? entries.map((mailbox, mailboxIndex) => {
+              const accountLabel = mailbox.provider === "graph"
+                ? "Mailbox address"
+                : mailbox.provider === "gmail"
+                  ? "Account"
+                  : "Mailbox account";
+              const accountPlaceholder = mailbox.provider === "graph"
+                ? "ops@example.com"
+                : mailbox.provider === "gmail"
+                  ? "me"
+                  : "default";
+              return (
+                <div key={`email-mailbox-${mailboxIndex}`} className="contact-editor-item email-mailbox-editor-item">
+                  <div className="contact-editor-item-header">
+                    <strong>{mailbox.mailboxId.trim() || `Mailbox ${mailboxIndex + 1}`}</strong>
+                    <div className="inline-actions compact-actions">
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() =>
+                          mutateEmailMailboxesField(field, fieldState, (current) =>
+                            current.filter((_, index) => index !== mailboxIndex),
+                          )
+                        }
+                        disabled={disabled}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                  <div className="communication-target-grid email-mailbox-grid">
+                    <label className="field-stack">
+                      <span>Mailbox id</span>
+                      <input
+                        value={mailbox.mailboxId}
+                        onChange={(event) =>
+                          updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                            ...mailbox,
+                            mailboxId: event.target.value,
+                          })
+                        }
+                        disabled={disabled}
+                        placeholder="m365-ops"
+                      />
+                    </label>
+                    <label className="field-stack">
+                      <span>Provider</span>
+                      <select
+                        value={mailbox.provider}
+                        onChange={(event) => {
+                          const provider = event.target.value as EmailMailboxProvider;
+                          updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                            ...mailbox,
+                            provider,
+                            folders: mailbox.folders.length
+                              ? mailbox.folders
+                              : defaultEmailMailboxFolders(provider),
+                          });
+                        }}
+                        disabled={disabled}
+                      >
+                        {EMAIL_MAILBOX_PROVIDERS.map((provider) => (
+                          <option key={provider} value={provider}>
+                            {provider === "graph"
+                              ? "Microsoft Graph (Office 365)"
+                              : provider === "gmail"
+                                ? "Gmail"
+                                : "Local JSON store"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field-stack">
+                      <span>{accountLabel}</span>
+                      <input
+                        value={mailbox.accountIdentifier}
+                        onChange={(event) =>
+                          updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                            ...mailbox,
+                            accountIdentifier: event.target.value,
+                          })
+                        }
+                        disabled={disabled}
+                        placeholder={accountPlaceholder}
+                      />
+                    </label>
+                    <label className="field-stack">
+                      <span>Host access-token env var</span>
+                      <input
+                        value={mailbox.accessTokenEnv}
+                        onChange={(event) =>
+                          updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                            ...mailbox,
+                            accessTokenEnv: event.target.value,
+                          })
+                        }
+                        disabled={disabled}
+                        placeholder={mailbox.provider === "graph" ? "GRAPH_M365_ACCESS_TOKEN" : "GMAIL_ACCESS_TOKEN"}
+                      />
+                    </label>
+                  </div>
+                  <div className="contact-subsection">
+                    <div className="contact-subsection-header">
+                      <div>
+                        <strong>Folders</strong>
+                        <p className="muted-text">Map policy folder names to provider folder names and select the defaults available to new sessions.</p>
+                      </div>
+                      <div className="inline-actions compact-actions">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                              ...mailbox,
+                              folders: [
+                                ...mailbox.folders,
+                                { folder: "", providerFolder: "", allowedByDefault: true },
+                              ],
+                            })
+                          }
+                          disabled={disabled}
+                        >
+                          Add folder
+                        </button>
+                      </div>
+                    </div>
+                    {mailbox.folders.length === 0 ? (
+                      <div className="empty-state compact-empty-state">No folder mappings are configured.</div>
+                    ) : null}
+                    {mailbox.folders.map((folder, folderIndex) => (
+                      <div key={`email-mailbox-${mailboxIndex}-folder-${folderIndex}`} className="email-mailbox-folder-row">
+                        <label className="field-stack">
+                          <span>Folder</span>
+                          <input
+                            value={folder.folder}
+                            onChange={(event) =>
+                              updateEmailMailboxFolder(field, fieldState, mailboxIndex, folderIndex, {
+                                ...folder,
+                                folder: event.target.value,
+                              })
+                            }
+                            disabled={disabled}
+                            placeholder="inbox"
+                          />
+                        </label>
+                        <label className="field-stack">
+                          <span>Provider folder</span>
+                          <input
+                            value={folder.providerFolder}
+                            onChange={(event) =>
+                              updateEmailMailboxFolder(field, fieldState, mailboxIndex, folderIndex, {
+                                ...folder,
+                                providerFolder: event.target.value,
+                              })
+                            }
+                            disabled={disabled}
+                            placeholder={mailbox.provider === "gmail" ? "INBOX" : "Inbox"}
+                          />
+                        </label>
+                        <label className="checkbox-row email-mailbox-allowed-folder">
+                          <input
+                            type="checkbox"
+                            checked={folder.allowedByDefault}
+                            onChange={(event) =>
+                              updateEmailMailboxFolder(field, fieldState, mailboxIndex, folderIndex, {
+                                ...folder,
+                                allowedByDefault: event.target.checked,
+                              })
+                            }
+                            disabled={disabled}
+                          />
+                          <span>Allow by default</span>
+                        </label>
+                        <div className="inline-actions compact-actions">
+                          <button
+                            type="button"
+                            className="danger"
+                            onClick={() =>
+                              updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                                ...mailbox,
+                                folders: mailbox.folders.filter((_, index) => index !== folderIndex),
+                              })
+                            }
+                            disabled={disabled}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })
           : null}
       </div>
     );
@@ -3089,6 +3405,7 @@ export function ConfigurationScreen() {
                       : !fieldState.include || fieldState.clear;
                     const isContactsField = isContactsConfigField(field);
                     const isCommunicationTargetsField = isCommunicationTargetsConfigField(field);
+                    const isEmailMailboxesField = isEmailMailboxesConfigField(field);
                     const isApprovalNotificationTargetList = isApprovalNotificationTargetField(field);
                     const inheritedCommunicationTargets = isCommunicationTargetsField
                       ? communicationTargetEntriesFromConfig(snapshot?.parent_defaults.config?.[field.field_name])
@@ -3096,7 +3413,7 @@ export function ConfigurationScreen() {
                     return (
                       <div
                         key={field.field_name}
-                        className={`config-field-card${isContactsField || isCommunicationTargetsField ? " contacts-field-card" : ""}`}
+                        className={`config-field-card${isContactsField || isCommunicationTargetsField || isEmailMailboxesField ? " contacts-field-card" : ""}`}
                       >
                         <div className="feature-list-title-row">
                           <div className="config-field-label">
@@ -3143,6 +3460,12 @@ export function ConfigurationScreen() {
                         <div className={inputDisabled ? "disabled-block" : ""}>
                           {isContactsField
                             ? renderContactsEditor(field, fieldState, inputDisabled || loading || saving || !state?.directory_scoped_config_enabled)
+                            : isEmailMailboxesField
+                            ? renderEmailMailboxesEditor(
+                                field,
+                                fieldState,
+                                inputDisabled || loading || saving || !state?.directory_scoped_config_enabled,
+                              )
                             : isCommunicationTargetsField
                             ? renderCommunicationTargetsEditor(
                                 field,

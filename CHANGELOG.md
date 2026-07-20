@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-20 - Structured Email Mailbox Configuration
+
+- Replaced the raw JSON editor for Admin Web email-mailbox configuration with a row-based editor
+  for provider, mailbox identity, host access-token environment-variable reference, and folder
+  mappings/defaults. The editor keeps OAuth token values out of Admin Web while supporting Gmail,
+  Microsoft Graph, and the local development provider.
+
 ## 2026-07-20 - Paginated Email Search MCP Tool
 
 - Added the explicitly granted `email_list_messages` MCP tool for paginated mailbox-folder
