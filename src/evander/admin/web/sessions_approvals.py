@@ -177,6 +177,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.EMAIL_LIST_UNREAD: (
         "List unread email messages available through the host email provider."
     ),
+    ToolName.EMAIL_LIST_MESSAGES: (
+        "List and search email messages available through the host email provider."
+    ),
     ToolName.EMAIL_GET_MESSAGE: (
         "Open a specific email message the session is allowed to inspect."
     ),

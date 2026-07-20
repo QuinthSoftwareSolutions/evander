@@ -107,6 +107,7 @@ class ToolName(str, Enum):
     GET_PHONE_CALL_RESULT = "get_phone_call_result"
     SUBMIT_VOICE_QUERY_RESPONSE = "submit_voice_query_response"
     EMAIL_LIST_UNREAD = "email_list_unread"
+    EMAIL_LIST_MESSAGES = "email_list_messages"
     EMAIL_GET_MESSAGE = "email_get_message"
     EMAIL_CREATE_DRAFT = "email_create_draft"
     EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS = "email_create_draft_with_attachments"

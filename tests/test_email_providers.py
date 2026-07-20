@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import UTC, datetime
 from email import message_from_bytes, policy
 
 import httpx
@@ -11,7 +12,7 @@ from evander.config import GatewayConfig
 from evander.email.gmail_provider import GmailEmailProvider
 from evander.email.graph_provider import GraphEmailProvider
 from evander.email.http_utils import ProviderRequestError
-from evander.email.providers import EmailDraftAttachment
+from evander.email.providers import EmailDraftAttachment, EmailMessageSearchQuery
 
 
 def patch_provider_client(
@@ -102,6 +103,129 @@ def test_graph_summary_sets_conversation_metadata() -> None:
 
     assert summary.thread_id == "conversation-999"
     assert summary.metadata["graph_conversation_id"] == "conversation-999"
+
+
+def test_gmail_list_messages_translates_filters_and_page_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages"):
+            assert request.url.params["pageToken"] == "next-page"
+            query = request.url.params["q"]
+            assert "in:INBOX" in query
+            assert "is:read" in query
+            assert "from:\"vendor@example.com\"" in query
+            assert "subject:\"invoice\"" in query
+            assert "has:attachment" in query
+            return httpx.Response(200, json={"messages": [{"id": "msg-1"}]}, request=request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg-1",
+                "threadId": "thread-1",
+                "labelIds": ["INBOX"],
+                "internalDate": "1774000800000",
+                "snippet": "invoice details",
+                "payload": {"headers": [{"name": "From", "value": "vendor@example.com"}]},
+            },
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.gmail_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GmailEmailProvider(
+        account_identifier="me",
+        folder_mapping={"inbox": "INBOX"},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://gmail.test/gmail/v1",
+    )
+
+    page = provider.list_messages(
+        mailbox_id="ops-gmail",
+        folder="inbox",
+        query=EmailMessageSearchQuery(
+            received_after=datetime(2026, 3, 20, tzinfo=UTC),
+            received_before=datetime(2026, 3, 21, tzinfo=UTC),
+            unread=False,
+            sender_contains="vendor@example.com",
+            subject_contains="invoice",
+            text_contains="details",
+            has_attachments=True,
+        ),
+        cursor="next-page",
+        limit=10,
+    )
+
+    assert [message.message_id for message in page.messages] == ["msg-1"]
+    assert page.messages[0].unread is False
+    assert page.next_cursor is None
+
+
+def test_graph_list_messages_translates_filters_and_preserves_next_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/mailFolders/Inbox/messages")
+        assert request.url.params["$top"] == "10"
+        assert "isRead eq false" in request.url.params["$filter"]
+        assert "contains(subject,'invoice')" in request.url.params["$filter"]
+        assert request.url.params["$search"] == '"details"'
+        assert request.headers["ConsistencyLevel"] == "eventual"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "graph-msg-1",
+                        "conversationId": "conversation-1",
+                        "isRead": False,
+                        "bodyPreview": "details",
+                        "receivedDateTime": "2026-03-20T10:00:00Z",
+                        "parentFolderId": "Inbox",
+                        "from": {"emailAddress": {"address": "sender@example.com"}},
+                        "toRecipients": [],
+                    }
+                ],
+                "@odata.nextLink": "https://graph.test/v1.0/next-page",
+            },
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+    )
+
+    page = provider.list_messages(
+        mailbox_id="exec-graph",
+        folder="inbox",
+        query=EmailMessageSearchQuery(
+            unread=True,
+            subject_contains="invoice",
+            text_contains="details",
+        ),
+        cursor=None,
+        limit=10,
+    )
+
+    assert [message.message_id for message in page.messages] == ["graph-msg-1"]
+    assert page.next_cursor == "https://graph.test/v1.0/next-page"
 
 
 def test_graph_detail_maps_parent_folder_to_policy_folder() -> None:

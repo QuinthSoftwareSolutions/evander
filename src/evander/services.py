@@ -57,6 +57,8 @@ from evander.email.providers import (
     EmailDraft,
     EmailDraftAttachment,
     EmailMessageDetail,
+    EmailMessagePage,
+    EmailMessageSearchQuery,
     EmailMessageSummary,
     EmailProvider,
     EmailSendResult,
@@ -522,6 +524,22 @@ class EmailService:
 
     def list_unread(self, mailbox_id: str, folder: str, limit: int) -> list[EmailMessageSummary]:
         return self.provider.list_unread(mailbox_id=mailbox_id, folder=folder, limit=limit)
+
+    def list_messages(
+        self,
+        mailbox_id: str,
+        folder: str,
+        query: EmailMessageSearchQuery,
+        cursor: str | None,
+        limit: int,
+    ) -> EmailMessagePage:
+        return self.provider.list_messages(
+            mailbox_id=mailbox_id,
+            folder=folder,
+            query=query,
+            cursor=cursor,
+            limit=limit,
+        )
 
     def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
         return self.provider.get_message(mailbox_id=mailbox_id, message_id=message_id)

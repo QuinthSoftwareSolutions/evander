@@ -15,6 +15,7 @@ enabling send flows or touching non-test destinations.
   - `discord_post_status`
 - Email:
   - `email_list_unread`
+  - `email_list_messages`
   - `email_get_message`
 - Providers:
   - one dedicated Gmail test mailbox
@@ -139,7 +140,9 @@ Then verify email for both providers:
 
 1. Call `email_list_unread` for the Gmail test mailbox and `inbox`.
 2. Pick one returned message ID and call `email_get_message`.
-3. Repeat for the Graph test mailbox and `inbox`.
+3. Call `email_list_messages` with a small `limit`, then use its `next_cursor` for a second page
+   when one is returned. Repeat with a bounded date filter.
+4. Repeat for the Graph test mailbox and `inbox`.
 
 Run at least one negative policy check:
 

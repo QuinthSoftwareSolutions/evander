@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
+import json
+import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,9 +18,10 @@ import httpx
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field as PydanticField
+from pydantic import ValidationError
 
 from evander.email.http_utils import ProviderRequestError
-from evander.email.providers import EmailDraftAttachment
+from evander.email.providers import EmailDraftAttachment, EmailMessageSearchQuery
 from evander.gateway.dependencies import _compat_gateway_attr
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.models import (
@@ -112,6 +118,74 @@ class CommunicationToolHelpers:
     transport_session_map: dict[str, str] | None = None
 
 
+class _EmailListCursorCodec:
+    _ttl_seconds = 15 * 60
+
+    def __init__(self) -> None:
+        self._secret = secrets.token_bytes(32)
+
+    @staticmethod
+    def _query_digest(query: EmailMessageSearchQuery) -> str:
+        serialized = json.dumps(query.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def issue(
+        self,
+        *,
+        session_id: str,
+        mailbox_id: str,
+        folder: str,
+        query: EmailMessageSearchQuery,
+        provider_cursor: str,
+    ) -> str:
+        payload = {
+            "version": 1,
+            "expires_at": int(time.time()) + self._ttl_seconds,
+            "session_id": session_id,
+            "mailbox_id": mailbox_id,
+            "folder": folder,
+            "query_digest": self._query_digest(query),
+            "provider_cursor": provider_cursor,
+        }
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        signature = hmac.new(self._secret, encoded.encode("ascii"), hashlib.sha256).hexdigest()
+        return f"{encoded}.{signature}"
+
+    def resolve(
+        self,
+        cursor: str,
+        *,
+        session_id: str,
+        mailbox_id: str,
+        folder: str,
+        query: EmailMessageSearchQuery,
+    ) -> str:
+        try:
+            encoded, signature = cursor.split(".", 1)
+            expected_signature = hmac.new(
+                self._secret, encoded.encode("ascii"), hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(signature, expected_signature):
+                raise ValueError("invalid email page cursor")
+            padding = "=" * (-len(encoded) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(f"{encoded}{padding}").decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid email page cursor") from exc
+        if (
+            payload.get("version") != 1
+            or not isinstance(payload.get("provider_cursor"), str)
+            or int(payload.get("expires_at", 0)) < int(time.time())
+            or payload.get("session_id") != session_id
+            or payload.get("mailbox_id") != mailbox_id
+            or payload.get("folder") != folder
+            or payload.get("query_digest") != self._query_digest(query)
+        ):
+            raise ValueError("invalid or expired email page cursor")
+        return str(payload["provider_cursor"])
+
+
 def register_communication_tools(
     server: Any,
     context: Any,
@@ -126,6 +200,7 @@ def register_communication_tools(
 
     audit_success = helpers.audit_success
     audit_failure = helpers.audit_failure
+    email_list_cursor_codec = _EmailListCursorCodec()
     transport_session_map = helpers.transport_session_map
     if transport_session_map is None:
         transport_session_map = getattr(server, "_evander_transport_session_map", {})
@@ -1277,6 +1352,122 @@ def register_communication_tools(
             audit_failure(
                 session_id,
                 ToolName.EMAIL_LIST_UNREAD,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def email_list_messages(
+        session_id: str,
+        mailbox_id: str,
+        folder: str,
+        cursor: str | None = None,
+        limit: Annotated[int, PydanticField(ge=1, le=100)] = 25,
+        received_after: datetime | None = None,
+        received_before: datetime | None = None,
+        unread: bool | None = None,
+        sender_contains: str | None = None,
+        recipient_contains: str | None = None,
+        subject_contains: str | None = None,
+        text_contains: str | None = None,
+        has_attachments: bool | None = None,
+    ) -> dict[str, Any]:
+        try:
+            query = EmailMessageSearchQuery(
+                received_after=received_after,
+                received_before=received_before,
+                unread=unread,
+                sender_contains=sender_contains,
+                recipient_contains=recipient_contains,
+                subject_contains=subject_contains,
+                text_contains=text_contains,
+                has_attachments=has_attachments,
+            )
+            args = {
+                "session_id": session_id,
+                "mailbox_id": mailbox_id,
+                "folder": folder,
+                "cursor_present": cursor is not None,
+                "limit": limit,
+                **query.model_dump(mode="json", exclude_none=True),
+            }
+            session = context.policy.require_tool(session_id, ToolName.EMAIL_LIST_MESSAGES)
+            context.policy.require_email_mailbox(session, mailbox_id)
+            context.policy.require_email_folder_for_mailbox(session, mailbox_id, folder)
+            provider_cursor = (
+                email_list_cursor_codec.resolve(
+                    cursor,
+                    session_id=session_id,
+                    mailbox_id=mailbox_id,
+                    folder=folder,
+                    query=query,
+                )
+                if cursor is not None
+                else None
+            )
+            page = context.email_service_for_session(session_id).list_messages(
+                mailbox_id=mailbox_id,
+                folder=folder,
+                query=query,
+                cursor=provider_cursor,
+                limit=limit,
+            )
+            next_cursor = (
+                email_list_cursor_codec.issue(
+                    session_id=session_id,
+                    mailbox_id=mailbox_id,
+                    folder=folder,
+                    query=query,
+                    provider_cursor=page.next_cursor,
+                )
+                if page.next_cursor is not None
+                else None
+            )
+            result = {
+                "messages": [message.model_dump(mode="json") for message in page.messages],
+                "next_cursor": next_cursor,
+            }
+            audit_success(
+                session_id,
+                ToolName.EMAIL_LIST_MESSAGES,
+                args,
+                {"count": len(page.messages), "has_next_cursor": next_cursor is not None},
+            )
+            return result
+        except (ValueError, ValidationError) as exc:
+            args = locals().get("args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder})
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_LIST_MESSAGES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(str(exc)) from exc
+        except PolicyError as exc:
+            args = locals().get("args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder})
+            audit_failure(session_id, ToolName.EMAIL_LIST_MESSAGES, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            args = locals().get("args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder})
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_LIST_MESSAGES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            args = locals().get("args", {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder})
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_LIST_MESSAGES,
                 args,
                 str(exc),
                 decision="error",

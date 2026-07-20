@@ -1,9 +1,19 @@
 # Changelog
 
+## 2026-07-20 - Paginated Email Search MCP Tool
+
+- Added the explicitly granted `email_list_messages` MCP tool for paginated mailbox-folder
+  listing across Gmail, Microsoft Graph, and the local provider, with read-state, date, sender,
+  recipient, subject, full-text, and attachment filters.
+- Kept `email_list_unread` as the separate incremental unread workflow; standard email-enabled
+  sessions do not receive the broader listing capability automatically.
+
 ## 2026-07-20 - Sessions MCP Tool Groups
 
 - Moved the codebase-consultation and connector MCP tools out of the generic **Other** group on
   the Sessions page, including when a stale catalog labels them as **Other**.
+- Separated Team Add-on MCP tools from the Microsoft Teams application tools by giving add-on
+  tool descriptors an optional group override.
 
 ## 2026-07-20 - Team Session Navigation
 

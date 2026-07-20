@@ -18,6 +18,8 @@ from .providers import (
     EmailDraft,
     EmailDraftAttachment,
     EmailMessageDetail,
+    EmailMessagePage,
+    EmailMessageSearchQuery,
     EmailMessageSummary,
     EmailSendResult,
 )
@@ -64,6 +66,44 @@ class GraphEmailProvider:
         summaries = self._dedupe_with_cursor(mailbox_id, folder, summaries, next_delta_link)
         summaries.sort(key=lambda entry: entry.received_at, reverse=True)
         return summaries[:limit]
+
+    def list_messages(
+        self,
+        mailbox_id: str,
+        folder: str,
+        query: EmailMessageSearchQuery,
+        cursor: str | None,
+        limit: int,
+    ) -> EmailMessagePage:
+        headers = self._headers()
+        if query.text_contains:
+            headers["ConsistencyLevel"] = "eventual"
+        if cursor:
+            url = cursor
+            params: dict[str, Any] | None = None
+        else:
+            graph_folder_id = self.folder_mapping.get(folder, folder)
+            url = self._url(f"mailFolders/{graph_folder_id}/messages")
+            params = self._search_params(query=query, limit=limit)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="list_messages",
+                method="GET",
+                url=url,
+                headers=headers,
+                params=params,
+            )
+            payload = response.json()
+        summaries = [
+            self._to_summary(mailbox_id=mailbox_id, folder=folder, payload=item)
+            for item in payload.get("value", [])
+            if not item.get("@removed")
+        ]
+        summaries.sort(key=lambda entry: entry.received_at, reverse=True)
+        next_cursor = str(payload.get("@odata.nextLink", "")).strip() or None
+        return EmailMessagePage(messages=summaries, next_cursor=next_cursor)
 
     def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -238,6 +278,52 @@ class GraphEmailProvider:
             "Content-Type": "application/json",
         }
 
+    @staticmethod
+    def _odata_literal(value: str) -> str:
+        return value.replace("'", "''")
+
+    @staticmethod
+    def _graph_datetime(value: datetime) -> str:
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    def _search_params(self, *, query: EmailMessageSearchQuery, limit: int) -> dict[str, Any]:
+        filters: list[str] = []
+        if query.received_after is not None:
+            filters.append(f"receivedDateTime ge {self._graph_datetime(query.received_after)}")
+        if query.received_before is not None:
+            filters.append(f"receivedDateTime lt {self._graph_datetime(query.received_before)}")
+        if query.unread is not None:
+            filters.append(f"isRead eq {'false' if query.unread else 'true'}")
+        if query.sender_contains:
+            filters.append(
+                "contains(from/emailAddress/address,"
+                f"'{self._odata_literal(query.sender_contains)}')"
+            )
+        if query.recipient_contains:
+            filters.append(
+                "toRecipients/any(recipient:contains(recipient/emailAddress/address,"
+                f"'{self._odata_literal(query.recipient_contains)}'))"
+            )
+        if query.subject_contains:
+            filters.append(f"contains(subject,'{self._odata_literal(query.subject_contains)}')")
+        if query.has_attachments is not None:
+            filters.append(f"hasAttachments eq {'true' if query.has_attachments else 'false'}")
+
+        params: dict[str, Any] = {
+            "$select": (
+                "id,subject,bodyPreview,from,toRecipients,isRead,receivedDateTime,"
+                "conversationId,parentFolderId,hasAttachments"
+            ),
+            "$top": limit,
+        }
+        if filters:
+            params["$filter"] = " and ".join(filters)
+        if query.text_contains:
+            params["$search"] = f'"{query.text_contains.replace(chr(34), " ")}"'
+        else:
+            params["$orderby"] = "receivedDateTime DESC"
+        return params
+
     def _to_summary(
         self, *, mailbox_id: str, folder: str, payload: dict[str, Any]
     ) -> EmailMessageSummary:
@@ -263,6 +349,7 @@ class GraphEmailProvider:
             thread_id=str(conversation_id) if conversation_id else None,
             sender=sender,
             recipients=recipients,
+            subject=str(payload.get("subject", "")),
             received_at=received_at,
             unread=not bool(payload.get("isRead", False)),
             body_snippet=str(payload.get("bodyPreview", "")),
@@ -281,7 +368,6 @@ class GraphEmailProvider:
         body = payload.get("body") or {}
         return EmailMessageDetail(
             **summary.model_dump(),
-            subject=str(payload.get("subject", "")),
             body_text=str(body.get("content", "")),
             attachments=[
                 self._attachment_metadata(item) for item in self._expanded_attachment_items(payload)
