@@ -326,11 +326,27 @@ def _communication_target_option(
     )
 
 
-def _tool_field_options() -> list[WorkflowEditorFieldOption]:
-    return [
+def _tool_field_options(
+    addon_tools: list[Mapping[str, str]] | None = None,
+) -> list[WorkflowEditorFieldOption]:
+    options = [
         _field_option(tool.value, tool.value.replace("_", " "))
         for tool in sorted(ToolName, key=lambda item: item.value)
     ]
+    for tool in addon_tools or []:
+        options.append(
+            _field_option(
+                tool["value"],
+                tool["label"],
+                description=tool.get("description"),
+                metadata={
+                    "tool_group": tool["group"],
+                    "provider": tool["provider"],
+                    "addon_id": tool["addon_id"],
+                },
+            )
+        )
+    return options
 
 
 def _port(

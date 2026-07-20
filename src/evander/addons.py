@@ -104,6 +104,20 @@ AddonRouteFactory = Callable[[AddonContext], Sequence[Any]]
 AddonMcpToolFactory = Callable[[Any, AddonContext], Sequence[str] | None]
 
 
+class AddonMcpTool(BaseModel):
+    name: str
+    label: str
+    description: str
+
+    @field_validator("name", "label", "description", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: object, info) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return text
+
+
 @dataclass(frozen=True)
 class AddonRegistration:
     addon_id: str
@@ -112,6 +126,7 @@ class AddonRegistration:
     admin_api_routes: Sequence[Any] | AddonRouteFactory = field(default_factory=tuple)
     admin_ui_routes: Sequence[Any] | AddonRouteFactory = field(default_factory=tuple)
     mcp_tools: AddonMcpToolFactory | None = None
+    mcp_tool_catalog: Sequence[AddonMcpTool | Mapping[str, Any]] = field(default_factory=tuple)
     workflow_providers: Any | None = None
     connector_drivers: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -132,12 +147,57 @@ class AddonRegistration:
             )
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
         object.__setattr__(self, "connector_drivers", dict(self.connector_drivers or {}))
+        tool_catalog: list[AddonMcpTool] = []
+        seen_tool_names: set[str] = set()
+        for raw_tool in self.mcp_tool_catalog or ():
+            tool = (
+                raw_tool
+                if isinstance(raw_tool, AddonMcpTool)
+                else AddonMcpTool.model_validate(raw_tool)
+            )
+            if tool.name in seen_tool_names:
+                raise ValueError(
+                    f"add-on {self.addon_id} declares duplicate MCP tool {tool.name!r}"
+                )
+            seen_tool_names.add(tool.name)
+            tool_catalog.append(tool)
+        object.__setattr__(self, "mcp_tool_catalog", tuple(tool_catalog))
 
 
 @dataclass(frozen=True)
 class LoadedAddonCatalog:
     registrations: tuple[AddonRegistration, ...]
     loaded_addons: tuple[str, ...]
+
+
+def addon_mcp_tool_catalog_payloads(catalog: LoadedAddonCatalog) -> list[dict[str, str]]:
+    payloads: list[dict[str, str]] = []
+    seen: dict[str, str] = {}
+    for registration in catalog.registrations:
+        group = (
+            registration.admin_navigation.label
+            if registration.admin_navigation is not None
+            else registration.display_name
+        )
+        for tool in registration.mcp_tool_catalog:
+            previous_addon_id = seen.get(tool.name)
+            if previous_addon_id is not None:
+                raise ValueError(
+                    f"MCP tool {tool.name!r} is declared by both "
+                    f"{previous_addon_id!r} and {registration.addon_id!r}"
+                )
+            seen[tool.name] = registration.addon_id
+            payloads.append(
+                {
+                    "value": tool.name,
+                    "label": tool.label,
+                    "description": tool.description,
+                    "group": group,
+                    "provider": registration.addon_id,
+                    "addon_id": registration.addon_id,
+                }
+            )
+    return payloads
 
 
 @dataclass(frozen=True)
@@ -746,6 +806,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
             admin_api_routes=value.get("admin_api_routes") or (),
             admin_ui_routes=value.get("admin_ui_routes") or (),
             mcp_tools=value.get("mcp_tools"),
+            mcp_tool_catalog=value.get("mcp_tool_catalog") or (),
             workflow_providers=value.get("workflow_providers"),
             connector_drivers=value.get("connector_drivers") or {},
             metadata=_coerce_metadata(value.get("metadata"), source=source),
@@ -759,6 +820,7 @@ def _coerce_registration(*, source: str, value: Any) -> AddonRegistration:
         admin_api_routes=getattr(value, "admin_api_routes", ()),
         admin_ui_routes=getattr(value, "admin_ui_routes", ()),
         mcp_tools=getattr(value, "mcp_tools", None),
+        mcp_tool_catalog=getattr(value, "mcp_tool_catalog", ()),
         workflow_providers=getattr(value, "workflow_providers", None),
         connector_drivers=getattr(value, "connector_drivers", {}),
         metadata=_coerce_metadata(getattr(value, "metadata", None), source=source),

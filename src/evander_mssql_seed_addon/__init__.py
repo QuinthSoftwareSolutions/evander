@@ -3,7 +3,7 @@ from __future__ import annotations
 from evander.addons import AddonAdminNavigation, AddonRegistration
 
 from .api import admin_api_routes
-from .mcp import register_mcp_tools
+from .mcp import MCP_TOOL_CATALOG, register_mcp_tools
 from .state import ADDON_ID, STATE_FILE
 from .ui import admin_ui_routes
 
@@ -21,6 +21,7 @@ def register_addon() -> AddonRegistration:
         admin_api_routes=admin_api_routes,
         admin_ui_routes=admin_ui_routes,
         mcp_tools=register_mcp_tools,
+        mcp_tool_catalog=MCP_TOOL_CATALOG,
         metadata={
             "description": (
                 "Restores operator-approved MSSQL backup seeds into worker-provisioned "

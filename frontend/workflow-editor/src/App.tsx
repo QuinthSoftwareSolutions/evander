@@ -1240,6 +1240,8 @@ function ensureDirectorySelectOption(
 }
 
 function groupToolOption(option: WorkflowFieldOption): string {
+  const declaredGroup = option.metadata?.tool_group;
+  if (typeof declaredGroup === "string" && declaredGroup.trim()) return declaredGroup.trim();
   const { value } = option;
   if ([
     "create_local_issue",
@@ -1361,7 +1363,13 @@ function groupToolOptions(options: WorkflowFieldOption[]) {
     const group = groupToolOption(option);
     groups.set(group, [...(groups.get(group) ?? []), option]);
   }
-  return TOOL_GROUP_ORDER
+  const orderedNames = [
+    ...TOOL_GROUP_ORDER.filter((name) => groups.has(name)),
+    ...[...groups.keys()]
+      .filter((name) => !TOOL_GROUP_ORDER.includes(name as (typeof TOOL_GROUP_ORDER)[number]))
+      .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" })),
+  ];
+  return orderedNames
     .map((name) => ({ name, items: groups.get(name) ?? [] }))
     .filter((group) => group.items.length > 0)
     .map((group) => ({

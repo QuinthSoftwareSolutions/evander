@@ -20,6 +20,7 @@ from starlette.staticfiles import StaticFiles
 from evander.addons import (
     AddonContext,
     LoadedAddonCatalog,
+    addon_mcp_tool_catalog_payloads,
     addon_admin_navigation_payloads,
     addon_runtime_dir,
     load_addons,
@@ -292,6 +293,14 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         addon_catalog = load_addons(service.config.addon_loader, base_dir=service.project_dir)
     except Exception:
         addon_catalog = LoadedAddonCatalog(registrations=(), loaded_addons=())
+    addon_tool_names = [
+        item["value"] for item in addon_mcp_tool_catalog_payloads(addon_catalog)
+    ]
+    if addon_tool_names:
+        existing_tool_names = set(service.runtime.policy.extra_mcp_tool_names)
+        service.runtime.policy.set_extra_mcp_tool_names(
+            existing_tool_names.union(addon_tool_names)
+        )
     service.vm_agent_admin.mark_abandoned_agent_create_operations_failed()
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
@@ -609,7 +618,14 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(capacity_routes(service, auth, dashboard_cache))
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
-    routes.extend(session_approval_routes(service, auth, dashboard_cache))
+    routes.extend(
+        session_approval_routes(
+            service,
+            auth,
+            dashboard_cache,
+            addon_catalog=addon_catalog,
+        )
+    )
     routes.extend(tool_call_routes(service, dashboard_cache))
     routes.extend(tool_visibility_routes(service))
     routes.extend(worker_config_routes(service, auth, dashboard_cache))

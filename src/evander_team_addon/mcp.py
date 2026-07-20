@@ -7,7 +7,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from evander.addons import AddonContext
+from evander.addons import AddonContext, AddonMcpTool
 from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
@@ -237,6 +237,17 @@ MCP_TOOL_NAMES = (
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     *READ_TEAM_MCP_TOOL_NAMES,
+)
+MCP_TOOL_CATALOG = tuple(
+    AddonMcpTool(
+        name=tool_name,
+        label=tool_name.removeprefix("team_").replace("_", " ").capitalize(),
+        description=(
+            "Team Add-on tool for "
+            f"{tool_name.removeprefix('team_').replace('_', ' ')}."
+        ),
+    )
+    for tool_name in MCP_TOOL_NAMES
 )
 
 

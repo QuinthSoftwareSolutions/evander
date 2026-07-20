@@ -14,6 +14,7 @@ from starlette.routing import BaseRoute, Route
 
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+from evander.admin.tool_visibility import _tool_category, _tool_provider
 from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.admin.web.shared import (
@@ -37,6 +38,7 @@ from evander.models import (
     utc_now,
 )
 from evander.policy import mandatory_approval_required_for_tool
+from evander.addons import LoadedAddonCatalog, addon_mcp_tool_catalog_payloads
 
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
@@ -492,10 +494,14 @@ def _rule_effective_settings(rule: McpToolPolicyRule | None) -> ApprovalGrantSet
 
 
 def _tool_option(tool: ToolName) -> dict[str, Any]:
+    category = _tool_category(tool)
     return {
         "value": tool.value,
         "label": tool.value.replace("_", " "),
         "description": _TOOL_DESCRIPTIONS.get(tool, ""),
+        "group": category,
+        "provider": _tool_provider(tool, category),
+        "addon_id": None,
     }
 
 
@@ -672,8 +678,25 @@ def session_approval_routes(
     service: AdminRuntimeComponents,
     auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
+    addon_catalog: LoadedAddonCatalog | None = None,
 ) -> list[BaseRoute]:
     policy_summary_cache = _SessionPolicySummaryCache()
+    addon_tool_options = (
+        addon_mcp_tool_catalog_payloads(addon_catalog)
+        if addon_catalog is not None
+        else []
+    )
+    addon_tool_options_by_name = {item["value"]: item for item in addon_tool_options}
+    core_tool_names = {tool.value for tool in ToolName}
+    collisions = sorted(core_tool_names.intersection(addon_tool_options_by_name))
+    if collisions:
+        raise ValueError(
+            "add-on MCP tool names collide with core tools: " + ", ".join(collisions)
+        )
+    merged_tool_options = [
+        *[_tool_option(tool) for tool in ToolName],
+        *addon_tool_options,
+    ]
 
     def _validated_directory_path(directory_path: object | None) -> str | None:
         if directory_path is None:
@@ -869,7 +892,7 @@ def session_approval_routes(
     async def sessions_catalog(_: Request) -> JSONResponse:
         return JSONResponse(
             {
-                "tool_options": [_tool_option(tool) for tool in ToolName],
+                "tool_options": merged_tool_options,
                 "model_options": _model_options_from_pricing_catalog(service),
                 "resume_mode_options": [
                     {"value": "same_context", "label": "same_context"},
@@ -1161,7 +1184,11 @@ def session_approval_routes(
             tool_name_value(tool) for tool in effective_policy.approval_required_tools
         }
         items: list[dict[str, Any]] = []
-        extra_tool_names = set(raw_policies) | set(effective_policy.mcp_tool_policies)
+        extra_tool_names = (
+            set(raw_policies)
+            | set(effective_policy.mcp_tool_policies)
+            | set(addon_tool_options_by_name)
+        )
         extra_tool_names.update(approval_required_tools)
         known_tools = list(ToolName) + sorted(
             tool_name
@@ -1175,10 +1202,14 @@ def session_approval_routes(
             option = (
                 _tool_option(tool)
                 if isinstance(tool, ToolName)
-                else {
+                else addon_tool_options_by_name.get(tool_value)
+                or {
                     "value": tool_value,
                     "label": tool_value.replace("_", " "),
                     "description": "Add-on MCP tool.",
+                    "group": "Add-ons",
+                    "provider": "add-on",
+                    "addon_id": None,
                 }
             )
             items.append(

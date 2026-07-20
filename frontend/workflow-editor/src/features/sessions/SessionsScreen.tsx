@@ -169,6 +169,9 @@ type CatalogOption = {
   value: string;
   label: string;
   description?: string;
+  group?: string;
+  provider?: string;
+  addon_id?: string;
 };
 
 type SessionCatalogResponse = {
@@ -436,6 +439,7 @@ function validateLeadingDotExtensions(values: readonly string[], fieldLabel: str
 const sessionListCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 function groupToolOption(tool: ToolOption): string {
+  if (tool.group?.trim()) return tool.group.trim();
   const { value } = tool;
   if ([
     "create_local_issue",

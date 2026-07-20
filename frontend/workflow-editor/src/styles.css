@@ -7476,6 +7476,20 @@ select {
   margin-top: 0.55rem;
 }
 
+.mcp-tool-policy-group {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.mcp-tool-policy-group-label {
+  padding: 0.3rem 0.2rem 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .mcp-tool-policy-list-item .feature-list-meta {
   overflow-wrap: anywhere;
 }

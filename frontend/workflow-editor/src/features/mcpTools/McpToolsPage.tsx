@@ -26,6 +26,9 @@ type McpToolPolicyItem = {
   value: string;
   label: string;
   description?: string;
+  group?: string;
+  provider?: string;
+  addon_id?: string;
   local_policy?: McpToolPolicyRule | null;
   effective_policy?: McpToolPolicyRule | null;
   effective_settings: ApprovalGrantSettings;
@@ -115,6 +118,10 @@ function formatUses(value: number | null | undefined): string {
   return value == null ? "unlimited" : String(value);
 }
 
+function toolGroup(item: McpToolPolicyItem): string {
+  return item.group?.trim() || "Core";
+}
+
 export function McpToolsPage() {
   const { selectedDirectoryPath, openDirectoryPicker, privilegedUnlocked } = useAdminUi();
   const [response, setResponse] = useState<McpToolsResponse | null>(null);
@@ -154,9 +161,27 @@ export function McpToolsPage() {
     const items = response?.items ?? [];
     if (!normalized) return items;
     return items.filter((item) =>
-      [item.value, item.label, item.description ?? ""].join(" ").toLowerCase().includes(normalized),
+      [item.value, item.label, item.description ?? "", item.group ?? "", item.provider ?? ""]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalized),
     );
   }, [filter, response?.items]);
+
+  const visibleGroups = useMemo(() => {
+    const groups = new Map<string, McpToolPolicyItem[]>();
+    for (const item of visibleItems) {
+      const group = toolGroup(item);
+      groups.set(group, [...(groups.get(group) ?? []), item]);
+    }
+    return [...groups.entries()]
+      .sort(([left], [right]) => {
+        if (left === "Core") return -1;
+        if (right === "Core") return 1;
+        return left.localeCompare(right, undefined, { sensitivity: "base" });
+      })
+      .map(([group, items]) => ({ group, items }));
+  }, [visibleItems]);
 
   const selectedItem = useMemo(
     () => response?.items.find((item) => item.value === selectedTool) ?? visibleItems[0] ?? null,
@@ -250,32 +275,37 @@ export function McpToolsPage() {
           <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="tool name or description" />
         </label>
         <div className="feature-list mcp-tool-policy-list">
-          {visibleItems.map((item) => {
-            const localRule = draftPolicies[item.value];
-            const localOverride = ruleHasLocalContent(localRule);
-            return (
-              <button
-                key={item.value}
-                type="button"
-                className={`feature-list-item mcp-tool-policy-list-item${selectedItem?.value === item.value ? " selected" : ""}`}
-                onClick={() => setSelectedTool(item.value)}
-              >
-                <div className="feature-list-title-row">
-                  <strong>{item.label}</strong>
-                  <span className={`status-pill state-${item.denied ? "failed" : item.approval_required ? "idle" : "running"}`}>
-                    {item.denied ? "Denied" : item.approval_required ? "Approval" : "Allowed"}
-                  </span>
-                </div>
-                <div className="feature-list-meta">{item.value}</div>
-                <div className="feature-list-meta mcp-tool-policy-description">
-                  {item.description || "No description available."}
-                </div>
-                <div className="feature-list-meta">
-                  {localOverride ? "Local rule" : "Inherited/default policy"}
-                </div>
-              </button>
-            );
-          })}
+          {visibleGroups.map(({ group, items }) => (
+            <div className="mcp-tool-policy-group" key={group}>
+              <div className="mcp-tool-policy-group-label">{group}</div>
+              {items.map((item) => {
+                const localRule = draftPolicies[item.value];
+                const localOverride = ruleHasLocalContent(localRule);
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    className={`feature-list-item mcp-tool-policy-list-item${selectedItem?.value === item.value ? " selected" : ""}`}
+                    onClick={() => setSelectedTool(item.value)}
+                  >
+                    <div className="feature-list-title-row">
+                      <strong>{item.label}</strong>
+                      <span className={`status-pill state-${item.denied ? "failed" : item.approval_required ? "idle" : "running"}`}>
+                        {item.denied ? "Denied" : item.approval_required ? "Approval" : "Allowed"}
+                      </span>
+                    </div>
+                    <div className="feature-list-meta">{item.value}</div>
+                    <div className="feature-list-meta mcp-tool-policy-description">
+                      {item.description || "No description available."}
+                    </div>
+                    <div className="feature-list-meta">
+                      {localOverride ? "Local rule" : "Inherited/default policy"}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
           {visibleItems.length === 0 ? <div className="empty-state">No MCP tools matched the filter.</div> : null}
         </div>
       </section>
