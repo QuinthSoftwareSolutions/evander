@@ -439,7 +439,8 @@ function validateLeadingDotExtensions(values: readonly string[], fieldLabel: str
 const sessionListCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 function groupToolOption(tool: ToolOption): string {
-  if (tool.group?.trim()) return tool.group.trim();
+  const declaredGroup = tool.group?.trim();
+  if (declaredGroup && declaredGroup !== "Other") return declaredGroup;
   const { value } = tool;
   if ([
     "create_local_issue",
@@ -492,6 +493,10 @@ function groupToolOption(tool: ToolOption): string {
     "prompt_agent",
     "list_pending_agent_prompts",
     "respond_to_agent",
+    "consult_codebase",
+    "get_codebase_consultation",
+    "cancel_codebase_consultation",
+    "submit_codebase_consultation_result",
     "schedule_resume",
     "cancel_scheduled_wake",
     "run_script",
@@ -553,6 +558,9 @@ function groupToolOption(tool: ToolOption): string {
   }
   if (value.startsWith("semantic_")) {
     return "Semantic store";
+  }
+  if (["list_connectors", "call_connector"].includes(value)) {
+    return "Connectors";
   }
   return "Other";
 }

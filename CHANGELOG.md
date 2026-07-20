@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-20 - Sessions MCP Tool Groups
+
+- Moved the codebase-consultation and connector MCP tools out of the generic **Other** group on
+  the Sessions page, including when a stale catalog labels them as **Other**.
+
 ## 2026-07-20 - Team Session Navigation
 
 - Added **Open session** actions for Team agents in the Teams detail views and org-chart context

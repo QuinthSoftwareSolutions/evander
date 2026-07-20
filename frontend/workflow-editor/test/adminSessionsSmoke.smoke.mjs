@@ -674,6 +674,46 @@ test("admin shell sessions page discards approval settings edits without saving 
   assert.deepEqual(consoleErrors, []);
 });
 
+test("admin shell sessions page categorizes consultation and connector tools", async (t) => {
+  const toolOptions = [
+    ["consult_codebase", "Consult codebase"],
+    ["get_codebase_consultation", "Get codebase consultation"],
+    ["cancel_codebase_consultation", "Cancel codebase consultation"],
+    ["submit_codebase_consultation_result", "Submit codebase consultation result"],
+    ["list_connectors", "List connectors"],
+    ["call_connector", "Call connector"],
+  ].map(([value, label]) => ({ value, label, group: "Other" }));
+  const {
+    address,
+    consoleErrors,
+    page,
+    pageErrors,
+  } = await createSessionsSmokeHarness(t, makeSessionRecord(), {}, {
+    sessionCatalogResponse: {
+      tool_options: toolOptions,
+      model_options: [],
+      resume_mode_options: [],
+      renew_extension_presets: [],
+    },
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+  await ensureSectionsExpanded(page);
+
+  const agentControlGroup = page.locator("details.session-tool-group").filter({ hasText: "Agent control" });
+  const connectorsGroup = page.locator("details.session-tool-group").filter({ hasText: "Connectors" });
+  await agentControlGroup.locator("summary").click();
+  await connectorsGroup.locator("summary").click();
+
+  assert.equal(await agentControlGroup.locator(".session-tool-row").count(), 4);
+  assert.equal(await connectorsGroup.locator(".session-tool-row").count(), 2);
+  assert.equal(await page.locator(".session-tool-group").filter({ hasText: /^Other/ }).count(), 0);
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
+
 test("admin shell sessions page reset clears an existing approval settings override", async (t) => {
   const permissiveApprovalSettings = {
     ttl_seconds: 86400,
