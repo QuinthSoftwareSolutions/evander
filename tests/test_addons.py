@@ -259,6 +259,12 @@ def test_team_addon_mcp_tools_do_not_share_the_microsoft_teams_group() -> None:
     )
 
     assert {item["group"] for item in payloads} == {"Team Add-on"}
+    reply_tool = next(item for item in payloads if item["value"] == "team_reply_to_chat")
+    assert reply_tool["description"] == (
+        "Reply to the specific human operator message that started the current Team Chat "
+        "dispatch. Available only while that dispatch is active; use "
+        "team_send_operator_chat_message for proactive messages to listed operators."
+    )
 
 
 def test_addon_mcp_tool_catalog_defaults_to_the_navigation_label() -> None:

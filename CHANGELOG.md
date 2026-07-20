@@ -23,6 +23,8 @@
   the Sessions page, including when a stale catalog labels them as **Other**.
 - Separated Team Add-on MCP tools from the Microsoft Teams application tools by giving add-on
   tool descriptors an optional group override.
+- Clarified the `team_reply_to_chat` tooltip: it is granted only for the active human Team Chat
+  dispatch, while `team_send_operator_chat_message` is the proactive operator-message tool.
 
 ## 2026-07-20 - Team Session Navigation
 

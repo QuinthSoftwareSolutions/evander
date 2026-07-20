@@ -238,13 +238,20 @@ MCP_TOOL_NAMES = (
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     *READ_TEAM_MCP_TOOL_NAMES,
 )
+_MCP_TOOL_CATALOG_DESCRIPTIONS = {
+    TEAM_REPLY_TO_CHAT_TOOL: (
+        "Reply to the specific human operator message that started the current Team Chat "
+        "dispatch. Available only while that dispatch is active; use "
+        "team_send_operator_chat_message for proactive messages to listed operators."
+    ),
+}
 MCP_TOOL_CATALOG = tuple(
     AddonMcpTool(
         name=tool_name,
         label=tool_name.removeprefix("team_").replace("_", " ").capitalize(),
-        description=(
-            "Team Add-on tool for "
-            f"{tool_name.removeprefix('team_').replace('_', ' ')}."
+        description=_MCP_TOOL_CATALOG_DESCRIPTIONS.get(
+            tool_name,
+            f"Team Add-on tool for {tool_name.removeprefix('team_').replace('_', ' ')}.",
         ),
         group="Team Add-on",
     )
