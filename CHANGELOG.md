@@ -6,6 +6,8 @@
   for provider, mailbox identity, host access-token environment-variable reference, and folder
   mappings/defaults. The editor keeps OAuth token values out of Admin Web while supporting Gmail,
   Microsoft Graph, and the local development provider.
+- Preserved mailbox draft fields across editor renders, retained intentionally empty default-folder
+  allowlists, and refreshed untouched folder mappings when changing providers.
 
 ## 2026-07-20 - Paginated Email Search MCP Tool
 

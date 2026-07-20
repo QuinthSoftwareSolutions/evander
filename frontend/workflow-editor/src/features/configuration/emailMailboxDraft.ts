@@ -81,6 +81,55 @@ function folderDraftsFromRecord(record: Record<string, unknown>, provider: Email
   }));
 }
 
+function folderDraftsFromValue(
+  record: Record<string, unknown>,
+  provider: EmailMailboxProvider,
+): EmailMailboxFolderDraft[] {
+  if (!Array.isArray(record.folders)) return folderDraftsFromRecord(record, provider);
+  return record.folders.map((item) => {
+    const folder = isRecord(item) ? item : {};
+    return {
+      folder: String(folder.folder ?? ""),
+      providerFolder: String(folder.providerFolder ?? ""),
+      allowedByDefault: folder.allowedByDefault === true,
+    };
+  });
+}
+
+function folderMappingsEqual(
+  left: EmailMailboxFolderDraft[],
+  right: EmailMailboxFolderDraft[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const remaining = [...right];
+  for (const folder of left) {
+    const matchingIndex = remaining.findIndex((candidate) =>
+      candidate.folder === folder.folder
+      && candidate.providerFolder === folder.providerFolder,
+    );
+    if (matchingIndex < 0) return false;
+    remaining.splice(matchingIndex, 1);
+  }
+  return true;
+}
+
+export function emailMailboxFoldersAfterProviderChange(
+  previousProvider: EmailMailboxProvider,
+  provider: EmailMailboxProvider,
+  folders: EmailMailboxFolderDraft[],
+): EmailMailboxFolderDraft[] {
+  if (provider === previousProvider) return folders;
+  if (!folders.length) return defaultEmailMailboxFolders(provider);
+  if (!folderMappingsEqual(folders, defaultEmailMailboxFolders(previousProvider))) return folders;
+  const allowedByFolder = new Map(
+    folders.map((folder) => [folder.folder, folder.allowedByDefault]),
+  );
+  return defaultEmailMailboxFolders(provider).map((folder) => ({
+    ...folder,
+    allowedByDefault: allowedByFolder.get(folder.folder) ?? folder.allowedByDefault,
+  }));
+}
+
 export function emailMailboxEntriesFromConfig(value: unknown): EmailMailboxDraftEntry[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
@@ -94,11 +143,13 @@ export function emailMailboxEntriesFromConfig(value: unknown): EmailMailboxDraft
         ? record.auth_env_var_names
         : {};
     return {
-      mailboxId: String(record.mailbox_id ?? ""),
+      mailboxId: String(record.mailboxId ?? record.mailbox_id ?? ""),
       provider,
-      accountIdentifier: accountIdentifier(record) || (provider === "json_store" ? "default" : ""),
-      accessTokenEnv: String(authRefs.access_token ?? ""),
-      folders: folderDraftsFromRecord(record, provider),
+      accountIdentifier: typeof record.accountIdentifier === "string"
+        ? record.accountIdentifier
+        : accountIdentifier(record) || (provider === "json_store" ? "default" : ""),
+      accessTokenEnv: String(record.accessTokenEnv ?? authRefs.access_token ?? ""),
+      folders: folderDraftsFromValue(record, provider),
     };
   });
 }
@@ -183,7 +234,7 @@ export function emailMailboxDraftEntriesToConfig(entries: EmailMailboxDraftEntry
       account_identifier: account,
       ...(accessTokenEnv ? { auth_secret_refs: { access_token: accessTokenEnv } } : {}),
       ...(Object.keys(folderMapping).length ? { folder_mapping: folderMapping } : {}),
-      ...(allowedFolders.length ? { folder_allowlist_defaults: allowedFolders } : {}),
+      folder_allowlist_defaults: allowedFolders,
     };
   });
 }

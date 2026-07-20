@@ -5,7 +5,10 @@ import { test } from "node:test";
 import {
   defaultEmailMailboxFolders,
   emailMailboxDraftEntriesToConfig,
+  emailMailboxDraftValue,
   emailMailboxEntriesFromConfig,
+  emailMailboxFoldersAfterProviderChange,
+  parseEmailMailboxDraftValue,
 } from "../src/features/configuration/emailMailboxDraft.ts";
 
 const configuration = readFileSync(
@@ -59,6 +62,85 @@ test("email mailbox drafts preserve Graph aliases and produce the canonical conf
       folder_allowlist_defaults: ["inbox"],
     },
   ]);
+});
+
+test("email mailbox draft values round-trip without losing camel-case fields", () => {
+  const entries = [
+    {
+      mailboxId: "gmail-support",
+      provider: "gmail",
+      accountIdentifier: "support@example.com",
+      accessTokenEnv: "GMAIL_SUPPORT_ACCESS_TOKEN",
+      folders: [
+        { folder: "inbox", providerFolder: "INBOX", allowedByDefault: false },
+        { folder: "drafts", providerFolder: "DRAFT", allowedByDefault: true },
+      ],
+    },
+  ];
+
+  assert.deepEqual(parseEmailMailboxDraftValue(emailMailboxDraftValue(entries)), {
+    entries,
+    error: null,
+  });
+});
+
+test("email mailbox config keeps an explicitly empty default folder allowlist", () => {
+  assert.deepEqual(
+    emailMailboxDraftEntriesToConfig([
+      {
+        mailboxId: "gmail-restricted",
+        provider: "gmail",
+        accountIdentifier: "me",
+        accessTokenEnv: "GMAIL_RESTRICTED_ACCESS_TOKEN",
+        folders: [
+          { folder: "inbox", providerFolder: "INBOX", allowedByDefault: false },
+          { folder: "drafts", providerFolder: "DRAFT", allowedByDefault: false },
+        ],
+      },
+    ]),
+    [
+      {
+        mailbox_id: "gmail-restricted",
+        provider: "gmail",
+        account_identifier: "me",
+        auth_secret_refs: { access_token: "GMAIL_RESTRICTED_ACCESS_TOKEN" },
+        folder_mapping: { inbox: "INBOX", drafts: "DRAFT" },
+        folder_allowlist_defaults: [],
+      },
+    ],
+  );
+});
+
+test("provider changes replace untouched defaults and preserve customized folders", () => {
+  assert.deepEqual(
+    emailMailboxFoldersAfterProviderChange(
+      "graph",
+      "gmail",
+      defaultEmailMailboxFolders("graph"),
+    ),
+    defaultEmailMailboxFolders("gmail"),
+  );
+
+  const restrictedDefaults = defaultEmailMailboxFolders("graph").map((folder) => ({
+    ...folder,
+    allowedByDefault: false,
+  }));
+  assert.deepEqual(
+    emailMailboxFoldersAfterProviderChange("graph", "gmail", restrictedDefaults),
+    [
+      { folder: "inbox", providerFolder: "INBOX", allowedByDefault: false },
+      { folder: "drafts", providerFolder: "DRAFT", allowedByDefault: false },
+    ],
+  );
+
+  const customized = [
+    { folder: "inbox", providerFolder: "Custom Inbox", allowedByDefault: true },
+    { folder: "drafts", providerFolder: "Drafts", allowedByDefault: true },
+  ];
+  assert.strictEqual(
+    emailMailboxFoldersAfterProviderChange("graph", "gmail", customized),
+    customized,
+  );
 });
 
 test("mailbox drafts default Graph folders and reject incomplete secret references", () => {

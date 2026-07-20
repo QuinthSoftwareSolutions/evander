@@ -22,10 +22,10 @@ import {
 } from "./modelPricingDraft";
 import {
   EMAIL_MAILBOX_PROVIDERS,
-  defaultEmailMailboxFolders,
   emailMailboxDraftEntriesToConfig,
   emailMailboxDraftValue,
   emailMailboxEntriesFromConfig,
+  emailMailboxFoldersAfterProviderChange,
   emptyEmailMailboxDraftEntry,
   parseEmailMailboxDraftValue,
   type EmailMailboxDraftEntry,
@@ -2070,9 +2070,11 @@ export function ConfigurationScreen() {
                           updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
                             ...mailbox,
                             provider,
-                            folders: mailbox.folders.length
-                              ? mailbox.folders
-                              : defaultEmailMailboxFolders(provider),
+                            folders: emailMailboxFoldersAfterProviderChange(
+                              mailbox.provider,
+                              provider,
+                              mailbox.folders,
+                            ),
                           });
                         }}
                         disabled={disabled}
