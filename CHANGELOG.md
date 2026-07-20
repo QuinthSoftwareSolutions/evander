@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-20 - Bokio Recovery And Retry Hardening
+
+- Allowed reconciliation-confirmed recovery of interrupted direct operations and prepared actions
+  left in `executing`, while keeping ordinary concurrent calls blocked.
+- Treated unparsable successful write responses as uncertain, while keeping DNS, TCP-connect, and
+  connection-establishment timeout failures on the explicit retry path.
+- Kept the mounted Bokio review frame synchronized with live privileged-operation lock changes and
+  exposed confirmed recovery for interrupted prepared actions.
+
 ## 2026-07-17 - Strict Worker Temporary Storage
 
 - Raised the strict container-worker profile's bounded noexec `/tmp` tmpfs from 512 MiB to 4 GiB,

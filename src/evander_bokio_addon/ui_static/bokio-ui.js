@@ -1,6 +1,6 @@
 const apiBase = "/api/addons/bokio-addon";
 const pageParams = new URLSearchParams(window.location.search);
-const privilegedUnlocked = pageParams.get("privileged_unlocked") === "true";
+let privilegedUnlocked = pageParams.get("privileged_unlocked") === "true";
 
 const state = {
   actions: [],
@@ -69,6 +69,21 @@ function setNotice(message = "", tone = "info") {
   els.notice.textContent = message;
   els.notice.className = message ? `notice ${tone}` : "notice hidden";
 }
+
+function setPrivilegedUnlocked(unlocked) {
+  const nextUnlocked = Boolean(unlocked);
+  if (privilegedUnlocked === nextUnlocked) return;
+  privilegedUnlocked = nextUnlocked;
+  els.lockedNotice.classList.toggle("hidden", privilegedUnlocked);
+  renderActionDetail();
+}
+
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin) return;
+  const data = event.data || {};
+  if (data.type !== "admin-privileged-operations") return;
+  setPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));
+});
 
 function actionSearchText(action) {
   return [
@@ -218,10 +233,10 @@ function renderActionDetail() {
     warning.textContent = "Execution creates the payment in Bokio, but a signatory must still approve it with BankID.";
     els.actionDetail.append(warning);
   }
-  if (action.status === "needs_attention") {
+  if (action.status === "needs_attention" || action.status === "executing") {
     const warning = document.createElement("div");
     warning.className = "notice danger inline";
-    warning.textContent = "The previous request may have reached Bokio. Reconcile the action in Bokio before retrying.";
+    warning.textContent = "The request may have reached Bokio. Reconcile the action in Bokio before recovering it.";
     els.actionDetail.append(warning);
   }
 
@@ -247,8 +262,9 @@ function renderActionDetail() {
     controls.append(mutationButton("Execute", "primary", () => runActionMutation(action, "execute")));
   } else if (action.status === "failed") {
     controls.append(mutationButton("Retry", "primary", () => runActionMutation(action, "retry")));
-  } else if (action.status === "needs_attention") {
-    controls.append(mutationButton("Confirm absent & retry", "danger", () => {
+  } else if (action.status === "needs_attention" || action.status === "executing") {
+    const recoveryLabel = action.status === "executing" ? "Confirm absent & recover" : "Confirm absent & retry";
+    controls.append(mutationButton(recoveryLabel, "danger", () => {
       const confirmed = window.confirm(
         "Confirm that you checked Bokio and this action was not created. Retry may create a duplicate if it already exists.",
       );
@@ -308,7 +324,7 @@ function renderOperations() {
     meta.textContent = `${operation.session_id} · ${formatDate(operation.updated_at)} · attempt ${operation.attempt_count}`;
     main.append(title, meta);
     row.append(main, makeStatusPill(operation.status));
-    if (operation.status === "needs_attention") {
+    if (operation.status === "needs_attention" || operation.status === "executing") {
       const warning = document.createElement("p");
       warning.textContent = "Outcome unknown — check Bokio before allowing a confirmed retry.";
       row.append(warning);

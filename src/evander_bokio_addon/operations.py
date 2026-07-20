@@ -8,6 +8,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+import httpx
+
 from evander.addons import addon_storage_path
 
 from .client import BokioApiError, BokioConfigError
@@ -100,9 +102,13 @@ class BokioOperationStore:
                     )
                 allowed_status = "needs_attention"
             elif status == "executing":
-                raise BokioOperationError(
-                    "Bokio operation is already executing or its outcome is unknown; inspect Bokio"
-                )
+                if not confirm_not_created:
+                    raise BokioOperationError(
+                        "Bokio operation is already executing or its outcome is unknown; inspect "
+                        "Bokio and set confirm_not_created only after confirming the supplier "
+                        "invoice is absent"
+                    )
+                allowed_status = "executing"
             if allowed_status is None:
                 raise BokioOperationError(f"Unsupported Bokio operation status: {status}")
             now = _now()
@@ -110,7 +116,7 @@ class BokioOperationStore:
                 """
                 UPDATE operations
                 SET status = ?, attempt_count = attempt_count + 1, error_json = NULL,
-                    started_at = ?, updated_at = ?
+                    result_json = NULL, completed_at = NULL, started_at = ?, updated_at = ?
                 WHERE session_id = ? AND operation_kind = ? AND operation_key = ? AND status = ?
                 """,
                 ("executing", now, now, *identity, allowed_status),
@@ -321,8 +327,10 @@ def bokio_write_failure_is_uncertain(exc: Exception) -> bool:
 
     if isinstance(exc, BokioConfigError | ValueError | TypeError):
         return False
+    if isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout):
+        return False
     if isinstance(exc, BokioApiError):
-        return exc.status_code is None or exc.status_code >= 500
+        return exc.status_code is None or 200 <= exc.status_code < 300 or exc.status_code >= 500
     return True
 
 

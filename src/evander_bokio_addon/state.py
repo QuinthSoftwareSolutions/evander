@@ -169,9 +169,11 @@ class PreparedActionStore:
                         "Bokio and confirm it was not created before retrying"
                     )
             elif status == "executing":
-                raise ValueError(
-                    f"Bokio prepared action {normalized} is executing or has an unknown outcome"
-                )
+                if not confirm_not_created:
+                    raise ValueError(
+                        f"Bokio prepared action {normalized} is executing or has an unknown "
+                        "outcome; inspect Bokio and confirm it was not created before retrying"
+                    )
             else:
                 raise ValueError(
                     f"Bokio prepared action {normalized} cannot execute from status {status!r}"
@@ -180,7 +182,12 @@ class PreparedActionStore:
             action["execution_started_at"] = now
             action["updated_at"] = now
             action["error"] = None
-            self._append_history(action, status="executing", at=now, detail="Execution claimed")
+            detail = (
+                "Execution recovered after operator confirmed the action was absent in Bokio"
+                if status in {"needs_attention", "executing"}
+                else "Execution claimed"
+            )
+            self._append_history(action, status="executing", at=now, detail=detail)
             actions[normalized] = action
             return action, True
 

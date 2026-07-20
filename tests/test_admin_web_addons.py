@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 from starlette.testclient import TestClient
 
 from evander.addons import (
@@ -23,6 +24,7 @@ from evander.admin.services.addon_admin_service import (
 )
 from evander.admin.web.app import create_app
 from evander.host_config import HostConfig, save_host_config
+from evander_bokio_addon.state import PreparedActionStore
 
 
 def _write_config(tmp_path: Path, *, module_name: str) -> Path:
@@ -307,6 +309,49 @@ def test_bokio_admin_prepared_action_mutations_require_privileged_unlock(
 
     assert created.status_code == 200
     assert created.json()["action"]["status"] == "pending_approval"
+
+
+def test_bokio_admin_recovers_an_interrupted_prepared_action(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = build_admin_runtime(_write_config(tmp_path, module_name="evander_bokio_addon"))
+    client = TestClient(create_app(runtime))
+    assert client.post("/api/admin/privileged/unlock").status_code == 200
+    created = client.post(
+        "/api/addons/bokio-addon/prepared-actions",
+        json={"kind": "supplier_invoice", "payload": {"supplierId": "supplier-1"}},
+    ).json()["action"]
+    store = PreparedActionStore(tmp_path / "runtime")
+    store.claim_execution(created["action_id"], approve=True)
+
+    unconfirmed = client.post(
+        f"/api/addons/bokio-addon/prepared-actions/{created['action_id']}/retry",
+        json={},
+    )
+    assert unconfirmed.status_code == 400
+    assert "confirm it was not created" in unconfirmed.json()["error"]
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(200, json={"id": "supplier-invoice-1"})
+    )
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", factory)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+
+    recovered = client.post(
+        f"/api/addons/bokio-addon/prepared-actions/{created['action_id']}/retry",
+        json={"confirm_not_created": True},
+    )
+
+    assert recovered.status_code == 200
+    assert recovered.json()["result"]["action"]["status"] == "executed"
 
 
 def test_admin_web_addon_management_disables_addon_after_restart(
