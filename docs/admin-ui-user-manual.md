@@ -293,7 +293,12 @@ Bundled examples:
 - **MSSQL Seeds** registers an Admin page for approved seed aliases and sidecar configuration. Its
   restore sidecar must also be enabled and reachable near the worker SQL Server; see
   `docs/addons.md` and `docs/operations.md`.
-- **Bokio** and **Skatteverket** register their own operator pages and approval-gated domain tools.
+- **Bokio** and **Skatteverket** register their own operator pages and domain tools. Their static
+  tool catalogs are merged into Sessions, MCP Tools, and workflow selectors, where the normal
+  session and directory policies decide whether each call is autonomous, approval-gated, or denied.
+- **Bokio** provides a prepared-action review queue with payload and history inspection,
+  **Approve & execute**, rejection, definite-failure retry, and reconciliation-gated retry for
+  uncertain outcomes. Mutations require an Admin owner and unlocked privileged operations.
 - **Azure DevOps Activity** is headless. It appears on Add-ons with MCP/workflow capabilities but
   deliberately has no navigation tab; it complements rather than replaces `evander-ado-worker`.
 

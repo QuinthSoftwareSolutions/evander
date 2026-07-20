@@ -248,6 +248,67 @@ def test_admin_web_exposes_enabled_addon_routes_and_navigation(tmp_path: Path, m
     assert "Team Add-on" in ui.text
 
 
+def test_admin_web_merges_enabled_addon_tools_into_session_and_policy_catalogs(
+    tmp_path: Path,
+) -> None:
+    runtime = build_admin_runtime(
+        _write_config(tmp_path, module_name="evander_bokio_addon")
+    )
+    client = TestClient(create_app(runtime))
+
+    session_catalog = client.get("/api/admin/sessions/catalog")
+    mcp_catalog = client.get("/api/admin/mcp-tools?directory_path=root")
+
+    assert session_catalog.status_code == 200
+    session_tools = {
+        item["value"]: item for item in session_catalog.json()["tool_options"]
+    }
+    assert session_tools["bokio_create_supplier_invoice"] == {
+        "value": "bokio_create_supplier_invoice",
+        "label": "Create supplier invoice",
+        "description": (
+            "Create a Bokio supplier invoice autonomously with a durable operation key."
+        ),
+        "group": "Bokio",
+        "provider": "bokio-addon",
+        "addon_id": "bokio-addon",
+    }
+    assert mcp_catalog.status_code == 200
+    mcp_tools = {item["value"]: item for item in mcp_catalog.json()["items"]}
+    assert mcp_tools["bokio_get_company"]["group"] == "Bokio"
+    assert mcp_tools["bokio_get_company"]["provider"] == "bokio-addon"
+    assert "bokio_create_supplier_invoice" in runtime.runtime.policy.extra_mcp_tool_names
+
+
+def test_bokio_admin_prepared_action_mutations_require_privileged_unlock(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        create_app(
+            build_admin_runtime(
+                _write_config(tmp_path, module_name="evander_bokio_addon")
+            )
+        )
+    )
+
+    assert client.get("/api/addons/bokio-addon/prepared-actions").status_code == 200
+    locked = client.post(
+        "/api/addons/bokio-addon/prepared-actions",
+        json={"kind": "supplier_invoice", "payload": {"supplierId": "supplier-1"}},
+    )
+    assert locked.status_code == 403
+    assert locked.json()["error"] == "Privileged operations are locked."
+
+    assert client.post("/api/admin/privileged/unlock").status_code == 200
+    created = client.post(
+        "/api/addons/bokio-addon/prepared-actions",
+        json={"kind": "supplier_invoice", "payload": {"supplierId": "supplier-1"}},
+    )
+
+    assert created.status_code == 200
+    assert created.json()["action"]["status"] == "pending_approval"
+
+
 def test_admin_web_addon_management_disables_addon_after_restart(
     tmp_path: Path, monkeypatch
 ) -> None:

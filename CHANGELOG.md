@@ -6,6 +6,18 @@
   so dependency-heavy browser and full-stack validation can complete without consuming the host
   filesystem or weakening the strict sandbox boundary.
 
+## 2026-07-17 - Add-on MCP Catalog And Bokio Review Workspace
+
+- Added validated static MCP tool descriptors to add-on registration and merged enabled add-on
+  tools into the Admin Web Sessions and MCP Tools catalogs, workflow tool selectors, and runtime
+  Tool Visibility policy, grouped by add-on.
+- Added a narrowly autonomous `bokio_create_supplier_invoice` MCP tool with caller-supplied durable
+  operation keys, exact-payload replay, atomic execution claims, and reconciliation-gated retry for
+  uncertain Bokio outcomes; no direct autonomous bank-payment tool was added.
+- Turned the Bokio tab into a prepared-action review workspace with filtering, payload/result/error
+  inspection, transition history, atomic **Approve & execute**, rejection, and explicit retry
+  states, protected by Admin-owner permission and the privileged-operations lock.
+
 ## 2026-07-17 - Repository Readiness And Admin Frontend Reliability
 
 - Restored a clean repository-wide Ruff lint and formatting baseline, while preserving the

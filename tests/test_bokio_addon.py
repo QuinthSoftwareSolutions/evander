@@ -26,6 +26,7 @@ from evander_bokio_addon.client import (
 )
 from evander_bokio_addon.evidence import BokioEvidenceError, BokioEvidenceStore
 from evander_bokio_addon.mcp import MCP_TOOL_NAMES, register_mcp_tools
+from evander_bokio_addon.operations import BokioOperationError, BokioOperationStore
 from evander_bokio_addon.providers import BokioCompanyQueryProvider
 from evander_bokio_addon.state import PreparedActionStore, upload_staging_dir
 
@@ -1000,6 +1001,244 @@ def test_bokio_mcp_approved_write_tool_checks_policy_before_client_access(
     assert store.get_action(action["action_id"])["status"] == "executed"
     assert len(requests) == 1
     assert requests[0].headers["authorization"] == "Bearer secret-token"
+
+
+def test_bokio_mcp_creates_supplier_invoice_once_for_an_exact_operation_key_repeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "supplier-invoice-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_supplier_invoice"],
+    )
+    arguments = {
+        "payload": {"supplierId": "supplier-1", "total": 1250},
+        "operation_key": "supplier-1-invoice-2026-07",
+        "session_id": "session-1",
+    }
+
+    first = server.tools["bokio_create_supplier_invoice"](**arguments)
+    repeated = server.tools["bokio_create_supplier_invoice"](**arguments)
+
+    assert first["operation"]["status"] == "succeeded"
+    assert repeated["operation"]["idempotent"] is True
+    assert repeated["operation"]["result"] == {"id": "supplier-invoice-1"}
+    assert len(requests) == 1
+    assert requests[0].url.path.endswith("/supplier-invoices")
+    operation = BokioOperationStore(tmp_path).list()[0]
+    assert operation["attempt_count"] == 1
+    assert operation["session_id"] == "session-1"
+
+
+def test_bokio_mcp_rejects_supplier_operation_key_reuse_for_a_changed_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "supplier-invoice-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_supplier_invoice"],
+    )
+    server.tools["bokio_create_supplier_invoice"](
+        payload={"supplierId": "supplier-1", "total": 1250},
+        operation_key="supplier-invoice-key",
+        session_id="session-1",
+    )
+
+    with pytest.raises(BokioOperationError, match="different Bokio request"):
+        server.tools["bokio_create_supplier_invoice"](
+            payload={"supplierId": "supplier-1", "total": 2500},
+            operation_key="supplier-invoice-key",
+            session_id="session-1",
+        )
+
+    assert len(requests) == 1
+
+
+def test_bokio_mcp_claims_supplier_invoice_before_the_external_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_started = threading.Event()
+    release_create = threading.Event()
+    request_count = 0
+    request_lock = threading.Lock()
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        with request_lock:
+            request_count += 1
+        create_started.set()
+        if not release_create.wait(timeout=5):
+            raise AssertionError("timed out waiting to release supplier invoice creation")
+        return httpx.Response(200, json={"id": "supplier-invoice-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_supplier_invoice"],
+    )
+    arguments = {
+        "payload": {"supplierId": "supplier-1", "total": 1250},
+        "operation_key": "concurrent-supplier-invoice",
+        "session_id": "session-1",
+    }
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        owner = executor.submit(server.tools["bokio_create_supplier_invoice"], **arguments)
+        assert create_started.wait(timeout=5)
+        duplicate = executor.submit(
+            server.tools["bokio_create_supplier_invoice"], **arguments
+        )
+        try:
+            with pytest.raises(BokioOperationError, match="already executing"):
+                duplicate.result(timeout=5)
+        finally:
+            release_create.set()
+        result = owner.result(timeout=5)
+
+    assert result["operation"]["status"] == "succeeded"
+    assert request_count == 1
+
+
+def test_bokio_mcp_requires_reconciliation_before_retrying_an_uncertain_supplier_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(503, json={"message": "upstream unavailable"})
+        return httpx.Response(200, json={"id": "supplier-invoice-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_supplier_invoice"],
+    )
+    arguments = {
+        "payload": {"supplierId": "supplier-1", "total": 1250},
+        "operation_key": "uncertain-supplier-invoice",
+        "session_id": "session-1",
+    }
+
+    with pytest.raises(BokioApiError, match="upstream unavailable"):
+        server.tools["bokio_create_supplier_invoice"](**arguments)
+    assert BokioOperationStore(tmp_path).list()[0]["status"] == "needs_attention"
+
+    with pytest.raises(BokioOperationError, match="confirm_not_created"):
+        server.tools["bokio_create_supplier_invoice"](**arguments, retry_if_failed=True)
+    assert len(requests) == 1
+
+    retried = server.tools["bokio_create_supplier_invoice"](
+        **arguments,
+        confirm_not_created=True,
+    )
+
+    assert retried["operation"]["status"] == "succeeded"
+    assert retried["operation"]["attempt_count"] == 2
+    assert len(requests) == 2
+
+
+def test_bokio_mcp_requires_explicit_retry_after_a_definite_supplier_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(400, json={"message": "invalid supplier invoice"})
+        return httpx.Response(200, json={"id": "supplier-invoice-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_supplier_invoice"],
+    )
+    arguments = {
+        "payload": {"supplierId": "supplier-1", "total": 1250},
+        "operation_key": "rejected-supplier-invoice",
+        "session_id": "session-1",
+    }
+
+    with pytest.raises(BokioApiError, match="invalid supplier invoice"):
+        server.tools["bokio_create_supplier_invoice"](**arguments)
+    assert BokioOperationStore(tmp_path).list()[0]["status"] == "failed"
+    with pytest.raises(BokioOperationError, match="retry_if_failed"):
+        server.tools["bokio_create_supplier_invoice"](**arguments)
+
+    retried = server.tools["bokio_create_supplier_invoice"](
+        **arguments,
+        retry_if_failed=True,
+    )
+
+    assert retried["operation"]["status"] == "succeeded"
+    assert retried["operation"]["attempt_count"] == 2
+    assert len(requests) == 2
+
+
+def test_prepared_action_execution_claim_is_atomic_and_requires_reconciliation(
+    tmp_path: Path,
+) -> None:
+    store = PreparedActionStore(tmp_path)
+    action = store.create_action(
+        kind="supplier_invoice",
+        payload={"supplierId": "supplier-1"},
+        source="session-1",
+    )
+
+    claimed, owns_execution = store.claim_execution(action["action_id"], approve=True)
+
+    assert owns_execution is True
+    assert claimed["status"] == "executing"
+    with pytest.raises(ValueError, match="executing or has an unknown outcome"):
+        store.claim_execution(action["action_id"], approve=True)
+    attention = store.mark_needs_attention(
+        action["action_id"], error={"error": "request timed out"}
+    )
+    assert attention["status"] == "needs_attention"
+    with pytest.raises(ValueError, match="confirm it was not created"):
+        store.claim_execution(action["action_id"], retry=True)
+    retried, owns_retry = store.claim_execution(
+        action["action_id"],
+        retry=True,
+        confirm_not_created=True,
+    )
+    assert owns_retry is True
+    assert retried["status"] == "executing"
+    assert [entry["status"] for entry in retried["history"]] == [
+        "pending_approval",
+        "executing",
+        "needs_attention",
+        "executing",
+    ]
 
 
 def test_bokio_workflow_provider_uses_full_gateway_provider_state(

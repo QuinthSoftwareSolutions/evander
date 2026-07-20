@@ -95,7 +95,7 @@ Disabling an add-on prevents it from loading next time; it does not silently era
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Registration, discovery, and private state**
 >
-> An add-on returns an `AddonRegistration` with a validated ID, display name, optional Admin navigation, API/UI route factories, MCP registration hook, workflow providers, and metadata. It receives an `AddonContext` containing its runtime directory and supported core services. Private state belongs under:
+> An add-on returns an `AddonRegistration` with a validated ID, display name, optional Admin navigation, API/UI route factories, MCP registration hook and static MCP tool descriptors, workflow providers, and metadata. Enabled add-on descriptors are merged into the core Sessions, MCP Tools, workflow-editor, and Tool Visibility catalogs; the gateway verifies declared tool names against registered names. Catalog visibility does not grant authority. It receives an `AddonContext` containing its runtime directory and supported core services. Private state belongs under:
 >
 > ```text
 > runtime/addons/<addon-id>/
@@ -112,6 +112,8 @@ Disabling an add-on prevents it from loading next time; it does not silently era
 The bundled Team Add-on registers its own `/api/addons/team-addon/...` API, `/addons/team-addon/` UI, MCP tools, workflow primitives, and relational state at `runtime/addons/team-addon/state.db`. A legacy `state.json` can be imported once. Core Evander remains responsible for sessions, execution, policy, Git, artifacts, workflows, audit, communication, and model usage; Team records refer to those core identities instead of duplicating their implementation.
 
 The add-on is disabled by default. Enable `team-addon`, restart every service listed by the Add-ons page (including the gateway when MCP registration changes), then verify loaded state. Team-specific chapters describe its organization, task, review, and release semantics.
+
+The bundled Bokio add-on uses the same catalog and policy path. Its operator page is a prepared-action review workspace, while `bokio_create_supplier_invoice` is a narrower direct MCP write with a required durable operation key. A session may be allowed to use that supplier-invoice tool autonomously without granting any direct autonomous bank-payment tool; Bokio bank-payment creation stays prepared/approved and still requires BankID signing.
 
 ## Failure behavior
 

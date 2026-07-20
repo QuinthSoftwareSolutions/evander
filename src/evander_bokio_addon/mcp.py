@@ -7,7 +7,7 @@ from typing import Any
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 
-from evander.addons import AddonContext
+from evander.addons import AddonContext, AddonMcpTool
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.policy import PolicyError
@@ -15,6 +15,11 @@ from evander.policy import PolicyError
 from .api import _execute_prepared_action
 from .client import BokioClient
 from .evidence import BokioEvidenceError, BokioEvidenceStore, validate_evidence_id
+from .operations import (
+    BokioOperationStore,
+    bokio_error_payload,
+    bokio_write_failure_is_uncertain,
+)
 from .state import PreparedActionStore, upload_staging_dir
 
 
@@ -33,6 +38,7 @@ PREPARE_JOURNAL_ENTRY_TOOL = "bokio_prepare_journal_entry"
 CREATE_APPROVED_JOURNAL_ENTRY_TOOL = "bokio_create_approved_journal_entry"
 PREPARE_SUPPLIER_INVOICE_TOOL = "bokio_prepare_supplier_invoice"
 CREATE_APPROVED_SUPPLIER_INVOICE_TOOL = "bokio_create_approved_supplier_invoice"
+CREATE_SUPPLIER_INVOICE_TOOL = "bokio_create_supplier_invoice"
 PREPARE_BANK_PAYMENT_TOOL = "bokio_prepare_bank_payment"
 CREATE_APPROVED_BANK_PAYMENT_TOOL = "bokio_create_approved_bank_payment"
 
@@ -54,10 +60,85 @@ WRITE_TOOLS = (
     CREATE_APPROVED_JOURNAL_ENTRY_TOOL,
     PREPARE_SUPPLIER_INVOICE_TOOL,
     CREATE_APPROVED_SUPPLIER_INVOICE_TOOL,
+    CREATE_SUPPLIER_INVOICE_TOOL,
     PREPARE_BANK_PAYMENT_TOOL,
     CREATE_APPROVED_BANK_PAYMENT_TOOL,
 )
 MCP_TOOL_NAMES = (*READ_TOOLS, *WRITE_TOOLS)
+
+
+def _catalog(name: str, label: str, description: str) -> AddonMcpTool:
+    return AddonMcpTool(name=name, label=label, description=description)
+
+
+MCP_TOOL_CATALOG = (
+    _catalog(GET_COMPANY_TOOL, "Get company", "Read the configured Bokio company."),
+    _catalog(LIST_ACCOUNTS_TOOL, "List accounts", "List Bokio chart-of-accounts records."),
+    _catalog(
+        LIST_JOURNAL_ENTRIES_TOOL,
+        "List journal entries",
+        "List Bokio journal entries with optional paging and filtering.",
+    ),
+    _catalog(LIST_INVOICES_TOOL, "List invoices", "List Bokio customer invoices."),
+    _catalog(LIST_EVIDENCE_TOOL, "List evidence", "List managed Bokio evidence records."),
+    _catalog(GET_EVIDENCE_TOOL, "Get evidence", "Read one managed Bokio evidence record."),
+    _catalog(
+        STAGE_EVIDENCE_TOOL,
+        "Stage evidence for workspace",
+        "Stage managed Bokio evidence as a session communication artifact.",
+    ),
+    _catalog(
+        IMPORT_EVIDENCE_ARTIFACT_TOOL,
+        "Import evidence artifact",
+        "Import a session-owned communication artifact into durable Bokio evidence.",
+    ),
+    _catalog(UPLOAD_DOCUMENT_TOOL, "Upload document", "Upload a staged document to Bokio."),
+    _catalog(
+        ATTACH_EVIDENCE_TOOL,
+        "Attach evidence",
+        "Upload managed evidence and attach it to a Bokio journal entry.",
+    ),
+    _catalog(
+        CREATE_JOURNAL_ENTRY_WITH_EVIDENCE_TOOL,
+        "Create journal entry with evidence",
+        "Create a Bokio journal entry and attach managed evidence idempotently.",
+    ),
+    _catalog(
+        PREPARE_JOURNAL_ENTRY_TOOL,
+        "Prepare journal entry",
+        "Prepare a local Bokio journal-entry action for operator review.",
+    ),
+    _catalog(
+        CREATE_APPROVED_JOURNAL_ENTRY_TOOL,
+        "Create approved journal entry",
+        "Execute an approved prepared Bokio journal-entry action.",
+    ),
+    _catalog(
+        PREPARE_SUPPLIER_INVOICE_TOOL,
+        "Prepare supplier invoice",
+        "Prepare a local Bokio supplier-invoice action for operator review.",
+    ),
+    _catalog(
+        CREATE_APPROVED_SUPPLIER_INVOICE_TOOL,
+        "Create approved supplier invoice",
+        "Execute an approved prepared Bokio supplier-invoice action.",
+    ),
+    _catalog(
+        CREATE_SUPPLIER_INVOICE_TOOL,
+        "Create supplier invoice",
+        "Create a Bokio supplier invoice autonomously with a durable operation key.",
+    ),
+    _catalog(
+        PREPARE_BANK_PAYMENT_TOOL,
+        "Prepare bank payment",
+        "Prepare a local Bokio bank-payment action for operator review.",
+    ),
+    _catalog(
+        CREATE_APPROVED_BANK_PAYMENT_TOOL,
+        "Create approved bank payment",
+        "Execute an approved Bokio bank payment; BankID signing remains required.",
+    ),
+)
 
 
 def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
@@ -372,6 +453,60 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
     ) -> dict[str, Any]:
         _require_tool(session_id, ctx, CREATE_APPROVED_SUPPLIER_INVOICE_TOOL)
         return _execute_prepared_action(context, prepared_action_id)
+
+    @server.tool(
+        name=CREATE_SUPPLIER_INVOICE_TOOL,
+        description=(
+            "Create a Bokio supplier invoice using a caller-supplied durable operation key. "
+            "Exact repeats return the stored result; uncertain outcomes require checking Bokio "
+            "and explicitly confirming that the invoice was not created before retrying."
+        ),
+    )
+    def bokio_create_supplier_invoice(
+        payload: dict[str, Any],
+        operation_key: str,
+        retry_if_failed: bool = False,
+        confirm_not_created: bool = False,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _require_tool(session_id, ctx, CREATE_SUPPLIER_INVOICE_TOOL)
+        store = BokioOperationStore(context.runtime_dir)
+        operation = store.begin(
+            session_id=resolved_session_id,
+            operation_kind="supplier_invoice",
+            operation_key=operation_key,
+            payload=payload,
+        )
+        if operation["status"] == "succeeded":
+            return {"operation": {**operation, "idempotent": True}}
+        operation, claimed = store.claim(
+            session_id=resolved_session_id,
+            operation_kind="supplier_invoice",
+            operation_key=operation_key,
+            retry_if_failed=retry_if_failed,
+            confirm_not_created=confirm_not_created,
+        )
+        if not claimed:
+            return {"operation": {**operation, "idempotent": True}}
+        try:
+            result = _client(context).create_supplier_invoice(payload)
+        except Exception as exc:
+            store.mark_failed(
+                session_id=resolved_session_id,
+                operation_kind="supplier_invoice",
+                operation_key=operation_key,
+                error=bokio_error_payload(exc),
+                uncertain=bokio_write_failure_is_uncertain(exc),
+            )
+            raise
+        operation = store.mark_succeeded(
+            session_id=resolved_session_id,
+            operation_kind="supplier_invoice",
+            operation_key=operation_key,
+            result=result,
+        )
+        return {"operation": operation}
 
     @server.tool(
         name=PREPARE_BANK_PAYMENT_TOOL,

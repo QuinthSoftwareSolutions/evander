@@ -18,6 +18,8 @@ Add-ons may register generic integration points:
 - Host-side MCP tools registered through the add-on MCP registrar and governed
   by the same session, directory policy, approval, and audit machinery as core
   tools
+- Static MCP tool descriptors used to merge enabled add-on tools into the core
+  Sessions, MCP Tools, workflow-editor, and Tool Visibility catalogs
 - Connector drivers registered by type name and invoked only through the core connector service,
   preserving directory resolution, exact session grants, approvals, auth handling, and audit
 - Private runtime state under `runtime/addons/<addon_id>/`
@@ -106,6 +108,14 @@ def register_addon():
         },
         "admin_api_routes": [Route("/health", health, methods=["GET"])],
         "admin_ui_routes": [Route("/", index, methods=["GET"])],
+        "mcp_tools": register_mcp_tools,
+        "mcp_tool_catalog": [
+            {
+                "name": "team_example",
+                "label": "Team example",
+                "description": "Run the add-on-owned Team example tool.",
+            }
+        ],
         "workflow_providers": {
             "effect_providers": {
                 "effect:team:example": ExampleEffectProvider,
@@ -182,6 +192,16 @@ Enable it with:
   }
 }
 ```
+
+Every tool exposed by an add-on registrar should have one static
+`mcp_tool_catalog` descriptor. When descriptors are present, gateway startup
+verifies that the declared and registered tool-name sets match. Admin Web groups
+the descriptors under the add-on navigation label (or display name for a
+headless add-on) and merges them with core tools. Operators can then select the
+tools on session create/edit, configure inherited approval or deny rules on
+**MCP Tools**, and select them in workflow tool fields without typing an unknown
+name. Catalog presence does not grant the tool: session allowlists, directory
+policy, invocation approval, and audit still apply.
 
 When enabled, Admin Web shows an `MSSQL Seeds` tab backed by
 `/api/addons/mssql-seed-addon/...` and `/addons/mssql-seed-addon/`. The add-on
@@ -292,7 +312,8 @@ When enabled, Admin Web shows a `Bokio` tab backed by
 `/api/addons/bokio-addon/...` and `/addons/bokio-addon/`. The add-on stores
 prepared bookkeeping actions under `runtime/addons/bokio-addon/` and exposes
 workflow nodes under `query:bokio:*` and `effect:bokio:*`, plus host-side MCP
-tools named `bokio_*`.
+tools named `bokio_*`. Its static tool descriptors also appear in the `Bokio`
+group on **Sessions**, **MCP Tools**, and workflow tool selectors.
 
 Configure the private integration on the host:
 
@@ -339,11 +360,26 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   entry whose creation outcome is unknown.
 - Agents can prepare journal entries, supplier invoices, and bank payments as
   local add-on actions for operator approval.
+- `bokio_create_supplier_invoice` is the deliberately narrow autonomous write
+  path. It requires a caller-supplied `operation_key` and stores the exact
+  payload digest and outcome in `runtime/addons/bokio-addon/operations.db`.
+  Repeating the same key and payload returns the saved result without another
+  Bokio call; reusing a key for a different payload is rejected. A definite
+  pre-request or client rejection becomes `failed` and requires
+  `retry_if_failed=true`. A timeout, server failure, or other uncertain result
+  becomes `needs_attention`; retry is blocked until Bokio has been checked and
+  the caller explicitly sets `confirm_not_created=true`.
 - Document uploads read only from add-on-owned staging directories under
   `runtime/addons/bokio-addon/uploads/`; MCP uploads use
   `uploads/sessions/<session-id>`, workflow uploads use
   `uploads/scopes/workflows` unless a `session_id` is supplied, and Admin API
   uploads use `uploads/scopes/admin`.
+- The Bokio Admin tab is the prepared-action review workspace. Pending actions
+  use one atomic **Approve & execute** operation; approved legacy actions can be
+  executed separately. Definite failures expose **Retry**. Uncertain outcomes
+  expose **Confirm absent & retry** only after reconciliation. Payload, result,
+  error, source, and transition history remain visible. All Admin mutations
+  require an Admin owner with privileged operations unlocked.
 - Prepared-action execution tools execute only approved prepared actions and
   should also be policy-gated with MCP invocation approval for production
   sessions.
@@ -355,7 +391,12 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
 
 For an autonomous bookkeeping session, allow the relevant email tools or the
 generic `list_connectors` and `call_connector` tools with exact connector-operation
-grants, then allow the required `bokio_*` tools. Keep
+grants, then allow the required `bokio_*` tools. To permit supplier invoices
+without per-call approval, allow `bokio_create_supplier_invoice` on the session
+and leave that tool without an inherited `require_approval` rule. Do not grant
+`bokio_create_approved_bank_payment`; alternatively keep it denied or approval
+required. There is no autonomous direct bank-payment MCP tool, and every Bokio
+bank payment still requires BankID signing. Keep
 `communication_copy_artifact_to_workspace` separate: it is needed only when the
 agent must inspect the original file in its workspace, not to persist or attach
 the document to Bokio.

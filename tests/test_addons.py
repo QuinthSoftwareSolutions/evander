@@ -13,7 +13,10 @@ from starlette.routing import Route
 from evander.addons import (
     AddonContext,
     AddonLoaderConfig,
+    AddonMcpTool,
     AddonRegistration,
+    LoadedAddonCatalog,
+    addon_mcp_tool_catalog_payloads,
     addon_json_object_store,
     addon_runtime_dir,
     addon_storage_path,
@@ -141,6 +144,22 @@ def test_bundled_addon_manifests_are_scannable_from_src() -> None:
     )
 
 
+def test_bundled_mcp_addons_declare_every_registered_tool_in_the_ui_catalog() -> None:
+    for module_name in (
+        "evander_team_addon",
+        "evander_bokio_addon",
+        "evander_skatteverket_addon",
+        "evander_mssql_seed_addon",
+        "evander_ado_activity_addon",
+    ):
+        registration = importlib.import_module(module_name).register_addon()
+        mcp_module = importlib.import_module(f"{module_name}.mcp")
+
+        assert {tool.name for tool in registration.mcp_tool_catalog} == set(
+            mcp_module.MCP_TOOL_NAMES
+        )
+
+
 def test_discover_addons_preserves_imported_bundled_package_alias(monkeypatch) -> None:
     public_module = importlib.import_module("evander_mssql_seed_addon")
     public_mcp_module = importlib.import_module("evander_mssql_seed_addon.mcp")
@@ -190,6 +209,66 @@ def test_addon_mcp_tool_registrar_returns_registered_names(tmp_path: Path) -> No
     assert calls == [(server, "custom-addon")]
 
 
+def test_addon_mcp_tool_catalog_exposes_grouped_static_descriptors() -> None:
+    registration = AddonRegistration(
+        addon_id="custom-addon",
+        display_name="Custom Add-on",
+        admin_navigation={
+            "label": "Custom books",
+            "description": "Custom bookkeeping tools.",
+        },
+        mcp_tool_catalog=[
+            {
+                "name": "custom_read_ledger",
+                "label": "Read ledger",
+                "description": "Read the custom ledger.",
+            }
+        ],
+    )
+
+    payloads = addon_mcp_tool_catalog_payloads(
+        LoadedAddonCatalog(registrations=(registration,), loaded_addons=("custom_addon",))
+    )
+
+    assert registration.mcp_tool_catalog == (
+        AddonMcpTool(
+            name="custom_read_ledger",
+            label="Read ledger",
+            description="Read the custom ledger.",
+        ),
+    )
+    assert payloads == [
+        {
+            "value": "custom_read_ledger",
+            "label": "Read ledger",
+            "description": "Read the custom ledger.",
+            "group": "Custom books",
+            "provider": "custom-addon",
+            "addon_id": "custom-addon",
+        }
+    ]
+
+
+def test_addon_mcp_tool_catalog_rejects_duplicate_names() -> None:
+    with pytest.raises(ValueError, match="duplicate MCP tool"):
+        AddonRegistration(
+            addon_id="custom-addon",
+            display_name="Custom Add-on",
+            mcp_tool_catalog=[
+                {
+                    "name": "custom_tool",
+                    "label": "One",
+                    "description": "First descriptor.",
+                },
+                {
+                    "name": "custom_tool",
+                    "label": "Two",
+                    "description": "Second descriptor.",
+                },
+            ],
+        )
+
+
 def test_load_addons_supports_explicit_module_list(tmp_path: Path, monkeypatch) -> None:
     module_root = tmp_path / "plugins"
     module_root.mkdir()
@@ -204,6 +283,13 @@ def register_addon():
             "short_label": "Custom",
             "description": "Custom add-on view.",
         },
+        "mcp_tool_catalog": [
+            {
+                "name": "custom_read",
+                "label": "Custom read",
+                "description": "Read custom state.",
+            }
+        ],
     }
 """,
         encoding="utf-8",
@@ -217,6 +303,7 @@ def register_addon():
     assert catalog.loaded_addons == ("custom_addon",)
     assert catalog.registrations[0].addon_id == "custom-addon"
     assert catalog.registrations[0].admin_navigation is not None
+    assert catalog.registrations[0].mcp_tool_catalog[0].name == "custom_read"
 
 
 def test_discover_addons_scans_package_manifests_from_base_dir(tmp_path: Path) -> None:

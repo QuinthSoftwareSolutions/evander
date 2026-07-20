@@ -8062,7 +8062,11 @@ silently erase its saved records.</p>
 <strong>Registration, discovery, and private state</strong></p>
 <p>An add-on returns an <code>AddonRegistration</code> with a validated
 ID, display name, optional Admin navigation, API/UI route factories, MCP
-registration hook, workflow providers, and metadata. It receives an
+registration hook and static MCP tool descriptors, workflow providers,
+and metadata. Enabled add-on descriptors are merged into the core
+Sessions, MCP Tools, workflow-editor, and Tool Visibility catalogs; the
+gateway verifies declared tool names against registered names. Catalog
+visibility does not grant authority. It receives an
 <code>AddonContext</code> containing its runtime directory and supported
 core services. Private state belongs under:</p>
 <pre class="text"><code>runtime/addons/&lt;addon-id&gt;/</code></pre>
@@ -8094,6 +8098,13 @@ restart every service listed by the Add-ons page (including the gateway
 when MCP registration changes), then verify loaded state. Team-specific
 chapters describe its organization, task, review, and release
 semantics.</p>
+<p>The bundled Bokio add-on uses the same catalog and policy path. Its
+operator page is a prepared-action review workspace, while
+<code>bokio_create_supplier_invoice</code> is a narrower direct MCP
+write with a required durable operation key. A session may be allowed to
+use that supplier-invoice tool autonomously without granting any direct
+autonomous bank-payment tool; Bokio bank-payment creation stays
+prepared/approved and still requires BankID signing.</p>
 <h2 id="failure-behavior">Failure behavior</h2>
 <table>
 <thead>

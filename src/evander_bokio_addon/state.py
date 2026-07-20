@@ -89,8 +89,17 @@ class PreparedActionStore:
             "approved_at": None,
             "rejected_at": None,
             "executed_at": None,
+            "execution_started_at": None,
+            "attention_at": None,
             "result": None,
             "error": None,
+            "history": [
+                {
+                    "status": "pending_approval",
+                    "at": _now(),
+                    "detail": "Prepared action created",
+                }
+            ],
         }
 
         def updater(root: dict[str, Any]) -> None:
@@ -103,7 +112,13 @@ class PreparedActionStore:
         return action
 
     def approve_action(self, action_id: str) -> dict[str, Any]:
-        return self._transition(action_id, status="approved", timestamp_field="approved_at")
+        return self._transition(
+            action_id,
+            status="approved",
+            timestamp_field="approved_at",
+            expected_statuses={"pending_approval"},
+            detail="Approved for execution",
+        )
 
     def reject_action(self, action_id: str, *, reason: str | None = None) -> dict[str, Any]:
         return self._transition(
@@ -111,7 +126,69 @@ class PreparedActionStore:
             status="rejected",
             timestamp_field="rejected_at",
             update={"rejection_reason": str(reason or "").strip() or None},
+            expected_statuses={"pending_approval", "approved"},
+            detail="Rejected by operator",
         )
+
+    def claim_execution(
+        self,
+        action_id: str,
+        *,
+        approve: bool = False,
+        retry: bool = False,
+        confirm_not_created: bool = False,
+    ) -> tuple[dict[str, Any], bool]:
+        normalized = _required(action_id, "action_id")
+        now = _now()
+
+        def updater(root: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+            actions = root.setdefault("actions", {})
+            if not isinstance(actions, dict) or normalized not in actions:
+                raise KeyError(normalized)
+            action = dict(actions[normalized])
+            status = str(action.get("status") or "")
+            if status == "executed":
+                return action, False
+            if status == "pending_approval":
+                if not approve:
+                    raise ValueError(
+                        f"Bokio prepared action {normalized} must be approved before execution"
+                    )
+                action["approved_at"] = action.get("approved_at") or now
+            elif status == "approved":
+                pass
+            elif status == "failed":
+                if not retry:
+                    raise ValueError(
+                        f"Bokio prepared action {normalized} failed; request an explicit retry"
+                    )
+            elif status == "needs_attention":
+                if not confirm_not_created:
+                    raise ValueError(
+                        f"Bokio prepared action {normalized} has an uncertain outcome; inspect "
+                        "Bokio and confirm it was not created before retrying"
+                    )
+            elif status == "executing":
+                raise ValueError(
+                    f"Bokio prepared action {normalized} is executing or has an unknown outcome"
+                )
+            else:
+                raise ValueError(
+                    f"Bokio prepared action {normalized} cannot execute from status {status!r}"
+                )
+            action["status"] = "executing"
+            action["execution_started_at"] = now
+            action["updated_at"] = now
+            action["error"] = None
+            self._append_history(action, status="executing", at=now, detail="Execution claimed")
+            actions[normalized] = action
+            return action, True
+
+        try:
+            action, claimed = self.store.update_object(updater)
+        except KeyError as exc:
+            raise ValueError(f"Unknown Bokio prepared action: {normalized}") from exc
+        return dict(action), bool(claimed)
 
     def mark_executed(self, action_id: str, *, result: Any) -> dict[str, Any]:
         return self._transition(
@@ -119,6 +196,8 @@ class PreparedActionStore:
             status="executed",
             timestamp_field="executed_at",
             update={"result": result, "error": None},
+            expected_statuses={"approved", "executing"},
+            detail="Bokio action executed",
         )
 
     def mark_failed(self, action_id: str, *, error: Any) -> dict[str, Any]:
@@ -127,6 +206,18 @@ class PreparedActionStore:
             status="failed",
             timestamp_field="executed_at",
             update={"error": error},
+            expected_statuses={"approved", "executing"},
+            detail="Execution failed before a successful Bokio result",
+        )
+
+    def mark_needs_attention(self, action_id: str, *, error: Any) -> dict[str, Any]:
+        return self._transition(
+            action_id,
+            status="needs_attention",
+            timestamp_field="attention_at",
+            update={"error": error},
+            expected_statuses={"executing"},
+            detail="Execution outcome is uncertain; reconciliation required",
         )
 
     def _transition(
@@ -136,6 +227,8 @@ class PreparedActionStore:
         status: str,
         timestamp_field: str,
         update: dict[str, Any] | None = None,
+        expected_statuses: set[str] | None = None,
+        detail: str | None = None,
     ) -> dict[str, Any]:
         normalized = _required(action_id, "action_id")
         now = _now()
@@ -145,11 +238,20 @@ class PreparedActionStore:
             if not isinstance(actions, dict) or normalized not in actions:
                 raise KeyError(normalized)
             action = dict(actions[normalized])
+            current_status = str(action.get("status") or "")
+            if current_status == status:
+                return action
+            if expected_statuses is not None and current_status not in expected_statuses:
+                raise ValueError(
+                    f"Bokio prepared action {normalized} cannot transition from "
+                    f"{current_status!r} to {status!r}"
+                )
             action["status"] = status
             action[timestamp_field] = now
             action["updated_at"] = now
             if update:
                 action.update(update)
+            self._append_history(action, status=status, at=now, detail=detail)
             actions[normalized] = action
             return action
 
@@ -158,6 +260,16 @@ class PreparedActionStore:
         except KeyError as exc:
             raise ValueError(f"Unknown Bokio prepared action: {normalized}") from exc
         return dict(result)
+
+    @staticmethod
+    def _append_history(
+        action: dict[str, Any], *, status: str, at: str, detail: str | None
+    ) -> None:
+        history = action.get("history")
+        if not isinstance(history, list):
+            history = []
+        history.append({"status": status, "at": at, "detail": detail})
+        action["history"] = history
 
 
 def _required(value: str, field_name: str) -> str:
