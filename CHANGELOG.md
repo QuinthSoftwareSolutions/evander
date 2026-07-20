@@ -7,6 +7,8 @@
   recipient, subject, full-text, and attachment filters.
 - Kept `email_list_unread` as the separate incremental unread workflow; standard email-enabled
   sessions do not receive the broader listing capability automatically.
+- Corrected Graph query composition and Gmail label filtering so structured and textual searches
+  use provider-supported request shapes, including mapped custom folders and recipient searches.
 
 ## 2026-07-20 - Sessions MCP Tool Groups
 

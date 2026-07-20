@@ -76,7 +76,8 @@ class GraphEmailProvider:
         limit: int,
     ) -> EmailMessagePage:
         headers = self._headers()
-        if query.text_contains:
+        uses_search = self._uses_search(query)
+        if uses_search:
             headers["ConsistencyLevel"] = "eventual"
         if cursor:
             url = cursor
@@ -96,10 +97,11 @@ class GraphEmailProvider:
                 params=params,
             )
             payload = response.json()
+        items = [item for item in payload.get("value", []) if not item.get("@removed")]
+        if uses_search:
+            items = [item for item in items if self._matches_structured_filters(item, query)]
         summaries = [
-            self._to_summary(mailbox_id=mailbox_id, folder=folder, payload=item)
-            for item in payload.get("value", [])
-            if not item.get("@removed")
+            self._to_summary(mailbox_id=mailbox_id, folder=folder, payload=item) for item in items
         ]
         summaries.sort(key=lambda entry: entry.received_at, reverse=True)
         next_cursor = str(payload.get("@odata.nextLink", "")).strip() or None
@@ -279,36 +281,58 @@ class GraphEmailProvider:
         }
 
     @staticmethod
-    def _odata_literal(value: str) -> str:
-        return value.replace("'", "''")
-
-    @staticmethod
     def _graph_datetime(value: datetime) -> str:
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
-    def _search_params(self, *, query: EmailMessageSearchQuery, limit: int) -> dict[str, Any]:
-        filters: list[str] = []
-        if query.received_after is not None:
-            filters.append(f"receivedDateTime ge {self._graph_datetime(query.received_after)}")
-        if query.received_before is not None:
-            filters.append(f"receivedDateTime lt {self._graph_datetime(query.received_before)}")
-        if query.unread is not None:
-            filters.append(f"isRead eq {'false' if query.unread else 'true'}")
-        if query.sender_contains:
-            filters.append(
-                "contains(from/emailAddress/address,"
-                f"'{self._odata_literal(query.sender_contains)}')"
+    @staticmethod
+    def _uses_search(query: EmailMessageSearchQuery) -> bool:
+        return any(
+            (
+                query.sender_contains,
+                query.recipient_contains,
+                query.subject_contains,
+                query.text_contains,
             )
-        if query.recipient_contains:
-            filters.append(
-                "toRecipients/any(recipient:contains(recipient/emailAddress/address,"
-                f"'{self._odata_literal(query.recipient_contains)}'))"
-            )
-        if query.subject_contains:
-            filters.append(f"contains(subject,'{self._odata_literal(query.subject_contains)}')")
-        if query.has_attachments is not None:
-            filters.append(f"hasAttachments eq {'true' if query.has_attachments else 'false'}")
+        )
 
+    @staticmethod
+    def _kql_value(value: str) -> str:
+        return " ".join(value.replace("\\", " ").replace('"', " ").split())
+
+    def _search_expression(self, query: EmailMessageSearchQuery) -> str:
+        clauses: list[str] = []
+        if query.text_contains:
+            clauses.append(self._kql_value(query.text_contains))
+        if query.sender_contains:
+            clauses.append(f"from:{self._kql_value(query.sender_contains)}")
+        if query.recipient_contains:
+            clauses.append(f"to:{self._kql_value(query.recipient_contains)}")
+        if query.subject_contains:
+            clauses.append(f"subject:{self._kql_value(query.subject_contains)}")
+        return f'"{" AND ".join(clauses)}"'
+
+    def _matches_structured_filters(
+        self, payload: dict[str, Any], query: EmailMessageSearchQuery
+    ) -> bool:
+        received_at = datetime.fromisoformat(
+            str(payload.get("receivedDateTime", datetime.min.replace(tzinfo=UTC).isoformat())).replace(
+                "Z", "+00:00"
+            )
+        )
+        if query.received_after is not None and received_at < query.received_after:
+            return False
+        if query.received_before is not None and received_at >= query.received_before:
+            return False
+        if query.unread is not None and (not bool(payload.get("isRead", False))) is not query.unread:
+            return False
+        if (
+            query.has_attachments is not None
+            and bool(payload.get("hasAttachments", False)) is not query.has_attachments
+        ):
+            return False
+        return True
+
+    def _search_params(self, *, query: EmailMessageSearchQuery, limit: int) -> dict[str, Any]:
         params: dict[str, Any] = {
             "$select": (
                 "id,subject,bodyPreview,from,toRecipients,isRead,receivedDateTime,"
@@ -316,12 +340,24 @@ class GraphEmailProvider:
             ),
             "$top": limit,
         }
+        if self._uses_search(query):
+            params["$search"] = self._search_expression(query)
+            return params
+
+        filters: list[str] = []
+        if query.received_after is not None:
+            filters.append(f"receivedDateTime ge {self._graph_datetime(query.received_after)}")
+        if query.received_before is not None:
+            filters.append(f"receivedDateTime lt {self._graph_datetime(query.received_before)}")
+        if not filters and (query.unread is not None or query.has_attachments is not None):
+            filters.append("receivedDateTime ge 1900-01-01T00:00:00Z")
+        if query.unread is not None:
+            filters.append(f"isRead eq {'false' if query.unread else 'true'}")
+        if query.has_attachments is not None:
+            filters.append(f"hasAttachments eq {'true' if query.has_attachments else 'false'}")
         if filters:
             params["$filter"] = " and ".join(filters)
-        if query.text_contains:
-            params["$search"] = f'"{query.text_contains.replace(chr(34), " ")}"'
-        else:
-            params["$orderby"] = "receivedDateTime DESC"
+        params["$orderby"] = "receivedDateTime DESC"
         return params
 
     def _to_summary(

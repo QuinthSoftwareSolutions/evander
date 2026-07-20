@@ -77,9 +77,12 @@ class GmailEmailProvider:
     ) -> EmailMessagePage:
         label = self._folder_label(folder)
         params: dict[str, Any] = {
-            "q": self._search_query(label=label, query=query),
+            "labelIds": [label],
             "maxResults": limit,
         }
+        search_query = self._search_query(query=query)
+        if search_query:
+            params["q"] = search_query
         if cursor:
             params["pageToken"] = cursor
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -373,8 +376,8 @@ class GmailEmailProvider:
         normalized = " ".join(value.replace('"', " ").split())
         return f'"{normalized}"'
 
-    def _search_query(self, *, label: str, query: EmailMessageSearchQuery) -> str:
-        query_parts = [f"in:{label}"] if label else []
+    def _search_query(self, *, query: EmailMessageSearchQuery) -> str:
+        query_parts: list[str] = []
         if query.received_after is not None:
             query_parts.append(f"after:{int(query.received_after.timestamp())}")
         if query.received_before is not None:

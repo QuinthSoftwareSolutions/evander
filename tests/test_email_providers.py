@@ -113,8 +113,9 @@ def test_gmail_list_messages_translates_filters_and_page_token(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/messages"):
             assert request.url.params["pageToken"] == "next-page"
+            assert request.url.params.get_list("labelIds") == ["Label_custom"]
             query = request.url.params["q"]
-            assert "in:INBOX" in query
+            assert "in:" not in query
             assert "is:read" in query
             assert "from:\"vendor@example.com\"" in query
             assert "subject:\"invoice\"" in query
@@ -140,7 +141,7 @@ def test_gmail_list_messages_translates_filters_and_page_token(
     )
     provider = GmailEmailProvider(
         account_identifier="me",
-        folder_mapping={"inbox": "INBOX"},
+        folder_mapping={"inbox": "Label_custom"},
         auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
         timeout_seconds=5.0,
         api_base_url="https://gmail.test/gmail/v1",
@@ -175,9 +176,11 @@ def test_graph_list_messages_translates_filters_and_preserves_next_link(
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/mailFolders/Inbox/messages")
         assert request.url.params["$top"] == "10"
-        assert "isRead eq false" in request.url.params["$filter"]
-        assert "contains(subject,'invoice')" in request.url.params["$filter"]
-        assert request.url.params["$search"] == '"details"'
+        assert "$filter" not in request.url.params
+        assert "$orderby" not in request.url.params
+        assert request.url.params["$search"] == (
+            '"details AND to:accounts@example.com AND subject:invoice"'
+        )
         assert request.headers["ConsistencyLevel"] == "eventual"
         return httpx.Response(
             200,
@@ -189,6 +192,18 @@ def test_graph_list_messages_translates_filters_and_preserves_next_link(
                         "isRead": False,
                         "bodyPreview": "details",
                         "receivedDateTime": "2026-03-20T10:00:00Z",
+                        "hasAttachments": True,
+                        "parentFolderId": "Inbox",
+                        "from": {"emailAddress": {"address": "sender@example.com"}},
+                        "toRecipients": [],
+                    },
+                    {
+                        "id": "graph-msg-read",
+                        "conversationId": "conversation-2",
+                        "isRead": True,
+                        "bodyPreview": "details",
+                        "receivedDateTime": "2026-03-20T09:00:00Z",
+                        "hasAttachments": True,
                         "parentFolderId": "Inbox",
                         "from": {"emailAddress": {"address": "sender@example.com"}},
                         "toRecipients": [],
@@ -216,9 +231,13 @@ def test_graph_list_messages_translates_filters_and_preserves_next_link(
         mailbox_id="exec-graph",
         folder="inbox",
         query=EmailMessageSearchQuery(
+            received_after=datetime(2026, 3, 20, tzinfo=UTC),
+            received_before=datetime(2026, 3, 21, tzinfo=UTC),
             unread=True,
+            recipient_contains="accounts@example.com",
             subject_contains="invoice",
             text_contains="details",
+            has_attachments=True,
         ),
         cursor=None,
         limit=10,
@@ -226,6 +245,45 @@ def test_graph_list_messages_translates_filters_and_preserves_next_link(
 
     assert [message.message_id for message in page.messages] == ["graph-msg-1"]
     assert page.next_cursor == "https://graph.test/v1.0/next-page"
+
+
+def test_graph_list_messages_orders_supported_structured_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "$search" not in request.url.params
+        assert request.url.params["$orderby"] == "receivedDateTime DESC"
+        assert request.url.params["$filter"] == (
+            "receivedDateTime ge 1900-01-01T00:00:00Z and "
+            "isRead eq false and hasAttachments eq true"
+        )
+        return httpx.Response(200, json={"value": []}, request=request)
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+    )
+
+    page = provider.list_messages(
+        mailbox_id="exec-graph",
+        folder="inbox",
+        query=EmailMessageSearchQuery(unread=True, has_attachments=True),
+        cursor=None,
+        limit=10,
+    )
+
+    assert page.messages == []
+    assert page.next_cursor is None
 
 
 def test_graph_detail_maps_parent_folder_to_policy_folder() -> None:

@@ -113,6 +113,10 @@ cd /path/to/evander
   --runtime-dir runtime \
   --vm-id vm-smoke-live \
   --discord-channel 123456789012345678
+./.venv/bin/evander-cli add-tool-permission \
+  --runtime-dir runtime \
+  smoke-live \
+  email_list_messages
 ```
 
 Seed the dedicated Discord channel into the command store and note the returned cursor:
