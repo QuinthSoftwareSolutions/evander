@@ -222,6 +222,7 @@ def test_addon_mcp_tool_catalog_exposes_grouped_static_descriptors() -> None:
                 "name": "custom_read_ledger",
                 "label": "Read ledger",
                 "description": "Read the custom ledger.",
+                "group": "Custom ledger",
             }
         ],
     )
@@ -235,6 +236,7 @@ def test_addon_mcp_tool_catalog_exposes_grouped_static_descriptors() -> None:
             name="custom_read_ledger",
             label="Read ledger",
             description="Read the custom ledger.",
+            group="Custom ledger",
         ),
     )
     assert payloads == [
@@ -242,11 +244,45 @@ def test_addon_mcp_tool_catalog_exposes_grouped_static_descriptors() -> None:
             "value": "custom_read_ledger",
             "label": "Read ledger",
             "description": "Read the custom ledger.",
-            "group": "Custom books",
+            "group": "Custom ledger",
             "provider": "custom-addon",
             "addon_id": "custom-addon",
         }
     ]
+
+
+def test_team_addon_mcp_tools_do_not_share_the_microsoft_teams_group() -> None:
+    registration = importlib.import_module("evander_team_addon").register_addon()
+
+    payloads = addon_mcp_tool_catalog_payloads(
+        LoadedAddonCatalog(registrations=(registration,), loaded_addons=("team-addon",))
+    )
+
+    assert {item["group"] for item in payloads} == {"Team Add-on"}
+
+
+def test_addon_mcp_tool_catalog_defaults_to_the_navigation_label() -> None:
+    registration = AddonRegistration(
+        addon_id="custom-addon",
+        display_name="Custom Add-on",
+        admin_navigation={
+            "label": "Custom books",
+            "description": "Custom bookkeeping tools.",
+        },
+        mcp_tool_catalog=[
+            {
+                "name": "custom_read_ledger",
+                "label": "Read ledger",
+                "description": "Read the custom ledger.",
+            }
+        ],
+    )
+
+    payloads = addon_mcp_tool_catalog_payloads(
+        LoadedAddonCatalog(registrations=(registration,), loaded_addons=("custom-addon",))
+    )
+
+    assert payloads[0]["group"] == "Custom books"
 
 
 def test_addon_mcp_tool_catalog_rejects_duplicate_names() -> None:

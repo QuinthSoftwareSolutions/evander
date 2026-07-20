@@ -114,6 +114,7 @@ def register_addon():
                 "name": "team_example",
                 "label": "Team example",
                 "description": "Run the add-on-owned Team example tool.",
+                "group": "Team Add-on",
             }
         ],
         "workflow_providers": {
@@ -196,12 +197,13 @@ Enable it with:
 Every tool exposed by an add-on registrar should have one static
 `mcp_tool_catalog` descriptor. When descriptors are present, gateway startup
 verifies that the declared and registered tool-name sets match. Admin Web groups
-the descriptors under the add-on navigation label (or display name for a
-headless add-on) and merges them with core tools. Operators can then select the
-tools on session create/edit, configure inherited approval or deny rules on
-**MCP Tools**, and select them in workflow tool fields without typing an unknown
-name. Catalog presence does not grant the tool: session allowlists, directory
-policy, invocation approval, and audit still apply.
+the descriptors under their optional `group`, falling back to the add-on
+navigation label (or display name for a headless add-on), and merges them with
+core tools. Operators can then select the tools on session create/edit,
+configure inherited approval or deny rules on **MCP Tools**, and select them in
+workflow tool fields without typing an unknown name. Catalog presence does not
+grant the tool: session allowlists, directory policy, invocation approval, and
+audit still apply.
 
 When enabled, Admin Web shows an `MSSQL Seeds` tab backed by
 `/api/addons/mssql-seed-addon/...` and `/addons/mssql-seed-addon/`. The add-on

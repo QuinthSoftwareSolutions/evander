@@ -714,6 +714,57 @@ test("admin shell sessions page categorizes consultation and connector tools", a
   assert.deepEqual(consoleErrors, []);
 });
 
+test("admin shell sessions page separates Microsoft Teams and Team Add-on tools", async (t) => {
+  const toolOptions = [
+    {
+      value: "teams_get_messages",
+      label: "teams get messages",
+      group: "Teams",
+      provider: "teams",
+      addon_id: null,
+    },
+    {
+      value: "team_list_tasks",
+      label: "List tasks",
+      group: "Team Add-on",
+      provider: "team-addon",
+      addon_id: "team-addon",
+    },
+  ];
+  const {
+    address,
+    consoleErrors,
+    page,
+    pageErrors,
+  } = await createSessionsSmokeHarness(t, makeSessionRecord(), {}, {
+    sessionCatalogResponse: {
+      tool_options: toolOptions,
+      model_options: [],
+      resume_mode_options: [],
+      renew_extension_presets: [],
+    },
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+  await ensureSectionsExpanded(page);
+
+  const teamsGroup = page.locator("details.session-tool-group").filter({ hasText: "Teams" });
+  const teamAddonGroup = page.locator("details.session-tool-group").filter({ hasText: "Team Add-on" });
+  const renderedToolGroups = await page.locator(".session-tool-groups").innerText();
+  assert.equal(await teamsGroup.count(), 1, renderedToolGroups);
+  assert.equal(await teamAddonGroup.count(), 1, renderedToolGroups);
+  await teamsGroup.locator("summary").click();
+  await teamAddonGroup.locator("summary").click();
+  assert.match(await teamsGroup.innerText(), /teams get messages/);
+  assert.doesNotMatch(await teamsGroup.innerText(), /List tasks/);
+  assert.match(await teamAddonGroup.innerText(), /List tasks/);
+  assert.doesNotMatch(await teamAddonGroup.innerText(), /teams get messages/);
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
+
 test("admin shell sessions page reset clears an existing approval settings override", async (t) => {
   const permissiveApprovalSettings = {
     ttl_seconds: 86400,

@@ -108,6 +108,7 @@ class AddonMcpTool(BaseModel):
     name: str
     label: str
     description: str
+    group: str | None = None
 
     @field_validator("name", "label", "description", mode="before")
     @classmethod
@@ -116,6 +117,13 @@ class AddonMcpTool(BaseModel):
         if not text:
             raise ValueError(f"{info.field_name} must be a non-empty string")
         return text
+
+    @field_validator("group", mode="before")
+    @classmethod
+    def normalize_optional_group(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
 
 
 @dataclass(frozen=True)
@@ -192,7 +200,7 @@ def addon_mcp_tool_catalog_payloads(catalog: LoadedAddonCatalog) -> list[dict[st
                     "value": tool.name,
                     "label": tool.label,
                     "description": tool.description,
-                    "group": group,
+                    "group": tool.group or group,
                     "provider": registration.addon_id,
                     "addon_id": registration.addon_id,
                 }

@@ -246,6 +246,7 @@ MCP_TOOL_CATALOG = tuple(
             "Team Add-on tool for "
             f"{tool_name.removeprefix('team_').replace('_', ' ')}."
         ),
+        group="Team Add-on",
     )
     for tool_name in MCP_TOOL_NAMES
 )
