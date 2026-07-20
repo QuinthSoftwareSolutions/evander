@@ -20,6 +20,7 @@ import { DirectoryAddIcon, DirectoryDeleteIcon, NotificationBellIcon } from "./f
 import { Tooltip } from "./features/admin/Tooltip";
 import {
   addonTabsFromPayload,
+  adminHash,
   currentTab,
   nextPathFromHash,
   tabsForExecutionBackend,
@@ -772,11 +773,13 @@ function AddonView({
   selectedDirectoryPath,
   privilegedUnlocked,
   onFrameLoad,
+  onNavigateToSession,
 }: {
   tab: AdminTabDefinition;
   selectedDirectoryPath: string;
   privilegedUnlocked: boolean;
   onFrameLoad?: () => void;
+  onNavigateToSession?: (sessionId: string) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const iframeSrcKey = `${tab.uiPath ?? ""}\n${selectedDirectoryPath}`;
@@ -802,6 +805,29 @@ function AddonView({
   useEffect(() => {
     postPrivilegeState();
   }, [privilegedUnlocked, iframeSrc]);
+
+  useEffect(() => {
+    function handleAddonNavigation(event: MessageEvent<unknown>) {
+      if (event.origin !== window.location.origin || event.source !== iframeRef.current?.contentWindow) {
+        return;
+      }
+      const payload = event.data;
+      if (!payload || typeof payload !== "object") {
+        return;
+      }
+      const data = payload as { type?: unknown; session_id?: unknown };
+      if (data.type !== "admin-navigate-to-session" || typeof data.session_id !== "string") {
+        return;
+      }
+      const sessionId = data.session_id.trim();
+      if (sessionId) {
+        onNavigateToSession?.(sessionId);
+      }
+    }
+
+    window.addEventListener("message", handleAddonNavigation);
+    return () => window.removeEventListener("message", handleAddonNavigation);
+  }, [onNavigateToSession]);
 
   function handleFrameLoad() {
     postPrivilegeState();
@@ -2017,6 +2043,12 @@ export default function AdminRoot() {
     setSelectedTab(nextTab);
   }
 
+  function navigateToSession(sessionId: string) {
+    suppressNextHashChangeRef.current = true;
+    window.location.hash = adminHash("sessions", { session_id: sessionId });
+    setSelectedTab("sessions");
+  }
+
   function confirmDiscardWorkflowChanges() {
     if (!workflowHasUnsavedChanges || renderedTab !== "workflow") {
       return true;
@@ -2249,6 +2281,7 @@ export default function AdminRoot() {
                   onFrameLoad={() => {
                     void refreshAuthSession();
                   }}
+                  onNavigateToSession={navigateToSession}
                 />
               ) : (
                 <PlaceholderView title={activeTab.label} description={activeTab.description} />

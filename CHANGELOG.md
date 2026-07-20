@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-20 - Team Session Navigation
+
+- Added **Open session** actions for Team agents in the Teams detail views and org-chart context
+  menus, taking operators directly to the linked Sessions record.
+- Kept add-on-to-shell navigation origin- and iframe-source-validated before updating the existing
+  session deep link.
+
 ## 2026-07-20 - Bokio Recovery And Retry Hardening
 
 - Allowed reconciliation-confirmed recovery of interrupted direct operations and prepared actions

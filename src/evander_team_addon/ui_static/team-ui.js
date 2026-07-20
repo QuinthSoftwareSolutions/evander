@@ -917,6 +917,7 @@ function openOrgCanvasContextMenu(detail) {
 
 function openOrgAgentContextMenu(detail) {
   const agentId = text(detail?.agentId);
+  const agent = state.agents?.[agentId];
   const point = orgContextPoint(detail);
   openOrgContextMenu({
     kind: "agent",
@@ -924,9 +925,15 @@ function openOrgAgentContextMenu(detail) {
     agentId,
     items: [
       {
+        action: "open-session",
+        label: "Open session",
+        disabled: !text(agent?.session_id),
+        disabledReason: "This agent has no linked session.",
+      },
+      {
         action: "add-subordinate-agent",
         label: "Add subordinate agent",
-        disabled: teamMutationLocked() || !state.agents?.[agentId],
+        disabled: teamMutationLocked() || !agent,
         disabledReason: teamMutationLocked()
           ? lockedMutationMessage("add subordinate agents")
           : "Agent is no longer available.",
@@ -1041,6 +1048,10 @@ function closeOrgContextMenu() {
 }
 
 function handleOrgContextAction(action, context) {
+  if (action === "open-session") {
+    navigateToAgentSession(state.agents?.[context.agentId]?.session_id);
+    return;
+  }
   if (action === "create-team") {
     if (!guardTeamMutation("create teams")) {
       return;
@@ -1580,6 +1591,13 @@ function bindRecordEditing() {
     if (selectAgentButton) {
       event.preventDefault();
       selectPeopleAgent(selectAgentButton.dataset.selectAgentId);
+      return;
+    }
+
+    const openSessionButton = event.target.closest("[data-open-session-id]");
+    if (openSessionButton) {
+      event.preventDefault();
+      navigateToAgentSession(openSessionButton.dataset.openSessionId);
       return;
     }
 
@@ -6096,6 +6114,7 @@ function renderAgents() {
                     <div class="record-actions">
                       ${renderAgentRosterStatusPill(details)}
                       ${renderAgentStandDownControls(details.id, details)}
+                      ${renderOpenAgentSessionButton(details.sessionId)}
                       <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
                       ${editButton("agent", details.id)}
                     </div>
@@ -8428,6 +8447,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
       </div>
       <div class="record-actions agent-detail-actions">
         ${renderAgentStandDownControls(details.id, details)}
+        ${renderOpenAgentSessionButton(details.sessionId)}
         <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
         ${editButton("agent", details.id)}
       </div>
@@ -8564,6 +8584,28 @@ function renderAgentDetailField(label, value) {
       <strong class="agent-detail-value">${escapeHtml(value)}</strong>
     </div>
   `;
+}
+
+function renderOpenAgentSessionButton(sessionId) {
+  const normalizedSessionId = text(sessionId);
+  if (!normalizedSessionId) {
+    return "";
+  }
+  return `<button class="record-action" type="button" data-open-session-id="${escapeAttr(normalizedSessionId)}">Open session</button>`;
+}
+
+function navigateToAgentSession(sessionId) {
+  const normalizedSessionId = text(sessionId);
+  if (!normalizedSessionId || !window.parent?.postMessage) {
+    return;
+  }
+  window.parent.postMessage(
+    {
+      type: "admin-navigate-to-session",
+      session_id: normalizedSessionId,
+    },
+    window.location.origin,
+  );
 }
 
 function agentRuntimeDetailRows(details) {

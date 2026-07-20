@@ -42,6 +42,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /context-rotation/);
   assert.match(script, /data-stand-down-agent-id/);
   assert.match(script, /data-stand-down-revoke-agent-id/);
+  assert.match(script, /data-open-session-id/);
+  assert.match(script, /admin-navigate-to-session/);
   assert.match(script, /stand-down/);
   assert.match(script, /Handoff summary/);
   assert.match(script, /data-team-view/);
@@ -152,6 +154,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /team-org-flow:edit-agent/);
   assert.match(script, /team-org-flow:canvas-menu/);
   assert.match(script, /data-org-context-action/);
+  assert.match(script, /action: "open-session"/);
   assert.match(script, /governance-add-team/);
   assert.match(script, /data-core-agent-session-create/);
   assert.match(script, /aria-describedby/);
@@ -3499,6 +3502,48 @@ test("team add-on locked mode disables mutation entry points", async (t) => {
 
   const mutationRequests = requests.filter((request) => request.method !== "GET");
   assert.deepEqual(mutationRequests, []);
+});
+
+test("team add-on opens linked sessions from Teams and Org chart agents", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await page.evaluate(() => {
+    window.__teamSessionNavigation = [];
+    window.addEventListener("message", (event) => {
+      if (event.data?.type === "admin-navigate-to-session") {
+        window.__teamSessionNavigation.push(event.data.session_id);
+      }
+    });
+  });
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await teamGroup.locator('[data-select-agent-id="manager"]').click();
+  const managerDetail = page.locator("#team-people-page .agent-detail", { hasText: "Ops Manager" });
+  await managerDetail.getByRole("button", { name: "Open session" }).click();
+  await page.waitForFunction(() => window.__teamSessionNavigation?.includes("session-manager"));
+
+  await openOrgChart(page);
+  const backendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  await backendCard.waitFor({ state: "visible" });
+  await backendCard.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Open session" }).click();
+  await page.waitForFunction(() => window.__teamSessionNavigation?.includes("session-backend"));
+  assert.deepEqual(
+    await page.evaluate(() => window.__teamSessionNavigation),
+    ["session-manager", "session-backend"],
+  );
 });
 
 test("team add-on privilege messages update controls without losing selected manager", async (t) => {

@@ -269,6 +269,53 @@ async function createAdminPage(t, options = {}) {
       return;
     }
 
+    if (pathname === "/api/admin/sessions/catalog") {
+      await route.fulfill(
+        jsonResponse({
+          tool_options: [],
+          model_options: [],
+          resume_mode_options: [],
+          renew_extension_presets: [],
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/sessions") {
+      const items = options.sessions ?? [];
+      await route.fulfill(
+        jsonResponse({
+          items,
+          counts: {
+            total: items.length,
+            active: items.filter((item) => !item.is_expired).length,
+            expired: items.filter((item) => item.is_expired).length,
+          },
+          status_ids: {
+            active: items.filter((item) => !item.is_expired).map((item) => item.session_id),
+            expired: items.filter((item) => item.is_expired).map((item) => item.session_id),
+          },
+        }),
+      );
+      return;
+    }
+
+    if (pathname.startsWith("/api/admin/sessions/")) {
+      const sessionId = decodeURIComponent(pathname.slice("/api/admin/sessions/".length));
+      const session = (options.sessions ?? []).find((item) => item.session_id === sessionId);
+      await route.fulfill(
+        session
+          ? jsonResponse({ session, wake_schedules: [], summary_json: {} })
+          : jsonResponse({ error: "Unknown session" }, 404),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/scheduled-wakes") {
+      await route.fulfill(jsonResponse({ items: [] }));
+      return;
+    }
+
     await route.fulfill(jsonResponse({ error: `Unexpected endpoint: ${pathname}` }, 404));
   });
 
@@ -460,6 +507,58 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
   await assert.doesNotReject(() => page.getByRole("button", { name: "Lock", exact: true }).waitFor({ state: "visible" }));
   assert.equal(await frame.getAttribute("src"), initialFrameSrc);
   assert.equal(addonFrameRequests, 1);
+});
+
+test("Team add-on session navigation opens the selected session", async (t) => {
+  const session = {
+    session_id: "session-team-worker",
+    vm_id: null,
+    model: "gpt-5.4",
+    directory_path: "root",
+    expires_at: "2026-06-18T12:00:00Z",
+    created_at: "2026-06-17T12:00:00Z",
+    is_expired: false,
+  };
+  const { address, page } = await createAdminPage(t, {
+    sessions: [session],
+    addons: [
+      {
+        addon_id: "team-addon",
+        display_name: "Team Add-on",
+        tab_key: "addon:team-addon",
+        label: "Teams",
+        short_label: "Teams",
+        description: "Team-oriented add-on surface.",
+        api_base_path: "/api/addons/team-addon",
+        ui_path: "/addons/team-addon/",
+      },
+    ],
+  });
+  await page.route("**/addons/team-addon/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: `
+        <button type="button" id="open-session">Open session</button>
+        <script>
+          document.querySelector("#open-session").addEventListener("click", () => {
+            window.parent.postMessage(
+              { type: "admin-navigate-to-session", session_id: "session-team-worker" },
+              window.location.origin,
+            );
+          });
+        </script>
+      `,
+    });
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#addon:team-addon`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.frameLocator(".admin-addon-frame").getByRole("button", { name: "Open session" }).click();
+  await page.waitForFunction(() => window.location.hash === "#sessions?session_id=session-team-worker");
+  await page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" });
+  await page.locator(".session-list-item.selected", { hasText: "session-team-worker" }).waitFor({ state: "visible" });
 });
 
 test("admin shell shows unread user notifications from the header", async (t) => {
