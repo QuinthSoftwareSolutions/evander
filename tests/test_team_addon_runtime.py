@@ -20,6 +20,7 @@ from evander.published_artifacts import PublishedArtifactStore
 from evander.queries.providers.base import QueryRuntimeContext
 from evander.workflow.packs import WorkflowPack
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
+from evander_team_addon.chat_attachments import TeamChatAttachmentStorage
 from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
@@ -27,6 +28,7 @@ from evander_team_addon.mcp import (
     TEAM_CREATE_CASE_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
+    TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
 )
 from evander_team_addon.models import (
     AgentActionRecord,
@@ -2058,9 +2060,15 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
         operator_display_name="Alice",
         expected_revision=repo.read().revision,
     )
+    prepared_attachment = TeamChatAttachmentStorage(tmp_path).prepare_upload(
+        content=b"runtime attachment",
+        filename="operator-notes.txt",
+        mime_type="text/plain",
+    )
     state, message = _team_chat_service(repo).record_operator_chat_message(
         conversation_id=conversation.id,
         body="Please answer this after your current wake finishes.",
+        attachments=[prepared_attachment],
         created_by="operator:alice@example.com",
         expected_revision=state.revision,
     )
@@ -2098,7 +2106,7 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
 
     result = provider.execute()
 
-    assert result["success"] is True
+    assert result["success"] is True, result["errors"]
     assert result["leased_count"] == 0
     assert result["leases"] == []
     assert result["dispatches"] == []
@@ -2108,15 +2116,36 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
     assert chat_dispatch["message_id"] == message.id
     assert chat_dispatch["team_chat_mcp_tools"] == {
         "session_id": "session-backend",
-        "requested_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES],
+        "requested_tools": [
+            TEAM_REPLY_TO_CHAT_TOOL,
+            TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+            *[
+                tool
+                for tool in ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES
+                if tool != TEAM_STAGE_CHAT_ATTACHMENT_TOOL
+            ],
+        ],
         "already_allowed_tools": [],
-        "granted_tools": [TEAM_REPLY_TO_CHAT_TOOL, *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES],
+        "granted_tools": [
+            TEAM_REPLY_TO_CHAT_TOOL,
+            TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+            *[
+                tool
+                for tool in ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES
+                if tool != TEAM_STAGE_CHAT_ATTACHMENT_TOOL
+            ],
+        ],
         "removed_tools": [],
         "error": None,
     }
     assert session_store.sessions["session-backend"].allowed_tools == [
         TEAM_REPLY_TO_CHAT_TOOL,
-        *ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES,
+        TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+        *[
+            tool
+            for tool in ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES
+            if tool != TEAM_STAGE_CHAT_ATTACHMENT_TOOL
+        ],
     ]
     assert resumer.calls[0]["target"] == "session-backend"
     assert resumer.calls[0]["dispatch_id"] == dispatch_id
@@ -2131,6 +2160,19 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
     assert "schema_version" not in prompt
     assert "dispatch_id" not in prompt
     assert "Please answer this after your current wake finishes." in prompt
+    assert "Attachments copied into your workspace" in prompt
+    assert "operator-notes.txt" in prompt
+    assert "untrusted operator-provided input" in prompt
+    attachment_copy = next(
+        file
+        for call in file_copier.calls
+        for file in call.get("files") or []
+        if file.get("destination_path", "").endswith("/01-operator-notes.txt")
+    )
+    assert attachment_copy["source_path"].endswith(prepared_attachment.id)
+    assert attachment_copy["destination_path"].startswith(
+        f"/home/agent/team-chat-attachments/{message.id}/"
+    )
     reread = TeamStateRepository(tmp_path).read()
     assert reread.conversation_messages[message.id].status == "running"
     assert reread.agent_runtimes["backend"].active_dispatch_id == dispatch_id
@@ -2187,10 +2229,19 @@ def test_wake_due_agents_provider_grants_reply_only_chat_tool_when_mutation_disa
 
     assert result["success"] is True
     chat_tools = result["chat_dispatches"][0]["team_chat_mcp_tools"]
-    assert chat_tools["requested_tools"] == [TEAM_REPLY_TO_CHAT_TOOL]
+    assert chat_tools["requested_tools"] == [
+        TEAM_REPLY_TO_CHAT_TOOL,
+        TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+    ]
+    assert chat_tools["already_allowed_tools"] == [TEAM_STAGE_CHAT_ATTACHMENT_TOOL]
     assert chat_tools["granted_tools"] == [TEAM_REPLY_TO_CHAT_TOOL]
-    assert chat_tools["removed_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
-    assert session_store.sessions["session-backend"].allowed_tools == [TEAM_REPLY_TO_CHAT_TOOL]
+    assert chat_tools["removed_tools"] == [
+        tool for tool in ORDINARY_TEAM_MCP_TOOL_NAMES if tool != TEAM_STAGE_CHAT_ATTACHMENT_TOOL
+    ]
+    assert session_store.sessions["session-backend"].allowed_tools == [
+        TEAM_REPLY_TO_CHAT_TOOL,
+        TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+    ]
     prompt = str(resumer.calls[0]["prompt"])
     assert "reply-only" in prompt
     assert "no Team state change was performed in this dispatch" in prompt

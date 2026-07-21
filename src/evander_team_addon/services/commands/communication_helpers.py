@@ -65,6 +65,7 @@ def _team_chat_reply_normalized_payload(
     conversation_id: str,
     message_id: str,
     body: str,
+    attachment_ids: Sequence[str],
     summary: str | None,
     correlation_id: str | None,
     causation_id: str | None,
@@ -73,6 +74,7 @@ def _team_chat_reply_normalized_payload(
         "conversation_id": _required_text(conversation_id, "conversation_id"),
         "message_id": _required_text(message_id, "message_id"),
         "body": _optional_text(body) or "",
+        "attachment_ids": sorted(_unique_text_list(attachment_ids, "attachment_ids")),
         "summary": _optional_text(summary),
         "correlation_id": _optional_text(correlation_id),
         "causation_id": _optional_text(causation_id),
@@ -83,6 +85,7 @@ def _team_operator_chat_normalized_payload(
     *,
     recipient_operator_user_id: str,
     body: str,
+    attachment_ids: Sequence[str],
     summary: str | None,
     handled_inbox_item_ids: Sequence[str],
     correlation_id: str | None,
@@ -91,6 +94,7 @@ def _team_operator_chat_normalized_payload(
     return {
         "recipient_operator_user_id": _normalize_operator_user_id(recipient_operator_user_id),
         "body": _optional_text(body) or "",
+        "attachment_ids": sorted(_unique_text_list(attachment_ids, "attachment_ids")),
         "summary": _optional_text(summary),
         "handled_inbox_item_ids": sorted(
             _unique_text_list(handled_inbox_item_ids, "handled_inbox_item_ids")

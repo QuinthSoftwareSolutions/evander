@@ -481,6 +481,26 @@ sending while inspecting. Team chat messages recorded by the Admin API carry
 human-operator metadata, and chat wake prompts tell the agent that the source is
 a human operator rather than another Team agent.
 
+Built-in Team Chat supports file and image attachments in both directions. An
+operator can attach up to the effective per-message limit when sending a Chat
+message; the add-on stores the bytes privately under
+`runtime/addons/team-addon/attachments/`, records metadata and SHA-256 in Team
+SQLite state, and copies the files into the recipient agent workspace under
+`/home/agent/team-chat-attachments/<message-id>/` before the Chat wake. Attachment
+contents are untrusted operator input. Authorized Chat readers can download files,
+and the UI renders permitted raster images inline.
+
+Agent-originated files use `team_stage_chat_attachment` first, then pass the
+returned attachment IDs to `team_reply_to_chat` or
+`team_send_operator_chat_message`. Staging accepts only regular files under
+`/home/agent`, is bound to the calling session, and expires after 24 hours. The
+root policy enables both directions, allows five common document/image files up
+to 10 MiB each, and requires exact approval for an agent send. Configure inherited
+overrides from Chat's **Files** dialog or the add-on-owned
+`GET`/`PUT /api/addons/team-addon/chat/attachment-policy` routes. These rules are
+deliberately independent of core communication-file policy and Microsoft Teams
+file policy; changing one does not broaden either of the others.
+
 The Mail view is the Agent Mail surface for agent-to-agent messages. It is
 separate from operator Chat: use Chat for a signed-in human's conversation with
 one persistent agent, and use Mail to inspect the sent and received projections

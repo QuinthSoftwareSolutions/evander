@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from pathlib import PurePosixPath
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -18,6 +21,8 @@ from evander.events.scheduled import (
     scheduled_internal_event_store_path,
 )
 from evander.effects.providers.base import EffectRuntimeContext
+from evander.effects.providers.agent_exec import AgentExecEffectProvider
+from evander.events.provider_models import AgentExecEffectDefinition
 from evander.queries.providers.base import QueryRuntimeContext
 
 from .mcp_context import (
@@ -28,6 +33,12 @@ from .mcp_context import (
 from .repository import (
     TeamStateConflictError,
     TeamStateRepository,
+)
+from .chat_attachments import (
+    TeamChatAttachmentPolicyService,
+    TeamChatAttachmentStorage,
+    validate_attachment_count,
+    validate_attachment_policy_content,
 )
 from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from .services.read_service import TeamReadService
@@ -61,6 +72,7 @@ TEAM_REQUEST_STATUS_TOOL = "team_request_status"
 TEAM_ASK_QUESTION_TOOL = "team_ask_question"
 TEAM_SEND_PROGRESS_REPORT_TOOL = "team_send_progress_report"
 TEAM_REPLY_TO_CHAT_TOOL = "team_reply_to_chat"
+TEAM_STAGE_CHAT_ATTACHMENT_TOOL = "team_stage_chat_attachment"
 TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL = "team_send_operator_chat_message"
 TEAM_ESCALATE_OPERATOR_TOOL = "team_escalate_operator"
 TEAM_CREATE_CASE_TOOL = "team_create_case"
@@ -116,6 +128,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_ASK_QUESTION_TOOL,
     TEAM_SEND_PROGRESS_REPORT_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+    TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
@@ -139,7 +152,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     TEAM_REJECT_EPHEMERAL_RESULT_TOOL,
 )
-CHAT_TEAM_MCP_TOOL_NAMES = (TEAM_REPLY_TO_CHAT_TOOL,)
+CHAT_TEAM_MCP_TOOL_NAMES = (TEAM_REPLY_TO_CHAT_TOOL, TEAM_STAGE_CHAT_ATTACHMENT_TOOL)
 EPHEMERAL_WORKER_MCP_TOOL_NAMES = (TEAM_REPORT_EPHEMERAL_RESULT_TOOL,)
 GOVERNANCE_TEAM_MCP_TOOL_NAMES = (
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
@@ -175,6 +188,7 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_ASK_QUESTION_TOOL,
     TEAM_SEND_PROGRESS_REPORT_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+    TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
@@ -198,7 +212,10 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     TEAM_REJECT_EPHEMERAL_RESULT_TOOL,
 )
-IMPLEMENTED_CHAT_TEAM_MCP_TOOL_NAMES = (TEAM_REPLY_TO_CHAT_TOOL,)
+IMPLEMENTED_CHAT_TEAM_MCP_TOOL_NAMES = (
+    TEAM_REPLY_TO_CHAT_TOOL,
+    TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+)
 IMPLEMENTED_EPHEMERAL_WORKER_MCP_TOOL_NAMES = (TEAM_REPORT_EPHEMERAL_RESULT_TOOL,)
 
 MCP_TOOL_NAMES = (
@@ -210,6 +227,7 @@ MCP_TOOL_NAMES = (
     TEAM_ASK_QUESTION_TOOL,
     TEAM_SEND_PROGRESS_REPORT_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
+    TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_CREATE_CASE_TOOL,
@@ -244,6 +262,10 @@ _MCP_TOOL_CATALOG_DESCRIPTIONS = {
         "dispatch. Available only while that dispatch is active; use "
         "team_send_operator_chat_message for proactive messages to listed operators."
     ),
+    TEAM_STAGE_CHAT_ATTACHMENT_TOOL: (
+        "Stage one regular file from the current agent workspace for a Team Chat reply "
+        "or proactive operator message. Returns a session-owned attachment_id."
+    ),
 }
 MCP_TOOL_CATALOG = tuple(
     AddonMcpTool(
@@ -276,6 +298,8 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     git_release_commands = TeamGitReleaseCommandService(repo)
     ephemeral_commands = TeamEphemeralCommandService(repo)
     resolver = TeamMcpContextResolver(repo=repo, context=context)
+    attachment_storage = TeamChatAttachmentStorage(context.runtime_dir)
+    attachment_policy_service = TeamChatAttachmentPolicyService(repo)
 
     @server.tool()
     def team_create_operator_directive(
@@ -365,6 +389,8 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         operator_escalation_commands,
         resolver,
         context,
+        attachment_storage,
+        attachment_policy_service,
     )
     _register_slice6_tools(
         server,
@@ -411,6 +437,8 @@ def _register_slice5_tools(
     operator_escalation_commands: TeamOperatorEscalationCommandService,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
+    attachment_storage: TeamChatAttachmentStorage,
+    attachment_policy_service: TeamChatAttachmentPolicyService,
 ) -> None:
     def team_record_note(
         body: str,
@@ -706,11 +734,70 @@ def _register_slice5_tools(
         ),
     )
 
+    def team_stage_chat_attachment(
+        source_path: str,
+        filename: str | None = None,
+        mime_type: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+        )
+        policy = attachment_policy_service.effective_policy(
+            _team_session_directory_path(context, caller.session_id),
+            state=caller.state,
+        )
+        if not policy.agent_to_operator_enabled:
+            raise ToolError("Agent-to-operator Team Chat attachments are disabled")
+        try:
+            workspace_file = _read_team_chat_workspace_file(
+                context,
+                session_id=caller.session_id,
+                source_path=source_path,
+                max_bytes=policy.max_attachment_bytes,
+            )
+            resolved_filename = str(filename or workspace_file["filename"])
+            resolved_mime = str(mime_type or workspace_file.get("mime_type") or "") or None
+            content = base64.b64decode(str(workspace_file["content_base64"]), validate=True)
+            validate_attachment_policy_content(
+                policy,
+                direction="agent_to_operator",
+                filename=resolved_filename,
+                mime_type=resolved_mime,
+                byte_count=len(content),
+            )
+            staged = attachment_storage.stage_agent_file(
+                session_id=caller.session_id,
+                source_path=str(workspace_file["source_path"]),
+                content=content,
+                filename=resolved_filename,
+                mime_type=resolved_mime,
+            )
+        except Exception as exc:
+            raise ToolError(str(exc)) from exc
+        return {
+            "success": True,
+            "revision": caller.state.revision,
+            "attachment": staged.payload(),
+        }
+
+    server.add_tool(
+        team_stage_chat_attachment,
+        name=TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+        description=(
+            "Stage one regular file under /home/agent for an attachment-enabled Team Chat "
+            "message. The returned attachment id is bound to the current session and expires."
+        ),
+    )
+
     def team_reply_to_chat(
         conversation_id: str,
         message_id: str,
         body: str,
         request_id: str,
+        attachment_ids: list[str] | None = None,
+        approval_request_id: str | None = None,
         summary: str | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -720,19 +807,49 @@ def _register_slice5_tools(
             session_id=session_id,
             tool_name=TEAM_REPLY_TO_CHAT_TOOL,
         )
+        normalized_attachment_ids = list(attachment_ids or [])
+        prepared_attachments = _prepare_team_chat_agent_attachments(
+            context,
+            storage=attachment_storage,
+            policy_service=attachment_policy_service,
+            caller=caller,
+            attachment_ids=normalized_attachment_ids,
+            approval_request_id=approval_request_id,
+            approval_payload={
+                "tool_name": TEAM_REPLY_TO_CHAT_TOOL,
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "body": body,
+                "attachment_ids": normalized_attachment_ids,
+            },
+        )
+        newly_promoted_attachments = [
+            attachment
+            for attachment in prepared_attachments
+            if attachment.id not in caller.state.chat_attachments
+        ]
         try:
             _state, result = chat_commands.reply_to_chat_command(
                 session_id=caller.session_id,
                 conversation_id=conversation_id,
                 message_id=message_id,
                 body=body,
+                attachments=prepared_attachments,
+                source_attachment_ids=normalized_attachment_ids,
                 summary=summary,
                 request_id=request_id,
                 correlation_id=correlation_id,
                 causation_id=causation_id,
             )
-        except (TypeError, ValueError) as exc:
+        except Exception as exc:
+            attachment_storage.delete_prepared(
+                attachment.id for attachment in newly_promoted_attachments
+            )
             raise ToolError(str(exc)) from exc
+        if not bool(result.get("success")):
+            attachment_storage.delete_prepared(
+                attachment.id for attachment in newly_promoted_attachments
+            )
         return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
@@ -740,7 +857,8 @@ def _register_slice5_tools(
         name=TEAM_REPLY_TO_CHAT_TOOL,
         description=(
             "Reply to a human Team Chat operator message for the current chat "
-            "dispatch. Requires conversation_id, message_id, body, and request_id."
+            "dispatch. Requires conversation_id, message_id, request_id, and either body "
+            "or staged attachment_ids. Agent file sends may require exact approval."
         ),
     )
 
@@ -748,6 +866,8 @@ def _register_slice5_tools(
         recipient_operator_user_id: str,
         body: str,
         request_id: str,
+        attachment_ids: list[str] | None = None,
+        approval_request_id: str | None = None,
         summary: str | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
@@ -758,19 +878,48 @@ def _register_slice5_tools(
             session_id=session_id,
             tool_name=TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
         )
+        normalized_attachment_ids = list(attachment_ids or [])
+        prepared_attachments = _prepare_team_chat_agent_attachments(
+            context,
+            storage=attachment_storage,
+            policy_service=attachment_policy_service,
+            caller=caller,
+            attachment_ids=normalized_attachment_ids,
+            approval_request_id=approval_request_id,
+            approval_payload={
+                "tool_name": TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+                "recipient_operator_user_id": recipient_operator_user_id,
+                "body": body,
+                "attachment_ids": normalized_attachment_ids,
+            },
+        )
+        newly_promoted_attachments = [
+            attachment
+            for attachment in prepared_attachments
+            if attachment.id not in caller.state.chat_attachments
+        ]
         try:
             _state, result = chat_commands.send_operator_chat_message_command(
                 session_id=caller.session_id,
                 recipient_operator_user_id=recipient_operator_user_id,
                 body=body,
+                attachments=prepared_attachments,
+                source_attachment_ids=normalized_attachment_ids,
                 summary=summary,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
                 causation_id=causation_id,
             )
-        except (TypeError, ValueError) as exc:
+        except Exception as exc:
+            attachment_storage.delete_prepared(
+                attachment.id for attachment in newly_promoted_attachments
+            )
             raise ToolError(str(exc)) from exc
+        if not bool(result.get("success")):
+            attachment_storage.delete_prepared(
+                attachment.id for attachment in newly_promoted_attachments
+            )
         return _team_command_mcp_result(result, caller=caller, context=context)
 
     server.add_tool(
@@ -2685,3 +2834,150 @@ def _governance_group_id_for_team(caller: Any, team_id: object) -> str | None:
     if len(caller.governance_groups) == 1:
         return caller.governance_groups[0].id
     return None
+
+
+_TEAM_CHAT_FILE_BEGIN = "__EVANDER_TEAM_CHAT_FILE_BEGIN__"
+_TEAM_CHAT_FILE_END = "__EVANDER_TEAM_CHAT_FILE_END__"
+_TEAM_CHAT_FILE_READER = r"""
+import base64, json, mimetypes, os, sys
+requested = sys.argv[1]
+max_bytes = int(sys.argv[2])
+resolved = os.path.realpath(requested)
+home = os.path.realpath('/home/agent')
+if resolved != home and not resolved.startswith(home + os.sep):
+    raise SystemExit('source_path must stay under /home/agent')
+if not os.path.isfile(resolved):
+    raise SystemExit('source_path must be a regular file')
+size = os.path.getsize(resolved)
+if max_bytes >= 0 and size > max_bytes:
+    raise SystemExit(f'file exceeds Team Chat limit: {size} > {max_bytes} bytes')
+with open(resolved, 'rb') as handle:
+    content = handle.read(max_bytes + 1 if max_bytes >= 0 else -1)
+if max_bytes >= 0 and len(content) > max_bytes:
+    raise SystemExit(f'file exceeds Team Chat limit: {len(content)} > {max_bytes} bytes')
+payload = {
+    'source_path': resolved,
+    'filename': os.path.basename(resolved),
+    'mime_type': mimetypes.guess_type(resolved)[0],
+    'byte_count': len(content),
+    'content_base64': base64.b64encode(content).decode('ascii'),
+}
+print('__EVANDER_TEAM_CHAT_FILE_BEGIN__')
+print(json.dumps(payload, sort_keys=True))
+print('__EVANDER_TEAM_CHAT_FILE_END__')
+"""
+
+
+def _team_session_directory_path(context: AddonContext, session_id: str) -> str:
+    repository = getattr(context.service, "session_repository", None)
+    get_session = getattr(repository, "get_session", None)
+    session = get_session(session_id) if callable(get_session) else None
+    return str(getattr(session, "directory_path", None) or "root")
+
+
+def _read_team_chat_workspace_file(
+    context: AddonContext,
+    *,
+    session_id: str,
+    source_path: str,
+    max_bytes: int | None,
+) -> dict[str, Any]:
+    normalized_path = str(PurePosixPath(str(source_path or "").strip()))
+    if not normalized_path.startswith("/home/agent/"):
+        raise ValueError("source_path must be an absolute path under /home/agent")
+    runtime = context.service
+    resolved_config = runtime.resolve_provider_config_for_session(session_id)
+    provider = AgentExecEffectProvider()
+    provider.initialize(
+        AgentExecEffectDefinition(
+            id="team-stage-chat-attachment",
+            display_name="Stage Team Chat attachment",
+            type="effect:agent:exec",
+            session_id=session_id,
+            command=[
+                "python3",
+                "-c",
+                _TEAM_CHAT_FILE_READER,
+                normalized_path,
+                str(max_bytes if max_bytes is not None else -1),
+            ],
+            working_directory="/home/agent",
+            timeout_seconds=30,
+            check=True,
+        ),
+        EffectRuntimeContext(
+            resolved_config=resolved_config,
+            provider_config_resolver=getattr(runtime, "provider_config", None),
+            admin_service=runtime,
+            metadata={"directory_path": _team_session_directory_path(context, session_id)},
+        ),
+    )
+    result = provider.execute()
+    stdout = str(result.get("stdout") or "")
+    start = stdout.find(_TEAM_CHAT_FILE_BEGIN)
+    end = stdout.find(_TEAM_CHAT_FILE_END)
+    if start < 0 or end <= start:
+        raise ValueError("workspace file reader did not return a Team Chat file payload")
+    payload = json.loads(stdout[start + len(_TEAM_CHAT_FILE_BEGIN) : end].strip())
+    if not isinstance(payload, dict):
+        raise ValueError("workspace file reader returned an invalid Team Chat file payload")
+    return payload
+
+
+def _prepare_team_chat_agent_attachments(
+    context: AddonContext,
+    *,
+    storage: TeamChatAttachmentStorage,
+    policy_service: TeamChatAttachmentPolicyService,
+    caller: Any,
+    attachment_ids: list[str],
+    approval_request_id: str | None,
+    approval_payload: dict[str, Any],
+) -> list[Any]:
+    if not attachment_ids:
+        return []
+    policy = policy_service.effective_policy(
+        _team_session_directory_path(context, caller.session_id),
+        state=caller.state,
+    )
+    validate_attachment_count(policy, len(attachment_ids))
+    staged = [
+        storage.get_staged(attachment_id, session_id=caller.session_id)
+        for attachment_id in attachment_ids
+    ]
+    for attachment in staged:
+        validate_attachment_policy_content(
+            policy,
+            direction="agent_to_operator",
+            filename=attachment.filename,
+            mime_type=attachment.mime_type,
+            byte_count=attachment.byte_count,
+        )
+    exact_payload = {
+        **approval_payload,
+        "attachments": [
+            {
+                "id": attachment.id,
+                "filename": attachment.filename,
+                "mime_type": attachment.mime_type,
+                "byte_count": attachment.byte_count,
+                "sha256": attachment.sha256,
+            }
+            for attachment in staged
+        ],
+    }
+    if policy.agent_send_requires_approval:
+        approval_id = str(approval_request_id or "").strip()
+        if not approval_id:
+            raise ToolError(
+                "Agent Team Chat attachments require exact approval; request approval for "
+                f"this payload: {json.dumps(exact_payload, sort_keys=True)}"
+            )
+        approval = context.service.policy.require_approved(approval_id, exact_payload)
+        if approval.session_id != caller.session_id:
+            raise ToolError("attachment approval belongs to another session")
+        if str(getattr(approval, "tool_name", "") or "").strip() != str(
+            approval_payload["tool_name"]
+        ):
+            raise ToolError("attachment approval is for a different tool")
+    return storage.promote_staged(attachment_ids, session_id=caller.session_id)

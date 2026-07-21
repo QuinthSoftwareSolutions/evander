@@ -4996,6 +4996,10 @@ A Team conversation contains exactly one signed-in operator user and one persist
 
 Operators normally see their own conversations. A user with <code>team_chats.read_all</code> may inspect another operator's history, but the UI marks that mode read-only and blocks sending. The permission does not broaden Agent Mail visibility.
 
+Chat messages may contain text, attachments, or both. Use the attachment control beside the composer to select common documents and images; selected files appear before sending, and supported images render inline in the transcript. Downloads use the same conversation authorization as the message, so read-all access remains read-only and does not make attachments public.
+
+The **Files** dialog controls Team Chat's directory-scoped attachment policy. Its root defaults allow operator-to-agent and agent-to-operator files, at most five files per message and 10 MiB per file, limited to common text, JSON, PDF, and raster-image types. Agent sends require exact approval by default. Child directories inherit the closest configured values. This policy belongs entirely to the Team Add-on: Microsoft Teams and the core communication connectors may use different file rules, and their settings neither grant nor deny built-in Chat attachments.
+
 The reply may take time because sending a Chat message records work for the agent rather than running the model inside the browser request. A reply-only dispatch can answer but cannot change Team state; a mutation-enabled dispatch can perform an otherwise authorized Team action and then explain the result. Later messages in the same conversation may use a different dispatch mode.
 
 > <span class="sidebar-kicker">Deeper detail</span> **How a Chat message is dispatched**
@@ -5004,13 +5008,15 @@ The reply may take time because sending a Chat message records work for the agen
 >
 > 1. The Admin API records the operator message and queues <code>team.chat.message_queued</code>.
 > 2. The Team runtime claims a queued message only when the agent is active, not stood down, not cost-blocked, not already leased, and its core session is not busy.
-> 3. It creates a Chat dispatch and prompts the agent with the human operator identity and message context.
+> 3. It creates a Chat dispatch and prompts the agent with the human operator identity and message context. Attached files are first copied into <code>/home/agent/team-chat-attachments/&lt;message-id&gt;/</code> and are identified as untrusted operator input.
 > 4. The agent replies with <code>team_reply_to_chat</code>.
 > 5. Dispatch finalization marks the operator message replied; a dispatch without a successful reply is marked failed with the available error context.
 >
 > A Chat dispatch can be **reply-only** or allow ordinary Team mutations. Its <code>allow_team_mutations</code> metadata controls whether the agent receives normal Team action tools alongside <code>team_reply_to_chat</code>. When a human asks “please change Imani's task priority,” a mutation-enabled dispatch can perform the authorized state change and reply. A reply-only dispatch must answer without changing Team state.
 >
 > The agent may use <code>team_send_operator_chat_message</code> only for operator participants listed in its current dispatch context. That is a bounded proactive message, not a way to enumerate arbitrary Admin users.
+>
+> For an outbound file, the agent first calls <code>team_stage_chat_attachment</code> with a regular file under <code>/home/agent</code>. It then supplies the session-owned staged ID to <code>team_reply_to_chat</code> or <code>team_send_operator_chat_message</code>. Staging expires after 24 hours. When the effective policy requires approval, the approval is bound to the target, message body, staged IDs, filenames, sizes, MIME types, and SHA-256 hashes.
 
 ![Team Chat conversation between a synthetic operator and Imani](assets/evander-user-manual/screenshots/team-chat.png)
 

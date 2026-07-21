@@ -46,6 +46,13 @@ from .avatars import (
     normalize_style_preset,
     openai_avatar_generator_from_config,
 )
+from .chat_attachments import (
+    TeamChatAttachmentPolicyService,
+    TeamChatAttachmentStorage,
+    normalize_directory_path,
+    validate_attachment_count,
+    validate_attachment_policy_content,
+)
 from .models import (
     AgentStatus,
     AgentVoiceProfile,
@@ -296,6 +303,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     chat_service = TeamChatService(repository)
     runtime_service = TeamRuntimeService(repository)
     avatar_storage = AvatarStorage(context.runtime_dir)
+    chat_attachment_storage = TeamChatAttachmentStorage(context.runtime_dir)
+    chat_attachment_policy_service = TeamChatAttachmentPolicyService(repository)
 
     def _state_payload(request: Request, state: TeamState) -> dict[str, Any]:
         payload = _team_state_payload_for_request(
@@ -1059,7 +1068,6 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
 
     async def send_conversation_message(request: Request) -> JSONResponse:
-        payload = await _read_payload(request)
         conversation_id = request.path_params["conversation_id"]
         before = repository.read()
         conversation = before.conversations.get(conversation_id)
@@ -1074,17 +1082,73 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             write=True,
             identity=identity,
         )
+        prepared_attachments = []
+        content_type = str(request.headers.get("content-type") or "").lower()
+        if content_type.startswith("multipart/form-data"):
+            try:
+                form = await request.form()
+            except Exception as exc:
+                raise ValueError("Request body must be multipart form data") from exc
+            body = _optional({"body": form.get("body")}, "body")
+            files = [
+                value
+                for key, value in form.multi_items()
+                if key == "files" and isinstance(value, UploadFile)
+            ]
+            directory_path = _conversation_agent_directory_path(
+                context,
+                before,
+                conversation,
+            )
+            policy = chat_attachment_policy_service.effective_policy(
+                directory_path,
+                state=before,
+            )
+            validate_attachment_count(policy, len(files))
+            try:
+                for file_value in files:
+                    max_bytes = int(policy.max_attachment_bytes or 0)
+                    content = await file_value.read(max_bytes + 1 if max_bytes is not None else -1)
+                    validate_attachment_policy_content(
+                        policy,
+                        direction="operator_to_agent",
+                        filename=file_value.filename or "attachment",
+                        mime_type=file_value.content_type,
+                        byte_count=len(content),
+                    )
+                    prepared_attachments.append(
+                        chat_attachment_storage.prepare_upload(
+                            content=content,
+                            filename=file_value.filename or "attachment",
+                            mime_type=file_value.content_type,
+                        )
+                    )
+            except Exception:
+                chat_attachment_storage.delete_prepared(
+                    attachment.id for attachment in prepared_attachments
+                )
+                raise
+        else:
+            payload = await _read_payload(request)
+            body = _optional(payload, "body")
         # Chat messages are append-only. The service validates the current
         # conversation and agent state, so a stale global revision must not block a send.
-        state, message = chat_service.record_operator_chat_message(
-            conversation_id=conversation_id,
-            body=_required(payload, "body"),
-            created_by=identity["actor"],
-            allow_team_mutations=_request_has_unlocked_privileged_operations(
-                context,
-                request,
-            ),
-        )
+        try:
+            state, message = chat_service.record_operator_chat_message(
+                conversation_id=conversation_id,
+                body=body,
+                attachments=prepared_attachments,
+                created_by=identity["actor"],
+                allow_team_mutations=_request_has_unlocked_privileged_operations(
+                    context,
+                    request,
+                ),
+            )
+        except Exception:
+            chat_attachment_storage.delete_prepared(
+                attachment.id for attachment in prepared_attachments
+            )
+            raise
         conversation = state.conversations[conversation_id]
         dispatch_id = f"team-chat:{message.id}"
         state, message = chat_service.queue_chat_message_dispatch(
@@ -1137,11 +1201,78 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                         identity=identity,
                     ),
                 ),
-                "message": _conversation_message_payload(message),
+                "message": _conversation_message_payload(message, state),
                 "dispatch": dispatch_payload,
                 "published_event_ids": published_event_ids,
             },
             status_code=202,
+        )
+
+    async def get_chat_attachment_policy(request: Request) -> JSONResponse:
+        state = repository.read()
+        directory_path = normalize_directory_path(request.query_params.get("directory_path"))
+        override = state.chat_attachment_policies.get(directory_path)
+        effective = chat_attachment_policy_service.effective_policy(directory_path, state=state)
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "directory_path": directory_path,
+                "override": override.model_dump(mode="json") if override is not None else None,
+                "effective": effective.model_dump(mode="json"),
+            }
+        )
+
+    async def put_chat_attachment_policy(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        directory_path = normalize_directory_path(
+            payload.get("directory_path") or request.query_params.get("directory_path")
+        )
+        values = payload.get("policy")
+        if not isinstance(values, Mapping):
+            raise ValueError("policy must be a JSON object")
+        identity = _operator_identity_from_request(context.auth, request)
+        state = chat_attachment_policy_service.set_override(
+            directory_path=directory_path,
+            values=values,
+            updated_by=identity["actor"],
+            expected_revision=_expected_revision(payload),
+        )
+        effective = chat_attachment_policy_service.effective_policy(directory_path, state=state)
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "directory_path": directory_path,
+                "override": state.chat_attachment_policies[directory_path].model_dump(mode="json"),
+                "effective": effective.model_dump(mode="json"),
+            }
+        )
+
+    async def get_chat_attachment(request: Request) -> FileResponse | JSONResponse:
+        state = repository.read()
+        conversation_id = request.path_params["conversation_id"]
+        attachment_id = request.path_params["attachment_id"]
+        conversation = state.conversations.get(conversation_id)
+        if conversation is None:
+            return JSONResponse({"error": "conversation not found"}, status_code=404)
+        _require_conversation_chat_scope(context.auth, request, state, conversation, write=False)
+        attachment = state.chat_attachments.get(attachment_id)
+        if attachment is None or attachment.conversation_id != conversation_id:
+            return JSONResponse({"error": "attachment not found"}, status_code=404)
+        try:
+            path = chat_attachment_storage.asset_path(attachment.id)
+        except ValueError:
+            return JSONResponse({"error": "attachment not found"}, status_code=404)
+        if not path.is_file():
+            return JSONResponse({"error": "attachment file not found"}, status_code=404)
+        return FileResponse(
+            path,
+            media_type=attachment.mime_type or "application/octet-stream",
+            filename=attachment.filename,
+            content_disposition_type=(
+                "inline"
+                if attachment.mime_type in {"image/png", "image/jpeg", "image/gif", "image/webp"}
+                else "attachment"
+            ),
         )
 
     async def create_agent_voice_session(request: Request) -> JSONResponse:
@@ -1269,7 +1400,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                         else None
                     ),
                     "conversation_message": (
-                        _conversation_message_payload(conversation_message)
+                        _conversation_message_payload(conversation_message, state)
                         if conversation_message is not None
                         else None
                     ),
@@ -1384,7 +1515,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     else None
                 ),
                 "conversation_message": (
-                    _conversation_message_payload(conversation_message)
+                    _conversation_message_payload(conversation_message, state)
                     if conversation_message is not None
                     else None
                 ),
@@ -2312,6 +2443,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["POST"],
             require_privileged=False,
         ),
+        route(
+            "/conversations/{conversation_id}/attachments/{attachment_id}",
+            get_chat_attachment,
+            methods=["GET"],
+        ),
+        route(
+            "/chat/attachment-policy",
+            get_chat_attachment_policy,
+            methods=["GET"],
+        ),
+        route(
+            "/chat/attachment-policy",
+            put_chat_attachment_policy,
+            methods=["PUT"],
+        ),
         route("/agents", register_agent, methods=["POST"]),
         route("/agents/{agent_id}", patch_agent, methods=["PATCH"]),
         route(
@@ -2544,6 +2690,22 @@ def _session_repository_from_context(context: AddonContext) -> Any | None:
     if repository is not None:
         return repository
     return getattr(service, "session_repository", None)
+
+
+def _conversation_agent_directory_path(
+    context: AddonContext,
+    state: TeamState,
+    conversation: Any,
+) -> str:
+    agent = state.agents.get(conversation.agent_id)
+    if agent is None:
+        return "root"
+    repository = _session_repository_from_context(context)
+    get_session = getattr(repository, "get_session", None)
+    if not callable(get_session):
+        return "root"
+    session = get_session(agent.session_id)
+    return normalize_directory_path(getattr(session, "directory_path", None))
 
 
 def _agent_execution_records_by_session(service: Any | None) -> dict[str, Any] | None:
@@ -3744,7 +3906,7 @@ def _conversation_payload(
     }
     if include_messages:
         page = _bounded_conversation_message_page(messages, limit=message_limit)
-        payload.update(_conversation_message_page_fields(page, message_count=len(messages)))
+        payload.update(_conversation_message_page_fields(state, page, message_count=len(messages)))
     return payload
 
 
@@ -3793,13 +3955,14 @@ def _bounded_conversation_message_page(
 
 
 def _conversation_message_page_fields(
+    state: TeamState,
     page: tuple[list[Any], bool],
     *,
     message_count: int,
 ) -> dict[str, Any]:
     messages, has_older = page
     return {
-        "messages": [_conversation_message_payload(message) for message in messages],
+        "messages": [_conversation_message_payload(message, state) for message in messages],
         "messages_limit": DEFAULT_CHAT_MESSAGE_LIMIT,
         "message_count": message_count,
         "has_older": has_older,
@@ -3822,7 +3985,7 @@ def _conversation_message_page_payload(
         limit=limit,
         before_message_id=before_message_id,
     )
-    payload = _conversation_message_page_fields(page, message_count=len(messages))
+    payload = _conversation_message_page_fields(state, page, message_count=len(messages))
     payload["messages_limit"] = limit
     return {
         "revision": state.revision,
@@ -3931,7 +4094,14 @@ async def _state_snapshot_events(
         yield f"event: snapshot\ndata: {serialized}\n\n"
 
 
-def _conversation_message_payload(message: Any) -> dict[str, Any]:
+def _conversation_message_payload(message: Any, state: TeamState | None = None) -> dict[str, Any]:
+    attachments = []
+    if state is not None:
+        attachments = [
+            _chat_attachment_payload(state.chat_attachments[attachment_id])
+            for attachment_id in message.attachment_ids
+            if attachment_id in state.chat_attachments
+        ]
     return {
         "id": message.id,
         "conversation_id": message.conversation_id,
@@ -3943,9 +4113,28 @@ def _conversation_message_payload(message: Any) -> dict[str, Any]:
         "voice_session_id": message.voice_session_id,
         "source_message_id": message.source_message_id,
         "error": message.error,
+        "attachments": attachments,
         "metadata": dict(message.metadata or {}),
         "created_at": message.created_at.isoformat() if message.created_at else None,
         "updated_at": message.updated_at.isoformat() if message.updated_at else None,
+    }
+
+
+def _chat_attachment_payload(attachment: Any) -> dict[str, Any]:
+    return {
+        "id": attachment.id,
+        "message_id": attachment.message_id,
+        "conversation_id": attachment.conversation_id,
+        "filename": attachment.filename,
+        "mime_type": attachment.mime_type,
+        "byte_count": attachment.byte_count,
+        "sha256": attachment.sha256,
+        "sender": attachment.sender,
+        "created_at": attachment.created_at.isoformat() if attachment.created_at else None,
+        "download_url": (
+            f"/api/addons/team-addon/conversations/{attachment.conversation_id}/"
+            f"attachments/{attachment.id}"
+        ),
     }
 
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-21 - Team Chat File Attachments
+
+- Added two-way file and image attachments to the Team Add-on's built-in operator Chat, including
+  multipart uploads, authenticated downloads, inline image rendering, and agent workspace delivery.
+- Added add-on-owned, directory-inherited Team Chat attachment policy with independent direction,
+  type, size, count, and exact agent-send approval controls; Microsoft Teams and core communication
+  file policies remain separate.
+- Added session-owned agent attachment staging and attachment-aware reply/proactive Chat MCP tools,
+  with durable add-on SQLite metadata and private add-on file storage.
+
 ## 2026-07-21 - Grouped Admin Navigation
 
 - Reorganized every Admin Web destination into permanently expanded Overview, Operations,

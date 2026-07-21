@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from uuid import uuid4
 
 from .domain import common as _team_common
@@ -15,6 +15,7 @@ from ..models import (
     PersistentAgent,
     TeamConversation,
     TeamConversationMessage,
+    TeamChatAttachment,
     TeamState,
     agent_has_project_assignment,
 )
@@ -34,6 +35,7 @@ from .domain.stand_down import (
     _active_stand_downs_for_agent,
     _stand_down_error_detail,
 )
+from ..chat_attachments import PreparedChatAttachment
 
 
 def utc_now() -> datetime:
@@ -59,6 +61,10 @@ def _require_agent_chat_dispatch_eligibility(
         raise ValueError(
             f"agent {agent.id} is stood down: {_stand_down_error_detail(active_stand_downs)}"
         )
+
+
+def _attachment_preview(count: int) -> str:
+    return f"Sent {count} attachment{'s' if count != 1 else ''}"
 
 
 class TeamChatService:
@@ -146,13 +152,17 @@ class TeamChatService:
         self,
         *,
         conversation_id: str,
-        body: str,
+        body: str | None,
+        attachments: Sequence[PreparedChatAttachment] = (),
         created_by: str | None = None,
         allow_team_mutations: bool = True,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, TeamConversationMessage]:
         normalized_conversation_id = _required_text(conversation_id, "conversation_id")
-        normalized_body = _required_text(body, "body")
+        normalized_body = _optional_text(body)
+        prepared_attachments = list(attachments)
+        if normalized_body is None and not prepared_attachments:
+            raise ValueError("body or at least one attachment is required")
         normalized_created_by = _optional_text(created_by)
         message_id: str | None = None
 
@@ -185,15 +195,28 @@ class TeamChatService:
                 sender="operator",
                 message_type="text",
                 body=normalized_body,
+                attachment_ids=[attachment.id for attachment in prepared_attachments],
                 status="created",
                 metadata=metadata,
                 created_at=now,
                 updated_at=now,
             )
+            for attachment in prepared_attachments:
+                state.chat_attachments[attachment.id] = TeamChatAttachment(
+                    **attachment.payload(),
+                    message_id=message_id,
+                    conversation_id=conversation.id,
+                    sender="operator",
+                    created_at=now,
+                )
             _touch_conversation(
                 conversation,
                 now=now,
-                preview=_chat_preview(normalized_body),
+                preview=(
+                    _chat_preview(normalized_body)
+                    if normalized_body is not None
+                    else _attachment_preview(len(prepared_attachments))
+                ),
             )
             return state
 

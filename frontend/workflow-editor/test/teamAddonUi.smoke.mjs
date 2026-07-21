@@ -119,6 +119,12 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /team-view-tab-badge/);
   assert.match(script, /chatNotificationSoundStorageKey/);
   assert.match(script, /data-chat-notification-sound/);
+  assert.match(script, /data-chat-attachment-input/);
+  assert.match(script, /pendingChatAttachments/);
+  assert.match(script, /chat\/attachment-policy/);
+  assert.match(script, /renderChatAttachment/);
+  assert.match(markup, /id="chat-attachment-policy-modal"/);
+  assert.match(stylesheet, /\.chat-message-attachment/);
   assert.match(script, /maybePlayChatNotificationSound/);
   assert.match(script, /maybePlayChatCollectionNotificationSound/);
   assert.match(script, /document\.hasFocus/);
@@ -5656,6 +5662,94 @@ test("team add-on Chat send keeps the selected message list anchored during send
     false,
     `expected selected chat message list node to be reused: ${JSON.stringify(samples)}`,
   );
+});
+
+test("team add-on Chat sends selected files as multipart attachments", async (t) => {
+  const initialState = seededLongChatState(4);
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+  let resolveUpload = null;
+  const uploadSeen = new Promise((resolve) => {
+    resolveUpload = resolve;
+  });
+
+  await page.route(
+    "**/api/addons/team-addon/conversations/conversation-alpha-lead/messages",
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      const contentType = route.request().headers()["content-type"] || "";
+      const rawBody = route.request().postDataBuffer()?.toString("utf8") || "";
+      const message = {
+        id: "chatmsg-attachment",
+        conversation_id: "conversation-alpha-lead",
+        sender: "operator",
+        message_type: "text",
+        body: "Please review the attachment.",
+        status: "queued",
+        dispatch_id: "team-chat:chatmsg-attachment",
+        voice_session_id: null,
+        source_message_id: null,
+        error: null,
+        attachments: [
+          {
+            id: "chatatt-attachment",
+            filename: "notes.txt",
+            mime_type: "text/plain",
+            byte_count: 15,
+            sha256: "0".repeat(64),
+            download_url:
+              "/api/addons/team-addon/conversations/conversation-alpha-lead/attachments/chatatt-attachment",
+          },
+        ],
+        metadata: {},
+        created_at: "2026-06-09T03:00:00Z",
+        updated_at: "2026-06-09T03:00:00Z",
+      };
+      initialState.revision += 1;
+      initialState.conversation_messages[message.id] = message;
+      const conversation = initialState.conversations[message.conversation_id];
+      conversation.last_message_preview = message.body;
+      conversation.updated_at = message.updated_at;
+      conversation.last_interaction_at = message.updated_at;
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({
+          revision: initialState.revision,
+          conversation: chatConversationPayload(initialState, conversation, {
+            includeMessages: true,
+            limit: 50,
+          }),
+          message,
+          dispatch: { success: false, queued: true },
+          published_event_ids: [],
+        }),
+      });
+      resolveUpload?.({ contentType, rawBody });
+    },
+  );
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  const fileInput = page.locator('[data-chat-attachment-input="conversation-alpha-lead"]');
+  await fileInput.setInputFiles({
+    name: "notes.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("attachment body"),
+  });
+  await page.getByText("notes.txt · 15 B").waitFor({ state: "visible" });
+  await page.locator('.chat-composer textarea[name="body"]').fill("Please review the attachment.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const upload = await uploadSeen;
+  assert.match(upload.contentType, /^multipart\/form-data; boundary=/);
+  assert.match(upload.rawBody, /name="body"[\s\S]*Please review the attachment\./);
+  assert.match(upload.rawBody, /name="files"; filename="notes.txt"/);
+  assert.match(upload.rawBody, /attachment body/);
+  await page.getByRole("link", { name: /notes\.txt/ }).waitFor({ state: "visible" });
 });
 
 test("team add-on Chat remains usable while privileged operations are locked", async (t) => {
