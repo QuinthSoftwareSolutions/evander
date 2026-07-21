@@ -4,6 +4,7 @@ import base64
 import json
 from datetime import UTC, datetime
 from email import message_from_bytes, policy
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -42,7 +43,11 @@ def test_gateway_config_supports_provider_mailbox_entries() -> None:
                     "mailbox_id": "exec-graph",
                     "provider": "graph",
                     "account_identifier": "leader@example.com",
-                    "auth_secret_refs": {"access_token": "GRAPH_ACCESS_TOKEN"},
+                    "auth_secret_refs": {
+                        "tenant_id": "GRAPH_TENANT_ID",
+                        "client_id": "GRAPH_CLIENT_ID",
+                        "client_secret": "GRAPH_CLIENT_SECRET",
+                    },
                     "folder_mapping": {"inbox": "Inbox", "drafts": "Drafts"},
                 },
             ]
@@ -52,6 +57,11 @@ def test_gateway_config_supports_provider_mailbox_entries() -> None:
     assert config.email_mailboxes[0].mailbox_id == "ops-gmail"
     assert config.email_mailboxes[0].provider == "gmail"
     assert config.email_mailboxes[1].provider == "graph"
+    assert config.email_mailboxes[1].auth_secret_refs == {
+        "tenant_id": "GRAPH_TENANT_ID",
+        "client_id": "GRAPH_CLIENT_ID",
+        "client_secret": "GRAPH_CLIENT_SECRET",
+    }
 
 
 def test_gmail_summary_sets_gmail_thread_metadata() -> None:
@@ -245,6 +255,161 @@ def test_graph_list_messages_translates_filters_and_preserves_next_link(
 
     assert [message.message_id for message in page.messages] == ["graph-msg-1"]
     assert page.next_cursor == "https://graph.test/v1.0/next-page"
+
+
+def test_graph_client_credentials_acquire_and_cache_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("GRAPH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GRAPH_CLIENT_SECRET", "client-secret")
+    calls = {"token": 0, "graph": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "login.test":
+            calls["token"] += 1
+            assert request.url.path == "/tenant-id/oauth2/v2.0/token"
+            form = parse_qs(request.content.decode("utf-8"))
+            assert form == {
+                "client_id": ["client-id"],
+                "client_secret": ["client-secret"],
+                "scope": ["https://graph.microsoft.com/.default"],
+                "grant_type": ["client_credentials"],
+            }
+            return httpx.Response(
+                200,
+                json={"access_token": "acquired-token", "expires_in": 3600},
+                request=request,
+            )
+        calls["graph"] += 1
+        assert request.headers["Authorization"] == "Bearer acquired-token"
+        return httpx.Response(200, json={"value": []}, request=request)
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={
+            "tenant_id": "GRAPH_TENANT_ID",
+            "client_id": "GRAPH_CLIENT_ID",
+            "client_secret": "GRAPH_CLIENT_SECRET",
+        },
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+        oauth_authority_url="https://login.test",
+    )
+
+    for _ in range(2):
+        provider.list_messages(
+            mailbox_id="exec-graph",
+            folder="inbox",
+            query=EmailMessageSearchQuery(),
+            cursor=None,
+            limit=10,
+        )
+
+    assert calls == {"token": 1, "graph": 2}
+
+
+def test_graph_client_credentials_refresh_expired_cached_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("GRAPH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GRAPH_CLIENT_SECRET", "client-secret")
+    issued_tokens: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "login.test":
+            token = f"acquired-token-{len(issued_tokens) + 1}"
+            issued_tokens.append(token)
+            return httpx.Response(
+                200,
+                json={"access_token": token, "expires_in": 3600},
+                request=request,
+            )
+        assert request.headers["Authorization"] == f"Bearer {issued_tokens[-1]}"
+        return httpx.Response(200, json={"value": []}, request=request)
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={
+            "tenant_id": "GRAPH_TENANT_ID",
+            "client_id": "GRAPH_CLIENT_ID",
+            "client_secret": "GRAPH_CLIENT_SECRET",
+        },
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+        oauth_authority_url="https://login.test",
+    )
+
+    provider.list_messages(
+        mailbox_id="exec-graph",
+        folder="inbox",
+        query=EmailMessageSearchQuery(),
+        cursor=None,
+        limit=10,
+    )
+    provider._cached_access_token_expires_at = datetime.now(UTC)
+    provider.list_messages(
+        mailbox_id="exec-graph",
+        folder="inbox",
+        query=EmailMessageSearchQuery(),
+        cursor=None,
+        limit=10,
+    )
+
+    assert issued_tokens == ["acquired-token-1", "acquired-token-2"]
+
+
+def test_graph_client_credentials_token_failure_does_not_expose_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("GRAPH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GRAPH_CLIENT_SECRET", "do-not-expose-this-secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "invalid_client"}, request=request)
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={
+            "tenant_id": "GRAPH_TENANT_ID",
+            "client_id": "GRAPH_CLIENT_ID",
+            "client_secret": "GRAPH_CLIENT_SECRET",
+        },
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+        oauth_authority_url="https://login.test",
+    )
+
+    with pytest.raises(RuntimeError, match="token acquisition failed") as exc_info:
+        provider.list_messages(
+            mailbox_id="exec-graph",
+            folder="inbox",
+            query=EmailMessageSearchQuery(),
+            cursor=None,
+            limit=10,
+        )
+
+    assert "do-not-expose-this-secret" not in str(exc_info.value)
 
 
 def test_graph_list_messages_orders_supported_structured_filter(

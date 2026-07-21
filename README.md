@@ -1276,8 +1276,9 @@ helper fails instead of silently falling back to the branch tip.
 ## Email Provider Configuration (Host-Side Secrets Only)
 
 - `email_mailboxes` supports multiple mailbox entries with explicit provider and auth env-var wiring.
-- Keep mailbox OAuth tokens in host-only environment variables (for example:
-  `GMAIL_OPS_ACCESS_TOKEN`, `GRAPH_EXEC_ACCESS_TOKEN`, `GRAPH_FINANCE_ACCESS_TOKEN`).
+- Keep mailbox OAuth credentials in host-only environment variables. Gmail and legacy Graph
+  configurations can reference a static access token; Graph should normally reference tenant ID,
+  client ID, and client secret env vars so Evander can acquire and renew access tokens itself.
 - Session manifests should allow explicit mailbox/folder scope, but **never include provider
   access tokens**.
 - Token values are never injected into guests, cloud-init payloads, or session manifests.
@@ -1304,13 +1305,17 @@ email_mailboxes:
     provider: "graph"
     address: "leader@example.com"
     auth_env_var_names:
-      access_token: "GRAPH_EXEC_ACCESS_TOKEN"
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_EXEC_CLIENT_ID"
+      client_secret: "GRAPH_EXEC_CLIENT_SECRET"
     folder_allowlist_defaults: ["inbox", "drafts"]
   - mailbox_id: "finance-graph"
     provider: "graph"
     address: "finance@example.com"
     auth_env_var_names:
-      access_token: "GRAPH_FINANCE_ACCESS_TOKEN"
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_FINANCE_CLIENT_ID"
+      client_secret: "GRAPH_FINANCE_CLIENT_SECRET"
     folder_allowlist_defaults: ["inbox", "drafts"]
 ```
 

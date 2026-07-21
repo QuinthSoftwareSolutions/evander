@@ -28,6 +28,7 @@ import {
   emailMailboxFoldersAfterProviderChange,
   emptyEmailMailboxDraftEntry,
   parseEmailMailboxDraftValue,
+  type EmailMailboxAuthMode,
   type EmailMailboxDraftEntry,
   type EmailMailboxFolderDraft,
   type EmailMailboxProvider,
@@ -2092,7 +2093,7 @@ export function ConfigurationScreen() {
       <div className="email-mailboxes-editor contacts-editor">
         <div className="contacts-editor-header">
           <p className="muted-text">
-            Define the mailbox identity and host secret reference once. Access tokens stay in the host environment and are never entered here.
+            Define the mailbox identity and host credential references once. Microsoft Graph client credentials are exchanged for short-lived access tokens automatically; credential values stay in the host environment.
           </p>
           <div className="inline-actions contacts-editor-actions">
             <button
@@ -2170,6 +2171,11 @@ export function ConfigurationScreen() {
                           updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
                             ...mailbox,
                             provider,
+                            authMode: provider === "graph"
+                              ? mailbox.provider === "graph"
+                                ? mailbox.authMode
+                                : "client_credentials"
+                              : "access_token",
                             folders: emailMailboxFoldersAfterProviderChange(
                               mailbox.provider,
                               provider,
@@ -2204,20 +2210,89 @@ export function ConfigurationScreen() {
                         placeholder={accountPlaceholder}
                       />
                     </label>
-                    <label className="field-stack">
-                      <span>Host access-token env var</span>
-                      <input
-                        value={mailbox.accessTokenEnv}
-                        onChange={(event) =>
-                          updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
-                            ...mailbox,
-                            accessTokenEnv: event.target.value,
-                          })
-                        }
-                        disabled={disabled}
-                        placeholder={mailbox.provider === "graph" ? "GRAPH_M365_ACCESS_TOKEN" : "GMAIL_ACCESS_TOKEN"}
-                      />
-                    </label>
+                    {mailbox.provider === "graph" ? (
+                      <label className="field-stack">
+                        <span>Authentication</span>
+                        <select
+                          value={mailbox.authMode}
+                          onChange={(event) =>
+                            updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                              ...mailbox,
+                              authMode: event.target.value as EmailMailboxAuthMode,
+                            })
+                          }
+                          disabled={disabled}
+                        >
+                          <option value="client_credentials">OAuth client credentials (automatic)</option>
+                          <option value="access_token">Static access token (legacy)</option>
+                        </select>
+                      </label>
+                    ) : null}
+                    {mailbox.provider === "graph" && mailbox.authMode === "client_credentials" ? (
+                      <>
+                        <label className="field-stack">
+                          <span>Tenant ID env var</span>
+                          <input
+                            value={mailbox.tenantIdEnv}
+                            onChange={(event) =>
+                              updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                                ...mailbox,
+                                tenantIdEnv: event.target.value,
+                              })
+                            }
+                            disabled={disabled}
+                            placeholder="GRAPH_M365_TENANT_ID"
+                          />
+                        </label>
+                        <label className="field-stack">
+                          <span>Client ID env var</span>
+                          <input
+                            value={mailbox.clientIdEnv}
+                            onChange={(event) =>
+                              updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                                ...mailbox,
+                                clientIdEnv: event.target.value,
+                              })
+                            }
+                            disabled={disabled}
+                            placeholder="GRAPH_M365_CLIENT_ID"
+                          />
+                        </label>
+                        <label className="field-stack">
+                          <span>Client secret env var</span>
+                          <input
+                            value={mailbox.clientSecretEnv}
+                            onChange={(event) =>
+                              updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                                ...mailbox,
+                                clientSecretEnv: event.target.value,
+                              })
+                            }
+                            disabled={disabled}
+                            placeholder="GRAPH_M365_CLIENT_SECRET"
+                          />
+                        </label>
+                      </>
+                    ) : mailbox.provider !== "json_store" ? (
+                      <label className="field-stack">
+                        <span>
+                          {mailbox.provider === "graph"
+                            ? "Host access-token env var (legacy)"
+                            : "Host access-token env var"}
+                        </span>
+                        <input
+                          value={mailbox.accessTokenEnv}
+                          onChange={(event) =>
+                            updateEmailMailboxEntry(field, fieldState, mailboxIndex, {
+                              ...mailbox,
+                              accessTokenEnv: event.target.value,
+                            })
+                          }
+                          disabled={disabled}
+                          placeholder={mailbox.provider === "graph" ? "GRAPH_M365_ACCESS_TOKEN" : "GMAIL_ACCESS_TOKEN"}
+                        />
+                      </label>
+                    ) : null}
                   </div>
                   <div className="contact-subsection">
                     <div className="contact-subsection-header">

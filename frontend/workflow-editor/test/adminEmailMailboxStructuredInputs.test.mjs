@@ -29,6 +29,10 @@ test("email mailboxes use a structured configuration editor", () => {
   assert.match(configuration, /renderEmailMailboxesEditor/);
   assert.match(configuration, /Add mailbox/);
   assert.match(configuration, /Microsoft Graph \(Office 365\)/);
+  assert.match(configuration, /OAuth client credentials \(automatic\)/);
+  assert.match(configuration, /Tenant ID env var/);
+  assert.match(configuration, /Client ID env var/);
+  assert.match(configuration, /Client secret env var/);
   assert.match(configuration, /Host access-token env var/);
   assert.match(configuration, /Map policy folder names to provider folder names/);
   assert.match(configuration, /Add folder/);
@@ -61,7 +65,11 @@ test("email mailbox drafts preserve Graph aliases and produce the canonical conf
       mailboxId: "m365-ops",
       provider: "graph",
       accountIdentifier: "ops@example.com",
+      authMode: "access_token",
       accessTokenEnv: "GRAPH_M365_ACCESS_TOKEN",
+      tenantIdEnv: "",
+      clientIdEnv: "",
+      clientSecretEnv: "",
       folders: [
         { folder: "inbox", providerFolder: "Inbox", allowedByDefault: true },
         { folder: "drafts", providerFolder: "Drafts", allowedByDefault: false },
@@ -87,7 +95,11 @@ test("email mailbox draft values round-trip without losing camel-case fields", (
       mailboxId: "gmail-support",
       provider: "gmail",
       accountIdentifier: "support@example.com",
+      authMode: "access_token",
       accessTokenEnv: "GMAIL_SUPPORT_ACCESS_TOKEN",
+      tenantIdEnv: "",
+      clientIdEnv: "",
+      clientSecretEnv: "",
       folders: [
         { folder: "inbox", providerFolder: "INBOX", allowedByDefault: false },
         { folder: "drafts", providerFolder: "DRAFT", allowedByDefault: true },
@@ -98,6 +110,33 @@ test("email mailbox draft values round-trip without losing camel-case fields", (
   assert.deepEqual(parseEmailMailboxDraftValue(emailMailboxDraftValue(entries)), {
     entries,
     error: null,
+  });
+});
+
+test("Graph mailbox client credentials round-trip to host environment references", () => {
+  const entries = emailMailboxEntriesFromConfig([
+    {
+      mailbox_id: "m365-accounting",
+      provider: "graph",
+      account_identifier: "accounting@example.com",
+      auth_secret_refs: {
+        tenant_id: "GRAPH_M365_TENANT_ID",
+        client_id: "GRAPH_M365_CLIENT_ID",
+        client_secret: "GRAPH_M365_CLIENT_SECRET",
+      },
+      folder_mapping: { inbox: "Inbox" },
+      folder_allowlist_defaults: ["inbox"],
+    },
+  ]);
+
+  assert.equal(entries[0].authMode, "client_credentials");
+  assert.equal(entries[0].tenantIdEnv, "GRAPH_M365_TENANT_ID");
+  assert.equal(entries[0].clientIdEnv, "GRAPH_M365_CLIENT_ID");
+  assert.equal(entries[0].clientSecretEnv, "GRAPH_M365_CLIENT_SECRET");
+  assert.deepEqual(emailMailboxDraftEntriesToConfig(entries)[0].auth_secret_refs, {
+    tenant_id: "GRAPH_M365_TENANT_ID",
+    client_id: "GRAPH_M365_CLIENT_ID",
+    client_secret: "GRAPH_M365_CLIENT_SECRET",
   });
 });
 

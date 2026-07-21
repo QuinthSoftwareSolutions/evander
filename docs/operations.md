@@ -1573,12 +1573,13 @@ Audit/result behavior:
   - `mailbox_id`
   - `provider` (`gmail` or `graph`)
   - `account` (Gmail `me`) or `address` (Graph mailbox address)
-  - `auth_env_var_names` (env vars that hold OAuth access tokens)
+  - `auth_env_var_names` (env vars that hold a static OAuth access token, or Graph tenant ID,
+    client ID, and client secret)
   - `folder_allowlist_defaults` (typically `inbox` and `drafts`)
 - Define `email_folder_allowlist_by_mailbox` for each mailbox so session policy is explicit.
-- Keep OAuth access tokens host-only (for example:
-  `GMAIL_OPS_ACCESS_TOKEN`, `GRAPH_EXEC_ACCESS_TOKEN`, `GRAPH_FINANCE_ACCESS_TOKEN`) and never
-  place those token values in guest images, cloud-init, or session manifests.
+- Keep OAuth credentials host-only and never place their values in guest images, cloud-init, or
+  session manifests. Prefer Graph client credentials so the host renews short-lived access tokens
+  automatically; static access-token references remain available for compatibility.
 - Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
   to allow `email_send` and enforce approval through MCP approval policy where required.
 
@@ -2341,16 +2342,23 @@ The helper:
 
 ### Microsoft Graph OAuth/token setup
 
-1. Register an application in Microsoft Entra ID and grant Microsoft Graph Mail permissions.
-2. Obtain an OAuth access token for the target mailbox.
-3. Export the token only on the host:
+1. Register a confidential application in Microsoft Entra ID and grant the least-privileged
+   Microsoft Graph application permissions required by the mailbox workflow (for example,
+   `Mail.Read` for inbox processing), including administrator consent.
+2. Scope application access to the intended mailbox or mailboxes in Exchange Online.
+3. Export the application identity and credential only on the host:
 
 ```bash
-export GRAPH_EXEC_ACCESS_TOKEN=...
-export GRAPH_FINANCE_ACCESS_TOKEN=...
+export GRAPH_TENANT_ID=...
+export GRAPH_EXEC_CLIENT_ID=...
+export GRAPH_EXEC_CLIENT_SECRET=...
+export GRAPH_FINANCE_CLIENT_ID=...
+export GRAPH_FINANCE_CLIENT_SECRET=...
 ```
 
-4. Reference that env var in mailbox config:
+4. Reference the env vars in mailbox config. Evander lazily exchanges the client credentials at
+   the Microsoft identity platform token endpoint, caches the returned Graph access token, and
+   renews it shortly before expiry:
 
 ```yaml
 email_folder_allowlist_by_mailbox:
@@ -2362,15 +2370,23 @@ email_mailboxes:
     provider: "graph"
     address: "leader@example.com"
     auth_env_var_names:
-      access_token: "GRAPH_EXEC_ACCESS_TOKEN"
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_EXEC_CLIENT_ID"
+      client_secret: "GRAPH_EXEC_CLIENT_SECRET"
     folder_allowlist_defaults: ["inbox", "drafts"]
   - mailbox_id: "finance-graph"
     provider: "graph"
     address: "finance@example.com"
     auth_env_var_names:
-      access_token: "GRAPH_FINANCE_ACCESS_TOKEN"
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_FINANCE_CLIENT_ID"
+      client_secret: "GRAPH_FINANCE_CLIENT_SECRET"
     folder_allowlist_defaults: ["inbox", "drafts"]
 ```
+
+For compatibility, a Graph mailbox can instead reference `auth_secret_refs.access_token`, but the
+operator must then replace that short-lived token whenever it expires. Do not put a client secret
+in an `access_token` environment variable; client secrets must be exchanged at the token endpoint.
 
 ### Multi-mailbox session allowlist example
 

@@ -12,6 +12,15 @@
   job containers receive no account file, environment token, command-line token, or direct public
   egress grant.
 
+## 2026-07-21 - Automatic Microsoft Graph Mailbox Tokens
+
+- Added host-side Microsoft Entra client-credentials authentication for Graph mailboxes, with
+  thread-safe access-token caching and automatic renewal shortly before token expiry.
+- Added structured Admin Web inputs for Graph tenant ID, client ID, and client-secret environment
+  references while retaining static access-token authentication as an explicit legacy mode.
+- Kept application credentials and acquired tokens out of guests and session manifests, validated
+  incomplete host credential configuration at runtime startup, and redacted secrets from failures.
+
 ## 2026-07-21 - Structured Email Policy Configuration
 
 - Replaced the email-target auth-profile text field with a sending-mailbox selector populated from

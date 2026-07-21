@@ -36,7 +36,8 @@ enabling send flows or touching non-test destinations.
 - Host env contains live credentials:
   - `DISCORD_BOT_TOKEN`
   - `GMAIL_OPS_ACCESS_TOKEN` or equivalent Gmail test token env var
-  - `GRAPH_EXEC_ACCESS_TOKEN` or equivalent Graph test token env var
+  - `GRAPH_TENANT_ID`, `GRAPH_EXEC_CLIENT_ID`, and `GRAPH_EXEC_CLIENT_SECRET` (preferred), or an
+    equivalent static Graph test token env var for compatibility testing
 - Dedicated test destinations already exist:
   - one Discord test channel
   - one Gmail test mailbox
@@ -95,7 +96,9 @@ email_mailboxes:
     provider: "graph"
     address: "leader@example.com"
     auth_env_var_names:
-      access_token: "GRAPH_EXEC_ACCESS_TOKEN"
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_EXEC_CLIENT_ID"
+      client_secret: "GRAPH_EXEC_CLIENT_SECRET"
     folder_allowlist_defaults: ["inbox", "drafts"]
     folder_mapping:
       inbox: "Inbox"

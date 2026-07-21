@@ -197,7 +197,8 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "email_mailboxes": (
         "JSON array of mailbox definitions. Each entry supports mailbox_id, provider "
         "(json_store/gmail/graph), account or address, auth_env_var_names/auth_secret_refs, "
-        "folder_mapping, and folder_allowlist_defaults."
+        "folder_mapping, and folder_allowlist_defaults. Graph auth can reference either a legacy "
+        "access token or tenant_id, client_id, and client_secret env vars for automatic renewal."
     ),
     "email_provider_timeout_seconds": (
         "HTTP timeout in seconds for provider-backed email and PR reply clients."

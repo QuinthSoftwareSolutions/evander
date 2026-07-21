@@ -907,3 +907,70 @@ def test_build_runtime_accepts_access_token_env_var_for_non_json_mailboxes(
     runtime = build_runtime(config)
 
     assert runtime.email_service is not None
+
+
+def test_build_runtime_accepts_graph_oauth_client_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("GRAPH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GRAPH_CLIENT_SECRET", "client-secret")
+    config = make_config(
+        tmp_path,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="ops",
+                provider="graph",
+                auth_secret_refs={
+                    "tenant_id": "GRAPH_TENANT_ID",
+                    "client_id": "GRAPH_CLIENT_ID",
+                    "client_secret": "GRAPH_CLIENT_SECRET",
+                },
+            )
+        ],
+    )
+
+    runtime = build_runtime(config)
+
+    assert runtime.email_service is not None
+
+
+def test_build_runtime_rejects_incomplete_graph_oauth_client_credentials(tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="ops",
+                provider="graph",
+                auth_secret_refs={"client_secret": "GRAPH_CLIENT_SECRET"},
+            )
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="complete OAuth client credential refs"):
+        build_runtime(config)
+
+
+def test_build_runtime_rejects_empty_graph_oauth_client_credential_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("GRAPH_CLIENT_ID", "client-id")
+    monkeypatch.delenv("GRAPH_CLIENT_SECRET", raising=False)
+    config = make_config(
+        tmp_path,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="ops",
+                provider="graph",
+                auth_secret_refs={
+                    "tenant_id": "GRAPH_TENANT_ID",
+                    "client_id": "GRAPH_CLIENT_ID",
+                    "client_secret": "GRAPH_CLIENT_SECRET",
+                },
+            )
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="GRAPH_CLIENT_SECRET"):
+        build_runtime(config)

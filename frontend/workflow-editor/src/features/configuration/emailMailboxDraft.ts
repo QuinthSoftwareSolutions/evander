@@ -1,6 +1,7 @@
 export const EMAIL_MAILBOX_PROVIDERS = ["json_store", "gmail", "graph"] as const;
 
 export type EmailMailboxProvider = (typeof EMAIL_MAILBOX_PROVIDERS)[number];
+export type EmailMailboxAuthMode = "access_token" | "client_credentials";
 
 export type EmailMailboxFolderDraft = {
   folder: string;
@@ -12,7 +13,11 @@ export type EmailMailboxDraftEntry = {
   mailboxId: string;
   provider: EmailMailboxProvider;
   accountIdentifier: string;
+  authMode: EmailMailboxAuthMode;
   accessTokenEnv: string;
+  tenantIdEnv: string;
+  clientIdEnv: string;
+  clientSecretEnv: string;
   folders: EmailMailboxFolderDraft[];
 };
 
@@ -142,13 +147,28 @@ export function emailMailboxEntriesFromConfig(value: unknown): EmailMailboxDraft
       : isRecord(record.auth_env_var_names)
         ? record.auth_env_var_names
         : {};
+    const tenantIdEnv = String(record.tenantIdEnv ?? authRefs.tenant_id ?? "");
+    const clientIdEnv = String(record.clientIdEnv ?? authRefs.client_id ?? "");
+    const clientSecretEnv = String(record.clientSecretEnv ?? authRefs.client_secret ?? "");
+    const configuredAuthMode = record.authMode === "client_credentials"
+      ? "client_credentials"
+      : record.authMode === "access_token"
+        ? "access_token"
+        : null;
     return {
       mailboxId: String(record.mailboxId ?? record.mailbox_id ?? ""),
       provider,
       accountIdentifier: typeof record.accountIdentifier === "string"
         ? record.accountIdentifier
         : accountIdentifier(record) || (provider === "json_store" ? "default" : ""),
+      authMode: configuredAuthMode
+        ?? (provider === "graph" && (tenantIdEnv || clientIdEnv || clientSecretEnv)
+          ? "client_credentials"
+          : "access_token"),
       accessTokenEnv: String(record.accessTokenEnv ?? authRefs.access_token ?? ""),
+      tenantIdEnv,
+      clientIdEnv,
+      clientSecretEnv,
       folders: folderDraftsFromValue(record, provider),
     };
   });
@@ -183,7 +203,11 @@ export function emptyEmailMailboxDraftEntry(): EmailMailboxDraftEntry {
     mailboxId: "",
     provider: "graph",
     accountIdentifier: "",
+    authMode: "client_credentials",
     accessTokenEnv: "",
+    tenantIdEnv: "",
+    clientIdEnv: "",
+    clientSecretEnv: "",
     folders: defaultEmailMailboxFolders("graph"),
   };
 }
@@ -205,9 +229,29 @@ export function emailMailboxDraftEntriesToConfig(entries: EmailMailboxDraftEntry
     if (!account) {
       throw new Error(`Mailbox ${mailboxId} account or address is required.`);
     }
-    const accessTokenEnv = entry.accessTokenEnv.trim();
-    if (entry.provider !== "json_store" && !accessTokenEnv) {
+    const accessTokenEnv = String(entry.accessTokenEnv ?? "").trim();
+    const tenantIdEnv = String(entry.tenantIdEnv ?? "").trim();
+    const clientIdEnv = String(entry.clientIdEnv ?? "").trim();
+    const clientSecretEnv = String(entry.clientSecretEnv ?? "").trim();
+    const authMode = entry.provider === "graph"
+      ? entry.authMode ?? (tenantIdEnv || clientIdEnv || clientSecretEnv
+        ? "client_credentials"
+        : "access_token")
+      : "access_token";
+    if (entry.provider !== "json_store" && authMode === "access_token" && !accessTokenEnv) {
       throw new Error(`Mailbox ${mailboxId} requires a host access-token environment variable.`);
+    }
+    if (entry.provider === "graph" && authMode === "client_credentials") {
+      const missing = [
+        ["tenant ID", tenantIdEnv],
+        ["client ID", clientIdEnv],
+        ["client secret", clientSecretEnv],
+      ].filter(([, value]) => !value).map(([name]) => name);
+      if (missing.length) {
+        throw new Error(
+          `Mailbox ${mailboxId} requires host environment variables for ${missing.join(", ")}.`,
+        );
+      }
     }
 
     const folderMapping: Record<string, string> = {};
@@ -232,7 +276,17 @@ export function emailMailboxDraftEntriesToConfig(entries: EmailMailboxDraftEntry
       mailbox_id: mailboxId,
       provider: entry.provider,
       account_identifier: account,
-      ...(accessTokenEnv ? { auth_secret_refs: { access_token: accessTokenEnv } } : {}),
+      ...(entry.provider === "graph" && authMode === "client_credentials"
+        ? {
+            auth_secret_refs: {
+              tenant_id: tenantIdEnv,
+              client_id: clientIdEnv,
+              client_secret: clientSecretEnv,
+            },
+          }
+        : accessTokenEnv
+          ? { auth_secret_refs: { access_token: accessTokenEnv } }
+          : {}),
       ...(Object.keys(folderMapping).length ? { folder_mapping: folderMapping } : {}),
       folder_allowlist_defaults: allowedFolders,
     };
