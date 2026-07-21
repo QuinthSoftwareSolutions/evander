@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-21 - Concurrency And Lifecycle Review Hardening
+
+- Prevented active Bokio supplier-invoice and prepared-action executions from being reclaimed by
+  confirmation alone; interrupted executions now require both operator reconciliation and proof
+  that the recorded owner process has exited.
+- Hardened Codex subscription completion and authentication startup so hostile marker directories
+  cannot block daemon recovery and failed app-server initialization always tears down its child.
+- Preserved legacy Teams channel, chat, and user grants during session-policy conversion, and kept
+  concurrent Team Chat attachment rollback from deleting files already committed by another send.
+
 ## 2026-07-21 - Team Chat File Attachments
 
 - Added two-way file and image attachments to the Team Add-on's built-in operator Chat, including

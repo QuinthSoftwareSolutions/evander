@@ -388,6 +388,8 @@ export type AgentSessionPolicy = {
   discord_channels: string[];
   discord_channel_allowlist: string[];
   teams_channel_allowlist: string[];
+  teams_chat_allowlist: string[];
+  teams_user_allowlist: string[];
   metadata: Record<string, unknown>;
   email_mailboxes: string[];
   email_folders: string[];

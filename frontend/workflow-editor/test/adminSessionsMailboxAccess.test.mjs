@@ -40,3 +40,19 @@ test("sessions empty mailbox state opens configuration for the session directory
   assert.match(mailboxEditor, />\s*Configure mailbox access\s*<\/button>/);
   assert.match(mailboxEditor, /onClick=\{openMailboxConfiguration\}/);
 });
+
+test("legacy session conversion preserves every Teams grant kind", () => {
+  const conversion = sourceBetween(
+    "function convertLegacyCommunicationPolicy() {",
+    "function updateApprovalNotificationTargets(",
+  );
+
+  for (const field of [
+    "discord_channel_allowlist",
+    "teams_channel_allowlist",
+    "teams_chat_allowlist",
+    "teams_user_allowlist",
+  ]) {
+    assert.match(conversion, new RegExp(`selectedSession\\.${field}`));
+  }
+});

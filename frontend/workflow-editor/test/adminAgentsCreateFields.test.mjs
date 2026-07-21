@@ -205,6 +205,25 @@ test("create modal clears directory-scoped grants when the selected directory ch
   );
 });
 
+test("legacy agent conversion preserves every Teams grant kind", () => {
+  const conversion = sourceBetweenIn(
+    agentsPage,
+    "function convertLegacyAgentCommunicationPolicy() {",
+    "function openPromptForm() {",
+  );
+
+  for (const field of [
+    "discord_channel_allowlist",
+    "teams_channel_allowlist",
+    "teams_chat_allowlist",
+    "teams_user_allowlist",
+  ]) {
+    assert.match(conversion, new RegExp(`selectedAgentPolicy\\.${field}`));
+  }
+  assert.match(agentsPage, /teams_chat_allowlist: hostStringList\(rawPolicy, "teams_chat_allowlist"\)/);
+  assert.match(agentsPage, /teams_user_allowlist: hostStringList\(rawPolicy, "teams_user_allowlist"\)/);
+});
+
 test("create modal always posts the selected page directory", () => {
   assert.match(agentCreateDialog, /directoryPath: string;/);
   assert.doesNotMatch(agentCreateShared, /createForm\.directoryPath/);

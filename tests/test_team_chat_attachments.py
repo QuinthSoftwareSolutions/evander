@@ -8,6 +8,7 @@ from evander_team_addon.chat_attachments import (
     TeamChatAttachmentPolicyService,
     TeamChatAttachmentStorage,
 )
+from evander_team_addon.mcp import _delete_uncommitted_team_chat_attachments
 from evander_team_addon.models import AgentRuntime
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
@@ -122,3 +123,42 @@ def test_agent_chat_reply_persists_staged_attachment_with_message(tmp_path) -> N
     assert attachment.message_id == reply.id
     assert attachment.created_by_session_id == "session-manager"
     assert TeamStateRepository(tmp_path).read().chat_attachments[attachment.id].sha256
+
+
+def test_failed_send_cleanup_preserves_attachment_claimed_by_concurrent_message(tmp_path) -> None:
+    repo, conversation, source_message = _repo_with_chat(tmp_path)
+    storage = TeamChatAttachmentStorage(tmp_path)
+    committed_staged = storage.stage_agent_file(
+        session_id="session-manager",
+        source_path="/home/agent/committed.txt",
+        content=b"committed",
+        filename="committed.txt",
+        mime_type="text/plain",
+    )
+    uncommitted_staged = storage.stage_agent_file(
+        session_id="session-manager",
+        source_path="/home/agent/uncommitted.txt",
+        content=b"uncommitted",
+        filename="uncommitted.txt",
+        mime_type="text/plain",
+    )
+    committed = storage.promote_staged([committed_staged.id], session_id="session-manager")
+    uncommitted = storage.promote_staged([uncommitted_staged.id], session_id="session-manager")
+    TeamChatCommandService(repo).reply_to_chat_command(
+        session_id="session-manager",
+        conversation_id=conversation.id,
+        message_id=source_message.id,
+        body="Committed first.",
+        request_id="winning-send",
+        attachments=committed,
+        source_attachment_ids=[committed_staged.id],
+    )
+
+    _delete_uncommitted_team_chat_attachments(
+        repository=repo,
+        storage=storage,
+        attachments=[*committed, *uncommitted],
+    )
+
+    assert storage.asset_path(committed[0].id).read_bytes() == b"committed"
+    assert not storage.asset_path(uncommitted[0].id).exists()

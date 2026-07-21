@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 import pytest
 
 from evander.codex_auth import CodexAuthMode, CodexTurnSpec
+from evander.worker.codex_app_server import CodexAppServerError, CodexAppServerProcess
 from evander.worker.codex_auth_broker import CodexExternalAuthTokens
 from evander.worker.codex_egress_proxy import RestrictedCodexEgressProxy, _tunnel
 from evander.worker.codex_subscription import (
@@ -172,6 +174,51 @@ def test_completion_marker_does_not_follow_agent_symlink(tmp_path: Path) -> None
     assert victim.read_text(encoding="utf-8") == "keep-me"
     assert not marker.is_symlink()
     assert marker.read_text(encoding="utf-8") == "0"
+
+
+def test_completion_marker_replaces_nonempty_agent_directory(tmp_path: Path) -> None:
+    marker = tmp_path / "turn.exit"
+    marker.mkdir()
+    (marker / "blocker").write_text("agent-created", encoding="utf-8")
+
+    write_completion_marker_no_follow(marker, 1)
+
+    assert marker.is_file()
+    assert marker.read_text(encoding="utf-8") == "1"
+    assert list(tmp_path.glob(".turn.exit.stale-*")) == []
+
+
+@pytest.mark.parametrize(
+    "server_script",
+    [
+        (
+            "import json, sys, time\n"
+            "request = json.loads(sys.stdin.readline())\n"
+            "print(json.dumps({'id': request['id'], 'error': {'message': 'rejected'}}), "
+            "flush=True)\n"
+            "time.sleep(30)\n"
+        ),
+        "import sys, time\nsys.stdin.readline()\ntime.sleep(30)\n",
+    ],
+    ids=["initialize-error", "initialize-timeout"],
+)
+def test_app_server_start_tears_down_process_when_initialization_fails(
+    server_script: str,
+) -> None:
+    process = CodexAppServerProcess(
+        (sys.executable, "-u", "-c", server_script),
+        request_timeout_seconds=0.1,
+    )
+    try:
+        with pytest.raises(CodexAppServerError, match="initialize"):
+            process.start()
+
+        child = process._process  # noqa: SLF001 - assert the owned child was actually reaped.
+        assert child is not None
+        assert child.poll() is not None
+        assert process.running is False
+    finally:
+        process.close()
 
 
 def test_subscription_runner_fails_when_app_server_exits_before_completion(

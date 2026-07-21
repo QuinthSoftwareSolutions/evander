@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import stat
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from evander.codex_auth import CodexTurnSpec
 
@@ -309,23 +311,54 @@ def write_completion_marker_no_follow(path: Path, exit_code: int) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     last_error: OSError | None = None
-    for _attempt in range(3):
-        try:
-            descriptor = os.open(marker, flags, 0o600)
-        except FileExistsError as exc:
-            last_error = exc
-            # Removing a directory entry is safe for symlinks, hardlinks, and special
-            # files. O_EXCL then guarantees that the descriptor is for our new inode.
-            marker.unlink(missing_ok=True)
-            continue
-        try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise OSError("completion marker is not a regular file")
-            payload = str(int(exit_code)).encode("ascii")
-            if os.write(descriptor, payload) != len(payload):
-                raise OSError("completion marker write was incomplete")
-            os.fsync(descriptor)
-            return
-        finally:
-            os.close(descriptor)
-    raise last_error or OSError("could not create completion marker without following links")
+    displaced_entries: list[Path] = []
+    try:
+        for _attempt in range(3):
+            try:
+                descriptor = os.open(marker, flags, 0o600)
+            except FileExistsError as exc:
+                last_error = exc
+                # Atomically move any agent-created entry aside. Unlike unlink(), rename
+                # also handles non-empty directories and does not follow symlinks.
+                displaced = marker.with_name(f".{marker.name}.stale-{uuid4().hex}")
+                try:
+                    os.replace(marker, displaced)
+                except FileNotFoundError:
+                    continue
+                displaced_entries.append(displaced)
+                continue
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise OSError("completion marker is not a regular file")
+                payload = str(int(exit_code)).encode("ascii")
+                if os.write(descriptor, payload) != len(payload):
+                    raise OSError("completion marker write was incomplete")
+                os.fsync(descriptor)
+                return
+            finally:
+                os.close(descriptor)
+        raise last_error or OSError("could not create completion marker without following links")
+    finally:
+        for displaced in displaced_entries:
+            _remove_displaced_completion_marker(displaced)
+
+
+def _remove_displaced_completion_marker(path: Path) -> None:
+    """Best-effort cleanup after an obstruction has been moved out of the marker path."""
+
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    try:
+        if stat.S_ISDIR(mode):
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+    except OSError as exc:
+        # Marker delivery has already been unblocked. A hostile directory's permissions
+        # must not turn cleanup of the displaced entry into a daemon-startup failure.
+        logger.warning(
+            "codex_subscription_displaced_marker_cleanup_failed exception_class=%s",
+            exc.__class__.__name__,
+        )

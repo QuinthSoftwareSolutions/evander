@@ -65,6 +65,8 @@ type SessionRecord = {
   allowed_script_names?: string[];
   discord_channel_allowlist?: string[];
   teams_channel_allowlist?: string[];
+  teams_chat_allowlist?: string[];
+  teams_user_allowlist?: string[];
   email_mailbox_allowlist?: string[];
   email_folder_allowlist?: string[];
   email_folder_allowlist_by_mailbox?: Record<string, string[]>;
@@ -1661,6 +1663,8 @@ export function SessionsScreen() {
       next.communicationTargetIds = dedupeStrings([
         ...(selectedSession.discord_channel_allowlist ?? []),
         ...(selectedSession.teams_channel_allowlist ?? []),
+        ...(selectedSession.teams_chat_allowlist ?? []),
+        ...(selectedSession.teams_user_allowlist ?? []),
       ]);
     }
     if (policyDraft.emailMailboxGrants === null) {

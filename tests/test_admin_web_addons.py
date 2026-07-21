@@ -351,6 +351,7 @@ def test_bokio_admin_recovers_an_interrupted_prepared_action(
     monkeypatch.setattr(httpx, "Client", factory)
     monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
     monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    monkeypatch.setattr("evander_bokio_addon.state.process_is_alive", lambda _: False)
 
     recovered = client.post(
         f"/api/addons/bokio-addon/prepared-actions/{created['action_id']}/retry",

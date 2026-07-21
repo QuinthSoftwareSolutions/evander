@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -13,6 +14,7 @@ import httpx
 from evander.addons import addon_storage_path
 
 from .client import BokioApiError, BokioConfigError
+from .execution_ownership import process_is_alive
 from .state import ADDON_ID
 
 
@@ -108,6 +110,17 @@ class BokioOperationStore:
                         "Bokio and set confirm_not_created only after confirming the supplier "
                         "invoice is absent"
                     )
+                owner_alive = process_is_alive(operation.get("execution_owner_pid"))
+                if owner_alive is None:
+                    raise BokioOperationError(
+                        "Bokio operation cannot be safely recovered because its execution owner "
+                        "is unknown; automatic recovery is unavailable"
+                    )
+                if owner_alive:
+                    raise BokioOperationError(
+                        "Bokio operation is still executing in a live process; wait for that "
+                        "attempt to finish before reconciling it"
+                    )
                 allowed_status = "executing"
             if allowed_status is None:
                 raise BokioOperationError(f"Unsupported Bokio operation status: {status}")
@@ -116,10 +129,11 @@ class BokioOperationStore:
                 """
                 UPDATE operations
                 SET status = ?, attempt_count = attempt_count + 1, error_json = NULL,
-                    result_json = NULL, completed_at = NULL, started_at = ?, updated_at = ?
+                    result_json = NULL, completed_at = NULL, started_at = ?, updated_at = ?,
+                    execution_owner_pid = ?
                 WHERE session_id = ? AND operation_kind = ? AND operation_key = ? AND status = ?
                 """,
-                ("executing", now, now, *identity, allowed_status),
+                ("executing", now, now, os.getpid(), *identity, allowed_status),
             ).rowcount
             current = self._get_with_connection(connection, identity)
             if claimed != 1:
@@ -198,7 +212,8 @@ class BokioOperationStore:
             updated = connection.execute(
                 """
                 UPDATE operations
-                SET status = ?, result_json = ?, error_json = ?, completed_at = ?, updated_at = ?
+                SET status = ?, result_json = ?, error_json = ?, completed_at = ?, updated_at = ?,
+                    execution_owner_pid = NULL
                 WHERE session_id = ? AND operation_kind = ? AND operation_key = ?
                     AND status = ?
                 """,
@@ -213,9 +228,7 @@ class BokioOperationStore:
                 ),
             ).rowcount
             if updated != 1:
-                raise BokioOperationError(
-                    "Bokio operation is not owned by this execution attempt"
-                )
+                raise BokioOperationError("Bokio operation is not owned by this execution attempt")
             return self._get_with_connection(connection, identity)
 
     def _initialize(self) -> None:
@@ -236,10 +249,14 @@ class BokioOperationStore:
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
                     completed_at TEXT,
+                    execution_owner_pid INTEGER,
                     PRIMARY KEY (session_id, operation_kind, operation_key)
                 )
                 """
             )
+            columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(operations)")}
+            if "execution_owner_pid" not in columns:
+                connection.execute("ALTER TABLE operations ADD COLUMN execution_owner_pid INTEGER")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=30.0)
@@ -315,6 +332,9 @@ def _operation_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "updated_at": str(row["updated_at"]),
         "started_at": str(row["started_at"]) if row["started_at"] else None,
         "completed_at": str(row["completed_at"]) if row["completed_at"] else None,
+        "execution_owner_pid": (
+            int(row["execution_owner_pid"]) if row["execution_owner_pid"] is not None else None
+        ),
     }
 
 

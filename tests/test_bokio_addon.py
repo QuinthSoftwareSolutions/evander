@@ -1482,10 +1482,12 @@ def test_bokio_mcp_claims_supplier_invoice_before_the_external_request(
         owner = executor.submit(server.tools["bokio_create_supplier_invoice"], **arguments)
         assert create_started.wait(timeout=5)
         duplicate = executor.submit(
-            server.tools["bokio_create_supplier_invoice"], **arguments
+            server.tools["bokio_create_supplier_invoice"],
+            **arguments,
+            confirm_not_created=True,
         )
         try:
-            with pytest.raises(BokioOperationError, match="already executing"):
+            with pytest.raises(BokioOperationError, match="live process"):
                 duplicate.result(timeout=5)
         finally:
             release_create.set()
@@ -1533,6 +1535,8 @@ def test_bokio_mcp_recovers_an_executing_supplier_operation_after_reconciliation
     with pytest.raises(BokioOperationError, match="confirm_not_created"):
         server.tools["bokio_create_supplier_invoice"](**arguments)
     assert requests == []
+
+    monkeypatch.setattr("evander_bokio_addon.operations.process_is_alive", lambda _: False)
 
     recovered = server.tools["bokio_create_supplier_invoice"](
         **arguments,
@@ -1750,6 +1754,7 @@ def test_prepared_action_execution_claim_is_atomic_and_requires_reconciliation(
 
 def test_prepared_action_recovers_an_executing_claim_after_reconciliation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = PreparedActionStore(tmp_path)
     action = store.create_action(
@@ -1761,6 +1766,14 @@ def test_prepared_action_recovers_an_executing_claim_after_reconciliation(
 
     with pytest.raises(ValueError, match="confirm it was not created"):
         store.claim_execution(action["action_id"], retry=True)
+    with pytest.raises(ValueError, match="live process"):
+        store.claim_execution(
+            action["action_id"],
+            retry=True,
+            confirm_not_created=True,
+        )
+
+    monkeypatch.setattr("evander_bokio_addon.state.process_is_alive", lambda _: False)
 
     recovered, owns_recovery = store.claim_execution(
         action["action_id"],

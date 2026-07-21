@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
@@ -35,6 +36,7 @@ from .repository import (
     TeamStateRepository,
 )
 from .chat_attachments import (
+    PreparedChatAttachment,
     TeamChatAttachmentPolicyService,
     TeamChatAttachmentStorage,
     validate_attachment_count,
@@ -63,6 +65,9 @@ from .services.memory_service import (
     list_memory_records,
     memory_record_payload,
 )
+
+
+logger = logging.getLogger(__name__)
 
 TEAM_RECORD_NOTE_TOOL = "team_record_note"
 TEAM_RECORD_MEMORY_TOOL = "team_record_memory"
@@ -842,13 +847,17 @@ def _register_slice5_tools(
                 causation_id=causation_id,
             )
         except Exception as exc:
-            attachment_storage.delete_prepared(
-                attachment.id for attachment in newly_promoted_attachments
+            _delete_uncommitted_team_chat_attachments(
+                repository=chat_commands.repository,
+                storage=attachment_storage,
+                attachments=newly_promoted_attachments,
             )
             raise ToolError(str(exc)) from exc
         if not bool(result.get("success")):
-            attachment_storage.delete_prepared(
-                attachment.id for attachment in newly_promoted_attachments
+            _delete_uncommitted_team_chat_attachments(
+                repository=chat_commands.repository,
+                storage=attachment_storage,
+                attachments=newly_promoted_attachments,
             )
         return _team_command_mcp_result(result, caller=caller, context=context)
 
@@ -912,13 +921,17 @@ def _register_slice5_tools(
                 causation_id=causation_id,
             )
         except Exception as exc:
-            attachment_storage.delete_prepared(
-                attachment.id for attachment in newly_promoted_attachments
+            _delete_uncommitted_team_chat_attachments(
+                repository=chat_commands.repository,
+                storage=attachment_storage,
+                attachments=newly_promoted_attachments,
             )
             raise ToolError(str(exc)) from exc
         if not bool(result.get("success")):
-            attachment_storage.delete_prepared(
-                attachment.id for attachment in newly_promoted_attachments
+            _delete_uncommitted_team_chat_attachments(
+                repository=chat_commands.repository,
+                storage=attachment_storage,
+                attachments=newly_promoted_attachments,
             )
         return _team_command_mcp_result(result, caller=caller, context=context)
 
@@ -2933,7 +2946,7 @@ def _prepare_team_chat_agent_attachments(
     attachment_ids: list[str],
     approval_request_id: str | None,
     approval_payload: dict[str, Any],
-) -> list[Any]:
+) -> list[PreparedChatAttachment]:
     if not attachment_ids:
         return []
     policy = policy_service.effective_policy(
@@ -2981,3 +2994,24 @@ def _prepare_team_chat_agent_attachments(
         ):
             raise ToolError("attachment approval is for a different tool")
     return storage.promote_staged(attachment_ids, session_id=caller.session_id)
+
+
+def _delete_uncommitted_team_chat_attachments(
+    *,
+    repository: TeamStateRepository,
+    storage: TeamChatAttachmentStorage,
+    attachments: list[PreparedChatAttachment],
+) -> None:
+    """Delete promoted files only when current durable state has not claimed them."""
+
+    try:
+        committed_attachment_ids = set(repository.read().chat_attachments)
+    except Exception as exc:  # noqa: BLE001 - cleanup must fail closed on repository errors.
+        logger.warning(
+            "team_chat_attachment_cleanup_state_read_failed exception_class=%s",
+            exc.__class__.__name__,
+        )
+        return
+    storage.delete_prepared(
+        attachment.id for attachment in attachments if attachment.id not in committed_attachment_ids
+    )

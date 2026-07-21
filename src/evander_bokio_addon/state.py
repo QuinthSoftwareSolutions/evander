@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from hashlib import sha256
+import os
 from pathlib import Path
 import re
 from typing import Any
 from uuid import uuid4
 
 from evander.addons import addon_json_object_store, addon_storage_path
+
+from .execution_ownership import process_is_alive
 
 
 ADDON_ID = "bokio-addon"
@@ -90,6 +93,7 @@ class PreparedActionStore:
             "rejected_at": None,
             "executed_at": None,
             "execution_started_at": None,
+            "execution_owner_pid": None,
             "attention_at": None,
             "result": None,
             "error": None,
@@ -174,12 +178,24 @@ class PreparedActionStore:
                         f"Bokio prepared action {normalized} is executing or has an unknown "
                         "outcome; inspect Bokio and confirm it was not created before retrying"
                     )
+                owner_alive = process_is_alive(action.get("execution_owner_pid"))
+                if owner_alive is None:
+                    raise ValueError(
+                        f"Bokio prepared action {normalized} cannot be safely recovered because "
+                        "its execution owner is unknown"
+                    )
+                if owner_alive:
+                    raise ValueError(
+                        f"Bokio prepared action {normalized} is still executing in a live "
+                        "process; wait for that attempt to finish"
+                    )
             else:
                 raise ValueError(
                     f"Bokio prepared action {normalized} cannot execute from status {status!r}"
                 )
             action["status"] = "executing"
             action["execution_started_at"] = now
+            action["execution_owner_pid"] = os.getpid()
             action["updated_at"] = now
             action["error"] = None
             detail = (
@@ -202,7 +218,7 @@ class PreparedActionStore:
             action_id,
             status="executed",
             timestamp_field="executed_at",
-            update={"result": result, "error": None},
+            update={"result": result, "error": None, "execution_owner_pid": None},
             expected_statuses={"approved", "executing"},
             detail="Bokio action executed",
         )
@@ -212,7 +228,7 @@ class PreparedActionStore:
             action_id,
             status="failed",
             timestamp_field="executed_at",
-            update={"error": error},
+            update={"error": error, "execution_owner_pid": None},
             expected_statuses={"approved", "executing"},
             detail="Execution failed before a successful Bokio result",
         )
@@ -222,7 +238,7 @@ class PreparedActionStore:
             action_id,
             status="needs_attention",
             timestamp_field="attention_at",
-            update={"error": error},
+            update={"error": error, "execution_owner_pid": None},
             expected_statuses={"executing"},
             detail="Execution outcome is uncertain; reconciliation required",
         )

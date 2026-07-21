@@ -738,6 +738,8 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     discord_channels: hostStringList(rawPolicy, "discord_channels"),
     discord_channel_allowlist: hostStringList(rawPolicy, "discord_channel_allowlist"),
     teams_channel_allowlist: hostStringList(rawPolicy, "teams_channel_allowlist"),
+    teams_chat_allowlist: hostStringList(rawPolicy, "teams_chat_allowlist"),
+    teams_user_allowlist: hostStringList(rawPolicy, "teams_user_allowlist"),
     metadata: hostRecord(rawPolicy, "metadata") ?? {},
     email_mailboxes: hostStringList(rawPolicy, "email_mailboxes"),
     email_folders: hostStringList(rawPolicy, "email_folders"),
@@ -1671,6 +1673,8 @@ export function AgentsPage() {
         communicationTargetIds: current.communicationTargetIds ?? dedupeStrings([
           ...selectedAgentPolicy.discord_channel_allowlist,
           ...selectedAgentPolicy.teams_channel_allowlist,
+          ...selectedAgentPolicy.teams_chat_allowlist,
+          ...selectedAgentPolicy.teams_user_allowlist,
         ]),
         emailMailboxGrants: current.emailMailboxGrants ?? selectedAgentPolicy.email_mailboxes.map(
           (mailboxId) => ({

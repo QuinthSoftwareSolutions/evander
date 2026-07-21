@@ -87,14 +87,20 @@ class CodexAppServerProcess:
         )
         self._reader.start()
         self._stderr_reader.start()
-        self.request(
-            "initialize",
-            {
-                "clientInfo": {"name": "evander", "version": "1"},
-                "capabilities": {"experimentalApi": True},
-            },
-        )
-        self.notify("initialized", {})
+        try:
+            self.request(
+                "initialize",
+                {
+                    "clientInfo": {"name": "evander", "version": "1"},
+                    "capabilities": {"experimentalApi": True},
+                },
+            )
+            self.notify("initialized", {})
+        except BaseException:
+            try:
+                self.close()
+            finally:
+                raise
 
     def request(
         self,
