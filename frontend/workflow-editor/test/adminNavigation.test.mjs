@@ -76,6 +76,109 @@ const configurationStateResponse = {
     errors: [],
     validation_diagnostics: [],
   },
+  tabs: [
+    {
+      key: "people_communications",
+      title: "People & Communications",
+      help_text: "Messaging and notification settings.",
+      underlying_domains: ["providers", "policy"],
+      sections: [
+        {
+          key: "teams",
+          title: "Teams",
+          fields: [
+            {
+              source_domain: "providers",
+              field_name: "teams_timeout_seconds",
+              label: "Teams timeout seconds",
+              kind: "float",
+              options: [],
+              scope: "directory",
+              root_starts_editable: false,
+              tooltip: "Maximum wait for Microsoft Teams provider requests.",
+            },
+          ],
+        },
+        {
+          key: "communication-files",
+          title: "Communication files",
+          fields: [
+            {
+              source_domain: "policy",
+              field_name: "communication_file_max_bytes",
+              label: "Maximum communication file bytes",
+              kind: "int",
+              options: [],
+              scope: "directory",
+              root_starts_editable: false,
+              tooltip: "Maximum file size accepted for communication attachments.",
+            },
+          ],
+        },
+      ],
+    },
+    {
+      key: "agent_runtime_launch",
+      title: "Agent Runtime & Launch",
+      help_text: "Execution and container worker settings.",
+      underlying_domains: ["providers"],
+      sections: [
+        {
+          key: "container-worker-settings",
+          title: "Container worker settings",
+          fields: [
+            {
+              source_domain: "providers",
+              field_name: "container_worker_job_timeout_seconds",
+              label: "Job timeout seconds",
+              kind: "int",
+              options: [],
+              scope: "directory",
+              root_starts_editable: false,
+              tooltip: "Maximum duration of a container worker job.",
+            },
+          ],
+        },
+      ],
+    },
+  ],
+  tab_snapshots: {
+    people_communications: {
+      key: "people_communications",
+      title: "People & Communications",
+      revision: "people-rev-1",
+      raw: { exists: true, config: { teams_timeout_seconds: 5, communication_file_max_bytes: 25000000 } },
+      effective: {
+        config: { teams_timeout_seconds: 5, communication_file_max_bytes: 25000000 },
+        validation_diagnostics: [],
+        errors: [],
+        payload: { teams_timeout_seconds: 5, communication_file_max_bytes: 25000000 },
+      },
+      parent_defaults: { directory_path: null, config: {}, payload: {} },
+    },
+    agent_runtime_launch: {
+      key: "agent_runtime_launch",
+      title: "Agent Runtime & Launch",
+      revision: "runtime-rev-1",
+      raw: { exists: true, config: { container_worker_job_timeout_seconds: 900 } },
+      effective: {
+        config: { container_worker_job_timeout_seconds: 900 },
+        validation_diagnostics: [],
+        errors: [],
+        payload: { container_worker_job_timeout_seconds: 900 },
+      },
+      parent_defaults: { directory_path: null, config: {}, payload: {} },
+    },
+  },
+  directory_overrides: {
+    directory_path: "root",
+    exists: true,
+    domain_count: 2,
+    field_count: 3,
+    overrides: {},
+    errors: [],
+    payload: {},
+  },
 };
 
 async function createAdminPage(t, options = {}) {
@@ -114,7 +217,7 @@ async function createAdminPage(t, options = {}) {
     }
 
     if (pathname === "/api/auth/session") {
-      await route.fulfill(jsonResponse(sessionResponse));
+      await route.fulfill(jsonResponse(options.session ?? sessionResponse));
       return;
     }
 
@@ -137,7 +240,7 @@ async function createAdminPage(t, options = {}) {
       assert.equal(url.searchParams.get("directory_path"), "root");
       await route.fulfill(
         jsonResponse({
-          ...adminStateResponse,
+          ...(options.adminState ?? adminStateResponse),
           assistant: options.assistant ?? adminStateResponse.assistant,
           addons: options.addons ?? [],
         }),
@@ -232,7 +335,61 @@ async function createAdminPage(t, options = {}) {
 
     if (pathname === "/api/configuration/state") {
       assert.equal(url.searchParams.get("directory_path"), "root");
-      await route.fulfill(jsonResponse(configurationStateResponse));
+      await route.fulfill(jsonResponse(options.configurationState ?? configurationStateResponse));
+      return;
+    }
+
+    if (pathname.startsWith("/api/configuration/domains/") && route.request().method() === "PUT") {
+      const tabKey = decodeURIComponent(pathname.slice("/api/configuration/domains/".length));
+      const requestPayload = route.request().postDataJSON();
+      options.configurationSaveRequests?.push({ tabKey, payload: requestPayload });
+      const sourceState = options.configurationState ?? configurationStateResponse;
+      const sourceSnapshot = sourceState.tab_snapshots[tabKey];
+      await route.fulfill(jsonResponse({
+        write_result: { ok: true, data: {}, errors: [], validation_diagnostics: [] },
+        tab_snapshot: {
+          ...sourceSnapshot,
+          revision: `${sourceSnapshot.revision}-saved`,
+          raw: { exists: true, config: requestPayload.config },
+          effective: {
+            ...sourceSnapshot.effective,
+            config: requestPayload.config,
+            payload: requestPayload.config,
+          },
+        },
+      }));
+      return;
+    }
+
+    if (pathname === "/api/configuration/model-pricing") {
+      await route.fulfill(jsonResponse({
+        status: "ok",
+        path: "/tmp/model-pricing.json",
+        path_source: "default",
+        env_var: "EVANDER_MODEL_PRICING_PATH",
+        version: "1",
+        currency: "usd",
+        description: null,
+        sources: [],
+        rule_count: 0,
+        rules: [],
+        revision: "pricing-rev-1",
+        catalog: { version: "1", currency: "usd", description: null, sources: [], rules: [] },
+        editable: true,
+        write_requires_privileged_unlock: true,
+        error: null,
+        error_class: null,
+      }));
+      return;
+    }
+
+    if (pathname === "/api/teams-auth/status") {
+      await route.fulfill(jsonResponse({
+        directory_path: "root",
+        backend: "stub",
+        state: "not_configured",
+        scopes: [],
+      }));
       return;
     }
 
@@ -394,6 +551,74 @@ test("quick navigator filters destinations and supports keyboard navigation", as
   assert.equal(await closeButton.evaluate((element) => element === document.activeElement), true);
   await closeButton.press("Escape");
   assert.equal(await page.getByRole("dialog", { name: "Find a page" }).count(), 0);
+});
+
+test("configuration navigation focuses sections, searches technical fields, and preserves drafts", async (t) => {
+  const configurationSaveRequests = [];
+  const { address, page } = await createAdminPage(t, {
+    session: {
+      ...sessionResponse,
+      privileged_operations: { unlocked: true },
+    },
+    adminState: {
+      ...adminStateResponse,
+      directory_scoped_config_enabled: true,
+      privileged_operations: { unlocked: true },
+    },
+    configurationState: {
+      ...configurationStateResponse,
+      directory_scoped_config_enabled: true,
+    },
+    configurationSaveRequests,
+  });
+
+  await page.goto(
+    `http://127.0.0.1:${address.port}/#configuration?config_tab=agent_runtime_launch&config_section=container-worker-settings&config_field=container_worker_job_timeout_seconds`,
+    { waitUntil: "domcontentloaded" },
+  );
+  await page.locator(".configuration-page").waitFor({ state: "visible" });
+  await assert.doesNotReject(() => page.getByRole("heading", { level: 2, name: "Container worker settings", exact: true }).waitFor({ state: "visible" }));
+  const runtimeField = page.locator("#configuration-field-agent_runtime_launch-container_worker_job_timeout_seconds");
+  await assert.doesNotReject(() => runtimeField.waitFor({ state: "visible" }));
+  assert.equal(await runtimeField.getByRole("spinbutton").inputValue(), "900");
+  assert.equal(await runtimeField.getByRole("spinbutton").evaluate((element) => element === document.activeElement), true);
+
+  const search = page.getByRole("combobox", { name: "Find setting" });
+  await search.fill("teams_timeout_seconds");
+  const teamsResult = page.getByRole("option", { name: /Teams timeout seconds/ });
+  await assert.doesNotReject(() => teamsResult.waitFor({ state: "visible" }));
+  await teamsResult.click();
+  await assert.doesNotReject(() => page.getByRole("heading", { level: 2, name: "Teams", exact: true }).waitFor({ state: "visible" }));
+  assert.match(page.url(), /config_tab=people_communications/);
+  assert.match(page.url(), /config_section=teams/);
+  assert.match(page.url(), /config_field=teams_timeout_seconds/);
+
+  const teamsInput = page.locator("#configuration-field-people_communications-teams_timeout_seconds").getByRole("spinbutton");
+  await teamsInput.fill("12");
+  const configurationNav = page.getByRole("navigation", { name: "Configuration areas and sections" });
+  await configurationNav.getByRole("button", { name: /Communication files/ }).click();
+  await assert.doesNotReject(() => page.getByRole("heading", { level: 2, name: "Communication files", exact: true }).waitFor({ state: "visible" }));
+  await configurationNav.getByRole("button", { name: "Teams 1", exact: true }).click();
+  assert.equal(await teamsInput.inputValue(), "12");
+  assert.match(await configurationNav.getByRole("button", { name: /People & Communications/ }).innerText(), /unsaved/i);
+
+  await configurationNav.getByRole("button", { name: "Validation", exact: true }).click();
+  await assert.doesNotReject(() => page.getByRole("heading", { level: 2, name: "Validation", exact: true }).waitFor({ state: "visible" }));
+  assert.match(page.url(), /config_section=validation/);
+
+  await page.getByRole("button", { name: "Save tab" }).click();
+  await page.waitForFunction(() => document.body.textContent?.includes("Saved People & Communications overrides for root."));
+  assert.equal(configurationSaveRequests.length, 1);
+  assert.equal(configurationSaveRequests[0].tabKey, "people_communications");
+  assert.deepEqual(configurationSaveRequests[0].payload.config, {
+    teams_timeout_seconds: 12,
+    communication_file_max_bytes: 25000000,
+  });
+  assert.equal(configurationSaveRequests[0].payload.expected_revision, "people-rev-1");
+
+  await page.setViewportSize({ width: 720, height: 900 });
+  await assert.doesNotReject(() => page.getByRole("combobox", { name: "Configuration area", exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("combobox", { name: "Section or utility", exact: true }).waitFor({ state: "visible" }));
 });
 
 test("quick navigator includes dynamic add-on destinations in Extensions", async (t) => {

@@ -10,6 +10,16 @@
 - Preserved legacy Teams channel, chat, and user grants during session-policy conversion, and kept
   concurrent Team Chat attachment rollback from deleting files already committed by another send.
 
+## 2026-07-21 - Focused Configuration Navigation
+
+- Replaced the Configuration page's dense area cards and nested collapsed panels with a compact
+  area/section navigator and a focused one-section editing workspace.
+- Added friendly and technical setting search, explicit configuration utilities, stable deep links,
+  field focus/highlighting, responsive selectors, and unsaved-area indicators without changing
+  configuration inheritance or save semantics.
+- Documented the `config_tab`, `config_section`, and `config_field` deep-link contract and the
+  stable section keys exposed by the configuration-state API.
+
 ## 2026-07-21 - Team Chat File Attachments
 
 - Added two-way file and image attachments to the Team Add-on's built-in operator Chat, including

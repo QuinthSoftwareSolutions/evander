@@ -42,32 +42,19 @@ import {
   parseEmailMailboxFolderPolicyDraftValue,
   type EmailMailboxFolderPolicyDraftEntry,
 } from "./emailMailboxPolicyDraft";
+import { ConfigurationNavigator } from "./ConfigurationNavigator";
+import {
+  configurationDestinationsForTab,
+  configurationFieldDomId,
+  configurationHash,
+  defaultConfigurationDestination,
+  resolveConfigurationLocation,
+  type ConfigurationField,
+  type ConfigurationTab,
+  type ConfigurationUtilityKey,
+} from "./configurationNavigation";
 
 type Diagnostic = { code: string; message: string; field?: string | null };
-
-type ConfigurationField = {
-  source_domain: string;
-  field_name: string;
-  label: string;
-  kind: "bool" | "int" | "float" | "literal" | "text" | "multiline_text" | "string_list" | "json";
-  options: string[];
-  scope?: "directory" | "global";
-  root_starts_editable: boolean;
-  tooltip: string;
-};
-
-type ConfigurationSection = {
-  title: string;
-  fields: ConfigurationField[];
-};
-
-type ConfigurationTab = {
-  key: string;
-  title: string;
-  help_text: string | null;
-  underlying_domains: string[];
-  sections: ConfigurationSection[];
-};
 
 type TabSnapshot = {
   key: string;
@@ -1008,10 +995,12 @@ export function ConfigurationScreen() {
   const [modelPricingDirty, setModelPricingDirty] = useState(false);
   const [modelPricingSaving, setModelPricingSaving] = useState(false);
   const [modelPricingError, setModelPricingError] = useState<string | null>(null);
-  const [modelPricingPanelCollapsed, setModelPricingPanelCollapsed] = useState(true);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState(globalSelectedDirectoryPath);
   const [selectedTab, setSelectedTab] = useState(DEFAULT_CONFIGURATION_TAB_KEY);
-  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+  const [selectedDestination, setSelectedDestination] = useState("");
+  const [pendingFieldFocus, setPendingFieldFocus] = useState<string | null>(null);
+  const [highlightedField, setHighlightedField] = useState<string | null>(null);
+  const lastDestinationByTabRef = useRef<Record<string, string>>({});
   const [drafts, setDrafts] = useState<TabDrafts>({});
   const [dirtyTabs, setDirtyTabs] = useState<Record<string, boolean>>({});
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -1087,11 +1076,17 @@ export function ConfigurationScreen() {
     if (payload.selected_directory_path !== globalSelectedDirectoryPath) {
       setGlobalSelectedDirectoryPath(payload.selected_directory_path);
     }
-    setSelectedTab((current) => (
-      payload.tabs.some((tab) => tab.key === current)
-        ? current
-        : payload.tabs[0]?.key ?? DEFAULT_CONFIGURATION_TAB_KEY
-    ));
+    const location = resolveConfigurationLocation(payload.tabs, window.location.hash);
+    if (location) {
+      setSelectedTab(location.tabKey);
+      setSelectedDestination(location.destinationKey);
+      setPendingFieldFocus(location.fieldName);
+      lastDestinationByTabRef.current[location.tabKey] = location.destinationKey;
+    } else {
+      setSelectedTab(payload.tabs[0]?.key ?? DEFAULT_CONFIGURATION_TAB_KEY);
+      setSelectedDestination(payload.tabs[0] ? defaultConfigurationDestination(payload.tabs[0]) : "");
+      setPendingFieldFocus(null);
+    }
     setDrafts((current) => {
       const next = { ...current };
       for (const tab of payload.tabs) {
@@ -1278,13 +1273,21 @@ export function ConfigurationScreen() {
   }, [globalSelectedDirectoryPath]);
 
   const selectedTabDefinition = state?.tabs.find((tab) => tab.key === selectedTab);
+  const selectedDestinationDefinition = selectedTabDefinition
+    ? configurationDestinationsForTab(selectedTabDefinition).find((destination) => destination.key === selectedDestination)
+    : null;
+  const selectedSectionDefinition = selectedTabDefinition?.sections.find(
+    (section) => section.key === selectedDestination,
+  ) ?? null;
+  const selectedUtility = selectedSectionDefinition
+    ? null
+    : (selectedDestination as ConfigurationUtilityKey | "");
   const snapshot = state?.tab_snapshots[selectedTab] ?? null;
   const tabDraft = drafts[selectedTab] ?? {};
   const isDirty = dirtyTabs[selectedTab] ?? false;
   const hasUnsavedTabs = hasDirtyDrafts(dirtyTabs);
   const isRoot = selectedDirectoryPath === "root";
   const mutationLocked = !privilegedUnlocked;
-  const selectedTabKey = selectedTabDefinition?.key ?? selectedTab;
   const emailMailboxEntries = configuredEmailMailboxEntries(tabDraft, snapshot, isRoot);
   const selectedTabHasGlobalFields = Boolean(
     selectedTabDefinition?.sections.some((section) => section.fields.some(isGlobalField)),
@@ -1301,6 +1304,73 @@ export function ConfigurationScreen() {
     !modelPricingDirty ||
     !modelPricingCatalog?.editable ||
     !modelPricingDraftBaseRevision;
+
+  function navigateToConfigurationDestination(
+    tabKey: string,
+    destinationKey: string,
+    fieldName?: string | null,
+  ) {
+    if (!tabKey || !destinationKey) return;
+    lastDestinationByTabRef.current[tabKey] = destinationKey;
+    setSelectedTab(tabKey);
+    setSelectedDestination(destinationKey);
+    setPendingFieldFocus(fieldName ?? null);
+    setHighlightedField(null);
+    const nextHash = configurationHash(tabKey, destinationKey, fieldName);
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    }
+  }
+
+  function navigateToConfigurationArea(tabKey: string) {
+    const tab = state?.tabs.find((candidate) => candidate.key === tabKey);
+    if (!tab) return;
+    const destinations = configurationDestinationsForTab(tab);
+    const remembered = lastDestinationByTabRef.current[tabKey];
+    const destination = destinations.some((candidate) => candidate.key === remembered)
+      ? remembered
+      : defaultConfigurationDestination(tab);
+    navigateToConfigurationDestination(tabKey, destination);
+  }
+
+  useEffect(() => {
+    function syncFromHash() {
+      const location = resolveConfigurationLocation(state?.tabs ?? [], window.location.hash);
+      if (!location) return;
+      lastDestinationByTabRef.current[location.tabKey] = location.destinationKey;
+      setSelectedTab(location.tabKey);
+      setSelectedDestination(location.destinationKey);
+      setPendingFieldFocus(location.fieldName);
+      setHighlightedField(null);
+    }
+    window.addEventListener("hashchange", syncFromHash);
+    return () => window.removeEventListener("hashchange", syncFromHash);
+  }, [state?.tabs]);
+
+  useEffect(() => {
+    if (!pendingFieldFocus || !selectedSectionDefinition) return;
+    let highlightTimeout: number | undefined;
+    const frame = window.requestAnimationFrame(() => {
+      const element = document.getElementById(configurationFieldDomId(selectedTab, pendingFieldFocus));
+      if (!element) return;
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      const focusable = element.querySelector<HTMLElement>(
+        ".config-field-control input:not([disabled]), .config-field-control select:not([disabled]), .config-field-control textarea:not([disabled]), .config-field-control button:not([disabled])",
+      ) ?? element.querySelector<HTMLElement>(
+        "input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      );
+      (focusable ?? element).focus({ preventScroll: true });
+      setHighlightedField(pendingFieldFocus);
+      highlightTimeout = window.setTimeout(() => {
+        setHighlightedField(null);
+        setPendingFieldFocus(null);
+      }, 1800);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (highlightTimeout !== undefined) window.clearTimeout(highlightTimeout);
+    };
+  }, [pendingFieldFocus, selectedDestination, selectedSectionDefinition, selectedTab]);
 
   async function reloadCurrentDirectory(options?: { preserveDirty?: boolean }) {
     try {
@@ -3091,19 +3161,6 @@ export function ConfigurationScreen() {
     );
   }
 
-  function sectionStorageKey(sectionTitle: string) {
-    return `${selectedTabKey}:${sectionTitle}`;
-  }
-
-  function isSectionCollapsed(sectionTitle: string) {
-    return collapsedSections[sectionStorageKey(sectionTitle)] ?? true;
-  }
-
-  function toggleSection(sectionTitle: string) {
-    const key = sectionStorageKey(sectionTitle);
-    setCollapsedSections((current) => ({ ...current, [key]: !(current[key] ?? false) }));
-  }
-
   function renderFieldInput(field: ConfigurationField, fieldState: DraftFieldState) {
     const disabled = loading || saving || (!isGlobalField(field) && !state?.directory_scoped_config_enabled);
     if (field.kind === "bool") {
@@ -3189,36 +3246,27 @@ export function ConfigurationScreen() {
             <h1>Configuration</h1>
           </div>
         </div>
-        {mutationLocked ? (
-          <div className="callout warning-callout">Unlock privileged operations to save configuration overrides.</div>
-        ) : null}
-
-        <div className="feature-list configuration-tab-list">
-          {(state?.tabs ?? []).map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              className={`feature-list-item configuration-tab-item${tab.key === selectedTab ? " selected" : ""}`}
-              onClick={() => setSelectedTab(tab.key)}
-              disabled={loading || saving}
-            >
-              <div className="feature-list-title-row">
-                <strong>{tab.title}</strong>
-                {dirtyTabs[tab.key] ? <span className="panel-meta">Unsaved</span> : null}
-              </div>
-              <div className="feature-list-meta">{tab.help_text ?? "Configuration controls for this domain."}</div>
-            </button>
-          ))}
-          {!state?.tabs.length ? <div className="empty-state">No configuration tabs are available for this directory.</div> : null}
-        </div>
+        <ConfigurationNavigator
+          tabs={state?.tabs ?? []}
+          selectedTabKey={selectedTab}
+          selectedDestinationKey={selectedDestination}
+          dirtyTabs={dirtyTabs}
+          modelPricingDirty={modelPricingDirty}
+          disabled={loading || saving}
+          onSelectArea={navigateToConfigurationArea}
+          onSelectDestination={navigateToConfigurationDestination}
+        />
+        {!state?.tabs.length ? <div className="empty-state">No configuration areas are available for this directory.</div> : null}
       </section>
 
       <section className="feature-content">
         <div className="feature-toolbar">
           <div>
-            <h2>{selectedTabDefinition?.title ?? "Configuration"}</h2>
+            <div className="eyebrow">{selectedTabDefinition?.title ?? "Configuration"}</div>
+            <h2>{selectedDestinationDefinition?.label ?? "Configuration"}</h2>
             <p className="muted-text">
-              Editing {selectedDirectoryPath}. Inspect inherited defaults, adjust explicit overrides, and save when the selected tab is ready.
+              {selectedDestinationDefinition?.description
+                ?? "Inspect inherited defaults, adjust explicit overrides, and save when the selected area is ready."}
             </p>
           </div>
           <div className="feature-toolbar-actions icon-actions">
@@ -3254,8 +3302,17 @@ export function ConfigurationScreen() {
           </div>
         ) : null}
 
+        <div className="configuration-context-strip" aria-label="Configuration context">
+          <div><span>Directory</span><strong>{selectedDirectoryPath}</strong></div>
+          <div><span>Parent</span><strong>{state?.selected_directory.parent_path ?? "No parent"}</strong></div>
+          <div><span>Scope</span><strong>{isRoot ? "Root defaults" : "Directory override"}</strong></div>
+          <div><span>Mode</span><strong>{state?.directory_scoped_config_enabled ? "Writable" : "Read only"}</strong></div>
+          <div><span>Domains</span><strong>{selectedTabDefinition?.underlying_domains.join(", ") || "n/a"}</strong></div>
+          <div><span>Overrides</span><strong>{state?.directory_overrides.field_count ?? 0} fields</strong></div>
+        </div>
+
         <div className="feature-grid configuration-summary-grid">
-          {selectedTabDefinition?.key === TEAMS_AUTH_CONFIGURATION_TAB_KEY ? (
+          {selectedUtility === "teams-auth" && selectedTabDefinition?.key === TEAMS_AUTH_CONFIGURATION_TAB_KEY ? (
             <article className="panel detail-panel configuration-summary-panel teams-auth-panel">
               <div className="panel-header">
                 <div>
@@ -3440,38 +3497,9 @@ export function ConfigurationScreen() {
               )}
             </article>
           ) : null}
-          <article className="panel detail-panel configuration-summary-panel">
-            <div className="panel-header">
-              <div>
-                <h3>Directory summary</h3>
-                <p className="muted-text">
-                  Active location, inheritance boundaries, and save scope for the selected configuration tab.
-                </p>
-              </div>
-              <span className="panel-meta">{selectedTabDefinition?.title ?? "No tab selected"}</span>
-            </div>
-            <div className="detail-stack compact-detail-stack">
-              <div className="detail-grid">
-                <div><span>Directory</span><strong>{selectedDirectoryPath}</strong></div>
-                <div><span>Parent</span><strong>{state?.selected_directory.parent_path ?? "root has no parent"}</strong></div>
-                <div><span>Scope</span><strong>{isRoot ? "Root defaults" : "Directory override"}</strong></div>
-                <div><span>Config mode</span><strong>{state?.directory_scoped_config_enabled ? "Writable" : "Read only"}</strong></div>
-                <div><span>Selected tab</span><strong>{selectedTabDefinition?.title ?? "None"}</strong></div>
-                <div><span>Underlying domains</span><strong>{selectedTabDefinition?.underlying_domains.join(", ") || "n/a"}</strong></div>
-                <div><span>Override domains</span><strong>{state?.directory_overrides.domain_count ?? 0}</strong></div>
-                <div><span>Override fields</span><strong>{state?.directory_overrides.field_count ?? 0}</strong></div>
-              </div>
-            </div>
-          </article>
-          {selectedTabDefinition?.key === MODEL_PRICING_CONFIGURATION_TAB_KEY ? (
+          {selectedUtility === "model-pricing" && selectedTabDefinition?.key === MODEL_PRICING_CONFIGURATION_TAB_KEY ? (
             <article className="panel detail-panel configuration-summary-panel model-pricing-panel">
-              <button
-                type="button"
-                className="panel-header panel-toggle model-pricing-panel-toggle"
-                onClick={() => setModelPricingPanelCollapsed((current) => !current)}
-                aria-expanded={!modelPricingPanelCollapsed}
-                aria-controls={modelPricingPanelBodyId}
-              >
+              <div className="panel-header model-pricing-panel-toggle">
                 <div>
                   <h3>Model pricing catalog</h3>
                   <p className="muted-text">
@@ -3480,13 +3508,11 @@ export function ConfigurationScreen() {
                 </div>
                 <div className="model-pricing-panel-toggle-meta">
                   <span className="panel-meta">{modelPricingCatalog?.status ?? "loading"}</span>
-                  {modelPricingDirty && modelPricingPanelCollapsed ? (
+                  {modelPricingDirty ? (
                     <span className="status-pill state-stale">Unsaved changes</span>
                   ) : null}
-                  <span className="panel-toggle-indicator">{modelPricingPanelCollapsed ? "Show" : "Hide"}</span>
                 </div>
-              </button>
-              {!modelPricingPanelCollapsed ? (
+              </div>
                 <div id={modelPricingPanelBodyId} className="detail-stack compact-detail-stack">
                 <div className="inline-actions compact-actions">
                   <button
@@ -3819,21 +3845,16 @@ export function ConfigurationScreen() {
                   </>
                 ) : null}
                 </div>
-              ) : null}
             </article>
           ) : null}
         </div>
 
-        {(selectedTabDefinition?.sections ?? []).map((section) => {
+        {selectedSectionDefinition ? (() => {
+          const section = selectedSectionDefinition;
           const sectionIsGlobal = section.fields.every(isGlobalField);
           return (
-            <article key={section.title} className="panel section-panel">
-              <button
-                type="button"
-                className="panel-header panel-toggle"
-                onClick={() => toggleSection(section.title)}
-                aria-expanded={!isSectionCollapsed(section.title)}
-              >
+            <article key={section.key} className="panel section-panel configuration-section-workspace">
+              <div className="panel-header configuration-section-header">
                 <div>
                   <h3>{section.title}</h3>
                   <p className="muted-text">
@@ -3844,9 +3865,8 @@ export function ConfigurationScreen() {
                       : "Enable overrides field-by-field to write only the values that should diverge from the parent directory."}
                   </p>
                 </div>
-                <span className="panel-toggle-indicator">{isSectionCollapsed(section.title) ? "Show" : "Hide"}</span>
-              </button>
-              {!isSectionCollapsed(section.title) ? (
+                <span className="panel-meta">{section.fields.length} {section.fields.length === 1 ? "setting" : "settings"}</span>
+              </div>
                 <div className="config-field-grid">
                   {section.fields.map((field) => {
                     const fieldIsGlobal = isGlobalField(field);
@@ -3873,7 +3893,9 @@ export function ConfigurationScreen() {
                     return (
                       <div
                         key={field.field_name}
-                        className={`config-field-card${isContactsField || isCommunicationTargetsField || isEmailMailboxesField || isEmailMailboxFolderPolicy || isEmailMailboxAllowlist ? " contacts-field-card" : ""}`}
+                        id={configurationFieldDomId(selectedTab, field.field_name)}
+                        tabIndex={-1}
+                        className={`config-field-card${isContactsField || isCommunicationTargetsField || isEmailMailboxesField || isEmailMailboxFolderPolicy || isEmailMailboxAllowlist ? " contacts-field-card complex-config-field" : ""}${highlightedField === field.field_name ? " search-highlight" : ""}`}
                       >
                         <div className="feature-list-title-row">
                           <div className="config-field-label">
@@ -3917,7 +3939,7 @@ export function ConfigurationScreen() {
                             </label>
                           </div>
                         ) : null}
-                        <div className={inputDisabled ? "disabled-block" : ""}>
+                        <div className={`config-field-control${inputDisabled ? " disabled-block" : ""}`}>
                           {isContactsField
                             ? renderContactsEditor(field, fieldState, inputDisabled || loading || saving || !state?.directory_scoped_config_enabled)
                             : isEmailMailboxesField
@@ -3957,20 +3979,19 @@ export function ConfigurationScreen() {
                             : renderFieldInput(field, fieldState)}
                         </div>
                         {fieldIsGlobal ? (
-                          <div className="panel-meta">Runtime-global setting.</div>
+                          <div className="panel-meta config-field-inheritance">Runtime-global setting.</div>
                         ) : !isRoot ? (
                           <Tooltip content={inheritedPreview(inherited)} inline={false}>
-                            <div className="panel-meta">{inheritedPreview(inherited)}</div>
+                            <div className="panel-meta config-field-inheritance">{inheritedPreview(inherited)}</div>
                           </Tooltip>
                         ) : null}
                       </div>
                     );
                   })}
                 </div>
-              ) : null}
             </article>
           );
-        })}
+        })() : null}
         {selectedTabDefinition && selectedTabDefinition.sections.length === 0 ? (
           <article className="panel">
             <div className="empty-state">This tab has no editable fields yet.</div>
@@ -3982,7 +4003,7 @@ export function ConfigurationScreen() {
           </article>
         ) : null}
 
-        <article className="panel">
+        {selectedUtility === "validation" ? <article className="panel configuration-utility-panel">
           <div className="panel-header">
             <h3>Validation</h3>
             <span className="panel-meta">{snapshot?.raw.exists ? "Saved overrides present" : "Inherited only"}</span>
@@ -4007,25 +4028,19 @@ export function ConfigurationScreen() {
                 ))
               : null}
           </div>
-        </article>
+        </article> : null}
 
         <div className="feature-grid configuration-diagnostics-grid">
-          <article className="panel section-panel">
+          {selectedUtility === "directory-overrides" ? <article className="panel section-panel configuration-utility-panel">
             <div className="panel-header configuration-json-panel-header">
-              <button
-                type="button"
-                className="panel-toggle configuration-json-toggle"
-                onClick={() => toggleSection("__directory_overrides")}
-                aria-expanded={!isSectionCollapsed("__directory_overrides")}
-              >
+              <div className="configuration-json-toggle">
                 <div>
                   <h3>Directory override JSON</h3>
                   <p className="muted-text">
                     Unified explicit overrides for {selectedDirectoryPath}, grouped by config domain.
                   </p>
                 </div>
-                <span className="panel-toggle-indicator">{isSectionCollapsed("__directory_overrides") ? "Show" : "Hide"}</span>
-              </button>
+              </div>
               <div className="feature-toolbar-actions icon-actions">
                 <Tooltip content="Copy unified directory override JSON.">
                   <button
@@ -4039,46 +4054,28 @@ export function ConfigurationScreen() {
                 </Tooltip>
               </div>
             </div>
-            {!isSectionCollapsed("__directory_overrides") ? (
-              <pre className="json-view">{formatJson(state?.directory_overrides.payload ?? {})}</pre>
-            ) : null}
-          </article>
+            <pre className="json-view">{formatJson(state?.directory_overrides.payload ?? {})}</pre>
+          </article> : null}
 
-          <article className="panel section-panel">
-            <button
-              type="button"
-              className="panel-header panel-toggle"
-              onClick={() => toggleSection("__effective_config")}
-              aria-expanded={!isSectionCollapsed("__effective_config")}
-            >
+          {selectedUtility === "effective-config" ? <article className="panel section-panel configuration-utility-panel">
+            <div className="panel-header">
               <div>
-                <h3>Effective config</h3>
+                <h3>Effective configuration</h3>
                 <p className="muted-text">Resolved output across {selectedTabDefinition?.underlying_domains.join(", ") || "the selected domains"}.</p>
               </div>
-              <span className="panel-toggle-indicator">{isSectionCollapsed("__effective_config") ? "Show" : "Hide"}</span>
-            </button>
-            {!isSectionCollapsed("__effective_config") ? (
-              <pre className="json-view">{formatJson(snapshot?.effective.payload ?? {})}</pre>
-            ) : null}
-          </article>
+            </div>
+            <pre className="json-view">{formatJson(snapshot?.effective.payload ?? {})}</pre>
+          </article> : null}
 
-          <article className="panel section-panel">
-            <button
-              type="button"
-              className="panel-header panel-toggle"
-              onClick={() => toggleSection("__parent_defaults")}
-              aria-expanded={!isSectionCollapsed("__parent_defaults")}
-            >
+          {selectedUtility === "parent-defaults" ? <article className="panel section-panel configuration-utility-panel">
+            <div className="panel-header">
               <div>
                 <h3>Parent defaults</h3>
                 <p className="muted-text">Inherited diagnostic payload from {snapshot?.parent_defaults.directory_path ?? "root"}.</p>
               </div>
-              <span className="panel-toggle-indicator">{isSectionCollapsed("__parent_defaults") ? "Show" : "Hide"}</span>
-            </button>
-            {!isSectionCollapsed("__parent_defaults") ? (
-              <pre className="json-view">{formatJson(snapshot?.parent_defaults.payload ?? {})}</pre>
-            ) : null}
-          </article>
+            </div>
+            <pre className="json-view">{formatJson(snapshot?.parent_defaults.payload ?? {})}</pre>
+          </article> : null}
         </div>
       </section>
     </div>

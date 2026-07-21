@@ -7221,6 +7221,14 @@ keys, then opens and highlights the selected field. Configuration URLs retain th
 section, and optional field so operators can share a precise destination without changing the
 underlying save or inheritance rules.
 
+The URL contract uses `config_tab` for the area key, `config_section` for a section or utility
+destination key, and optional `config_field` for an exact field name. The
+`GET /api/configuration/state` response supplies area identifiers as `tabs[].key` and supplies a
+deterministic, URL-safe `key` beside every entry in `tabs[].sections[]`; clients should use that
+section key rather than deriving an identifier from the display title. Section keys are unique
+within their area. Unknown or stale destinations fall back to the first available section, and an
+unknown field is ignored.
+
 | Area | Operator question |
 |---|---|
 | Dashboard | Is the control plane broadly healthy, and what needs attention? |

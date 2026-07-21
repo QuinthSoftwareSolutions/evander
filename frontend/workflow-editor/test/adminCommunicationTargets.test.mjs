@@ -6,6 +6,10 @@ const configuration = readFileSync(
   new URL("../src/features/configuration/ConfigurationScreen.tsx", import.meta.url),
   "utf8",
 );
+const configurationNavigation = readFileSync(
+  new URL("../src/features/configuration/configurationNavigation.ts", import.meta.url),
+  "utf8",
+);
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("communication target editor preserves capability drafts and inserts Teams channels into the draft", () => {
@@ -61,13 +65,11 @@ test("configuration screen exposes editable model pricing catalog controls", () 
   assert.match(configuration, /Model pricing catalog/);
   assert.match(configuration, /modelPricingPayloadFromDraft/);
   assert.match(configuration, /saveModelPricingCatalog/);
-  assert.match(
-    configuration,
-    /const \[modelPricingPanelCollapsed, setModelPricingPanelCollapsed\] = useState\(true\)/,
-  );
-  assert.match(configuration, /modelPricingPanelCollapsed/);
-  assert.match(configuration, /className="panel-header panel-toggle model-pricing-panel-toggle"/);
-  assert.match(configuration, /aria-controls=\{modelPricingPanelBodyId\}/);
+  assert.match(configurationNavigation, /key: "model-pricing"/);
+  assert.match(configuration, /selectedUtility === "model-pricing"/);
+  assert.match(configuration, /className="panel-header model-pricing-panel-toggle"/);
+  assert.match(configuration, /id=\{modelPricingPanelBodyId\}/);
+  assert.doesNotMatch(configuration, /modelPricingPanelCollapsed/);
   assert.match(configuration, /status-pill state-stale">Unsaved changes<\/span>/);
   assert.match(configuration, /activeModelPricingDraft\.rules\.map/);
   assert.match(configuration, /duplicateModelPricingRule/);

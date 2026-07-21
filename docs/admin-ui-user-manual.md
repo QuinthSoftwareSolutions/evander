@@ -526,6 +526,20 @@ Configuration destinations are linkable through the page URL. Links may identify
 section, and field so another operator can open the same setting directly; invalid or outdated
 destinations fall back to the first available section.
 
+Configuration links use these hash-query parameters:
+
+| Parameter | Value |
+|---|---|
+| `config_tab` | Configuration area key from `tabs[].key` in `/api/configuration/state`. |
+| `config_section` | Section key from `tabs[].sections[].key`, or the selected utility key. |
+| `config_field` | Optional exact `field_name` within the selected section. |
+
+For example,
+`#configuration?config_tab=agent_runtime_launch&config_section=container-worker-settings&config_field=container_worker_job_timeout_seconds`
+opens the Container worker settings section and focuses the job-timeout field. Preserve these
+parameters when sharing a destination; the directory remains controlled by the Admin Web shell's
+directory selector and access rules.
+
 Specialized configuration areas:
 
 - **People & Communications**: maintain contacts, communication targets, approval notification

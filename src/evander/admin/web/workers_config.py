@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+import re
 from pathlib import Path
 from types import UnionType
 from typing import Any, get_args, get_origin
@@ -874,6 +875,11 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
     return None
 
 
+def _directory_config_section_key(title: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", title.casefold()).strip("-")
+    return normalized or "section"
+
+
 def _approval_notification_target_options(
     service: AdminRuntimeComponents, directory_path: str
 ) -> tuple[str, ...]:
@@ -967,6 +973,7 @@ def _directory_tab_metadata(
     for title, field_sources, prefixes in _DIRECTORY_CONFIG_TAB_SECTIONS.get(tab_key, ()):
         sections.append(
             {
+                "key": _directory_config_section_key(title),
                 "title": title,
                 "fields": [
                     _directory_config_field_metadata(
@@ -984,6 +991,9 @@ def _directory_tab_metadata(
     if not sections:
         sections = [
             {
+                "key": _directory_config_section_key(
+                    _DIRECTORY_CONFIG_UI_TAB_TITLES.get(tab_key, tab_key)
+                ),
                 "title": _DIRECTORY_CONFIG_UI_TAB_TITLES.get(tab_key, tab_key),
                 "fields": [
                     _directory_config_field_metadata(

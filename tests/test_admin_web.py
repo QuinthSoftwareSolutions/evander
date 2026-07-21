@@ -11325,6 +11325,26 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert isinstance(payload["snapshots"]["providers"]["revision"], str)
     people = next(tab for tab in payload["tabs"] if tab["key"] == "people_communications")
     assert people["title"] == "People & Communications"
+    for tab in payload["tabs"]:
+        section_keys = [section["key"] for section in tab["sections"]]
+        assert section_keys
+        assert len(section_keys) == len(set(section_keys))
+        assert all(
+            section_key and section_key == section_key.casefold()
+            for section_key in section_keys
+        )
+    assert [section["key"] for section in people["sections"]] == [
+        "contacts",
+        "communication-targets",
+        "approval-notification-targets",
+        "discord",
+        "teams",
+        "email-mailboxes",
+        "email-access-and-sending-policy",
+        "phone-calls",
+        "communication-files",
+        "communication-artifact-links",
+    ]
     assert {section["title"] for section in people["sections"]} == {
         "Contacts",
         "Communication targets",
@@ -11338,6 +11358,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "Communication artifact links",
     }
     contacts = next(section for section in people["sections"] if section["title"] == "Contacts")
+    assert contacts["key"] == "contacts"
     assert {field["field_name"] for field in contacts["fields"]} == {"contacts"}
     communication_targets = next(
         section for section in people["sections"] if section["title"] == "Communication targets"
