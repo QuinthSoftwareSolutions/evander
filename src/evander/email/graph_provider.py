@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
+from dataclasses import dataclass
+from hashlib import sha256
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from threading import Lock
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -27,6 +32,72 @@ from .providers import (
 )
 
 
+@dataclass(frozen=True)
+class _CachedGraphAccessToken:
+    value: str
+    refresh_at_monotonic: float
+
+
+class GraphAccessTokenCache:
+    """Process-local client-credentials token cache shared by Graph providers."""
+
+    _lock_stripe_count = 16
+
+    def __init__(self) -> None:
+        self._entries: dict[str, _CachedGraphAccessToken] = {}
+        self._entries_lock = Lock()
+        self._acquisition_locks = tuple(Lock() for _ in range(self._lock_stripe_count))
+
+    def get_or_acquire(
+        self,
+        *,
+        credential_key: str,
+        acquire: Callable[[], tuple[str, float]],
+        expiry_skew_seconds: float,
+    ) -> str:
+        cached = self._valid_entry(credential_key)
+        if cached is not None:
+            return cached.value
+
+        acquisition_lock = self._acquisition_locks[
+            int(credential_key[:8], 16) % self._lock_stripe_count
+        ]
+        with acquisition_lock:
+            cached = self._valid_entry(credential_key)
+            if cached is not None:
+                return cached.value
+
+            access_token, expires_in = acquire()
+            refresh_skew = min(expiry_skew_seconds, expires_in * 0.1)
+            cached = _CachedGraphAccessToken(
+                value=access_token,
+                refresh_at_monotonic=(
+                    monotonic() + max(0.0, expires_in - refresh_skew)
+                ),
+            )
+            with self._entries_lock:
+                now = monotonic()
+                self._entries = {
+                    key: entry
+                    for key, entry in self._entries.items()
+                    if entry.refresh_at_monotonic > now
+                }
+                self._entries[credential_key] = cached
+            return cached.value
+
+    def _valid_entry(self, credential_key: str) -> _CachedGraphAccessToken | None:
+        now = monotonic()
+        with self._entries_lock:
+            cached = self._entries.get(credential_key)
+            if cached is not None and cached.refresh_at_monotonic > now:
+                return cached
+            self._entries.pop(credential_key, None)
+        return None
+
+
+_SHARED_GRAPH_ACCESS_TOKEN_CACHE = GraphAccessTokenCache()
+
+
 class GraphEmailProvider:
     provider_name = "graph"
     _fallback_lookback_days = 7
@@ -34,6 +105,7 @@ class GraphEmailProvider:
     _large_attachment_threshold_bytes = 3 * 1024 * 1024
     _upload_chunk_size = 5 * 1024 * 1024
     _client_credential_ref_names = ("tenant_id", "client_id", "client_secret")
+    _client_credentials_scope = "https://graph.microsoft.com/.default"
     _token_expiry_skew_seconds = 60.0
 
     def __init__(
@@ -46,6 +118,7 @@ class GraphEmailProvider:
         cursor_store: "EmailCursorRepository | None" = None,
         api_base_url: str = "https://graph.microsoft.com/v1.0",
         oauth_authority_url: str = "https://login.microsoftonline.com",
+        access_token_cache: GraphAccessTokenCache | None = None,
     ) -> None:
         self.account_identifier = account_identifier
         self.folder_mapping = folder_mapping
@@ -54,9 +127,11 @@ class GraphEmailProvider:
         self.cursor_store = cursor_store
         self.api_base_url = api_base_url.rstrip("/")
         self.oauth_authority_url = oauth_authority_url.rstrip("/")
-        self._cached_access_token: str | None = None
-        self._cached_access_token_expires_at = datetime.min.replace(tzinfo=UTC)
-        self._access_token_lock = Lock()
+        self._access_token_cache = (
+            access_token_cache
+            if access_token_cache is not None
+            else _SHARED_GRAPH_ACCESS_TOKEN_CACHE
+        )
 
     def list_unread(self, mailbox_id: str, folder: str, limit: int) -> list[EmailMessageSummary]:
         graph_folder_id = self.folder_mapping.get(folder, folder)
@@ -310,73 +385,77 @@ class GraphEmailProvider:
         return token
 
     def _client_credentials_access_token(self, refs: dict[str, str]) -> str:
-        now = datetime.now(UTC)
-        if self._cached_access_token and now < self._cached_access_token_expires_at:
-            return self._cached_access_token
-
-        with self._access_token_lock:
-            now = datetime.now(UTC)
-            if self._cached_access_token and now < self._cached_access_token_expires_at:
-                return self._cached_access_token
-
-            credentials = {
-                name: os.environ.get(ref, "").strip() for name, ref in refs.items()
-            }
-            missing_values = [name for name, value in credentials.items() if not value]
-            if missing_values:
-                missing_env_vars = ", ".join(repr(refs[name]) for name in missing_values)
-                raise RuntimeError(
-                    "graph OAuth client credential environment variables are empty: "
-                    f"{missing_env_vars}"
-                )
-
-            token_endpoint = (
-                f"{self.oauth_authority_url}/{quote(credentials['tenant_id'], safe='')}"
-                "/oauth2/v2.0/token"
+        credentials = {name: os.environ.get(ref, "").strip() for name, ref in refs.items()}
+        missing_values = [name for name, value in credentials.items() if not value]
+        if missing_values:
+            missing_env_vars = ", ".join(repr(refs[name]) for name in missing_values)
+            raise RuntimeError(
+                "graph OAuth client credential environment variables are empty: "
+                f"{missing_env_vars}"
             )
-            with httpx.Client(timeout=self.timeout_seconds) as client:
-                try:
-                    response = request_with_retries(
-                        client=client,
-                        provider=self.provider_name,
-                        operation="acquire_access_token",
-                        method="POST",
-                        url=token_endpoint,
-                        headers={"Content-Type": "application/x-www-form-urlencoded"},
-                        data={
-                            "client_id": credentials["client_id"],
-                            "client_secret": credentials["client_secret"],
-                            "scope": "https://graph.microsoft.com/.default",
-                            "grant_type": "client_credentials",
-                        },
-                        retry_non_idempotent_methods=True,
-                    )
-                except ProviderRequestError as exc:
-                    raise RuntimeError(
-                        "graph OAuth client-credentials token acquisition failed: "
-                        f"{exc}"
-                    ) from exc
+
+        credential_key = self._client_credentials_cache_key(credentials)
+        return self._access_token_cache.get_or_acquire(
+            credential_key=credential_key,
+            acquire=lambda: self._acquire_client_credentials_access_token(credentials),
+            expiry_skew_seconds=self._token_expiry_skew_seconds,
+        )
+
+    def _client_credentials_cache_key(self, credentials: dict[str, str]) -> str:
+        identity = {
+            "oauth_authority_url": self.oauth_authority_url,
+            "tenant_id": credentials["tenant_id"],
+            "client_id": credentials["client_id"],
+            "client_secret": credentials["client_secret"],
+            "scope": self._client_credentials_scope,
+        }
+        encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return sha256(encoded).hexdigest()
+
+    def _acquire_client_credentials_access_token(
+        self, credentials: dict[str, str]
+    ) -> tuple[str, float]:
+        token_endpoint = (
+            f"{self.oauth_authority_url}/{quote(credentials['tenant_id'], safe='')}"
+            "/oauth2/v2.0/token"
+        )
+        with httpx.Client(timeout=self.timeout_seconds) as client:
             try:
-                payload = response.json()
-            except ValueError as exc:
+                response = request_with_retries(
+                    client=client,
+                    provider=self.provider_name,
+                    operation="acquire_access_token",
+                    method="POST",
+                    url=token_endpoint,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    data={
+                        "client_id": credentials["client_id"],
+                        "client_secret": credentials["client_secret"],
+                        "scope": self._client_credentials_scope,
+                        "grant_type": "client_credentials",
+                    },
+                    retry_non_idempotent_methods=True,
+                )
+            except ProviderRequestError as exc:
                 raise RuntimeError(
-                    "graph OAuth client-credentials token response was not valid JSON"
+                    "graph OAuth client-credentials token acquisition failed: " f"{exc}"
                 ) from exc
-            access_token = str(payload.get("access_token", "")).strip()
-            if not access_token:
-                raise RuntimeError(
-                    "graph OAuth client-credentials token response did not include access_token"
-                )
-            try:
-                expires_in = max(0.0, float(payload.get("expires_in", 3600)))
-            except (TypeError, ValueError):
-                expires_in = 3600.0
-            refresh_skew = min(self._token_expiry_skew_seconds, expires_in * 0.1)
-            self._cached_access_token = access_token
-            self._cached_access_token_expires_at = now + timedelta(
-                seconds=max(0.0, expires_in - refresh_skew)
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                "graph OAuth client-credentials token response was not valid JSON"
+            ) from exc
+        access_token = str(payload.get("access_token", "")).strip()
+        if not access_token:
+            raise RuntimeError(
+                "graph OAuth client-credentials token response did not include access_token"
             )
-            return access_token
+        try:
+            expires_in = max(0.0, float(payload.get("expires_in", 3600)))
+        except (TypeError, ValueError):
+            expires_in = 3600.0
+        return access_token, expires_in
 
     @staticmethod
     def _graph_datetime(value: datetime) -> str:

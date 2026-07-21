@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 from datetime import UTC, datetime
 from email import message_from_bytes, policy
+from threading import Barrier, Lock
 from urllib.parse import parse_qs
 
 import httpx
@@ -11,7 +13,7 @@ import pytest
 
 from evander.config import GatewayConfig
 from evander.email.gmail_provider import GmailEmailProvider
-from evander.email.graph_provider import GraphEmailProvider
+from evander.email.graph_provider import GraphAccessTokenCache, GraphEmailProvider
 from evander.email.http_utils import ProviderRequestError
 from evander.email.providers import EmailDraftAttachment, EmailMessageSearchQuery
 
@@ -301,6 +303,7 @@ def test_graph_client_credentials_acquire_and_cache_access_token(
         timeout_seconds=5.0,
         api_base_url="https://graph.test/v1.0",
         oauth_authority_url="https://login.test",
+        access_token_cache=GraphAccessTokenCache(),
     )
 
     for _ in range(2):
@@ -313,6 +316,194 @@ def test_graph_client_credentials_acquire_and_cache_access_token(
         )
 
     assert calls == {"token": 1, "graph": 2}
+
+
+def test_graph_client_credentials_cache_is_shared_across_provider_rebuilds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_SHARED_TENANT_ID", "shared-tenant-id")
+    monkeypatch.setenv("GRAPH_SHARED_CLIENT_ID", "shared-client-id")
+    monkeypatch.setenv("GRAPH_SHARED_CLIENT_SECRET", "shared-client-secret")
+    token_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal token_calls
+        token_calls += 1
+        return httpx.Response(
+            200,
+            json={"access_token": "shared-token", "expires_in": 3600},
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider_args = {
+        "folder_mapping": {"inbox": "Inbox"},
+        "auth_secret_refs": {
+            "tenant_id": "GRAPH_SHARED_TENANT_ID",
+            "client_id": "GRAPH_SHARED_CLIENT_ID",
+            "client_secret": "GRAPH_SHARED_CLIENT_SECRET",
+        },
+        "timeout_seconds": 5.0,
+        "oauth_authority_url": "https://login-shared.test",
+    }
+
+    first_provider = GraphEmailProvider(
+        account_identifier="first@example.com", **provider_args
+    )
+    rebuilt_provider = GraphEmailProvider(
+        account_identifier="second@example.com", **provider_args
+    )
+
+    assert first_provider._access_token() == "shared-token"
+    assert rebuilt_provider._access_token() == "shared-token"
+    assert token_calls == 1
+
+
+def test_graph_client_credentials_cache_serializes_concurrent_provider_rebuilds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("GRAPH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GRAPH_CLIENT_SECRET", "client-secret")
+    cache = GraphAccessTokenCache()
+    barrier = Barrier(8)
+    calls_lock = Lock()
+    token_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal token_calls
+        with calls_lock:
+            token_calls += 1
+        return httpx.Response(
+            200,
+            json={"access_token": "concurrent-token", "expires_in": 3600},
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    providers = [
+        GraphEmailProvider(
+            account_identifier=f"mailbox-{index}@example.com",
+            folder_mapping={"inbox": "Inbox"},
+            auth_secret_refs={
+                "tenant_id": "GRAPH_TENANT_ID",
+                "client_id": "GRAPH_CLIENT_ID",
+                "client_secret": "GRAPH_CLIENT_SECRET",
+            },
+            timeout_seconds=5.0,
+            oauth_authority_url="https://login-concurrent.test",
+            access_token_cache=cache,
+        )
+        for index in range(8)
+    ]
+
+    def access_token(provider: GraphEmailProvider) -> str:
+        barrier.wait()
+        return provider._access_token()
+
+    with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+        tokens = list(executor.map(access_token, providers))
+
+    assert tokens == ["concurrent-token"] * len(providers)
+    assert token_calls == 1
+
+
+def test_graph_client_credentials_cache_isolated_by_credential_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("GRAPH_CLIENT_ID_A", "client-id-a")
+    monkeypatch.setenv("GRAPH_CLIENT_ID_B", "client-id-b")
+    monkeypatch.setenv("GRAPH_CLIENT_SECRET", "client-secret")
+    cache = GraphAccessTokenCache()
+    issued_client_ids: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        form = parse_qs(request.content.decode("utf-8"))
+        client_id = form["client_id"][0]
+        issued_client_ids.append(client_id)
+        return httpx.Response(
+            200,
+            json={"access_token": f"token-for-{client_id}", "expires_in": 3600},
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+
+    def provider(client_id_ref: str) -> GraphEmailProvider:
+        return GraphEmailProvider(
+            account_identifier="leader@example.com",
+            folder_mapping={"inbox": "Inbox"},
+            auth_secret_refs={
+                "tenant_id": "GRAPH_TENANT_ID",
+                "client_id": client_id_ref,
+                "client_secret": "GRAPH_CLIENT_SECRET",
+            },
+            timeout_seconds=5.0,
+            oauth_authority_url="https://login-isolated.test",
+            access_token_cache=cache,
+        )
+
+    assert provider("GRAPH_CLIENT_ID_A")._access_token() == "token-for-client-id-a"
+    assert provider("GRAPH_CLIENT_ID_B")._access_token() == "token-for-client-id-b"
+    assert issued_client_ids == ["client-id-a", "client-id-b"]
+
+
+def test_graph_client_credentials_secret_rotation_invalidates_cached_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_TENANT_ID", "tenant-id")
+    monkeypatch.setenv("GRAPH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GRAPH_CLIENT_SECRET", "client-secret-1")
+    issued_secrets: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        form = parse_qs(request.content.decode("utf-8"))
+        client_secret = form["client_secret"][0]
+        issued_secrets.append(client_secret)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": f"token-{len(issued_secrets)}",
+                "expires_in": 3600,
+            },
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={
+            "tenant_id": "GRAPH_TENANT_ID",
+            "client_id": "GRAPH_CLIENT_ID",
+            "client_secret": "GRAPH_CLIENT_SECRET",
+        },
+        timeout_seconds=5.0,
+        oauth_authority_url="https://login-rotation.test",
+        access_token_cache=GraphAccessTokenCache(),
+    )
+
+    assert provider._access_token() == "token-1"
+    monkeypatch.setenv("GRAPH_CLIENT_SECRET", "client-secret-2")
+    assert provider._access_token() == "token-2"
+    assert issued_secrets == ["client-secret-1", "client-secret-2"]
 
 
 def test_graph_client_credentials_refresh_expired_cached_token(
@@ -329,7 +520,7 @@ def test_graph_client_credentials_refresh_expired_cached_token(
             issued_tokens.append(token)
             return httpx.Response(
                 200,
-                json={"access_token": token, "expires_in": 3600},
+                json={"access_token": token, "expires_in": 0},
                 request=request,
             )
         assert request.headers["Authorization"] == f"Bearer {issued_tokens[-1]}"
@@ -351,6 +542,7 @@ def test_graph_client_credentials_refresh_expired_cached_token(
         timeout_seconds=5.0,
         api_base_url="https://graph.test/v1.0",
         oauth_authority_url="https://login.test",
+        access_token_cache=GraphAccessTokenCache(),
     )
 
     provider.list_messages(
@@ -360,7 +552,6 @@ def test_graph_client_credentials_refresh_expired_cached_token(
         cursor=None,
         limit=10,
     )
-    provider._cached_access_token_expires_at = datetime.now(UTC)
     provider.list_messages(
         mailbox_id="exec-graph",
         folder="inbox",
@@ -398,6 +589,7 @@ def test_graph_client_credentials_token_failure_does_not_expose_secret(
         timeout_seconds=5.0,
         api_base_url="https://graph.test/v1.0",
         oauth_authority_url="https://login.test",
+        access_token_cache=GraphAccessTokenCache(),
     )
 
     with pytest.raises(RuntimeError, match="token acquisition failed") as exc_info:

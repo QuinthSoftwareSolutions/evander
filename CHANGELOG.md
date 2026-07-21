@@ -15,7 +15,8 @@
 ## 2026-07-21 - Automatic Microsoft Graph Mailbox Tokens
 
 - Added host-side Microsoft Entra client-credentials authentication for Graph mailboxes, with
-  thread-safe access-token caching and automatic renewal shortly before token expiry.
+  a credential-keyed process cache shared across provider rebuilds, thread-safe acquisition, and
+  automatic renewal shortly before token expiry.
 - Added structured Admin Web inputs for Graph tenant ID, client ID, and client-secret environment
   references while retaining static access-token authentication as an explicit legacy mode.
 - Kept application credentials and acquired tokens out of guests and session manifests, validated
