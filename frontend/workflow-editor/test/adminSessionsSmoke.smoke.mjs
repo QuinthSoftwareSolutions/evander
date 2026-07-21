@@ -398,6 +398,8 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.equal(await page.getByRole("combobox", { name: "State" }).inputValue(), "active");
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").getByText("session-1").waitFor({ state: "visible" }));
+  assert.equal(await page.locator(".session-list").evaluate((element) => getComputedStyle(element).overflowY), "auto");
+  assert.notEqual(await page.locator(".session-list").evaluate((element) => getComputedStyle(element).maxHeight), "none");
   await assert.doesNotReject(() =>
     fieldDescription("Allowed scripts")
       .getByText("One script name per row.")
@@ -752,6 +754,8 @@ test("admin shell sessions page separates Microsoft Teams and Team Add-on tools"
 
   const teamsGroup = page.locator("details.session-tool-group").filter({ hasText: "Teams" });
   const teamAddonGroup = page.locator("details.session-tool-group").filter({ hasText: "Team Add-on" });
+  await teamsGroup.waitFor({ state: "visible" });
+  await teamAddonGroup.waitFor({ state: "visible" });
   const renderedToolGroups = await page.locator(".session-tool-groups").innerText();
   assert.equal(await teamsGroup.count(), 1, renderedToolGroups);
   assert.equal(await teamAddonGroup.count(), 1, renderedToolGroups);

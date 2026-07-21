@@ -2009,38 +2009,46 @@ export function AgentsPage() {
                   const queueSummary = promptQueueForAgent(item);
                   const executionDisplay = agentExecutionDisplay(item);
                   const targetStateText = agentTargetStateText(item);
+                  const identifier = item.target_name || item.agent_id;
+                  const hoverSummary = [
+                    `Agent id: ${item.agent_id}`,
+                    `Session: ${item.session_id ?? "None"}`,
+                    `Directory: ${item.directory_path}`,
+                    targetStateText,
+                    runtimeImageSummary,
+                    queueSummary.record_count > 0 || queueSummary.read_error
+                      ? `Prompt queue: ${promptQueueSummaryText(queueSummary)}`
+                      : null,
+                  ].filter((value): value is string => Boolean(value)).join("\n");
                   return (
-                    <button
+                    <Tooltip
                       key={agentKey(item)}
-                      type="button"
-                      className={`feature-list-item vm-list-item agent-list-item${selectedAgentKey === agentKey(item) ? " selected" : ""}`}
-                      onClick={() => {
-                        setSelectedKey(agentKey(item));
-                        setShowPromptForm(false);
-                        setShowEditForm(false);
-                        setShowSkillInstallForm(false);
-                        setShowOperatorSteeringDialog(false);
-                      }}
+                      content={hoverSummary}
+                      className="agent-list-item-tooltip"
+                      triggerClassName="agent-list-item-tooltip-trigger"
+                      bubbleClassName="agent-list-item-tooltip-bubble"
+                      inline={false}
                     >
-                      <div className="feature-list-title-row vm-list-item-row">
-                        <strong>{item.target_name || item.agent_id}</strong>
-                        <span className={`status-pill vm-status-pill state-${executionDisplay.className}`}>
-                          {executionDisplay.label}
-                        </span>
-                      </div>
-                      <div className="feature-list-meta agent-list-item-meta">
-                        {item.session_id ?? "No session"} / {item.directory_path}
-                      </div>
-                      <div className="feature-list-meta agent-list-item-meta">{targetStateText}</div>
-                      {runtimeImageSummary ? (
-                        <div className="feature-list-meta agent-list-item-meta">{runtimeImageSummary}</div>
-                      ) : null}
-                      {queueSummary.record_count > 0 || queueSummary.read_error ? (
-                        <div className="feature-list-meta agent-list-item-meta">
-                          Prompt queue: {promptQueueSummaryText(queueSummary)}
+                      <button
+                        type="button"
+                        className={`feature-list-item vm-list-item agent-list-item${selectedAgentKey === agentKey(item) ? " selected" : ""}`}
+                        aria-label={`${identifier}, ${executionDisplay.label}`}
+                        onClick={() => {
+                          setSelectedKey(agentKey(item));
+                          setShowPromptForm(false);
+                          setShowEditForm(false);
+                          setShowSkillInstallForm(false);
+                          setShowOperatorSteeringDialog(false);
+                        }}
+                      >
+                        <div className="feature-list-title-row vm-list-item-row">
+                          <strong>{identifier}</strong>
+                          <span className={`status-pill vm-status-pill state-${executionDisplay.className}`}>
+                            {executionDisplay.label}
+                          </span>
                         </div>
-                      ) : null}
-                    </button>
+                      </button>
+                    </Tooltip>
                   );
                 })}
               </div>

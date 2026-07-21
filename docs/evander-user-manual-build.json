@@ -1,15 +1,15 @@
 {
   "edition": "1.0",
-  "generated_at": "2026-07-21T13:55:55.668052+00:00",
+  "generated_at": "2026-07-21T14:35:29.548573+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "d7b2bb2bb106aab58d39070cb29f9399c497419766aa6b9c57c12340dd232921",
-    "docs/evander-user-manual.html": "e47f9e39f285b6d9a534d7a4e46e97255f0428a5341b977ddbb86c226044b18f",
+    "docs/evander-user-manual.docx": "595ccfb56edf2def3ecbf784e8d9167fa55167a411fab951f76a9bce2c717c69",
+    "docs/evander-user-manual.html": "dbe1fc56b7819ac363a16075f9745fdcb272fd24281c71f85008a75042a760d1",
     "docs/evander-user-manual.md": "c2bd971df54410e353535b8b25a89a3758571b767f660af79e26a908e9f2c1ef",
-    "docs/evander-user-manual.pdf": "648f657f95d1cb332984fd4130769a924b25d7b3708f08a8d548e38dc6993f0f"
+    "docs/evander-user-manual.pdf": "abe63e4b0c9642825ef7d3ecd9e2f22fdbe4f9563934989b7705ddfb7a3a2d15"
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "61a5b28caba658c663bfa114c64c0351885e326e7f7184f61815f070d3b557e5",
+  "source_fingerprint": "e719cccbd67ce372fe4faafe037d38d5d2276fe918fb3c0cb00c9efb8b8ce920",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -49,9 +49,9 @@
     "docs/assets/evander-user-manual/diagrams/18-team-ui-data-flow.svg": "100745cae346705e76927e8e8cff281619df0ce4c8790e78b0fc16d9369a4b0f",
     "docs/assets/evander-user-manual/diagrams/19-design-evolution.png": "2ce98b7bbd49111d797f67834d772ce821381d5034728e578d33520c33176e5f",
     "docs/assets/evander-user-manual/diagrams/19-design-evolution.svg": "a8d47691216cdfcd57b9ebf97dfe67381f854b4a308f06e84fd2fb48f7fd3ff7",
-    "docs/assets/evander-user-manual/screenshots/admin-approvals.png": "2a24b36ae3e977a312e39292fb9c8fbf63a66ee8871ac86226564a46d414fc34",
+    "docs/assets/evander-user-manual/screenshots/admin-approvals.png": "cde00ba73e01b21e805cd37bcbaf71111f6f99ab28f9030dadb6abd4f0471885",
     "docs/assets/evander-user-manual/screenshots/admin-dashboard.png": "cdb9bfb38c0acb896c242ad8f72e084cfd25bcb4fd02d04a0c86a9dd877b254f",
-    "docs/assets/evander-user-manual/screenshots/admin-sessions.png": "1800bc3697057c7e55b6d78c49d33b2e6dc20178ac147f283ae380e627cbea06",
+    "docs/assets/evander-user-manual/screenshots/admin-sessions.png": "a34ac0051932d00c0e07cf256d05baeaafaf087c2df5aef09805c33adfc3a958",
     "docs/assets/evander-user-manual/screenshots/admin-workflow.png": "fa325e3ffb0005678ea574f06e148a8aa877a79605f6ecd7dbe1cec3fffd2659",
     "docs/assets/evander-user-manual/screenshots/manifest.json": "c727cd1b7447a5675f223e2ef82e31dedf80bbccdcd421ee88553f069abc5a27",
     "docs/assets/evander-user-manual/screenshots/team-chat.png": "5e0b4df67e177b7726cc352e9bf55827b08e95d32ec4d1138140244bb5f4fd2a",

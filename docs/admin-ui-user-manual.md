@@ -187,26 +187,33 @@ Common tasks:
 1. Select a directory in the shell.
 2. Open **Agents**.
 3. Use **Refresh** to reload current target state.
-4. Select an agent from the left list to inspect details, logs, active steering dispatch, labels,
-   policy, metadata, and attached session or VM context.
-5. Unlock privileges before starting any mutation.
-6. Use **Create** to create an agent session. Fill in directory, session ID, model, TTL, target
+4. Scroll the left list independently from the detail workspace. Its compact rows show only the
+   agent identifier and execution status; hover or focus a row for its session, directory, target,
+   runtime-image, and prompt-queue summary.
+5. Select an agent to inspect full details, logs, active steering dispatch, labels, policy,
+   metadata, and attached session or VM context.
+6. Unlock privileges before starting any mutation.
+7. Use **Create** to create an agent session. Fill in directory, session ID, model, TTL, target
    details, allowed tools/scripts, communication targets, mailbox-account access, bootstrap
    options, and optional Codex skills. Container-worker Codex agents can also choose **Metered
    API** or **ChatGPT subscription** as their usage source.
-7. Use the policy edit action to adjust an existing agent's host-side policy. A changed Codex usage
+8. Use the policy edit action to adjust an existing agent's host-side policy. A changed Codex usage
    source applies on the next turn without replacing the session or its thread history.
-8. When you are an Admin owner at `root`, use **Worker ChatGPT subscription** to inspect the
+9. When you are an Admin owner at `root`, use **Worker ChatGPT subscription** to inspect the
    worker-global account, start or cancel device-code sign-in, and sign out. These account actions
    require both root ownership and an unlocked privileged session because every subscription-mode
    agent on that worker shares the account.
-9. Use the skill install action to copy managed Codex skills into an existing session.
-10. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
+10. Use the skill install action to copy managed Codex skills into an existing session.
+11. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
    multiline prompt and an optional resume thread ID, prefilled from the session's latest known
    agent thread when available.
-11. Use **Operator steering** to interrupt and steer a container worker session's active dispatch,
+12. Use **Operator steering** to interrupt and steer a container worker session's active dispatch,
     or to queue a legacy relay-delivered note for non-container sessions.
-12. Use lifecycle actions only after confirming the target and directory are correct.
+13. Use lifecycle actions only after confirming the target and directory are correct.
+
+The same independent sidebar scrolling applies to the other card-list/detail pages, including
+Sessions, VMs, Issues, Approvals, Workers, Skills, Add-ons, Connectors, users and groups, MCP Tools,
+Tool Visibility, and report navigation. Their existing card contents and density are unchanged.
 
 Notes:
 

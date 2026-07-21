@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-21 - Scrollable Admin Detail Lists
+
+- Made card-list sidebars independently scrollable across Admin Web list/detail pages so operators
+  can browse long collections without moving the selected detail workspace.
+- Reduced Agents list rows to the agent identifier and execution-status badge, with the previous
+  session, directory, target, runtime-image, and prompt-queue summary available on hover or focus
+  and in the selected-agent detail.
+
 ## 2026-07-21 - Concurrency And Lifecycle Review Hardening
 
 - Prevented active Bokio supplier-invoice and prepared-action executions from being reclaimed by
