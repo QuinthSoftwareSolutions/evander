@@ -6,6 +6,8 @@
   deleted, while retaining raw destination resolution for legacy allowlists.
 - Preserved explicit empty mailbox-folder grants and limited mailbox defaults returned to Admin Web
   to folders allowed by effective directory policy.
+- Added an actionable Sessions-page empty state that opens Configuration for the session directory
+  when no mailbox accounts are available under its policy.
 
 ## 2026-07-20 - Session Communication And Mailbox Grants
 

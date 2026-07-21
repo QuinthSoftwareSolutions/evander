@@ -1153,7 +1153,7 @@ function ApprovalSettingsModal({
 }
 
 export function SessionsScreen() {
-  const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
+  const { privilegedUnlocked, selectedDirectoryPath, setSelectedDirectoryPath } = useAdminUi();
   const [response, setResponse] = useState<SessionListResponse | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [deepLinkSessionId, setDeepLinkSessionId] = useState(() => sessionIdFromHash());
@@ -1640,6 +1640,18 @@ export function SessionsScreen() {
     setPolicyDraft((current) => ({ ...current, ...update }));
     setPolicyDirty(true);
     setStatus(null);
+  }
+
+  function openMailboxConfiguration() {
+    if (!selectedSession) return;
+    if (
+      (modelDirty || toolsDirty || policyDirty)
+      && !window.confirm("Open Configuration and discard unsaved session changes?")
+    ) {
+      return;
+    }
+    setSelectedDirectoryPath(selectedSession.directory_path);
+    window.location.hash = "configuration";
   }
 
   function convertLegacyCommunicationPolicy() {
@@ -2446,8 +2458,19 @@ export function SessionsScreen() {
                         options={selectedSession?.email_mailbox_options ?? []}
                         onChange={(nextGrants) => updatePolicyDraft({ emailMailboxGrants: nextGrants })}
                         disabled={mutationLocked}
-                        emptyState="No mailbox accounts are granted to this session."
+                        emptyState={
+                          (selectedSession?.email_mailbox_options ?? []).length > 0
+                            ? "No mailbox accounts are granted to this session."
+                            : "No mailbox accounts are available under this session's directory policy. Configure the mailbox allowlist and folder policy first."
+                        }
                       />
+                      {(selectedSession?.email_mailbox_options ?? []).length === 0 ? (
+                        <div className="inline-actions compact-actions">
+                          <button type="button" className="admin-action-button compact" onClick={openMailboxConfiguration}>
+                            Configure mailbox access
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                   <label className="checkbox-row">
