@@ -53,7 +53,7 @@ def strict_worker_sandbox_profile() -> WorkerSandboxProfile:
     return WorkerSandboxProfile(
         name="strict",
         read_only_rootfs=True,
-        tmpfs=("/tmp:rw,noexec,nosuid,size=512m",),
+        tmpfs=("/tmp:rw,noexec,nosuid,size=4g",),
         default_pids_limit=512,
     )
 

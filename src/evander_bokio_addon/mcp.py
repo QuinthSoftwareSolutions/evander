@@ -7,7 +7,7 @@ from typing import Any
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 
-from evander.addons import AddonContext
+from evander.addons import AddonContext, AddonMcpTool
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.policy import PolicyError
@@ -15,13 +15,25 @@ from evander.policy import PolicyError
 from .api import _execute_prepared_action
 from .client import BokioClient
 from .evidence import BokioEvidenceError, BokioEvidenceStore, validate_evidence_id
+from .operations import (
+    BokioOperationStore,
+    bokio_error_payload,
+    bokio_write_failure_is_uncertain,
+)
 from .state import PreparedActionStore, upload_staging_dir
 
 
 GET_COMPANY_TOOL = "bokio_get_company"
 LIST_ACCOUNTS_TOOL = "bokio_list_accounts"
 LIST_JOURNAL_ENTRIES_TOOL = "bokio_list_journal_entries"
+LIST_CUSTOMERS_TOOL = "bokio_list_customers"
+GET_CUSTOMER_TOOL = "bokio_get_customer"
 LIST_INVOICES_TOOL = "bokio_list_invoices"
+LIST_SUPPLIERS_TOOL = "bokio_list_suppliers"
+GET_SUPPLIER_TOOL = "bokio_get_supplier"
+LIST_UPLOADS_TOOL = "bokio_list_uploads"
+GET_UPLOAD_TOOL = "bokio_get_upload"
+DOWNLOAD_UPLOAD_TOOL = "bokio_download_upload"
 LIST_EVIDENCE_TOOL = "bokio_list_evidence"
 GET_EVIDENCE_TOOL = "bokio_get_evidence"
 STAGE_EVIDENCE_TOOL = "bokio_stage_evidence_for_workspace"
@@ -33,6 +45,7 @@ PREPARE_JOURNAL_ENTRY_TOOL = "bokio_prepare_journal_entry"
 CREATE_APPROVED_JOURNAL_ENTRY_TOOL = "bokio_create_approved_journal_entry"
 PREPARE_SUPPLIER_INVOICE_TOOL = "bokio_prepare_supplier_invoice"
 CREATE_APPROVED_SUPPLIER_INVOICE_TOOL = "bokio_create_approved_supplier_invoice"
+CREATE_SUPPLIER_INVOICE_TOOL = "bokio_create_supplier_invoice"
 PREPARE_BANK_PAYMENT_TOOL = "bokio_prepare_bank_payment"
 CREATE_APPROVED_BANK_PAYMENT_TOOL = "bokio_create_approved_bank_payment"
 
@@ -40,11 +53,18 @@ READ_TOOLS = (
     GET_COMPANY_TOOL,
     LIST_ACCOUNTS_TOOL,
     LIST_JOURNAL_ENTRIES_TOOL,
+    LIST_CUSTOMERS_TOOL,
+    GET_CUSTOMER_TOOL,
     LIST_INVOICES_TOOL,
+    LIST_SUPPLIERS_TOOL,
+    GET_SUPPLIER_TOOL,
+    LIST_UPLOADS_TOOL,
+    GET_UPLOAD_TOOL,
     LIST_EVIDENCE_TOOL,
     GET_EVIDENCE_TOOL,
 )
 WRITE_TOOLS = (
+    DOWNLOAD_UPLOAD_TOOL,
     STAGE_EVIDENCE_TOOL,
     IMPORT_EVIDENCE_ARTIFACT_TOOL,
     UPLOAD_DOCUMENT_TOOL,
@@ -54,10 +74,112 @@ WRITE_TOOLS = (
     CREATE_APPROVED_JOURNAL_ENTRY_TOOL,
     PREPARE_SUPPLIER_INVOICE_TOOL,
     CREATE_APPROVED_SUPPLIER_INVOICE_TOOL,
+    CREATE_SUPPLIER_INVOICE_TOOL,
     PREPARE_BANK_PAYMENT_TOOL,
     CREATE_APPROVED_BANK_PAYMENT_TOOL,
 )
 MCP_TOOL_NAMES = (*READ_TOOLS, *WRITE_TOOLS)
+
+
+def _catalog(name: str, label: str, description: str) -> AddonMcpTool:
+    return AddonMcpTool(name=name, label=label, description=description)
+
+
+MCP_TOOL_CATALOG = (
+    _catalog(GET_COMPANY_TOOL, "Get company", "Read the configured Bokio company."),
+    _catalog(LIST_ACCOUNTS_TOOL, "List accounts", "List Bokio chart-of-accounts records."),
+    _catalog(
+        LIST_JOURNAL_ENTRIES_TOOL,
+        "List journal entries",
+        "List Bokio journal entries with optional paging and filtering.",
+    ),
+    _catalog(
+        LIST_CUSTOMERS_TOOL,
+        "List customers",
+        "List Bokio customers with optional paging and filtering.",
+    ),
+    _catalog(GET_CUSTOMER_TOOL, "Get customer", "Read one Bokio customer."),
+    _catalog(LIST_INVOICES_TOOL, "List invoices", "List Bokio customer invoices."),
+    _catalog(
+        LIST_SUPPLIERS_TOOL,
+        "List suppliers",
+        "List Bokio suppliers with optional paging and filtering. This API is in preview.",
+    ),
+    _catalog(
+        GET_SUPPLIER_TOOL,
+        "Get supplier",
+        "Read one Bokio supplier. This API is in preview.",
+    ),
+    _catalog(
+        LIST_UPLOADS_TOOL,
+        "List uploads",
+        "List receipt and invoice uploads stored remotely in Bokio.",
+    ),
+    _catalog(GET_UPLOAD_TOOL, "Get upload", "Read one remote Bokio upload's metadata."),
+    _catalog(
+        DOWNLOAD_UPLOAD_TOOL,
+        "Download upload",
+        "Download a remote Bokio upload as a session communication artifact.",
+    ),
+    _catalog(LIST_EVIDENCE_TOOL, "List evidence", "List managed Bokio evidence records."),
+    _catalog(GET_EVIDENCE_TOOL, "Get evidence", "Read one managed Bokio evidence record."),
+    _catalog(
+        STAGE_EVIDENCE_TOOL,
+        "Stage evidence for workspace",
+        "Stage managed Bokio evidence as a session communication artifact.",
+    ),
+    _catalog(
+        IMPORT_EVIDENCE_ARTIFACT_TOOL,
+        "Import evidence artifact",
+        "Import a session-owned communication artifact into durable Bokio evidence.",
+    ),
+    _catalog(UPLOAD_DOCUMENT_TOOL, "Upload document", "Upload a staged document to Bokio."),
+    _catalog(
+        ATTACH_EVIDENCE_TOOL,
+        "Attach evidence",
+        "Upload managed evidence and attach it to a Bokio journal entry.",
+    ),
+    _catalog(
+        CREATE_JOURNAL_ENTRY_WITH_EVIDENCE_TOOL,
+        "Create journal entry with evidence",
+        "Create a Bokio journal entry and attach managed evidence idempotently.",
+    ),
+    _catalog(
+        PREPARE_JOURNAL_ENTRY_TOOL,
+        "Prepare journal entry",
+        "Prepare a local Bokio journal-entry action for operator review.",
+    ),
+    _catalog(
+        CREATE_APPROVED_JOURNAL_ENTRY_TOOL,
+        "Create approved journal entry",
+        "Execute an approved prepared Bokio journal-entry action.",
+    ),
+    _catalog(
+        PREPARE_SUPPLIER_INVOICE_TOOL,
+        "Prepare supplier invoice",
+        "Prepare a local Bokio supplier-invoice action for operator review.",
+    ),
+    _catalog(
+        CREATE_APPROVED_SUPPLIER_INVOICE_TOOL,
+        "Create approved supplier invoice",
+        "Execute an approved prepared Bokio supplier-invoice action.",
+    ),
+    _catalog(
+        CREATE_SUPPLIER_INVOICE_TOOL,
+        "Create supplier invoice",
+        "Create a Bokio supplier invoice autonomously with a durable operation key.",
+    ),
+    _catalog(
+        PREPARE_BANK_PAYMENT_TOOL,
+        "Prepare bank payment",
+        "Prepare a local Bokio bank-payment action for operator review.",
+    ),
+    _catalog(
+        CREATE_APPROVED_BANK_PAYMENT_TOOL,
+        "Create approved bank payment",
+        "Execute an approved Bokio bank payment; BankID signing remains required.",
+    ),
+)
 
 
 def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
@@ -131,6 +253,38 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         }
 
     @server.tool(
+        name=LIST_CUSTOMERS_TOOL,
+        description="List Bokio customers with optional pagination and query filter.",
+    )
+    def bokio_list_customers(
+        page: int = 1,
+        page_size: int = 25,
+        query: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, LIST_CUSTOMERS_TOOL)
+        return {
+            "result": _client(context).list_customers(
+                page=page,
+                page_size=page_size,
+                query=query,
+            )
+        }
+
+    @server.tool(
+        name=GET_CUSTOMER_TOOL,
+        description="Read one Bokio customer by customer ID.",
+    )
+    def bokio_get_customer(
+        customer_id: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, GET_CUSTOMER_TOOL)
+        return {"result": _client(context).get_customer(customer_id)}
+
+    @server.tool(
         name=LIST_INVOICES_TOOL,
         description="List Bokio invoices with optional pagination and query filter.",
     )
@@ -144,6 +298,100 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         _require_tool(session_id, ctx, LIST_INVOICES_TOOL)
         return {
             "result": _client(context).list_invoices(page=page, page_size=page_size, query=query)
+        }
+
+    @server.tool(
+        name=LIST_SUPPLIERS_TOOL,
+        description=(
+            "List Bokio suppliers with optional pagination and query filter. "
+            "The Bokio suppliers API is in preview."
+        ),
+    )
+    def bokio_list_suppliers(
+        page: int = 1,
+        page_size: int = 25,
+        query: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, LIST_SUPPLIERS_TOOL)
+        return {
+            "result": _client(context).list_suppliers(
+                page=page,
+                page_size=page_size,
+                query=query,
+            )
+        }
+
+    @server.tool(
+        name=GET_SUPPLIER_TOOL,
+        description="Read one Bokio supplier by supplier ID. The Bokio suppliers API is in preview.",
+    )
+    def bokio_get_supplier(
+        supplier_id: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, GET_SUPPLIER_TOOL)
+        return {"result": _client(context).get_supplier(supplier_id)}
+
+    @server.tool(
+        name=LIST_UPLOADS_TOOL,
+        description="List remote Bokio uploads with optional pagination and query filter.",
+    )
+    def bokio_list_uploads(
+        page: int = 1,
+        page_size: int = 25,
+        query: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, LIST_UPLOADS_TOOL)
+        return {
+            "result": _client(context).list_uploads(
+                page=page,
+                page_size=page_size,
+                query=query,
+            )
+        }
+
+    @server.tool(
+        name=GET_UPLOAD_TOOL,
+        description="Read metadata for one upload stored remotely in Bokio.",
+    )
+    def bokio_get_upload(
+        upload_id: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, GET_UPLOAD_TOOL)
+        return {"result": _client(context).get_upload(upload_id)}
+
+    @server.tool(
+        name=DOWNLOAD_UPLOAD_TOOL,
+        description="Download one remote Bokio upload as a session-owned communication artifact.",
+    )
+    def bokio_download_upload(
+        upload_id: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _require_tool(session_id, ctx, DOWNLOAD_UPLOAD_TOOL)
+        client = _client(context)
+        upload = client.get_upload(upload_id)
+        downloaded = client.download_upload(upload_id)
+        artifact = CommunicationArtifactStore(context.runtime_dir).stage(
+            provider="bokio_upload",
+            session_id=resolved_session_id,
+            content=downloaded.content,
+            original_filename=downloaded.filename,
+            mime_type=downloaded.mime_type,
+            source_attachment_id=upload_id,
+            metadata={"bokio_upload_id": upload_id, "bokio_upload": upload},
+        )
+        return {
+            "upload": upload,
+            "artifact": artifact.model_dump(mode="json"),
         }
 
     @server.tool(
@@ -372,6 +620,60 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
     ) -> dict[str, Any]:
         _require_tool(session_id, ctx, CREATE_APPROVED_SUPPLIER_INVOICE_TOOL)
         return _execute_prepared_action(context, prepared_action_id)
+
+    @server.tool(
+        name=CREATE_SUPPLIER_INVOICE_TOOL,
+        description=(
+            "Create a Bokio supplier invoice using a caller-supplied durable operation key. "
+            "Exact repeats return the stored result; uncertain outcomes require checking Bokio "
+            "and explicitly confirming that the invoice was not created before retrying."
+        ),
+    )
+    def bokio_create_supplier_invoice(
+        payload: dict[str, Any],
+        operation_key: str,
+        retry_if_failed: bool = False,
+        confirm_not_created: bool = False,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _require_tool(session_id, ctx, CREATE_SUPPLIER_INVOICE_TOOL)
+        store = BokioOperationStore(context.runtime_dir)
+        operation = store.begin(
+            session_id=resolved_session_id,
+            operation_kind="supplier_invoice",
+            operation_key=operation_key,
+            payload=payload,
+        )
+        if operation["status"] == "succeeded":
+            return {"operation": {**operation, "idempotent": True}}
+        operation, claimed = store.claim(
+            session_id=resolved_session_id,
+            operation_kind="supplier_invoice",
+            operation_key=operation_key,
+            retry_if_failed=retry_if_failed,
+            confirm_not_created=confirm_not_created,
+        )
+        if not claimed:
+            return {"operation": {**operation, "idempotent": True}}
+        try:
+            result = _client(context).create_supplier_invoice(payload)
+        except Exception as exc:
+            store.mark_failed(
+                session_id=resolved_session_id,
+                operation_kind="supplier_invoice",
+                operation_key=operation_key,
+                error=bokio_error_payload(exc),
+                uncertain=bokio_write_failure_is_uncertain(exc),
+            )
+            raise
+        operation = store.mark_succeeded(
+            session_id=resolved_session_id,
+            operation_kind="supplier_invoice",
+            operation_key=operation_key,
+            result=result,
+        )
+        return {"operation": operation}
 
     @server.tool(
         name=PREPARE_BANK_PAYMENT_TOOL,

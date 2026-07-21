@@ -43,6 +43,7 @@ from evander.session_auth import session_mcp_auth_token
 
 from .agent_session import (
     container_backend,
+    container_codex_turn_spec,
     container_prompt_command,
     container_thread_id_from_logs,
     container_worker_guest_gateway_url,
@@ -369,18 +370,30 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
+        mcp_gateway_url = self._mcp_gateway_url(
+            config=effective_config,
+            target=session_id,
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+            base_gateway_url=container_worker_guest_gateway_url(effective_config),
+        )
+        codex_turn = container_codex_turn_spec(
+            prompt=prompt,
+            model=resolved_model,
+            resume_thread_id=effective_resume_thread_id,
+            session=session,
+            config=effective_config,
+            agent_provider=agent_harness,
+            resume_mode="new_context",
+            mcp_gateway_url=mcp_gateway_url,
+            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
+        )
         command = self._container_prompt_command(
             prompt=prompt,
             model=resolved_model,
             resume_thread_id=effective_resume_thread_id,
             agent_provider=agent_harness,
-            mcp_gateway_url=self._mcp_gateway_url(
-                config=effective_config,
-                target=session_id,
-                workflow_run_id=workflow_run_id,
-                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-                base_gateway_url=container_worker_guest_gateway_url(effective_config),
-            ),
+            mcp_gateway_url=mcp_gateway_url,
             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
         )
         try:
@@ -393,6 +406,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                         directory_path=session.directory_path if session is not None else "root",
                         image=container_worker_image_for_session(session, effective_config),
                         command=command,
+                        codex_turn=codex_turn,
                         metadata={
                             "effect_type": self.node_type(),
                             "dispatch_id": dispatch_id,
@@ -400,6 +414,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
                             "agent_provider": agent_harness,
                             "model": resolved_model,
                             "model_provider_mode": effective_config.model_provider_mode,
+                            **(
+                                {"codex_auth_mode": codex_turn.auth_mode.value}
+                                if codex_turn is not None
+                                else {}
+                            ),
                         },
                     )
                 )
@@ -1283,6 +1302,26 @@ class AgentPromptEffectProvider(EffectProviderBase):
             or str(getattr(record, "resolved_config", {}).get("directory_path") or "").strip()
             or "root"
         )
+        retry_mcp_gateway_url = cls._context_retry_mcp_gateway_url(
+            record=record,
+            config=config,
+            session_id=session_id,
+            session=session,
+        )
+        codex_turn = container_codex_turn_spec(
+            prompt=retry_prompt,
+            model=model,
+            resume_thread_id=None,
+            session=session,
+            config=config,
+            agent_provider=agent_harness,
+            resume_mode="new_context",
+            mcp_gateway_url=retry_mcp_gateway_url,
+            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
+        )
+        if codex_turn is None:
+            merged_outputs["context_retry_skipped_reason"] = "non_codex_agent_provider"
+            return False
         try:
             handle = backend.start(
                 backend.prepare(
@@ -1298,14 +1337,10 @@ class AgentPromptEffectProvider(EffectProviderBase):
                             resume_thread_id=None,
                             agent_provider=agent_harness,
                             resume_mode="new_context",
-                            mcp_gateway_url=cls._context_retry_mcp_gateway_url(
-                                record=record,
-                                config=config,
-                                session_id=session_id,
-                                session=session,
-                            ),
+                            mcp_gateway_url=retry_mcp_gateway_url,
                             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
                         ),
+                        codex_turn=codex_turn,
                         metadata={
                             "effect_type": str(getattr(record, "effect_type", "") or ""),
                             "dispatch_id": dispatch_id,
@@ -1313,6 +1348,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                             "agent_provider": agent_harness,
                             "model": model,
                             "model_provider_mode": getattr(config, "model_provider_mode", None),
+                            "codex_auth_mode": codex_turn.auth_mode.value,
                             "context_retry_mode": CONTEXT_RETRY_MODE_REDUCED,
                             "context_retry_attempt": attempt + 1,
                             "context_retry_max_attempts": max_attempts,

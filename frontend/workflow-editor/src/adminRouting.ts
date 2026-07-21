@@ -20,11 +20,25 @@ export type BuiltinAdminTab =
 
 export type AdminTab = BuiltinAdminTab | `addon:${string}`;
 
+export type AdminNavigationGroup =
+  | "overview"
+  | "operations"
+  | "automation"
+  | "extensions"
+  | "infrastructure"
+  | "governance";
+
+export type AdminNavigationGroupDefinition = {
+  key: AdminNavigationGroup;
+  label: string;
+};
+
 export type AdminTabDefinition = {
   key: AdminTab;
   label: string;
   shortLabel: string;
   description: string;
+  group: AdminNavigationGroup;
   addonId?: string;
   apiBasePath?: string;
   uiPath?: string | null;
@@ -44,35 +58,46 @@ export type AdminAddonNavigationPayload = {
 export type AdminHashParamValue = string | number | boolean | null | undefined;
 export type AdminUsersMode = "users" | "groups";
 
+export const ADMIN_NAVIGATION_GROUPS: ReadonlyArray<AdminNavigationGroupDefinition> = [
+  { key: "overview", label: "Overview" },
+  { key: "operations", label: "Operations" },
+  { key: "automation", label: "Automation" },
+  { key: "extensions", label: "Extensions" },
+  { key: "infrastructure", label: "Infrastructure" },
+  { key: "governance", label: "Governance" },
+];
+
 export const TABS: ReadonlyArray<AdminTabDefinition> = [
   {
     key: "dashboard",
     label: "Dashboard",
     shortLabel: "Ops",
     description: "System overview and live operations.",
+    group: "overview",
   },
-  { key: "agents", label: "Agents", shortLabel: "Agents", description: "Active and historical execution targets." },
-  { key: "approvals", label: "Approvals", shortLabel: "Approvals", description: "Review guarded approval requests and queued decisions." },
-  { key: "artifacts", label: "Artifacts", shortLabel: "Artifacts", description: "Resolve and download durable agent artifact archives." },
-  { key: "addons", label: "Add-ons", shortLabel: "Add-ons", description: "Enable, disable, and inspect runtime add-ons." },
-  { key: "connectors", label: "Connectors", shortLabel: "Connect", description: "Configure approved files and REST integrations for agent sessions." },
-  { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library." },
-  { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
-  { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and issue records." },
-  { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
-  { key: "tool-visibility", label: "Tool Visibility", shortLabel: "Visibility", description: "Effective tool visibility, transport binding, and denied execution evidence." },
-  { key: "mcp-tools", label: "MCP Tools", shortLabel: "MCP", description: "Directory-scoped MCP tool approval and deny policy." },
-  { key: "tool-calls", label: "Tool Calls", shortLabel: "Calls", description: "Search MCP tool invocation audit entries." },
-  { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },
-  { key: "reports", label: "Reports", shortLabel: "Reports", description: "Workflow activity and operational reporting." },
+  { key: "reports", label: "Reports", shortLabel: "Reports", description: "Workflow activity and operational reporting.", group: "overview" },
+  { key: "agents", label: "Agents", shortLabel: "Agents", description: "Active and historical execution targets.", group: "operations" },
+  { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules.", group: "operations" },
+  { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and issue records.", group: "operations" },
+  { key: "approvals", label: "Approvals", shortLabel: "Approvals", description: "Review guarded approval requests and queued decisions.", group: "operations" },
+  { key: "artifacts", label: "Artifacts", shortLabel: "Artifacts", description: "Resolve and download durable agent artifact archives.", group: "operations" },
+  { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity.", group: "automation" },
+  { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library.", group: "automation" },
+  { key: "addons", label: "Add-ons", shortLabel: "Add-ons", description: "Enable, disable, and inspect runtime add-ons.", group: "extensions" },
+  { key: "connectors", label: "Connectors", shortLabel: "Connect", description: "Configure approved files and REST integrations for agent sessions.", group: "extensions" },
+  { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details.", group: "infrastructure" },
+  { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings.", group: "infrastructure" },
+  { key: "tool-visibility", label: "Tool Visibility", shortLabel: "Visibility", description: "Effective tool visibility, transport binding, and denied execution evidence.", group: "governance" },
+  { key: "mcp-tools", label: "MCP Tools", shortLabel: "MCP", description: "Directory-scoped MCP tool approval and deny policy.", group: "governance" },
+  { key: "tool-calls", label: "Tool Calls", shortLabel: "Calls", description: "Search MCP tool invocation audit entries.", group: "governance" },
+  { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy.", group: "governance" },
   {
     key: "users",
     label: "Users & Groups",
     shortLabel: "Users",
     description: "Admin users, groups, and permissions.",
+    group: "governance",
   },
-  { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings." },
-  { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity." },
 ];
 
 const TAB_ALIASES: Readonly<Record<string, BuiltinAdminTab>> = {
@@ -153,6 +178,7 @@ export function addonTabsFromPayload(
       label: addon.label || addon.display_name || addon.addon_id,
       shortLabel: addon.short_label || addon.label || addon.addon_id,
       description: addon.description || addon.display_name || addon.addon_id,
+      group: "extensions",
       addonId: addon.addon_id,
       apiBasePath: addon.api_base_path,
       uiPath: addon.ui_path ?? null,

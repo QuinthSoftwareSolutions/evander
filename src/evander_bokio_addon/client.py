@@ -2,15 +2,20 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from email.message import Message
 from pathlib import Path
 from typing import Any
+import json
 import mimetypes
 import os
+import re
 
 import httpx
 
 
 DEFAULT_BOKIO_API_BASE_URL = "https://api.bokio.se/v1"
+MAX_BOKIO_DOWNLOAD_BYTES = 100 * 1024 * 1024
+MAX_BOKIO_ERROR_BODY_BYTES = 2 * 1024
 _UPLOAD_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".jpg": "image/jpeg",
@@ -101,6 +106,13 @@ def settings_from_context(context: Any | None = None) -> BokioConnectionSettings
     )
 
 
+@dataclass(frozen=True)
+class BokioDownloadedUpload:
+    content: bytes
+    filename: str
+    mime_type: str | None
+
+
 class BokioClient:
     def __init__(self, settings: BokioConnectionSettings) -> None:
         self.settings = settings
@@ -131,6 +143,19 @@ class BokioClient:
     def create_journal_entry(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post("/journal-entries", json=payload)
 
+    def list_customers(
+        self, *, page: int = 1, page_size: int = 25, query: str | None = None
+    ) -> Any:
+        return self.get("/customers", params=_page_params(page, page_size, query))
+
+    def get_customer(self, customer_id: str) -> Any:
+        normalized_id = _opaque_resource_id(
+            customer_id,
+            field_name="customer_id",
+            resource_name="customer",
+        )
+        return self.get(f"/customers/{normalized_id}")
+
     def list_invoices(self, *, page: int = 1, page_size: int = 25, query: str | None = None) -> Any:
         return self.get("/invoices", params=_page_params(page, page_size, query))
 
@@ -145,8 +170,70 @@ class BokioClient:
     def create_supplier_invoice(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post("/supplier-invoices", json=payload)
 
+    def list_suppliers(
+        self, *, page: int = 1, page_size: int = 25, query: str | None = None
+    ) -> Any:
+        return self.get("/suppliers", params=_page_params(page, page_size, query))
+
+    def get_supplier(self, supplier_id: str) -> Any:
+        normalized_id = _opaque_resource_id(
+            supplier_id,
+            field_name="supplier_id",
+            resource_name="supplier",
+        )
+        return self.get(f"/suppliers/{normalized_id}")
+
     def list_uploads(self, *, page: int = 1, page_size: int = 25, query: str | None = None) -> Any:
         return self.get("/uploads", params=_page_params(page, page_size, query))
+
+    def get_upload(self, upload_id: str) -> Any:
+        return self.get(f"/uploads/{_opaque_upload_id(upload_id)}")
+
+    def download_upload(
+        self,
+        upload_id: str,
+        *,
+        max_bytes: int | None = None,
+    ) -> BokioDownloadedUpload:
+        normalized_upload_id = _opaque_upload_id(upload_id)
+        bounded_max_bytes = MAX_BOKIO_DOWNLOAD_BYTES if max_bytes is None else int(max_bytes)
+        if bounded_max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        path = f"/uploads/{normalized_upload_id}/download"
+        with httpx.Client(timeout=self.settings.timeout_seconds) as client:
+            with client.stream(
+                "GET",
+                self._request_url(path),
+                headers=self._request_headers(accept="application/octet-stream"),
+            ) as response:
+                if response.status_code != 200:
+                    raise _download_response_error(response)
+                content_length = _optional_content_length(response.headers.get("content-length"))
+                if content_length is not None and content_length > bounded_max_bytes:
+                    raise _download_too_large_error(
+                        response,
+                        byte_count=content_length,
+                        max_bytes=bounded_max_bytes,
+                    )
+                content = bytearray()
+                for chunk in response.iter_bytes():
+                    content.extend(chunk)
+                    if len(content) > bounded_max_bytes:
+                        raise _download_too_large_error(
+                            response,
+                            byte_count=len(content),
+                            max_bytes=bounded_max_bytes,
+                        )
+                mime_type = _response_mime_type(response)
+                filename = _response_filename(
+                    response,
+                    fallback=_download_fallback_filename(normalized_upload_id, mime_type),
+                )
+        return BokioDownloadedUpload(
+            content=bytes(content),
+            filename=filename,
+            mime_type=mime_type,
+        )
 
     def upload_document(
         self,
@@ -200,15 +287,28 @@ class BokioClient:
         return self._json_response(self.request("POST", path, json=json, data=data, files=files))
 
     def request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        url = f"{self.settings.api_base_url}/companies/{self.settings.company_id}{path}"
         headers = dict(kwargs.pop("headers", {}) or {})
         headers["Authorization"] = f"Bearer {self.settings.integration_token}"
         headers.setdefault("Accept", "application/json")
         with httpx.Client(timeout=self.settings.timeout_seconds) as client:
-            response = client.request(method, url, headers=headers, **kwargs)
+            response = client.request(
+                method,
+                self._request_url(path),
+                headers=headers,
+                **kwargs,
+            )
         if response.status_code >= 400:
             raise self._api_error(response)
         return response
+
+    def _request_url(self, path: str) -> str:
+        return f"{self.settings.api_base_url}/companies/{self.settings.company_id}{path}"
+
+    def _request_headers(self, *, accept: str = "application/json") -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.settings.integration_token}",
+            "Accept": accept,
+        }
 
     def _json_response(self, response: httpx.Response) -> Any:
         if response.status_code == 204 or not response.content:
@@ -250,6 +350,87 @@ def _required(value: str, field_name: str) -> str:
     if not normalized:
         raise ValueError(f"{field_name} is required")
     return normalized
+
+
+def _opaque_upload_id(value: str) -> str:
+    return _opaque_resource_id(value, field_name="upload_id", resource_name="upload")
+
+
+def _opaque_resource_id(value: str, *, field_name: str, resource_name: str) -> str:
+    normalized = _required(value, field_name)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}", normalized):
+        raise ValueError(f"{field_name} must be an opaque Bokio {resource_name} ID")
+    return normalized
+
+
+def _optional_content_length(value: str | None) -> int | None:
+    try:
+        parsed = int(str(value or "").strip())
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _response_mime_type(response: httpx.Response) -> str | None:
+    value = str(response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    return value or None
+
+
+def _response_filename(response: httpx.Response, *, fallback: str) -> str:
+    disposition = str(response.headers.get("content-disposition") or "").strip()
+    if disposition:
+        message = Message()
+        message["content-disposition"] = disposition
+        filename = str(message.get_filename() or "").strip()
+        if filename:
+            return filename
+    return fallback
+
+
+def _download_fallback_filename(upload_id: str, mime_type: str | None) -> str:
+    suffix = mimetypes.guess_extension(str(mime_type or "").strip()) or ".bin"
+    return f"bokio-upload-{upload_id}{suffix}"
+
+
+def _download_too_large_error(
+    response: httpx.Response,
+    *,
+    byte_count: int,
+    max_bytes: int,
+) -> BokioApiError:
+    return BokioApiError(
+        f"Bokio upload exceeds the {max_bytes}-byte download limit",
+        status_code=response.status_code,
+        payload={"byte_count": byte_count, "max_bytes": max_bytes},
+        plan_warning=response.headers.get("Bokio-Plan-Warning"),
+    )
+
+
+def _download_response_error(response: httpx.Response) -> BokioApiError:
+    prefix = bytearray()
+    for chunk in response.iter_bytes(chunk_size=MAX_BOKIO_ERROR_BODY_BYTES):
+        remaining = MAX_BOKIO_ERROR_BODY_BYTES - len(prefix)
+        prefix.extend(chunk[:remaining])
+        if len(prefix) >= MAX_BOKIO_ERROR_BODY_BYTES:
+            break
+    text = bytes(prefix).decode("utf-8", errors="replace")
+    try:
+        payload: Any = json.loads(text)
+    except json.JSONDecodeError:
+        payload = text
+    message = (
+        "Bokio API request failed"
+        if response.status_code >= 400
+        else f"Bokio upload download returned unexpected HTTP {response.status_code}"
+    )
+    if isinstance(payload, dict):
+        message = str(payload.get("message") or payload.get("error") or message)
+    return BokioApiError(
+        message,
+        status_code=response.status_code,
+        payload=payload,
+        plan_warning=response.headers.get("Bokio-Plan-Warning"),
+    )
 
 
 def _resolve_upload_path(

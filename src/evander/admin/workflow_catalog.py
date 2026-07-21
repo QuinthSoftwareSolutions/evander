@@ -265,7 +265,7 @@ def _communication_target_option_metadata(
     elif purpose == "agent-session":
         metadata["supported_capabilities"] = ["read", "write", "reply"]
         if provider == "email":
-            metadata["required_capabilities"] = ["read", "write"]
+            metadata["required_capabilities"] = ["write"]
     elif purpose == "send-message":
         metadata["thread_id"] = {
             "top_level": {
@@ -326,11 +326,27 @@ def _communication_target_option(
     )
 
 
-def _tool_field_options() -> list[WorkflowEditorFieldOption]:
-    return [
+def _tool_field_options(
+    addon_tools: list[Mapping[str, str]] | None = None,
+) -> list[WorkflowEditorFieldOption]:
+    options = [
         _field_option(tool.value, tool.value.replace("_", " "))
         for tool in sorted(ToolName, key=lambda item: item.value)
     ]
+    for tool in addon_tools or []:
+        options.append(
+            _field_option(
+                tool["value"],
+                tool["label"],
+                description=tool.get("description"),
+                metadata={
+                    "tool_group": tool["group"],
+                    "provider": tool["provider"],
+                    "addon_id": tool["addon_id"],
+                },
+            )
+        )
+    return options
 
 
 def _port(
@@ -1969,6 +1985,25 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 ],
             ),
             _field(
+                "codex_auth_mode",
+                "Codex usage",
+                "enum",
+                bindable=True,
+                description=(
+                    "Optional Codex authentication override for container workers. "
+                    "Subscription mode uses the worker-owned ChatGPT account; metered mode "
+                    "uses the configured OpenAI relay."
+                ),
+                options=[
+                    _field_option("metered_api", "Metered API"),
+                    _field_option("chatgpt_subscription", "ChatGPT subscription"),
+                ],
+                metadata={
+                    "execution_backends": ["container_worker_vm"],
+                    "agent_providers": ["codex"],
+                },
+            ),
+            _field(
                 "npm_registry_url",
                 "NPM registry URL",
                 "string",
@@ -2039,15 +2074,25 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Communication targets",
                 "string_list",
                 description=(
-                    "Known Teams, Discord, or mailbox-backed email communication targets "
-                    "to allowlist for the created session. Select from the directory "
-                    "communication target catalogue."
+                    "Known communication targets for Teams and Discord destinations or outbound "
+                    "email recipients. This does not grant mailbox account access."
                 ),
                 metadata={"selection_only": True},
             ),
             _field(
+                "email_mailbox_grants",
+                "Email mailbox grants",
+                "json",
+                bindable=True,
+                description=(
+                    "Mailbox account grants with mailbox_id, read/draft/send access, and folders."
+                ),
+                json_value_type="array",
+                default_value=[],
+            ),
+            _field(
                 "discord_channels",
-                "Discord channels",
+                "Legacy Discord channels",
                 "string_list",
                 description="Discord channel ids the created session may read or post to.",
             ),
@@ -2073,13 +2118,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             ),
             _field(
                 "email_mailboxes",
-                "Email mailboxes",
+                "Legacy email mailboxes",
                 "string_list",
                 description="Email mailboxes the created session may inspect.",
             ),
             _field(
                 "email_folders",
-                "Email folders",
+                "Legacy email folders",
                 "string_list",
                 description="Email folders the created session may inspect.",
             ),

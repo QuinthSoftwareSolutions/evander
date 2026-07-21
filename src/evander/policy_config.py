@@ -271,11 +271,17 @@ class PolicyConfigResolver:
             session_id=session.session_id,
             directory_path=session.directory_path,
         )
+        refs = (
+            session.communication_target_ids
+            if session.communication_target_ids is not None
+            else session.discord_channel_allowlist
+        )
         return self._discord_channel_ids_from_refs(
             directory_path,
-            session.discord_channel_allowlist,
+            refs,
             capability=capability,
             strict_target_capability=False,
+            allow_unresolved_raw_reference=session.communication_target_ids is None,
         )
 
     def resolved_teams_channel_targets_for_session(
@@ -289,14 +295,18 @@ class PolicyConfigResolver:
             session_id=session.session_id,
             directory_path=session.directory_path,
         )
-        refs = list(session.teams_channel_allowlist or []) + list(
-            session.teams_chat_allowlist or []
+        refs = (
+            list(session.communication_target_ids)
+            if session.communication_target_ids is not None
+            else list(session.teams_channel_allowlist or [])
+            + list(session.teams_chat_allowlist or [])
         )
         return self._teams_channel_targets_from_refs(
             directory_path,
             refs,
             capability=capability,
             strict_target_capability=False,
+            allow_unresolved_raw_reference=session.communication_target_ids is None,
         )
 
     def resolved_teams_user_targets_for_session(
@@ -310,11 +320,17 @@ class PolicyConfigResolver:
             session_id=session.session_id,
             directory_path=session.directory_path,
         )
+        refs = (
+            session.communication_target_ids
+            if session.communication_target_ids is not None
+            else session.teams_user_allowlist
+        )
         return self._teams_user_targets_from_refs(
             directory_path,
-            session.teams_user_allowlist,
+            refs,
             capability=capability,
             strict_target_capability=False,
+            allow_unresolved_raw_reference=session.communication_target_ids is None,
         )
 
     def allowed_discord_channel_ids_for_active_sessions(self) -> list[str]:
@@ -455,6 +471,7 @@ class PolicyConfigResolver:
         *,
         capability: CommunicationTargetCapability,
         strict_target_capability: bool,
+        allow_unresolved_raw_reference: bool,
     ) -> str:
         normalized = str(reference or "").strip()
         if not normalized:
@@ -466,7 +483,7 @@ class PolicyConfigResolver:
                 raise
             return ""
         if target is None:
-            return normalized
+            return normalized if allow_unresolved_raw_reference else ""
         if not self._target_has_capability(target, capability):
             if strict_target_capability:
                 raise ValueError(
@@ -482,6 +499,7 @@ class PolicyConfigResolver:
         *,
         capability: CommunicationTargetCapability,
         strict_target_capability: bool,
+        allow_unresolved_raw_reference: bool = True,
     ) -> list[str]:
         channel_ids = {
             self._discord_channel_id_from_ref(
@@ -489,6 +507,7 @@ class PolicyConfigResolver:
                 ref,
                 capability=capability,
                 strict_target_capability=strict_target_capability,
+                allow_unresolved_raw_reference=allow_unresolved_raw_reference,
             )
             for ref in refs
             if str(ref or "").strip()
@@ -502,6 +521,7 @@ class PolicyConfigResolver:
         *,
         capability: CommunicationTargetCapability,
         strict_target_capability: bool,
+        allow_unresolved_raw_reference: bool,
     ) -> str:
         normalized = str(reference or "").strip()
         if not normalized:
@@ -523,6 +543,8 @@ class PolicyConfigResolver:
             if parse_teams_target(target_address).kind == "user":
                 return ""
             return target_address
+        if not allow_unresolved_raw_reference:
+            return ""
         try:
             target_address = normalize_teams_target(normalized)
         except ValueError:
@@ -538,6 +560,7 @@ class PolicyConfigResolver:
         *,
         capability: CommunicationTargetCapability,
         strict_target_capability: bool,
+        allow_unresolved_raw_reference: bool = True,
     ) -> list[str]:
         targets = {
             self._teams_channel_target_from_ref(
@@ -545,6 +568,7 @@ class PolicyConfigResolver:
                 ref,
                 capability=capability,
                 strict_target_capability=strict_target_capability,
+                allow_unresolved_raw_reference=allow_unresolved_raw_reference,
             )
             for ref in refs
             if str(ref or "").strip()
@@ -558,6 +582,7 @@ class PolicyConfigResolver:
         *,
         capability: CommunicationTargetCapability,
         strict_target_capability: bool,
+        allow_unresolved_raw_reference: bool,
     ) -> str:
         normalized = str(reference or "").strip()
         if not normalized:
@@ -577,6 +602,8 @@ class PolicyConfigResolver:
                 return ""
             target_address = normalize_teams_target(target.address)
             return target_address if parse_teams_target(target_address).kind == "user" else ""
+        if not allow_unresolved_raw_reference:
+            return ""
         try:
             return normalize_teams_user_target(normalized)
         except ValueError:
@@ -589,6 +616,7 @@ class PolicyConfigResolver:
         *,
         capability: CommunicationTargetCapability,
         strict_target_capability: bool,
+        allow_unresolved_raw_reference: bool = True,
     ) -> list[str]:
         targets = {
             self._teams_user_target_from_ref(
@@ -596,6 +624,7 @@ class PolicyConfigResolver:
                 ref,
                 capability=capability,
                 strict_target_capability=strict_target_capability,
+                allow_unresolved_raw_reference=allow_unresolved_raw_reference,
             )
             for ref in refs
             if str(ref or "").strip()

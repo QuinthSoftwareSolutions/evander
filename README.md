@@ -1007,6 +1007,21 @@ deadlines, cancellation, one-time result tokens, and the hidden system workflow 
 use and guarantee cleanup. The feature is generic MCP/workflow infrastructure and has no Team
 Add-on dependency.
 
+Container-worker Codex agents whose effective `model_provider_mode` is `openai_public` can
+independently select metered API usage or a worker-owned ChatGPT subscription account. The choice
+can be changed for an existing agent and takes effect on its next turn without replacing the
+session. When `local_openai` or `azure_openai` is effective, the turn stays on that configured
+private/API-key route even if the stored Codex preference is `chatgpt_subscription`; Evander keeps
+the preference so it can apply again on a later public OpenAI turn. Non-Codex agents do not inherit
+the Codex auth default, and an explicit subscription override is invalid for them. Subscription
+mode uses one broker-owned `auth.json` per worker, never mounts it into job containers, coalesces
+refreshes across concurrent agents, and fails closed rather than falling back to metered usage
+when a public subscription turn has missing or expired credentials. Because the account is
+worker-global, viewing its status and starting, polling, cancelling, or logging out a device login
+requires both unlocked privileged operations and `admin.owner` permission at `root`. See
+[`docs/container-worker-backend.md`](docs/container-worker-backend.md#codex-chatgpt-subscription-authentication)
+for deployment, device-login, and egress requirements.
+
 ## Retell Phone Call Tools
 
 - `list_contacts` lists the directory contact ids and safe summaries visible to the session. It does
@@ -1268,8 +1283,9 @@ helper fails instead of silently falling back to the branch tip.
 ## Email Provider Configuration (Host-Side Secrets Only)
 
 - `email_mailboxes` supports multiple mailbox entries with explicit provider and auth env-var wiring.
-- Keep mailbox OAuth tokens in host-only environment variables (for example:
-  `GMAIL_OPS_ACCESS_TOKEN`, `GRAPH_EXEC_ACCESS_TOKEN`, `GRAPH_FINANCE_ACCESS_TOKEN`).
+- Keep mailbox OAuth credentials in host-only environment variables. Gmail and legacy Graph
+  configurations can reference a static access token; Graph should normally reference tenant ID,
+  client ID, and client secret env vars so Evander can acquire and renew access tokens itself.
 - Session manifests should allow explicit mailbox/folder scope, but **never include provider
   access tokens**.
 - Token values are never injected into guests, cloud-init payloads, or session manifests.
@@ -1296,13 +1312,17 @@ email_mailboxes:
     provider: "graph"
     address: "leader@example.com"
     auth_env_var_names:
-      access_token: "GRAPH_EXEC_ACCESS_TOKEN"
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_EXEC_CLIENT_ID"
+      client_secret: "GRAPH_EXEC_CLIENT_SECRET"
     folder_allowlist_defaults: ["inbox", "drafts"]
   - mailbox_id: "finance-graph"
     provider: "graph"
     address: "finance@example.com"
     auth_env_var_names:
-      access_token: "GRAPH_FINANCE_ACCESS_TOKEN"
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_FINANCE_CLIENT_ID"
+      client_secret: "GRAPH_FINANCE_CLIENT_SECRET"
     folder_allowlist_defaults: ["inbox", "drafts"]
 ```
 
@@ -1317,6 +1337,24 @@ evander-cli directories config-set \
 
 evander-cli create-session real-session --runtime-dir runtime
 ```
+
+For new Admin Web/API-created agent sessions, mailbox-account access and messaging destinations are
+separate grants:
+
+```json
+{
+  "communication_target_ids": ["teams-ops", "email-finance-recipient"],
+  "email_mailbox_grants": [
+    {"mailbox_id": "finance-graph", "access": "read", "folders": ["inbox"]}
+  ]
+}
+```
+
+The mailbox grant above lets the agent read the finance inbox; it does not let the agent send mail.
+Email recipients belong in `communication_target_ids` and matter only when a mailbox has `send`
+access. A `draft` grant permits host-side draft creation without granting a recipient target. For
+both canonical fields, `null`/missing preserves legacy behavior while `[]` explicitly grants no
+access.
 
 ## Communication File Transfer
 

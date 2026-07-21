@@ -5,7 +5,7 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from evander.addons import AddonContext
+from evander.addons import AddonContext, AddonMcpTool
 from evander.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
 from evander.execution.container_worker_client import ContainerWorkerClientError
 from evander.gateway.session_context import _resolve_session_id_from_context
@@ -28,6 +28,23 @@ MCP_TOOL_NAMES = (
     PROVISION_DATABASE_TOOL,
     RESET_DATABASE_TOOL,
     LIST_DATABASES_TOOL,
+)
+MCP_TOOL_CATALOG = (
+    AddonMcpTool(
+        name=PROVISION_DATABASE_TOOL,
+        label="Provision seeded database",
+        description="Provision a session database from an operator-approved MSSQL seed.",
+    ),
+    AddonMcpTool(
+        name=RESET_DATABASE_TOOL,
+        label="Reset seeded database",
+        description="Reset a session database from its operator-approved MSSQL seed.",
+    ),
+    AddonMcpTool(
+        name=LIST_DATABASES_TOOL,
+        label="List seeded databases",
+        description="List seeded MSSQL databases owned by the calling session.",
+    ),
 )
 
 
@@ -281,4 +298,4 @@ def _redacted_audit_result(result: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
-__all__ = ["MCP_TOOL_NAMES", "register_mcp_tools"]
+__all__ = ["MCP_TOOL_CATALOG", "MCP_TOOL_NAMES", "register_mcp_tools"]

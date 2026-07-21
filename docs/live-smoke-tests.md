@@ -15,6 +15,7 @@ enabling send flows or touching non-test destinations.
   - `discord_post_status`
 - Email:
   - `email_list_unread`
+  - `email_list_messages`
   - `email_get_message`
 - Providers:
   - one dedicated Gmail test mailbox
@@ -35,7 +36,8 @@ enabling send flows or touching non-test destinations.
 - Host env contains live credentials:
   - `DISCORD_BOT_TOKEN`
   - `GMAIL_OPS_ACCESS_TOKEN` or equivalent Gmail test token env var
-  - `GRAPH_EXEC_ACCESS_TOKEN` or equivalent Graph test token env var
+  - `GRAPH_TENANT_ID`, `GRAPH_EXEC_CLIENT_ID`, and `GRAPH_EXEC_CLIENT_SECRET` (preferred), or an
+    equivalent static Graph test token env var for compatibility testing
 - Dedicated test destinations already exist:
   - one Discord test channel
   - one Gmail test mailbox
@@ -94,7 +96,9 @@ email_mailboxes:
     provider: "graph"
     address: "leader@example.com"
     auth_env_var_names:
-      access_token: "GRAPH_EXEC_ACCESS_TOKEN"
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_EXEC_CLIENT_ID"
+      client_secret: "GRAPH_EXEC_CLIENT_SECRET"
     folder_allowlist_defaults: ["inbox", "drafts"]
     folder_mapping:
       inbox: "Inbox"
@@ -112,6 +116,10 @@ cd /path/to/evander
   --runtime-dir runtime \
   --vm-id vm-smoke-live \
   --discord-channel 123456789012345678
+./.venv/bin/evander-cli add-tool-permission \
+  --runtime-dir runtime \
+  smoke-live \
+  email_list_messages
 ```
 
 Seed the dedicated Discord channel into the command store and note the returned cursor:
@@ -139,7 +147,9 @@ Then verify email for both providers:
 
 1. Call `email_list_unread` for the Gmail test mailbox and `inbox`.
 2. Pick one returned message ID and call `email_get_message`.
-3. Repeat for the Graph test mailbox and `inbox`.
+3. Call `email_list_messages` with a small `limit`, then use its `next_cursor` for a second page
+   when one is returned. Repeat with a bounded date filter.
+4. Repeat for the Graph test mailbox and `inbox`.
 
 Run at least one negative policy check:
 

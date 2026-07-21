@@ -5,7 +5,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from evander.addons import AddonContext
+from evander.addons import AddonContext, AddonMcpTool
 from evander.models import digest_payload
 
 from .catalog import catalog_payload
@@ -32,6 +32,44 @@ MCP_TOOL_NAMES = (
     VALIDATE_DRAFT_TOOL,
     REQUEST_SUBMISSION_APPROVAL_TOOL,
     SUBMIT_APPROVED_DRAFT_TOOL,
+)
+
+MCP_TOOL_CATALOG = (
+    AddonMcpTool(
+        name=LIST_CATALOG_TOOL,
+        label="List API catalog",
+        description="List the supported Skatteverket API catalog.",
+    ),
+    AddonMcpTool(
+        name=CONNECTION_STATUS_TOOL,
+        label="Connection status",
+        description="Read the configured Skatteverket connection status.",
+    ),
+    AddonMcpTool(
+        name=GET_TAX_ACCOUNT_TOOL,
+        label="Get tax account",
+        description="Read tax-account information for a subject and period.",
+    ),
+    AddonMcpTool(
+        name=CREATE_DRAFT_TOOL,
+        label="Create filing draft",
+        description="Create a local Skatteverket filing draft.",
+    ),
+    AddonMcpTool(
+        name=VALIDATE_DRAFT_TOOL,
+        label="Validate filing draft",
+        description="Validate a local Skatteverket filing draft.",
+    ),
+    AddonMcpTool(
+        name=REQUEST_SUBMISSION_APPROVAL_TOOL,
+        label="Request submission approval",
+        description="Request operator approval for a validated filing draft.",
+    ),
+    AddonMcpTool(
+        name=SUBMIT_APPROVED_DRAFT_TOOL,
+        label="Submit approved draft",
+        description="Submit an approved Skatteverket filing draft.",
+    ),
 )
 
 

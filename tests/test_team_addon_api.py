@@ -885,6 +885,91 @@ def test_team_addon_chat_rejects_stale_sends_after_wake_blockers(tmp_path: Path)
         assert repo.read().conversation_messages == {}
 
 
+def test_team_addon_chat_uploads_renders_and_downloads_attachments(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+    created = client.post(
+        "/api/addons/team-addon/conversations",
+        json={"agent_id": "backend", "expected_revision": repo.read().revision},
+    )
+    assert created.status_code == 201
+    conversation_id = created.json()["conversations"][0]["id"]
+
+    sent = client.post(
+        f"/api/addons/team-addon/conversations/{conversation_id}/messages",
+        data={"body": "Please inspect these."},
+        files=[
+            ("files", ("notes.txt", b"hello from chat", "text/plain")),
+            ("files", ("pixel.png", _png_avatar_bytes(), "image/png")),
+        ],
+    )
+
+    assert sent.status_code == 202, sent.text
+    message = sent.json()["message"]
+    assert message["body"] == "Please inspect these."
+    assert [item["filename"] for item in message["attachments"]] == [
+        "notes.txt",
+        "pixel.png",
+    ]
+    text_attachment = message["attachments"][0]
+    download = client.get(text_attachment["download_url"])
+    assert download.status_code == 200
+    assert download.content == b"hello from chat"
+    assert "attachment" in download.headers["content-disposition"]
+
+    reread = repo.read()
+    stored_message = reread.conversation_messages[message["id"]]
+    assert stored_message.attachment_ids == [item["id"] for item in message["attachments"]]
+    assert all(item_id in reread.chat_attachments for item_id in stored_message.attachment_ids)
+
+
+def test_team_addon_chat_attachment_policy_is_addon_owned_and_enforced(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    client = _client(tmp_path)
+    policy = client.get(
+        "/api/addons/team-addon/chat/attachment-policy?directory_path=root/engineering"
+    )
+    assert policy.status_code == 200
+    assert policy.json()["effective"]["operator_to_agent_enabled"] is True
+    assert policy.json()["effective"]["agent_send_requires_approval"] is True
+
+    saved = client.put(
+        "/api/addons/team-addon/chat/attachment-policy",
+        json={
+            "directory_path": "root",
+            "expected_revision": repo.read().revision,
+            "policy": {
+                "operator_to_agent_enabled": False,
+                "agent_to_operator_enabled": True,
+                "agent_send_requires_approval": True,
+                "max_attachment_bytes": 1024,
+                "max_attachments_per_message": 2,
+                "allowed_mime_types": ["text/plain"],
+                "allowed_extensions": [".txt"],
+                "blocked_extensions": [".exe"],
+            },
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["effective"]["operator_to_agent_enabled"] is False
+
+    created = client.post(
+        "/api/addons/team-addon/conversations",
+        json={"agent_id": "backend"},
+    )
+    assert created.status_code == 201
+    conversation_id = created.json()["conversations"][0]["id"]
+    denied = client.post(
+        f"/api/addons/team-addon/conversations/{conversation_id}/messages",
+        data={"body": "Attachment only."},
+        files=[("files", ("notes.txt", b"hello", "text/plain"))],
+    )
+    assert denied.status_code == 403
+    assert "disabled" in denied.json()["error"]
+
+
 def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     tmp_path: Path,
     monkeypatch,

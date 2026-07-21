@@ -45,6 +45,11 @@ class VmAgentContainerSessionPolicyMixin:
             "allowed_contact_ids": (
                 None if session.allowed_contact_ids is None else list(session.allowed_contact_ids)
             ),
+            "communication_target_ids": (
+                None
+                if session.communication_target_ids is None
+                else list(session.communication_target_ids)
+            ),
             "discord_channels": list(session.discord_channel_allowlist),
             "discord_channel_allowlist": list(session.discord_channel_allowlist),
             "teams_channel_allowlist": list(session.teams_channel_allowlist),
@@ -52,6 +57,16 @@ class VmAgentContainerSessionPolicyMixin:
             "teams_user_allowlist": list(session.teams_user_allowlist),
             "email_mailboxes": list(session.email_mailbox_allowlist),
             "email_folders": list(session.email_folder_allowlist),
+            "email_folder_allowlist_by_mailbox": {
+                mailbox_id: list(folders)
+                for mailbox_id, folders in session.email_folder_allowlist_by_mailbox.items()
+            },
+            "email_mailbox_grants": (
+                None
+                if session.email_mailbox_grants is None
+                else [grant.model_dump(mode="json") for grant in session.email_mailbox_grants]
+            ),
+            "email_send_enabled": session.email_send_enabled,
             "communication_file_receive_enabled": session.communication_file_receive_enabled,
             "communication_file_send_enabled": session.communication_file_send_enabled,
             "communication_file_max_bytes": session.communication_file_max_bytes,
@@ -68,6 +83,9 @@ class VmAgentContainerSessionPolicyMixin:
                 session.communication_file_require_approval_for_send
             ),
             "web_search_enabled": session.web_search_enabled,
+            "codex_auth_mode": (
+                session.codex_auth_mode.value if session.codex_auth_mode is not None else None
+            ),
             "metadata": dict(session.metadata),
             "labels": labels,
         }

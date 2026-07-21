@@ -4,8 +4,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from evander.admin.services import session_helpers
+from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.admin.services.ports import DirectoryOwnershipPort
 from evander.admin.services.vm_agent.common_helpers import (
+    _admin_agent_communication_allowlists,
+    _admin_agent_email_mailbox_grants,
     _revoke_managed_git_access_for_session,
     _resolve_session_approval_notification_target_ids,
 )
@@ -220,6 +223,45 @@ class SessionAdminService:
             payload,
             contacts_config=contacts_config,
         )
+        if "communication_target_ids" in payload:
+            communication_allowlists = _admin_agent_communication_allowlists(
+                payload,
+                config=self._deps.config,
+                directory_path=manifest.directory_path,
+            )
+            update["communication_target_ids"] = communication_allowlists[
+                "communication_target_ids"
+            ]
+            if communication_allowlists["communication_target_ids"] is not None:
+                update.update(
+                    {
+                        "discord_channel_allowlist": communication_allowlists["discord_channels"]
+                        or [],
+                        "teams_channel_allowlist": communication_allowlists[
+                            "teams_channel_allowlist"
+                        ]
+                        or [],
+                        "teams_chat_allowlist": communication_allowlists["teams_chat_allowlist"]
+                        or [],
+                        "teams_user_allowlist": communication_allowlists["teams_user_allowlist"]
+                        or [],
+                    }
+                )
+        if "email_mailbox_grants" in payload:
+            grants = _admin_agent_email_mailbox_grants(
+                payload,
+                runtime=self._deps.runtime,
+                directory_path=manifest.directory_path,
+            )
+            update["email_mailbox_grants"] = grants
+            if grants is not None:
+                update["email_mailbox_allowlist"] = [grant.mailbox_id for grant in grants]
+                update["email_folder_allowlist_by_mailbox"] = {
+                    grant.mailbox_id: list(grant.folders) for grant in grants
+                }
+                update["email_folder_allowlist"] = sorted(
+                    {folder for grant in grants for folder in grant.folders}
+                )
         if "connector_grants" in update:
             connector_config = self._deps.runtime.provider_config.resolve_connectors_for_directory(
                 manifest.directory_path
@@ -274,4 +316,29 @@ class SessionAdminService:
             session_id=session_id,
             action="set_session_model",
             message=f"Updated model for session {session_id}",
+        )
+
+    def set_session_codex_auth_mode(
+        self,
+        target: str,
+        mode: str | CodexAuthMode | None,
+    ) -> SessionActionResult:
+        session_id, manifest = session_helpers.resolve_session_target(
+            target, self._sessions_by_id()
+        )
+        if str(manifest.vm_provider or "").strip() != "container_worker_vm":
+            raise ValueError("codex_auth_mode is supported only for container worker sessions")
+        normalized = normalize_codex_auth_mode(mode)
+        metadata = manifest.metadata if isinstance(manifest.metadata, dict) else {}
+        agent_provider = str(metadata.get("agent_provider") or "codex").strip().casefold()
+        if normalized is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
+            raise ValueError("chatgpt_subscription is supported only for Codex agents")
+        manifest.codex_auth_mode = normalized
+        self._session_repository().upsert_session(manifest)
+        effective = normalized.value if normalized is not None else "directory default"
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="set_session_codex_auth_mode",
+            message=f"Updated Codex auth mode for session {session_id} to {effective}",
         )

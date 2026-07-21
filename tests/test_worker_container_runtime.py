@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from evander.codex_auth import CodexAuthMode, CodexTurnSpec
 from evander.worker_daemon import (
     DockerContainerRuntime,
     WorkerJobRecord,
@@ -144,6 +145,62 @@ def test_docker_runtime_allows_non_host_network_override(tmp_path: Path) -> None
     assert args[args.index("--network") + 1] == "agent-worker-net"
 
 
+def test_subscription_app_server_gets_only_restricted_proxy_configuration(
+    tmp_path: Path,
+) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    runtime = DockerContainerRuntime(
+        docker_network="agent-worker-net",
+        codex_egress_proxy_url="http://172.18.0.1:11889",
+    )
+    turn = CodexTurnSpec(
+        auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+        prompt="continue",
+        model="gpt-5.4",
+        mcp_gateway_url="http://10.20.30.40:8000/mcp",
+    )
+    request = _request().model_copy(update={"codex_turn": turn})
+
+    run_args = runtime._build_run_args(  # noqa: SLF001
+        request=request,
+        record=_record(paths),
+        paths=paths,
+    )
+    app_server_args = list(runtime.codex_app_server_command(_record(paths), turn))
+
+    assert not any("access_token" in value.casefold() for value in run_args + app_server_args)
+    assert not any("auth.json" in value for value in run_args + app_server_args)
+    assert not any(value.startswith("HTTPS_PROXY=") for value in run_args)
+    assert f"{paths.logs}/codex-turns:/run/evander/codex-turns:ro" in run_args
+    assert "/home/agent/.evander/codex-turns" not in " ".join(run_args)
+    assert app_server_args[-3:] == ["/usr/local/bin/codex", "app-server", "--stdio"]
+    assert "/home/agent/bin/codex" not in app_server_args
+    assert "HTTPS_PROXY=http://172.18.0.1:11889" in app_server_args
+    no_proxy = next(value for value in app_server_args if value.startswith("NO_PROXY="))
+    assert "10.20.30.40" in no_proxy
+
+
+def test_subscription_container_requires_restricted_proxy(tmp_path: Path) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    runtime = DockerContainerRuntime(docker_network="agent-worker-net")
+    request = _request().model_copy(
+        update={
+            "codex_turn": CodexTurnSpec(
+                auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+                prompt="continue",
+                model="gpt-5.4",
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="restricted codex_egress_proxy_url"):
+        runtime._build_run_args(  # noqa: SLF001
+            request=request,
+            record=_record(paths),
+            paths=paths,
+        )
+
+
 def test_docker_runtime_adds_worker_read_only_mounts(tmp_path: Path) -> None:
     paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
     runtime = DockerContainerRuntime(
@@ -225,7 +282,7 @@ def test_strict_profile_adds_read_only_tmpfs_and_default_pids_limit(tmp_path: Pa
     args = runtime._build_run_args(request=request, record=_record(paths), paths=paths)  # noqa: SLF001
 
     assert "--read-only" in args
-    assert args[args.index("--tmpfs") + 1] == "/tmp:rw,noexec,nosuid,size=512m"
+    assert args[args.index("--tmpfs") + 1] == "/tmp:rw,noexec,nosuid,size=4g"
     assert args[args.index("--security-opt") + 1] == "no-new-privileges"
     assert args[args.index("--pids-limit") + 1] == "512"
 

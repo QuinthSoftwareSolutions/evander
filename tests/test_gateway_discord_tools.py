@@ -27,6 +27,7 @@ from evander.models import (
     ApprovalStatus,
     DiscordCommandEnvelope,
     DiscordMessageEnvelope,
+    EmailMailboxGrant,
     LocalIssueRecord,
     SessionManifest,
     WakeDispatchRecord,
@@ -2097,6 +2098,113 @@ def test_email_tools_require_and_return_mailbox_id(tmp_path: Path) -> None:
     assert draft["mailbox_id"] == "primary"
 
 
+def test_email_list_messages_pages_filtered_results_and_binds_cursor(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.EMAIL_LIST_MESSAGES],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["inbox"]},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    store = context.email_service.provider.email_store
+    for message_id, received_at, unread, subject in (
+        ("msg-new", datetime(2026, 3, 20, 12, tzinfo=UTC), False, "Invoice March"),
+        ("msg-old", datetime(2026, 3, 19, 12, tzinfo=UTC), True, "Invoice February"),
+        ("msg-ignore", datetime(2026, 3, 18, 12, tzinfo=UTC), False, "Newsletter"),
+    ):
+        store.put(
+            message_id,
+            store.model(
+                message_id=message_id,
+                mailbox_id="primary",
+                folder="inbox",
+                sender="vendor@example.com",
+                recipients=["accounts@example.com"],
+                subject=subject,
+                body_text="payment details",
+                unread=unread,
+                received_at=received_at,
+            ),
+        )
+
+    server = create_server(context)
+    first_page = call_tool(
+        server,
+        "email_list_messages",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "folder": "inbox",
+            "subject_contains": "invoice",
+            "limit": 1,
+        },
+    )
+
+    assert [item["message_id"] for item in first_page["messages"]] == ["msg-new"]
+    assert first_page["messages"][0]["subject"] == "Invoice March"
+    assert first_page["messages"][0]["unread"] is False
+    assert first_page["next_cursor"]
+
+    second_page = call_tool(
+        server,
+        "email_list_messages",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "folder": "inbox",
+            "subject_contains": "invoice",
+            "cursor": first_page["next_cursor"],
+            "limit": 1,
+        },
+    )
+    assert [item["message_id"] for item in second_page["messages"]] == ["msg-old"]
+    assert second_page["next_cursor"] is None
+
+    with pytest.raises(ToolError, match="email page cursor"):
+        asyncio.run(
+            server.call_tool(
+                "email_list_messages",
+                {
+                    "session_id": "session-1",
+                    "mailbox_id": "primary",
+                    "folder": "inbox",
+                    "subject_contains": "newsletter",
+                    "cursor": first_page["next_cursor"],
+                    "limit": 1,
+                },
+            )
+        )
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["tool_name"] == ToolName.EMAIL_LIST_MESSAGES.value
+    assert event["decision"] == "error"
+    assert event["result"]["error_class"] == "validation_error"
+
+
+def test_email_list_messages_requires_explicit_tool_grant(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["inbox"]},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "email_list_messages",
+                {"session_id": "session-1", "mailbox_id": "primary", "folder": "inbox"},
+            )
+        )
+
+
 def test_email_tools_enforce_mailbox_and_folder_allowlists(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
@@ -2232,6 +2340,83 @@ def test_email_send_sends_recorded_draft(tmp_path: Path) -> None:
     assert snapshot is not None
     assert snapshot.send_status == "local_sent"
     assert snapshot.sent_at is not None
+
+
+def test_canonical_email_send_requires_granted_recipient_target(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    write_root_communication_targets(
+        context,
+        [
+            {
+                "id": "primary-approved",
+                "provider": "email",
+                "kind": "email",
+                "address": "approved@example.com",
+                "policy": {"capabilities": ["write"], "auth_profile_ref": "email.primary"},
+            }
+        ],
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.EMAIL_CREATE_DRAFT, ToolName.EMAIL_SEND],
+            communication_target_ids=["primary-approved"],
+            email_mailbox_grants=[
+                EmailMailboxGrant(mailbox_id="primary", access="send", folders=["drafts"])
+            ],
+            email_draft_recipient_allowlist=["approved@example.com"],
+            email_send_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    server = create_server(context)
+
+    draft = call_tool(
+        server,
+        "email_create_draft",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+        },
+    )
+    result = call_tool(
+        server,
+        "email_send",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "draft_id": draft["draft_id"],
+            "subject": "Status",
+            "recipients": ["approved@example.com"],
+        },
+    )
+
+    assert result["communication_target_ids"] == ["primary-approved"]
+
+
+def test_read_only_mailbox_grant_cannot_create_draft(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.EMAIL_CREATE_DRAFT],
+            email_mailbox_grants=[
+                EmailMailboxGrant(mailbox_id="primary", access="read", folders=["inbox"])
+            ],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="requires draft access"):
+        call_tool(
+            server,
+            "email_create_draft",
+            {"session_id": "session-1", "mailbox_id": "primary", "body": "draft"},
+        )
 
 
 def test_email_send_rejects_recipient_mismatch(tmp_path: Path) -> None:

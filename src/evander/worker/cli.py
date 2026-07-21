@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+import shlex
 from pathlib import Path
 
 import uvicorn
@@ -105,6 +107,37 @@ def main() -> None:
         "--mssql-sqlcmd-path",
         default=os.environ.get("EVANDER_WORKER_MSSQL_SQLCMD_PATH", "sqlcmd"),
     )
+    parser.add_argument(
+        "--codex-auth-image",
+        default=os.environ.get("EVANDER_WORKER_CODEX_AUTH_IMAGE"),
+        help="Runner image used for the worker-owned managed Codex auth utility container.",
+    )
+    parser.add_argument(
+        "--codex-auth-command",
+        default=os.environ.get("EVANDER_WORKER_CODEX_AUTH_COMMAND"),
+        help="Advanced override for the managed Codex app-server command.",
+    )
+    parser.add_argument(
+        "--codex-egress-proxy-url",
+        default=os.environ.get("EVANDER_WORKER_CODEX_EGRESS_PROXY_URL"),
+        help="Restricted HTTP CONNECT proxy URL reachable from runner containers.",
+    )
+    parser.add_argument(
+        "--codex-egress-proxy-bind-host",
+        default=os.environ.get("EVANDER_WORKER_CODEX_EGRESS_PROXY_BIND_HOST"),
+        help="Optional address on which the worker daemon hosts the restricted proxy.",
+    )
+    parser.add_argument(
+        "--codex-egress-proxy-port",
+        type=int,
+        default=int(os.environ.get("EVANDER_WORKER_CODEX_EGRESS_PROXY_PORT", "11889")),
+    )
+    parser.add_argument(
+        "--codex-egress-host",
+        action="append",
+        default=None,
+        help="Allowed HTTPS hostname or wildcard for subscription traffic; repeat as needed.",
+    )
     args = parser.parse_args()
     sandbox_profile = worker_sandbox_profile(args.sandbox_profile).with_overrides(
         network_mode=args.docker_network,
@@ -112,6 +145,14 @@ def main() -> None:
         read_only_rootfs=True if args.read_only_rootfs else None,
         tmpfs=args.tmpfs,
         user=args.container_user,
+    )
+    codex_auth_command = _codex_auth_command(
+        explicit_command=args.codex_auth_command,
+        image=args.codex_auth_image,
+        worker_root=args.worker_root,
+        docker_network=sandbox_profile.network_mode,
+        container_user=sandbox_profile.user,
+        proxy_url=args.codex_egress_proxy_url,
     )
 
     uvicorn.run(
@@ -130,7 +171,58 @@ def main() -> None:
             mssql_port=args.mssql_port,
             mssql_container_host=args.mssql_container_host,
             mssql_sqlcmd_path=args.mssql_sqlcmd_path,
+            codex_auth_command=codex_auth_command,
+            codex_egress_proxy_url=args.codex_egress_proxy_url,
+            codex_egress_proxy_bind_host=args.codex_egress_proxy_bind_host,
+            codex_egress_proxy_port=args.codex_egress_proxy_port,
+            codex_egress_allowed_hosts=args.codex_egress_host,
         ),
         host=args.host,
         port=args.port,
     )
+
+
+def _codex_auth_command(
+    *,
+    explicit_command: str | None,
+    image: str | None,
+    worker_root: Path,
+    docker_network: str,
+    container_user: str | None,
+    proxy_url: str | None,
+) -> tuple[str, ...]:
+    if explicit_command:
+        command = tuple(shlex.split(explicit_command))
+        if not command:
+            raise ValueError("--codex-auth-command must not be empty")
+        return command
+    if image:
+        auth_container_name = (
+            "evander-codex-auth-"
+            + hashlib.sha256(str(worker_root.resolve()).encode("utf-8")).hexdigest()[:12]
+        )
+        command = [
+            "docker",
+            "run",
+            "--rm",
+            "-i",
+            "--name",
+            auth_container_name,
+            "--network",
+            docker_network,
+            "-v",
+            f"{worker_root / 'codex-auth'}:/codex-auth",
+            "-e",
+            "CODEX_HOME=/codex-auth",
+            "-e",
+            "HOME=/home/agent",
+        ]
+        if container_user:
+            command.extend(["--user", container_user])
+        if proxy_url:
+            command.extend(["-e", f"HTTPS_PROXY={proxy_url}"])
+            command.extend(["-e", f"HTTP_PROXY={proxy_url}"])
+            command.extend(["-e", "NO_PROXY=127.0.0.1,localhost"])
+        command.extend([image, "codex", "app-server", "--stdio"])
+        return tuple(command)
+    return ("codex", "app-server", "--stdio")

@@ -9,6 +9,7 @@ from typing import Any
 from evander.execution import ExecutionBackendKind, ExecutionSpec, build_execution_backend
 from evander.effects.providers.base import EffectLifecycleHookBase
 from evander.effects.providers.agent_session import (
+    container_codex_turn_spec,
     container_worker_guest_gateway_url,
     container_prompt_command,
     container_worker_image_for_session,
@@ -573,6 +574,17 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             or getattr(session, "model", None)
             or default_agent_model_for_provider(agent_harness, config)
         ).strip()
+        codex_turn = container_codex_turn_spec(
+            prompt=record.prompt,
+            model=model,
+            resume_thread_id=effective_resume_thread_id,
+            session=session,
+            config=config,
+            agent_provider=agent_harness,
+            resume_mode=getattr(record, "resume_mode", None),
+            mcp_gateway_url=mcp_gateway_url,
+            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
+        )
         try:
             handle = backend.start(
                 backend.prepare(
@@ -591,12 +603,18 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                             mcp_gateway_url=mcp_gateway_url,
                             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
                         ),
+                        codex_turn=codex_turn,
                         metadata={
                             "effect_type": "effect:agent:enqueue-prompt",
                             "dispatch_id": dispatch_id,
                             "agent_provider": agent_harness,
                             "model": model,
                             "model_provider_mode": config.model_provider_mode,
+                            **(
+                                {"codex_auth_mode": codex_turn.auth_mode.value}
+                                if codex_turn is not None
+                                else {}
+                            ),
                             "resume_thread_id": effective_resume_thread_id,
                             "queued": True,
                         },

@@ -28,6 +28,8 @@ from evander.models import (
     CancelScheduledWakeRequest,
     Directory,
     DiscordCommandEnvelope,
+    EmailMailboxAccess,
+    EmailMailboxGrant,
     SessionManifest,
     TeamsMessageEnvelope,
     ToolName,
@@ -2439,6 +2441,91 @@ def test_discord_session_allowlist_resolves_communication_target_refs(tmp_path: 
     ]
 
 
+def test_canonical_session_target_ids_do_not_fall_back_to_raw_destinations(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "123456789012345678",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "111111111111111111",
+                "policy": {"capabilities": ["read"]},
+            },
+            {
+                "id": "chat:stale-chat",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "chat:active-chat",
+                "policy": {"capabilities": ["read"]},
+            },
+            {
+                "id": "user:stale-user",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "user:active-user",
+                "policy": {"capabilities": ["write"]},
+            },
+        ],
+    )
+    session = SessionManifest(
+        session_id="canonical-targets",
+        allowed_tools=[],
+        communication_target_ids=[
+            "123456789012345678",
+            "chat:stale-chat",
+            "user:stale-user",
+        ],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert engine.policy_config.resolved_discord_channel_ids_for_session(
+        session, capability="read"
+    ) == ["111111111111111111"]
+    assert engine.policy_config.resolved_teams_channel_targets_for_session(
+        session, capability="read"
+    ) == ["chat:active-chat"]
+    assert engine.policy_config.resolved_teams_user_targets_for_session(
+        session, capability="write"
+    ) == ["user:active-user"]
+
+    write_root_communication_targets(engine.config, [])
+
+    assert (
+        engine.policy_config.resolved_discord_channel_ids_for_session(session, capability="read")
+        == []
+    )
+    assert (
+        engine.policy_config.resolved_teams_channel_targets_for_session(session, capability="read")
+        == []
+    )
+    assert (
+        engine.policy_config.resolved_teams_user_targets_for_session(session, capability="write")
+        == []
+    )
+
+    legacy_session = SessionManifest(
+        session_id="legacy-targets",
+        allowed_tools=[],
+        discord_channel_allowlist=["123456789012345678"],
+        teams_chat_allowlist=["chat:stale-chat"],
+        teams_user_allowlist=["user:stale-user"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    assert engine.policy_config.resolved_discord_channel_ids_for_session(
+        legacy_session, capability="read"
+    ) == ["123456789012345678"]
+    assert engine.policy_config.resolved_teams_channel_targets_for_session(
+        legacy_session, capability="read"
+    ) == ["chat:stale-chat"]
+    assert engine.policy_config.resolved_teams_user_targets_for_session(
+        legacy_session, capability="write"
+    ) == ["user:stale-user"]
+
+
 def test_require_teams_message_source_allows_session_channel(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(
@@ -2871,6 +2958,96 @@ def test_require_draft_recipients_enforces_address_and_domain_allowlists(tmp_pat
             ),
             ["person@other.com"],
         )
+
+
+def test_canonical_email_mailbox_grants_distinguish_read_draft_and_send(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    read_session = SessionManifest(
+        session_id="read",
+        allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
+        email_mailbox_grants=[
+            EmailMailboxGrant(mailbox_id="primary", access="read", folders=["inbox"])
+        ],
+        expires_at=expires_at,
+    )
+    engine.require_email_mailbox(read_session, "primary")
+    engine.require_email_folder_for_mailbox(read_session, "primary", "inbox")
+    with pytest.raises(PolicyError, match="requires draft access"):
+        engine.require_email_draft_enabled(read_session, "primary")
+
+    draft_session = read_session.model_copy(
+        update={
+            "session_id": "draft",
+            "email_send_enabled": True,
+            "email_mailbox_grants": [
+                EmailMailboxGrant(
+                    mailbox_id="primary", access=EmailMailboxAccess.DRAFT, folders=["drafts"]
+                )
+            ],
+        }
+    )
+    engine.require_email_draft_enabled(draft_session, "primary")
+    with pytest.raises(PolicyError, match="requires send access"):
+        engine.require_email_send_enabled(draft_session, "primary")
+
+
+def test_explicit_empty_email_mailbox_grants_deny_legacy_mailbox_fallback(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="canonical-empty",
+        allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
+        email_mailbox_allowlist=["primary"],
+        email_mailbox_grants=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    with pytest.raises(PolicyError, match="not granted"):
+        engine.require_email_mailbox(session, "primary")
+
+
+def test_email_send_targets_require_matching_recipient_and_mailbox_profile(tmp_path: Path) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+    )
+    write_root_communication_targets(
+        config,
+        [
+            {
+                "id": "primary-ops",
+                "provider": "email",
+                "kind": "email",
+                "address": "ops@example.com",
+                "policy": {"capabilities": ["write"], "auth_profile_ref": "email.primary"},
+            },
+            {
+                "id": "secondary-ops",
+                "provider": "email",
+                "kind": "email",
+                "address": "other@example.com",
+                "policy": {"capabilities": ["write"], "auth_profile_ref": "email.secondary"},
+            },
+        ],
+    )
+    engine = make_engine_from_config(config)
+    session = SessionManifest(
+        session_id="send",
+        allowed_tools=[ToolName.EMAIL_SEND],
+        communication_target_ids=["primary-ops", "secondary-ops"],
+        email_mailbox_grants=[
+            EmailMailboxGrant(mailbox_id="primary", access="send", folders=["drafts"])
+        ],
+        email_send_enabled=True,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert engine.require_email_send_targets(session, "primary", ["ops@example.com"]) == [
+        "primary-ops"
+    ]
+    with pytest.raises(PolicyError, match="not granted communication targets"):
+        engine.require_email_send_targets(session, "primary", ["other@example.com"])
 
 
 def test_communication_file_policy_denies_disallowed_mime_type(tmp_path: Path) -> None:

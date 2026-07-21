@@ -6,7 +6,7 @@ from typing import Any
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 
-from evander.addons import AddonContext
+from evander.addons import AddonContext, AddonMcpTool
 from evander.gateway.session_context import _resolve_session_id_from_context
 from evander.policy import PolicyError
 
@@ -15,6 +15,18 @@ from .service import AdoActivityIndexService
 SYNC_ADO_ACTIVITY_INDEX_TOOL = "sync_ado_activity_index"
 QUERY_ADO_ACTIVITY_INDEX_TOOL = "query_ado_activity_index"
 MCP_TOOL_NAMES = (SYNC_ADO_ACTIVITY_INDEX_TOOL, QUERY_ADO_ACTIVITY_INDEX_TOOL)
+MCP_TOOL_CATALOG = (
+    AddonMcpTool(
+        name=SYNC_ADO_ACTIVITY_INDEX_TOOL,
+        label="Sync ADO activity index",
+        description="Synchronize durable Azure DevOps work-item activity into the local index.",
+    ),
+    AddonMcpTool(
+        name=QUERY_ADO_ACTIVITY_INDEX_TOOL,
+        label="Query ADO activity index",
+        description="Query the durable Azure DevOps work-item activity index.",
+    ),
+)
 
 
 def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:

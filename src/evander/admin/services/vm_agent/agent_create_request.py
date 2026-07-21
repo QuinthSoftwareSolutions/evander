@@ -8,6 +8,7 @@ from evander.admin.services.vm_agent.common import (
     SessionManifest,
     VmActionResult,
     _admin_agent_communication_allowlists,
+    _admin_agent_email_mailbox_grants,
     _build_issue_session_manifest,
     _normalize_session_labels,
     _normalize_session_policy_bool,
@@ -19,6 +20,7 @@ from evander.admin.services.vm_agent.common import (
     resolve_libvirt_vm_template_selector,
 )
 from evander.session_auth import ensure_session_mcp_auth_token
+from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.connectors.models import normalize_connector_grants
 
 
@@ -105,6 +107,11 @@ class VmAgentCreateRequestMixin:
                 config=self.config,
                 directory_path=directory_path,
             )
+            email_mailbox_grants = _admin_agent_email_mailbox_grants(
+                payload,
+                runtime=self.runtime,
+                directory_path=directory_path,
+            )
             connector_grants = _connector_grants_for_admin_agent(
                 self.runtime,
                 session_id=self._agent_optional_string(payload, "session_id") or vm_name,
@@ -133,6 +140,8 @@ class VmAgentCreateRequestMixin:
                 teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
                 teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],
                 teams_user_allowlist=communication_allowlists["teams_user_allowlist"],
+                communication_target_ids=communication_allowlists["communication_target_ids"],
+                email_mailbox_grants=email_mailbox_grants,
                 email_mailboxes=communication_allowlists["email_mailboxes"],
                 email_folders=communication_allowlists["email_folders"],
                 communication_file_receive_enabled=(
@@ -234,6 +243,15 @@ class VmAgentCreateRequestMixin:
         agent_provider = requested_agent_provider or default_agent_provider_for_config(
             backend.config
         )
+        codex_auth_mode = normalize_codex_auth_mode(payload.get("codex_auth_mode"))
+        if (
+            codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+            and str(agent_provider).strip().casefold() != "codex"
+        ):
+            raise ValueError("chatgpt_subscription is supported only for Codex agents")
+        requested_model_provider_mode = normalize_model_provider_mode_override(
+            payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+        )
         container_image_selection = resolve_container_worker_image_selector(
             self._agent_optional_string(payload, "container_image"),
             default_image=backend.config.container_worker_default_image,
@@ -245,9 +263,7 @@ class VmAgentCreateRequestMixin:
         }
         if requested_agent_provider or agent_provider == "claude":
             metadata["agent_provider"] = agent_provider
-        model_provider_mode = normalize_model_provider_mode_override(
-            payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
-        )
+        model_provider_mode = requested_model_provider_mode
         if model_provider_mode:
             metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
         if labels:
@@ -265,6 +281,11 @@ class VmAgentCreateRequestMixin:
         communication_allowlists = _admin_agent_communication_allowlists(
             payload,
             config=self.config,
+            directory_path=directory_path,
+        )
+        email_mailbox_grants = _admin_agent_email_mailbox_grants(
+            payload,
+            runtime=self.runtime,
             directory_path=directory_path,
         )
         manifest = _build_issue_session_manifest(
@@ -293,6 +314,8 @@ class VmAgentCreateRequestMixin:
             teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"] or [],
             teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"] or [],
             teams_user_allowlist=communication_allowlists["teams_user_allowlist"] or [],
+            communication_target_ids=communication_allowlists["communication_target_ids"],
+            email_mailbox_grants=email_mailbox_grants,
             email_mailboxes=communication_allowlists["email_mailboxes"] or [],
             email_folders=communication_allowlists["email_folders"] or [],
             communication_file_receive_enabled=(
@@ -341,6 +364,7 @@ class VmAgentCreateRequestMixin:
                 "vm_provider": "container_worker_vm",
                 "vm_provider_id": target_name,
                 "model": model,
+                "codex_auth_mode": codex_auth_mode,
                 "metadata": metadata,
             }
         )
@@ -414,6 +438,7 @@ class VmAgentCreateRequestMixin:
         normalized_directory = self._normalize_directory_path(directory_path)
         vm_defaults = self.resolve_vm_defaults(normalized_directory)
         provider_config = self.runtime.provider_config.resolve_for_directory(normalized_directory)
+        policy_config = self.runtime.policy_config.resolve_for_directory(normalized_directory)
         libvirt_templates = [
             {"alias": alias, "image_ref": image_ref}
             for alias, image_ref in sorted(vm_defaults.libvirt_vm_templates.items())
@@ -445,6 +470,31 @@ class VmAgentCreateRequestMixin:
             for connector_id, connector in sorted(connector_config.connectors.items())
             if not connector.disabled
         ]
+        allowed_mailbox_ids = set(policy_config.email_mailbox_allowlist)
+        email_mailboxes: list[dict[str, object]] = []
+        for mailbox in provider_config.email_mailboxes:
+            if mailbox.mailbox_id not in allowed_mailbox_ids:
+                continue
+            allowed_folders = list(
+                policy_config.email_folder_allowlist_by_mailbox.get(
+                    mailbox.mailbox_id, mailbox.folder_allowlist_defaults
+                )
+            )
+            allowed_folder_set = set(allowed_folders)
+            email_mailboxes.append(
+                {
+                    "mailbox_id": mailbox.mailbox_id,
+                    "provider": mailbox.provider,
+                    "account_identifier": mailbox.account_identifier,
+                    "folders": allowed_folders,
+                    "default_folders": [
+                        folder
+                        for folder in mailbox.folder_allowlist_defaults
+                        if folder in allowed_folder_set
+                    ],
+                    "send_enabled": bool(policy_config.email_send_enabled),
+                }
+            )
         return {
             "directory_path": normalized_directory,
             "backends": ["libvirt_vm", "container_worker_vm"],
@@ -474,6 +524,7 @@ class VmAgentCreateRequestMixin:
                 option.model_dump(mode="json")
                 for option in self._agent_communication_target_options(normalized_directory)
             ],
+            "email_mailboxes": email_mailboxes,
             "connectors": connectors,
             "libvirt": {
                 "default_template": vm_defaults.libvirt_vm_default_template,

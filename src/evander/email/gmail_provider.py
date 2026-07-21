@@ -20,6 +20,8 @@ from .providers import (
     EmailDraft,
     EmailDraftAttachment,
     EmailMessageDetail,
+    EmailMessagePage,
+    EmailMessageSearchQuery,
     EmailMessageSummary,
     EmailSendResult,
 )
@@ -64,6 +66,47 @@ class GmailEmailProvider:
         summaries = self._dedupe_with_cursor(mailbox_id, folder, summaries, cursor_primitive)
         summaries.sort(key=lambda entry: entry.received_at, reverse=True)
         return summaries[:limit]
+
+    def list_messages(
+        self,
+        mailbox_id: str,
+        folder: str,
+        query: EmailMessageSearchQuery,
+        cursor: str | None,
+        limit: int,
+    ) -> EmailMessagePage:
+        label = self._folder_label(folder)
+        params: dict[str, Any] = {
+            "labelIds": [label],
+            "maxResults": limit,
+        }
+        search_query = self._search_query(query=query)
+        if search_query:
+            params["q"] = search_query
+        if cursor:
+            params["pageToken"] = cursor
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="list_messages",
+                method="GET",
+                url=self._url("messages"),
+                headers=self._headers(),
+                params=params,
+            )
+            payload = response.json()
+            messages = [
+                self._fetch_message(client, message_id=str(item["id"]), format_name="metadata")
+                for item in payload.get("messages", [])
+            ]
+        summaries = [
+            self._to_summary(mailbox_id=mailbox_id, folder=folder, payload=message)
+            for message in messages
+        ]
+        summaries.sort(key=lambda entry: entry.received_at, reverse=True)
+        next_cursor = str(payload.get("nextPageToken", "")).strip() or None
+        return EmailMessagePage(messages=summaries, next_cursor=next_cursor)
 
     def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -328,6 +371,31 @@ class GmailEmailProvider:
                 )
         return messages, str(highest_history_id) if highest_history_id is not None else None
 
+    @staticmethod
+    def _search_phrase(value: str) -> str:
+        normalized = " ".join(value.replace('"', " ").split())
+        return f'"{normalized}"'
+
+    def _search_query(self, *, query: EmailMessageSearchQuery) -> str:
+        query_parts: list[str] = []
+        if query.received_after is not None:
+            query_parts.append(f"after:{int(query.received_after.timestamp())}")
+        if query.received_before is not None:
+            query_parts.append(f"before:{int(query.received_before.timestamp())}")
+        if query.unread is not None:
+            query_parts.append("is:unread" if query.unread else "is:read")
+        if query.sender_contains:
+            query_parts.append(f"from:{self._search_phrase(query.sender_contains)}")
+        if query.recipient_contains:
+            query_parts.append(f"to:{self._search_phrase(query.recipient_contains)}")
+        if query.subject_contains:
+            query_parts.append(f"subject:{self._search_phrase(query.subject_contains)}")
+        if query.text_contains:
+            query_parts.append(self._search_phrase(query.text_contains))
+        if query.has_attachments is not None:
+            query_parts.append("has:attachment" if query.has_attachments else "-has:attachment")
+        return " ".join(query_parts)
+
     def _dedupe_with_cursor(
         self,
         mailbox_id: str,
@@ -397,6 +465,7 @@ class GmailEmailProvider:
             thread_id=str(thread_id) if thread_id else None,
             sender=headers.get("from", self.account_identifier),
             recipients=self._split_recipients(headers.get("to", "")),
+            subject=headers.get("subject", ""),
             received_at=received_at,
             unread="UNREAD" in payload.get("labelIds", []),
             body_snippet=str(payload.get("snippet", "")),
@@ -407,10 +476,8 @@ class GmailEmailProvider:
         summary = self._to_summary(
             mailbox_id=mailbox_id, folder=self._primary_folder(payload), payload=payload
         )
-        headers = self._header_map(payload)
         return EmailMessageDetail(
             **summary.model_dump(),
-            subject=headers.get("subject", ""),
             body_text=self._extract_body_text(payload.get("payload", {})),
             attachments=self._extract_attachments(payload.get("payload", {})),
         )

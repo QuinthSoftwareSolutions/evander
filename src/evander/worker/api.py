@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -20,6 +22,8 @@ from .models import (
     WorkerSessionPrepareRequest,
     WorkerTaskWorktreeRequest,
 )
+from .codex_auth_broker import CodexAuthBroker, CodexAuthBrokerError
+from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
 from .security import list_relative_files, safe_subprocess_error
@@ -56,6 +60,37 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         record = daemon.read_telemetry(refresh=refresh)
         return JSONResponse(record.model_dump(mode="json"))
 
+    async def codex_auth_status(_: Request) -> JSONResponse:
+        return JSONResponse(daemon.codex_auth_status())
+
+    async def start_codex_device_login(_: Request) -> JSONResponse:
+        try:
+            record = daemon.start_codex_device_login()
+        except CodexAuthBrokerError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse(record, status_code=201)
+
+    async def codex_device_login_status(request: Request) -> JSONResponse:
+        try:
+            record = daemon.codex_device_login_status(request.path_params["login_id"])
+        except CodexAuthBrokerError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        return JSONResponse(record)
+
+    async def cancel_codex_device_login(request: Request) -> JSONResponse:
+        try:
+            record = daemon.cancel_codex_device_login(request.path_params["login_id"])
+        except CodexAuthBrokerError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        return JSONResponse(record)
+
+    async def logout_codex_auth(_: Request) -> JSONResponse:
+        try:
+            record = daemon.logout_codex_auth()
+        except CodexAuthBrokerError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse(record)
+
     async def create_job(request: Request) -> JSONResponse:
         try:
             payload = await request.json()
@@ -63,6 +98,10 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             record = daemon.start_job(job_request)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+        except CodexAuthBrokerError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
         except subprocess.CalledProcessError as exc:
             return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
         return JSONResponse(record.model_dump(mode="json"), status_code=201)
@@ -251,11 +290,32 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             return JSONResponse({"error": "job not found"}, status_code=404)
         return JSONResponse({"artifacts": list_relative_files(Path(record.artifacts_path))})
 
+    @asynccontextmanager
+    async def lifespan(_: Starlette) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            daemon.close()
+
     app = Starlette(
         debug=False,
+        lifespan=lifespan,
         routes=[
             Route("/healthz", health, methods=["GET"]),
             Route("/v1/telemetry", telemetry, methods=["GET"]),
+            Route("/v1/codex-auth", codex_auth_status, methods=["GET"]),
+            Route("/v1/codex-auth/device-login", start_codex_device_login, methods=["POST"]),
+            Route(
+                "/v1/codex-auth/device-login/{login_id}",
+                codex_device_login_status,
+                methods=["GET"],
+            ),
+            Route(
+                "/v1/codex-auth/device-login/{login_id}",
+                cancel_codex_device_login,
+                methods=["DELETE"],
+            ),
+            Route("/v1/codex-auth", logout_codex_auth, methods=["DELETE"]),
             Route("/v1/sessions", prepare_session, methods=["POST"]),
             Route("/v1/sessions/{session_id}/repo", clone_session_repo, methods=["POST"]),
             Route(
@@ -321,6 +381,13 @@ def create_app(
     mssql_port: int = 1433,
     mssql_container_host: str = "172.17.0.1",
     mssql_sqlcmd_path: str = "sqlcmd",
+    codex_auth_broker: CodexAuthBroker | None = None,
+    codex_auth_command: Sequence[str] | None = None,
+    codex_egress_proxy_url: str | None = None,
+    codex_egress_proxy: RestrictedCodexEgressProxy | None = None,
+    codex_egress_proxy_bind_host: str | None = None,
+    codex_egress_proxy_port: int = 11889,
+    codex_egress_allowed_hosts: Sequence[str] | None = None,
 ) -> Starlette:
     return WorkerDaemon(
         runtime_dir=runtime_dir,
@@ -340,4 +407,11 @@ def create_app(
         mssql_port=mssql_port,
         mssql_container_host=mssql_container_host,
         mssql_sqlcmd_path=mssql_sqlcmd_path,
+        codex_auth_broker=codex_auth_broker,
+        codex_auth_command=codex_auth_command,
+        codex_egress_proxy_url=codex_egress_proxy_url,
+        codex_egress_proxy=codex_egress_proxy,
+        codex_egress_proxy_bind_host=codex_egress_proxy_bind_host,
+        codex_egress_proxy_port=codex_egress_proxy_port,
+        codex_egress_allowed_hosts=codex_egress_allowed_hosts,
     ).create_app()

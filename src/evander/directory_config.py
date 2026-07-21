@@ -105,6 +105,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "container_worker_request_timeout_seconds",
             "container_worker_token_env",
             "container_worker_workspace_persistence",
+            "container_worker_codex_auth_mode",
             "container_worker_git_allowed_from",
             "managed_git_commit_name",
             "managed_git_commit_email",

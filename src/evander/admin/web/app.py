@@ -20,6 +20,7 @@ from starlette.staticfiles import StaticFiles
 from evander.addons import (
     AddonContext,
     LoadedAddonCatalog,
+    addon_mcp_tool_catalog_payloads,
     addon_admin_navigation_payloads,
     addon_runtime_dir,
     load_addons,
@@ -40,6 +41,7 @@ from evander.admin.web.addons import addon_routes
 from evander.admin.web.capacity import capacity_routes
 from evander.admin.web.artifacts import artifact_routes
 from evander.admin.web.chat import chat_routes
+from evander.admin.web.codex_auth import codex_auth_routes
 from evander.admin.web.connectors import connector_routes
 from evander.admin.web.operator_steering import operator_steering_routes
 from evander.admin.web.sessions_approvals import session_approval_routes
@@ -292,6 +294,14 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         addon_catalog = load_addons(service.config.addon_loader, base_dir=service.project_dir)
     except Exception:
         addon_catalog = LoadedAddonCatalog(registrations=(), loaded_addons=())
+    addon_tool_names = [
+        item["value"] for item in addon_mcp_tool_catalog_payloads(addon_catalog)
+    ]
+    if addon_tool_names:
+        existing_tool_names = set(service.runtime.policy.extra_mcp_tool_names)
+        service.runtime.policy.set_extra_mcp_tool_names(
+            existing_tool_names.union(addon_tool_names)
+        )
     service.vm_agent_admin.mark_abandoned_agent_create_operations_failed()
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
@@ -609,7 +619,14 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(capacity_routes(service, auth, dashboard_cache))
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
-    routes.extend(session_approval_routes(service, auth, dashboard_cache))
+    routes.extend(
+        session_approval_routes(
+            service,
+            auth,
+            dashboard_cache,
+            addon_catalog=addon_catalog,
+        )
+    )
     routes.extend(tool_call_routes(service, dashboard_cache))
     routes.extend(tool_visibility_routes(service))
     routes.extend(worker_config_routes(service, auth, dashboard_cache))
@@ -619,6 +636,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(report_routes(service, auth, dashboard_cache))
     routes.extend(teams_auth_routes(service, auth))
     routes.extend(chat_routes(service, auth))
+    routes.extend(codex_auth_routes(service, auth))
     routes.extend(workflow_event_routes(service, auth))
     routes.extend(workflow_webhook_routes(service))
     routes.extend(operator_steering_routes(service, auth))

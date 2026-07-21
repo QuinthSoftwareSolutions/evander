@@ -809,6 +809,37 @@
           </form>
         </section>
       </div>
+      <div id="chat-attachment-policy-modal" class="edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="chat-attachment-policy-title">
+        <div class="edit-modal-backdrop" data-chat-attachment-policy-close></div>
+        <section class="edit-modal-panel">
+          <div class="edit-modal-header">
+            <div>
+              <p class="section-label">Team Chat</p>
+              <h2 id="chat-attachment-policy-title">Attachment policy</h2>
+            </div>
+            <button type="button" class="record-action" data-chat-attachment-policy-close>Close</button>
+          </div>
+          <form id="chat-attachment-policy-form">
+            <div class="edit-form-body">
+              <label><span>Directory path</span><input name="directory_path" value="root" required /></label>
+              <div class="form-grid two-column">
+                <label class="checkbox-label"><input type="checkbox" name="operator_to_agent_enabled" /><span>Operator uploads enabled</span></label>
+                <label class="checkbox-label"><input type="checkbox" name="agent_to_operator_enabled" /><span>Agent attachments enabled</span></label>
+                <label class="checkbox-label"><input type="checkbox" name="agent_send_requires_approval" /><span>Require agent send approval</span></label>
+                <label><span>Maximum bytes per file</span><input type="number" min="0" name="max_attachment_bytes" required /></label>
+                <label><span>Maximum files per message</span><input type="number" min="1" max="20" name="max_attachments_per_message" required /></label>
+              </div>
+              <label><span>Allowed MIME types (one per line)</span><textarea name="allowed_mime_types" rows="5"></textarea></label>
+              <label><span>Allowed extensions (one per line)</span><textarea name="allowed_extensions" rows="4"></textarea></label>
+              <label><span>Blocked extensions (one per line)</span><textarea name="blocked_extensions" rows="4"></textarea></label>
+            </div>
+            <div class="edit-modal-actions">
+              <button type="submit">Save policy</button>
+              <button type="button" class="record-action" data-chat-attachment-policy-close>Cancel</button>
+            </div>
+          </form>
+        </section>
+      </div>
     </div>
   </body>
 </html>

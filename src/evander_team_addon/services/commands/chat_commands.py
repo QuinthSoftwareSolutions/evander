@@ -18,14 +18,15 @@ from .validators import (
     _require_command_agent,
     _require_command_chat_message,
     _require_command_conversation,
-    _required_command_text,
 )
 from ...models import (
+    TeamChatAttachment,
     TeamConversation,
     TeamConversationMessage,
     TeamState,
     _unique_text_list,
 )
+from ...chat_attachments import PreparedChatAttachment
 from ..domain.chat import (
     _chat_preview,
     _publish_admin_chat_notifications,
@@ -51,6 +52,8 @@ class TeamChatCommandService(TeamCommandExecutor):
         message_id: str,
         body: str,
         request_id: str,
+        attachments: Sequence[PreparedChatAttachment] = (),
+        source_attachment_ids: Sequence[str] = (),
         summary: str | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -61,6 +64,13 @@ class TeamChatCommandService(TeamCommandExecutor):
         normalized_message_id = _required_text(message_id, "message_id")
         normalized_body = _optional_text(body) or ""
         normalized_summary = _optional_text(summary)
+        prepared_attachments = list(attachments)
+        normalized_source_attachment_ids = _unique_text_list(
+            source_attachment_ids,
+            "attachment_ids",
+        )
+        if len(prepared_attachments) != len(normalized_source_attachment_ids):
+            raise ValueError("prepared attachments must match attachment_ids")
         context = TeamCommandContext(
             ambient_session_id=normalized_session_id,
             tool_name="team_reply_to_chat",
@@ -74,6 +84,7 @@ class TeamChatCommandService(TeamCommandExecutor):
             conversation_id=normalized_conversation_id,
             message_id=normalized_message_id,
             body=normalized_body,
+            attachment_ids=normalized_source_attachment_ids,
             summary=normalized_summary,
             correlation_id=context.correlation_id,
             causation_id=context.causation_id,
@@ -95,11 +106,12 @@ class TeamChatCommandService(TeamCommandExecutor):
                         ),
                     },
                 )
-            body_text = _required_command_text(
-                normalized_body,
-                field_name="body",
-                code="empty_body",
-            )
+            body_text = _optional_text(normalized_body)
+            if body_text is None and not prepared_attachments:
+                raise TeamCommandValidationError(
+                    code="empty_body",
+                    message="body or at least one attachment is required",
+                )
             conversation = _require_command_conversation(
                 state,
                 conversation_id=normalized_conversation_id,
@@ -122,6 +134,7 @@ class TeamChatCommandService(TeamCommandExecutor):
                     message=f"message {source_message.id} has already been replied to",
                     correction_context={"message_id": source_message.id},
                 )
+            _require_unclaimed_chat_attachments(state, prepared_attachments)
             now = utc_now()
             source_message.status = "replied"
             source_message.error = None
@@ -136,13 +149,27 @@ class TeamChatCommandService(TeamCommandExecutor):
                 sender="agent",
                 message_type="text",
                 body=body_text,
+                attachment_ids=[attachment.id for attachment in prepared_attachments],
                 status="sent",
                 source_message_id=source_message.id,
                 metadata=metadata,
                 created_at=now,
                 updated_at=now,
             )
-            _touch_conversation(conversation, now=now, preview=_chat_preview(body_text))
+            for attachment in prepared_attachments:
+                state.chat_attachments[attachment.id] = TeamChatAttachment(
+                    **attachment.payload(),
+                    message_id=reply_id,
+                    conversation_id=conversation.id,
+                    sender="agent",
+                    created_by_session_id=normalized_session_id,
+                    created_at=now,
+                )
+            _touch_conversation(
+                conversation,
+                now=now,
+                preview=_chat_message_preview(body_text, len(prepared_attachments)),
+            )
             return TeamCommandApplyResult(
                 response_payload={
                     "chat_message_id": reply_id,
@@ -178,6 +205,8 @@ class TeamChatCommandService(TeamCommandExecutor):
         recipient_operator_user_id: str,
         body: str,
         request_id: str,
+        attachments: Sequence[PreparedChatAttachment] = (),
+        source_attachment_ids: Sequence[str] = (),
         summary: str | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
@@ -188,6 +217,13 @@ class TeamChatCommandService(TeamCommandExecutor):
         normalized_operator_id = _normalize_operator_user_id(recipient_operator_user_id)
         normalized_body = _optional_text(body) or ""
         normalized_summary = _optional_text(summary)
+        prepared_attachments = list(attachments)
+        normalized_source_attachment_ids = _unique_text_list(
+            source_attachment_ids,
+            "attachment_ids",
+        )
+        if len(prepared_attachments) != len(normalized_source_attachment_ids):
+            raise ValueError("prepared attachments must match attachment_ids")
         normalized_handled_ids = _unique_text_list(
             handled_inbox_item_ids or [],
             "handled_inbox_item_ids",
@@ -203,6 +239,7 @@ class TeamChatCommandService(TeamCommandExecutor):
         normalized_payload = _team_operator_chat_normalized_payload(
             recipient_operator_user_id=normalized_operator_id,
             body=normalized_body,
+            attachment_ids=normalized_source_attachment_ids,
             summary=normalized_summary,
             handled_inbox_item_ids=normalized_handled_ids,
             correlation_id=context.correlation_id,
@@ -214,11 +251,12 @@ class TeamChatCommandService(TeamCommandExecutor):
             resolved: _ResolvedTeamCommandContext,
         ) -> TeamCommandApplyResult:
             agent = _require_command_agent(resolved, "team_send_operator_chat_message")
-            body_text = _required_command_text(
-                normalized_body,
-                field_name="body",
-                code="empty_body",
-            )
+            body_text = _optional_text(normalized_body)
+            if body_text is None and not prepared_attachments:
+                raise TeamCommandValidationError(
+                    code="empty_body",
+                    message="body or at least one attachment is required",
+                )
             known_display_name = _operator_display_name_for_user(state, normalized_operator_id)
             known_operator_ids = {
                 conversation.operator_user_id for conversation in state.conversations.values()
@@ -232,6 +270,7 @@ class TeamChatCommandService(TeamCommandExecutor):
                         "operator_user_ids": sorted(known_operator_ids),
                     },
                 )
+            _require_unclaimed_chat_attachments(state, prepared_attachments)
             conversation = next(
                 (
                     item
@@ -276,12 +315,26 @@ class TeamChatCommandService(TeamCommandExecutor):
                 sender="agent",
                 message_type="text",
                 body=body_text,
+                attachment_ids=[attachment.id for attachment in prepared_attachments],
                 status="sent",
                 metadata=metadata,
                 created_at=now,
                 updated_at=now,
             )
-            _touch_conversation(conversation, now=now, preview=_chat_preview(body_text))
+            for attachment in prepared_attachments:
+                state.chat_attachments[attachment.id] = TeamChatAttachment(
+                    **attachment.payload(),
+                    message_id=message_id,
+                    conversation_id=conversation.id,
+                    sender="agent",
+                    created_by_session_id=normalized_session_id,
+                    created_at=now,
+                )
+            _touch_conversation(
+                conversation,
+                now=now,
+                preview=_chat_message_preview(body_text, len(prepared_attachments)),
+            )
             created_domain_ids = [message_id]
             if conversation_created:
                 created_domain_ids.append(conversation.id)
@@ -315,3 +368,35 @@ class TeamChatCommandService(TeamCommandExecutor):
 
 
 __all__ = ["TeamChatCommandService"]
+
+
+def _chat_message_preview(body: str | None, attachment_count: int) -> str:
+    if body:
+        return _chat_preview(body)
+    return f"Sent {attachment_count} attachment{'s' if attachment_count != 1 else ''}"
+
+
+def _require_unclaimed_chat_attachments(
+    state: TeamState,
+    attachments: Sequence[PreparedChatAttachment],
+) -> None:
+    claimed = [
+        state.chat_attachments[attachment.id]
+        for attachment in attachments
+        if attachment.id in state.chat_attachments
+    ]
+    if not claimed:
+        return
+    attachment_ids = sorted({attachment.id for attachment in claimed})
+    message_ids = sorted({attachment.message_id for attachment in claimed})
+    raise TeamCommandValidationError(
+        code="chat_attachment_already_claimed",
+        message=(
+            "Team Chat attachment is already assigned to another message: "
+            + ", ".join(attachment_ids)
+        ),
+        correction_context={
+            "attachment_ids": attachment_ids,
+            "message_ids": message_ids,
+        },
+    )

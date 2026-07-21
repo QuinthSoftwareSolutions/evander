@@ -14,7 +14,19 @@ const agentCreateShared = readFileSync(
   new URL("../src/features/agents/agentCreateShared.ts", import.meta.url),
   "utf8",
 );
-const page = [agentsPage, agentCreateDialog, agentCreateShared].join("\n");
+const codexAuthPanel = readFileSync(
+  new URL("../src/features/agents/CodexAuthPanel.tsx", import.meta.url),
+  "utf8",
+);
+const sessionGrantEditors = readFileSync(
+  new URL("../src/features/communications/SessionGrantEditors.tsx", import.meta.url),
+  "utf8",
+);
+const legacyCommunicationPolicy = readFileSync(
+  new URL("../src/features/communications/legacyCommunicationPolicy.ts", import.meta.url),
+  "utf8",
+);
+const page = [agentsPage, agentCreateDialog, agentCreateShared, sessionGrantEditors].join("\n");
 const types = readFileSync(
   new URL("../src/features/admin/types.ts", import.meta.url),
   "utf8",
@@ -38,7 +50,7 @@ function sourceBetween(startMarker, endMarker) {
 }
 
 function createModalSource() {
-  return agentCreateDialog;
+  return [agentCreateDialog, sessionGrantEditors].join("\n");
 }
 
 function buildCreatePayloadSource() {
@@ -94,8 +106,36 @@ test("create form state carries backend-aware provider and image selections", ()
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?model: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?ttlDuration: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?vmImage: string;[\s\S]*?\};/);
+  assert.match(page, /type AgentCreateFormState = \{[\s\S]*?codexAuthMode: string;[\s\S]*?\};/);
   // emptyCreateForm must seed both image/provider fields so the modal opens with defaults.
   assert.match(page, /function emptyCreateForm\([\s\S]*?ttlDuration: "7d",[\s\S]*?model: "",[\s\S]*?agentProvider: "",[\s\S]*?modelProviderMode: "",[\s\S]*?vmImage: "",[\s\S]*?\}/);
+});
+
+test("container Codex usage can switch per agent without transporting credentials", () => {
+  const payloadSource = buildCreatePayloadSource();
+  assert.match(
+    payloadSource,
+    /codexAuthMode === "metered_api" \|\| codexAuthMode === "chatgpt_subscription"/,
+  );
+  assert.match(payloadSource, /payload\.codex_auth_mode = codexAuthMode/);
+  assert.match(
+    agentCreateDialog,
+    /showCreateCodexAuthMode =\s*createForm\.backend === "container_worker_vm"/,
+  );
+  assert.match(agentCreateDialog, /<option value="metered_api">Metered API<\/option>/);
+  assert.match(
+    agentCreateDialog,
+    /<option value="chatgpt_subscription">ChatGPT subscription<\/option>/,
+  );
+  assert.match(agentsPage, /buildPolicyPayload\([\s\S]*?includeCodexAuthMode = false/);
+  assert.match(agentsPage, /payload\.codex_auth_mode =/);
+  assert.doesNotMatch(codexAuthPanel, /accessToken|refreshToken|OPENAI_API_KEY/);
+  assert.match(codexAuthPanel, /\/api\/admin\/codex-auth\/device-login/);
+  assert.match(codexAuthPanel, /Worker ChatGPT subscription/);
+  assert.match(codexAuthPanel, /suffix\(login\.directoryPath\)/);
+  assert.match(codexAuthPanel, /const originDirectoryPath = login\.directoryPath;/);
+  assert.match(codexAuthPanel, /setLogin\(\{ \.\.\.payload, directoryPath: originDirectoryPath \}\);/);
+  assert.match(codexAuthPanel, /login\?\.status === "pending"/);
 });
 
 test("create TTL duration accepts seconds through weeks and emits seconds", () => {
@@ -144,6 +184,7 @@ test("buildCreatePayload gates provider and image fields by backend", () => {
     "allowed_tools",
     "allowed_script_names",
     "communication_target_ids",
+    "email_mailbox_grants",
   ]) {
     assert.match(source, new RegExp(`payload\\.${field}`));
   }
@@ -170,6 +211,41 @@ test("create modal clears directory-scoped grants when the selected directory ch
     agentCreateDialog,
     /useEffect\(\(\) => \{[\s\S]*?setCreateForm\(\(current\) => \(\{[\s\S]*?connectorGrants: \{\},[\s\S]*?\}\)\);[\s\S]*?loadAgentCreateOptions\(directoryPath\)[\s\S]*?\}, \[directoryPath\]\);/,
   );
+});
+
+test("legacy agent conversion uses the current complete communication policy", () => {
+  const conversion = sourceBetweenIn(
+    agentsPage,
+    "function convertLegacyAgentCommunicationPolicy() {",
+    "function openPromptForm() {",
+  );
+
+  for (const field of [
+    "discordChannels",
+    "teamsChannels",
+    "teamsChats",
+    "teamsUsers",
+    "emailMailboxes",
+    "emailFolderAllowlistByMailbox",
+    "allowedTools",
+  ]) {
+    assert.match(conversion, new RegExp(`current\\.${field}`));
+  }
+  assert.doesNotMatch(conversion, /selectedAgentPolicy/);
+  assert.match(conversion, /legacyEmailMailboxAccess/);
+  assert.match(agentsPage, /teams_chat_allowlist: hostStringList\(rawPolicy, "teams_chat_allowlist"\)/);
+  assert.match(agentsPage, /teams_user_allowlist: hostStringList\(rawPolicy, "teams_user_allowlist"\)/);
+  assert.match(agentsPage, /email_folder_allowlist_by_mailbox: hostStringListMap/);
+  for (const tool of [
+    "email_create_draft",
+    "email_create_draft_with_attachments",
+    "email_send",
+    "email_send_with_attachments",
+    "email_send_approved",
+    "email_send_approved_with_attachments",
+  ]) {
+    assert.match(legacyCommunicationPolicy, new RegExp(`"${tool}"`));
+  }
 });
 
 test("create modal always posts the selected page directory", () => {
@@ -255,6 +331,7 @@ test("create modal exposes model override and structured initial policy controls
     "Allowed tools",
     "Allowed scripts",
     "Communication targets",
+    "Email mailbox access",
     "Capabilities",
     "Web search",
     "Model",

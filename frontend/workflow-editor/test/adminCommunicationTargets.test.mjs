@@ -6,12 +6,20 @@ const configuration = readFileSync(
   new URL("../src/features/configuration/ConfigurationScreen.tsx", import.meta.url),
   "utf8",
 );
+const configurationNavigation = readFileSync(
+  new URL("../src/features/configuration/configurationNavigation.ts", import.meta.url),
+  "utf8",
+);
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("communication target editor preserves capability drafts and inserts Teams channels into the draft", () => {
   assert.match(configuration, /COMMUNICATION_TARGET_KINDS_BY_PROVIDER/);
   assert.match(configuration, /showKindSelector = kindOptions\.length > 1/);
-  assert.match(configuration, /showAuthProfile = target\.provider === "email"/);
+  assert.match(configuration, /showSendingMailbox = target\.provider === "email"/);
+  assert.match(configuration, /<span>Sending mailbox<\/span>/);
+  assert.match(configuration, /emailMailboxIdFromAuthProfileRef\(target\.authProfileRef\)/);
+  assert.match(configuration, /authProfileRef: emailMailboxAuthProfileRef\(event\.target\.value\)/);
+  assert.doesNotMatch(configuration, /<span>Auth profile<\/span>/);
   assert.match(configuration, /authProfileRef: provider === "email" \? target\.authProfileRef : ""/);
   assert.match(configuration, /draftCapabilities = stringListFromValue\(target\.capabilities\)/);
   assert.match(
@@ -35,10 +43,20 @@ test("communication target editor preserves capability drafts and inserts Teams 
   assert.match(configuration, /Insert target/);
 });
 
+test("email policy mailbox references use structured mailbox and folder selectors", () => {
+  assert.match(configuration, /isEmailMailboxFolderPolicyField\(field\)/);
+  assert.match(configuration, /renderEmailMailboxFolderPolicyEditor/);
+  assert.match(configuration, /Add mailbox policy/);
+  assert.match(configuration, /<strong>Allowed folders<\/strong>/);
+  assert.match(configuration, /renderEmailMailboxAllowlistEditor/);
+  assert.match(configuration, /Select the configured mailboxes that sessions in this directory may access/);
+  assert.match(configuration, /Configure an email mailbox before adding it to the policy/);
+});
+
 test("configuration screen does not render raw secret-bearing Teams auth fields", () => {
   assert.doesNotMatch(configuration, /device_code/i);
   assert.doesNotMatch(configuration, /store_path/i);
-  assert.doesNotMatch(configuration, /access_token/i);
+  assert.doesNotMatch(configuration, /<span>Access token<\/span>/i);
   assert.doesNotMatch(configuration, /refresh_token/i);
 });
 
@@ -47,13 +65,11 @@ test("configuration screen exposes editable model pricing catalog controls", () 
   assert.match(configuration, /Model pricing catalog/);
   assert.match(configuration, /modelPricingPayloadFromDraft/);
   assert.match(configuration, /saveModelPricingCatalog/);
-  assert.match(
-    configuration,
-    /const \[modelPricingPanelCollapsed, setModelPricingPanelCollapsed\] = useState\(true\)/,
-  );
-  assert.match(configuration, /modelPricingPanelCollapsed/);
-  assert.match(configuration, /className="panel-header panel-toggle model-pricing-panel-toggle"/);
-  assert.match(configuration, /aria-controls=\{modelPricingPanelBodyId\}/);
+  assert.match(configurationNavigation, /key: "model-pricing"/);
+  assert.match(configuration, /selectedUtility === "model-pricing"/);
+  assert.match(configuration, /className="panel-header model-pricing-panel-toggle"/);
+  assert.match(configuration, /id=\{modelPricingPanelBodyId\}/);
+  assert.doesNotMatch(configuration, /modelPricingPanelCollapsed/);
   assert.match(configuration, /status-pill state-stale">Unsaved changes<\/span>/);
   assert.match(configuration, /activeModelPricingDraft\.rules\.map/);
   assert.match(configuration, /duplicateModelPricingRule/);

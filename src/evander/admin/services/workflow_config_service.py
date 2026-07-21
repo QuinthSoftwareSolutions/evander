@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from evander.addons import addon_mcp_tool_catalog_payloads, load_addons
 from evander.admin.common import (
     _coerce_optional_datetime,
     _coerce_optional_string,
@@ -2155,7 +2156,7 @@ class WorkflowConfigAdminService:
                 ):
                     continue
                 if provider == "email":
-                    if not {"read", "write"}.issubset(capabilities):
+                    if "write" not in capabilities:
                         continue
                 elif not capabilities.intersection({"read", "write", "reply"}):
                     continue
@@ -2195,7 +2196,8 @@ class WorkflowConfigAdminService:
         self, directory_path: str | None = None
     ) -> WorkflowEditorCatalogPayload:
         skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
-        tool_options = _tool_field_options()
+        addon_catalog = load_addons(self.config.addon_loader, base_dir=self.project_dir)
+        tool_options = _tool_field_options(addon_mcp_tool_catalog_payloads(addon_catalog))
         communication_send_target_options = self._communication_send_target_options(directory_path)
         communication_notification_target_options = self._communication_notification_target_options(
             directory_path
@@ -2226,6 +2228,12 @@ class WorkflowConfigAdminService:
                     )
                 },
             )
+            node.fields = [
+                field.model_copy(update={"options": tool_options})
+                if field.key in {"allowed_tools", "tool_argument_policies", "tools"}
+                else field
+                for field in node.fields
+            ]
             if node.type in {"effect:vm:create", "effect:agent:create"}:
                 node.fields = [
                     field.model_copy(update={"options": skill_options})

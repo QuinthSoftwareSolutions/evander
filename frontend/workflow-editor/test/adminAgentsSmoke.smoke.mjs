@@ -192,6 +192,30 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     directory_path: "root/team",
     direct_only: true,
   };
+  for (let index = 4; index <= 28; index += 1) {
+    agentsResponse.items.push({
+      agent_id: `agent-${index}`,
+      backend: "libvirt_vm",
+      target_name: `Archived agent ${String(index).padStart(2, "0")}`,
+      session_id: `session-${index}`,
+      directory_path: "root/team/archive",
+      status: "completed",
+      started_at: "2026-05-17T09:00:00Z",
+      finished_at: "2026-05-17T10:00:00Z",
+      updated_at: "2026-05-17T10:00:00Z",
+      host: { power_state: "shut off", libvirt_state: "shut off" },
+      capabilities: {
+        start: false,
+        shutdown: false,
+        resume: false,
+        enable_disable: false,
+        kill: false,
+        logs: false,
+        stop: false,
+        destroy: false,
+      },
+    });
+  }
   const sessionResponse = {
     auth_mode: "none",
     auth_required: false,
@@ -414,10 +438,16 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.doesNotReject(() => page.locator(".agent-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
   assert.match(await page.locator(".agent-list-item.selected .status-pill").innerText(), /^running$/i);
-  assert.match(await page.locator(".agent-list-item.selected").innerText(), /VM: Running/);
+  const selectedListItemText = await page.locator(".agent-list-item.selected").innerText();
+  assert.match(selectedListItemText, /Dispatch agent/);
+  assert.doesNotMatch(selectedListItemText, /VM: Running/);
+  assert.doesNotMatch(selectedListItemText, /dotnet-agent\.qcow2/);
+  assert.doesNotMatch(selectedListItemText, /Prompt queue/);
+  const selectedListTooltip = page.locator(".agent-list-item-tooltip").filter({ has: page.locator(".agent-list-item.selected") });
+  await selectedListTooltip.hover();
+  await assert.doesNotReject(() => page.getByRole("tooltip").filter({ hasText: "Agent id: agent-1" }).waitFor({ state: "visible" }));
+  await assert.match(await page.getByRole("tooltip").filter({ hasText: "Agent id: agent-1" }).innerText(), /Prompt queue: 2 records \/ 4 prompts/);
   assert.match(await page.locator(".feature-toolbar-actions .status-pill").first().innerText(), /^running$/i);
-  await assert.match(await page.locator(".agent-list-item.selected").innerText(), /VM template dotnet \/ dotnet-agent\.qcow2/);
-  await assert.match(await page.locator(".agent-list-item.selected").innerText(), /Prompt queue: 2 records \/ 4 prompts/);
   await assert.match(await page.locator(".feature-content").innerText(), /VM template/i);
   await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
   await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
@@ -428,10 +458,24 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.match(await page.locator(".agent-inline-label").filter({ hasText: "vm-type" }).innerText(), /issue/);
   assert.equal(await page.locator(".panel-header h3").filter({ hasText: /^Labels$/ }).count(), 0);
 
+  const agentList = page.locator(".agent-list");
+  const mainScrollTopBefore = await page.locator(".admin-shell-main").evaluate((element) => element.scrollTop);
+  assert.equal(await agentList.evaluate((element) => getComputedStyle(element).overflowY), "auto");
+  assert.equal(await agentList.evaluate((element) => element.scrollHeight > element.clientHeight), true);
+  await agentList.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  assert.ok(await agentList.evaluate((element) => element.scrollTop > 0));
+  assert.equal(await page.locator(".admin-shell-main").evaluate((element) => element.scrollTop), mainScrollTopBefore);
+  await assert.doesNotReject(() => page.locator(".agent-list-item").filter({ hasText: "Archived agent 28" }).waitFor({ state: "visible" }));
+  await agentList.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+
   const idleVmItem = page.locator(".agent-list-item").filter({ hasText: "Online idle VM" });
   await assert.doesNotReject(() => idleVmItem.waitFor({ state: "visible", timeout: 5000 }));
   assert.match(await idleVmItem.locator(".status-pill").innerText(), /^idle$/i);
-  assert.match(await idleVmItem.innerText(), /VM: Running/);
+  assert.doesNotMatch(await idleVmItem.innerText(), /VM: Running/);
   await idleVmItem.click();
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Online idle VM" }).waitFor({ state: "visible" }));
   assert.match(await page.locator(".feature-toolbar-actions .status-pill").first().innerText(), /^idle$/i);
@@ -444,7 +488,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   const steeringButton = page.getByRole("button", { name: "Operator steering" });
   await assert.doesNotReject(() => steeringButton.waitFor({ state: "visible", timeout: 5000 }));
 
-  await assert.match(
+  assert.doesNotMatch(
     await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
     /Container image runner:latest \(default\)/,
   );
@@ -452,7 +496,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).locator(".status-pill").innerText(),
     /^running$/i,
   );
-  await assert.match(
+  assert.doesNotMatch(
     await page.locator(".agent-list-item").filter({ hasText: "Container worker" }).innerText(),
     /Worker: 1 active, latest Running/,
   );

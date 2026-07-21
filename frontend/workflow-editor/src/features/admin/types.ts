@@ -233,6 +233,7 @@ export type AgentCreateRequest = {
   connector_grants?: Record<string, unknown>;
   allowed_script_names?: string[];
   communication_target_ids?: string[];
+  email_mailbox_grants?: EmailMailboxGrant[];
   discord_channels?: string[];
   teams_channel_allowlist?: string[];
   email_mailboxes?: string[];
@@ -250,6 +251,7 @@ export type AgentCreateRequest = {
   container_image?: string | null;
   agent_provider?: string | null;
   model_provider_mode?: string | null;
+  codex_auth_mode?: "metered_api" | "chatgpt_subscription" | null;
   vm_image?: string | null;
 };
 
@@ -303,6 +305,23 @@ export type AgentCreateCommunicationTargetOption = {
   metadata?: Record<string, unknown>;
 };
 
+export type EmailMailboxAccess = "read" | "draft" | "send";
+
+export type EmailMailboxGrant = {
+  mailbox_id: string;
+  access: EmailMailboxAccess;
+  folders: string[];
+};
+
+export type AgentCreateEmailMailboxOption = {
+  mailbox_id: string;
+  provider: string;
+  account_identifier: string;
+  folders: string[];
+  default_folders: string[];
+  send_enabled: boolean;
+};
+
 export type AgentCreateConnectorOption = {
   connector_id: string;
   display_name: string;
@@ -322,6 +341,7 @@ export type AgentCreateOptionsResponse = {
   agent_providers: AgentCreateProviderOption[];
   model_provider_modes: AgentCreateModelProviderModeOption[];
   communication_targets: AgentCreateCommunicationTargetOption[];
+  email_mailboxes: AgentCreateEmailMailboxOption[];
   connectors: AgentCreateConnectorOption[];
   libvirt: {
     default_template: string | null;
@@ -342,13 +362,19 @@ export type AgentPolicyUpdateRequest = {
   connector_grants?: Record<string, unknown>;
   approval_required_tools?: string[];
   approval_notification_target_ids?: string[];
+  communication_target_ids?: string[] | null;
+  email_mailbox_grants?: EmailMailboxGrant[] | null;
+  codex_auth_mode?: "metered_api" | "chatgpt_subscription" | null;
   allowed_script_names?: string[];
   discord_channels?: string[];
   discord_channel_allowlist?: string[];
   teams_channel_allowlist?: string[];
+  teams_chat_allowlist?: string[];
+  teams_user_allowlist?: string[];
   metadata?: Record<string, unknown>;
   email_mailboxes?: string[];
   email_folders?: string[];
+  email_folder_allowlist_by_mailbox?: Record<string, string[]>;
 };
 
 export type AgentSessionPolicy = {
@@ -360,15 +386,22 @@ export type AgentSessionPolicy = {
   approval_required_tools?: string[];
   approval_notification_target_ids: string[];
   approval_notification_target_options: Array<{ value: string; label: string }>;
+  communication_target_ids: string[] | null;
   allowed_script_names: string[];
   discord_channels: string[];
   discord_channel_allowlist: string[];
   teams_channel_allowlist: string[];
+  teams_chat_allowlist: string[];
+  teams_user_allowlist: string[];
   metadata: Record<string, unknown>;
   email_mailboxes: string[];
   email_folders: string[];
+  email_folder_allowlist_by_mailbox: Record<string, string[]>;
+  email_mailbox_grants: EmailMailboxGrant[] | null;
+  email_send_enabled: boolean;
   labels: Record<string, string>;
   web_search_enabled: boolean;
+  codex_auth_mode: "metered_api" | "chatgpt_subscription" | null;
 };
 
 export type AgentListResponse = {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -73,6 +74,7 @@ class EffectProviderConfig(BaseModel):
     container_worker_job_timeout_seconds: float = 1800.0
     container_worker_request_timeout_seconds: float = 30.0
     container_worker_workspace_persistence: str = "session"
+    container_worker_codex_auth_mode: Literal["metered_api", "chatgpt_subscription"] = "metered_api"
     container_worker_guest_openai_base_url: str | None = None
     container_worker_guest_anthropic_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None

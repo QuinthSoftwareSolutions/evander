@@ -6,7 +6,14 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+from evander.codex_auth import CodexTurnSpec
+
+from .codex_subscription import (
+    CODEX_COMPLETION_MARKER_CONTAINER_DIR,
+    CODEX_COMPLETION_MARKER_HOST_DIRNAME,
+)
 from .models import (
     WorkerJobRecord,
     WorkerJobRequest,
@@ -24,6 +31,9 @@ from .sandbox_profile import (
 )
 
 
+_CODEX_IMAGE_BINARY = "/usr/local/bin/codex"
+
+
 class DockerContainerRuntime:
     def __init__(
         self,
@@ -32,6 +42,7 @@ class DockerContainerRuntime:
         docker_binary: str = "docker",
         sandbox_profile: WorkerSandboxProfile | None = None,
         read_only_mounts: Sequence[str | WorkerReadOnlyMount] | None = None,
+        codex_egress_proxy_url: str | None = None,
     ) -> None:
         profile = sandbox_profile or default_worker_sandbox_profile()
         if docker_network is not None:
@@ -45,6 +56,7 @@ class DockerContainerRuntime:
             else validate_worker_read_only_mount(mount)
             for mount in (read_only_mounts or ())
         )
+        self.codex_egress_proxy_url = _normalize_proxy_url(codex_egress_proxy_url)
 
     def start_job(
         self,
@@ -114,6 +126,38 @@ class DockerContainerRuntime:
         )
         return completed.stdout
 
+    def codex_app_server_command(
+        self, record: WorkerJobRecord, turn: CodexTurnSpec
+    ) -> Sequence[str]:
+        if not self.codex_egress_proxy_url:
+            raise ValueError("Codex subscription jobs require a restricted codex_egress_proxy_url")
+        no_proxy = [
+            "127.0.0.1",
+            "localhost",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+        ]
+        if turn.mcp_gateway_url is not None:
+            gateway_host = urlsplit(str(turn.mcp_gateway_url)).hostname
+            if gateway_host:
+                no_proxy.append(gateway_host)
+        return (
+            self.docker_binary,
+            "exec",
+            "-i",
+            "-e",
+            f"HTTPS_PROXY={self.codex_egress_proxy_url}",
+            "-e",
+            f"HTTP_PROXY={self.codex_egress_proxy_url}",
+            "-e",
+            f"NO_PROXY={','.join(dict.fromkeys(no_proxy))}",
+            record.container_id or record.container_name,
+            _CODEX_IMAGE_BINARY,
+            "app-server",
+            "--stdio",
+        )
+
     def _build_run_args(
         self,
         *,
@@ -130,6 +174,27 @@ class DockerContainerRuntime:
             validate_worker_read_only_mount(mount)
         paths.assert_contained()
         identity_mounts = self._container_identity_mounts(paths)
+        subscription_completion_mount: str | None = None
+        if (
+            request.codex_turn is not None
+            and request.codex_turn.auth_mode.value == "chatgpt_subscription"
+        ):
+            completion_dir = paths.logs / CODEX_COMPLETION_MARKER_HOST_DIRNAME
+            ensure_resolved_path_within(
+                base=paths.root,
+                candidate=completion_dir,
+                description="Codex completion marker directory",
+            )
+            completion_dir.mkdir(parents=True, exist_ok=True)
+            ensure_resolved_path_within(
+                base=paths.root,
+                candidate=completion_dir,
+                description="Codex completion marker directory",
+            )
+            reject_unsafe_mount(completion_dir, CODEX_COMPLETION_MARKER_CONTAINER_DIR)
+            subscription_completion_mount = (
+                f"{completion_dir}:{CODEX_COMPLETION_MARKER_CONTAINER_DIR}:ro"
+            )
 
         args = [
             self.docker_binary,
@@ -149,6 +214,8 @@ class DockerContainerRuntime:
         ]
         for mount in identity_mounts:
             args.extend(["-v", mount])
+        if subscription_completion_mount is not None:
+            args.extend(["-v", subscription_completion_mount])
         for mount in self.read_only_mounts:
             args.extend(["-v", mount.docker_volume_arg])
         for cap in self.sandbox_profile.cap_drop:
@@ -170,6 +237,14 @@ class DockerContainerRuntime:
             pids_limit = self.sandbox_profile.default_pids_limit
         if pids_limit is not None:
             args.extend(["--pids-limit", str(pids_limit)])
+        if (
+            request.codex_turn is not None
+            and request.codex_turn.auth_mode.value == "chatgpt_subscription"
+        ):
+            if not self.codex_egress_proxy_url:
+                raise ValueError(
+                    "Codex subscription jobs require a restricted codex_egress_proxy_url"
+                )
         args.append(request.image)
         args.extend(request.command)
         return args
@@ -234,3 +309,13 @@ def docker_state_to_status(state: dict[str, Any]) -> str:
         exit_code = state.get("ExitCode")
         return "exited" if exit_code in (0, None) else "failed"
     return status or "unknown"
+
+
+def _normalize_proxy_url(value: str | None) -> str | None:
+    text = str(value or "").strip().rstrip("/")
+    if not text:
+        return None
+    parsed = urlsplit(text)
+    if parsed.scheme != "http" or not parsed.hostname or parsed.path not in {"", "/"}:
+        raise ValueError("codex_egress_proxy_url must be an http URL without a path")
+    return text

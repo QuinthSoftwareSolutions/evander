@@ -72,6 +72,12 @@ import { Tooltip } from "./features/admin/Tooltip";
 import { hashQueryParam } from "./adminRouting";
 import { graphVisibleInDirectory } from "./workflowGraphDirectory";
 import {
+  EMPTY_WORKFLOW_TARGET_INVENTORY,
+  workflowTargetInventoryPath,
+  workflowTargetOptions,
+  type WorkflowTargetInventory,
+} from "./workflowTargetInventory";
+import {
   BindingParseError,
   isParsedBindingExpression,
   isParsedBindingReference,
@@ -1240,6 +1246,8 @@ function ensureDirectorySelectOption(
 }
 
 function groupToolOption(option: WorkflowFieldOption): string {
+  const declaredGroup = option.metadata?.tool_group;
+  if (typeof declaredGroup === "string" && declaredGroup.trim()) return declaredGroup.trim();
   const { value } = option;
   if ([
     "create_local_issue",
@@ -1361,7 +1369,13 @@ function groupToolOptions(options: WorkflowFieldOption[]) {
     const group = groupToolOption(option);
     groups.set(group, [...(groups.get(group) ?? []), option]);
   }
-  return TOOL_GROUP_ORDER
+  const orderedNames = [
+    ...TOOL_GROUP_ORDER.filter((name) => groups.has(name)),
+    ...[...groups.keys()]
+      .filter((name) => !TOOL_GROUP_ORDER.includes(name as (typeof TOOL_GROUP_ORDER)[number]))
+      .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" })),
+  ];
+  return orderedNames
     .map((name) => ({ name, items: groups.get(name) ?? [] }))
     .filter((group) => group.items.length > 0)
     .map((group) => ({
@@ -4135,12 +4149,16 @@ export default function App() {
   const runtimePulseSeenActivityKeysRef = useRef<Set<string>>(new Set());
   const runtimePulseSeenActivityKeyOrderRef = useRef<string[]>([]);
   const runtimePulseTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const workflowTargetInventoryCacheRef = useRef<Map<string, WorkflowTargetInventory>>(new Map());
   const previousSelectedDirectoryPathRef = useRef(selectedDirectoryPath);
   const selectedWorkflowPackReferenceRef = useRef("");
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [undoHistory, setUndoHistory] = useState<WorkflowUndoEntry[]>([]);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
+  const [workflowTargetInventory, setWorkflowTargetInventory] = useState<WorkflowTargetInventory>(
+    EMPTY_WORKFLOW_TARGET_INVENTORY,
+  );
   const [workflowGeneratorOpen, setWorkflowGeneratorOpen] = useState(false);
   const [workflowGeneratorDescription, setWorkflowGeneratorDescription] = useState("");
   const [workflowGeneratorState, setWorkflowGeneratorState] = useState<WorkflowGeneratorState>("idle");
@@ -4552,7 +4570,35 @@ export default function App() {
   })();
   const effectTargetField = selectedCatalogEntry?.fields.find((field) => field.key === effectTargetKey)
     ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
+  const effectTargetOptions = useMemo(
+    () => workflowTargetOptions(workflowTargetInventory, effectTargetKey),
+    [effectTargetKey, workflowTargetInventory],
+  );
   const communicationThreadField = selectedCatalogEntry?.fields.find((field) => field.key === "thread_id");
+
+  useEffect(() => {
+    if (!hasCollapsedTargetUi || isTutorialMode) return;
+    const directoryPath = selectedDirectoryPath.trim() || "root";
+    const cachedInventory = workflowTargetInventoryCacheRef.current.get(directoryPath);
+    if (cachedInventory) {
+      setWorkflowTargetInventory(cachedInventory);
+      return;
+    }
+    setWorkflowTargetInventory(EMPTY_WORKFLOW_TARGET_INVENTORY);
+    let cancelled = false;
+    fetchJson<WorkflowTargetInventory>(workflowTargetInventoryPath(directoryPath))
+      .then((inventory) => {
+        if (cancelled) return;
+        setWorkflowTargetInventory(inventory);
+        workflowTargetInventoryCacheRef.current.set(directoryPath, inventory);
+      })
+      .catch(() => {
+        if (!cancelled) setWorkflowTargetInventory(EMPTY_WORKFLOW_TARGET_INVENTORY);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasCollapsedTargetUi, isTutorialMode, selectedDirectoryPath]);
 
   useEffect(() => {
     setWorkflowHasUnsavedChanges(hasUnsavedWorkflowChanges);
@@ -8120,6 +8166,9 @@ export default function App() {
         : effectTargetKey === "vm_name"
           ? "VM name"
           : "VM name or session ID";
+    const optionListId = effectTargetOptions.length > 0
+      ? `workflow-target-options-${effectTargetKey}`
+      : undefined;
     return (
       <div className="inspector-field" key="effect-target">
         <div className="field-toolbar">
@@ -8189,11 +8238,19 @@ export default function App() {
           : (
             <input
               value={typeof value === "string" ? value : ""}
+              list={optionListId}
               placeholder={targetPlaceholder}
               onChange={(event) => updateKnownField(effectTargetKey, event.target.value)}
               disabled={isDisabled}
             />
           )}
+        {mode === "literal" && optionListId ? (
+          <datalist id={optionListId}>
+            {effectTargetOptions.map((option) => (
+              <option key={`${effectTargetKey}-${option.value}`} value={option.value} label={option.label} />
+            ))}
+          </datalist>
+        ) : null}
       </div>
     );
   }

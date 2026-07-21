@@ -1309,6 +1309,11 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
             directory_path="root",
             allowed_tools=[],
             allowed_contact_ids=["ops"],
+            email_folder_allowlist_by_mailbox={
+                "primary": ["inbox"],
+                "archive": ["inbox", "archive"],
+            },
+            email_send_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={"labels": {"system": "chat_assistant"}},
         )
@@ -1341,6 +1346,11 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
     assert agents[0].host["inventory_error"] == "virsh: command not found"
     assert agents[0].host["session_policy"]["session_id"] == "assistant-shared"
     assert agents[0].host["session_policy"]["allowed_contact_ids"] == ["ops"]
+    assert agents[0].host["session_policy"]["email_folder_allowlist_by_mailbox"] == {
+        "primary": ["inbox"],
+        "archive": ["inbox", "archive"],
+    }
+    assert agents[0].host["session_policy"]["email_send_enabled"] is True
 
 
 def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
@@ -12722,6 +12732,73 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             {
                 "allowed_contact_ids": ["missing"],
             },
+        )
+
+
+def test_update_session_policy_validates_canonical_communication_and_mailbox_grants(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    communication_targets = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(service.config.runtime_dir)
+    )
+    communication_targets.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "ops-email",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "ops@example.com",
+                    "policy": {
+                        "capabilities": ["write"],
+                        "auth_profile_ref": "email.default",
+                    },
+                }
+            ]
+        },
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="canonical-session",
+            allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    service.operations_admin.update_session_policy(
+        "canonical-session",
+        {
+            "communication_target_ids": ["OPS-EMAIL"],
+            "email_mailbox_grants": [{"mailbox_id": "default", "access": "read"}],
+        },
+    )
+
+    updated = service.runtime.session_repository.get_session("canonical-session")
+    assert updated is not None
+    assert updated.communication_target_ids == ["ops-email"]
+    assert updated.email_mailbox_grants is not None
+    assert updated.email_mailbox_grants[0].access.value == "read"
+    assert updated.email_mailbox_allowlist == ["default"]
+    assert updated.email_folder_allowlist_by_mailbox == {"default": ["inbox", "drafts"]}
+
+    service.operations_admin.update_session_policy(
+        "canonical-session",
+        {
+            "email_mailbox_grants": [{"mailbox_id": "default", "access": "read", "folders": []}],
+        },
+    )
+
+    updated = service.runtime.session_repository.get_session("canonical-session")
+    assert updated is not None
+    assert updated.email_mailbox_grants is not None
+    assert updated.email_mailbox_grants[0].folders == []
+    assert updated.email_folder_allowlist_by_mailbox == {"default": []}
+
+    with pytest.raises(ValueError, match="unknown target"):
+        service.operations_admin.update_session_policy(
+            "canonical-session", {"communication_target_ids": ["missing"]}
         )
 
 

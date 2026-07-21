@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from evander.models import DraftMessage, EmailMessage
 from evander.repositories.records import EmailRecordsRepository
@@ -41,6 +41,7 @@ class EmailMessageSummary(BaseModel):
     thread_id: str | None = None
     sender: str
     recipients: list[str]
+    subject: str = ""
     received_at: datetime
     unread: bool
     body_snippet: str
@@ -51,6 +52,37 @@ class EmailMessageDetail(EmailMessageSummary):
     subject: str
     body_text: str
     attachments: list[EmailAttachmentMetadata] = Field(default_factory=list)
+
+
+class EmailMessageSearchQuery(BaseModel):
+    """Portable structured filters for historical email listing."""
+
+    received_after: datetime | None = None
+    received_before: datetime | None = None
+    unread: bool | None = None
+    sender_contains: str | None = None
+    recipient_contains: str | None = None
+    subject_contains: str | None = None
+    text_contains: str | None = None
+    has_attachments: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "EmailMessageSearchQuery":
+        for value in (self.received_after, self.received_before):
+            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+                raise ValueError("received date filters must include a timezone")
+        if (
+            self.received_after is not None
+            and self.received_before is not None
+            and self.received_after >= self.received_before
+        ):
+            raise ValueError("received_after must be earlier than received_before")
+        return self
+
+
+class EmailMessagePage(BaseModel):
+    messages: list[EmailMessageSummary] = Field(default_factory=list)
+    next_cursor: str | None = None
 
 
 class EmailDraft(BaseModel):
@@ -79,6 +111,15 @@ class EmailProvider(Protocol):
     def list_unread(
         self, mailbox_id: str, folder: str, limit: int
     ) -> list[EmailMessageSummary]: ...
+
+    def list_messages(
+        self,
+        mailbox_id: str,
+        folder: str,
+        query: EmailMessageSearchQuery,
+        cursor: str | None,
+        limit: int,
+    ) -> EmailMessagePage: ...
 
     def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail: ...
 
@@ -118,6 +159,23 @@ class MultiMailboxEmailProvider:
     def list_unread(self, mailbox_id: str, folder: str, limit: int) -> list[EmailMessageSummary]:
         provider = self._provider_for_mailbox(mailbox_id)
         return provider.list_unread(mailbox_id=mailbox_id, folder=folder, limit=limit)
+
+    def list_messages(
+        self,
+        mailbox_id: str,
+        folder: str,
+        query: EmailMessageSearchQuery,
+        cursor: str | None,
+        limit: int,
+    ) -> EmailMessagePage:
+        provider = self._provider_for_mailbox(mailbox_id)
+        return provider.list_messages(
+            mailbox_id=mailbox_id,
+            folder=folder,
+            query=query,
+            cursor=cursor,
+            limit=limit,
+        )
 
     def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
         provider = self._provider_for_mailbox(mailbox_id)
@@ -178,6 +236,67 @@ class JsonEmailProvider:
         ]
         messages.sort(key=lambda item: item.received_at, reverse=True)
         return [self._to_summary(message) for message in messages[:limit]]
+
+    def list_messages(
+        self,
+        mailbox_id: str,
+        folder: str,
+        query: EmailMessageSearchQuery,
+        cursor: str | None,
+        limit: int,
+    ) -> EmailMessagePage:
+        try:
+            offset = int(cursor or "0")
+        except ValueError as exc:
+            raise ValueError("invalid email page cursor") from exc
+        if offset < 0:
+            raise ValueError("invalid email page cursor")
+
+        messages = [
+            message
+            for message in self.email_store.read_all().values()
+            if message.mailbox_id == mailbox_id
+            and message.folder == folder
+            and self._matches_search_query(message, query)
+        ]
+        messages.sort(key=lambda item: item.received_at, reverse=True)
+        page = messages[offset : offset + limit]
+        next_offset = offset + len(page)
+        return EmailMessagePage(
+            messages=[self._to_summary(message) for message in page],
+            next_cursor=str(next_offset) if next_offset < len(messages) else None,
+        )
+
+    @staticmethod
+    def _matches_search_query(message: EmailMessage, query: EmailMessageSearchQuery) -> bool:
+        if query.received_after is not None and message.received_at < query.received_after:
+            return False
+        if query.received_before is not None and message.received_at >= query.received_before:
+            return False
+        if query.unread is not None and message.unread is not query.unread:
+            return False
+
+        def contains(value: str, expected: str | None) -> bool:
+            return expected is None or expected.casefold() in value.casefold()
+
+        if not contains(message.sender, query.sender_contains):
+            return False
+        if query.recipient_contains is not None and not any(
+            contains(recipient, query.recipient_contains) for recipient in message.recipients
+        ):
+            return False
+        if not contains(message.subject, query.subject_contains):
+            return False
+        if query.text_contains is not None and not contains(
+            f"{message.subject}\n{message.body_text}", query.text_contains
+        ):
+            return False
+        if query.has_attachments is not None:
+            attachments = message.metadata.get("attachments") or []
+            has_attachments = bool(attachments) or bool(message.metadata.get("has_attachments"))
+            if has_attachments is not query.has_attachments:
+                return False
+        return True
 
     def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
         message = self.email_store.get(message_id)
@@ -278,6 +397,7 @@ class JsonEmailProvider:
             thread_id=message.thread_id,
             sender=message.sender,
             recipients=message.recipients,
+            subject=message.subject,
             received_at=message.received_at,
             unread=message.unread,
             body_snippet=message.body_snippet,
@@ -289,7 +409,6 @@ class JsonEmailProvider:
         summary = cls._to_summary(message)
         return EmailMessageDetail(
             **summary.model_dump(),
-            subject=message.subject,
             body_text=message.body_text,
             attachments=[],
         )

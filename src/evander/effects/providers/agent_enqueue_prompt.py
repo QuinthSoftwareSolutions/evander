@@ -35,6 +35,7 @@ from evander.workflow.validation import NodeCapability
 from .agent_prompt import AgentPromptEffectProvider, _prompt_error_outputs
 from .agent_session import (
     container_backend,
+    container_codex_turn_spec,
     container_prompt_command,
     container_worker_guest_gateway_url,
     container_worker_image_for_session,
@@ -560,6 +561,24 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         )
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
+        mcp_gateway_url = self._mcp_gateway_url(
+            config=effective_config,
+            target=session_id,
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+            base_gateway_url=container_worker_guest_gateway_url(effective_config),
+        )
+        codex_turn = container_codex_turn_spec(
+            prompt=prompt,
+            model=resolved_model,
+            resume_thread_id=effective_resume_thread_id,
+            session=session,
+            config=effective_config,
+            agent_provider=agent_harness,
+            resume_mode=resume_mode,
+            mcp_gateway_url=mcp_gateway_url,
+            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
+        )
         try:
             handle = backend.start(
                 backend.prepare(
@@ -578,17 +597,10 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                             resume_thread_id=effective_resume_thread_id,
                             agent_provider=agent_harness,
                             resume_mode=resume_mode,
-                            mcp_gateway_url=self._mcp_gateway_url(
-                                config=effective_config,
-                                target=session_id,
-                                workflow_run_id=workflow_run_id,
-                                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-                                base_gateway_url=container_worker_guest_gateway_url(
-                                    effective_config
-                                ),
-                            ),
+                            mcp_gateway_url=mcp_gateway_url,
                             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
                         ),
+                        codex_turn=codex_turn,
                         metadata={
                             "effect_type": self.node_type(),
                             "dispatch_id": dispatch_id,
@@ -596,6 +608,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                             "agent_provider": agent_harness,
                             "model": resolved_model,
                             "model_provider_mode": effective_config.model_provider_mode,
+                            **(
+                                {"codex_auth_mode": codex_turn.auth_mode.value}
+                                if codex_turn is not None
+                                else {}
+                            ),
                         },
                     )
                 )

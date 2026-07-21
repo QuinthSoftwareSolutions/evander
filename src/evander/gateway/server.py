@@ -882,9 +882,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
             config=context.config,
             service=context,
         )
-        addon_mcp_tool_names.extend(register_addon_mcp_tools(addon, server, addon_context))
+        registered_names = register_addon_mcp_tools(addon, server, addon_context)
+        declared_names = tuple(tool.name for tool in addon.mcp_tool_catalog)
+        if declared_names and set(registered_names) != set(declared_names):
+            missing = sorted(set(declared_names) - set(registered_names))
+            unexpected = sorted(set(registered_names) - set(declared_names))
+            raise ValueError(
+                f"add-on {addon.addon_id} MCP tool catalog does not match registration; "
+                f"missing={missing} unexpected={unexpected}"
+            )
+        addon_mcp_tool_names.extend(registered_names)
     if addon_mcp_tool_names:
-        context.policy.set_extra_mcp_tool_names(addon_mcp_tool_names)
+        existing_tool_names = set(context.policy.extra_mcp_tool_names)
+        context.policy.set_extra_mcp_tool_names(
+            existing_tool_names.union(addon_mcp_tool_names)
+        )
 
     def _deprecate_session_id_parameter_schema() -> None:
         for tool in server._tool_manager.list_tools():

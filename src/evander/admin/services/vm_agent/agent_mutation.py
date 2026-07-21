@@ -6,6 +6,8 @@ from evander.admin.services.vm_agent.common import (
     Mapping,
     SessionManifest,
     _normalize_allowed_tools,
+    _admin_agent_communication_allowlists,
+    _admin_agent_email_mailbox_grants,
     _normalize_session_labels,
     _prune_approvals_for_sessions,
     _prune_pr_feedback_store,
@@ -17,6 +19,7 @@ from evander.admin.services.vm_agent.common import (
     timedelta,
 )
 from evander.connectors.models import normalize_connector_grants
+from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 
 
 class VmAgentMutationMixin:
@@ -50,7 +53,11 @@ class VmAgentMutationMixin:
             "web_search_enabled",
             "email_mailboxes",
             "email_folders",
+            "email_folder_allowlist_by_mailbox",
+            "communication_target_ids",
+            "email_mailbox_grants",
             "labels",
+            "codex_auth_mode",
             *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
         }
         unsupported = sorted(set(body) - allowed_fields)
@@ -143,6 +150,65 @@ class VmAgentMutationMixin:
             )
         if "email_folders" in body:
             update["email_folder_allowlist"] = self._agent_string_list(body, "email_folders") or []
+        if "email_folder_allowlist_by_mailbox" in body:
+            raw_folder_map = body.get("email_folder_allowlist_by_mailbox")
+            if not isinstance(raw_folder_map, Mapping):
+                raise ValueError("email_folder_allowlist_by_mailbox must be an object")
+            folder_map: dict[str, list[str]] = {}
+            for raw_mailbox_id, raw_folders in raw_folder_map.items():
+                mailbox_id = str(raw_mailbox_id or "").strip()
+                if not mailbox_id:
+                    raise ValueError(
+                        "email_folder_allowlist_by_mailbox keys must be non-empty strings"
+                    )
+                if mailbox_id in folder_map:
+                    raise ValueError(
+                        "email_folder_allowlist_by_mailbox contains duplicate mailbox "
+                        f"{mailbox_id!r}"
+                    )
+                folder_map[mailbox_id] = (
+                    self._agent_string_list({"folders": raw_folders}, "folders") or []
+                )
+            update["email_folder_allowlist_by_mailbox"] = folder_map
+        if "communication_target_ids" in body:
+            communication_allowlists = _admin_agent_communication_allowlists(
+                body,
+                config=self.config,
+                directory_path=session.directory_path,
+            )
+            update["communication_target_ids"] = communication_allowlists[
+                "communication_target_ids"
+            ]
+            if communication_allowlists["communication_target_ids"] is not None:
+                update.update(
+                    {
+                        "discord_channel_allowlist": communication_allowlists["discord_channels"]
+                        or [],
+                        "teams_channel_allowlist": communication_allowlists[
+                            "teams_channel_allowlist"
+                        ]
+                        or [],
+                        "teams_chat_allowlist": communication_allowlists["teams_chat_allowlist"]
+                        or [],
+                        "teams_user_allowlist": communication_allowlists["teams_user_allowlist"]
+                        or [],
+                    }
+                )
+        if "email_mailbox_grants" in body:
+            grants = _admin_agent_email_mailbox_grants(
+                body,
+                runtime=self.runtime,
+                directory_path=session.directory_path,
+            )
+            update["email_mailbox_grants"] = grants
+            if grants is not None:
+                update["email_mailbox_allowlist"] = [grant.mailbox_id for grant in grants]
+                update["email_folder_allowlist_by_mailbox"] = {
+                    grant.mailbox_id: list(grant.folders) for grant in grants
+                }
+                update["email_folder_allowlist"] = sorted(
+                    {folder for grant in grants for folder in grant.folders}
+                )
         if "labels" in body:
             metadata = dict(update["metadata"] if "metadata" in update else session.metadata)
             labels = _normalize_session_labels(body.get("labels"))
@@ -151,6 +217,16 @@ class VmAgentMutationMixin:
             else:
                 metadata.pop("labels", None)
             update["metadata"] = metadata
+        if "codex_auth_mode" in body:
+            if selected_backend != "container_worker_vm":
+                raise ValueError("codex_auth_mode is supported only for container worker agents")
+            codex_auth_mode = normalize_codex_auth_mode(body.get("codex_auth_mode"))
+            agent_provider = (
+                str(session.metadata.get("agent_provider") or "codex").strip().casefold()
+            )
+            if codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
+                raise ValueError("chatgpt_subscription is supported only for Codex agents")
+            update["codex_auth_mode"] = codex_auth_mode
 
         updated = session.model_copy(update=update)
         self.runtime.session_repository.upsert_session(updated)

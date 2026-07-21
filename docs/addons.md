@@ -18,6 +18,8 @@ Add-ons may register generic integration points:
 - Host-side MCP tools registered through the add-on MCP registrar and governed
   by the same session, directory policy, approval, and audit machinery as core
   tools
+- Static MCP tool descriptors used to merge enabled add-on tools into the core
+  Sessions, MCP Tools, workflow-editor, and Tool Visibility catalogs
 - Connector drivers registered by type name and invoked only through the core connector service,
   preserving directory resolution, exact session grants, approvals, auth handling, and audit
 - Private runtime state under `runtime/addons/<addon_id>/`
@@ -106,6 +108,15 @@ def register_addon():
         },
         "admin_api_routes": [Route("/health", health, methods=["GET"])],
         "admin_ui_routes": [Route("/", index, methods=["GET"])],
+        "mcp_tools": register_mcp_tools,
+        "mcp_tool_catalog": [
+            {
+                "name": "team_example",
+                "label": "Team example",
+                "description": "Run the add-on-owned Team example tool.",
+                "group": "Team Add-on",
+            }
+        ],
         "workflow_providers": {
             "effect_providers": {
                 "effect:team:example": ExampleEffectProvider,
@@ -182,6 +193,17 @@ Enable it with:
   }
 }
 ```
+
+Every tool exposed by an add-on registrar should have one static
+`mcp_tool_catalog` descriptor. When descriptors are present, gateway startup
+verifies that the declared and registered tool-name sets match. Admin Web groups
+the descriptors under their optional `group`, falling back to the add-on
+navigation label (or display name for a headless add-on), and merges them with
+core tools. Operators can then select the tools on session create/edit,
+configure inherited approval or deny rules on **MCP Tools**, and select them in
+workflow tool fields without typing an unknown name. Catalog presence does not
+grant the tool: session allowlists, directory policy, invocation approval, and
+audit still apply.
 
 When enabled, Admin Web shows an `MSSQL Seeds` tab backed by
 `/api/addons/mssql-seed-addon/...` and `/addons/mssql-seed-addon/`. The add-on
@@ -292,7 +314,8 @@ When enabled, Admin Web shows a `Bokio` tab backed by
 `/api/addons/bokio-addon/...` and `/addons/bokio-addon/`. The add-on stores
 prepared bookkeeping actions under `runtime/addons/bokio-addon/` and exposes
 workflow nodes under `query:bokio:*` and `effect:bokio:*`, plus host-side MCP
-tools named `bokio_*`.
+tools named `bokio_*`. Its static tool descriptors also appear in the `Bokio`
+group on **Sessions**, **MCP Tools**, and workflow tool selectors.
 
 Configure the private integration on the host:
 
@@ -309,7 +332,23 @@ runtime state, guest images, or session manifests.
 The Bokio add-on is intentionally an assisted-bookkeeping layer:
 
 - Agents can inspect company information, accounts, journal entries, invoices,
-  supplier invoices, uploads, and prepared actions.
+  customers, suppliers, supplier invoices, uploads, and prepared actions.
+- `bokio_list_customers` and `bokio_list_suppliers` expose Bokio's paginated
+  customer and supplier directories, while `bokio_get_customer` and
+  `bokio_get_supplier` retrieve one record by its Bokio ID. Customer queries can
+  filter on `name`, `type`, `vatNumber`, `orgNumber`, and `modifiedDateTime`;
+  supplier queries can filter on `name`, `vatNumber`, and `orgNumber`. Each tool
+  requires its own session grant. Bokio currently marks the supplier API as
+  preview, so supplier response fields and behavior may change.
+- `bokio_list_uploads` queries documents already stored remotely in Bokio, with
+  Bokio pagination and optional `description` or `journalEntryId` query filters.
+  `bokio_get_upload` reads one remote upload's metadata, while
+  `bokio_download_upload` downloads its file into a session-owned communication
+  artifact. Only a complete HTTP `200` response is staged; redirects, partial
+  responses, and interrupted or truncated transfers are rejected. Downloads
+  require their exact MCP tool grant, are bounded to 100 MiB, and do not
+  automatically create durable local evidence; call
+  `bokio_import_evidence_artifact` explicitly when local retention is required.
 - Receipt and invoice intake is connector- and communication-driven. An agent can
   import a PDF, JPEG, or PNG returned as an artifact by a granted filesystem/REST
   connector, or by `communication_download_attachment`, with
@@ -324,9 +363,10 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   downloaded or scanned documents. A REST connector may provide vendor cost data
   or a fixed document download endpoint, but it does not replace the email
   integration for user-delegated mailboxes.
-- `bokio_list_evidence` and `bokio_get_evidence` expose evidence metadata,
-  provenance, and Bokio association state. `bokio_stage_evidence_for_workspace`
-  can make previously retained evidence available to a new session as an artifact.
+- `bokio_list_evidence` and `bokio_get_evidence` expose metadata, provenance, and
+  Bokio association state from Evander's durable local evidence store; they do not
+  query Bokio's remote uploads. `bokio_stage_evidence_for_workspace` can make
+  previously retained evidence available to a new session as an artifact.
 - `bokio_attach_evidence` uploads managed evidence with a Bokio journal-entry ID,
   linking it to an existing transaction or entry. `bokio_create_journal_entry_with_evidence`
   creates an entry and attaches one or more evidence records with a durable
@@ -339,11 +379,35 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   entry whose creation outcome is unknown.
 - Agents can prepare journal entries, supplier invoices, and bank payments as
   local add-on actions for operator approval.
+- `bokio_create_supplier_invoice` is the deliberately narrow autonomous write
+  path. It requires a caller-supplied `operation_key` and stores the exact
+  payload digest and outcome in `runtime/addons/bokio-addon/operations.db`.
+  Repeating the same key and payload returns the saved result without another
+  Bokio call; reusing a key for a different payload is rejected. A definite
+  pre-request or client rejection becomes `failed` and requires
+  `retry_if_failed=true`. A timeout, server failure, or other uncertain result
+  becomes `needs_attention`; retry is blocked until Bokio has been checked and
+  the caller explicitly sets `confirm_not_created=true`.
+- Direct operations and prepared actions record the process that owns an
+  `executing` claim. **Confirm absent** never steals a claim from a live process;
+  wait for that attempt to finish. A stranded claim can be recovered only after
+  reconciling Bokio, explicitly confirming that the object was not created, and
+  verifying that the recorded owner process has exited. Missing or untrustworthy
+  ownership fails closed and requires reconciliation or repair outside the retry
+  control.
 - Document uploads read only from add-on-owned staging directories under
   `runtime/addons/bokio-addon/uploads/`; MCP uploads use
   `uploads/sessions/<session-id>`, workflow uploads use
   `uploads/scopes/workflows` unless a `session_id` is supplied, and Admin API
   uploads use `uploads/scopes/admin`.
+- The Bokio Admin tab is the prepared-action review workspace. Pending actions
+  use one atomic **Approve & execute** operation; approved legacy actions can be
+  executed separately. Definite failures expose **Retry**. Uncertain outcomes
+  expose **Confirm absent & retry** only after reconciliation, while a stranded
+  `executing` action uses **Confirm absent & recover** and still refuses to take
+  over a live or unknown owner. Payload, result, error, source, and transition
+  history remain visible. All Admin mutations require an Admin owner with
+  privileged operations unlocked.
 - Prepared-action execution tools execute only approved prepared actions and
   should also be policy-gated with MCP invocation approval for production
   sessions.
@@ -355,7 +419,12 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
 
 For an autonomous bookkeeping session, allow the relevant email tools or the
 generic `list_connectors` and `call_connector` tools with exact connector-operation
-grants, then allow the required `bokio_*` tools. Keep
+grants, then allow the required `bokio_*` tools. To permit supplier invoices
+without per-call approval, allow `bokio_create_supplier_invoice` on the session
+and leave that tool without an inherited `require_approval` rule. Do not grant
+`bokio_create_approved_bank_payment`; alternatively keep it denied or approval
+required. There is no autonomous direct bank-payment MCP tool, and every Bokio
+bank payment still requires BankID signing. Keep
 `communication_copy_artifact_to_workspace` separate: it is needed only when the
 agent must inspect the original file in its workspace, not to persist or attach
 the document to Bokio.
@@ -429,6 +498,26 @@ inspection; the UI labels that mode separately from "My chats" and blocks
 sending while inspecting. Team chat messages recorded by the Admin API carry
 human-operator metadata, and chat wake prompts tell the agent that the source is
 a human operator rather than another Team agent.
+
+Built-in Team Chat supports file and image attachments in both directions. An
+operator can attach up to the effective per-message limit when sending a Chat
+message; the add-on stores the bytes privately under
+`runtime/addons/team-addon/attachments/`, records metadata and SHA-256 in Team
+SQLite state, and copies the files into the recipient agent workspace under
+`/home/agent/team-chat-attachments/<message-id>/` before the Chat wake. Attachment
+contents are untrusted operator input. Authorized Chat readers can download files,
+and the UI renders permitted raster images inline.
+
+Agent-originated files use `team_stage_chat_attachment` first, then pass the
+returned attachment IDs to `team_reply_to_chat` or
+`team_send_operator_chat_message`. Staging accepts only regular files under
+`/home/agent`, is bound to the calling session, and expires after 24 hours. The
+root policy enables both directions, allows five common document/image files up
+to 10 MiB each, and requires exact approval for an agent send. Configure inherited
+overrides from Chat's **Files** dialog or the add-on-owned
+`GET`/`PUT /api/addons/team-addon/chat/attachment-policy` routes. These rules are
+deliberately independent of core communication-file policy and Microsoft Teams
+file policy; changing one does not broaden either of the others.
 
 The Mail view is the Agent Mail surface for agent-to-agent messages. It is
 separate from operator Chat: use Chat for a signed-in human's conversation with
@@ -820,6 +909,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_ask_question`
 - `team_send_progress_report`
 - `team_send_operator_chat_message`
+- `team_stage_chat_attachment`
 - `team_escalate_operator`
 - `team_record_memory`
 - `team_archive_memory`
@@ -848,8 +938,9 @@ Ordinary persistent Team wakes may receive these tools:
 Tool visibility is scoped by wake class:
 
 - Normal persistent wakes get ordinary Team action tools.
-- Team Chat wakes get the chat-class tool `team_reply_to_chat`, plus ordinary tools only when that
-  chat dispatch may mutate Team state.
+- Team Chat wakes get the chat-class tool `team_reply_to_chat` and the attachment-staging tool
+  `team_stage_chat_attachment`, plus ordinary tools only when that chat dispatch may mutate Team
+  state.
 - Governance wakes get governance tools only.
 - Ephemeral worker wakes get `team_report_ephemeral_result` only.
 - Inactive or teamless sessions get no ordinary Team action tools, except

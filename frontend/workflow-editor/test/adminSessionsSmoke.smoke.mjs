@@ -398,6 +398,8 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.equal(await page.getByRole("combobox", { name: "State" }).inputValue(), "active");
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").getByText("session-1").waitFor({ state: "visible" }));
+  assert.equal(await page.locator(".session-list").evaluate((element) => getComputedStyle(element).overflowY), "auto");
+  assert.notEqual(await page.locator(".session-list").evaluate((element) => getComputedStyle(element).maxHeight), "none");
   await assert.doesNotReject(() =>
     fieldDescription("Allowed scripts")
       .getByText("One script name per row.")
@@ -670,6 +672,99 @@ test("admin shell sessions page discards approval settings edits without saving 
   assert.equal(policyBodies.length, 0);
 
   assert.ok(requestedEndpoints.includes("/api/admin/sessions/session-1"));
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
+
+test("admin shell sessions page categorizes consultation and connector tools", async (t) => {
+  const toolOptions = [
+    ["consult_codebase", "Consult codebase"],
+    ["get_codebase_consultation", "Get codebase consultation"],
+    ["cancel_codebase_consultation", "Cancel codebase consultation"],
+    ["submit_codebase_consultation_result", "Submit codebase consultation result"],
+    ["list_connectors", "List connectors"],
+    ["call_connector", "Call connector"],
+  ].map(([value, label]) => ({ value, label, group: "Other" }));
+  const {
+    address,
+    consoleErrors,
+    page,
+    pageErrors,
+  } = await createSessionsSmokeHarness(t, makeSessionRecord(), {}, {
+    sessionCatalogResponse: {
+      tool_options: toolOptions,
+      model_options: [],
+      resume_mode_options: [],
+      renew_extension_presets: [],
+    },
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+  await ensureSectionsExpanded(page);
+
+  const agentControlGroup = page.locator("details.session-tool-group").filter({ hasText: "Agent control" });
+  const connectorsGroup = page.locator("details.session-tool-group").filter({ hasText: "Connectors" });
+  await agentControlGroup.locator("summary").click();
+  await connectorsGroup.locator("summary").click();
+
+  assert.equal(await agentControlGroup.locator(".session-tool-row").count(), 4);
+  assert.equal(await connectorsGroup.locator(".session-tool-row").count(), 2);
+  assert.equal(await page.locator(".session-tool-group").filter({ hasText: /^Other/ }).count(), 0);
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
+
+test("admin shell sessions page separates Microsoft Teams and Team Add-on tools", async (t) => {
+  const toolOptions = [
+    {
+      value: "teams_get_messages",
+      label: "teams get messages",
+      group: "Teams",
+      provider: "teams",
+      addon_id: null,
+    },
+    {
+      value: "team_list_tasks",
+      label: "List tasks",
+      group: "Team Add-on",
+      provider: "team-addon",
+      addon_id: "team-addon",
+    },
+  ];
+  const {
+    address,
+    consoleErrors,
+    page,
+    pageErrors,
+  } = await createSessionsSmokeHarness(t, makeSessionRecord(), {}, {
+    sessionCatalogResponse: {
+      tool_options: toolOptions,
+      model_options: [],
+      resume_mode_options: [],
+      renew_extension_presets: [],
+    },
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+  await ensureSectionsExpanded(page);
+
+  const teamsGroup = page.locator("details.session-tool-group").filter({ hasText: "Teams" });
+  const teamAddonGroup = page.locator("details.session-tool-group").filter({ hasText: "Team Add-on" });
+  await teamsGroup.waitFor({ state: "visible" });
+  await teamAddonGroup.waitFor({ state: "visible" });
+  const renderedToolGroups = await page.locator(".session-tool-groups").innerText();
+  assert.equal(await teamsGroup.count(), 1, renderedToolGroups);
+  assert.equal(await teamAddonGroup.count(), 1, renderedToolGroups);
+  await teamsGroup.locator("summary").click();
+  await teamAddonGroup.locator("summary").click();
+  assert.match(await teamsGroup.innerText(), /teams get messages/);
+  assert.doesNotMatch(await teamsGroup.innerText(), /List tasks/);
+  assert.match(await teamAddonGroup.innerText(), /List tasks/);
+  assert.doesNotMatch(await teamAddonGroup.innerText(), /teams get messages/);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });

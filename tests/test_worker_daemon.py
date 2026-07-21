@@ -22,6 +22,8 @@ from evander.capacity_health import (
     SessionStorageSample,
     TelemetryStatus,
 )
+from evander.codex_auth import CodexAuthMode, CodexTurnSpec
+from evander.worker.codex_auth_broker import CodexExternalAuthTokens
 from evander.worker.service import WorkerDaemon, _git_subprocess_env
 from evander.worker.models import (
     WorkerGitWriteKeyRequest,
@@ -2092,6 +2094,192 @@ def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
     assert deleted_again.status_code == 200
     assert deleted_again.json() == {"deleted": True, "job_id": "job-1"}
     assert runtime.removed == ["job-1"]
+
+
+def test_subscription_job_uses_worker_owned_read_only_completion_signal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runners: list[Any] = []
+
+    class SubscriptionRuntime(FakeContainerRuntime):
+        def codex_app_server_command(self, record, turn):
+            del record, turn
+            return ["codex-app-server"]
+
+    class SubscriptionBroker:
+        def external_tokens(self, **kwargs):
+            del kwargs
+            return CodexExternalAuthTokens("access-secret", "account-1", "plus")
+
+        def close(self) -> None:
+            return None
+
+    class Runner:
+        def __init__(self, **kwargs):
+            self.finished_marker = kwargs["finished_marker"]
+            runners.append(self)
+
+        def start(self) -> None:
+            return None
+
+        def cancel(self) -> None:
+            return None
+
+        def join(self, *, timeout_seconds: float) -> bool:
+            del timeout_seconds
+            return True
+
+    monkeypatch.setattr("evander.worker.service.CodexSubscriptionTurnRunner", Runner)
+    runtime = SubscriptionRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+        codex_auth_broker=SubscriptionBroker(),  # type: ignore[arg-type]
+    )
+    request = WorkerJobRequest(
+        session_id="session-1",
+        job_id="job-1",
+        image="runner:latest",
+        command=["codex", "exec", "continue"],
+        codex_turn=CodexTurnSpec(
+            auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            prompt="Continue",
+            model="gpt-5.4",
+        ),
+    )
+
+    try:
+        daemon.start_job(request)
+
+        started_request, _record, paths = runtime.started[0]
+        shell_command = started_request.command[-1]
+        assert "/run/evander/codex-turns/job-1.exit" in shell_command
+        assert "/home/agent/.evander/codex-turns" not in shell_command
+        assert runners
+        assert runners[0].finished_marker == paths.logs / "codex-turns" / "job-1.exit"
+        assert paths.agent_home not in runners[0].finished_marker.parents
+    finally:
+        daemon.close()
+
+
+def test_subscription_restart_ignores_agent_completion_marker_ancestor_symlink(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_root = tmp_path / "worker-root"
+    paths = WorkerSessionPaths.resolve(worker_root, "session-1")
+    attacker_marker_dir = paths.agent_home / ".evander" / "codex-turns"
+    attacker_marker_dir.parent.mkdir(parents=True, exist_ok=True)
+    attacker_marker_dir.symlink_to("/proc", target_is_directory=True)
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="runner:latest",
+        command=["codex", "exec", "continue"],
+        container_name="agent-worker-job-1",
+        status="running",
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+        metadata={"codex_auth_mode": "chatgpt_subscription"},
+    )
+    WorkerJobStore(runtime_dir / "worker-jobs.json").put(record)
+
+    daemon = WorkerDaemon(
+        runtime_dir=runtime_dir,
+        worker_root=worker_root,
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    try:
+        reconciled = daemon.store.get("job-1")
+        assert reconciled is not None
+        assert reconciled.status == "failed"
+        assert (paths.logs / "codex-turns" / "job-1.exit").read_text(encoding="utf-8") == "1"
+        assert attacker_marker_dir.is_symlink()
+    finally:
+        daemon.close()
+
+
+def test_worker_waits_for_subscription_runner_before_removing_job_data(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    class OrderedRuntime(FakeContainerRuntime):
+        def remove_job(self, record: WorkerJobRecord) -> None:
+            events.append("container-remove")
+            super().remove_job(record)
+
+    class Runner:
+        def cancel_and_wait(self, *, timeout_seconds: float) -> None:
+            assert timeout_seconds == 40.0
+            events.append("runner-stopped")
+
+    runtime = OrderedRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="runner:latest",
+        command=["true"],
+        container_name="agent-worker-job-1",
+        status="running",
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    daemon.store.put(record)
+    daemon._codex_subscription_runners[record.job_id] = Runner()  # type: ignore[assignment]  # noqa: SLF001
+
+    daemon.remove_job(record)
+
+    assert events == ["runner-stopped", "container-remove"]
+
+
+def test_worker_keeps_subscription_runner_handle_when_shutdown_fails(tmp_path: Path) -> None:
+    class StuckRunner:
+        def cancel_and_wait(self, *, timeout_seconds: float) -> None:
+            del timeout_seconds
+            raise RuntimeError("runner still active")
+
+    runtime = FakeContainerRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="runner:latest",
+        command=["true"],
+        container_name="agent-worker-job-1",
+        status="running",
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    runner = StuckRunner()
+    daemon._codex_subscription_runners[record.job_id] = runner  # type: ignore[assignment]  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="runner still active"):
+        daemon.remove_job(record)
+
+    assert runtime.removed == []
+    assert daemon._codex_subscription_runners[record.job_id] is runner  # noqa: SLF001
 
 
 def test_worker_inspection_records_objective_command_exit_metadata(tmp_path: Path) -> None:

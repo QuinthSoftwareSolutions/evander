@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from evander.codex_auth import CodexAuthMode
 from evander.config import GatewayConfig
 from evander.directories import DirectoryStore
 from evander.execution import ExecutionStatusKind
@@ -24,6 +25,7 @@ from evander.effects.providers.agent_session import (
     build_container_session_files,
     _claude_json_log_filter_script,
     _codex_json_log_filter_script,
+    container_codex_turn_spec,
     container_prompt_command,
     container_thread_id_from_logs,
     selected_execution_backend_for_target,
@@ -997,6 +999,7 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
             "discord-ops",
             "ops-email",
         ],
+        email_mailbox_grants=[{"mailbox_id": "default", "access": "read", "folders": []}],
         teams_channel_allowlist=["team-a/existing"],
         discord_channels=["111111111111111111"],
         email_mailboxes=["default"],
@@ -1026,19 +1029,21 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
     ]
     assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == ["teams-chat"]
     assert admin_service.create_vm_calls[0]["teams_user_allowlist"] == ["teams-user"]
-    assert admin_service.create_vm_calls[0]["email_mailboxes"] == ["default", "ops"]
+    assert admin_service.create_vm_calls[0]["email_mailboxes"] == ["default"]
+    assert admin_service.create_vm_calls[0]["email_mailbox_grants"] is not None
+    assert admin_service.create_vm_calls[0]["email_mailbox_grants"][0].folders == []
+    assert admin_service.create_vm_calls[0]["communication_target_ids"] == [
+        "teams-channel",
+        "teams-chat",
+        "teams-user",
+        "discord-ops",
+        "ops-email",
+    ]
 
 
-@pytest.mark.parametrize(
-    ("target_id", "capabilities"),
-    [
-        ("ops-email-read", ["read"]),
-        ("ops-email-write", ["write"]),
-    ],
-)
-def test_agent_create_provider_rejects_capability_limited_email_targets(
-    tmp_path: Path, target_id: str, capabilities: list[str]
-) -> None:
+def test_agent_create_provider_rejects_read_only_email_target(tmp_path: Path) -> None:
+    target_id = "ops-email-read"
+    capabilities = ["read"]
     config = GatewayConfig(runtime_dir=tmp_path)
     _write_root_communication_targets(
         config,
@@ -1077,7 +1082,7 @@ def test_agent_create_provider_rejects_capability_limited_email_targets(
         admin_service=admin_service,
     )
 
-    with pytest.raises(ValueError, match="requires both read and write capabilities"):
+    with pytest.raises(ValueError, match="requires write capability"):
         factory.build(effect).execute()
 
     assert admin_service.create_vm_calls == []
@@ -2490,6 +2495,7 @@ def test_agent_enqueue_prompt_infers_claude_provider_for_anthropic_container_ses
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_codex_auth_mode="chatgpt_subscription",
         model_provider_mode="anthropic",
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
@@ -2953,6 +2959,8 @@ def test_container_prompt_uses_claude_default_model_for_claude_session(
     ).execute()
 
     assert output["execution_backend"] == "container_worker_vm"
+    assert backend.started_specs[0].codex_turn is None
+    assert "codex_auth_mode" not in backend.started_specs[0].metadata
     command = str(backend.started_specs[0].command)
     assert "claude -p" in command
     assert "--model claude-sonnet-4-6" in command
@@ -3273,6 +3281,9 @@ def test_context_exhausted_container_completion_starts_reduced_context_retry(
         runtime_dir=tmp_path,
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://local-model.test:11434/v1",
+        container_worker_codex_auth_mode="chatgpt_subscription",
         agent_context_retry_target_chars=4_000,
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
@@ -3367,6 +3378,8 @@ def test_context_exhausted_container_completion_starts_reduced_context_retry(
     started = backend.started_specs[0]
     assert started.session_id == "session-1"
     assert started.metadata["context_retry_attempt"] == 1
+    assert started.codex_turn is not None
+    assert started.codex_turn.auth_mode is CodexAuthMode.METERED_API
     assert started.metadata["context_retry_of_execution_id"] == "agent-old-1"
     assert "Previous agent run hit the model context limit" in started.command
     assert "middle context omitted" in started.command
@@ -4082,6 +4095,9 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     config = GatewayConfig(
         runtime_dir=tmp_path,
         execution_backend="libvirt_vm",
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://local-model.test:11434/v1",
+        container_worker_codex_auth_mode="chatgpt_subscription",
         container_worker_base_url="http://worker.test",
         container_worker_guest_openai_base_url="http://relay.test:11434/v1",
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
@@ -4398,6 +4414,8 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     ) in (clone_config_command)
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
     assert backend.started_specs[-1].command is not None
+    assert backend.started_specs[-1].codex_turn is not None
+    assert backend.started_specs[-1].codex_turn.auth_mode is CodexAuthMode.METERED_API
     assert "cd /home/agent" in str(backend.started_specs[-1].command)
     assert "continue" in str(backend.started_specs[-1].command)
     assert 'web_search="live"' in str(backend.started_specs[-1].command)
@@ -4511,6 +4529,60 @@ def test_agent_create_container_can_override_npm_registry_url(
         "registry=http://facade.test:11881/" in bootstrap_by_path["/home/agent/.npmrc"]["content"]
     )
     assert "replace-registry-host=always" in bootstrap_by_path["/home/agent/.npmrc"]["content"]
+
+
+def test_agent_create_preserves_subscription_preference_for_local_openai_fallback(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://local-model.test:11434/v1",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="local-codex",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+        )
+    ).execute()
+
+    session = session_repository.get_session("local-codex")
+    assert session is not None
+    assert session.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    turn = container_codex_turn_spec(
+        prompt="Continue",
+        model="gpt-5.4",
+        resume_thread_id=None,
+        session=session,
+        config=config,
+        agent_provider="codex",
+    )
+    assert turn is not None
+    assert turn.auth_mode is CodexAuthMode.METERED_API
 
 
 def test_agent_create_container_can_select_configured_image_alias(
@@ -5608,6 +5680,7 @@ def test_agent_create_container_upserts_when_session_exists(
             session_id="session-1",
             vm_provider="container_worker_vm",
             model="gpt-5.4",
+            codex_auth_mode=CodexAuthMode.METERED_API,
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             connector_grants={"manually-assigned": ["read"]},
             web_search_enabled=True,
@@ -5677,6 +5750,7 @@ def test_agent_create_container_upserts_when_session_exists(
     updated = session_repository.get_session("session-1")
     assert updated is not None
     assert updated.model == "gpt-5.5"
+    assert updated.codex_auth_mode is CodexAuthMode.METERED_API
     assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN, ToolName.STAGE_ARTIFACT]
     assert updated.connector_grants == {"manually-assigned": ["read"]}
     assert updated.web_search_enabled is True

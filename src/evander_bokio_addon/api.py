@@ -7,8 +7,15 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from evander.addons import AddonContext
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
+from evander.admin.web.shared import request_has_privileged_operations
 
 from .client import BokioApiError, BokioClient, BokioConfigError, settings_from_context
+from .operations import (
+    BokioOperationStore,
+    bokio_error_payload,
+    bokio_write_failure_is_uncertain,
+)
 from .state import PreparedActionStore, upload_staging_dir
 
 
@@ -86,6 +93,17 @@ def admin_api_routes(context: AddonContext) -> list[Route]:
         )
         return JSONResponse({"action": action})
 
+    async def operations(request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "operations": BokioOperationStore(context.runtime_dir).list(
+                    status=_optional(request.query_params.get("status")),
+                    operation_kind=_optional(request.query_params.get("operation_kind")),
+                    limit=int(request.query_params.get("limit") or 100),
+                )
+            }
+        )
+
     async def approve_action(request: Request) -> JSONResponse:
         action_id = request.path_params["action_id"]
         action = PreparedActionStore(context.runtime_dir).approve_action(action_id)
@@ -104,6 +122,25 @@ def admin_api_routes(context: AddonContext) -> list[Route]:
         action_id = request.path_params["action_id"]
         return _json(lambda: _execute_prepared_action(context, action_id))
 
+    async def approve_and_execute_action(request: Request) -> JSONResponse:
+        action_id = request.path_params["action_id"]
+        return _json(lambda: _execute_prepared_action(context, action_id, approve=True))
+
+    async def retry_action(request: Request) -> JSONResponse:
+        action_id = request.path_params["action_id"]
+        payload = await _json_body(request, default={})
+        confirm_not_created = payload.get("confirm_not_created", False)
+        if not isinstance(confirm_not_created, bool):
+            raise ValueError("confirm_not_created must be a boolean")
+        return _json(
+            lambda: _execute_prepared_action(
+                context,
+                action_id,
+                retry=True,
+                confirm_not_created=confirm_not_created,
+            )
+        )
+
     async def sie_download(request: Request) -> Response:
         fiscal_year_id = _required(request.path_params.get("fiscal_year_id"), "fiscal_year_id")
         try:
@@ -116,20 +153,35 @@ def admin_api_routes(context: AddonContext) -> list[Route]:
             headers={"content-disposition": f'attachment; filename="bokio-{fiscal_year_id}.se"'},
         )
 
+    route_specs = [
+        ("/health", health, ["GET"]),
+        ("/company", company, ["GET"]),
+        ("/accounts", accounts, ["GET"]),
+        ("/journal-entries", journal_entries, ["GET"]),
+        ("/invoices", invoices, ["GET"]),
+        ("/supplier-invoices", supplier_invoices, ["GET"]),
+        ("/uploads", uploads, ["GET", "POST"]),
+        ("/bank-payments", bank_payments, ["GET", "POST"]),
+        ("/sie/{fiscal_year_id}/download", sie_download, ["GET"]),
+        ("/prepared-actions", prepared_actions, ["GET", "POST"]),
+        ("/operations", operations, ["GET"]),
+        ("/prepared-actions/{action_id}/approve", approve_action, ["POST"]),
+        ("/prepared-actions/{action_id}/reject", reject_action, ["POST"]),
+        ("/prepared-actions/{action_id}/execute", execute_action, ["POST"]),
+        (
+            "/prepared-actions/{action_id}/approve-and-execute",
+            approve_and_execute_action,
+            ["POST"],
+        ),
+        ("/prepared-actions/{action_id}/retry", retry_action, ["POST"]),
+    ]
     return [
-        Route("/health", health, methods=["GET"]),
-        Route("/company", company, methods=["GET"]),
-        Route("/accounts", accounts, methods=["GET"]),
-        Route("/journal-entries", journal_entries, methods=["GET"]),
-        Route("/invoices", invoices, methods=["GET"]),
-        Route("/supplier-invoices", supplier_invoices, methods=["GET"]),
-        Route("/uploads", uploads, methods=["GET", "POST"]),
-        Route("/bank-payments", bank_payments, methods=["GET", "POST"]),
-        Route("/sie/{fiscal_year_id}/download", sie_download, methods=["GET"]),
-        Route("/prepared-actions", prepared_actions, methods=["GET", "POST"]),
-        Route("/prepared-actions/{action_id}/approve", approve_action, methods=["POST"]),
-        Route("/prepared-actions/{action_id}/reject", reject_action, methods=["POST"]),
-        Route("/prepared-actions/{action_id}/execute", execute_action, methods=["POST"]),
+        Route(
+            path,
+            _with_admin_guard(context, handler, mutating_methods={"POST", "PUT", "PATCH", "DELETE"}),
+            methods=methods,
+        )
+        for path, handler, methods in route_specs
     ]
 
 
@@ -137,17 +189,27 @@ def _client(context: AddonContext) -> BokioClient:
     return BokioClient.from_context(context)
 
 
-def _execute_prepared_action(context: AddonContext, action_id: str) -> dict[str, Any]:
+def _execute_prepared_action(
+    context: AddonContext,
+    action_id: str,
+    *,
+    approve: bool = False,
+    retry: bool = False,
+    confirm_not_created: bool = False,
+) -> dict[str, Any]:
     store = PreparedActionStore(context.runtime_dir)
-    action = store.get_action(action_id)
-    if action is None:
-        raise ValueError(f"Unknown Bokio prepared action: {action_id}")
-    if action.get("status") != "approved":
-        raise ValueError(f"Bokio prepared action {action_id} must be approved before execution")
-    kind = str(action.get("kind") or "").strip()
-    payload = _object(action.get("payload"), "payload")
-    client = _client(context)
+    action, claimed = store.claim_execution(
+        action_id,
+        approve=approve,
+        retry=retry,
+        confirm_not_created=confirm_not_created,
+    )
+    if not claimed:
+        return {"action": action, "result": action.get("result"), "idempotent": True}
     try:
+        kind = str(action.get("kind") or "").strip()
+        payload = _object(action.get("payload"), "payload")
+        client = _client(context)
         if kind == "journal_entry":
             result = client.create_journal_entry(payload)
         elif kind == "supplier_invoice":
@@ -159,7 +221,10 @@ def _execute_prepared_action(context: AddonContext, action_id: str) -> dict[str,
         else:
             raise ValueError(f"Unsupported Bokio prepared action kind: {kind}")
     except Exception as exc:
-        store.mark_failed(action_id, error=_exception_payload(exc))
+        if bokio_write_failure_is_uncertain(exc):
+            store.mark_needs_attention(action_id, error=bokio_error_payload(exc))
+        else:
+            store.mark_failed(action_id, error=bokio_error_payload(exc))
         raise
     action = store.mark_executed(action_id, result=result)
     return {"action": action, "result": result}
@@ -228,3 +293,30 @@ def _object(value: Any, field_name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{field_name} must be a JSON object")
     return dict(value)
+
+
+def _with_admin_guard(context: AddonContext, handler: Any, *, mutating_methods: set[str]):
+    async def guarded(request: Request) -> Response:
+        auth = context.auth
+        if auth is None:
+            return JSONResponse({"error": "Admin authentication is unavailable"}, status_code=503)
+        try:
+            if request.method.upper() in mutating_methods:
+                auth.require_permission(request, ADMIN_OWNER_PERMISSION)
+            else:
+                auth.require(request)
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        if request.method.upper() in mutating_methods and not request_has_privileged_operations(
+            auth=auth,
+            service=context.service,
+            request=request,
+            required_permission=ADMIN_OWNER_PERMISSION,
+        ):
+            return JSONResponse({"error": "Privileged operations are locked."}, status_code=403)
+        try:
+            return await handler(request)
+        except Exception as exc:
+            return _error_response(exc)
+
+    return guarded

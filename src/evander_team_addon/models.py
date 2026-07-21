@@ -24,6 +24,42 @@ from evander_team_addon.git_naming import (
 )
 
 SCHEMA_VERSION = 2
+TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "application/json",
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+)
+TEAM_CHAT_ATTACHMENT_DEFAULT_EXTENSIONS = (
+    ".txt",
+    ".md",
+    ".csv",
+    ".json",
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+)
+TEAM_CHAT_ATTACHMENT_DEFAULT_BLOCKED_EXTENSIONS = (
+    ".bat",
+    ".cmd",
+    ".com",
+    ".exe",
+    ".js",
+    ".msi",
+    ".ps1",
+    ".scr",
+    ".sh",
+)
+TEAM_CHAT_ATTACHMENT_DEFAULT_MAX_BYTES = 10 * 1024 * 1024
+TEAM_CHAT_ATTACHMENT_DEFAULT_MAX_FILES = 5
 AGENT_OPERATOR_ONLY_FIELDS = {"avatar", "voice_profile"}
 REALTIME_BUILT_IN_VOICE_IDS = (
     "alloy",
@@ -1500,6 +1536,7 @@ class TeamConversationMessage(TeamModel):
     voice_session_id: str | None = None
     source_message_id: str | None = None
     error: str | None = None
+    attachment_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -1532,9 +1569,103 @@ class TeamConversationMessage(TeamModel):
 
     @model_validator(mode="after")
     def _validate_body(self) -> "TeamConversationMessage":
-        if self.message_type == "text" and not self.body:
-            raise ValueError("text conversation messages require body")
+        if self.message_type == "text" and not self.body and not self.attachment_ids:
+            raise ValueError("text conversation messages require body or attachments")
         return self
+
+
+class TeamChatAttachment(TeamModel):
+    id: str
+    message_id: str
+    conversation_id: str
+    filename: str
+    mime_type: str | None = None
+    byte_count: int = Field(ge=0)
+    sha256: str
+    sender: Literal["operator", "agent"]
+    created_by_session_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "message_id",
+        "conversation_id",
+        "filename",
+        "sha256",
+        "sender",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("mime_type", "created_by_session_id", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
+class TeamChatAttachmentPolicy(TeamModel):
+    id: str
+    directory_path: str
+    operator_to_agent_enabled: bool | None = None
+    agent_to_operator_enabled: bool | None = None
+    agent_send_requires_approval: bool | None = None
+    max_attachment_bytes: int | None = Field(default=None, ge=0)
+    max_attachments_per_message: int | None = Field(default=None, ge=1, le=20)
+    allowed_mime_types: list[str] | None = None
+    allowed_extensions: list[str] | None = None
+    blocked_extensions: list[str] | None = None
+    updated_by: str | None = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "directory_path", mode="before")
+    @classmethod
+    def _directory_text(cls, value: object, info) -> str:
+        normalized = DirectoryPath(segments=str(value or "").strip()).as_posix()
+        return _required_text(normalized, info.field_name)
+
+    @field_validator("updated_by", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator(
+        "allowed_mime_types",
+        "allowed_extensions",
+        "blocked_extensions",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text_list(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, (list, tuple, set)):
+            raise ValueError("attachment policy lists must be arrays")
+        return sorted(
+            {str(item or "").strip().lower() for item in value if str(item or "").strip()}
+        )
+
+    @model_validator(mode="after")
+    def _matching_directory_id(self) -> "TeamChatAttachmentPolicy":
+        if self.id != self.directory_path:
+            raise ValueError("attachment policy id must match directory_path")
+        return self
+
+    @classmethod
+    def root_defaults(cls) -> "TeamChatAttachmentPolicy":
+        return cls(
+            id="root",
+            directory_path="root",
+            operator_to_agent_enabled=True,
+            agent_to_operator_enabled=True,
+            agent_send_requires_approval=True,
+            max_attachment_bytes=TEAM_CHAT_ATTACHMENT_DEFAULT_MAX_BYTES,
+            max_attachments_per_message=TEAM_CHAT_ATTACHMENT_DEFAULT_MAX_FILES,
+            allowed_mime_types=list(TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES),
+            allowed_extensions=list(TEAM_CHAT_ATTACHMENT_DEFAULT_EXTENSIONS),
+            blocked_extensions=list(TEAM_CHAT_ATTACHMENT_DEFAULT_BLOCKED_EXTENSIONS),
+        )
 
 
 class AgentStandDown(TeamModel):
@@ -2023,6 +2154,8 @@ class TeamState(TeamModel):
     memories: dict[str, TeamMemoryRecord] = Field(default_factory=dict)
     conversations: dict[str, TeamConversation] = Field(default_factory=dict)
     conversation_messages: dict[str, TeamConversationMessage] = Field(default_factory=dict)
+    chat_attachments: dict[str, TeamChatAttachment] = Field(default_factory=dict)
+    chat_attachment_policies: dict[str, TeamChatAttachmentPolicy] = Field(default_factory=dict)
     release_packages: dict[str, ReleasePackage] = Field(default_factory=dict)
     release_verification_runs: dict[str, ReleaseVerificationRun] = Field(default_factory=dict)
     ephemeral_assignments: dict[str, EphemeralAssignment] = Field(default_factory=dict)
@@ -2248,6 +2381,8 @@ class TeamState(TeamModel):
             "memories",
             "conversations",
             "conversation_messages",
+            "chat_attachments",
+            "chat_attachment_policies",
             "release_packages",
             "ephemeral_assignments",
             "git_promotions",
@@ -3053,6 +3188,39 @@ class TeamState(TeamModel):
                 errors.append(
                     f"conversation message {message.id} references missing source message "
                     f"{message.source_message_id}"
+                )
+            for attachment_id in message.attachment_ids:
+                attachment = self.chat_attachments.get(attachment_id)
+                if attachment is None:
+                    errors.append(
+                        f"conversation message {message.id} references missing attachment "
+                        f"{attachment_id}"
+                    )
+                elif attachment.message_id != message.id:
+                    errors.append(
+                        f"attachment {attachment.id} belongs to message {attachment.message_id}, "
+                        f"not {message.id}"
+                    )
+        for attachment in self.chat_attachments.values():
+            message = self.conversation_messages.get(attachment.message_id)
+            if message is None:
+                errors.append(
+                    f"chat attachment {attachment.id} references missing message "
+                    f"{attachment.message_id}"
+                )
+            if attachment.conversation_id not in self.conversations:
+                errors.append(
+                    f"chat attachment {attachment.id} references missing conversation "
+                    f"{attachment.conversation_id}"
+                )
+            if message is not None and attachment.conversation_id != message.conversation_id:
+                errors.append(
+                    f"chat attachment {attachment.id} conversation {attachment.conversation_id} "
+                    f"does not match message conversation {message.conversation_id}"
+                )
+            if message is not None and attachment.id not in message.attachment_ids:
+                errors.append(
+                    f"chat attachment {attachment.id} is not linked from message {message.id}"
                 )
 
     def _validate_releases(self, errors: list[str]) -> None:

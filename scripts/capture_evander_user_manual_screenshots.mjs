@@ -614,6 +614,7 @@ const CONFIGURATION_TABS = [
     underlying_domains: ["contacts", "communication_targets", "policy"],
     sections: [
       {
+        key: "contacts",
         title: "Contacts",
         fields: [
           {
@@ -629,6 +630,7 @@ const CONFIGURATION_TABS = [
         ],
       },
       {
+        key: "approval-notification-targets",
         title: "Approval notification targets",
         fields: [
           {
@@ -646,13 +648,38 @@ const CONFIGURATION_TABS = [
     ],
   },
   {
-    key: "execution_isolation",
-    title: "Execution & Isolation",
-    help_text: "Execution backend, network isolation, and session policy for this directory.",
-    underlying_domains: ["policy", "vm", "providers"],
+    key: "models_assistant_knowledge",
+    title: "Models, Assistant & Knowledge",
+    help_text: "Model routing, pricing metadata, assistant controls, and semantic knowledge.",
+    underlying_domains: ["providers", "assistant_settings"],
     sections: [
       {
-        title: "Execution defaults",
+        key: "llm-providers",
+        title: "LLM providers",
+        fields: [
+          {
+            source_domain: "providers",
+            field_name: "openai_model",
+            label: "Default OpenAI model",
+            kind: "text",
+            options: [],
+            scope: "directory",
+            root_starts_editable: true,
+            tooltip: "Default model identifier used for new Northstar agent sessions.",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    key: "agent_runtime_launch",
+    title: "Agent Runtime & Launch",
+    help_text: "Execution backend, container worker runtime, prompt delivery, and launch defaults.",
+    underlying_domains: ["providers", "issue_setup"],
+    sections: [
+      {
+        key: "agent-execution",
+        title: "Agent execution",
         fields: [
           {
             source_domain: "providers",
@@ -669,27 +696,39 @@ const CONFIGURATION_TABS = [
     ],
   },
   {
-    key: "models_assistant_knowledge",
-    title: "Models, Assistant & Knowledge",
-    help_text: "Model routing, pricing metadata, and assistant controls.",
-    underlying_domains: ["providers", "policy"],
-    sections: [
-      {
-        title: "Model routing",
-        fields: [
-          {
-            source_domain: "providers",
-            field_name: "openai_model",
-            label: "Default OpenAI model",
-            kind: "text",
-            options: [],
-            scope: "directory",
-            root_starts_editable: true,
-            tooltip: "Default model identifier used for new Northstar agent sessions.",
-          },
-        ],
-      },
-    ],
+    key: "code_issues_prs",
+    title: "Code, Issues & Pull Requests",
+    help_text: "Git transport, provider integrations, issue intake, and pull request automation.",
+    underlying_domains: ["providers", "ado", "issue_setup"],
+    sections: [{ key: "azure-devops", title: "Azure DevOps", fields: [] }],
+  },
+  {
+    key: "access_approvals_audit",
+    title: "Access, Approvals & Audit",
+    help_text: "Approval requirements, tool policy, argument guardrails, and audit redaction.",
+    underlying_domains: ["policy"],
+    sections: [{ key: "approval-requirements", title: "Approval requirements", fields: [] }],
+  },
+  {
+    key: "network_relays_packages",
+    title: "Network, Relays & Package Access",
+    help_text: "VM networking, gateway and relay endpoints, NuGet, and npm access.",
+    underlying_domains: ["vm", "providers"],
+    sections: [{ key: "network", title: "Network", fields: [] }],
+  },
+  {
+    key: "automation_assignment",
+    title: "Automation & Assignment",
+    help_text: "Capacity and role controls for automated issue intake and assignment.",
+    underlying_domains: ["automation"],
+    sections: [{ key: "capacity", title: "Capacity", fields: [] }],
+  },
+  {
+    key: "advanced_raw",
+    title: "Advanced & Raw",
+    help_text: "Advanced provider state and support diagnostics.",
+    underlying_domains: ["providers"],
+    sections: [{ key: "provider-state", title: "Provider state", fields: [] }],
   },
 ];
 
@@ -702,8 +741,8 @@ function tabSnapshot(tab) {
       },
       approval_notification_target_ids: ["northstar-operators"],
     },
-    execution_isolation: { execution_backend: "libvirt_vm" },
     models_assistant_knowledge: { openai_model: "gpt-5.4" },
+    agent_runtime_launch: { execution_backend: "libvirt_vm" },
   }[tab.key];
   return {
     key: tab.key,
@@ -1581,6 +1620,19 @@ function handleApi(req, res, url, unknownRequests, openStreams) {
   if (pathname === "/api/admin/user-notifications" && method === "GET") return json(res, { items: [], unread_count: 0, next_cursor: null }), true;
   if (pathname === "/api/admin/user-notifications/read" && method === "POST") return json(res, { updated: 1, unread_count: 0 }), true;
 
+  if (pathname === "/api/admin/codex-auth" && method === "GET") {
+    return json(res, {
+      directory_path: DIRECTORY,
+      available: true,
+      signed_in: true,
+      account_type: "chatgpt",
+      email: "northstar-operator@example.invalid",
+      plan_type: "subscription",
+      last_refresh: TIMESTAMPS.updated,
+      access_token_expires_at: TIMESTAMPS.expires,
+      error: null,
+    }), true;
+  }
   if (pathname === "/api/admin/agents") return json(res, { items: ADMIN_AGENTS, directory_path: DIRECTORY, direct_only: url.searchParams.get("direct_only") !== "false" }), true;
   if (pathname === "/api/admin/agents/create-options") {
     return json(res, { directory_path: DIRECTORY, backends: ["libvirt_vm", "container_worker_vm"], agent_providers: [{ value: "codex", label: "Codex", execution_backends: ["libvirt_vm", "container_worker_vm"] }], model_provider_modes: [{ value: "openai", label: "OpenAI relay" }], communication_targets: [{ value: "northstar-operators", label: "Northstar operators" }], libvirt: { default_template: "python", templates: [{ alias: "python", image_ref: "python-agent.qcow2" }] }, container_worker: { default_image: "runner", images: [{ alias: "runner", image_ref: "evander-runner:latest" }] } }), true;

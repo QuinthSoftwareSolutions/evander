@@ -1,5 +1,228 @@
 # Changelog
 
+## 2026-07-21 - Subscription Completion And Policy Conversion Hardening
+
+- Launched subscription turns through the image-owned `/usr/local/bin/codex` executable instead
+  of resolving `codex` through the persistent agent home's writable `PATH` entry.
+- Moved Codex subscription completion signals out of the persistent agent home and exposed them
+  to job containers through a worker-owned read-only mount, preventing forged success markers and
+  agent-created marker symlinks from blocking worker restart.
+- Rejected reuse of a staged Team Chat attachment after another message has claimed it while
+  preserving same-request idempotent replay.
+- Corrected legacy communication conversion to use current tool and form drafts, recognize every
+  email draft/send variant, preserve mailbox-specific folders, and keep device-login polling and
+  cancellation bound to the originating worker directory.
+
+## 2026-07-21 - Bokio Customer And Supplier Reads
+
+- Added separately permissioned Bokio MCP tools for listing and retrieving customers and
+  suppliers, including bounded pagination, query filtering, and safe resource-ID handling.
+- Marked supplier tools as preview in the agent-facing catalog and documented the supported
+  customer and supplier query fields.
+
+## 2026-07-21 - Microsoft Graph Attachment Retrieval
+
+- Restored Graph message-detail and attachment-list retrieval by limiting attachment metadata
+  selections to properties supported by the base Microsoft Graph attachment type.
+- Resolved Graph's opaque message parent-folder IDs against configured mailbox folders before
+  enforcing session folder grants.
+- Allowed that resolution to continue past stale folder mappings without hiding authentication,
+  permission, throttling, or transient Graph failures.
+
+## 2026-07-21 - Scrollable Admin Detail Lists
+
+- Made card-list sidebars independently scrollable across Admin Web list/detail pages so operators
+  can browse long collections without moving the selected detail workspace.
+- Reduced Agents list rows to the agent identifier and execution-status badge, with the previous
+  session, directory, target, runtime-image, and prompt-queue summary available on hover or focus
+  and in the selected-agent detail.
+
+## 2026-07-21 - Concurrency And Lifecycle Review Hardening
+
+- Prevented active Bokio supplier-invoice and prepared-action executions from being reclaimed by
+  confirmation alone; interrupted executions now require both operator reconciliation and proof
+  that the recorded owner process has exited.
+- Hardened Codex subscription completion and authentication startup so hostile marker directories
+  cannot block daemon recovery and failed app-server initialization always tears down its child.
+- Preserved legacy Teams channel, chat, and user grants during session-policy conversion, and kept
+  concurrent Team Chat attachment rollback from deleting files already committed by another send.
+
+## 2026-07-21 - Focused Configuration Navigation
+
+- Replaced the Configuration page's dense area cards and nested collapsed panels with a compact
+  area/section navigator and a focused one-section editing workspace.
+- Added friendly and technical setting search, explicit configuration utilities, stable deep links,
+  field focus/highlighting, responsive selectors, and unsaved-area indicators without changing
+  configuration inheritance or save semantics.
+- Documented the `config_tab`, `config_section`, and `config_field` deep-link contract and the
+  stable section keys exposed by the configuration-state API.
+
+## 2026-07-21 - Team Chat File Attachments
+
+- Added two-way file and image attachments to the Team Add-on's built-in operator Chat, including
+  multipart uploads, authenticated downloads, inline image rendering, and agent workspace delivery.
+- Added add-on-owned, directory-inherited Team Chat attachment policy with independent direction,
+  type, size, count, and exact agent-send approval controls; Microsoft Teams and core communication
+  file policies remain separate.
+- Added session-owned agent attachment staging and attachment-aware reply/proactive Chat MCP tools,
+  with durable add-on SQLite metadata and private add-on file storage.
+
+## 2026-07-21 - Grouped Admin Navigation
+
+- Reorganized every Admin Web destination into permanently expanded Overview, Operations,
+  Automation, Extensions, Infrastructure, and Governance groups without changing page routes or
+  backend-specific visibility.
+- Replaced tall navigation cards with compact icon rows and description tooltips while preserving
+  the collapsed desktop navigation and horizontal mobile page strip.
+- Added a searchable **Find page** dialog for built-in and add-on destinations, available from the
+  navigation or with `Ctrl+K` / `Command+K` and protected by the existing unsaved-workflow guard.
+
+## 2026-07-21 - Bokio Remote Upload MCP Tools
+
+- Added separately granted MCP tools to list remote Bokio uploads, read one upload's metadata, and
+  download its bounded file into a session-owned communication artifact.
+- Kept remote downloads transient and the existing local evidence inventory distinct, requiring an
+  explicit evidence import when a downloaded Bokio upload should be retained and deduplicated.
+- Rejected partial, redirect, and other non-200 upload downloads before artifact staging, and bounded
+  streamed error-body capture so malformed upstream failures cannot bypass the download memory cap.
+
+## 2026-07-21 - Switchable Codex Subscription Usage
+
+- Added per-directory defaults and per-session overrides for choosing metered API or ChatGPT
+  subscription usage on container-worker Codex turns, including Admin Web creation, policy edit,
+  account sign-in/status/logout controls, and next-turn switching that preserves thread history.
+- Added one worker-owned Codex auth broker as the sole durable `auth.json` writer, with exclusive
+  ownership locking, serialized/coalesced refresh, external in-memory job authentication, token
+  redaction, audit events, and fail-closed behavior with no metered fallback.
+- Added an allowlisted HTTPS CONNECT proxy for subscription traffic and Ansible worker settings;
+  job containers receive no account file, environment token, command-line token, or direct public
+  egress grant.
+- Hardened subscription completion and teardown with no-follow marker creation, immediate
+  app-server-exit detection, cancellation-safe runner joins, and notification handling that cannot
+  block the sole protocol reader.
+- Kept local and Azure OpenAI sessions on their configured private API-key routes whenever the
+  stored Codex preference is subscription auth, without rewriting that preference, and stopped
+  applying Codex defaults to Claude turns or clearing omitted per-session auth overrides during
+  workflow upserts.
+- Matched subscription turns to the existing container-owned Codex sandbox policy so managed Git,
+  package relays, and `/artifacts` remain available, while bounding restricted-proxy connections
+  and expiring idle tunnels to protect worker host resources.
+- Restricted worker-global subscription account management to root owners instead of accepting
+  ownership of any one directory that shares the worker.
+
+## 2026-07-21 - Automatic Microsoft Graph Mailbox Tokens
+
+- Added host-side Microsoft Entra client-credentials authentication for Graph mailboxes, with
+  a credential-keyed process cache shared across provider rebuilds, thread-safe acquisition, and
+  automatic renewal shortly before token expiry.
+- Added structured Admin Web inputs for Graph tenant ID, client ID, and client-secret environment
+  references while retaining static access-token authentication as an explicit legacy mode.
+- Kept application credentials and acquired tokens out of guests and session manifests, validated
+  incomplete host credential configuration at runtime startup, and redacted secrets from failures.
+
+## 2026-07-21 - Structured Email Policy Configuration
+
+- Replaced the email-target auth-profile text field with a sending-mailbox selector populated from
+  configured mailbox accounts while retaining canonical `email.<mailbox-id>` storage.
+- Replaced raw JSON mailbox-folder policy editing with mailbox rows and folder checkboxes, and made
+  the mailbox allowlist select configured mailbox IDs while preserving explicit empty folder grants.
+- Kept effective host-config mailboxes available to the selectors when the root directory has no
+  explicit mailbox override.
+
+## 2026-07-21 - Workflow Existing-Target Suggestions
+
+- Added compact existing-session and VM suggestions to Literal workflow target fields while
+  preserving free-form values, templates, and upstream-output bindings.
+- Included expired sessions in the directory-scoped suggestions with an `(expired)` label that
+  does not alter the stored target ID.
+- Served suggestions from a workflow-authorized target catalog, so workflow operators and
+  maintainers no longer depend on the owner-only Sessions inventory route.
+- Preserved session or VM suggestions when the other inventory source is temporarily unavailable.
+
+## 2026-07-21 - Session Communication Grant Hardening
+
+- Made canonical communication-target IDs fail closed when their catalog entries are disabled or
+  deleted, while retaining raw destination resolution for legacy allowlists.
+- Preserved explicit empty mailbox-folder grants and limited mailbox defaults returned to Admin Web
+  to folders allowed by effective directory policy.
+- Added an actionable Sessions-page empty state that opens Configuration for the session directory
+  when no mailbox accounts are available under its policy.
+
+## 2026-07-20 - Session Communication And Mailbox Grants
+
+- Added durable, nullable session `communication_target_ids` and structured
+  `email_mailbox_grants`, keeping missing/null manifests on legacy behavior while treating explicit
+  empty lists as no access.
+- Separated mailbox read/draft/send capability from Teams, Discord, and outbound email recipient
+  destinations. Email send now requires a send-capable mailbox grant plus a write-capable recipient
+  target bound to the same mailbox profile; draft-only access needs no send target.
+- Added shared Agent/Sessions editors, secret-free mailbox option catalogs, explicit legacy-session
+  conversion, workflow support, audit target IDs, and policy/API regression coverage.
+
+## 2026-07-20 - Structured Email Mailbox Configuration
+
+- Replaced the raw JSON editor for Admin Web email-mailbox configuration with a row-based editor
+  for provider, mailbox identity, host access-token environment-variable reference, and folder
+  mappings/defaults. The editor keeps OAuth token values out of Admin Web while supporting Gmail,
+  Microsoft Graph, and the local development provider.
+- Preserved mailbox draft fields across editor renders, retained intentionally empty default-folder
+  allowlists, and refreshed untouched folder mappings when changing providers.
+
+## 2026-07-20 - Paginated Email Search MCP Tool
+
+- Added the explicitly granted `email_list_messages` MCP tool for paginated mailbox-folder
+  listing across Gmail, Microsoft Graph, and the local provider, with read-state, date, sender,
+  recipient, subject, full-text, and attachment filters.
+- Kept `email_list_unread` as the separate incremental unread workflow; standard email-enabled
+  sessions do not receive the broader listing capability automatically.
+- Corrected Graph query composition and Gmail label filtering so structured and textual searches
+  use provider-supported request shapes, including mapped custom folders and recipient searches.
+
+## 2026-07-20 - Sessions MCP Tool Groups
+
+- Moved the codebase-consultation and connector MCP tools out of the generic **Other** group on
+  the Sessions page, including when a stale catalog labels them as **Other**.
+- Separated Team Add-on MCP tools from the Microsoft Teams application tools by giving add-on
+  tool descriptors an optional group override.
+- Clarified the `team_reply_to_chat` tooltip: it is granted only for the active human Team Chat
+  dispatch, while `team_send_operator_chat_message` is the proactive operator-message tool.
+
+## 2026-07-20 - Team Session Navigation
+
+- Added **Open session** actions for Team agents in the Teams detail views and org-chart context
+  menus, taking operators directly to the linked Sessions record.
+- Kept add-on-to-shell navigation origin- and iframe-source-validated before updating the existing
+  session deep link.
+
+## 2026-07-20 - Bokio Recovery And Retry Hardening
+
+- Allowed reconciliation-confirmed recovery of interrupted direct operations and prepared actions
+  left in `executing`, while keeping ordinary concurrent calls blocked.
+- Treated unparsable successful write responses as uncertain, while keeping DNS, TCP-connect, and
+  connection-establishment timeout failures on the explicit retry path.
+- Kept prepared actions on the explicit retry path when payload validation or Bokio client setup
+  fails locally before any remote request can occur.
+- Kept the mounted Bokio review frame synchronized with live privileged-operation lock changes and
+  exposed confirmed recovery for interrupted prepared actions.
+
+## 2026-07-17 - Strict Worker Temporary Storage
+
+- Raised the strict container-worker profile's bounded noexec `/tmp` tmpfs from 512 MiB to 4 GiB,
+  so dependency-heavy browser and full-stack validation can complete without consuming the host
+  filesystem or weakening the strict sandbox boundary.
+
+## 2026-07-17 - Add-on MCP Catalog And Bokio Review Workspace
+
+- Added validated static MCP tool descriptors to add-on registration and merged enabled add-on
+  tools into the Admin Web Sessions and MCP Tools catalogs, workflow tool selectors, and runtime
+  Tool Visibility policy, grouped by add-on.
+- Added a narrowly autonomous `bokio_create_supplier_invoice` MCP tool with caller-supplied durable
+  operation keys, exact-payload replay, atomic execution claims, and reconciliation-gated retry for
+  uncertain Bokio outcomes; no direct autonomous bank-payment tool was added.
+- Turned the Bokio tab into a prepared-action review workspace with filtering, payload/result/error
+  inspection, transition history, atomic **Approve & execute**, rejection, and explicit retry
+  states, protected by Admin-owner permission and the privileged-operations lock.
+
 ## 2026-07-17 - Repository Readiness And Admin Frontend Reliability
 
 - Restored a clean repository-wide Ruff lint and formatting baseline, while preserving the

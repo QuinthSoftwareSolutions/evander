@@ -442,7 +442,7 @@ def _build_email_provider(
             providers_by_mailbox[mailbox.mailbox_id] = JsonEmailProvider(emails, drafts)
             continue
         if mailbox.provider == "gmail":
-            _validate_mailbox_access_token_env_var(mailbox)
+            _validate_mailbox_auth_environment(mailbox)
             providers_by_mailbox[mailbox.mailbox_id] = GmailEmailProvider(
                 account_identifier=mailbox.account_identifier,
                 folder_mapping=mailbox.folder_mapping,
@@ -452,7 +452,7 @@ def _build_email_provider(
             )
             continue
         if mailbox.provider == "graph":
-            _validate_mailbox_access_token_env_var(mailbox)
+            _validate_mailbox_auth_environment(mailbox)
             providers_by_mailbox[mailbox.mailbox_id] = GraphEmailProvider(
                 account_identifier=mailbox.account_identifier,
                 folder_mapping=mailbox.folder_mapping,
@@ -466,12 +466,45 @@ def _build_email_provider(
     return MultiMailboxEmailProvider(providers_by_mailbox)
 
 
-def _validate_mailbox_access_token_env_var(mailbox: MailboxConfig) -> None:
+def _validate_mailbox_auth_environment(mailbox: MailboxConfig) -> None:
+    graph_client_credential_names = ("tenant_id", "client_id", "client_secret")
+    graph_client_credential_refs = {
+        name: mailbox.auth_secret_refs.get(name, "").strip()
+        for name in graph_client_credential_names
+    }
+    if mailbox.provider == "graph" and any(graph_client_credential_refs.values()):
+        missing_refs = [
+            name for name, env_var_name in graph_client_credential_refs.items() if not env_var_name
+        ]
+        if missing_refs:
+            missing = ", ".join(f"auth_secret_refs.{name}" for name in missing_refs)
+            raise RuntimeError(
+                f"email mailbox {mailbox.mailbox_id!r} using provider 'graph' requires "
+                f"complete OAuth client credential refs; missing {missing}"
+            )
+        missing_env_vars = [
+            env_var_name
+            for env_var_name in graph_client_credential_refs.values()
+            if not os.environ.get(env_var_name, "").strip()
+        ]
+        if missing_env_vars:
+            missing = ", ".join(repr(name) for name in missing_env_vars)
+            raise RuntimeError(
+                f"email mailbox {mailbox.mailbox_id!r} using provider 'graph' requires "
+                f"non-empty OAuth client credential environment variables: {missing}"
+            )
+        return
+
     env_var_name = mailbox.auth_secret_refs.get("access_token", "").strip()
     if not env_var_name:
         raise RuntimeError(
             f"email mailbox {mailbox.mailbox_id!r} using provider {mailbox.provider!r} "
             "requires auth_secret_refs.access_token to be configured"
+            + (
+                " or Graph OAuth client credential refs tenant_id, client_id, and client_secret"
+                if mailbox.provider == "graph"
+                else ""
+            )
         )
 
     access_token = os.environ.get(env_var_name, "").strip()

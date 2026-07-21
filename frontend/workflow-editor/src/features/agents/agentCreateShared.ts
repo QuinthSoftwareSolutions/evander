@@ -6,6 +6,7 @@ import type {
   AgentCreateOperationResponse,
   AgentCreateOptionsResponse,
   AgentCreateRequest,
+  EmailMailboxGrant,
 } from "../admin/types";
 
 export type AgentCreateFormState = {
@@ -19,6 +20,7 @@ export type AgentCreateFormState = {
   vmUser: string;
   agentProvider: string;
   modelProviderMode: string;
+  codexAuthMode: string;
   vmImage: string;
   containerImage: string;
   dotnet: boolean;
@@ -36,6 +38,7 @@ export type AgentInitialPolicyFormState = {
   connectorGrants: Record<string, string[]>;
   allowedScriptNames: string[];
   communicationTargetIds: string[];
+  emailMailboxGrants: EmailMailboxGrant[];
 };
 
 export type AgentCreateSubmitMeta = {
@@ -55,6 +58,7 @@ export function emptyCreateForm(): AgentCreateFormState {
     vmUser: "agent",
     agentProvider: "",
     modelProviderMode: "",
+    codexAuthMode: "",
     vmImage: "",
     containerImage: "",
     dotnet: false,
@@ -74,6 +78,7 @@ export function emptyInitialPolicyForm(): AgentInitialPolicyFormState {
     connectorGrants: {},
     allowedScriptNames: [],
     communicationTargetIds: [],
+    emailMailboxGrants: [],
   };
 }
 
@@ -150,6 +155,10 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   if (agentProvider) payload.agent_provider = agentProvider;
   const modelProviderMode = optionalText(form.modelProviderMode);
   if (modelProviderMode) payload.model_provider_mode = modelProviderMode;
+  const codexAuthMode = optionalText(form.codexAuthMode);
+  if (codexAuthMode === "metered_api" || codexAuthMode === "chatgpt_subscription") {
+    payload.codex_auth_mode = codexAuthMode;
+  }
   payload.dotnet = form.dotnet;
   payload.nuget = form.nuget;
   payload.playwright = form.playwright;
@@ -181,7 +190,12 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   const allowedScriptNames = dedupeStrings(initialPolicy.allowedScriptNames);
   if (allowedScriptNames.length > 0) payload.allowed_script_names = allowedScriptNames;
   const communicationTargetIds = dedupeStrings(initialPolicy.communicationTargetIds);
-  if (communicationTargetIds.length > 0) payload.communication_target_ids = communicationTargetIds;
+  payload.communication_target_ids = communicationTargetIds;
+  payload.email_mailbox_grants = initialPolicy.emailMailboxGrants.map((grant) => ({
+    mailbox_id: grant.mailbox_id,
+    access: grant.access,
+    folders: dedupeStrings(grant.folders),
+  }));
   return payload;
 }
 

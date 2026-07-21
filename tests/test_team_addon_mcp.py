@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,9 +13,10 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.addons import AddonLoaderConfig
 from evander.config import GatewayConfig
+from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.events.scheduled import scheduled_internal_event_store_path
 from evander.gateway import create_server
-from evander.models import SessionManifest, ToolName, tool_name_value
+from evander.models import ApprovalStatus, SessionManifest, ToolName, tool_name_value
 from evander.runtime import build_runtime
 from evander_team_addon.mcp import (
     MCP_TOOL_NAMES,
@@ -32,12 +35,19 @@ from evander_team_addon.mcp import (
     TEAM_REQUEST_RELEASE_TOOL,
     TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
+    TEAM_REPLY_TO_CHAT_TOOL,
+    TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+    TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+)
+from evander_team_addon.chat_attachments import (
+    TeamChatAttachmentPolicyService,
+    TeamChatAttachmentStorage,
 )
 from evander_team_addon.models import (
     AgentRuntime,
@@ -58,6 +68,8 @@ from evander_team_addon.repository import (
 )
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.chat_service import TeamChatService
+from evander_team_addon.services.commands.chat_commands import TeamChatCommandService
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 
 
@@ -350,6 +362,243 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     )
     assert "infrastructure-failed or timed-out verification" in retry_release_description
     assert "process-blocked reviews" in retry_release_description
+
+
+def test_team_chat_agent_attachment_staging_and_exact_approved_reply(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=[TEAM_STAGE_CHAT_ATTACHMENT_TOOL, TEAM_REPLY_TO_CHAT_TOOL],
+    )
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    state, source_message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please return the report.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    chat.begin_chat_message_dispatch(
+        message_id=source_message.id,
+        dispatch_id=f"team-chat:{source_message.id}",
+    )
+    monkeypatch.setattr(
+        AgentExecEffectProvider,
+        "execute",
+        lambda _self: {
+            "success": True,
+            "session_id": "session-backend",
+            "stdout": (
+                "__EVANDER_TEAM_CHAT_FILE_BEGIN__\n"
+                '{"source_path":"/home/agent/report.txt","filename":"report.txt",'
+                '"mime_type":"text/plain","byte_count":6,"content_base64":"cmVwb3J0"}\n'
+                "__EVANDER_TEAM_CHAT_FILE_END__\n"
+            ),
+        },
+    )
+    server = create_server(context)
+
+    staged_result = _call_tool(
+        server,
+        TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
+        {
+            "session_id": "session-backend",
+            "source_path": "/home/agent/report.txt",
+        },
+    )
+    staged = staged_result["attachment"]
+    reply_arguments = {
+        "session_id": "session-backend",
+        "conversation_id": conversation.id,
+        "message_id": source_message.id,
+        "body": "Attached is the report.",
+        "attachment_ids": [staged["id"]],
+        "request_id": "reply-with-report",
+    }
+    with pytest.raises(ToolError, match="require exact approval"):
+        _call_tool(server, TEAM_REPLY_TO_CHAT_TOOL, reply_arguments)
+
+    approval_payload = {
+        "tool_name": TEAM_REPLY_TO_CHAT_TOOL,
+        "conversation_id": conversation.id,
+        "message_id": source_message.id,
+        "body": "Attached is the report.",
+        "attachment_ids": [staged["id"]],
+        "attachments": [
+            {key: staged[key] for key in ("id", "filename", "mime_type", "byte_count", "sha256")}
+        ],
+    }
+    approval = context.policy.create_approval(
+        "session-backend",
+        "mcp_tool_invocation",
+        approval_payload,
+        "Send report.txt to the Team Chat operator",
+        tool_name=TEAM_REPLY_TO_CHAT_TOOL,
+    )
+    approval.status = ApprovalStatus.APPROVED
+    context.policy.approval_store.put(approval.request_id, approval)
+
+    replied = _call_tool(
+        server,
+        TEAM_REPLY_TO_CHAT_TOOL,
+        {**reply_arguments, "approval_request_id": approval.request_id},
+    )
+
+    assert replied["success"] is True
+    stored = repo.read()
+    reply = stored.conversation_messages[replied["chat_message_id"]]
+    assert reply.body == "Attached is the report."
+    assert len(reply.attachment_ids) == 1
+    attachment = stored.chat_attachments[reply.attachment_ids[0]]
+    assert attachment.filename == "report.txt"
+    assert attachment.created_by_session_id == "session-backend"
+
+
+def test_concurrent_chat_reply_failure_does_not_delete_committed_attachment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=[TEAM_REPLY_TO_CHAT_TOOL],
+    )
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    state, source_message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please return the report.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    chat.begin_chat_message_dispatch(
+        message_id=source_message.id,
+        dispatch_id=f"team-chat:{source_message.id}",
+    )
+    TeamChatAttachmentPolicyService(repo).set_override(
+        directory_path="root",
+        values={"agent_send_requires_approval": False},
+        updated_by="test",
+        expected_revision=repo.read().revision,
+    )
+    storage = TeamChatAttachmentStorage(context.config.runtime_dir)
+    staged = storage.stage_agent_file(
+        session_id="session-backend",
+        source_path="/home/agent/report.txt",
+        content=b"report",
+        filename="report.txt",
+        mime_type="text/plain",
+    )
+    attachment_id = f"chatatt_{staged.id.removeprefix('chatstage_')}"
+    barrier = threading.Barrier(2)
+    original_reply = TeamChatCommandService.reply_to_chat_command
+
+    def synchronized_reply(self, **kwargs):
+        barrier.wait(timeout=5)
+        return original_reply(self, **kwargs)
+
+    monkeypatch.setattr(TeamChatCommandService, "reply_to_chat_command", synchronized_reply)
+    server = create_server(context)
+    common_arguments = {
+        "session_id": "session-backend",
+        "conversation_id": conversation.id,
+        "message_id": source_message.id,
+        "body": "Attached is the report.",
+        "attachment_ids": [staged.id],
+    }
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                _call_tool,
+                server,
+                TEAM_REPLY_TO_CHAT_TOOL,
+                {**common_arguments, "request_id": request_id},
+            )
+            for request_id in ("concurrent-reply-1", "concurrent-reply-2")
+        ]
+        results = [future.result(timeout=10) for future in futures]
+
+    assert sum(bool(result["success"]) for result in results) == 1
+    committed = repo.read().chat_attachments[attachment_id]
+    assert committed.message_id in repo.read().conversation_messages
+    assert storage.asset_path(attachment_id).read_bytes() == b"report"
+
+
+def test_staged_chat_attachment_cannot_be_claimed_by_a_second_message(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=[TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL],
+    )
+    _lease_planning_agents(repo)
+    TeamChatService(repo).create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    TeamChatAttachmentPolicyService(repo).set_override(
+        directory_path="root",
+        values={"agent_send_requires_approval": False},
+        updated_by="test",
+        expected_revision=repo.read().revision,
+    )
+    storage = TeamChatAttachmentStorage(context.config.runtime_dir)
+    staged = storage.stage_agent_file(
+        session_id="session-backend",
+        source_path="/home/agent/report.txt",
+        content=b"report",
+        filename="report.txt",
+        mime_type="text/plain",
+    )
+    server = create_server(context)
+    arguments = {
+        "session_id": "session-backend",
+        "recipient_operator_user_id": "operator@example.com",
+        "body": "Attached is the report.",
+        "attachment_ids": [staged.id],
+        "request_id": "send-report-1",
+    }
+
+    first = _call_tool(server, TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL, arguments)
+    replay = _call_tool(server, TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL, arguments)
+    second = _call_tool(
+        server,
+        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+        {**arguments, "request_id": "send-report-2"},
+    )
+
+    assert first["success"] is True
+    assert replay["success"] is True
+    assert replay["chat_message_id"] == first["chat_message_id"]
+    assert second["success"] is False
+    assert second["errors"][0]["code"] == "chat_attachment_already_claimed"
+    attachment_id = f"chatatt_{staged.id.removeprefix('chatstage_')}"
+    stored = repo.read()
+    assert stored.chat_attachments[attachment_id].message_id == first["chat_message_id"]
+    assert storage.asset_path(attachment_id).read_bytes() == b"report"
 
 
 def test_team_addon_mcp_registers_operator_directive_tool(tmp_path: Path) -> None:

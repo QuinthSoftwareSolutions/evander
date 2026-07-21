@@ -43,7 +43,9 @@ def test_worker_cli_uses_default_sandbox_profile(monkeypatch, tmp_path: Path) ->
     assert profile.security_opt == ("no-new-privileges",)
     assert not profile.read_only_rootfs
     assert captured["create_app"]["docker_network"] is None
-    assert not any("egress" in key for key in captured["create_app"])
+    assert captured["create_app"]["codex_egress_proxy_url"] is None
+    assert captured["create_app"]["codex_egress_proxy_bind_host"] is None
+    assert captured["create_app"]["codex_egress_allowed_hosts"] is None
 
 
 def test_worker_cli_accepts_strict_profile_network_and_container_tuning(
@@ -159,6 +161,53 @@ def test_worker_cli_accepts_mssql_flags(monkeypatch, tmp_path: Path) -> None:
     assert captured["create_app"]["mssql_port"] == 14330
     assert captured["create_app"]["mssql_container_host"] == "172.18.0.1"
     assert captured["create_app"]["mssql_sqlcmd_path"] == "/opt/mssql-tools18/bin/sqlcmd"
+
+
+def test_worker_cli_accepts_codex_subscription_broker_and_proxy_flags(
+    monkeypatch, tmp_path: Path
+) -> None:
+    worker_root = tmp_path / "worker-root"
+    captured = _run_cli(
+        monkeypatch,
+        [
+            "evander-worker-daemon",
+            "--runtime-dir",
+            str(tmp_path / "runtime"),
+            "--worker-root",
+            str(worker_root),
+            "--docker-network",
+            "agent-worker-net",
+            "--codex-auth-image",
+            "evander-runner:latest",
+            "--container-user",
+            "1200:1200",
+            "--codex-egress-proxy-url",
+            "http://172.18.0.1:11889",
+            "--codex-egress-proxy-bind-host",
+            "172.18.0.1",
+            "--codex-egress-proxy-port",
+            "11889",
+            "--codex-egress-host",
+            "auth.openai.com",
+            "--codex-egress-host",
+            "*.chatgpt.com",
+        ],
+    )
+
+    command = captured["create_app"]["codex_auth_command"]
+    assert command[:4] == ("docker", "run", "--rm", "-i")
+    assert command[command.index("--name") + 1].startswith("evander-codex-auth-")
+    assert f"{worker_root / 'codex-auth'}:/codex-auth" in command
+    assert "CODEX_HOME=/codex-auth" in command
+    assert command[command.index("--user") + 1] == "1200:1200"
+    assert "http://172.18.0.1:11889" in " ".join(command)
+    assert captured["create_app"]["codex_egress_proxy_url"] == ("http://172.18.0.1:11889")
+    assert captured["create_app"]["codex_egress_proxy_bind_host"] == "172.18.0.1"
+    assert captured["create_app"]["codex_egress_proxy_port"] == 11889
+    assert captured["create_app"]["codex_egress_allowed_hosts"] == [
+        "auth.openai.com",
+        "*.chatgpt.com",
+    ]
 
 
 def test_worker_cli_reads_sandbox_profile_from_environment(monkeypatch, tmp_path: Path) -> None:

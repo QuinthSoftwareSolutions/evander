@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 25
+SQLITE_SCHEMA_VERSION = 26
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -808,6 +808,12 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_conversation_messages",
+                    column_name="attachment_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_action_records",
                     column_name="feedback_delivered_by_dispatch_id",
                     definition="TEXT",
@@ -1172,6 +1178,8 @@ class TeamStateSqliteStore:
             "memories": {},
             "conversations": {},
             "conversation_messages": {},
+            "chat_attachments": {},
+            "chat_attachment_policies": {},
             "release_packages": {},
             "release_verification_runs": {},
             "ephemeral_assignments": {},
@@ -1199,6 +1207,8 @@ class TeamStateSqliteStore:
         self._read_memories(connection, payload)
         self._read_conversations(connection, payload)
         self._read_conversation_messages(connection, payload)
+        self._read_chat_attachments(connection, payload)
+        self._read_chat_attachment_policies(connection, payload)
         self._read_release_packages(connection, payload)
         self._read_release_verification_runs(connection, payload)
         self._read_ephemeral_assignments(connection, payload)
@@ -1229,6 +1239,8 @@ class TeamStateSqliteStore:
         self._write_memories(connection, payload["memories"])
         self._write_conversations(connection, payload["conversations"])
         self._write_conversation_messages(connection, payload["conversation_messages"])
+        self._write_chat_attachments(connection, payload["chat_attachments"])
+        self._write_chat_attachment_policies(connection, payload["chat_attachment_policies"])
         self._write_release_packages(connection, payload["release_packages"])
         self._write_release_verification_runs(connection, payload["release_verification_runs"])
         self._write_ephemeral_assignments(connection, payload["ephemeral_assignments"])
@@ -2553,6 +2565,7 @@ class TeamStateSqliteStore:
                 "source_message_id": row["source_message_id"],
                 "error": row["error"],
                 "metadata": _json_loads(row["metadata_json"]),
+                "attachment_ids": _json_loads(row["attachment_ids_json"] or "[]"),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
@@ -2569,8 +2582,9 @@ class TeamStateSqliteStore:
                     id, conversation_id, sender, message_type, body, status,
                     dispatch_id, voice_session_id, source_message_id, error,
                     metadata_json, created_at, updated_at
+                    , attachment_ids_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message["id"],
@@ -2586,6 +2600,116 @@ class TeamStateSqliteStore:
                     _json_dumps(message.get("metadata", {})),
                     message["created_at"],
                     message["updated_at"],
+                    _json_dumps(message.get("attachment_ids", [])),
+                ),
+            )
+
+    @staticmethod
+    def _read_chat_attachments(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        for row in connection.execute(
+            "SELECT * FROM team_chat_attachments ORDER BY created_at, id"
+        ):
+            payload["chat_attachments"][row["id"]] = {
+                "id": row["id"],
+                "message_id": row["message_id"],
+                "conversation_id": row["conversation_id"],
+                "filename": row["filename"],
+                "mime_type": row["mime_type"],
+                "byte_count": row["byte_count"],
+                "sha256": row["sha256"],
+                "sender": row["sender"],
+                "created_by_session_id": row["created_by_session_id"],
+                "created_at": row["created_at"],
+            }
+
+    @staticmethod
+    def _write_chat_attachments(
+        connection: sqlite3.Connection, attachments: dict[str, Any]
+    ) -> None:
+        for attachment in attachments.values():
+            connection.execute(
+                """
+                INSERT INTO team_chat_attachments(
+                    id, message_id, conversation_id, filename, mime_type, byte_count,
+                    sha256, sender, created_by_session_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attachment["id"],
+                    attachment["message_id"],
+                    attachment["conversation_id"],
+                    attachment["filename"],
+                    attachment.get("mime_type"),
+                    attachment["byte_count"],
+                    attachment["sha256"],
+                    attachment["sender"],
+                    attachment.get("created_by_session_id"),
+                    attachment["created_at"],
+                ),
+            )
+
+    @staticmethod
+    def _read_chat_attachment_policies(
+        connection: sqlite3.Connection, payload: dict[str, Any]
+    ) -> None:
+        for row in connection.execute(
+            "SELECT * FROM team_chat_attachment_policies ORDER BY directory_path"
+        ):
+            payload["chat_attachment_policies"][row["directory_path"]] = {
+                "id": row["directory_path"],
+                "directory_path": row["directory_path"],
+                "operator_to_agent_enabled": _optional_db_bool(row["operator_to_agent_enabled"]),
+                "agent_to_operator_enabled": _optional_db_bool(row["agent_to_operator_enabled"]),
+                "agent_send_requires_approval": _optional_db_bool(
+                    row["agent_send_requires_approval"]
+                ),
+                "max_attachment_bytes": row["max_attachment_bytes"],
+                "max_attachments_per_message": row["max_attachments_per_message"],
+                "allowed_mime_types": _json_loads(row["allowed_mime_types_json"])
+                if row["allowed_mime_types_json"] is not None
+                else None,
+                "allowed_extensions": _json_loads(row["allowed_extensions_json"])
+                if row["allowed_extensions_json"] is not None
+                else None,
+                "blocked_extensions": _json_loads(row["blocked_extensions_json"])
+                if row["blocked_extensions_json"] is not None
+                else None,
+                "updated_by": row["updated_by"],
+                "updated_at": row["updated_at"],
+            }
+
+    @staticmethod
+    def _write_chat_attachment_policies(
+        connection: sqlite3.Connection, policies: dict[str, Any]
+    ) -> None:
+        for policy in policies.values():
+            connection.execute(
+                """
+                INSERT INTO team_chat_attachment_policies(
+                    directory_path, operator_to_agent_enabled, agent_to_operator_enabled,
+                    agent_send_requires_approval, max_attachment_bytes,
+                    max_attachments_per_message, allowed_mime_types_json,
+                    allowed_extensions_json, blocked_extensions_json, updated_by, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    policy["directory_path"],
+                    _optional_bool_db(policy.get("operator_to_agent_enabled")),
+                    _optional_bool_db(policy.get("agent_to_operator_enabled")),
+                    _optional_bool_db(policy.get("agent_send_requires_approval")),
+                    policy.get("max_attachment_bytes"),
+                    policy.get("max_attachments_per_message"),
+                    _json_dumps(policy["allowed_mime_types"])
+                    if policy.get("allowed_mime_types") is not None
+                    else None,
+                    _json_dumps(policy["allowed_extensions"])
+                    if policy.get("allowed_extensions") is not None
+                    else None,
+                    _json_dumps(policy["blocked_extensions"])
+                    if policy.get("blocked_extensions") is not None
+                    else None,
+                    policy.get("updated_by"),
+                    policy["updated_at"],
                 ),
             )
 
@@ -3042,6 +3166,14 @@ def _int_bool(value: Any) -> int:
     return 1 if bool(value) else 0
 
 
+def _optional_db_bool(value: Any) -> bool | None:
+    return None if value is None else bool(int(value))
+
+
+def _optional_bool_db(value: Any) -> int | None:
+    return None if value is None else (1 if bool(value) else 0)
+
+
 def _required_text(value: Any, field_name: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -3436,6 +3568,8 @@ _STATE_TABLES = (
     "team_ephemeral_assignments",
     "team_release_verification_runs",
     "team_release_packages",
+    "team_chat_attachments",
+    "team_chat_attachment_policies",
     "team_conversation_messages",
     "team_conversations",
     "team_memories",
@@ -3969,6 +4103,35 @@ CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_conversation
     ON team_conversation_messages(conversation_id, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_team_conversation_messages_dispatch
     ON team_conversation_messages(dispatch_id, id);
+
+CREATE TABLE IF NOT EXISTS team_chat_attachments (
+    id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    mime_type TEXT,
+    byte_count INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    created_by_session_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_chat_attachments_message
+    ON team_chat_attachments(message_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS team_chat_attachment_policies (
+    directory_path TEXT PRIMARY KEY,
+    operator_to_agent_enabled INTEGER,
+    agent_to_operator_enabled INTEGER,
+    agent_send_requires_approval INTEGER,
+    max_attachment_bytes INTEGER,
+    max_attachments_per_message INTEGER,
+    allowed_mime_types_json TEXT,
+    allowed_extensions_json TEXT,
+    blocked_extensions_json TEXT,
+    updated_by TEXT,
+    updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS team_release_packages (
     id TEXT PRIMARY KEY,

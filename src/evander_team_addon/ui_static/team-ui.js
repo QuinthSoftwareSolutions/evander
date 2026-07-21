@@ -141,6 +141,7 @@ let chatNewPickerOpen = false;
 let selectedChatConversationId = null;
 let selectedChatOperatorUserId = null;
 let chatSending = false;
+const pendingChatAttachments = new Map();
 let chatStream = null;
 let chatStreamConversationId = null;
 let chatStreamErrorRefreshPending = false;
@@ -284,6 +285,8 @@ const elements = {
   editModalTitle: document.querySelector("#edit-modal-title"),
   editForm: document.querySelector("#edit-record-form"),
   editFormBody: document.querySelector("#edit-form-body"),
+  chatAttachmentPolicyModal: document.querySelector("#chat-attachment-policy-modal"),
+  chatAttachmentPolicyForm: document.querySelector("#chat-attachment-policy-form"),
 };
 
 const deliveryStatusOrder = [
@@ -917,6 +920,7 @@ function openOrgCanvasContextMenu(detail) {
 
 function openOrgAgentContextMenu(detail) {
   const agentId = text(detail?.agentId);
+  const agent = state.agents?.[agentId];
   const point = orgContextPoint(detail);
   openOrgContextMenu({
     kind: "agent",
@@ -924,9 +928,15 @@ function openOrgAgentContextMenu(detail) {
     agentId,
     items: [
       {
+        action: "open-session",
+        label: "Open session",
+        disabled: !text(agent?.session_id),
+        disabledReason: "This agent has no linked session.",
+      },
+      {
         action: "add-subordinate-agent",
         label: "Add subordinate agent",
-        disabled: teamMutationLocked() || !state.agents?.[agentId],
+        disabled: teamMutationLocked() || !agent,
         disabledReason: teamMutationLocked()
           ? lockedMutationMessage("add subordinate agents")
           : "Agent is no longer available.",
@@ -1041,6 +1051,10 @@ function closeOrgContextMenu() {
 }
 
 function handleOrgContextAction(action, context) {
+  if (action === "open-session") {
+    navigateToAgentSession(state.agents?.[context.agentId]?.session_id);
+    return;
+  }
   if (action === "create-team") {
     if (!guardTeamMutation("create teams")) {
       return;
@@ -1394,6 +1408,24 @@ function bindForms() {
     void submitChatMessage(form);
   });
 
+  elements.chatAttachmentPolicyForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitChatAttachmentPolicy(elements.chatAttachmentPolicyForm);
+  });
+
+  document.addEventListener("click", (event) => {
+    const openButton = event.target?.closest?.("[data-chat-attachment-policy-open]");
+    if (openButton) {
+      event.preventDefault();
+      void openChatAttachmentPolicy();
+      return;
+    }
+    if (event.target?.closest?.("[data-chat-attachment-policy-close]")) {
+      event.preventDefault();
+      closeChatAttachmentPolicy();
+    }
+  });
+
   document.addEventListener("submit", (event) => {
     const form = event.target?.closest?.("form[data-team-inline-create-form]");
     if (!form) {
@@ -1479,6 +1511,14 @@ function bindForms() {
       return;
     }
 
+    const attachmentInput = event.target?.closest?.("[data-chat-attachment-input]");
+    if (attachmentInput instanceof HTMLInputElement) {
+      const conversationId = text(attachmentInput.dataset.chatAttachmentInput);
+      pendingChatAttachments.set(conversationId, [...(attachmentInput.files || [])]);
+      renderChat();
+      return;
+    }
+
     const select = event.target?.closest?.("[data-chat-operator-select]");
     if (!select) {
       return;
@@ -1488,6 +1528,22 @@ function bindForms() {
     chatNewPickerOpen = false;
     closeChatStream();
     void loadConversations({ preserveSelection: false });
+  });
+
+  document.addEventListener("click", (event) => {
+    const removeAttachment = event.target?.closest?.("[data-chat-attachment-remove]");
+    if (!removeAttachment) {
+      return;
+    }
+    event.preventDefault();
+    const conversationId = text(removeAttachment.dataset.chatAttachmentConversationId);
+    const index = Number(removeAttachment.dataset.chatAttachmentRemove);
+    const files = [...(pendingChatAttachments.get(conversationId) || [])];
+    if (Number.isInteger(index)) {
+      files.splice(index, 1);
+    }
+    pendingChatAttachments.set(conversationId, files);
+    renderChat();
   });
 }
 
@@ -1580,6 +1636,13 @@ function bindRecordEditing() {
     if (selectAgentButton) {
       event.preventDefault();
       selectPeopleAgent(selectAgentButton.dataset.selectAgentId);
+      return;
+    }
+
+    const openSessionButton = event.target.closest("[data-open-session-id]");
+    if (openSessionButton) {
+      event.preventDefault();
+      navigateToAgentSession(openSessionButton.dataset.openSessionId);
       return;
     }
 
@@ -2138,6 +2201,7 @@ const lockedMutationControlSelectors = [
   ["#update-task-form button[type='submit']", "update tasks"],
   ["#decide-review-form button[type='submit']", "record review decisions"],
   ["#edit-record-form button[type='submit']", "save changes"],
+  ["#chat-attachment-policy-form button[type='submit']", "configure Team Chat attachments"],
 ];
 
 function applyLockedMutationControls(root = document) {
@@ -3611,8 +3675,9 @@ async function submitChatMessage(form) {
   }
   const formData = new FormData(form);
   const body = text(formData.get("body"));
-  if (!body) {
-    setStatus("Message is required.", "error");
+  const attachments = [...(pendingChatAttachments.get(text(conversation.id)) || [])];
+  if (!body && !attachments.length) {
+    setStatus("Message or attachment is required.", "error");
     return;
   }
   chatSending = true;
@@ -3621,15 +3686,18 @@ async function submitChatMessage(form) {
   setStatus("Sending chat message.", "loading");
   try {
     const conversationId = text(conversation.id);
+    let requestBody = JSON.stringify({ body });
+    const requestHeaders = { Accept: "application/json", "Content-Type": "application/json" };
+    if (attachments.length) {
+      requestBody = new FormData();
+      requestBody.set("body", body);
+      attachments.forEach((file) => requestBody.append("files", file, file.name));
+      delete requestHeaders["Content-Type"];
+    }
     const response = await teamFetch(`${API_BASE}/conversations/${encodeURIComponent(conversation.id)}/messages`, {
       method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        body,
-      }),
+      headers: requestHeaders,
+      body: requestBody,
     });
     if (!response.ok) {
       throw new Error(await responseText(response));
@@ -3654,6 +3722,7 @@ async function submitChatMessage(form) {
       if (activeComposer instanceof HTMLTextAreaElement) {
         activeComposer.value = "";
       }
+      pendingChatAttachments.delete(conversationId);
     }
     if (payload.dispatch?.success === false && !payload.dispatch?.queued) {
       setStatus(payload.dispatch.message || "Chat message saved, but dispatch failed.", "warning");
@@ -3668,6 +3737,84 @@ async function submitChatMessage(form) {
   } finally {
     chatSending = false;
     renderChat();
+  }
+}
+
+async function openChatAttachmentPolicy() {
+  const form = elements.chatAttachmentPolicyForm;
+  if (!form || !elements.chatAttachmentPolicyModal) return;
+  const directoryPath = text(form.elements.directory_path?.value) || "root";
+  setStatus("Loading Team Chat attachment policy.", "loading");
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/chat/attachment-policy?directory_path=${encodeURIComponent(directoryPath)}`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) throw new Error(await responseText(response));
+    const payload = await response.json();
+    fillChatAttachmentPolicyForm(form, payload.effective || {}, payload.directory_path || directoryPath);
+    elements.chatAttachmentPolicyModal.hidden = false;
+    form.elements.directory_path?.focus();
+    setStatus("", "");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Attachment policy could not be loaded.", "error");
+  }
+}
+
+function closeChatAttachmentPolicy() {
+  if (elements.chatAttachmentPolicyModal) elements.chatAttachmentPolicyModal.hidden = true;
+}
+
+function fillChatAttachmentPolicyForm(form, policy, directoryPath) {
+  form.elements.directory_path.value = directoryPath || "root";
+  form.elements.operator_to_agent_enabled.checked = Boolean(policy.operator_to_agent_enabled);
+  form.elements.agent_to_operator_enabled.checked = Boolean(policy.agent_to_operator_enabled);
+  form.elements.agent_send_requires_approval.checked = Boolean(policy.agent_send_requires_approval);
+  form.elements.max_attachment_bytes.value = policy.max_attachment_bytes ?? 10485760;
+  form.elements.max_attachments_per_message.value = policy.max_attachments_per_message ?? 5;
+  form.elements.allowed_mime_types.value = (policy.allowed_mime_types || []).join("\n");
+  form.elements.allowed_extensions.value = (policy.allowed_extensions || []).join("\n");
+  form.elements.blocked_extensions.value = (policy.blocked_extensions || []).join("\n");
+}
+
+function chatAttachmentPolicyList(value) {
+  return String(value || "").split(/[\n,]+/).map(text).filter(Boolean);
+}
+
+async function submitChatAttachmentPolicy(form) {
+  if (!guardTeamMutation("configure Team Chat attachments")) return;
+  const directoryPath = text(form.elements.directory_path.value) || "root";
+  const policy = {
+    operator_to_agent_enabled: form.elements.operator_to_agent_enabled.checked,
+    agent_to_operator_enabled: form.elements.agent_to_operator_enabled.checked,
+    agent_send_requires_approval: form.elements.agent_send_requires_approval.checked,
+    max_attachment_bytes: Number(form.elements.max_attachment_bytes.value),
+    max_attachments_per_message: Number(form.elements.max_attachments_per_message.value),
+    allowed_mime_types: chatAttachmentPolicyList(form.elements.allowed_mime_types.value),
+    allowed_extensions: chatAttachmentPolicyList(form.elements.allowed_extensions.value),
+    blocked_extensions: chatAttachmentPolicyList(form.elements.blocked_extensions.value),
+  };
+  setStatus("Saving Team Chat attachment policy.", "loading");
+  try {
+    const response = await teamFetch(`${API_BASE}/chat/attachment-policy`, {
+      method: "PUT",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        directory_path: directoryPath,
+        expected_revision: Number(chatState.revision ?? state.revision),
+        policy,
+      }),
+    });
+    if (!response.ok) throw new Error(await responseText(response));
+    const payload = await response.json();
+    state.revision = payload.revision ?? state.revision;
+    chatState.revision = payload.revision ?? chatState.revision;
+    fillChatAttachmentPolicyForm(form, payload.effective || policy, directoryPath);
+    closeChatAttachmentPolicy();
+    renderShell();
+    setStatus("Team Chat attachment policy saved.", "success");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Attachment policy could not be saved.", "error");
   }
 }
 
@@ -6096,6 +6243,7 @@ function renderAgents() {
                     <div class="record-actions">
                       ${renderAgentRosterStatusPill(details)}
                       ${renderAgentStandDownControls(details.id, details)}
+                      ${renderOpenAgentSessionButton(details.sessionId)}
                       <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
                       ${editButton("agent", details.id)}
                     </div>
@@ -7937,6 +8085,7 @@ function renderChatThreadHeader(conversation, agent, label, readOnly) {
         </div>
       </div>
       <div class="chat-thread-actions">
+        <button type="button" data-chat-attachment-policy-open title="Configure add-on-owned file rules by directory">Files</button>
         <label
           class="chat-sound-toggle"
           title="Play a short sound when agent messages arrive and this window is not focused."
@@ -7990,10 +8139,26 @@ function renderChatMessageListContents(conversation, messages, olderLoading) {
 }
 
 function renderChatComposer(label, readOnly) {
+  const conversationId = text(selectedChatConversationId);
+  const attachments = [...(pendingChatAttachments.get(conversationId) || [])];
   return `
     <form class="chat-composer" data-chat-message-form>
       <textarea name="body" rows="3" placeholder="${readOnly ? "Read-only chat history" : `Message ${escapeAttr(label)}`}" ${chatSending || readOnly ? "disabled" : ""}></textarea>
-      <button type="submit" ${chatSending || readOnly ? "disabled" : ""}>Send</button>
+      <div class="chat-attachment-drafts">
+        ${attachments.map((file, index) => `
+          <span class="chat-attachment-chip">
+            <span>${escapeHtml(file.name)} · ${escapeHtml(formatFileSize(file.size))}</span>
+            <button type="button" aria-label="Remove ${escapeAttr(file.name)}" data-chat-attachment-remove="${index}" data-chat-attachment-conversation-id="${escapeAttr(conversationId)}">×</button>
+          </span>
+        `).join("")}
+      </div>
+      <div class="chat-composer-actions">
+        <label class="chat-attach-button ${readOnly ? "is-disabled" : ""}">
+          <input type="file" multiple data-chat-attachment-input="${escapeAttr(conversationId)}" ${chatSending || readOnly ? "disabled" : ""} />
+          <span>Attach</span>
+        </label>
+        <button type="submit" ${chatSending || readOnly ? "disabled" : ""}>Send</button>
+      </div>
     </form>
   `;
 }
@@ -8060,10 +8225,12 @@ function renderChatMessage(message) {
   const metadata = message.metadata || {};
   const status = text(message.status);
   const type = text(message.message_type) || "text";
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
   return `
     <article class="chat-message chat-message--${escapeAttr(sender)} chat-message--${escapeAttr(type)}">
       <div class="chat-message-bubble">
-        <p>${escapeHtml(message.body || "")}</p>
+        ${message.body ? `<p>${escapeHtml(message.body)}</p>` : ""}
+        ${attachments.length ? `<div class="chat-message-attachments">${attachments.map(renderChatAttachment).join("")}</div>` : ""}
         <div class="chat-message-meta">
           <span>${escapeHtml(chatMessageSenderLabel(sender, metadata))}</span>
           <time>${escapeHtml(formatChatTimestamp(message.created_at))}</time>
@@ -8073,6 +8240,26 @@ function renderChatMessage(message) {
       </div>
     </article>
   `;
+}
+
+function renderChatAttachment(attachment) {
+  const url = text(attachment.download_url);
+  const mimeType = text(attachment.mime_type);
+  const filename = text(attachment.filename) || "attachment";
+  const image = ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mimeType);
+  return `
+    <a class="chat-message-attachment${image ? " is-image" : ""}" href="${escapeAttr(url)}" target="_blank" rel="noopener">
+      ${image ? `<img src="${escapeAttr(url)}" alt="${escapeAttr(filename)}" loading="lazy" />` : `<span class="chat-file-icon" aria-hidden="true">↧</span>`}
+      <span><strong>${escapeHtml(filename)}</strong><small>${escapeHtml(formatFileSize(attachment.byte_count))}${mimeType ? ` · ${escapeHtml(mimeType)}` : ""}</small></span>
+    </a>
+  `;
+}
+
+function formatFileSize(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function chatMessageListSignature(conversation, messages, olderLoading) {
@@ -8086,6 +8273,7 @@ function chatMessageListSignature(conversation, messages, olderLoading) {
         message.status,
         message.error,
         JSON.stringify(message.metadata || {}),
+        JSON.stringify(message.attachments || []),
         message.created_at,
         message.updated_at,
       ].map(text).join("\x1f"),
@@ -8428,6 +8616,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
       </div>
       <div class="record-actions agent-detail-actions">
         ${renderAgentStandDownControls(details.id, details)}
+        ${renderOpenAgentSessionButton(details.sessionId)}
         <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
         ${editButton("agent", details.id)}
       </div>
@@ -8564,6 +8753,28 @@ function renderAgentDetailField(label, value) {
       <strong class="agent-detail-value">${escapeHtml(value)}</strong>
     </div>
   `;
+}
+
+function renderOpenAgentSessionButton(sessionId) {
+  const normalizedSessionId = text(sessionId);
+  if (!normalizedSessionId) {
+    return "";
+  }
+  return `<button class="record-action" type="button" data-open-session-id="${escapeAttr(normalizedSessionId)}">Open session</button>`;
+}
+
+function navigateToAgentSession(sessionId) {
+  const normalizedSessionId = text(sessionId);
+  if (!normalizedSessionId || !window.parent?.postMessage) {
+    return;
+  }
+  window.parent.postMessage(
+    {
+      type: "admin-navigate-to-session",
+      session_id: normalizedSessionId,
+    },
+    window.location.origin,
+  );
 }
 
 function agentRuntimeDetailRows(details) {

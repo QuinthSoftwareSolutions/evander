@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from collections.abc import Iterable
 from typing import Any
 
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
@@ -599,6 +601,48 @@ def workflow_routes(
             return json_error(str(exc), status_code=403)
         return JSONResponse(catalog.model_dump(mode="json"))
 
+    async def get_target_catalog(request: Request) -> JSONResponse:
+        try:
+            directory_path = service.teams_admin.normalize_directory_reference(
+                request.query_params.get("directory_path") or "root"
+            )
+            auth.require_permission(
+                request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path
+            )
+            sessions_result, vms_result = await asyncio.gather(
+                run_in_threadpool(
+                    service.vm_agent_admin.list_sessions,
+                    include_expired=True,
+                    directory_path=directory_path,
+                    direct_only=False,
+                ),
+                run_in_threadpool(
+                    service.vm_agent_admin.list_vms,
+                    include_inactive=True,
+                    directory_path=directory_path,
+                    direct_only=False,
+                ),
+                return_exceptions=True,
+            )
+            sessions = [] if isinstance(sessions_result, BaseException) else sessions_result
+            vms = [] if isinstance(vms_result, BaseException) else vms_result
+        except ValueError as exc:
+            return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(
+            {
+                "sessions": [
+                    {
+                        "session_id": session.session_id,
+                        "is_expired": session.is_expired,
+                    }
+                    for session in sessions
+                ],
+                "vms": [{"vm_name": vm.vm_name} for vm in vms],
+            }
+        )
+
     async def get_runs(request: Request) -> JSONResponse:
         try:
             document = service.workflow_config_admin.read_composed_workflow_editor_document()
@@ -1018,6 +1062,7 @@ def workflow_routes(
             cache.wrap("workflow.catalog", get_catalog) if cache else get_catalog,
             methods=["GET"],
         ),
+        Route("/api/workflow-editor/target-catalog", get_target_catalog, methods=["GET"]),
         Route(
             "/api/workflow-editor/runs",
             cache.wrap("workflow.runs", get_runs) if cache else get_runs,

@@ -98,6 +98,11 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "container_worker_base_url": (
         "Base HTTP URL for the container worker service used when execution_backend is container_worker_vm."
     ),
+    "container_worker_codex_auth_mode": (
+        "Default Codex usage source for container-worker sessions. Metered API uses the existing "
+        "OpenAI relay; ChatGPT subscription uses the worker-owned account and fails closed when "
+        "that account is unavailable. A session override takes effect on its next turn."
+    ),
     "container_worker_default_image": (
         "Fallback runner container image used when a container session does not select an approved image alias. If the selector exactly matches the default image reference, it resolves here with no alias recorded."
     ),
@@ -192,7 +197,8 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "email_mailboxes": (
         "JSON array of mailbox definitions. Each entry supports mailbox_id, provider "
         "(json_store/gmail/graph), account or address, auth_env_var_names/auth_secret_refs, "
-        "folder_mapping, and folder_allowlist_defaults."
+        "folder_mapping, and folder_allowlist_defaults. Graph auth can reference either a legacy "
+        "access token or tenant_id, client_id, and client_secret env vars for automatic renewal."
     ),
     "email_provider_timeout_seconds": (
         "HTTP timeout in seconds for provider-backed email and PR reply clients."

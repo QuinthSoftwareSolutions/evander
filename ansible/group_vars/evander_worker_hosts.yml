@@ -74,6 +74,20 @@ evander_worker_egress_policy_block_cidrs:
   - "169.254.0.0/16"
 evander_worker_read_only_rootfs: false
 evander_worker_tmpfs: []
+# Optional worker-owned ChatGPT subscription support. The same runner image hosts
+# the managed auth app-server, but only its dedicated codex-auth directory is
+# mounted. Set the proxy URL/bind address to an address reachable on the selected
+# private Docker network before selecting chatgpt_subscription for a session.
+evander_worker_codex_auth_image: "{{ evander_runner_image_name }}"
+evander_worker_codex_egress_proxy_url: ""
+evander_worker_codex_egress_proxy_bind_host: ""
+evander_worker_codex_egress_proxy_port: 11889
+evander_worker_codex_egress_hosts:
+  - "auth.openai.com"
+  - "api.openai.com"
+  - "chatgpt.com"
+  - "*.openai.com"
+  - "*.chatgpt.com"
 # Empty means the playbook runs containers as the worker service account uid:gid so
 # capability-dropped containers can still write durable session mounts.
 evander_worker_container_user: ""

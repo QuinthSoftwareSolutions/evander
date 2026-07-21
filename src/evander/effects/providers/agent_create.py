@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from evander.container_worker_images import resolve_container_worker_image_selector
+from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.connectors.models import normalize_connector_grants
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
 from evander.directories import DirectoryStore
@@ -16,6 +17,8 @@ from evander.provider_config import (
 )
 from evander.services import parse_teams_target
 from evander.session_auth import ensure_session_mcp_auth_token
+from evander.admin.services.session_helpers import normalize_email_mailbox_grants
+from evander.models import EmailMailboxAccess, EmailMailboxGrant
 from evander.vm.templates import resolve_libvirt_vm_template_selector
 
 from .agent_session import (
@@ -46,9 +49,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
-        allowed_contact_ids_provided = "allowed_contact_ids" in getattr(
-            effect, "model_fields_set", set()
-        )
+        effect_fields_set = getattr(effect, "model_fields_set", set())
+        allowed_contact_ids_provided = "allowed_contact_ids" in effect_fields_set
+        codex_auth_mode_provided = "codex_auth_mode" in effect_fields_set
         payload = {
             "provider": effect.provider,
             "agent_provider": effect.agent_provider,
@@ -69,6 +72,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "allowed_script_names": effect.allowed_script_names,
             "allowed_contact_ids": effect.allowed_contact_ids,
             "communication_target_ids": effect.communication_target_ids,
+            "email_mailbox_grants": effect.email_mailbox_grants,
             "discord_channels": effect.discord_channels,
             "teams_channel_allowlist": effect.teams_channel_allowlist,
             "teams_chat_allowlist": effect.teams_chat_allowlist,
@@ -93,12 +97,17 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "directory_path": effect.directory_path,
             "metadata": effect.metadata,
         }
+        if codex_auth_mode_provided:
+            payload["codex_auth_mode"] = effect.codex_auth_mode
         if resolved_config:
             resolved_payload = dict(resolved_config)
             if "allowed_contact_ids" in resolved_payload:
                 allowed_contact_ids_provided = True
+            if "codex_auth_mode" in resolved_payload:
+                codex_auth_mode_provided = True
             payload.update(resolved_payload)
         payload["_allowed_contact_ids_provided"] = allowed_contact_ids_provided
+        payload["_codex_auth_mode_provided"] = codex_auth_mode_provided
 
         directory_path = normalize_optional_string(payload.get("directory_path")) or str(
             context.metadata.get("directory_path") or "root"
@@ -212,6 +221,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             config=config,
             directory_path=directory_path,
         )
+        email_mailbox_grants = _agent_email_mailbox_grants(
+            payload,
+            config=config,
+            directory_path=directory_path,
+        )
         connector_grants = _validated_connector_grants(
             context,
             directory_path=directory_path,
@@ -235,6 +249,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
             teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],
             teams_user_allowlist=communication_allowlists["teams_user_allowlist"],
+            communication_target_ids=communication_allowlists["communication_target_ids"],
+            email_mailbox_grants=email_mailbox_grants,
             email_mailboxes=communication_allowlists["email_mailboxes"],
             email_folders=communication_allowlists["email_folders"],
             communication_file_receive_enabled=as_bool_or_none(
@@ -343,6 +359,13 @@ class AgentCreateEffectProvider(EffectProviderBase):
             or existing_agent_provider
             or default_agent_provider_for_config(config)
         )
+        codex_auth_mode = normalize_codex_auth_mode(
+            payload.get("codex_auth_mode")
+            if payload.get("_codex_auth_mode_provided")
+            else getattr(existing_session, "codex_auth_mode", None)
+        )
+        if codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
+            raise ValueError("chatgpt_subscription is supported only for Codex agents")
         container_image_selection = _container_image_selection_for_create(
             selector=normalize_optional_string(payload.get("container_image")),
             config=config,
@@ -393,6 +416,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             config=config,
             directory_path=directory_path,
         )
+        email_mailbox_grants = _agent_email_mailbox_grants(
+            payload,
+            config=config,
+            directory_path=directory_path,
+        )
         connector_grants = _validated_connector_grants(
             context,
             directory_path=directory_path,
@@ -413,6 +441,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             session_id=session_id,
             directory_path=directory_path,
             model=model,
+            codex_auth_mode=codex_auth_mode,
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=resolved_allowed_tools,
             connector_grants=connector_grants,
@@ -423,6 +452,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             teams_channel_allowlist=communication_allowlists["teams_channel_allowlist"],
             teams_chat_allowlist=communication_allowlists["teams_chat_allowlist"],
             teams_user_allowlist=communication_allowlists["teams_user_allowlist"],
+            communication_target_ids=communication_allowlists["communication_target_ids"],
+            email_mailbox_grants=email_mailbox_grants,
             email_mailboxes=communication_allowlists["email_mailboxes"],
             email_folders=communication_allowlists["email_folders"],
             communication_file_receive_enabled=as_bool_or_none(
@@ -563,12 +594,21 @@ def _agent_communication_allowlists(
     teams_user_allowlist = as_string_list(payload.get("teams_user_allowlist")) or []
     email_mailboxes = as_string_list(payload.get("email_mailboxes")) or []
     email_folders = as_string_list(payload.get("email_folders")) or []
+    has_communication_target_ids = "communication_target_ids" in payload
+    communication_target_ids_are_legacy = (
+        has_communication_target_ids and payload.get("communication_target_ids") is None
+    )
     communication_target_ids = [
         target_id.lower()
         for target_id in (as_string_list(payload.get("communication_target_ids")) or [])
     ]
     if not communication_target_ids:
         return {
+            "communication_target_ids": (
+                None
+                if not has_communication_target_ids or communication_target_ids_are_legacy
+                else []
+            ),
             "discord_channels": discord_channels or None,
             "teams_channel_allowlist": teams_channel_allowlist or None,
             "teams_chat_allowlist": teams_chat_allowlist or None,
@@ -586,7 +626,6 @@ def _agent_communication_allowlists(
     selected_teams_channels: list[str] = []
     selected_teams_chats: list[str] = []
     selected_teams_users: list[str] = []
-    selected_email_mailboxes: list[str] = []
     for target_id in communication_target_ids:
         target = targets_by_id.get(target_id)
         if target is None:
@@ -607,13 +646,12 @@ def _agent_communication_allowlists(
                 selected_teams_channels.append(target.id)
             continue
         if target.provider == "email":
-            missing_capabilities = sorted({"read", "write"} - set(target.policy.capabilities))
-            if missing_capabilities:
+            if "write" not in set(target.policy.capabilities):
                 raise ValueError(
                     "effect:agent:create email communication target "
-                    f"{target.id!r} requires both read and write capabilities"
+                    f"{target.id!r} requires write capability"
                 )
-            selected_email_mailboxes.append(_email_mailbox_id_for_target(target))
+            _email_mailbox_id_for_target(target)
             continue
         raise ValueError(
             "effect:agent:create communication_target_ids only supports Teams, Discord, and email "
@@ -621,6 +659,7 @@ def _agent_communication_allowlists(
         )
 
     return {
+        "communication_target_ids": communication_target_ids,
         "discord_channels": _append_unique(discord_channels, selected_discord_channels) or None,
         "teams_channel_allowlist": _append_unique(
             teams_channel_allowlist,
@@ -637,9 +676,55 @@ def _agent_communication_allowlists(
             selected_teams_users,
         )
         or None,
-        "email_mailboxes": _append_unique(email_mailboxes, selected_email_mailboxes) or None,
+        "email_mailboxes": email_mailboxes or None,
         "email_folders": email_folders or None,
     }
+
+
+def _agent_email_mailbox_grants(
+    payload: Mapping[str, Any],
+    *,
+    config: Any,
+    directory_path: str,
+) -> list[EmailMailboxGrant] | None:
+    if "email_mailbox_grants" not in payload:
+        return None
+    grants = normalize_email_mailbox_grants(payload.get("email_mailbox_grants"))
+    if grants is None:
+        return None
+    mailboxes = {mailbox.mailbox_id: mailbox for mailbox in config.email_mailboxes}
+    allowed_mailboxes = set(config.email_mailbox_allowlist)
+    validated: list[EmailMailboxGrant] = []
+    for grant in grants:
+        mailbox = mailboxes.get(grant.mailbox_id)
+        if mailbox is None or grant.mailbox_id not in allowed_mailboxes:
+            raise ValueError(
+                "effect:agent:create email_mailbox_grants contains unavailable mailbox "
+                f"{grant.mailbox_id!r} for directory {directory_path!r}"
+            )
+        folders = (
+            list(grant.folders)
+            if "folders" in grant.model_fields_set
+            else list(mailbox.folder_allowlist_defaults)
+        )
+        allowed_folders = set(
+            config.email_folder_allowlist_by_mailbox.get(
+                grant.mailbox_id, mailbox.folder_allowlist_defaults
+            )
+        )
+        unavailable_folders = sorted(set(folders) - allowed_folders)
+        if unavailable_folders:
+            raise ValueError(
+                "effect:agent:create email_mailbox_grants contains unavailable folders "
+                f"for mailbox {grant.mailbox_id!r}: {', '.join(unavailable_folders)}"
+            )
+        if grant.access == EmailMailboxAccess.SEND and not config.email_send_enabled:
+            raise ValueError(
+                "effect:agent:create cannot grant send access while email send is disabled "
+                f"for directory {directory_path!r}"
+            )
+        validated.append(grant.model_copy(update={"folders": folders}))
+    return validated
 
 
 def _email_mailbox_id_for_target(target: Any) -> str:

@@ -586,7 +586,7 @@ Type-specific keys:
 | `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
-| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `communication_target_ids`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
+| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
@@ -654,6 +654,16 @@ that should use only the worker's shared read-only Git key.
 runtime deep-merges that patch into the created session manifest after built-in
 create metadata such as labels, model, execution backend, and worker URL are
 assembled.
+
+`effect:agent:create.codex_auth_mode` accepts `metered_api` or
+`chatgpt_subscription` for container-worker sessions. Omitting it on an
+existing-agent upsert preserves the session's stored override; omitting it on a
+new session leaves the directory's `container_worker_codex_auth_mode` default
+in effect. `chatgpt_subscription` is valid only for Codex agents and is
+effective only when `model_provider_mode` resolves to `openai_public`.
+`local_openai` and `azure_openai` turns keep their configured private/API-key
+routes without rewriting the stored preference. Missing credentials fail
+closed only when a public Codex turn actually selects subscription mode.
 
 `effect:agent:create` also accepts `vm_image` as a libvirt-only VM template
 selector. The selector resolves against the directory-scoped `vm.json`
@@ -1328,7 +1338,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `default_session_ttl_seconds` | legacy gateway YAML | `src/evander/cli.py` session creation defaults. |
 | `bind_network_cidr` | legacy gateway YAML | `src/evander/config.py` validation/normalization (policy-bound network constraints). |
 | `gateway_url` | legacy gateway YAML | `src/evander/cli.py` health checks / external endpoint references. |
-| `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
+| `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_codex_auth_mode`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_codex_auth_mode` defaults to `metered_api` and is inherited only by Codex sessions. `chatgpt_subscription` selects the worker-owned account only for public OpenAI container Codex turns; local and Azure routes use their configured private/API-key path without clearing the stored selection. A public subscription turn fails closed when the account is unavailable. A session override applies on its next turn without replacing the session. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
 | `agent_consultation_profiles`, `agent_consultation_default_profile`, `agent_consultation_max_wait_seconds`, `agent_consultation_retention_days`, `agent_consultation_token_secret_env` | root or directory `providers.json` | Request-scoped `consult_codebase` workers. Each named profile requires `model`, is restricted to `container_worker_vm`, and may set `agent_provider`, `model_provider_mode`, `container_image`, `timeout_seconds`, and `max_concurrency`. The gateway pins a managed-Git commit, persists the request, and returns after the bounded wait; the hidden system workflow creates and cleans up the worker. The token field names a host env var and defaults to `AGENT_PROMPT_TOKEN_SECRET`; it never contains the secret itself. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex/Claude model relays, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
@@ -1337,6 +1347,11 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number`, `inbound_phone_routes` | root or directory `providers.json` | `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and `src/evander/gateway.py` for host-side phone calls. |
 | `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/evander/directory_config.py`, `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
 | `redacted_keys` | legacy gateway YAML (optional) | `src/evander/gateway.py` request/response redaction in logs. |
+
+The worker ChatGPT account is not directory-scoped. Admin Web account status, device-login
+start/status/cancellation, and logout require both an unlocked privileged-operations session and
+`admin.owner` permission at `root`, even when the worker connection is resolved from another
+directory's provider configuration.
 
 ### OpenAI relay keys
 
@@ -1550,7 +1565,7 @@ aliases for the same provisioned environment.
 | `email_mailboxes[].mailbox_id` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/policy.py`, validation in `src/evander/config.py`. |
 | `email_mailboxes[].provider` | legacy gateway YAML | `src/evander/runtime.py` provider type dispatch (`json_store`/`gmail`/`graph`). |
 | `email_mailboxes[].account_identifier` (`account`/`address` aliases) | legacy gateway YAML | `src/evander/email/gmail_provider.py`, `src/evander/email/graph_provider.py`. |
-| `email_mailboxes[].auth_secret_refs` (`auth_env_var_names` alias) | legacy gateway YAML | `src/evander/runtime.py` + provider token resolution. |
+| `email_mailboxes[].auth_secret_refs` (`auth_env_var_names` alias) | legacy gateway YAML | Host env-var references used by provider token resolution. Gmail supports `access_token`. Graph supports either compatibility `access_token` or automatic client credentials through `tenant_id`, `client_id`, and `client_secret`. |
 | `email_mailboxes[].folder_mapping` | legacy gateway YAML | Gmail/Graph provider folder mapping. |
 | `email_mailboxes[].folder_allowlist_defaults` | legacy gateway YAML | Defaulting logic in `src/evander/config.py`. |
 | `email_mailbox_allowlist` | legacy gateway YAML | `src/evander/cli.py` session manifest policy surface. |
@@ -1821,17 +1836,24 @@ that feeds `trigger:teams:new-message` for both channel threads and group chats,
 `trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids,
 UPNs, or mail addresses.
 
-Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or
-directory-scoped communication target IDs in their communication allowlists. Declared target IDs are
+Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or the
+canonical nullable `communication_target_ids` field. Declared target IDs are
 resolved at use time from the session directory, take precedence over raw IDs when a value collides,
 and must expose the capability required by the operation: `read` for message reads, inbound
 trigger polling, and attachment list/download; `write` for top-level sends; and `reply` for thread
 replies and reactions. Raw legacy IDs keep the existing allowlist behavior.
-`effect:agent:create.communication_target_ids` is an additive shorthand for known Teams, Discord,
-and mailbox-backed email targets in the session directory. The workflow editor presents it as a
-catalogue-backed multi-select, and execution maps the selected target IDs into the existing Discord,
-Teams channel/chat/user, or email mailbox allowlist fields. Email target folders still resolve from
-the effective email policy defaults unless `email_folders` is provided directly.
+`communication_target_ids` grants messaging destinations: Teams and Discord targets plus outbound
+email recipient targets. An email target does not grant access to the mailbox named by its auth
+profile. `email_mailbox_grants` grants mailbox-account access separately. Each entry contains
+`mailbox_id`, `access` (`read`, `draft`, or `send`), and `folders`; draft/send grants require the
+logical `drafts` folder. Sending email requires a send-capable mailbox grant and a write-capable
+email target for every recipient whose auth profile names that same mailbox. Creating a draft needs
+the mailbox grant but no send target, so an agent can prepare a draft for human handoff.
+
+Both canonical fields are nullable for compatibility. Missing or `null` retains the legacy
+allowlist behavior; an explicit empty list grants no targets or mailboxes. Existing sessions are not
+converted implicitly. Admin Web labels legacy sessions and converts them only after an explicit
+operator action.
 
 Teams channel targets can still be declared directly with `teams_channel_allowlist`, Teams chat
 targets with `teams_chat_allowlist`, and one-on-one user send targets with
@@ -1875,7 +1897,7 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 | `MSSQL_SA_PASSWORD` | `src/evander/cli.py`, `scripts/setup_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
 | `EVANDER_MODEL_PRICING_PATH` | `src/evander/model_usage/pricing.py` and Admin Web Configuration | Optional override for the operator-owned model pricing catalog used by `query:model-usage:list` cost estimates. Defaults to `model-pricing.openai.json` under the configured runtime directory; `evander-cli init-state` seeds it from `config/model-pricing.openai.json.example`, and Admin Web displays and edits the active runtime catalog after privileged unlock with revision checks. The legacy tracked `config/model-pricing.openai.json` file is retained only for upgrade compatibility and is not active by default. |
 | `EVANDER_ADMIN_WEB_PAGE_TITLE`, `EVANDER_ADMIN_WEB_HEADER_TITLE`, `EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE`, `EVANDER_ADMIN_WEB_HEADER_LOGO_SIZE`, `EVANDER_ADMIN_WEB_*_LOGO_*`, `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` | `config/admin-web.env` | Optional Admin Web branding. The Python service exposes `/api/admin/branding` and `/api/admin/branding/assets/...`; the React shell uses them for the browser title, header title, header logo, product logo, sign-in company logo, and optional wordmark-style header presentation without rebuilding per environment. |
-| Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/evander/runtime.py`, `src/evander/email/gmail_provider.py`, `src/evander/email/graph_provider.py`. |
+| Provider mailbox OAuth values (`GMAIL_*_ACCESS_TOKEN`; Graph tenant/client/secret values; legacy `GRAPH_*_ACCESS_TOKEN`) | Referenced indirectly in effective root directory config under `auth_secret_refs` | `src/evander/runtime.py`, `src/evander/email/gmail_provider.py`, `src/evander/email/graph_provider.py`. Graph client credentials are exchanged and cached host-side; static Graph access tokens remain a compatibility mode. |
 | Teams delegated Graph token env name (`teams_graph_access_token_env`, default `GRAPH_TEAMS_ACCESS_TOKEN`) | Referenced indirectly in effective provider config under `teams_graph_access_token_env` | `src/evander/runtime.py`, `src/evander/services.py`. |
 
 For issue setup, the Git SSH host/user/alias, `AGENT_DEFAULT_MODEL`, and

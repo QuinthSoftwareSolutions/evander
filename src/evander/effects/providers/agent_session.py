@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
+from evander.codex_auth import (
+    CodexAuthMode,
+    CodexTurnSpec,
+    effective_codex_auth_mode,
+    normalize_codex_auth_mode,
+)
 from evander.config import GatewayConfig
 from evander.directory_config import ContactDirectoryConfig
 from evander.runtime import allowed_tools_for_capability_profile
@@ -26,6 +32,8 @@ from evander.execution import (
     build_execution_backend,
 )
 from evander.models import (
+    EmailMailboxAccess,
+    EmailMailboxGrant,
     McpToolName,
     SessionManifest,
     ToolName,
@@ -449,6 +457,7 @@ def build_container_session_manifest(
     session_id: str,
     directory_path: str,
     model: str | None,
+    codex_auth_mode: CodexAuthMode | None = None,
     ttl_hours: int | None,
     allowed_tools: list[str] | None,
     connector_grants: dict[str, list[str]] | None = None,
@@ -459,6 +468,8 @@ def build_container_session_manifest(
     teams_channel_allowlist: list[str] | None = None,
     teams_chat_allowlist: list[str] | None = None,
     teams_user_allowlist: list[str] | None = None,
+    communication_target_ids: list[str] | None = None,
+    email_mailbox_grants: list[EmailMailboxGrant] | None = None,
     email_mailboxes: list[str] | None,
     email_folders: list[str] | None,
     communication_file_receive_enabled: bool | None = None,
@@ -487,16 +498,28 @@ def build_container_session_manifest(
         ):
             if tool not in resolved_tools:
                 resolved_tools.append(tool)
-    email_requested = bool(email_mailboxes or email_folders)
+    email_requested = (
+        bool(email_mailbox_grants)
+        if email_mailbox_grants is not None
+        else bool(email_mailboxes or email_folders)
+    )
     if email_requested:
         for tool in (
             ToolName.EMAIL_LIST_UNREAD,
             ToolName.EMAIL_GET_MESSAGE,
-            ToolName.EMAIL_CREATE_DRAFT,
         ):
             if tool not in resolved_tools:
                 resolved_tools.append(tool)
-        if config.email_send_enabled:
+        if email_mailbox_grants is None or any(
+            grant.access in {EmailMailboxAccess.DRAFT, EmailMailboxAccess.SEND}
+            for grant in email_mailbox_grants
+        ):
+            if ToolName.EMAIL_CREATE_DRAFT not in resolved_tools:
+                resolved_tools.append(ToolName.EMAIL_CREATE_DRAFT)
+        if config.email_send_enabled and (
+            email_mailbox_grants is None
+            or any(grant.access == EmailMailboxAccess.SEND for grant in email_mailbox_grants)
+        ):
             for tool in (ToolName.EMAIL_SEND, ToolName.EMAIL_SEND_APPROVED):
                 if tool not in resolved_tools:
                     resolved_tools.append(tool)
@@ -504,25 +527,38 @@ def build_container_session_manifest(
     resolved_teams_channel_allowlist = normalize_teams_channel_allowlist(teams_channel_allowlist)
     resolved_teams_chat_allowlist = normalize_teams_chat_allowlist(teams_chat_allowlist)
     resolved_teams_user_allowlist = normalize_teams_user_allowlist(teams_user_allowlist)
-    resolved_email_mailboxes = email_mailboxes or (
-        config.email_mailbox_allowlist if email_requested else []
+    resolved_email_mailboxes = (
+        [grant.mailbox_id for grant in email_mailbox_grants]
+        if email_mailbox_grants is not None
+        else email_mailboxes or (config.email_mailbox_allowlist if email_requested else [])
     )
-    resolved_email_folders = email_folders or (
-        sorted(
-            {
-                folder
-                for folders in config.email_folder_allowlist_by_mailbox.values()
-                for folder in folders
-            }
+    resolved_email_folder_map = (
+        {grant.mailbox_id: list(grant.folders) for grant in email_mailbox_grants}
+        if email_mailbox_grants is not None
+        else config.email_folder_allowlist_by_mailbox
+    )
+    resolved_email_folders = (
+        sorted({folder for grant in email_mailbox_grants for folder in grant.folders})
+        if email_mailbox_grants is not None
+        else email_folders
+        or (
+            sorted(
+                {
+                    folder
+                    for folders in config.email_folder_allowlist_by_mailbox.values()
+                    for folder in folders
+                }
+            )
+            if email_requested
+            else []
         )
-        if email_requested
-        else []
     )
     return SessionManifest(
         session_id=session_id,
         vm_id=None,
         vm_provider=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
         model=model,
+        codex_auth_mode=codex_auth_mode,
         directory_path=directory_path,
         allowed_tools=resolved_tools,
         connector_grants=connector_grants or {},
@@ -534,9 +570,11 @@ def build_container_session_manifest(
         teams_channel_allowlist=resolved_teams_channel_allowlist,
         teams_chat_allowlist=resolved_teams_chat_allowlist,
         teams_user_allowlist=resolved_teams_user_allowlist,
+        communication_target_ids=communication_target_ids,
+        email_mailbox_grants=email_mailbox_grants,
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
-        email_folder_allowlist_by_mailbox=config.email_folder_allowlist_by_mailbox,
+        email_folder_allowlist_by_mailbox=resolved_email_folder_map,
         email_draft_recipient_allowlist=config.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=config.email_draft_domain_allowlist,
         email_send_enabled=config.email_send_enabled,
@@ -1015,6 +1053,50 @@ def container_prompt_command(
         + _codex_optional_feature_args_shell()
         + _shell_join_with_codex_optional_feature_args(args)
         + " | evander_codex_json_to_log\n"
+    )
+
+
+def container_codex_turn_spec(
+    *,
+    prompt: str,
+    model: str,
+    resume_thread_id: str | None,
+    session: object | None,
+    config: GatewayConfig,
+    agent_provider: str | None = None,
+    resume_mode: str | None = None,
+    mcp_gateway_url: str | None = None,
+    web_search_enabled: bool = False,
+) -> CodexTurnSpec | None:
+    provider = normalize_optional_string(agent_provider) or "codex"
+    if provider != "codex":
+        # Directory Codex defaults do not apply to other agent harnesses. A
+        # session-level value is an explicit override and remains invalid.
+        explicit_auth_mode = normalize_codex_auth_mode(
+            getattr(session, "codex_auth_mode", None) if session is not None else None
+        )
+        if explicit_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION:
+            raise ValueError("chatgpt_subscription is supported only for Codex agents")
+        return None
+    auth_mode = effective_codex_auth_mode(session=session, config=config)
+    metadata = getattr(session, "metadata", {}) if session is not None else {}
+    model_provider_mode = (
+        normalize_optional_string(metadata.get("model_provider_mode"))
+        if isinstance(metadata, Mapping)
+        else None
+    ) or normalize_optional_string(getattr(config, "model_provider_mode", None))
+    if model_provider_mode != "openai_public":
+        # Subscription tokens are valid only for the public OpenAI route. Keep
+        # local/Azure traffic on its configured private endpoint and API-key mode.
+        auth_mode = CodexAuthMode.METERED_API
+    return CodexTurnSpec(
+        auth_mode=auth_mode,
+        prompt=prompt,
+        model=model,
+        resume_thread_id=_container_resume_thread_id(resume_thread_id),
+        resume_mode=("same_context" if resume_mode == "same_context" else "new_context"),
+        mcp_gateway_url=mcp_gateway_url,
+        web_search_enabled=web_search_enabled,
     )
 
 

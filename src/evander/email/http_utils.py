@@ -35,6 +35,7 @@ def request_with_retries(
     url: str,
     headers: dict[str, str] | None = None,
     params: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
     json: dict[str, Any] | None = None,
     max_attempts: int = 4,
     base_backoff_seconds: float = 0.25,
@@ -56,6 +57,7 @@ def request_with_retries(
                 for key, value in {
                     "headers": headers,
                     "params": params,
+                    "data": data,
                     "json": json,
                 }.items()
                 if value is not None

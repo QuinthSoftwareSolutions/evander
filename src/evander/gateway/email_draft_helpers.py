@@ -142,8 +142,7 @@ class EmailDraftHelpers:
         subject: str | None = None,
         artifact_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        self.context.policy.require_email_send_enabled(session)
-        self.context.policy.require_email_mailbox(session, mailbox_id)
+        self.context.policy.require_email_send_enabled(session, mailbox_id)
         self.context.policy.require_draft_recipients(session, recipients)
         snapshot = self.load_email_draft_snapshot(
             session_id=session_id, mailbox_id=mailbox_id, draft_id=draft_id
@@ -153,6 +152,11 @@ class EmailDraftHelpers:
             recipients=recipients,
             subject=subject,
             artifact_ids=artifact_ids,
+        )
+        matched_target_ids = self.context.policy.require_email_send_targets(
+            session,
+            mailbox_id,
+            list(snapshot.recipients),
         )
         result = self.context.email_service_for_session(session_id).send_draft(
             mailbox_id=mailbox_id,
@@ -166,6 +170,8 @@ class EmailDraftHelpers:
         )
         output = result.model_dump(mode="json")
         output["recipients"] = list(snapshot.recipients)
+        if session.communication_target_ids is not None:
+            output["communication_target_ids"] = matched_target_ids
         if artifact_ids is not None:
             output["artifact_ids"] = list(artifact_ids)
         return output

@@ -23,7 +23,7 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "Authorization: Bearer <EVANDER_WORKER_TOKEN>" in docs
     assert "--security-opt no-new-privileges" in docs
     assert "--sandbox-profile strict" in docs
-    assert "--tmpfs /tmp:rw,noexec,nosuid,size=512m" in docs
+    assert "--tmpfs /tmp:rw,noexec,nosuid,size=4g" in docs
     assert "Phase 5 first slice" in docs
     assert "single-worker" in docs
     assert "evander_worker_egress_policy_enabled" in docs
@@ -78,6 +78,14 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "approved refs must already be present on the worker VM" in docs
     assert "worker-side remote manifest comparison" in docs
     assert "tar-copy/load deployment model" in docs
+    assert "## Codex ChatGPT Subscription Authentication" in docs
+    assert "<worker-root>/codex-auth/auth.json" in docs
+    assert "<worker-root>/codex-auth/.broker.lock" in docs
+    assert "never\nfalls back from subscription mode to metered usage" in docs
+    assert "experimental external-auth API" in docs
+    assert "evander_worker_codex_egress_proxy_url" in docs
+    assert "HTTP_PROXY`/`HTTPS_PROXY" in docs
+    assert "DELETE /v1/codex-auth" in docs
 
 
 def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() -> None:

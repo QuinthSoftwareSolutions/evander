@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+import re
 from pathlib import Path
 from types import UnionType
 from typing import Any, get_args, get_origin
@@ -133,6 +134,7 @@ _CONTAINER_WORKER_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "container_worker_job_timeout_seconds"),
     ("providers", "container_worker_request_timeout_seconds"),
     ("providers", "container_worker_workspace_persistence"),
+    ("providers", "container_worker_codex_auth_mode"),
     ("providers", "container_worker_guest_openai_base_url"),
     ("providers", "container_worker_guest_anthropic_base_url"),
     ("providers", "container_worker_guest_gateway_url"),
@@ -288,6 +290,7 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "openai_realtime_api_base_url"): "OpenAI Realtime API base URL",
     ("providers", "container_worker_images"): "Approved container image catalog",
     ("providers", "container_worker_guest_openai_base_url"): ("Container-visible OpenAI base URL"),
+    ("providers", "container_worker_codex_auth_mode"): "Default Codex auth mode",
     ("providers", "communication_artifact_public_base_url"): (
         "Communication artifact public base URL"
     ),
@@ -872,6 +875,11 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
     return None
 
 
+def _directory_config_section_key(title: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", title.casefold()).strip("-")
+    return normalized or "section"
+
+
 def _approval_notification_target_options(
     service: AdminRuntimeComponents, directory_path: str
 ) -> tuple[str, ...]:
@@ -965,6 +973,7 @@ def _directory_tab_metadata(
     for title, field_sources, prefixes in _DIRECTORY_CONFIG_TAB_SECTIONS.get(tab_key, ()):
         sections.append(
             {
+                "key": _directory_config_section_key(title),
                 "title": title,
                 "fields": [
                     _directory_config_field_metadata(
@@ -982,6 +991,9 @@ def _directory_tab_metadata(
     if not sections:
         sections = [
             {
+                "key": _directory_config_section_key(
+                    _DIRECTORY_CONFIG_UI_TAB_TITLES.get(tab_key, tab_key)
+                ),
                 "title": _DIRECTORY_CONFIG_UI_TAB_TITLES.get(tab_key, tab_key),
                 "fields": [
                     _directory_config_field_metadata(

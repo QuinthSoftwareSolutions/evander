@@ -6,20 +6,25 @@ from pathlib import Path
 from evander.admin.composition import build_admin_runtime
 
 
-def _write_gateway_config(tmp_path: Path) -> Path:
+def _write_gateway_config(tmp_path: Path, *, addon_module: str | None = None) -> Path:
     runtime_dir = tmp_path / "runtime"
     config_path = tmp_path / "gateway.yaml"
-    config_path.write_text(
-        "\n".join(
+    lines = [
+        f'runtime_dir: "{runtime_dir}"',
+        f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
+        f'session_store_path: "{runtime_dir / "sessions.json"}"',
+        f'approval_store_path: "{runtime_dir / "approvals.json"}"',
+    ]
+    if addon_module:
+        lines.extend(
             [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
+                "addon_loader:",
+                "  modules:",
+                f'    - "{addon_module}"',
+                "  enabled_entry_points: false",
             ]
-        ),
-        encoding="utf-8",
-    )
+        )
+    config_path.write_text("\n".join(lines), encoding="utf-8")
     return config_path
 
 
@@ -198,3 +203,37 @@ def test_workflow_editor_catalog_uses_loader_settings_when_workflow_config_is_in
     nodes = {node["type"]: node for node in catalog_payload["nodes"]}
     assert "trigger:cron" in nodes
     assert "effect:team:wake-due-agents" in nodes
+
+
+def test_workflow_editor_tool_selectors_include_enabled_addon_tools(tmp_path: Path) -> None:
+    _write_trigger_config(tmp_path, enable_team_addon=False)
+    runtime = build_admin_runtime(
+        _write_gateway_config(tmp_path, addon_module="evander_bokio_addon")
+    )
+
+    payload = runtime.workflow_config_admin.read_workflow_editor_catalog(
+        directory_path="root"
+    ).model_dump(mode="json")
+    nodes = {node["type"]: node for node in payload["nodes"]}
+    agent_create_fields = {
+        field["key"]: field for field in nodes["effect:agent:create"]["fields"]
+    }
+    approve_fields = {
+        field["key"]: field
+        for field in nodes["effect:session:approve-mcp-tools-for-run"]["fields"]
+    }
+    allowed_tools = {
+        option["value"]: option for option in agent_create_fields["allowed_tools"]["options"]
+    }
+    approval_tools = {
+        option["value"]: option for option in approve_fields["tools"]["options"]
+    }
+
+    assert allowed_tools["bokio_create_supplier_invoice"]["metadata"] == {
+        "tool_group": "Bokio",
+        "provider": "bokio-addon",
+        "addon_id": "bokio-addon",
+    }
+    assert approval_tools["bokio_create_supplier_invoice"] == allowed_tools[
+        "bokio_create_supplier_invoice"
+    ]

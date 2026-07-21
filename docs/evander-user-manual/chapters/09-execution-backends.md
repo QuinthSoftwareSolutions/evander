@@ -73,6 +73,7 @@ An operator can use the first column to describe the symptom. The remaining colu
 | Wrong image or toolchain | The session recorded a different image alias/ref, or the worker cache is incomplete. | Inspect session metadata and the worker image catalog; do not change the catalog and assume an existing session changed. |
 | `cleanup_failed` | Worker deletion did not complete. | Preserve the record, inspect its cleanup error, retry after fixing reachability or worker state. |
 | Model unavailable | The provider rejected the configured model before useful work. | Inspect sanitized wake/job failure metadata and the directory/session model override. |
+| ChatGPT subscription turn says the account is not signed in | The session selected the worker's subscription account, but the broker has no usable login. | Ask a root owner to inspect the worker account; do not switch silently to a metered credential. |
 | VM starts but guest tools are stale | Optional bootstrap state no longer matches the host. | Re-run the relevant idempotent bootstrap script. |
 
 ## Troubleshooting: what to hand to an administrator
@@ -146,7 +147,41 @@ Container sessions are configured by mounting their durable agent home, not by r
 
 The default security posture is no general container network. A non-`none` Docker network mode is valid only when the worker deployment explicitly enables its egress policy and supplies an allowlist. The current backend does not provide worker scheduling, autoscaling, Kubernetes, general secret transport, or a general internet path. The worker bearer token stays on the control plane. Provider keys stay behind host relays.
 
+An optional ChatGPT subscription account follows the same host-ownership principle but uses a
+worker-local broker and restricted HTTPS proxy instead of putting the account or a provider key in
+the container. It does not turn the container network into a general public route.
+
 SQL Server is also intentionally separate. `effect:agent:create` rejects the VM-style `mssql=true` and `mssql_init_root` options for container sessions. Container agents use the worker-host SQL Server through the scoped MCP provisioning operations `mssql_provision_database`, `mssql_list_databases`, and `mssql_drop_database`.
+
+### Codex metered API and ChatGPT subscription usage
+
+Container-worker Codex sessions can choose between `metered_api` and `chatgpt_subscription`.
+`container_worker_codex_auth_mode` supplies the directory-resolved default, while a session's
+nullable `codex_auth_mode` is an explicit override. The setting applies only to Codex on
+`container_worker_vm`; it is not a Claude default and subscription mode is rejected as an explicit
+Claude override. Changing an existing session's selection takes effect on its next turn and keeps
+the existing Codex thread history.
+
+The subscription selection is effective only for a turn whose model provider mode is
+`openai_public`. A local OpenAI-compatible or Azure OpenAI turn keeps using its configured private
+endpoint and API-key route even when the stored session preference says `chatgpt_subscription`.
+Evander does not rewrite that preference, so a later public-OpenAI turn can use it. Chapter 10
+describes the network-routing distinction.
+
+There is one signed-in ChatGPT account per worker, shared by every subscription-mode agent on that
+worker. The worker auth broker is the sole durable writer of its `auth.json`, holds an exclusive
+ownership lock, and serializes login, logout, account reads, and token refresh. Concurrent refresh
+requests are coalesced. Each disposable job authenticates its own Codex app-server from an
+in-memory external-token snapshot; it receives no account-file mount, token environment variable,
+command-line token, or persisted account metadata. Public HTTPS goes only through the worker's
+allowlisted CONNECT proxy, while the ordinary container egress policy remains default-deny.
+
+This path fails closed. If the worker account is absent, logged out, cannot refresh, or the broker
+cannot prove exclusive ownership, a subscription turn fails instead of falling back to metered API
+use. Login start, cancellation, and logout are audited. Because the account is worker-global,
+Admin Web account controls require an authenticated operator, an unlocked privileged-operations
+session, and effective `admin.owner` permission at `root`; ownership of one child directory is not
+enough.
 
 ## Administrator reference: persistence and cleanup
 
@@ -185,6 +220,12 @@ evander-cli execution logs <execution-or-session-id>
 
 `execution start-container-job` and `smoke-container-worker` explicitly construct the container backend. The generic `status`, `logs`, `stop`, and `destroy` commands infer it only when the target is present in the container execution mapping, unless `--backend container_worker_vm` is supplied. These commands never change the configured default backend.
 
+For subscription-mode Codex, a root owner should also open **Agents → Worker ChatGPT
+subscription**, verify the worker account status, and complete device login when required. Verify
+that worker egress policy allows only the configured subscription proxy and that the proxy's
+OpenAI/ChatGPT hostname allowlist is current. Do not copy the broker's account file into a job for
+diagnosis; a missing login is meant to fail closed.
+
 When cleanup fails:
 
 1. Record the session ID, execution ID, worker job ID, last observed status, and cleanup error.
@@ -200,7 +241,15 @@ For deployment details and a deeper worker security checklist, continue with `do
 - `src/evander/execution/backend.py` and `src/evander/execution/models.py` — shared backend protocol, execution specification, handles, and status model.
 - `src/evander/execution/libvirt_backend.py` — libvirt adapter and power-state normalization.
 - `src/evander/execution/container_worker_backend.py` and `src/evander/execution/container_worker_repository.py` — worker requests, durable mappings, logs, and cleanup outcomes.
+- `src/evander/codex_auth.py`, `src/evander/worker/codex_auth_broker.py`,
+  `src/evander/worker/codex_subscription.py`, and `src/evander/worker/codex_egress_proxy.py` —
+  effective auth selection, single-writer account ownership, external job authentication, and
+  restricted subscription traffic.
+- `src/evander/admin/web/codex_auth.py` — root-owner account-management boundary and audit events.
 - `src/evander/effects/providers/agent_create.py`, `agent_clone_repo.py`, `agent_prompt.py`, and `agent_destroy.py` — portable agent lifecycle dispatch.
 - `src/evander/worker/` and `ansible/worker.yml` — worker API, Docker runtime, durable store, sandbox policy, and deployment.
 - `docs/execution-backends.md`, `docs/container-worker-backend.md`, and `docs/libvirt-vm-template-operations.md` — supported operator contracts.
-- `tests/test_libvirt_execution_backend.py`, `tests/test_container_worker_execution_backend.py`, `tests/test_worker_daemon.py`, and `tests/test_vm_to_container_migration.py` — backend and migration behavior.
+- `tests/test_libvirt_execution_backend.py`, `tests/test_container_worker_execution_backend.py`,
+  `tests/test_worker_daemon.py`, `tests/test_codex_auth_modes.py`,
+  `tests/test_codex_auth_broker.py`, and `tests/test_vm_to_container_migration.py` — backend,
+  subscription-auth, and migration behavior.

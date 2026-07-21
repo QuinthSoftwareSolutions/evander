@@ -200,6 +200,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     labels: ConfigValue | None = None
     model: ConfigValue | None = None
     model_provider_mode: ConfigValue | None = None
+    codex_auth_mode: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     vm_image: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None
@@ -210,6 +211,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     allowed_script_names: list[str] | None = None
     allowed_contact_ids: list[str] | None = None
     communication_target_ids: list[str] | None = None
+    email_mailbox_grants: ConfigValue | None = None
     discord_channels: list[str] | None = None
     teams_channel_allowlist: list[str] | None = None
     teams_chat_allowlist: list[str] | None = None

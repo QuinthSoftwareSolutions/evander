@@ -51,6 +51,7 @@ from evander.admin.web.rbac import (
     OWNER_GROUP_ID,
     TEAM_CHATS_READ_ALL_PERMISSION,
     WORKFLOW_PACKS_MANAGE_PERMISSION,
+    WORKFLOW_MAINTAINER_GROUP_ID,
     WORKFLOWS_READ_PERMISSION,
     WORKFLOWS_WRITE_PERMISSION,
     WORKFLOW_RUNS_CONTROL_PERMISSION,
@@ -1734,6 +1735,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "labels",
         "model",
         "model_provider_mode",
+        "codex_auth_mode",
         "vm_user",
         "vm_image",
         "ttl_hours",
@@ -1742,6 +1744,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "tool_argument_policies",
         "allowed_script_names",
         "communication_target_ids",
+        "email_mailbox_grants",
         "discord_channels",
         "teams_channel_allowlist",
         "teams_chat_allowlist",
@@ -2289,6 +2292,7 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     assert set(trigger_read_ops) == set(message_read_ops)
     assert set(agent_create_root) == {
         "mail-read-write",
+        "mail-write",
         "root-chat",
         "root-discord-reply-only",
         "root-read-chat",
@@ -2296,6 +2300,7 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     }
     assert set(agent_create_ops) == {
         "mail-read-write",
+        "mail-write",
         "root-discord-reply-only",
         "root-read-chat",
         "root-read-discord",
@@ -2311,7 +2316,7 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
         "communication_target_ids",
     )
     assert agent_create_targets_field["kind"] == "string_list"
-    assert "directory communication target catalogue" in agent_create_targets_field["description"]
+    assert "does not grant mailbox account access" in agent_create_targets_field["description"]
 
     root_chat = send_root["root-chat"]
     assert root_chat["metadata"]["provider"] == "teams"
@@ -4106,6 +4111,150 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
     assert generate_denied.json()["error"] == "Permission required: workflows.write"
     assert save_denied.status_code == 403
     assert save_denied.json()["error"] == "Permission required: workflows.write"
+
+
+def test_admin_web_workflow_target_catalog_uses_workflow_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    service.directory_admin.create_child(parent="root", name="finance")
+    for session_id, vm_id, directory_path in (
+        ("ops-session", "ops-vm", "root/ops"),
+        ("finance-session", "finance-vm", "root/finance"),
+    ):
+        service.runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                vm_id=vm_id,
+                directory_path=directory_path,
+                allowed_tools=[],
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+
+    def list_vms(self, **kwargs):
+        del self
+        assert kwargs == {
+            "include_inactive": True,
+            "directory_path": "root/ops",
+            "direct_only": False,
+        }
+        return [
+            VmSummary(
+                vm_name="ops-vm",
+                directory_paths=["root/ops"],
+                power_state="running",
+                agent_state="idle",
+            )
+        ]
+
+    monkeypatch.setattr(
+        service.vm_agent_admin, "list_vms", MethodType(list_vms, service.vm_agent_admin)
+    )
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin", display_name="Owner")
+    store.upsert_user(login="maintainer@example.com", role="regular", display_name="Maintainer")
+    store.remove_user_group_assignment(
+        login="maintainer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="maintainer@example.com",
+        group_id=WORKFLOW_MAINTAINER_GROUP_ID,
+        directory_path="root/ops",
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(service)
+    client = TestClient(app)
+    _complete_azure_login(app, client, login="maintainer@example.com", display_name="Maintainer")
+
+    owner_only_sessions = client.get(
+        "/api/admin/sessions", params={"directory_path": "root/ops", "include_expired": "true"}
+    )
+    allowed = client.get("/api/workflow-editor/target-catalog?directory_path=root/ops")
+    denied = client.get("/api/workflow-editor/target-catalog?directory_path=root/finance")
+
+    assert owner_only_sessions.status_code == 403
+    assert allowed.status_code == 200
+    assert allowed.json() == {
+        "sessions": [{"session_id": "ops-session", "is_expired": False}],
+        "vms": [{"vm_name": "ops-vm"}],
+    }
+    assert denied.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("failed_source", "expected_payload"),
+    [
+        (
+            "sessions",
+            {
+                "sessions": [],
+                "vms": [{"vm_name": "root-vm"}],
+            },
+        ),
+        (
+            "vms",
+            {
+                "sessions": [{"session_id": "root-session", "is_expired": False}],
+                "vms": [],
+            },
+        ),
+    ],
+)
+def test_admin_web_workflow_target_catalog_preserves_partial_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_source: str,
+    expected_payload: dict[str, object],
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="root-session",
+            vm_id="root-vm",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    original_list_sessions = service.vm_agent_admin.list_sessions
+
+    def list_sessions(self, **kwargs):
+        del self
+        if failed_source == "sessions":
+            raise RuntimeError("session inventory unavailable")
+        return original_list_sessions(**kwargs)
+
+    def list_vms(self, **kwargs):
+        del self, kwargs
+        if failed_source == "vms":
+            raise RuntimeError("VM inventory unavailable")
+        return [
+            VmSummary(
+                vm_name="root-vm",
+                directory_paths=["root"],
+                power_state="running",
+                agent_state="idle",
+            )
+        ]
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_sessions",
+        MethodType(list_sessions, service.vm_agent_admin),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(list_vms, service.vm_agent_admin),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/workflow-editor/target-catalog?directory_path=root")
+
+    assert response.status_code == 200
+    assert response.json() == expected_payload
 
 
 def test_admin_web_workflow_run_routes_enforce_directory_permissions(
@@ -11176,6 +11325,26 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert isinstance(payload["snapshots"]["providers"]["revision"], str)
     people = next(tab for tab in payload["tabs"] if tab["key"] == "people_communications")
     assert people["title"] == "People & Communications"
+    for tab in payload["tabs"]:
+        section_keys = [section["key"] for section in tab["sections"]]
+        assert section_keys
+        assert len(section_keys) == len(set(section_keys))
+        assert all(
+            section_key and section_key == section_key.casefold()
+            for section_key in section_keys
+        )
+    assert [section["key"] for section in people["sections"]] == [
+        "contacts",
+        "communication-targets",
+        "approval-notification-targets",
+        "discord",
+        "teams",
+        "email-mailboxes",
+        "email-access-and-sending-policy",
+        "phone-calls",
+        "communication-files",
+        "communication-artifact-links",
+    ]
     assert {section["title"] for section in people["sections"]} == {
         "Contacts",
         "Communication targets",
@@ -11189,6 +11358,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "Communication artifact links",
     }
     contacts = next(section for section in people["sections"] if section["title"] == "Contacts")
+    assert contacts["key"] == "contacts"
     assert {field["field_name"] for field in contacts["fields"]} == {"contacts"}
     communication_targets = next(
         section for section in people["sections"] if section["title"] == "Communication targets"
@@ -14309,7 +14479,9 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1", "ops-teams"],
         "teams_chat_allowlist": None,
         "teams_user_allowlist": None,
-        "email_mailboxes": ["default", "ops"],
+        "communication_target_ids": ["ops-teams", "ops-email"],
+        "email_mailbox_grants": None,
+        "email_mailboxes": ["default"],
         "email_folders": ["inbox"],
         "communication_file_receive_enabled": True,
         "communication_file_send_enabled": True,
@@ -14334,19 +14506,12 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
     }
 
 
-@pytest.mark.parametrize(
-    ("target_id", "capabilities"),
-    [
-        ("ops-email-read", ["read"]),
-        ("ops-email-write", ["write"]),
-    ],
-)
-def test_admin_web_agents_create_rejects_capability_limited_email_targets(
+def test_admin_web_agents_create_rejects_read_only_email_target(
     tmp_path: Path,
     monkeypatch,
-    target_id: str,
-    capabilities: list[str],
 ) -> None:
+    target_id = "ops-email-read"
+    capabilities = ["read"]
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     service.directory_admin.create_child(parent="root", name="team-a")
     communication_targets_write = service.operations_admin.write_directory_domain_config(
@@ -14396,7 +14561,7 @@ def test_admin_web_agents_create_rejects_capability_limited_email_targets(
 
     assert response.status_code == 400
     assert target_id in response.json()["error"]
-    assert "requires both read and write capabilities" in response.json()["error"]
+    assert "requires write capability" in response.json()["error"]
     assert create_vm_calls == []
 
 
@@ -14432,6 +14597,16 @@ def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path
     assert body["container_worker"]["default_image"] == "evander-runner:latest"
     assert body["container_worker"]["images"] == []
     assert body["communication_targets"] == []
+    assert body["email_mailboxes"] == [
+        {
+            "mailbox_id": "default",
+            "provider": "json_store",
+            "account_identifier": "default",
+            "folders": ["inbox", "drafts"],
+            "default_folders": ["inbox", "drafts"],
+            "send_enabled": False,
+        }
+    ]
 
 
 def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: Path) -> None:
@@ -14463,6 +14638,15 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
         },
     )
     assert vm_write.ok is True
+    policy_write = service.operations_admin.write_directory_domain_config(
+        team_path,
+        "policy",
+        {
+            "email_mailbox_allowlist": ["default"],
+            "email_folder_allowlist_by_mailbox": {"default": ["inbox"]},
+        },
+    )
+    assert policy_write.ok is True
     communications_write = service.operations_admin.write_directory_domain_config(
         team_path,
         COMMUNICATION_TARGETS_DOMAIN,
@@ -14537,11 +14721,29 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
             "image_ref": "runner-dotnet-playwright:2026-06-05",
         },
     ]
+    assert body["email_mailboxes"] == [
+        {
+            "mailbox_id": "default",
+            "provider": "json_store",
+            "account_identifier": "default",
+            "folders": ["inbox"],
+            "default_folders": ["inbox"],
+            "send_enabled": False,
+        }
+    ]
     communication_targets = {target["value"]: target for target in body["communication_targets"]}
-    assert set(communication_targets) == {"ops-teams", "ops-discord", "ops-email"}
+    assert set(communication_targets) == {
+        "ops-teams",
+        "ops-discord",
+        "ops-email",
+        "ops-email-write",
+    }
     assert communication_targets["ops-teams"]["metadata"]["provider"] == "teams"
     assert communication_targets["ops-discord"]["metadata"]["provider"] == "discord"
     assert communication_targets["ops-email"]["metadata"]["provider"] == "email"
+    assert communication_targets["ops-email-write"]["metadata"]["required_capabilities"] == [
+        "write"
+    ]
 
 
 def test_admin_web_agents_create_vm_duplicate_session_returns_409(
@@ -14956,6 +15158,7 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
             "metadata": {"keep": "new-value"},
             "email_mailboxes": ["new-mailbox"],
             "email_folders": ["new-folder"],
+            "email_folder_allowlist_by_mailbox": {"new-mailbox": ["new-folder"]},
             "communication_file_receive_enabled": True,
             "communication_file_send_enabled": True,
             "communication_file_max_bytes": 8192,
@@ -14999,6 +15202,7 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
     assert updated.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
     assert updated.email_mailbox_allowlist == ["new-mailbox"]
     assert updated.email_folder_allowlist == ["new-folder"]
+    assert updated.email_folder_allowlist_by_mailbox == {"new-mailbox": ["new-folder"]}
     assert updated.communication_file_receive_enabled is True
     assert updated.communication_file_send_enabled is True
     assert updated.communication_file_max_bytes == 8192
