@@ -13,6 +13,8 @@
   selections to properties supported by the base Microsoft Graph attachment type.
 - Resolved Graph's opaque message parent-folder IDs against configured mailbox folders before
   enforcing session folder grants.
+- Allowed that resolution to continue past stale folder mappings without hiding authentication,
+  permission, throttling, or transient Graph failures.
 
 ## 2026-07-21 - Scrollable Admin Detail Lists
 

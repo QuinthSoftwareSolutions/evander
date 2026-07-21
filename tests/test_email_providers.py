@@ -782,6 +782,8 @@ def test_graph_get_message_resolves_opaque_parent_folder_to_policy_folder(
                 },
                 request=request,
             )
+        if request.url.path.endswith("/mailFolders/stale-folder-id"):
+            return httpx.Response(404, json={"error": "not found"}, request=request)
         if request.url.path.endswith("/mailFolders/Inbox"):
             assert request.url.params["$select"] == "id"
             return httpx.Response(
@@ -798,7 +800,11 @@ def test_graph_get_message_resolves_opaque_parent_folder_to_policy_folder(
     )
     provider = GraphEmailProvider(
         account_identifier="leader@example.com",
-        folder_mapping={"inbox": "Inbox", "drafts": "Drafts"},
+        folder_mapping={
+            "stale": "stale-folder-id",
+            "inbox": "Inbox",
+            "drafts": "Drafts",
+        },
         auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
         timeout_seconds=5.0,
         api_base_url="https://graph.test/v1.0",
@@ -809,6 +815,7 @@ def test_graph_get_message_resolves_opaque_parent_folder_to_policy_folder(
     assert detail.folder == "inbox"
     assert requested_paths == [
         "/v1.0/users/leader@example.com/messages/msg-1",
+        "/v1.0/users/leader@example.com/mailFolders/stale-folder-id",
         "/v1.0/users/leader@example.com/mailFolders/Inbox",
     ]
 

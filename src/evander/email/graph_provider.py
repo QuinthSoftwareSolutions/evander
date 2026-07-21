@@ -813,15 +813,20 @@ class GraphEmailProvider:
             return "unknown"
 
         for policy_folder, provider_folder in self.folder_mapping.items():
-            response = request_with_retries(
-                client=client,
-                provider=self.provider_name,
-                operation="resolve_folder",
-                method="GET",
-                url=self._url(f"mailFolders/{quote(str(provider_folder), safe='')}"),
-                headers=self._headers(),
-                params={"$select": "id"},
-            )
+            try:
+                response = request_with_retries(
+                    client=client,
+                    provider=self.provider_name,
+                    operation="resolve_folder",
+                    method="GET",
+                    url=self._url(f"mailFolders/{quote(str(provider_folder), safe='')}"),
+                    headers=self._headers(),
+                    params={"$select": "id"},
+                )
+            except ProviderRequestError as exc:
+                if exc.status_code == 404:
+                    continue
+                raise
             if str(response.json().get("id") or "") == normalized_parent_folder_id:
                 return policy_folder
 
