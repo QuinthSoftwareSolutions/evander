@@ -15,6 +15,7 @@
   does not alter the stored target ID.
 - Served suggestions from a workflow-authorized target catalog, so workflow operators and
   maintainers no longer depend on the owner-only Sessions inventory route.
+- Preserved session or VM suggestions when the other inventory source is temporarily unavailable.
 
 ## 2026-07-21 - Session Communication Grant Hardening
 

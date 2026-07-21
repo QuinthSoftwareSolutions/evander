@@ -4182,6 +4182,80 @@ def test_admin_web_workflow_target_catalog_uses_workflow_permission(
     assert denied.status_code == 403
 
 
+@pytest.mark.parametrize(
+    ("failed_source", "expected_payload"),
+    [
+        (
+            "sessions",
+            {
+                "sessions": [],
+                "vms": [{"vm_name": "root-vm"}],
+            },
+        ),
+        (
+            "vms",
+            {
+                "sessions": [{"session_id": "root-session", "is_expired": False}],
+                "vms": [],
+            },
+        ),
+    ],
+)
+def test_admin_web_workflow_target_catalog_preserves_partial_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_source: str,
+    expected_payload: dict[str, object],
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="root-session",
+            vm_id="root-vm",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    original_list_sessions = service.vm_agent_admin.list_sessions
+
+    def list_sessions(self, **kwargs):
+        del self
+        if failed_source == "sessions":
+            raise RuntimeError("session inventory unavailable")
+        return original_list_sessions(**kwargs)
+
+    def list_vms(self, **kwargs):
+        del self, kwargs
+        if failed_source == "vms":
+            raise RuntimeError("VM inventory unavailable")
+        return [
+            VmSummary(
+                vm_name="root-vm",
+                directory_paths=["root"],
+                power_state="running",
+                agent_state="idle",
+            )
+        ]
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_sessions",
+        MethodType(list_sessions, service.vm_agent_admin),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(list_vms, service.vm_agent_admin),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/workflow-editor/target-catalog?directory_path=root")
+
+    assert response.status_code == 200
+    assert response.json() == expected_payload
+
+
 def test_admin_web_workflow_run_routes_enforce_directory_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

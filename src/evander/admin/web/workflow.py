@@ -609,7 +609,7 @@ def workflow_routes(
             auth.require_permission(
                 request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path
             )
-            sessions, vms = await asyncio.gather(
+            sessions_result, vms_result = await asyncio.gather(
                 run_in_threadpool(
                     service.vm_agent_admin.list_sessions,
                     include_expired=True,
@@ -622,7 +622,10 @@ def workflow_routes(
                     directory_path=directory_path,
                     direct_only=False,
                 ),
+                return_exceptions=True,
             )
+            sessions = [] if isinstance(sessions_result, BaseException) else sessions_result
+            vms = [] if isinstance(vms_result, BaseException) else vms_result
         except ValueError as exc:
             return json_error(str(exc))
         except PermissionError as exc:
