@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-21 - Structured Email Policy Configuration
+
+- Replaced the email-target auth-profile text field with a sending-mailbox selector populated from
+  configured mailbox accounts while retaining canonical `email.<mailbox-id>` storage.
+- Replaced raw JSON mailbox-folder policy editing with mailbox rows and folder checkboxes, and made
+  the mailbox allowlist select configured mailbox IDs while preserving explicit empty folder grants.
+
 ## 2026-07-21 - Workflow Existing-Target Suggestions
 
 - Added compact existing-session and VM suggestions to Literal workflow target fields while

@@ -10,6 +10,14 @@ import {
   emailMailboxFoldersAfterProviderChange,
   parseEmailMailboxDraftValue,
 } from "../src/features/configuration/emailMailboxDraft.ts";
+import {
+  emailMailboxAuthProfileRef,
+  emailMailboxFolderPolicyDraftEntriesToConfig,
+  emailMailboxFolderPolicyDraftValue,
+  emailMailboxFolderPolicyEntriesFromConfig,
+  emailMailboxIdFromAuthProfileRef,
+  parseEmailMailboxFolderPolicyDraftValue,
+} from "../src/features/configuration/emailMailboxPolicyDraft.ts";
 
 const configuration = readFileSync(
   new URL("../src/features/configuration/ConfigurationScreen.tsx", import.meta.url),
@@ -175,5 +183,47 @@ test("mailbox drafts default Graph folders and reject incomplete secret referenc
         },
       ]),
     /Mailbox m365-ops requires a host access-token environment variable\./,
+  );
+});
+
+test("email target mailbox references map between selector ids and canonical auth profiles", () => {
+  assert.equal(emailMailboxIdFromAuthProfileRef("email.accounting"), "accounting");
+  assert.equal(emailMailboxIdFromAuthProfileRef(" accounting "), "accounting");
+  assert.equal(emailMailboxAuthProfileRef(" accounting "), "email.accounting");
+  assert.equal(emailMailboxAuthProfileRef(""), "");
+});
+
+test("mailbox folder policy drafts round-trip and preserve explicit empty folder lists", () => {
+  const entries = emailMailboxFolderPolicyEntriesFromConfig({
+    accounting: ["inbox", "drafts", "inbox"],
+    restricted: [],
+  });
+
+  assert.deepEqual(entries, [
+    { mailboxId: "accounting", folders: ["inbox", "drafts"] },
+    { mailboxId: "restricted", folders: [] },
+  ]);
+  assert.deepEqual(
+    parseEmailMailboxFolderPolicyDraftValue(emailMailboxFolderPolicyDraftValue(entries)),
+    { entries, error: null },
+  );
+  assert.deepEqual(emailMailboxFolderPolicyDraftEntriesToConfig(entries), {
+    accounting: ["inbox", "drafts"],
+    restricted: [],
+  });
+});
+
+test("mailbox folder policy drafts reject blank and duplicate mailbox rows", () => {
+  assert.throws(
+    () => emailMailboxFolderPolicyDraftEntriesToConfig([{ mailboxId: "", folders: [] }]),
+    /requires a mailbox/,
+  );
+  assert.throws(
+    () =>
+      emailMailboxFolderPolicyDraftEntriesToConfig([
+        { mailboxId: "accounting", folders: ["inbox"] },
+        { mailboxId: "accounting", folders: [] },
+      ]),
+    /Duplicate mailbox folder policy: accounting/,
   );
 });
