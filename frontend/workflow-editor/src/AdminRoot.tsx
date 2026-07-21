@@ -16,6 +16,7 @@ import { AdminUiContext } from "./features/admin/AdminContext";
 import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminContext";
 import { useDocumentVisible } from "./features/admin/visibility";
 import { ChatLauncher } from "./features/chat/ChatLauncher";
+import { AdminNavigation } from "./features/admin/AdminNavigation";
 import { DirectoryAddIcon, DirectoryDeleteIcon, NotificationBellIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
 import {
@@ -2037,7 +2038,15 @@ export default function AdminRoot() {
     refreshAuthSession,
   };
 
-  function navigateToTab(nextTab: AdminTab) {
+  function requestNavigateToTab(nextTab: AdminTab) {
+    if (nextTab === renderedTab) {
+      return;
+    }
+    if (workflowHasUnsavedChanges && renderedTab === "workflow" && nextTab !== "workflow") {
+      if (!window.confirm("Workflow has unsaved changes. Discard them and continue?")) {
+        return;
+      }
+    }
     suppressNextHashChangeRef.current = true;
     window.location.hash = nextTab;
     setSelectedTab(nextTab);
@@ -2047,13 +2056,6 @@ export default function AdminRoot() {
     suppressNextHashChangeRef.current = true;
     window.location.hash = adminHash("sessions", { session_id: sessionId });
     setSelectedTab("sessions");
-  }
-
-  function confirmDiscardWorkflowChanges() {
-    if (!workflowHasUnsavedChanges || renderedTab !== "workflow") {
-      return true;
-    }
-    return window.confirm("Workflow has unsaved changes. Discard them and continue?");
   }
 
   if (session === null) {
@@ -2184,44 +2186,14 @@ export default function AdminRoot() {
         />
 
         <div className="admin-shell-layout">
-          <nav className={`admin-shell-nav${workflowSidebarCollapsed ? " collapsed" : ""}`} aria-label="Admin sections">
-            <div className="admin-shell-nav-header">
-              <div className="admin-shell-nav-header-row">
-                <div className="section-label">Sections</div>
-                <Tooltip content={workflowSidebarCollapsed ? "Expand the left navigation sections." : "Collapse the left navigation sections."}>
-                  <button
-                    type="button"
-                    className="admin-shell-nav-toggle"
-                    onClick={() => setWorkflowSidebarCollapsed((current) => !current)}
-                    disabled={authBusy}
-                    aria-label={workflowSidebarCollapsed ? "Expand sections" : "Collapse sections"}
-                  >
-                    <span aria-hidden="true">≡</span>
-                  </button>
-                </Tooltip>
-              </div>
-              <p>Operational views for machines, policy, reviews, and workflow state.</p>
-            </div>
-            {visibleTabs.map((tab) => (
-              <button
-                key={tab.key}
-                className={`admin-shell-tab ${tab.key === renderedTab ? "active" : ""}`}
-                onClick={() => {
-                  if (tab.key === renderedTab) {
-                    return;
-                  }
-                  if (!confirmDiscardWorkflowChanges()) {
-                    return;
-                  }
-                  navigateToTab(tab.key);
-                }}
-              >
-                <span className="admin-shell-tab-label admin-shell-tab-label-full">{tab.label}</span>
-                <span className="admin-shell-tab-label admin-shell-tab-label-short">{tab.shortLabel}</span>
-                <small>{tab.description}</small>
-              </button>
-            ))}
-          </nav>
+          <AdminNavigation
+            tabs={visibleTabs}
+            activeTab={renderedTab}
+            collapsed={workflowSidebarCollapsed}
+            disabled={authBusy}
+            onToggleCollapsed={() => setWorkflowSidebarCollapsed((current) => !current)}
+            onNavigate={requestNavigateToTab}
+          />
           <main className="admin-shell-main">
             <DeploymentStatusBanner status={deploymentStatus} />
             {sessionError ? <div className="admin-shell-alert">{sessionError}</div> : null}

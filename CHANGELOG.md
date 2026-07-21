@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-21 - Grouped Admin Navigation
+
+- Reorganized every Admin Web destination into permanently expanded Overview, Operations,
+  Automation, Extensions, Infrastructure, and Governance groups without changing page routes or
+  backend-specific visibility.
+- Replaced tall navigation cards with compact icon rows and description tooltips while preserving
+  the collapsed desktop navigation and horizontal mobile page strip.
+- Added a searchable **Find page** dialog for built-in and add-on destinations, available from the
+  navigation or with `Ctrl+K` / `Command+K` and protected by the existing unsaved-workflow guard.
+
 ## 2026-07-21 - Bokio Remote Upload MCP Tools
 
 - Added separately granted MCP tools to list remote Bokio uploads, read one upload's metadata, and

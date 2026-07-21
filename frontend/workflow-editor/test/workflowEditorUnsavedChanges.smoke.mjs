@@ -601,8 +601,9 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   );
 
   await ensureSectionsExpanded(page);
-  const usersTab = page.locator(".admin-shell-tab").filter({ hasText: "Users & Groups" });
-  await usersTab.click();
+  await page.getByRole("button", { name: "Find page", exact: true }).click();
+  await page.getByRole("searchbox", { name: "Search pages" }).fill("Users & Groups");
+  await page.getByRole("option", { name: /Users & Groups/ }).click();
   assert.deepEqual(tabConfirmMessages, ["Workflow has unsaved changes. Discard them and continue?"]);
   await page.waitForFunction(() => window.location.hash === "#workflow");
   await assert.equal(await page.locator(".admin-shell-tab.active").filter({ hasText: "Workflow" }).count(), 1);
