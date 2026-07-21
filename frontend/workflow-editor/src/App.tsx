@@ -72,6 +72,15 @@ import { Tooltip } from "./features/admin/Tooltip";
 import { hashQueryParam } from "./adminRouting";
 import { graphVisibleInDirectory } from "./workflowGraphDirectory";
 import {
+  EMPTY_WORKFLOW_TARGET_INVENTORY,
+  workflowTargetInventoryFromSettledResults,
+  workflowTargetInventoryPaths,
+  workflowTargetOptions,
+  type WorkflowTargetInventory,
+  type WorkflowTargetSessionListResponse,
+  type WorkflowTargetVmListResponse,
+} from "./workflowTargetInventory";
+import {
   BindingParseError,
   isParsedBindingExpression,
   isParsedBindingReference,
@@ -4143,12 +4152,16 @@ export default function App() {
   const runtimePulseSeenActivityKeysRef = useRef<Set<string>>(new Set());
   const runtimePulseSeenActivityKeyOrderRef = useRef<string[]>([]);
   const runtimePulseTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const workflowTargetInventoryCacheRef = useRef<Map<string, WorkflowTargetInventory>>(new Map());
   const previousSelectedDirectoryPathRef = useRef(selectedDirectoryPath);
   const selectedWorkflowPackReferenceRef = useRef("");
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [undoHistory, setUndoHistory] = useState<WorkflowUndoEntry[]>([]);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
+  const [workflowTargetInventory, setWorkflowTargetInventory] = useState<WorkflowTargetInventory>(
+    EMPTY_WORKFLOW_TARGET_INVENTORY,
+  );
   const [workflowGeneratorOpen, setWorkflowGeneratorOpen] = useState(false);
   const [workflowGeneratorDescription, setWorkflowGeneratorDescription] = useState("");
   const [workflowGeneratorState, setWorkflowGeneratorState] = useState<WorkflowGeneratorState>("idle");
@@ -4560,7 +4573,38 @@ export default function App() {
   })();
   const effectTargetField = selectedCatalogEntry?.fields.find((field) => field.key === effectTargetKey)
     ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
+  const effectTargetOptions = useMemo(
+    () => workflowTargetOptions(workflowTargetInventory, effectTargetKey),
+    [effectTargetKey, workflowTargetInventory],
+  );
   const communicationThreadField = selectedCatalogEntry?.fields.find((field) => field.key === "thread_id");
+
+  useEffect(() => {
+    if (!hasCollapsedTargetUi || isTutorialMode) return;
+    const directoryPath = selectedDirectoryPath.trim() || "root";
+    const cachedInventory = workflowTargetInventoryCacheRef.current.get(directoryPath);
+    if (cachedInventory) {
+      setWorkflowTargetInventory(cachedInventory);
+      return;
+    }
+    setWorkflowTargetInventory(EMPTY_WORKFLOW_TARGET_INVENTORY);
+    const paths = workflowTargetInventoryPaths(directoryPath);
+    let cancelled = false;
+    Promise.allSettled([
+      fetchJson<WorkflowTargetSessionListResponse>(paths.sessions),
+      fetchJson<WorkflowTargetVmListResponse>(paths.vms),
+    ]).then(([sessionsResult, vmsResult]) => {
+      if (cancelled) return;
+      const inventory = workflowTargetInventoryFromSettledResults(sessionsResult, vmsResult);
+      setWorkflowTargetInventory(inventory);
+      if (sessionsResult.status === "fulfilled" && vmsResult.status === "fulfilled") {
+        workflowTargetInventoryCacheRef.current.set(directoryPath, inventory);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasCollapsedTargetUi, isTutorialMode, selectedDirectoryPath]);
 
   useEffect(() => {
     setWorkflowHasUnsavedChanges(hasUnsavedWorkflowChanges);
@@ -8128,6 +8172,9 @@ export default function App() {
         : effectTargetKey === "vm_name"
           ? "VM name"
           : "VM name or session ID";
+    const optionListId = effectTargetOptions.length > 0
+      ? `workflow-target-options-${effectTargetKey}`
+      : undefined;
     return (
       <div className="inspector-field" key="effect-target">
         <div className="field-toolbar">
@@ -8197,11 +8244,19 @@ export default function App() {
           : (
             <input
               value={typeof value === "string" ? value : ""}
+              list={optionListId}
               placeholder={targetPlaceholder}
               onChange={(event) => updateKnownField(effectTargetKey, event.target.value)}
               disabled={isDisabled}
             />
           )}
+        {mode === "literal" && optionListId ? (
+          <datalist id={optionListId}>
+            {effectTargetOptions.map((option) => (
+              <option key={`${effectTargetKey}-${option.value}`} value={option.value} label={option.label} />
+            ))}
+          </datalist>
+        ) : null}
       </div>
     );
   }

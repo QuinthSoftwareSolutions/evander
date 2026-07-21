@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-21 - Workflow Existing-Target Suggestions
+
+- Added compact existing-session and VM suggestions to Literal workflow target fields while
+  preserving free-form values, templates, and upstream-output bindings.
+- Included expired sessions in the directory-scoped suggestions with an `(expired)` label that
+  does not alter the stored target ID.
+
 ## 2026-07-21 - Session Communication Grant Hardening
 
 - Made canonical communication-target IDs fail closed when their catalog entries are disabled or

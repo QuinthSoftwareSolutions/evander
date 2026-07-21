@@ -41,4 +41,9 @@ test("collapses target selector triplets while preserving session and VM disambi
   assert.match(app, /<option value="target">Generic target<\/option>/);
   assert.match(app, /<option value="session_id">Session ID<\/option>/);
   assert.match(app, /<option value="vm_name">VM name<\/option>/);
+  assert.match(app, /Promise\.allSettled\(\[/);
+  assert.match(app, /if \(!hasCollapsedTargetUi \|\| isTutorialMode\) return;/);
+  assert.match(app, /list=\{optionListId\}/);
+  assert.match(app, /<datalist id=\{optionListId\}>/);
+  assert.match(app, /value=\{option\.value\} label=\{option\.label\}/);
 });
