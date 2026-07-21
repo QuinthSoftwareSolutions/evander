@@ -147,6 +147,12 @@ Tool Visibility, MCP Tools, Tool Calls, Configuration, and Users & Groups. Use *
 `Ctrl+K` / `Command+K` to search the currently visible built-in and add-on areas without changing
 their hash routes or directory scope.
 
+Inside **Configuration**, a second compact navigator exposes the active area's settings and
+utilities. **Find setting** searches operator labels and help alongside technical domains and field
+keys, then opens and highlights the selected field. Configuration URLs retain the selected area,
+section, and optional field so operators can share a precise destination without changing the
+underlying save or inheritance rules.
+
 | Area | Operator question |
 |---|---|
 | Dashboard | Is the control plane broadly healthy, and what needs attention? |

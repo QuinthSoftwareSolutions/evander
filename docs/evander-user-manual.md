@@ -1306,14 +1306,22 @@ rejected” differs from “the tool was absent.”
 ## A session is the job's permission card
 
 When Evander creates a session, it records the job's identity, directory, expiry, selected
-execution context, and allowed capabilities. An empty or absent permission is not read as broad
-access. Unknown and expired sessions are denied, and an old workload cannot prolong its own
-authority merely by continuing to send traffic.
+execution context, and allowed capabilities. Most empty or absent permissions do not become broad
+access. Two newer communication fields deliberately preserve a narrower compatibility distinction:
+missing or `null` means that an older session still uses its legacy allowlists, while an explicit
+empty list means no managed communication destinations or mailbox accounts. Unknown and expired
+sessions are denied, and an old workload cannot prolong its own authority merely by continuing to
+send traffic.
 
 Two sessions in the same project can therefore differ. An implementation session may receive only
 the tools needed to inspect a work item, operate the managed-repository workflow, and report its
 result, while a review session receives a different set. Renewal or reissue is an explicit
 operator or domain action.
+
+An older session can show a **legacy communication policy** callout on the Sessions page. Converting
+it prepares managed destination and mailbox selections for review; it does not save them
+immediately. Review the proposed rows—especially outbound email recipients—then save the session
+policy. Selecting no rows and saving is an explicit denial, not a return to legacy behavior.
 
 ![Admin Web detail for a synthetic implementation session](assets/evander-user-manual/screenshots/admin-sessions.png)
 
@@ -1447,6 +1455,12 @@ permission is the union of matching group assignments and matching direct workfl
 inheritance is downward only: an assignment on `mission-control` does not authorize its parent or
 sibling.
 
+Some resources are worker-global rather than directory-owned. In particular, the one ChatGPT
+subscription account shared by a container worker can be inspected, signed in, cancelled during
+login, or signed out only by an authenticated operator with privileged operations unlocked and
+effective `admin.owner` permission at `root`. Ownership of only a child directory is insufficient,
+because changing that account affects subscription-mode agents from every directory on the worker.
+
 ### Privileged-operation lock implementation
 
 Authentication and RBAC answer whether an operator *may* perform an action. Sensitive mutation
@@ -1466,11 +1480,38 @@ A `SessionManifest` includes:
 - canonical `directory_path`;
 - allowed MCP tools, approval-required tools, and per-tool grant settings;
 - allowed contact and script IDs;
-- Discord, Teams, mailbox, folder, recipient, and domain allowlists;
+- nullable `communication_target_ids` for Teams and Discord destinations plus outbound email
+  recipients;
+- nullable structured `email_mailbox_grants` for mailbox `read`, `draft`, or `send` access and
+  per-mailbox folders, alongside legacy Discord, Teams, mailbox, folder, recipient, and domain
+  allowlists retained for older sessions;
+- an optional `codex_auth_mode` override for container-worker Codex sessions;
 - tool argument policies;
 - communication file limits and enablement;
 - web-search enablement and quotas;
 - metadata for workflow, issue, Team, Git, HTTP-target, and execution correlation.
+
+### Canonical communication grants and legacy conversion
+
+The canonical fields divide two kinds of authority that legacy allowlists combined:
+
+| Session field | Grants | Does not grant |
+|---|---|---|
+| `communication_target_ids` | Named Teams and Discord destinations, and named outbound email recipients | Access to read or draft within an email mailbox |
+| `email_mailbox_grants` | One mailbox account, an access level (`read`, `draft`, or `send`), and explicit folders | Permission to deliver mail to arbitrary recipients |
+
+Both fields are nullable for compatibility. Missing or `null` keeps the corresponding legacy
+resolution path; `[]` is canonical and denies all access in that category even if old allowlist
+fields still contain values. A canonical target that has since been disabled or removed fails
+closed instead of falling back to its raw provider address.
+
+The Sessions-page conversion is explicit and reviewable. It proposes destination IDs from legacy
+Discord channels and Teams channel, chat, and one-on-one user allowlists, plus mailbox grants from
+the old mailbox/folder fields. Mailbox access is inferred conservatively from the session's current
+email tools and send flag: read-only remains `read`, draft-capable becomes `draft`, and an actually
+send-capable session becomes `send`; draft and send proposals include the required `drafts` folder.
+Legacy recipient strings are not silently turned into managed email targets. Select the intended
+configured email recipient targets before saving if the converted session must send mail.
 
 ### Policy evaluation details
 
@@ -1529,6 +1570,7 @@ separate exact approval may still be required for a sensitive call.
 | Agent's `tools/list` is empty | Session/MCP identity | Unknown, expired, unproved, or incorrectly bound session |
 | Tool is missing | Visibility policy | Not granted, directory-denied, profile-denied, or structurally unavailable |
 | Visible tool rejects call | Payload policy | Argument, target, quota, lease, or approval failed |
+| Legacy communication conversion cannot be saved | Canonical resource validation | A proposed raw/old destination no longer resolves to an enabled managed target, or a mailbox/folder is unavailable under effective policy |
 | Lease works in one run but not another | Workflow scope | Run/session mismatch is intentional |
 | Last owner mutation is rejected | Recovery invariant | Store prevents loss of the effective owner boundary |
 
@@ -1570,6 +1612,11 @@ human's group does not automatically revoke an already issued agent session.
   scope, and privileged lock.
 - `src/evander/admin/web/users.py` and `tests/test_admin_web_user_store.py` — user/group
   administration, bootstrap, migration, and owner protection.
+- `src/evander/admin/web/codex_auth.py` — privileged root-owner authorization for the worker-global
+  ChatGPT subscription account.
+- `src/evander/admin/services/session_helpers.py` and
+  `frontend/workflow-editor/src/features/sessions/SessionsScreen.tsx` — canonical session-policy
+  updates and explicit legacy communication conversion.
 - `src/evander/models.py` — `SessionManifest`, `SessionToolApprovalLease`, and approval models.
 - `src/evander/policy.py` and `src/evander/policy_config.py` — visibility, grants, denial,
   structural checks, arguments, approvals, and defaults.
@@ -2405,6 +2452,7 @@ An operator can use the first column to describe the symptom. The remaining colu
 | Wrong image or toolchain | The session recorded a different image alias/ref, or the worker cache is incomplete. | Inspect session metadata and the worker image catalog; do not change the catalog and assume an existing session changed. |
 | `cleanup_failed` | Worker deletion did not complete. | Preserve the record, inspect its cleanup error, retry after fixing reachability or worker state. |
 | Model unavailable | The provider rejected the configured model before useful work. | Inspect sanitized wake/job failure metadata and the directory/session model override. |
+| ChatGPT subscription turn says the account is not signed in | The session selected the worker's subscription account, but the broker has no usable login. | Ask a root owner to inspect the worker account; do not switch silently to a metered credential. |
 | VM starts but guest tools are stale | Optional bootstrap state no longer matches the host. | Re-run the relevant idempotent bootstrap script. |
 
 ## Troubleshooting: what to hand to an administrator
@@ -2478,7 +2526,41 @@ Container sessions are configured by mounting their durable agent home, not by r
 
 The default security posture is no general container network. A non-`none` Docker network mode is valid only when the worker deployment explicitly enables its egress policy and supplies an allowlist. The current backend does not provide worker scheduling, autoscaling, Kubernetes, general secret transport, or a general internet path. The worker bearer token stays on the control plane. Provider keys stay behind host relays.
 
+An optional ChatGPT subscription account follows the same host-ownership principle but uses a
+worker-local broker and restricted HTTPS proxy instead of putting the account or a provider key in
+the container. It does not turn the container network into a general public route.
+
 SQL Server is also intentionally separate. `effect:agent:create` rejects the VM-style `mssql=true` and `mssql_init_root` options for container sessions. Container agents use the worker-host SQL Server through the scoped MCP provisioning operations `mssql_provision_database`, `mssql_list_databases`, and `mssql_drop_database`.
+
+### Codex metered API and ChatGPT subscription usage
+
+Container-worker Codex sessions can choose between `metered_api` and `chatgpt_subscription`.
+`container_worker_codex_auth_mode` supplies the directory-resolved default, while a session's
+nullable `codex_auth_mode` is an explicit override. The setting applies only to Codex on
+`container_worker_vm`; it is not a Claude default and subscription mode is rejected as an explicit
+Claude override. Changing an existing session's selection takes effect on its next turn and keeps
+the existing Codex thread history.
+
+The subscription selection is effective only for a turn whose model provider mode is
+`openai_public`. A local OpenAI-compatible or Azure OpenAI turn keeps using its configured private
+endpoint and API-key route even when the stored session preference says `chatgpt_subscription`.
+Evander does not rewrite that preference, so a later public-OpenAI turn can use it. Chapter 10
+describes the network-routing distinction.
+
+There is one signed-in ChatGPT account per worker, shared by every subscription-mode agent on that
+worker. The worker auth broker is the sole durable writer of its `auth.json`, holds an exclusive
+ownership lock, and serializes login, logout, account reads, and token refresh. Concurrent refresh
+requests are coalesced. Each disposable job authenticates its own Codex app-server from an
+in-memory external-token snapshot; it receives no account-file mount, token environment variable,
+command-line token, or persisted account metadata. Public HTTPS goes only through the worker's
+allowlisted CONNECT proxy, while the ordinary container egress policy remains default-deny.
+
+This path fails closed. If the worker account is absent, logged out, cannot refresh, or the broker
+cannot prove exclusive ownership, a subscription turn fails instead of falling back to metered API
+use. Login start, cancellation, and logout are audited. Because the account is worker-global,
+Admin Web account controls require an authenticated operator, an unlocked privileged-operations
+session, and effective `admin.owner` permission at `root`; ownership of one child directory is not
+enough.
 
 ## Administrator reference: persistence and cleanup
 
@@ -2517,6 +2599,12 @@ evander-cli execution logs <execution-or-session-id>
 
 `execution start-container-job` and `smoke-container-worker` explicitly construct the container backend. The generic `status`, `logs`, `stop`, and `destroy` commands infer it only when the target is present in the container execution mapping, unless `--backend container_worker_vm` is supplied. These commands never change the configured default backend.
 
+For subscription-mode Codex, a root owner should also open **Agents → Worker ChatGPT
+subscription**, verify the worker account status, and complete device login when required. Verify
+that worker egress policy allows only the configured subscription proxy and that the proxy's
+OpenAI/ChatGPT hostname allowlist is current. Do not copy the broker's account file into a job for
+diagnosis; a missing login is meant to fail closed.
+
 When cleanup fails:
 
 1. Record the session ID, execution ID, worker job ID, last observed status, and cleanup error.
@@ -2532,10 +2620,18 @@ For deployment details and a deeper worker security checklist, continue with `do
 - `src/evander/execution/backend.py` and `src/evander/execution/models.py` — shared backend protocol, execution specification, handles, and status model.
 - `src/evander/execution/libvirt_backend.py` — libvirt adapter and power-state normalization.
 - `src/evander/execution/container_worker_backend.py` and `src/evander/execution/container_worker_repository.py` — worker requests, durable mappings, logs, and cleanup outcomes.
+- `src/evander/codex_auth.py`, `src/evander/worker/codex_auth_broker.py`,
+  `src/evander/worker/codex_subscription.py`, and `src/evander/worker/codex_egress_proxy.py` —
+  effective auth selection, single-writer account ownership, external job authentication, and
+  restricted subscription traffic.
+- `src/evander/admin/web/codex_auth.py` — root-owner account-management boundary and audit events.
 - `src/evander/effects/providers/agent_create.py`, `agent_clone_repo.py`, `agent_prompt.py`, and `agent_destroy.py` — portable agent lifecycle dispatch.
 - `src/evander/worker/` and `ansible/worker.yml` — worker API, Docker runtime, durable store, sandbox policy, and deployment.
 - `docs/execution-backends.md`, `docs/container-worker-backend.md`, and `docs/libvirt-vm-template-operations.md` — supported operator contracts.
-- `tests/test_libvirt_execution_backend.py`, `tests/test_container_worker_execution_backend.py`, `tests/test_worker_daemon.py`, and `tests/test_vm_to_container_migration.py` — backend and migration behavior.
+- `tests/test_libvirt_execution_backend.py`, `tests/test_container_worker_execution_backend.py`,
+  `tests/test_worker_daemon.py`, `tests/test_codex_auth_modes.py`,
+  `tests/test_codex_auth_broker.py`, and `tests/test_vm_to_container_migration.py` — backend,
+  subscription-auth, and migration behavior.
 
 
 # 10. Networking, Relays, Packages, and Secrets
@@ -2549,7 +2645,7 @@ An isolated workspace does not normally browse the internet or receive the host'
 | What the agent needs | Controlled route | Plain-language boundary |
 |---|---|---|
 | Evander tools | MCP gateway | Show and run only the tools allowed for this active session. |
-| A model | Model relay | Send a supported model request while the real provider key remains on the host. |
+| A model | Model relay, or the worker's brokered subscription route | Keep provider keys or the shared ChatGPT account outside the agent workspace and constrain the upstream destination. |
 | Packages | Package relay, facade, or prepared cache | Reach configured package sources without opening a general download route. |
 | A named test or application environment | HTTP target relay | Reach only a target alias recorded for this session; use the application's own guest-held login. |
 | Source code | Restricted managed Git over SSH | Read or write only the repository scope and refs granted to this session. |
@@ -2566,7 +2662,7 @@ The host resolves the session and directory rules, supplies an upstream credenti
 
 Suppose the implementation agent for Northstar Platform needs to test telemetry retry behavior.
 
-- A model request goes to Evander's model relay. Evander checks the session, selects the configured provider, removes guest transport credentials, adds the host's provider credential, and records available usage information.
+- A model request normally goes to Evander's model relay. Evander checks the session, selects the configured provider, removes guest transport credentials, adds the host's provider credential, and records available usage information. An explicitly selected public-OpenAI subscription turn on a container worker instead receives in-memory authentication from the worker broker and uses its restricted public proxy.
 - A package restore goes through the appropriate relay or cache. The route may serve a public feed, add a host-held private-feed credential, or use already prepared package content.
 - A request to the provisioned `mission-control` environment uses a session alias such as `mission-control-api`. The agent supplies its legitimate application credential; the relay confines the destination and does not turn that URL into general internet permission.
 
@@ -2595,6 +2691,7 @@ An operator can use the first column to describe the failure. The remaining colu
 | Expired or bad session token | Session relay request is rejected (`401`/`403` or WebSocket policy close). | Repair session/bootstrap state; do not bypass session routing. |
 | Hosted web search requested but disabled | Relay returns a policy error and logs the denial. | Enable only on the session that genuinely needs it. |
 | Unsupported provider path | Relay returns `501`, validation error, or WebSocket policy close. | Use a supported API; the relay is not a generic reverse proxy. |
+| Subscription mode selected but worker account unavailable | The Codex turn fails without a metered fallback. | Have a root owner inspect broker/account status; do not copy account credentials into the job. |
 | Azure NuGet PAT missing | Public NuGet may work; Azure feed returns `503`. | Set the configured PAT environment variable for the NuGet unit. |
 | HTTP target alias missing | Relay returns `404`. | Add the alias through the session/workflow metadata contract. |
 | HTTP target redirect changes origin | Relay returns `502` rather than following it. | Correct the target base URL or application redirect behavior. |
@@ -2658,6 +2755,24 @@ The general OpenAI-compatible HTTP allowlist is `GET /v1/models` and `POST` to `
 The relay removes guest `Authorization`, `x-api-key`, hop-by-hop headers, content length/encoding, host, and the Evander session token before building the upstream request. It then supplies the provider credential selected by host configuration. For streaming responses, the upstream client remains alive until the response iterator finishes, so raw SSE bytes can be forwarded without truncating the stream.
 
 Hosted OpenAI web search is denied unless the session manifest explicitly sets `web_search_enabled: true`. The relay examines both HTTP request bodies and WebSocket messages, rather than trusting a client-side Codex flag alone. Model use is recorded in `runtime/model-usage.db` when the provider supplies token usage; completed responses without a usage block are recorded as `usage_unavailable`.
+
+### Subscription routing remains provider-specific
+
+ChatGPT subscription authentication is an optional container-worker Codex route, not a new
+credential accepted by every provider. A `chatgpt_subscription` preference becomes effective only
+when the turn's model provider mode is `openai_public`. The disposable job gets an in-memory token
+snapshot from the worker auth broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts through
+the worker's CONNECT proxy; it receives neither the broker's `auth.json` nor direct public egress.
+
+For `local_openai` and `azure_openai`, Evander deliberately computes the turn as `metered_api` and
+keeps the configured private endpoint and API-key/relay behavior. It leaves the stored session
+preference unchanged. This distinction matters when diagnosing a session that moves between
+provider modes: seeing `chatgpt_subscription` in session policy does not mean a local Ollama or
+Azure request was sent with the worker account.
+
+Subscription authentication also fails closed. An absent login, refresh failure, broker ownership
+failure, or restricted-proxy failure does not cause a quiet retry against the host's metered OpenAI
+credential. Chapter 9 covers account ownership and lifecycle.
 
 ### Local-model routing is still a relay boundary
 
@@ -2728,6 +2843,22 @@ The repo-root `secrets.env` can be loaded by supported systemd templates, but it
 
 There are narrow exceptions where a guest receives a short-lived or scoped credential: the MCP session token, a session-scoped restricted Git key, a one-time response/consultation token, or an ephemeral OpenAI Realtime client secret. These are capabilities with a bounded audience and purpose, not copies of the long-lived host credential.
 
+### Microsoft Graph mailbox credentials
+
+A Graph mailbox can use a static access-token environment reference for compatibility, but the
+preferred application path names three host environment variables: tenant ID, client ID, and
+client secret. Evander validates that the client-credentials set is complete, lazily exchanges the
+values at the tenant's OAuth 2.0 token endpoint using the Graph `.default` scope, and sends only the
+acquired bearer token to Microsoft Graph. Neither the application secret nor the acquired token is
+written to a guest, session manifest, communication target, or prompt.
+
+Acquired tokens live in a process-local cache keyed by the complete credential identity, including
+authority, tenant, client, secret, and scope. The cache is shared across provider object rebuilds,
+serializes concurrent acquisition for the same identity, and refreshes shortly before expiry.
+Changing a credential value selects a new cache entry, so host-side secret rotation does not keep
+using the old token. Acquisition errors are redacted; operators should record the mailbox ID and
+environment-variable names, never their values.
+
 ## Administrator runbook
 
 First verify the listeners locally on the control plane:
@@ -2777,10 +2908,18 @@ When diagnosing, preserve the separation of concerns: a DNS or firewall failure 
 - `config/firewall.env.example` and `scripts/apply_firewall.sh` — guest-facing host-port defaults and nftables forwarding policy.
 - `config/cloud-init-user-data.yaml` and `scripts/bootstrap_codex_vm.sh` — guest session environment and relay-aware Codex configuration.
 - `src/evander/relays/openai.py` — session authentication, provider routing, endpoint allowlists, web-search policy, streaming, and usage capture.
+- `src/evander/effects/providers/agent_session.py`, `src/evander/codex_auth.py`, and
+  `src/evander/worker/codex_egress_proxy.py` — public-only subscription selection, preserved
+  private-provider routing, and restricted worker egress.
+- `src/evander/email/graph_provider.py` — host-side Graph client-credentials exchange, shared
+  credential-keyed token cache, and renewal.
 - `src/evander/relays/nuget.py` and `scripts/bootstrap_nuget_vm.sh` — public/private feed proxying, URL rewriting, and guest NuGet layout.
 - `src/evander/relays/http_target.py` — session aliases, guest-managed auth, path validation, and redirect confinement.
 - `src/evander/relays/npm_audit_facade.py` — split npm package/audit routing.
-- `tests/test_openai_relay.py`, `tests/test_nuget_relay.py`, `tests/test_app_relay.py`, `tests/test_npm_audit_facade.py`, and `tests/test_firewall_defaults.py` — relay and network boundary regression coverage.
+- `tests/test_openai_relay.py`, `tests/test_codex_auth_modes.py`,
+  `tests/test_email_providers.py`, `tests/test_nuget_relay.py`, `tests/test_app_relay.py`,
+  `tests/test_npm_audit_facade.py`, and `tests/test_firewall_defaults.py` — relay, private-route,
+  Graph credential, and network-boundary regression coverage.
 
 
 # 11. Managed Git, Artifacts, and Code Consultations
@@ -3281,12 +3420,20 @@ Operators and workflow authors select communication targets by a stable, readabl
 pasting an arbitrary provider address into each job. Each target says whether the project may read,
 write, or reply. Direct messages can additionally restrict which senders are accepted.
 
+A communication target is a destination, not an account login. For email, a named recipient target
+answers “where may this session deliver a message?” while a mailbox grant answers “which mailbox
+may it read, draft in, or send from?” Granting one never silently grants the other. This same split
+keeps a readable finance inbox from becoming permission to mail arbitrary people.
+
 > <span class="sidebar-kicker">Deeper detail</span> **Target resolution and policy**
 >
 > A target definition has a stable ID, provider and target kind, provider-native address, display
 > metadata, and capabilities. Capabilities are explicit—typically `read`, `write`, and `reply`—and
-> are checked per operation. Sessions refer to target IDs or legacy provider references; the resolver
-> applies directory inheritance and overlays before returning the effective target.
+> are checked per operation. Canonical sessions refer to destinations through
+> `communication_target_ids`; the resolver applies directory inheritance and overlays before
+> returning the effective target. Missing or `null` retains legacy destination resolution for an
+> older session, while `[]` means no destinations. Once canonical, a disabled or deleted target
+> fails closed instead of being treated as a raw provider address.
 >
 > Target definitions contain addresses, not access tokens. Discord bot tokens, Microsoft Graph
 > credentials, email credentials, and telephony secrets remain in host environment/configuration.
@@ -3357,20 +3504,68 @@ session's artifact area.
 An agent can prepare a draft without automatically gaining permission to send it. Recipient and
 domain rules still apply, and the final send can pause for explicit approval.
 
+Three checks stay visibly separate:
+
+| Selection | What it permits | What else is needed |
+|---|---|---|
+| Mailbox grant with `read` | Read only the named mailbox and granted folders | The relevant read tool must also be granted |
+| Mailbox grant with `draft` | Read plus create a host-recorded draft in that mailbox | The `drafts` folder, the draft tool, and any recipient/domain rule |
+| Mailbox grant with `send` | Read and draft, and make that mailbox eligible to send | Global/session send enablement, the send tool, a matching recipient target, and any required approval |
+
+`draft` and `send` grants must include the `drafts` folder. A draft may name recipients allowed by
+the draft recipient/domain policy without receiving an outbound `communication_target_ids` grant;
+that lets an agent prepare text for review. Delivery is stricter: every recipient must resolve to a
+write-capable email communication target selected for the session and bound to the same sending
+mailbox profile.
+
 > <span class="sidebar-kicker">Deeper detail</span> **Mailbox providers and state**
 >
-> Email providers support Gmail and Microsoft Graph behind a normalized interface. Mailbox and
-> folder reads are restricted by host policy. Sync cursors are stored locally so polling can continue
-> without scanning the entire mailbox.
+> Email providers support Gmail and Microsoft Graph behind a normalized interface. Mailbox access
+> comes from `email_mailbox_grants`; each row names the mailbox, access level, and folders. Missing
+> or `null` retains the old mailbox/folder allowlists, while `[]` denies all mailbox access even if
+> old allowlist fields remain in the manifest. Sync cursors are stored locally so incremental unread
+> polling can continue without scanning the entire mailbox.
 >
-> Drafting and sending are different operations. Recipient and domain allowlists constrain drafts;
-> a send can require explicit approval. The guest sees message and draft abstractions, not OAuth
-> refresh tokens. JSON-backed email is available for controlled/local use but should not be mistaken
-> for a live provider.
+> Draft creation records a host-side snapshot owned by the calling session and mailbox. Sending must
+> reference that snapshot and match its recipients, subject, and attachment IDs; a different session
+> cannot send it. The send then applies the mailbox's `send` grant, global/session send enablement,
+> matching canonical recipient targets, and approval policy before calling the provider.
+>
+> Microsoft Graph can acquire application tokens from host-held tenant, client, and client-secret
+> environment references and cache them until shortly before expiry. The guest sees message and
+> draft abstractions, not application credentials or access tokens. Static Graph tokens remain a
+> compatibility mode; Chapter 10 describes the host-side credential boundary. JSON-backed email is
+> available for controlled/local use but should not be mistaken for a live provider.
+
+Older sessions remain on their legacy communication behavior until an operator explicitly chooses
+**Convert to managed grants** on the Sessions page and saves the reviewed result. The conversion
+proposes mailbox access from current tools and flags and brings forward legacy Discord channels and
+Teams channel, chat, and one-on-one user allowlists; it does not invent managed email recipient
+targets from free-form recipient strings. Chapter 6 gives the conversion details. An explicit empty
+managed selection is a denial, so do not use conversion as a casual formatting operation.
 
 When a send result is uncertain—for example, the network fails after the provider accepted the
 request—inspect the provider's sent/draft state and Evander's audit entry before retrying. Blind
 retry can duplicate a message.
+
+### Finding older email safely
+
+`email_list_unread` remains the incremental unread workflow. The broader
+`email_list_messages` tool is separate and must appear explicitly in the session's allowed tools;
+giving a session ordinary email read tools does not add it automatically. It also requires a
+read-capable grant for the named mailbox and folder.
+
+The listing tool returns message summaries plus an opaque `next_cursor`. It accepts a page size
+from 1 to 100 and portable filters for received-after/before time, read state, sender, recipient,
+subject, full text, and attachment presence. Date bounds must include a timezone, and the lower
+bound must be earlier than the upper bound. Gmail and Graph translate those filters into
+provider-supported queries, while the controlled local provider evaluates them in memory. The
+agent does not receive provider-specific query syntax.
+
+A cursor is bound to the session, mailbox, folder, and exact filter set that issued it, and expires
+after 15 minutes. Continue a page with the returned cursor and the same arguments; trying to reuse
+it for another search—or after expiry—is a validation error. This prevents an opaque provider
+continuation URL or token from becoming a way to change mailbox scope.
 
 ## Scheduled wakes
 
@@ -3457,6 +3652,9 @@ example, “the message appears in Evander, but no workflow run was created.”
 | Message is stored; workflow did not run | Trigger target, sender filter, and trigger cursor | Ingest succeeded; workflow eligibility did not |
 | Workflow ran; agent did not wake | Wake dispatch record and session state | Dispatch was denied, deferred, or failed |
 | Read works but reply fails | Target capabilities and thread identity | `read` does not imply `reply` |
+| Mailbox is visible but an email read is denied | Mailbox grant, folder, and exact tool | A destination target does not grant mailbox-account access; `email_list_messages` also needs its own tool grant |
+| Draft succeeds but send is denied | Recorded draft, send-capable mailbox, recipient target, send enablement, and approval | Draft authority deliberately does not imply delivery authority |
+| Email page cursor is rejected | Session/mailbox/folder/filter binding or the 15-minute expiry | Reuse an unexpired cursor only with the exact search that issued it; start a new search otherwise |
 | Attachment fetch is rejected | Source target, filename/type/size, and stored message link | File did not pass the attachment trust boundary |
 | Cron fires repeatedly at once | Schedule/cursor migration or clock assumptions | Inspect persisted `next_run_at`; do not edit the database live |
 | Call/meeting exists but no summary arrives | Provider/bridge record, ingest event, then wake record | Transport, event ingestion, and agent delivery are distinct |
@@ -3470,10 +3668,10 @@ uncertain, and do not edit a wake cursor or schedule database to make it advance
 ## Administrator runbook
 
 1. **Name the stage.** Decide whether the failure is provider receipt, ingest, local query, trigger, effect/send, or wake.
-2. **Resolve the target.** In Admin Web, inspect the effective directory target, provider kind, native address, capabilities, and sender restrictions.
+2. **Resolve the target and mailbox independently.** In Admin Web, inspect the effective directory target, provider kind, native address, capabilities, and sender restrictions. For email, also inspect the mailbox grant, access level, folders, and sending-mailbox binding.
 3. **Check the owner service.** Use `journalctl` for `evander-discord-ingest`, `evander-discord-wake`, `evander-teams-ingest`, `evander-teams-meeting-ingest`, or `evander-scheduled-wake` as appropriate.
 4. **Correlate durable IDs.** Follow provider message ID/cursor → stored record → trigger event ID → workflow run → wake dispatch/session. Do not correlate only by message text.
-5. **Inspect policy and approval.** Confirm the session's target allowlist/capability and any pending or expired approval.
+5. **Inspect policy and approval.** Confirm the session's canonical target IDs, mailbox grants, exact tool grant, send flag, recorded draft, and any pending or expired approval. Distinguish `null` legacy fields from explicit empty canonical fields.
 6. **Retry at the failed boundary.** Poll again, replay the eligible workflow event, retry the effect under its idempotency contract, or allow the wake worker's bounded retry. Avoid resending when provider acceptance is uncertain.
 7. **For meetings/calls, check transport separately.** Verify bridge/provider health before debugging transcript or wake logic.
 
@@ -3488,8 +3686,13 @@ uncertain, and do not edit a wake cursor or schedule database to make it advance
 - `src/evander/messaging/wake_dispatch.py`
 - `src/evander/messaging/wake_store.py`
 - `src/evander/gateway/communication_tools.py`
+- `src/evander/gateway/email_draft_helpers.py`
 - `src/evander/communication_artifacts.py`
 - `src/evander/email/providers.py`
+- `src/evander/email/gmail_provider.py`
+- `src/evander/email/graph_provider.py`
+- `src/evander/models.py`
+- `src/evander/policy.py`
 - `src/evander/voice_sessions.py`
 - `src/evander/retell_phone.py`
 - `src/evander/didww_sip_bridge.py`
@@ -3500,7 +3703,9 @@ uncertain, and do not edit a wake cursor or schedule database to make it advance
 - `tests/test_scheduled_wake_worker.py`
 - `tests/test_wake_store.py`
 - `tests/test_gateway_communication_files.py`
+- `tests/test_gateway_discord_tools.py`
 - `tests/test_email_providers.py`
+- `tests/test_policy.py`
 - `tests/test_voice_sessions.py`
 - `tests/test_teams_meeting.py`
 
@@ -3622,6 +3827,49 @@ The add-on is disabled by default. Enable `team-addon`, restart every service li
 
 The bundled Bokio add-on uses the same catalog and policy path. Its operator page is a prepared-action review workspace, while `bokio_create_supplier_invoice` is a narrower direct MCP write with a required durable operation key. A session may be allowed to use that supplier-invoice tool autonomously without granting any direct autonomous bank-payment tool; Bokio bank-payment creation stays prepared/approved and still requires BankID signing.
 
+### The Bokio Add-on boundary
+
+Bokio has two document inventories that should not be confused. Remote uploads are documents that
+already exist in Bokio. Managed evidence is Evander's durable, content-deduplicated local record
+with provenance and association state. Looking at or downloading a remote upload does not
+automatically create managed evidence.
+
+The remote-upload MCP tools each require their own exact session tool grant:
+
+| Tool | Result |
+|---|---|
+| `bokio_list_uploads` | A Bokio-paginated remote list, with page/page-size and an optional query such as a description or `journalEntryId` filter |
+| `bokio_get_upload` | Metadata for one opaque remote upload ID |
+| `bokio_download_upload` | The remote metadata plus a newly staged, session-owned communication artifact containing the file |
+
+The download artifact is a transient handoff governed by the communication-artifact retention
+policy. It can be copied to the current workspace for inspection, but it is not durable bookkeeping
+evidence. Call `bokio_import_evidence_artifact` explicitly while the artifact still exists to create
+or reuse a managed evidence record. `bokio_list_evidence` and `bokio_get_evidence` inspect that
+local durable store; they do not query Bokio's remote uploads.
+
+Remote download is fail-closed. The client accepts only an exact HTTP `200`: partial-content `206`
+and redirects are errors rather than usable files. It streams at most 100 MiB into a bounded buffer,
+normalizes the returned filename, and stages the artifact only after the complete response has been
+read. An oversized, redirected, non-`200`, or interrupted response therefore leaves no partial
+artifact. The job receives the artifact ID and safe metadata, not a host filesystem path.
+
+### Bokio execution ownership and recovery
+
+Direct supplier-invoice operations and prepared actions make one atomic `executing` claim and
+record the process that owns it. A confirmation flag is not permission to steal active work. If the
+recorded process is alive, wait for that attempt to finish before reconciling or retrying it.
+
+A stranded `executing` record is recoverable only after the operator checks Bokio, explicitly
+confirms that the object was not created, and Evander verifies that the recorded owner is no longer
+running. A missing or untrustworthy owner fails closed because Evander cannot distinguish old state
+from live work; reconcile or repair that record outside the ordinary retry control. Terminal
+success, definite failure, and needs-attention transitions clear the execution owner.
+
+In the Admin review workspace, uncertain terminal outcomes use **Confirm absent & retry**. A
+stranded executing action uses **Confirm absent & recover**, but the action still refuses recovery
+while its owner is alive or unknown.
+
 ## Failure behavior
 
 | Symptom | Likely cause | Safe response |
@@ -3633,6 +3881,9 @@ The bundled Bokio add-on uses the same catalog and policy path. Its operator pag
 | Add-on says “pending restart” | Configuration changed after process assembly | Restart the listed services and verify loaded state |
 | Add-on load error | Bad manifest/module/registration, duplicate ID, or missing asset | Inspect discovery and the journal; an explicitly enabled/mapped add-on can fail process assembly rather than start with an incomplete contract |
 | Team UI works but Team MCP tools are missing | Admin restarted but gateway did not | Restart gateway after confirming enablement |
+| Bokio remote upload is listed but local evidence is absent | Remote uploads and managed evidence are separate inventories | Download with the exact grant, then explicitly import the session artifact if durable retention is required |
+| Bokio upload download rejects `206`, redirect, size, or interrupted stream | The complete-file download contract did not pass | Repair the upstream response or request; do not retain or reconstruct partial bytes as evidence |
+| Bokio recovery says the execution owner is live or unknown | The operation is still owned, or the record lacks trustworthy ownership | Wait for a live attempt; for unknown ownership, reconcile or repair outside the retry control rather than forcing a takeover |
 
 ## Troubleshooting and operator handoff
 
@@ -3649,6 +3900,7 @@ If a skill or add-on is missing from a running session, remember that an existin
 5. **Skills:** validate the library entry and every configuration/workflow reference before adding or deleting it. Start a fresh execution to verify installed content.
 6. **Add-ons:** open Add-ons, distinguish discovered/enabled/loaded/pending-restart states, inspect load errors, restart the listed services, and verify `/api/admin/state` plus the add-on's health/read endpoint.
 7. **Team Add-on:** verify `runtime/addons/team-addon/state.db` exists and is readable through the add-on API. Never repair it by copying a stale JSON snapshot over the database.
+8. **Bokio Add-on:** distinguish Bokio's remote upload ID from Evander's artifact and evidence IDs. Verify the session has the exact remote-upload/import tools, then follow remote upload → complete session artifact → explicit durable evidence import. Do not treat a failed partial download as retained evidence.
 
 ## Source trail
 
@@ -3663,6 +3915,9 @@ If a skill or add-on is missing from a running session, remember that an existin
 - `src/evander/admin/services/skill_admin_service.py`
 - `src/evander/addons.py`
 - `src/evander_team_addon/__init__.py`
+- `src/evander_bokio_addon/mcp.py`
+- `src/evander_bokio_addon/client.py`
+- `src/evander_bokio_addon/evidence.py`
 - `docs/addons.md`
 - `docs/configuration-reference.md`
 - `config/model-pricing.openai.json.example`
@@ -3672,6 +3927,7 @@ If a skill or add-on is missing from a running session, remember that an existin
 - `tests/test_model_usage_pricing.py`
 - `tests/test_skill_library_repository.py`
 - `tests/test_addons.py`
+- `tests/test_bokio_addon.py`
 - `tests/test_team_addon_repository.py`
 
 
@@ -6958,6 +7214,12 @@ add-on-contributed areas; **Infrastructure** contains VMs and Workers; and **Gov
 Tool Visibility, MCP Tools, Tool Calls, Configuration, and Users & Groups. Use **Find page** or
 `Ctrl+K` / `Command+K` to search the currently visible built-in and add-on areas without changing
 their hash routes or directory scope.
+
+Inside **Configuration**, a second compact navigator exposes the active area's settings and
+utilities. **Find setting** searches operator labels and help alongside technical domains and field
+keys, then opens and highlights the selected field. Configuration URLs retain the selected area,
+section, and optional field so operators can share a precise destination without changing the
+underlying save or inheritance rules.
 
 | Area | Operator question |
 |---|---|

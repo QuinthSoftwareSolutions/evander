@@ -43,7 +43,10 @@ For Anthropic-backed Claude sessions, set `model_provider_mode: "anthropic"` in 
 provider config and select the `claude` image alias when creating the container-backed session.
 `container_worker_codex_auth_mode` sets the inherited Codex usage source. Keep `metered_api` for
 the existing OpenAI relay, or select `chatgpt_subscription` after configuring and signing in the
-worker account. A session-level selection overrides this default.
+worker account. A session-level selection overrides this default. The subscription selection is
+effective only for container Codex turns whose effective `model_provider_mode` is
+`openai_public`. A `local_openai` or `azure_openai` turn uses its configured private/API-key route
+without rewriting the stored selection, and non-Codex agents do not inherit this Codex default.
 
 The same image catalog is used by request-scoped codebase consultations. A named
 `agent_consultation_profiles` entry selects the model, provider mode, image alias, deadline, and
@@ -295,9 +298,10 @@ evander-cli execution smoke-container-worker --json
 ## Codex ChatGPT Subscription Authentication
 
 This optional path lets container-worker Codex sessions use the operator's ChatGPT subscription
-instead of the metered OpenAI relay. It does not add another worker profile or assign an account
-to one agent: all subscription-mode agents on the worker share the single signed-in operator
-account. Metered and subscription agents can run on the same worker.
+instead of the metered OpenAI relay when their effective `model_provider_mode` is
+`openai_public`. It does not add another worker profile or assign an account to one agent: all
+subscription-mode agents on the worker share the single signed-in operator account. Metered and
+subscription agents can run on the same worker.
 
 The worker auth broker is the only owner of
 `<worker-root>/codex-auth/auth.json`. It holds an exclusive lock at
@@ -338,16 +342,29 @@ The existing `DOCKER-USER` default-deny policy must permit containers to reach t
 but must not grant them direct public egress. Keep the proxy's allowlist narrow and review it when
 Codex's service endpoints change.
 
-After deployment, unlock privileged operations in Admin Web, open **Agents**, and use **Worker
-ChatGPT subscription** to start device login. Complete the displayed link and code, then wait for
-the status to show signed in. Login start, cancellation, and logout are audited without recording
-tokens. Logging out removes the worker account; subscription turns then fail closed. Evander never
-falls back from subscription mode to metered usage.
+After deployment, sign in to Admin Web as an Admin with `admin.owner` permission at `root`, unlock
+privileged operations, open **Agents**, and use **Worker ChatGPT subscription** to start device
+login. Complete the displayed link and code, then wait for the status to show signed in. Account
+status, login start/status, cancellation, and logout all require both checks; ownership of a child
+directory is insufficient because this is one worker-global account. Login start, cancellation,
+and logout are audited without recording tokens.
 
 Choose **Metered API** or **ChatGPT subscription** when creating a container Codex agent, or edit
 an existing agent's policy. The new selection applies to the next turn and preserves that
 session's Codex thread. Multiple agents can use the account concurrently; only account-file and
 token-refresh operations are serialized.
+
+`chatgpt_subscription` is effective only for a container Codex turn on the public OpenAI route.
+If the effective `model_provider_mode` is `local_openai` or `azure_openai`, Evander runs the turn
+through that configured private/API-key route and preserves the stored subscription preference;
+switching the session back to `openai_public` makes the preference effective again. Other agent
+harnesses do not inherit the Codex auth default, and an explicit `chatgpt_subscription` override
+on a non-Codex agent is rejected.
+
+That route selection is separate from subscription failure handling. Once a public Codex turn
+actually selects `chatgpt_subscription`, missing or expired worker credentials fail that turn. Evander never
+falls back from subscription mode to metered usage. Logging out removes the worker account, so
+subsequent public subscription turns fail closed until an authorized root owner signs in again.
 
 ## Session Durability
 

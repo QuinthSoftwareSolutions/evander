@@ -337,8 +337,10 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   Bokio pagination and optional `description` or `journalEntryId` query filters.
   `bokio_get_upload` reads one remote upload's metadata, while
   `bokio_download_upload` downloads its file into a session-owned communication
-  artifact. Downloads require their exact MCP tool grant, are bounded to 100 MiB,
-  and do not automatically create durable local evidence; call
+  artifact. Only a complete HTTP `200` response is staged; redirects, partial
+  responses, and interrupted or truncated transfers are rejected. Downloads
+  require their exact MCP tool grant, are bounded to 100 MiB, and do not
+  automatically create durable local evidence; call
   `bokio_import_evidence_artifact` explicitly when local retention is required.
 - Receipt and invoice intake is connector- and communication-driven. An agent can
   import a PDF, JPEG, or PNG returned as an artifact by a granted filesystem/REST
@@ -379,6 +381,13 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   `retry_if_failed=true`. A timeout, server failure, or other uncertain result
   becomes `needs_attention`; retry is blocked until Bokio has been checked and
   the caller explicitly sets `confirm_not_created=true`.
+- Direct operations and prepared actions record the process that owns an
+  `executing` claim. **Confirm absent** never steals a claim from a live process;
+  wait for that attempt to finish. A stranded claim can be recovered only after
+  reconciling Bokio, explicitly confirming that the object was not created, and
+  verifying that the recorded owner process has exited. Missing or untrustworthy
+  ownership fails closed and requires reconciliation or repair outside the retry
+  control.
 - Document uploads read only from add-on-owned staging directories under
   `runtime/addons/bokio-addon/uploads/`; MCP uploads use
   `uploads/sessions/<session-id>`, workflow uploads use
@@ -387,9 +396,11 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
 - The Bokio Admin tab is the prepared-action review workspace. Pending actions
   use one atomic **Approve & execute** operation; approved legacy actions can be
   executed separately. Definite failures expose **Retry**. Uncertain outcomes
-  expose **Confirm absent & retry** only after reconciliation. Payload, result,
-  error, source, and transition history remain visible. All Admin mutations
-  require an Admin owner with privileged operations unlocked.
+  expose **Confirm absent & retry** only after reconciliation, while a stranded
+  `executing` action uses **Confirm absent & recover** and still refuses to take
+  over a live or unknown owner. Payload, result, error, source, and transition
+  history remain visible. All Admin mutations require an Admin owner with
+  privileged operations unlocked.
 - Prepared-action execution tools execute only approved prepared actions and
   should also be policy-gated with MCP invocation approval for production
   sessions.
@@ -891,6 +902,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_ask_question`
 - `team_send_progress_report`
 - `team_send_operator_chat_message`
+- `team_stage_chat_attachment`
 - `team_escalate_operator`
 - `team_record_memory`
 - `team_archive_memory`
@@ -919,8 +931,9 @@ Ordinary persistent Team wakes may receive these tools:
 Tool visibility is scoped by wake class:
 
 - Normal persistent wakes get ordinary Team action tools.
-- Team Chat wakes get the chat-class tool `team_reply_to_chat`, plus ordinary tools only when that
-  chat dispatch may mutate Team state.
+- Team Chat wakes get the chat-class tool `team_reply_to_chat` and the attachment-staging tool
+  `team_stage_chat_attachment`, plus ordinary tools only when that chat dispatch may mutate Team
+  state.
 - Governance wakes get governance tools only.
 - Ephemeral worker wakes get `team_report_ephemeral_result` only.
 - Inactive or teamless sessions get no ordinary Team action tools, except

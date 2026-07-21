@@ -9,7 +9,7 @@ An isolated workspace does not normally browse the internet or receive the host'
 | What the agent needs | Controlled route | Plain-language boundary |
 |---|---|---|
 | Evander tools | MCP gateway | Show and run only the tools allowed for this active session. |
-| A model | Model relay | Send a supported model request while the real provider key remains on the host. |
+| A model | Model relay, or the worker's brokered subscription route | Keep provider keys or the shared ChatGPT account outside the agent workspace and constrain the upstream destination. |
 | Packages | Package relay, facade, or prepared cache | Reach configured package sources without opening a general download route. |
 | A named test or application environment | HTTP target relay | Reach only a target alias recorded for this session; use the application's own guest-held login. |
 | Source code | Restricted managed Git over SSH | Read or write only the repository scope and refs granted to this session. |
@@ -26,7 +26,7 @@ The host resolves the session and directory rules, supplies an upstream credenti
 
 Suppose the implementation agent for Northstar Platform needs to test telemetry retry behavior.
 
-- A model request goes to Evander's model relay. Evander checks the session, selects the configured provider, removes guest transport credentials, adds the host's provider credential, and records available usage information.
+- A model request normally goes to Evander's model relay. Evander checks the session, selects the configured provider, removes guest transport credentials, adds the host's provider credential, and records available usage information. An explicitly selected public-OpenAI subscription turn on a container worker instead receives in-memory authentication from the worker broker and uses its restricted public proxy.
 - A package restore goes through the appropriate relay or cache. The route may serve a public feed, add a host-held private-feed credential, or use already prepared package content.
 - A request to the provisioned `mission-control` environment uses a session alias such as `mission-control-api`. The agent supplies its legitimate application credential; the relay confines the destination and does not turn that URL into general internet permission.
 
@@ -55,6 +55,7 @@ An operator can use the first column to describe the failure. The remaining colu
 | Expired or bad session token | Session relay request is rejected (`401`/`403` or WebSocket policy close). | Repair session/bootstrap state; do not bypass session routing. |
 | Hosted web search requested but disabled | Relay returns a policy error and logs the denial. | Enable only on the session that genuinely needs it. |
 | Unsupported provider path | Relay returns `501`, validation error, or WebSocket policy close. | Use a supported API; the relay is not a generic reverse proxy. |
+| Subscription mode selected but worker account unavailable | The Codex turn fails without a metered fallback. | Have a root owner inspect broker/account status; do not copy account credentials into the job. |
 | Azure NuGet PAT missing | Public NuGet may work; Azure feed returns `503`. | Set the configured PAT environment variable for the NuGet unit. |
 | HTTP target alias missing | Relay returns `404`. | Add the alias through the session/workflow metadata contract. |
 | HTTP target redirect changes origin | Relay returns `502` rather than following it. | Correct the target base URL or application redirect behavior. |
@@ -118,6 +119,24 @@ The general OpenAI-compatible HTTP allowlist is `GET /v1/models` and `POST` to `
 The relay removes guest `Authorization`, `x-api-key`, hop-by-hop headers, content length/encoding, host, and the Evander session token before building the upstream request. It then supplies the provider credential selected by host configuration. For streaming responses, the upstream client remains alive until the response iterator finishes, so raw SSE bytes can be forwarded without truncating the stream.
 
 Hosted OpenAI web search is denied unless the session manifest explicitly sets `web_search_enabled: true`. The relay examines both HTTP request bodies and WebSocket messages, rather than trusting a client-side Codex flag alone. Model use is recorded in `runtime/model-usage.db` when the provider supplies token usage; completed responses without a usage block are recorded as `usage_unavailable`.
+
+### Subscription routing remains provider-specific
+
+ChatGPT subscription authentication is an optional container-worker Codex route, not a new
+credential accepted by every provider. A `chatgpt_subscription` preference becomes effective only
+when the turn's model provider mode is `openai_public`. The disposable job gets an in-memory token
+snapshot from the worker auth broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts through
+the worker's CONNECT proxy; it receives neither the broker's `auth.json` nor direct public egress.
+
+For `local_openai` and `azure_openai`, Evander deliberately computes the turn as `metered_api` and
+keeps the configured private endpoint and API-key/relay behavior. It leaves the stored session
+preference unchanged. This distinction matters when diagnosing a session that moves between
+provider modes: seeing `chatgpt_subscription` in session policy does not mean a local Ollama or
+Azure request was sent with the worker account.
+
+Subscription authentication also fails closed. An absent login, refresh failure, broker ownership
+failure, or restricted-proxy failure does not cause a quiet retry against the host's metered OpenAI
+credential. Chapter 9 covers account ownership and lifecycle.
 
 ### Local-model routing is still a relay boundary
 
@@ -188,6 +207,22 @@ The repo-root `secrets.env` can be loaded by supported systemd templates, but it
 
 There are narrow exceptions where a guest receives a short-lived or scoped credential: the MCP session token, a session-scoped restricted Git key, a one-time response/consultation token, or an ephemeral OpenAI Realtime client secret. These are capabilities with a bounded audience and purpose, not copies of the long-lived host credential.
 
+### Microsoft Graph mailbox credentials
+
+A Graph mailbox can use a static access-token environment reference for compatibility, but the
+preferred application path names three host environment variables: tenant ID, client ID, and
+client secret. Evander validates that the client-credentials set is complete, lazily exchanges the
+values at the tenant's OAuth 2.0 token endpoint using the Graph `.default` scope, and sends only the
+acquired bearer token to Microsoft Graph. Neither the application secret nor the acquired token is
+written to a guest, session manifest, communication target, or prompt.
+
+Acquired tokens live in a process-local cache keyed by the complete credential identity, including
+authority, tenant, client, secret, and scope. The cache is shared across provider object rebuilds,
+serializes concurrent acquisition for the same identity, and refreshes shortly before expiry.
+Changing a credential value selects a new cache entry, so host-side secret rotation does not keep
+using the old token. Acquisition errors are redacted; operators should record the mailbox ID and
+environment-variable names, never their values.
+
 ## Administrator runbook
 
 First verify the listeners locally on the control plane:
@@ -237,7 +272,15 @@ When diagnosing, preserve the separation of concerns: a DNS or firewall failure 
 - `config/firewall.env.example` and `scripts/apply_firewall.sh` — guest-facing host-port defaults and nftables forwarding policy.
 - `config/cloud-init-user-data.yaml` and `scripts/bootstrap_codex_vm.sh` — guest session environment and relay-aware Codex configuration.
 - `src/evander/relays/openai.py` — session authentication, provider routing, endpoint allowlists, web-search policy, streaming, and usage capture.
+- `src/evander/effects/providers/agent_session.py`, `src/evander/codex_auth.py`, and
+  `src/evander/worker/codex_egress_proxy.py` — public-only subscription selection, preserved
+  private-provider routing, and restricted worker egress.
+- `src/evander/email/graph_provider.py` — host-side Graph client-credentials exchange, shared
+  credential-keyed token cache, and renewal.
 - `src/evander/relays/nuget.py` and `scripts/bootstrap_nuget_vm.sh` — public/private feed proxying, URL rewriting, and guest NuGet layout.
 - `src/evander/relays/http_target.py` — session aliases, guest-managed auth, path validation, and redirect confinement.
 - `src/evander/relays/npm_audit_facade.py` — split npm package/audit routing.
-- `tests/test_openai_relay.py`, `tests/test_nuget_relay.py`, `tests/test_app_relay.py`, `tests/test_npm_audit_facade.py`, and `tests/test_firewall_defaults.py` — relay and network boundary regression coverage.
+- `tests/test_openai_relay.py`, `tests/test_codex_auth_modes.py`,
+  `tests/test_email_providers.py`, `tests/test_nuget_relay.py`, `tests/test_app_relay.py`,
+  `tests/test_npm_audit_facade.py`, and `tests/test_firewall_defaults.py` — relay, private-route,
+  Graph credential, and network-boundary regression coverage.

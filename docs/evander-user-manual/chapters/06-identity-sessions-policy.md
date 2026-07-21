@@ -44,14 +44,22 @@ rejected” differs from “the tool was absent.”
 ## A session is the job's permission card
 
 When Evander creates a session, it records the job's identity, directory, expiry, selected
-execution context, and allowed capabilities. An empty or absent permission is not read as broad
-access. Unknown and expired sessions are denied, and an old workload cannot prolong its own
-authority merely by continuing to send traffic.
+execution context, and allowed capabilities. Most empty or absent permissions do not become broad
+access. Two newer communication fields deliberately preserve a narrower compatibility distinction:
+missing or `null` means that an older session still uses its legacy allowlists, while an explicit
+empty list means no managed communication destinations or mailbox accounts. Unknown and expired
+sessions are denied, and an old workload cannot prolong its own authority merely by continuing to
+send traffic.
 
 Two sessions in the same project can therefore differ. An implementation session may receive only
 the tools needed to inspect a work item, operate the managed-repository workflow, and report its
 result, while a review session receives a different set. Renewal or reissue is an explicit
 operator or domain action.
+
+An older session can show a **legacy communication policy** callout on the Sessions page. Converting
+it prepares managed destination and mailbox selections for review; it does not save them
+immediately. Review the proposed rows—especially outbound email recipients—then save the session
+policy. Selecting no rows and saving is an explicit denial, not a return to legacy behavior.
 
 ![Admin Web detail for a synthetic implementation session](../../assets/evander-user-manual/screenshots/admin-sessions.png)
 
@@ -185,6 +193,12 @@ permission is the union of matching group assignments and matching direct workfl
 inheritance is downward only: an assignment on `mission-control` does not authorize its parent or
 sibling.
 
+Some resources are worker-global rather than directory-owned. In particular, the one ChatGPT
+subscription account shared by a container worker can be inspected, signed in, cancelled during
+login, or signed out only by an authenticated operator with privileged operations unlocked and
+effective `admin.owner` permission at `root`. Ownership of only a child directory is insufficient,
+because changing that account affects subscription-mode agents from every directory on the worker.
+
 ### Privileged-operation lock implementation
 
 Authentication and RBAC answer whether an operator *may* perform an action. Sensitive mutation
@@ -204,11 +218,38 @@ A `SessionManifest` includes:
 - canonical `directory_path`;
 - allowed MCP tools, approval-required tools, and per-tool grant settings;
 - allowed contact and script IDs;
-- Discord, Teams, mailbox, folder, recipient, and domain allowlists;
+- nullable `communication_target_ids` for Teams and Discord destinations plus outbound email
+  recipients;
+- nullable structured `email_mailbox_grants` for mailbox `read`, `draft`, or `send` access and
+  per-mailbox folders, alongside legacy Discord, Teams, mailbox, folder, recipient, and domain
+  allowlists retained for older sessions;
+- an optional `codex_auth_mode` override for container-worker Codex sessions;
 - tool argument policies;
 - communication file limits and enablement;
 - web-search enablement and quotas;
 - metadata for workflow, issue, Team, Git, HTTP-target, and execution correlation.
+
+### Canonical communication grants and legacy conversion
+
+The canonical fields divide two kinds of authority that legacy allowlists combined:
+
+| Session field | Grants | Does not grant |
+|---|---|---|
+| `communication_target_ids` | Named Teams and Discord destinations, and named outbound email recipients | Access to read or draft within an email mailbox |
+| `email_mailbox_grants` | One mailbox account, an access level (`read`, `draft`, or `send`), and explicit folders | Permission to deliver mail to arbitrary recipients |
+
+Both fields are nullable for compatibility. Missing or `null` keeps the corresponding legacy
+resolution path; `[]` is canonical and denies all access in that category even if old allowlist
+fields still contain values. A canonical target that has since been disabled or removed fails
+closed instead of falling back to its raw provider address.
+
+The Sessions-page conversion is explicit and reviewable. It proposes destination IDs from legacy
+Discord channels and Teams channel, chat, and one-on-one user allowlists, plus mailbox grants from
+the old mailbox/folder fields. Mailbox access is inferred conservatively from the session's current
+email tools and send flag: read-only remains `read`, draft-capable becomes `draft`, and an actually
+send-capable session becomes `send`; draft and send proposals include the required `drafts` folder.
+Legacy recipient strings are not silently turned into managed email targets. Select the intended
+configured email recipient targets before saving if the converted session must send mail.
 
 ### Policy evaluation details
 
@@ -267,6 +308,7 @@ separate exact approval may still be required for a sensitive call.
 | Agent's `tools/list` is empty | Session/MCP identity | Unknown, expired, unproved, or incorrectly bound session |
 | Tool is missing | Visibility policy | Not granted, directory-denied, profile-denied, or structurally unavailable |
 | Visible tool rejects call | Payload policy | Argument, target, quota, lease, or approval failed |
+| Legacy communication conversion cannot be saved | Canonical resource validation | A proposed raw/old destination no longer resolves to an enabled managed target, or a mailbox/folder is unavailable under effective policy |
 | Lease works in one run but not another | Workflow scope | Run/session mismatch is intentional |
 | Last owner mutation is rejected | Recovery invariant | Store prevents loss of the effective owner boundary |
 
@@ -308,6 +350,11 @@ human's group does not automatically revoke an already issued agent session.
   scope, and privileged lock.
 - `src/evander/admin/web/users.py` and `tests/test_admin_web_user_store.py` — user/group
   administration, bootstrap, migration, and owner protection.
+- `src/evander/admin/web/codex_auth.py` — privileged root-owner authorization for the worker-global
+  ChatGPT subscription account.
+- `src/evander/admin/services/session_helpers.py` and
+  `frontend/workflow-editor/src/features/sessions/SessionsScreen.tsx` — canonical session-policy
+  updates and explicit legacy communication conversion.
 - `src/evander/models.py` — `SessionManifest`, `SessionToolApprovalLease`, and approval models.
 - `src/evander/policy.py` and `src/evander/policy_config.py` — visibility, grants, denial,
   structural checks, arguments, approvals, and defaults.

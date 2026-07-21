@@ -191,20 +191,31 @@ Common tasks:
    policy, metadata, and attached session or VM context.
 5. Unlock privileges before starting any mutation.
 6. Use **Create** to create an agent session. Fill in directory, session ID, model, TTL, target
-   details, allowed tools/scripts, communication allowlists, bootstrap options, and optional Codex
-   skills.
-7. Use the policy edit action to adjust an existing agent's host-side policy.
-8. Use the skill install action to copy managed Codex skills into an existing session.
-9. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
+   details, allowed tools/scripts, communication targets, mailbox-account access, bootstrap
+   options, and optional Codex skills. Container-worker Codex agents can also choose **Metered
+   API** or **ChatGPT subscription** as their usage source.
+7. Use the policy edit action to adjust an existing agent's host-side policy. A changed Codex usage
+   source applies on the next turn without replacing the session or its thread history.
+8. When you are an Admin owner at `root`, use **Worker ChatGPT subscription** to inspect the
+   worker-global account, start or cancel device-code sign-in, and sign out. These account actions
+   require both root ownership and an unlocked privileged session because every subscription-mode
+   agent on that worker shares the account.
+9. Use the skill install action to copy managed Codex skills into an existing session.
+10. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
    multiline prompt and an optional resume thread ID, prefilled from the session's latest known
    agent thread when available.
-10. Use **Operator steering** to interrupt and steer a container worker session's active dispatch,
+11. Use **Operator steering** to interrupt and steer a container worker session's active dispatch,
     or to queue a legacy relay-delivered note for non-container sessions.
-11. Use lifecycle actions only after confirming the target and directory are correct.
+12. Use lifecycle actions only after confirming the target and directory are correct.
 
 Notes:
 
 - The provider field can be left blank to use the directory/default backend.
+- ChatGPT subscription use applies only to container-worker Codex turns whose effective model
+  provider is public OpenAI. Local OpenAI and Azure OpenAI turns keep their configured private
+  API-key route while retaining the saved preference, and Claude agents do not inherit a Codex
+  usage-source default. A public-OpenAI subscription turn fails rather than falling back when the
+  worker account is unavailable.
 - Skill choices come from the managed Skills tab.
 - The page's automatic list refresh uses a short-lived cached summary so it does not reconcile
   every container execution or probe VM agent state on each poll. Use **Refresh** when you need a
@@ -296,7 +307,8 @@ Treat state removal as a separate, explicit host operation.
 Bundled examples:
 
 - **Team Add-on** registers the Teams UI, Team workflow providers, MCP tools, and a runtime workflow
-  pack.
+  pack. Team agent cards and org-chart actions can open the linked core Sessions record directly;
+  the link does not grant broader session access.
 - **MSSQL Seeds** registers an Admin page for approved seed aliases and sidecar configuration. Its
   restore sidecar must also be enabled and reachable near the worker SQL Server; see
   `docs/addons.md` and `docs/operations.md`.
@@ -393,17 +405,27 @@ Common tasks:
 8. Use delete only when you intend to remove saved local session state.
 9. Edit the model field when a session needs a different model for future resume/prompt work.
 10. Toggle allowed tools and **Require approval** for tools that should queue human decisions.
+    Tools are grouped by domain; Team Add-on tools are distinct from Microsoft Teams application
+    tools even though both names contain “Team”.
 11. Use the settings button next to **Require approval** to set approval TTL, use count, and payload
     matching for that session.
-12. Edit allowed scripts and communication allowlists.
-13. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
+12. Edit **Communication targets** (`communication_target_ids`) for Teams/Discord destinations and
+    outbound email recipients. This control does not grant access to an email mailbox account.
+13. Edit **Email mailbox access** (`email_mailbox_grants`) separately, choosing a configured mailbox,
+    folders, and `read`, `draft`, or `send` capability. Sending requires both a send-capable mailbox grant and a
+    write-capable email target bound to that mailbox; drafting needs the mailbox grant but no send
+    target.
+14. For a legacy session whose canonical grants are still null, review its inherited/raw
+    allowlists and use **Convert to managed grants** deliberately. Missing or null canonical fields
+    preserve legacy behavior; an explicit empty list means no access.
+15. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
     metadata.
-14. Edit connector grants as a connector-to-operation map. A grant exposes only the named
+16. Edit connector grants as a connector-to-operation map. A grant exposes only the named
     operations; it does not expose connector endpoints or authentication material.
-15. Save settings.
-16. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
+17. Save settings.
+18. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
     prompts.
-17. Review recent scheduled wake ledger entries for the selected session, filter by delivery
+19. Review recent scheduled wake ledger entries for the selected session, filter by delivery
     status, and retry failed or missed/late wakes without reading host logs.
 
 Changing allowed tools can also remove approval requirements for tools that are no longer allowed.
@@ -484,20 +506,34 @@ Common tasks:
 
 1. Choose the directory in the shell.
 2. Open **Configuration**.
-3. Select a configuration area from the left list.
-4. Review the effective values, explicit overrides, parent defaults, validation messages, and raw
-   override JSON.
-5. Unlock privileges before saving.
-6. Edit only the fields for the selected area.
-7. Use field tooltips to confirm each setting's meaning and source domain.
-8. Click the save icon in the toolbar.
-9. If the save fails because the config changed on the server, reload and reapply the intended
+3. Select a compact configuration area, then choose one of its visible **Settings** or
+   **Utilities** destinations. Only the selected destination is shown in the workspace.
+4. Use **Find setting** to search friendly labels, descriptions, section names, config domains, or
+   exact field keys. Selecting a field result opens, focuses, and briefly highlights that setting.
+5. Review directory, parent, scope, write mode, underlying domains, and override count in the
+   context strip.
+6. Unlock privileges before saving.
+7. Edit fields in the selected section. Moving between sections or areas preserves drafts and marks
+   every affected area as unsaved.
+8. Use field tooltips to confirm each setting's meaning and source domain.
+9. Click the save icon in the toolbar to save the selected area's complete draft.
+10. Open **Validation**, **Directory override JSON**, **Effective configuration**, or **Parent
+    defaults** from Utilities when you need resolution and diagnostic detail.
+11. If the save fails because the config changed on the server, reload and reapply the intended
    changes.
+
+Configuration destinations are linkable through the page URL. Links may identify an area,
+section, and field so another operator can open the same setting directly; invalid or outdated
+destinations fall back to the first available section.
 
 Specialized configuration areas:
 
 - **People & Communications**: maintain contacts, communication targets, approval notification
-  targets, Discord, Teams, email, phone-call, and communication-file settings together.
+  targets, Discord, Teams, email, phone-call, and communication-file settings together. The email
+  mailbox editor uses structured rows for provider, mailbox identity, host-only secret environment
+  references, folder mapping, and default folders. Microsoft Graph supports either a legacy static
+  access-token reference or tenant/client/client-secret references for automatic host-side token
+  acquisition; secret values never belong in the form.
 - **Models, Assistant & Knowledge**: edit model routing, Assistant behavior, model pricing,
   semantic-store, and embedding settings.
 - **Agent Runtime & Launch**: control execution backend, container worker, prompt delivery,
@@ -505,7 +541,9 @@ Specialized configuration areas:
 - **Code, Issues & Pull Requests**: configure Azure DevOps, GitHub, ADO worker filters, Git
   transport, PR feedback approval, and PR templates.
 - **Access, Approvals & Audit**: keep approval-required tools, core approval timing, MCP tool
-  policies, tool argument guardrails, and audit redaction together.
+  policies, tool argument guardrails, and audit redaction together. Email policy controls use
+  configured mailbox selectors and folder rows rather than raw JSON; outbound email targets select
+  their sending mailbox independently from session mailbox-account access.
 - **Network, Relays & Package Access**: configure VM provider defaults, libvirt templates, VM
   network, gateway, relay endpoints, NuGet, and npm audit facade settings.
 - **Automation & Assignment**: set issue intake capacity and assignment roles.
@@ -671,6 +709,10 @@ Common editing tasks:
    and catalog-backed options. Agent/VM creation tool argument policies use a structured
    rule-and-constraint editor for common policies, with raw JSON still available for advanced
    policy maps.
+   Literal session and VM target fields offer compact suggestions from the selected directory,
+   including expired sessions labeled `(expired)`. Suggestions do not replace free-form IDs,
+   templates, or upstream-output bindings, and the available half of the catalog remains usable if
+   the session or VM inventory cannot be loaded.
 10. Review diagnostics on dirty or invalid nodes.
 11. Use **Reset changes** for a selected dirty node when you want to return it to the saved
     version.

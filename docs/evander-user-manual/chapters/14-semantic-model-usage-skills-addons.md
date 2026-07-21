@@ -115,6 +115,49 @@ The add-on is disabled by default. Enable `team-addon`, restart every service li
 
 The bundled Bokio add-on uses the same catalog and policy path. Its operator page is a prepared-action review workspace, while `bokio_create_supplier_invoice` is a narrower direct MCP write with a required durable operation key. A session may be allowed to use that supplier-invoice tool autonomously without granting any direct autonomous bank-payment tool; Bokio bank-payment creation stays prepared/approved and still requires BankID signing.
 
+### The Bokio Add-on boundary
+
+Bokio has two document inventories that should not be confused. Remote uploads are documents that
+already exist in Bokio. Managed evidence is Evander's durable, content-deduplicated local record
+with provenance and association state. Looking at or downloading a remote upload does not
+automatically create managed evidence.
+
+The remote-upload MCP tools each require their own exact session tool grant:
+
+| Tool | Result |
+|---|---|
+| `bokio_list_uploads` | A Bokio-paginated remote list, with page/page-size and an optional query such as a description or `journalEntryId` filter |
+| `bokio_get_upload` | Metadata for one opaque remote upload ID |
+| `bokio_download_upload` | The remote metadata plus a newly staged, session-owned communication artifact containing the file |
+
+The download artifact is a transient handoff governed by the communication-artifact retention
+policy. It can be copied to the current workspace for inspection, but it is not durable bookkeeping
+evidence. Call `bokio_import_evidence_artifact` explicitly while the artifact still exists to create
+or reuse a managed evidence record. `bokio_list_evidence` and `bokio_get_evidence` inspect that
+local durable store; they do not query Bokio's remote uploads.
+
+Remote download is fail-closed. The client accepts only an exact HTTP `200`: partial-content `206`
+and redirects are errors rather than usable files. It streams at most 100 MiB into a bounded buffer,
+normalizes the returned filename, and stages the artifact only after the complete response has been
+read. An oversized, redirected, non-`200`, or interrupted response therefore leaves no partial
+artifact. The job receives the artifact ID and safe metadata, not a host filesystem path.
+
+### Bokio execution ownership and recovery
+
+Direct supplier-invoice operations and prepared actions make one atomic `executing` claim and
+record the process that owns it. A confirmation flag is not permission to steal active work. If the
+recorded process is alive, wait for that attempt to finish before reconciling or retrying it.
+
+A stranded `executing` record is recoverable only after the operator checks Bokio, explicitly
+confirms that the object was not created, and Evander verifies that the recorded owner is no longer
+running. A missing or untrustworthy owner fails closed because Evander cannot distinguish old state
+from live work; reconcile or repair that record outside the ordinary retry control. Terminal
+success, definite failure, and needs-attention transitions clear the execution owner.
+
+In the Admin review workspace, uncertain terminal outcomes use **Confirm absent & retry**. A
+stranded executing action uses **Confirm absent & recover**, but the action still refuses recovery
+while its owner is alive or unknown.
+
 ## Failure behavior
 
 | Symptom | Likely cause | Safe response |
@@ -126,6 +169,9 @@ The bundled Bokio add-on uses the same catalog and policy path. Its operator pag
 | Add-on says “pending restart” | Configuration changed after process assembly | Restart the listed services and verify loaded state |
 | Add-on load error | Bad manifest/module/registration, duplicate ID, or missing asset | Inspect discovery and the journal; an explicitly enabled/mapped add-on can fail process assembly rather than start with an incomplete contract |
 | Team UI works but Team MCP tools are missing | Admin restarted but gateway did not | Restart gateway after confirming enablement |
+| Bokio remote upload is listed but local evidence is absent | Remote uploads and managed evidence are separate inventories | Download with the exact grant, then explicitly import the session artifact if durable retention is required |
+| Bokio upload download rejects `206`, redirect, size, or interrupted stream | The complete-file download contract did not pass | Repair the upstream response or request; do not retain or reconstruct partial bytes as evidence |
+| Bokio recovery says the execution owner is live or unknown | The operation is still owned, or the record lacks trustworthy ownership | Wait for a live attempt; for unknown ownership, reconcile or repair outside the retry control rather than forcing a takeover |
 
 ## Troubleshooting and operator handoff
 
@@ -142,6 +188,7 @@ If a skill or add-on is missing from a running session, remember that an existin
 5. **Skills:** validate the library entry and every configuration/workflow reference before adding or deleting it. Start a fresh execution to verify installed content.
 6. **Add-ons:** open Add-ons, distinguish discovered/enabled/loaded/pending-restart states, inspect load errors, restart the listed services, and verify `/api/admin/state` plus the add-on's health/read endpoint.
 7. **Team Add-on:** verify `runtime/addons/team-addon/state.db` exists and is readable through the add-on API. Never repair it by copying a stale JSON snapshot over the database.
+8. **Bokio Add-on:** distinguish Bokio's remote upload ID from Evander's artifact and evidence IDs. Verify the session has the exact remote-upload/import tools, then follow remote upload → complete session artifact → explicit durable evidence import. Do not treat a failed partial download as retained evidence.
 
 ## Source trail
 
@@ -156,6 +203,9 @@ If a skill or add-on is missing from a running session, remember that an existin
 - `src/evander/admin/services/skill_admin_service.py`
 - `src/evander/addons.py`
 - `src/evander_team_addon/__init__.py`
+- `src/evander_bokio_addon/mcp.py`
+- `src/evander_bokio_addon/client.py`
+- `src/evander_bokio_addon/evidence.py`
 - `docs/addons.md`
 - `docs/configuration-reference.md`
 - `config/model-pricing.openai.json.example`
@@ -165,4 +215,5 @@ If a skill or add-on is missing from a running session, remember that an existin
 - `tests/test_model_usage_pricing.py`
 - `tests/test_skill_library_repository.py`
 - `tests/test_addons.py`
+- `tests/test_bokio_addon.py`
 - `tests/test_team_addon_repository.py`

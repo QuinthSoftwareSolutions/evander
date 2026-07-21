@@ -47,12 +47,20 @@ Operators and workflow authors select communication targets by a stable, readabl
 pasting an arbitrary provider address into each job. Each target says whether the project may read,
 write, or reply. Direct messages can additionally restrict which senders are accepted.
 
+A communication target is a destination, not an account login. For email, a named recipient target
+answers “where may this session deliver a message?” while a mailbox grant answers “which mailbox
+may it read, draft in, or send from?” Granting one never silently grants the other. This same split
+keeps a readable finance inbox from becoming permission to mail arbitrary people.
+
 > <span class="sidebar-kicker">Deeper detail</span> **Target resolution and policy**
 >
 > A target definition has a stable ID, provider and target kind, provider-native address, display
 > metadata, and capabilities. Capabilities are explicit—typically `read`, `write`, and `reply`—and
-> are checked per operation. Sessions refer to target IDs or legacy provider references; the resolver
-> applies directory inheritance and overlays before returning the effective target.
+> are checked per operation. Canonical sessions refer to destinations through
+> `communication_target_ids`; the resolver applies directory inheritance and overlays before
+> returning the effective target. Missing or `null` retains legacy destination resolution for an
+> older session, while `[]` means no destinations. Once canonical, a disabled or deleted target
+> fails closed instead of being treated as a raw provider address.
 >
 > Target definitions contain addresses, not access tokens. Discord bot tokens, Microsoft Graph
 > credentials, email credentials, and telephony secrets remain in host environment/configuration.
@@ -123,20 +131,68 @@ session's artifact area.
 An agent can prepare a draft without automatically gaining permission to send it. Recipient and
 domain rules still apply, and the final send can pause for explicit approval.
 
+Three checks stay visibly separate:
+
+| Selection | What it permits | What else is needed |
+|---|---|---|
+| Mailbox grant with `read` | Read only the named mailbox and granted folders | The relevant read tool must also be granted |
+| Mailbox grant with `draft` | Read plus create a host-recorded draft in that mailbox | The `drafts` folder, the draft tool, and any recipient/domain rule |
+| Mailbox grant with `send` | Read and draft, and make that mailbox eligible to send | Global/session send enablement, the send tool, a matching recipient target, and any required approval |
+
+`draft` and `send` grants must include the `drafts` folder. A draft may name recipients allowed by
+the draft recipient/domain policy without receiving an outbound `communication_target_ids` grant;
+that lets an agent prepare text for review. Delivery is stricter: every recipient must resolve to a
+write-capable email communication target selected for the session and bound to the same sending
+mailbox profile.
+
 > <span class="sidebar-kicker">Deeper detail</span> **Mailbox providers and state**
 >
-> Email providers support Gmail and Microsoft Graph behind a normalized interface. Mailbox and
-> folder reads are restricted by host policy. Sync cursors are stored locally so polling can continue
-> without scanning the entire mailbox.
+> Email providers support Gmail and Microsoft Graph behind a normalized interface. Mailbox access
+> comes from `email_mailbox_grants`; each row names the mailbox, access level, and folders. Missing
+> or `null` retains the old mailbox/folder allowlists, while `[]` denies all mailbox access even if
+> old allowlist fields remain in the manifest. Sync cursors are stored locally so incremental unread
+> polling can continue without scanning the entire mailbox.
 >
-> Drafting and sending are different operations. Recipient and domain allowlists constrain drafts;
-> a send can require explicit approval. The guest sees message and draft abstractions, not OAuth
-> refresh tokens. JSON-backed email is available for controlled/local use but should not be mistaken
-> for a live provider.
+> Draft creation records a host-side snapshot owned by the calling session and mailbox. Sending must
+> reference that snapshot and match its recipients, subject, and attachment IDs; a different session
+> cannot send it. The send then applies the mailbox's `send` grant, global/session send enablement,
+> matching canonical recipient targets, and approval policy before calling the provider.
+>
+> Microsoft Graph can acquire application tokens from host-held tenant, client, and client-secret
+> environment references and cache them until shortly before expiry. The guest sees message and
+> draft abstractions, not application credentials or access tokens. Static Graph tokens remain a
+> compatibility mode; Chapter 10 describes the host-side credential boundary. JSON-backed email is
+> available for controlled/local use but should not be mistaken for a live provider.
+
+Older sessions remain on their legacy communication behavior until an operator explicitly chooses
+**Convert to managed grants** on the Sessions page and saves the reviewed result. The conversion
+proposes mailbox access from current tools and flags and brings forward legacy Discord channels and
+Teams channel, chat, and one-on-one user allowlists; it does not invent managed email recipient
+targets from free-form recipient strings. Chapter 6 gives the conversion details. An explicit empty
+managed selection is a denial, so do not use conversion as a casual formatting operation.
 
 When a send result is uncertain—for example, the network fails after the provider accepted the
 request—inspect the provider's sent/draft state and Evander's audit entry before retrying. Blind
 retry can duplicate a message.
+
+### Finding older email safely
+
+`email_list_unread` remains the incremental unread workflow. The broader
+`email_list_messages` tool is separate and must appear explicitly in the session's allowed tools;
+giving a session ordinary email read tools does not add it automatically. It also requires a
+read-capable grant for the named mailbox and folder.
+
+The listing tool returns message summaries plus an opaque `next_cursor`. It accepts a page size
+from 1 to 100 and portable filters for received-after/before time, read state, sender, recipient,
+subject, full text, and attachment presence. Date bounds must include a timezone, and the lower
+bound must be earlier than the upper bound. Gmail and Graph translate those filters into
+provider-supported queries, while the controlled local provider evaluates them in memory. The
+agent does not receive provider-specific query syntax.
+
+A cursor is bound to the session, mailbox, folder, and exact filter set that issued it, and expires
+after 15 minutes. Continue a page with the returned cursor and the same arguments; trying to reuse
+it for another search—or after expiry—is a validation error. This prevents an opaque provider
+continuation URL or token from becoming a way to change mailbox scope.
 
 ## Scheduled wakes
 
@@ -223,6 +279,9 @@ example, “the message appears in Evander, but no workflow run was created.”
 | Message is stored; workflow did not run | Trigger target, sender filter, and trigger cursor | Ingest succeeded; workflow eligibility did not |
 | Workflow ran; agent did not wake | Wake dispatch record and session state | Dispatch was denied, deferred, or failed |
 | Read works but reply fails | Target capabilities and thread identity | `read` does not imply `reply` |
+| Mailbox is visible but an email read is denied | Mailbox grant, folder, and exact tool | A destination target does not grant mailbox-account access; `email_list_messages` also needs its own tool grant |
+| Draft succeeds but send is denied | Recorded draft, send-capable mailbox, recipient target, send enablement, and approval | Draft authority deliberately does not imply delivery authority |
+| Email page cursor is rejected | Session/mailbox/folder/filter binding or the 15-minute expiry | Reuse an unexpired cursor only with the exact search that issued it; start a new search otherwise |
 | Attachment fetch is rejected | Source target, filename/type/size, and stored message link | File did not pass the attachment trust boundary |
 | Cron fires repeatedly at once | Schedule/cursor migration or clock assumptions | Inspect persisted `next_run_at`; do not edit the database live |
 | Call/meeting exists but no summary arrives | Provider/bridge record, ingest event, then wake record | Transport, event ingestion, and agent delivery are distinct |
@@ -236,10 +295,10 @@ uncertain, and do not edit a wake cursor or schedule database to make it advance
 ## Administrator runbook
 
 1. **Name the stage.** Decide whether the failure is provider receipt, ingest, local query, trigger, effect/send, or wake.
-2. **Resolve the target.** In Admin Web, inspect the effective directory target, provider kind, native address, capabilities, and sender restrictions.
+2. **Resolve the target and mailbox independently.** In Admin Web, inspect the effective directory target, provider kind, native address, capabilities, and sender restrictions. For email, also inspect the mailbox grant, access level, folders, and sending-mailbox binding.
 3. **Check the owner service.** Use `journalctl` for `evander-discord-ingest`, `evander-discord-wake`, `evander-teams-ingest`, `evander-teams-meeting-ingest`, or `evander-scheduled-wake` as appropriate.
 4. **Correlate durable IDs.** Follow provider message ID/cursor → stored record → trigger event ID → workflow run → wake dispatch/session. Do not correlate only by message text.
-5. **Inspect policy and approval.** Confirm the session's target allowlist/capability and any pending or expired approval.
+5. **Inspect policy and approval.** Confirm the session's canonical target IDs, mailbox grants, exact tool grant, send flag, recorded draft, and any pending or expired approval. Distinguish `null` legacy fields from explicit empty canonical fields.
 6. **Retry at the failed boundary.** Poll again, replay the eligible workflow event, retry the effect under its idempotency contract, or allow the wake worker's bounded retry. Avoid resending when provider acceptance is uncertain.
 7. **For meetings/calls, check transport separately.** Verify bridge/provider health before debugging transcript or wake logic.
 
@@ -254,8 +313,13 @@ uncertain, and do not edit a wake cursor or schedule database to make it advance
 - `src/evander/messaging/wake_dispatch.py`
 - `src/evander/messaging/wake_store.py`
 - `src/evander/gateway/communication_tools.py`
+- `src/evander/gateway/email_draft_helpers.py`
 - `src/evander/communication_artifacts.py`
 - `src/evander/email/providers.py`
+- `src/evander/email/gmail_provider.py`
+- `src/evander/email/graph_provider.py`
+- `src/evander/models.py`
+- `src/evander/policy.py`
 - `src/evander/voice_sessions.py`
 - `src/evander/retell_phone.py`
 - `src/evander/didww_sip_bridge.py`
@@ -266,6 +330,8 @@ uncertain, and do not edit a wake cursor or schedule database to make it advance
 - `tests/test_scheduled_wake_worker.py`
 - `tests/test_wake_store.py`
 - `tests/test_gateway_communication_files.py`
+- `tests/test_gateway_discord_tools.py`
 - `tests/test_email_providers.py`
+- `tests/test_policy.py`
 - `tests/test_voice_sessions.py`
 - `tests/test_teams_meeting.py`

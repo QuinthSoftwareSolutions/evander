@@ -318,9 +318,21 @@ Container-worker Codex sessions can use either `metered_api` or
 `chatgpt_subscription`. Set the inherited default with
 `container_worker_codex_auth_mode` in directory provider configuration, then override individual
 agents from the Admin Web create or policy editor. An override applies to the next turn and keeps
-the existing session and thread. Subscription mode requires a signed-in worker account; unlock
-privileged operations on the Agents page to complete device login or log out. Missing or expired
-subscription credentials fail the turn and never fall back to metered usage. The deployment and
+the existing session and thread.
+
+The subscription selection is effective only for container Codex turns whose effective
+`model_provider_mode` is `openai_public`. If `local_openai` or `azure_openai` is effective, the
+turn uses that configured private/API-key route and the stored subscription preference is left
+unchanged. Returning the session to `openai_public` makes the preference effective again.
+Non-Codex agents do not inherit the Codex default; an explicit `chatgpt_subscription` override on
+one is invalid.
+
+Subscription mode on the public route requires a signed-in worker account. Account status,
+device-login start/status/cancellation, and logout are worker-global operations, so the Admin must
+have `admin.owner` at `root` and must unlock privileged operations on the Agents page. A child
+directory owner is not sufficient. Missing or expired credentials then fail the public
+subscription turn and never fall back to metered usage; using the configured local or Azure route
+described above is route selection, not an authentication fallback. The deployment and
 single-`auth.json` ownership requirements are in
 [`container-worker-backend.md`](container-worker-backend.md#codex-chatgpt-subscription-authentication).
 
@@ -1582,6 +1594,25 @@ Audit/result behavior:
   automatically; static access-token references remain available for compatibility.
 - Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
   to allow `email_send` and enforce approval through MCP approval policy where required.
+
+### Paginated mailbox listing
+
+Use `email_list_messages` for historical or filtered mailbox-folder scans. Grant the tool
+explicitly and give the session read access to the selected `mailbox_id` and `folder`; ordinary
+email-enabled sessions do not receive this broader listing tool automatically. Keep
+`email_list_unread` for incremental unread processing.
+
+The required arguments are `session_id`, `mailbox_id`, and `folder`. `limit` defaults to `25` and
+accepts `1` through `100`. Optional filters are `received_after`, `received_before`, `unread`,
+`sender_contains`, `recipient_contains`, `subject_contains`, `text_contains`, and
+`has_attachments`. Date filters must be timezone-aware, and `received_after` must be earlier than
+`received_before`.
+
+The result contains `messages` and an opaque `next_cursor`. To read another page, pass that cursor
+back with the same session, mailbox, folder, and complete filter set. Cursors expire after 15
+minutes and cannot be reused with changed filters; omit `cursor` to start a new scan. Listing
+returns message summaries. Use the separately granted `email_get_message` tool with a returned
+`message_id` when the full message body or attachment metadata is needed.
 
 ## Operator Approval Notifications
 
