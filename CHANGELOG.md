@@ -6,6 +6,8 @@
   configured mailbox accounts while retaining canonical `email.<mailbox-id>` storage.
 - Replaced raw JSON mailbox-folder policy editing with mailbox rows and folder checkboxes, and made
   the mailbox allowlist select configured mailbox IDs while preserving explicit empty folder grants.
+- Kept effective host-config mailboxes available to the selectors when the root directory has no
+  explicit mailbox override.
 
 ## 2026-07-21 - Workflow Existing-Target Suggestions
 

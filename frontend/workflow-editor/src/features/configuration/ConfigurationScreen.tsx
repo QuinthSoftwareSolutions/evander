@@ -737,7 +737,7 @@ function configuredEmailMailboxEntries(
 ): EmailMailboxDraftEntry[] {
   const fieldState = tabDraft[EMAIL_MAILBOXES_FIELD_NAME];
   if (fieldState) {
-    if (fieldState.clear && (isRoot || fieldState.include)) {
+    if (fieldState.clear && fieldState.include) {
       return [];
     }
     const usesDraft = isRoot ? !fieldState.clear : fieldState.include && !fieldState.clear;

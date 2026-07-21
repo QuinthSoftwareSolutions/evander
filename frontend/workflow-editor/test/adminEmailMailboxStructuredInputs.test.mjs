@@ -35,6 +35,15 @@ test("email mailboxes use a structured configuration editor", () => {
   assert.match(configuration, /emailMailboxDraftEntriesToConfig/);
 });
 
+test("unset root mailbox overrides keep effective mailboxes available to selectors", () => {
+  assert.match(configuration, /if \(fieldState\.clear && fieldState\.include\) \{\s*return \[\];/);
+  assert.doesNotMatch(configuration, /fieldState\.clear && \(isRoot \|\| fieldState\.include\)/);
+  assert.match(
+    configuration,
+    /snapshot\?\.effective\.config\[EMAIL_MAILBOXES_FIELD_NAME\]/,
+  );
+});
+
 test("email mailbox drafts preserve Graph aliases and produce the canonical config shape", () => {
   const entries = emailMailboxEntriesFromConfig([
     {
