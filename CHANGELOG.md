@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-21 - Bokio Remote Upload MCP Tools
+
+- Added separately granted MCP tools to list remote Bokio uploads, read one upload's metadata, and
+  download its bounded file into a session-owned communication artifact.
+- Kept remote downloads transient and the existing local evidence inventory distinct, requiring an
+  explicit evidence import when a downloaded Bokio upload should be retained and deduplicated.
+
 ## 2026-07-21 - Switchable Codex Subscription Usage
 
 - Added per-directory defaults and per-session overrides for choosing metered API or ChatGPT

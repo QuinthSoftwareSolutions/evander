@@ -333,6 +333,13 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
 
 - Agents can inspect company information, accounts, journal entries, invoices,
   supplier invoices, uploads, and prepared actions.
+- `bokio_list_uploads` queries documents already stored remotely in Bokio, with
+  Bokio pagination and optional `description` or `journalEntryId` query filters.
+  `bokio_get_upload` reads one remote upload's metadata, while
+  `bokio_download_upload` downloads its file into a session-owned communication
+  artifact. Downloads require their exact MCP tool grant, are bounded to 100 MiB,
+  and do not automatically create durable local evidence; call
+  `bokio_import_evidence_artifact` explicitly when local retention is required.
 - Receipt and invoice intake is connector- and communication-driven. An agent can
   import a PDF, JPEG, or PNG returned as an artifact by a granted filesystem/REST
   connector, or by `communication_download_attachment`, with
@@ -347,9 +354,10 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   downloaded or scanned documents. A REST connector may provide vendor cost data
   or a fixed document download endpoint, but it does not replace the email
   integration for user-delegated mailboxes.
-- `bokio_list_evidence` and `bokio_get_evidence` expose evidence metadata,
-  provenance, and Bokio association state. `bokio_stage_evidence_for_workspace`
-  can make previously retained evidence available to a new session as an artifact.
+- `bokio_list_evidence` and `bokio_get_evidence` expose metadata, provenance, and
+  Bokio association state from Evander's durable local evidence store; they do not
+  query Bokio's remote uploads. `bokio_stage_evidence_for_workspace` can make
+  previously retained evidence available to a new session as an artifact.
 - `bokio_attach_evidence` uploads managed evidence with a Bokio journal-entry ID,
   linking it to an existing transaction or entry. `bokio_create_journal_entry_with_evidence`
   creates an entry and attaches one or more evidence records with a durable

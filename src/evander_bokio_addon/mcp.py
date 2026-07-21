@@ -27,6 +27,9 @@ GET_COMPANY_TOOL = "bokio_get_company"
 LIST_ACCOUNTS_TOOL = "bokio_list_accounts"
 LIST_JOURNAL_ENTRIES_TOOL = "bokio_list_journal_entries"
 LIST_INVOICES_TOOL = "bokio_list_invoices"
+LIST_UPLOADS_TOOL = "bokio_list_uploads"
+GET_UPLOAD_TOOL = "bokio_get_upload"
+DOWNLOAD_UPLOAD_TOOL = "bokio_download_upload"
 LIST_EVIDENCE_TOOL = "bokio_list_evidence"
 GET_EVIDENCE_TOOL = "bokio_get_evidence"
 STAGE_EVIDENCE_TOOL = "bokio_stage_evidence_for_workspace"
@@ -47,10 +50,13 @@ READ_TOOLS = (
     LIST_ACCOUNTS_TOOL,
     LIST_JOURNAL_ENTRIES_TOOL,
     LIST_INVOICES_TOOL,
+    LIST_UPLOADS_TOOL,
+    GET_UPLOAD_TOOL,
     LIST_EVIDENCE_TOOL,
     GET_EVIDENCE_TOOL,
 )
 WRITE_TOOLS = (
+    DOWNLOAD_UPLOAD_TOOL,
     STAGE_EVIDENCE_TOOL,
     IMPORT_EVIDENCE_ARTIFACT_TOOL,
     UPLOAD_DOCUMENT_TOOL,
@@ -80,6 +86,17 @@ MCP_TOOL_CATALOG = (
         "List Bokio journal entries with optional paging and filtering.",
     ),
     _catalog(LIST_INVOICES_TOOL, "List invoices", "List Bokio customer invoices."),
+    _catalog(
+        LIST_UPLOADS_TOOL,
+        "List uploads",
+        "List receipt and invoice uploads stored remotely in Bokio.",
+    ),
+    _catalog(GET_UPLOAD_TOOL, "Get upload", "Read one remote Bokio upload's metadata."),
+    _catalog(
+        DOWNLOAD_UPLOAD_TOOL,
+        "Download upload",
+        "Download a remote Bokio upload as a session communication artifact.",
+    ),
     _catalog(LIST_EVIDENCE_TOOL, "List evidence", "List managed Bokio evidence records."),
     _catalog(GET_EVIDENCE_TOOL, "Get evidence", "Read one managed Bokio evidence record."),
     _catalog(
@@ -225,6 +242,65 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         _require_tool(session_id, ctx, LIST_INVOICES_TOOL)
         return {
             "result": _client(context).list_invoices(page=page, page_size=page_size, query=query)
+        }
+
+    @server.tool(
+        name=LIST_UPLOADS_TOOL,
+        description="List remote Bokio uploads with optional pagination and query filter.",
+    )
+    def bokio_list_uploads(
+        page: int = 1,
+        page_size: int = 25,
+        query: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, LIST_UPLOADS_TOOL)
+        return {
+            "result": _client(context).list_uploads(
+                page=page,
+                page_size=page_size,
+                query=query,
+            )
+        }
+
+    @server.tool(
+        name=GET_UPLOAD_TOOL,
+        description="Read metadata for one upload stored remotely in Bokio.",
+    )
+    def bokio_get_upload(
+        upload_id: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, GET_UPLOAD_TOOL)
+        return {"result": _client(context).get_upload(upload_id)}
+
+    @server.tool(
+        name=DOWNLOAD_UPLOAD_TOOL,
+        description="Download one remote Bokio upload as a session-owned communication artifact.",
+    )
+    def bokio_download_upload(
+        upload_id: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _require_tool(session_id, ctx, DOWNLOAD_UPLOAD_TOOL)
+        client = _client(context)
+        upload = client.get_upload(upload_id)
+        downloaded = client.download_upload(upload_id)
+        artifact = CommunicationArtifactStore(context.runtime_dir).stage(
+            provider="bokio_upload",
+            session_id=resolved_session_id,
+            content=downloaded.content,
+            original_filename=downloaded.filename,
+            mime_type=downloaded.mime_type,
+            source_attachment_id=upload_id,
+            metadata={"bokio_upload_id": upload_id, "bokio_upload": upload},
+        )
+        return {
+            "upload": upload,
+            "artifact": artifact.model_dump(mode="json"),
         }
 
     @server.tool(

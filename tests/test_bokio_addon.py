@@ -76,6 +76,73 @@ def test_bokio_client_normalizes_api_errors(monkeypatch) -> None:
     assert payload["payload"]["error"] == "price_plan_feature_required"
 
 
+def test_bokio_client_lists_gets_and_downloads_remote_uploads(monkeypatch) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/uploads/upload-1/download"):
+            return httpx.Response(
+                200,
+                content=b"%PDF-1.7\nreceipt",
+                headers={
+                    "content-type": "application/pdf; charset=binary",
+                    "content-disposition": 'attachment; filename="receipt.pdf"',
+                },
+            )
+        if request.url.path.endswith("/uploads/upload-1"):
+            return httpx.Response(200, json={"id": "upload-1", "description": "Receipt"})
+        return httpx.Response(
+            200,
+            json={"totalItems": 1, "items": [{"id": "upload-1"}]},
+        )
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    client = BokioClient(settings_from_context())
+
+    listed = client.list_uploads(page=0, page_size=999, query="journalEntryId==entry-1")
+    upload = client.get_upload("upload-1")
+    downloaded = client.download_upload("upload-1")
+
+    assert listed["items"] == [{"id": "upload-1"}]
+    assert upload == {"id": "upload-1", "description": "Receipt"}
+    assert downloaded.content == b"%PDF-1.7\nreceipt"
+    assert downloaded.filename == "receipt.pdf"
+    assert downloaded.mime_type == "application/pdf"
+    assert dict(requests[0].url.params) == {
+        "page": "1",
+        "pageSize": "100",
+        "query": "journalEntryId==entry-1",
+    }
+    assert [request.headers["authorization"] for request in requests] == ["Bearer secret-token"] * 3
+    assert requests[2].headers["accept"] == "application/octet-stream"
+
+
+def test_bokio_client_download_rejects_oversized_upload(monkeypatch) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"123456789", headers={"content-type": "image/png"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+
+    with pytest.raises(BokioApiError, match="8-byte download limit") as exc_info:
+        BokioClient(settings_from_context()).download_upload("upload-1", max_bytes=8)
+
+    assert exc_info.value.payload == {"byte_count": 9, "max_bytes": 8}
+
+
+@pytest.mark.parametrize("upload_id", ["", "../journal-entries", "upload/other"])
+def test_bokio_client_rejects_non_opaque_upload_ids(monkeypatch, upload_id: str) -> None:
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+
+    with pytest.raises(ValueError, match="upload_id"):
+        BokioClient(settings_from_context()).get_upload(upload_id)
+
+
 def test_bokio_upload_document_requires_staged_pdf_jpeg_or_png(
     tmp_path,
     monkeypatch,
@@ -882,6 +949,187 @@ def test_bokio_mcp_read_tool_requires_session_tool_permission(
     assert result == {"result": {"companyInformation": {"name": "Example AB"}}}
     assert len(requests) == 1
     assert requests[0].headers["authorization"] == "Bearer secret-token"
+
+
+def test_bokio_mcp_lists_and_gets_remote_uploads_with_separate_permissions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/uploads/upload-1"):
+            return httpx.Response(200, json={"id": "upload-1", "description": "Receipt"})
+        return httpx.Response(200, json={"totalItems": 1, "items": [{"id": "upload-1"}]})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_list_uploads", "bokio_get_upload"],
+    )
+
+    listed = server.tools["bokio_list_uploads"](
+        page=2,
+        page_size=50,
+        query="description~Receipt",
+        session_id="session-1",
+    )
+    upload = server.tools["bokio_get_upload"](
+        upload_id="upload-1",
+        session_id="session-1",
+    )
+
+    assert listed == {"result": {"totalItems": 1, "items": [{"id": "upload-1"}]}}
+    assert upload == {"result": {"id": "upload-1", "description": "Receipt"}}
+    assert dict(requests[0].url.params) == {
+        "page": "2",
+        "pageSize": "50",
+        "query": "description~Receipt",
+    }
+
+
+def test_bokio_mcp_downloads_remote_upload_to_session_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/download"):
+            return httpx.Response(
+                200,
+                content=b"%PDF-1.7\nreceipt",
+                headers={
+                    "content-type": "application/pdf",
+                    "content-disposition": 'attachment; filename="../../receipt.pdf"',
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"id": "upload-1", "journalEntryId": "entry-1"},
+        )
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(tmp_path, allowed_tools=["bokio_download_upload"])
+
+    first = server.tools["bokio_download_upload"](
+        upload_id="upload-1",
+        session_id="session-1",
+    )
+    second = server.tools["bokio_download_upload"](
+        upload_id="upload-1",
+        session_id="session-1",
+    )
+
+    assert first["upload"] == {"id": "upload-1", "journalEntryId": "entry-1"}
+    assert first["artifact"]["provider"] == "bokio_upload"
+    assert first["artifact"]["session_id"] == "session-1"
+    assert first["artifact"]["source_attachment_id"] == "upload-1"
+    assert first["artifact"]["filename"] == "receipt.pdf"
+    assert first["artifact"]["mime_type"] == "application/pdf"
+    assert first["artifact"]["metadata"]["bokio_upload"] == first["upload"]
+    assert "path" not in first["artifact"]
+    assert first["artifact"]["artifact_id"] != second["artifact"]["artifact_id"]
+    staged = CommunicationArtifactStore(tmp_path).get(first["artifact"]["artifact_id"])
+    assert staged.blob_path.read_bytes() == b"%PDF-1.7\nreceipt"
+    assert len(requests) == 4
+
+
+def test_bokio_mcp_download_requires_only_exact_tool_permission(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/download"):
+            return httpx.Response(200, content=b"image", headers={"content-type": "image/png"})
+        return httpx.Response(200, json={"id": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    denied_server = _register_bokio_mcp(tmp_path / "denied", allowed_tools=[])
+
+    with pytest.raises(ToolError, match="bokio_download_upload"):
+        denied_server.tools["bokio_download_upload"](
+            upload_id="upload-1",
+            session_id="session-1",
+        )
+
+    assert requests == []
+    allowed_server = _register_bokio_mcp(
+        tmp_path / "allowed",
+        allowed_tools=["bokio_download_upload"],
+    )
+    result = allowed_server.tools["bokio_download_upload"](
+        upload_id="upload-1",
+        session_id="session-1",
+    )
+
+    assert result["artifact"]["filename"] == "bokio-upload-upload-1.png"
+    assert len(requests) == 2
+
+
+def test_bokio_mcp_oversized_download_leaves_no_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/download"):
+            return httpx.Response(200, content=b"123456789")
+        return httpx.Response(200, json={"id": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    monkeypatch.setattr("evander_bokio_addon.client.MAX_BOKIO_DOWNLOAD_BYTES", 8)
+    server = _register_bokio_mcp(tmp_path, allowed_tools=["bokio_download_upload"])
+
+    with pytest.raises(BokioApiError, match="8-byte download limit"):
+        server.tools["bokio_download_upload"](
+            upload_id="upload-1",
+            session_id="session-1",
+        )
+
+    artifact_root = tmp_path / "communication-artifacts"
+    assert not artifact_root.exists() or list(artifact_root.iterdir()) == []
+
+
+def test_bokio_mcp_interrupted_download_leaves_no_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class InterruptedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"partial"
+            raise httpx.ReadError("download interrupted")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/download"):
+            return httpx.Response(200, stream=InterruptedStream())
+        return httpx.Response(200, json={"id": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(tmp_path, allowed_tools=["bokio_download_upload"])
+
+    with pytest.raises(httpx.ReadError, match="download interrupted"):
+        server.tools["bokio_download_upload"](
+            upload_id="upload-1",
+            session_id="session-1",
+        )
+
+    artifact_root = tmp_path / "communication-artifacts"
+    assert not artifact_root.exists() or list(artifact_root.iterdir()) == []
 
 
 def test_bokio_mcp_prepare_tool_requires_session_tool_permission(tmp_path: Path) -> None:

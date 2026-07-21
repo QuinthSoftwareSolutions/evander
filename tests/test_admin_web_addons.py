@@ -279,7 +279,14 @@ def test_admin_web_merges_enabled_addon_tools_into_session_and_policy_catalogs(
     mcp_tools = {item["value"]: item for item in mcp_catalog.json()["items"]}
     assert mcp_tools["bokio_get_company"]["group"] == "Bokio"
     assert mcp_tools["bokio_get_company"]["provider"] == "bokio-addon"
+    assert session_tools["bokio_list_uploads"]["label"] == "List uploads"
+    assert session_tools["bokio_get_upload"]["label"] == "Get upload"
+    assert session_tools["bokio_download_upload"]["label"] == "Download upload"
+    assert mcp_tools["bokio_download_upload"]["provider"] == "bokio-addon"
     assert "bokio_create_supplier_invoice" in runtime.runtime.policy.extra_mcp_tool_names
+    assert "bokio_list_uploads" in runtime.runtime.policy.extra_mcp_tool_names
+    assert "bokio_get_upload" in runtime.runtime.policy.extra_mcp_tool_names
+    assert "bokio_download_upload" in runtime.runtime.policy.extra_mcp_tool_names
 
 
 def test_bokio_admin_prepared_action_mutations_require_privileged_unlock(
