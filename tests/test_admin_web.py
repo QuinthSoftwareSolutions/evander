@@ -1735,6 +1735,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "labels",
         "model",
         "model_provider_mode",
+        "codex_auth_mode",
         "vm_user",
         "vm_image",
         "ttl_hours",

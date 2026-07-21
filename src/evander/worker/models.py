@@ -23,6 +23,7 @@ from evander.capacity_health import (
     TelemetryError,
     TelemetryStatus,
 )
+from evander.codex_auth import CodexTurnSpec
 from evander.managed_sections import normalize_managed_section_id
 
 DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
@@ -94,6 +95,7 @@ class WorkerJobRequest(BaseModel):
     job_id: str | None = None
     image: str
     command: list[str]
+    codex_turn: CodexTurnSpec | None = None
     repo_source: str | None = None
     clone_branch: str | None = None
     working_directory: str | None = None

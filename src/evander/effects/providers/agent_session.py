@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
+from evander.codex_auth import (
+    CodexAuthMode,
+    CodexTurnSpec,
+    effective_codex_auth_mode,
+)
 from evander.config import GatewayConfig
 from evander.directory_config import ContactDirectoryConfig
 from evander.runtime import allowed_tools_for_capability_profile
@@ -451,6 +456,7 @@ def build_container_session_manifest(
     session_id: str,
     directory_path: str,
     model: str | None,
+    codex_auth_mode: CodexAuthMode | None = None,
     ttl_hours: int | None,
     allowed_tools: list[str] | None,
     connector_grants: dict[str, list[str]] | None = None,
@@ -551,6 +557,7 @@ def build_container_session_manifest(
         vm_id=None,
         vm_provider=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
         model=model,
+        codex_auth_mode=codex_auth_mode,
         directory_path=directory_path,
         allowed_tools=resolved_tools,
         connector_grants=connector_grants or {},
@@ -1045,6 +1052,35 @@ def container_prompt_command(
         + _codex_optional_feature_args_shell()
         + _shell_join_with_codex_optional_feature_args(args)
         + " | evander_codex_json_to_log\n"
+    )
+
+
+def container_codex_turn_spec(
+    *,
+    prompt: str,
+    model: str,
+    resume_thread_id: str | None,
+    session: object | None,
+    config: GatewayConfig,
+    agent_provider: str | None = None,
+    resume_mode: str | None = None,
+    mcp_gateway_url: str | None = None,
+    web_search_enabled: bool = False,
+) -> CodexTurnSpec | None:
+    provider = normalize_optional_string(agent_provider) or "codex"
+    auth_mode = effective_codex_auth_mode(session=session, config=config)
+    if provider != "codex":
+        if auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION:
+            raise ValueError("chatgpt_subscription is supported only for Codex agents")
+        return None
+    return CodexTurnSpec(
+        auth_mode=auth_mode,
+        prompt=prompt,
+        model=model,
+        resume_thread_id=_container_resume_thread_id(resume_thread_id),
+        resume_mode=("same_context" if resume_mode == "same_context" else "new_context"),
+        mcp_gateway_url=mcp_gateway_url,
+        web_search_enabled=web_search_enabled,
     )
 
 

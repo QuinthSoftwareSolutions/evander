@@ -200,6 +200,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     labels: ConfigValue | None = None
     model: ConfigValue | None = None
     model_provider_mode: ConfigValue | None = None
+    codex_auth_mode: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     vm_image: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None

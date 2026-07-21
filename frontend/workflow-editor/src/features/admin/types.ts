@@ -251,6 +251,7 @@ export type AgentCreateRequest = {
   container_image?: string | null;
   agent_provider?: string | null;
   model_provider_mode?: string | null;
+  codex_auth_mode?: "metered_api" | "chatgpt_subscription" | null;
   vm_image?: string | null;
 };
 
@@ -363,6 +364,7 @@ export type AgentPolicyUpdateRequest = {
   approval_notification_target_ids?: string[];
   communication_target_ids?: string[] | null;
   email_mailbox_grants?: EmailMailboxGrant[] | null;
+  codex_auth_mode?: "metered_api" | "chatgpt_subscription" | null;
   allowed_script_names?: string[];
   discord_channels?: string[];
   discord_channel_allowlist?: string[];
@@ -392,6 +394,7 @@ export type AgentSessionPolicy = {
   email_mailbox_grants: EmailMailboxGrant[] | null;
   labels: Record<string, string>;
   web_search_enabled: boolean;
+  codex_auth_mode: "metered_api" | "chatgpt_subscription" | null;
 };
 
 export type AgentListResponse = {

@@ -1985,6 +1985,25 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 ],
             ),
             _field(
+                "codex_auth_mode",
+                "Codex usage",
+                "enum",
+                bindable=True,
+                description=(
+                    "Optional Codex authentication override for container workers. "
+                    "Subscription mode uses the worker-owned ChatGPT account; metered mode "
+                    "uses the configured OpenAI relay."
+                ),
+                options=[
+                    _field_option("metered_api", "Metered API"),
+                    _field_option("chatgpt_subscription", "ChatGPT subscription"),
+                ],
+                metadata={
+                    "execution_backends": ["container_worker_vm"],
+                    "agent_providers": ["codex"],
+                },
+            ),
+            _field(
                 "npm_registry_url",
                 "NPM registry URL",
                 "string",

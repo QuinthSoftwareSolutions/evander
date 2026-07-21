@@ -138,6 +138,11 @@ function resetBackendSensitiveFields(
       nextAgentProvider && nextAgentProvider !== "codex"
         ? ""
         : form.modelProviderMode,
+    codexAuthMode:
+      nextBackend === "container_worker_vm" &&
+      (!nextAgentProvider || nextAgentProvider === "codex")
+        ? form.codexAuthMode
+        : "",
   };
 }
 
@@ -203,6 +208,9 @@ export function AgentCreateDialog({
   );
   const showCreateModelProviderMode =
     !createForm.agentProvider || createForm.agentProvider === "codex";
+  const showCreateCodexAuthMode =
+    createForm.backend === "container_worker_vm" &&
+    (!createForm.agentProvider || createForm.agentProvider === "codex");
   const createCommunicationTargetOptions = createOptions?.communication_targets ?? [];
   const createEmailMailboxOptions = createOptions?.email_mailboxes ?? [];
 
@@ -295,6 +303,10 @@ export function AgentCreateDialog({
                           nextAgentProvider && nextAgentProvider !== "codex"
                             ? ""
                             : current.modelProviderMode,
+                        codexAuthMode:
+                          nextAgentProvider && nextAgentProvider !== "codex"
+                            ? ""
+                            : current.codexAuthMode,
                       };
                     })
                   }
@@ -329,6 +341,28 @@ export function AgentCreateDialog({
                         {option.label}
                       </option>
                     ))}
+                  </select>
+                </span>
+              </label>
+            ) : null}
+            {showCreateCodexAuthMode ? (
+              <label className="field-stack">
+                <CreateFieldLabel tooltip="How Codex authenticates on this container worker. Metered API uses the configured OpenAI relay. ChatGPT subscription uses the worker-owned signed-in account. The choice applies on the next turn and does not replace the Codex thread.">
+                  Codex usage
+                </CreateFieldLabel>
+                <span className="select-field-control">
+                  <select
+                    value={createForm.codexAuthMode}
+                    onChange={(event) =>
+                      setCreateForm((current) => ({
+                        ...current,
+                        codexAuthMode: event.target.value,
+                      }))
+                    }
+                  >
+                    <option value="">Directory default</option>
+                    <option value="metered_api">Metered API</option>
+                    <option value="chatgpt_subscription">ChatGPT subscription</option>
                   </select>
                 </span>
               </label>

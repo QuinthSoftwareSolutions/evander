@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from evander.admin.services import session_helpers
+from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.admin.services.ports import DirectoryOwnershipPort
 from evander.admin.services.vm_agent.common_helpers import (
     _admin_agent_communication_allowlists,
@@ -315,4 +316,29 @@ class SessionAdminService:
             session_id=session_id,
             action="set_session_model",
             message=f"Updated model for session {session_id}",
+        )
+
+    def set_session_codex_auth_mode(
+        self,
+        target: str,
+        mode: str | CodexAuthMode | None,
+    ) -> SessionActionResult:
+        session_id, manifest = session_helpers.resolve_session_target(
+            target, self._sessions_by_id()
+        )
+        if str(manifest.vm_provider or "").strip() != "container_worker_vm":
+            raise ValueError("codex_auth_mode is supported only for container worker sessions")
+        normalized = normalize_codex_auth_mode(mode)
+        metadata = manifest.metadata if isinstance(manifest.metadata, dict) else {}
+        agent_provider = str(metadata.get("agent_provider") or "codex").strip().casefold()
+        if normalized is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
+            raise ValueError("chatgpt_subscription is supported only for Codex agents")
+        manifest.codex_auth_mode = normalized
+        self._session_repository().upsert_session(manifest)
+        effective = normalized.value if normalized is not None else "directory default"
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="set_session_codex_auth_mode",
+            message=f"Updated Codex auth mode for session {session_id} to {effective}",
         )

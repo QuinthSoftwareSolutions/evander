@@ -24,6 +24,7 @@ from evander.ado_query_mode import AdoQueryMode, normalize_ado_query_mode, valid
 from evander.approval_notification_targets import (
     normalize_approval_notification_target_ids,
 )
+from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS = 1000
@@ -575,6 +576,7 @@ class SessionManifest(BaseModel):
     vm_provider: str | None = None
     vm_provider_id: str | None = None
     model: str | None = None
+    codex_auth_mode: CodexAuthMode | None = None
     directory_path: str = "root"
     allowed_tools: list[McpToolName]
     connector_grants: dict[str, list[str]] = Field(default_factory=dict)
@@ -613,6 +615,11 @@ class SessionManifest(BaseModel):
     @classmethod
     def validate_directory_path(cls, value: str) -> str:
         return DirectoryPath(segments=value).as_posix()
+
+    @field_validator("codex_auth_mode", mode="before")
+    @classmethod
+    def normalize_codex_auth_mode_field(cls, value: object) -> CodexAuthMode | None:
+        return normalize_codex_auth_mode(value)
 
     @field_validator("allowed_script_names", mode="before")
     @classmethod

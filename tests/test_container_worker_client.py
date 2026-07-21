@@ -118,6 +118,46 @@ def test_container_worker_client_health_create_get_stop_delete_and_logs(
     ]
 
 
+def test_container_worker_client_codex_auth_routes_use_worker_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        assert request.headers["authorization"] == "Bearer secret-token"
+        if request.url.path.endswith("/device-login") and request.method == "POST":
+            payload: dict[str, object] = {"login_id": "login/1", "status": "pending"}
+            return httpx.Response(201, json=payload, request=request)
+        if "/device-login/" in request.url.path:
+            return httpx.Response(
+                200,
+                json={"login_id": "login/1", "status": "pending"},
+                request=request,
+            )
+        return httpx.Response(200, json={"signed_in": False}, request=request)
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert worker.codex_auth_status() == {"signed_in": False}
+    assert worker.start_codex_device_login()["login_id"] == "login/1"
+    assert worker.codex_device_login_status("login/1")["status"] == "pending"
+    assert worker.cancel_codex_device_login("login/1")["status"] == "pending"
+    assert worker.logout_codex_auth() == {"signed_in": False}
+    assert seen == [
+        ("GET", "/v1/codex-auth"),
+        ("POST", "/v1/codex-auth/device-login"),
+        ("GET", "/v1/codex-auth/device-login/login/1"),
+        ("DELETE", "/v1/codex-auth/device-login/login/1"),
+        ("DELETE", "/v1/codex-auth"),
+    ]
+
+
 def test_container_worker_client_telemetry_uses_auth_and_parses_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

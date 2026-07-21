@@ -1007,6 +1007,14 @@ deadlines, cancellation, one-time result tokens, and the hidden system workflow 
 use and guarantee cleanup. The feature is generic MCP/workflow infrastructure and has no Team
 Add-on dependency.
 
+Container-worker Codex agents can independently select metered API usage or a worker-owned
+ChatGPT subscription account. The choice can be changed for an existing agent and takes effect on
+its next turn without replacing the session. Subscription mode uses one broker-owned
+`auth.json` per worker, never mounts it into job containers, coalesces refreshes across concurrent
+agents, and fails closed rather than falling back to metered usage. See
+[`docs/container-worker-backend.md`](docs/container-worker-backend.md#codex-chatgpt-subscription-authentication)
+for deployment, device-login, and egress requirements.
+
 ## Retell Phone Call Tools
 
 - `list_contacts` lists the directory contact ids and safe summaries visible to the session. It does

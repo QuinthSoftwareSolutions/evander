@@ -100,6 +100,7 @@ class ContainerWorkerVmExecutionBackend:
             session_id=session_id,
             directory_path=spec.directory_path,
             command=spec.command,
+            codex_turn=spec.codex_turn,
             image=spec.image or self.config.container_worker_default_image,
             repo_source=spec.repo_source,
             clone_branch=spec.clone_branch,
@@ -141,6 +142,7 @@ class ContainerWorkerVmExecutionBackend:
             session_id=request.session_id,
             directory_path=prepared.directory_path,
             command=prepared.command,
+            codex_turn=prepared.codex_turn,
             image=request.image,
             repo_source=prepared.repo_source,
             clone_branch=prepared.clone_branch,
@@ -404,6 +406,8 @@ class ContainerWorkerVmExecutionBackend:
             "command": command,
             "metadata": sanitize_metadata(prepared.metadata),
         }
+        if prepared.codex_turn is not None:
+            payload["codex_turn"] = prepared.codex_turn.model_dump(mode="json", exclude_none=True)
         if prepared.repo_source:
             payload["repo_source"] = prepared.repo_source
         if prepared.clone_branch:
@@ -469,6 +473,7 @@ class ContainerWorkerVmExecutionBackend:
                 session_id=target.session_id,
                 directory_path=target.directory_path,
                 command=target.command,
+                codex_turn=target.codex_turn,
                 image=target.image,
                 repo_source=target.repo_source,
                 clone_branch=target.clone_branch,
@@ -541,6 +546,10 @@ class ContainerWorkerVmExecutionBackend:
             "agent_provider",
             "model_provider_mode",
             "model",
+            "codex_auth_mode",
+            "codex_subscription_thread_id",
+            "codex_subscription_turn_id",
+            "codex_subscription_exit_code",
             "exit_code",
             "worker_terminal_kind",
         ):

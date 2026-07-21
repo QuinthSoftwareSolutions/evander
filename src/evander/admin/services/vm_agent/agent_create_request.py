@@ -20,6 +20,7 @@ from evander.admin.services.vm_agent.common import (
     resolve_libvirt_vm_template_selector,
 )
 from evander.session_auth import ensure_session_mcp_auth_token
+from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.connectors.models import normalize_connector_grants
 
 
@@ -242,6 +243,23 @@ class VmAgentCreateRequestMixin:
         agent_provider = requested_agent_provider or default_agent_provider_for_config(
             backend.config
         )
+        codex_auth_mode = normalize_codex_auth_mode(payload.get("codex_auth_mode"))
+        if (
+            codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+            and str(agent_provider).strip().casefold() != "codex"
+        ):
+            raise ValueError("chatgpt_subscription is supported only for Codex agents")
+        requested_model_provider_mode = normalize_model_provider_mode_override(
+            payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+        )
+        effective_model_provider_mode = (
+            requested_model_provider_mode or backend.config.model_provider_mode
+        )
+        if (
+            codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+            and effective_model_provider_mode != "openai_public"
+        ):
+            raise ValueError("chatgpt_subscription requires the public OpenAI model provider mode")
         container_image_selection = resolve_container_worker_image_selector(
             self._agent_optional_string(payload, "container_image"),
             default_image=backend.config.container_worker_default_image,
@@ -253,9 +271,7 @@ class VmAgentCreateRequestMixin:
         }
         if requested_agent_provider or agent_provider == "claude":
             metadata["agent_provider"] = agent_provider
-        model_provider_mode = normalize_model_provider_mode_override(
-            payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
-        )
+        model_provider_mode = requested_model_provider_mode
         if model_provider_mode:
             metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
         if labels:
@@ -356,6 +372,7 @@ class VmAgentCreateRequestMixin:
                 "vm_provider": "container_worker_vm",
                 "vm_provider_id": target_name,
                 "model": model,
+                "codex_auth_mode": codex_auth_mode,
                 "metadata": metadata,
             }
         )

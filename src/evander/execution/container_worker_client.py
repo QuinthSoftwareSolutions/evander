@@ -73,6 +73,30 @@ class ContainerWorkerClient:
         response = self._request("GET", "/healthz", auth=False)
         return self._json_dict(response, operation="health")
 
+    def codex_auth_status(self) -> dict[str, Any]:
+        response = self._request("GET", "/v1/codex-auth")
+        return self._json_dict(response, operation="read Codex auth status")
+
+    def start_codex_device_login(self) -> dict[str, Any]:
+        response = self._request("POST", "/v1/codex-auth/device-login")
+        return self._json_dict(response, operation="start Codex device login")
+
+    def codex_device_login_status(self, login_id: str) -> dict[str, Any]:
+        response = self._request(
+            "GET", f"/v1/codex-auth/device-login/{quote(str(login_id), safe='')}"
+        )
+        return self._json_dict(response, operation="read Codex device login")
+
+    def cancel_codex_device_login(self, login_id: str) -> dict[str, Any]:
+        response = self._request(
+            "DELETE", f"/v1/codex-auth/device-login/{quote(str(login_id), safe='')}"
+        )
+        return self._json_dict(response, operation="cancel Codex device login")
+
+    def logout_codex_auth(self) -> dict[str, Any]:
+        response = self._request("DELETE", "/v1/codex-auth")
+        return self._json_dict(response, operation="log out Codex account")
+
     def create(self, request: WorkerJobRequest) -> WorkerJobRecord:
         response = self._request(
             "POST",

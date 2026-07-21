@@ -1123,6 +1123,31 @@ def session_approval_routes(
             }
         )
 
+    async def update_session_codex_auth_mode(request: Request) -> JSONResponse:
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
+        try:
+            payload = await request.json()
+        except Exception:
+            return json_error("Request body must be valid JSON.")
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object.")
+        raw_mode = payload.get("codex_auth_mode")
+        mode = None if raw_mode is None else str(raw_mode).strip()
+        try:
+            result = service.operations_admin.set_session_codex_auth_mode(session_id, mode)
+            summary = _get_session_summary(session_id)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=404 if "Unknown" in str(exc) else 400)
+        return JSONResponse(
+            {
+                **result.model_dump(mode="json"),
+                "session": _session_payload(service, summary, policy_cache=policy_summary_cache),
+            }
+        )
+
     async def update_session_tools(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         _, auth_error = _authorize_session_mutation(request, session_id)
@@ -1463,6 +1488,11 @@ def session_approval_routes(
         Route("/api/admin/sessions/{session_id:str}/cleanup", cleanup_session, methods=["POST"]),
         Route("/api/admin/sessions/{session_id:str}", delete_session, methods=["DELETE"]),
         Route("/api/admin/sessions/{session_id:str}/model", update_session_model, methods=["PUT"]),
+        Route(
+            "/api/admin/sessions/{session_id:str}/codex-auth-mode",
+            update_session_codex_auth_mode,
+            methods=["PUT"],
+        ),
         Route(
             "/api/admin/sessions/{session_id:str}/allowed-tools",
             update_session_tools,

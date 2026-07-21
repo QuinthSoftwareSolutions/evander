@@ -2,7 +2,10 @@
 
 `evander-worker-daemon` is the worker-VM side of the container execution backend. It exposes a small HTTP API for starting, inspecting, stopping, deleting, and reading logs for jobs that run inside disposable Docker containers.
 
-The daemon is intentionally only an execution envelope. It does not store host secrets, publish pull requests, decide policy, or turn platform summaries into agent memory.
+The daemon is intentionally primarily an execution envelope. It does not receive control-plane
+API keys, publish pull requests, decide policy, or turn platform summaries into agent memory. When
+ChatGPT subscription execution is enabled, the worker additionally owns the one durable Codex
+account file used by its auth broker; that file is never mounted into job containers.
 
 ## Control-Plane Configuration
 
@@ -13,6 +16,7 @@ execution_backend: container_worker_vm
 container_worker_base_url: "http://10.0.2.10:11888"
 container_worker_token_env: "EVANDER_WORKER_TOKEN"
 container_worker_default_image: "evander-runner:latest"
+container_worker_codex_auth_mode: "metered_api"
 container_worker_images:
   default: "evander-runner:latest"
   claude: "evander-runner-claude:latest"
@@ -37,6 +41,9 @@ recorded, while `claude` and `dotnet-playwright` resolve to additional approved 
 dispatch does not pull or build images, so approved refs must already be present on the worker VM.
 For Anthropic-backed Claude sessions, set `model_provider_mode: "anthropic"` in the effective
 provider config and select the `claude` image alias when creating the container-backed session.
+`container_worker_codex_auth_mode` sets the inherited Codex usage source. Keep `metered_api` for
+the existing OpenAI relay, or select `chatgpt_subscription` after configuring and signing in the
+worker account. A session-level selection overrides this default.
 
 The same image catalog is used by request-scoped codebase consultations. A named
 `agent_consultation_profiles` entry selects the model, provider mode, image alias, deadline, and
@@ -285,6 +292,63 @@ sudo iptables -S DOCKER-USER
 evander-cli execution smoke-container-worker --json
 ```
 
+## Codex ChatGPT Subscription Authentication
+
+This optional path lets container-worker Codex sessions use the operator's ChatGPT subscription
+instead of the metered OpenAI relay. It does not add another worker profile or assign an account
+to one agent: all subscription-mode agents on the worker share the single signed-in operator
+account. Metered and subscription agents can run on the same worker.
+
+The worker auth broker is the only owner of
+`<worker-root>/codex-auth/auth.json`. It holds an exclusive lock at
+`<worker-root>/codex-auth/.broker.lock`, serializes login, logout, account reads, and refreshes, and
+coalesces concurrent refresh requests. A second broker for the same directory refuses to start.
+The managed auth app-server is the only process allowed to write the file. The utility container
+that hosts that app-server mounts only `codex-auth/`; it is not a separate Evander worker and does
+not mount any session workspace. It runs as the configured worker container UID/GID so its files
+remain owned and readable only by the worker service account. Its deterministic Docker name also
+prevents a replacement daemon from starting a second writer if a hard crash leaves the previous
+utility container alive; the replacement fails closed. After confirming the old worker daemon is
+gone, remove that stale `evander-codex-auth-*` container before restarting authentication.
+
+Each subscription job starts its own Codex app-server inside the disposable runner container and
+logs in through Codex's external-token mode. Those credentials remain in that process's memory:
+the job receives no `auth.json` mount, environment token, command-line token, or persisted token
+metadata. When Codex rejects an access token, the job asks the broker for one serialized refresh
+and receives only the new in-memory snapshot. Auth and refresh responses are redacted from worker
+logs. This integration uses Codex app-server's experimental external-auth API and should be
+revalidated when upgrading Codex.
+
+Set the worker's runner image and restricted proxy settings in inventory. The URL must use an
+address that runner containers can reach; do not use loopback unless the containers share that
+network namespace:
+
+```yaml
+evander_worker_docker_network: "bridge"
+evander_worker_egress_policy_enabled: true
+evander_worker_codex_auth_image: "evander-runner:latest"
+evander_worker_codex_egress_proxy_bind_host: "172.17.0.1"
+evander_worker_codex_egress_proxy_port: 11889
+evander_worker_codex_egress_proxy_url: "http://172.17.0.1:11889"
+```
+
+The job container receives that URL only as `HTTP_PROXY`/`HTTPS_PROXY`. The worker proxy accepts
+HTTPS `CONNECT` requests only to its configured OpenAI/ChatGPT hostname allowlist and port 443.
+The existing `DOCKER-USER` default-deny policy must permit containers to reach the proxy endpoint
+but must not grant them direct public egress. Keep the proxy's allowlist narrow and review it when
+Codex's service endpoints change.
+
+After deployment, unlock privileged operations in Admin Web, open **Agents**, and use **Worker
+ChatGPT subscription** to start device login. Complete the displayed link and code, then wait for
+the status to show signed in. Login start, cancellation, and logout are audited without recording
+tokens. Logging out removes the worker account; subscription turns then fail closed. Evander never
+falls back from subscription mode to metered usage.
+
+Choose **Metered API** or **ChatGPT subscription** when creating a container Codex agent, or edit
+an existing agent's policy. The new selection applies to the next turn and preserves that
+session's Codex thread. Multiple agents can use the account concurrently; only account-file and
+token-refresh operations are serialized.
+
 ## Session Durability
 
 Durable state lives under:
@@ -303,7 +367,7 @@ Each session contains:
 - `logs/`: platform-owned job logs
 - `metadata.json`: platform bookkeeping for paths and creation time
 
-Containers are disposable. Continuity comes from mounting the same `agent_home/` into each run for a session. The runner image currently sets `CODEX_HOME=/home/agent/.config/evander/codex`, so native Codex resume state is persisted under `/var/lib/agent-worker/sessions/<session_id>/agent_home/.config/evander/codex/sessions`. The bootstrap also writes `/var/lib/agent-worker/sessions/<session_id>/agent_home/.codex/config.toml` for compatibility, but `.codex/sessions` is not the active session store unless `CODEX_HOME` is changed. Both config files use the `evander_openai_relay` Codex provider with `supports_websockets = false` so container Codex sessions do not websocket-prewarm against the HTTP/SSE relay.
+Containers are disposable. Continuity comes from mounting the same `agent_home/` into each run for a session. The runner image currently sets `CODEX_HOME=/home/agent/.config/evander/codex`, so native Codex resume state is persisted under `/var/lib/agent-worker/sessions/<session_id>/agent_home/.config/evander/codex/sessions`. The bootstrap also writes `/var/lib/agent-worker/sessions/<session_id>/agent_home/.codex/config.toml` for compatibility, but `.codex/sessions` is not the active session store unless `CODEX_HOME` is changed. Metered turns use the `evander_openai_relay` Codex provider with `supports_websockets = false`, while subscription turns use an external-token app-server and retain thread state in the same session home. Job homes do not contain the worker's subscription `auth.json`.
 
 The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` so Codex state, identity files, and checked-out repos can resume naturally.
 
@@ -558,6 +622,11 @@ Authorization: Bearer <EVANDER_WORKER_TOKEN>
 Routes:
 
 - `GET /v1/telemetry`
+- `GET /v1/codex-auth`
+- `POST /v1/codex-auth/device-login`
+- `GET /v1/codex-auth/device-login/{login_id}`
+- `DELETE /v1/codex-auth/device-login/{login_id}`
+- `DELETE /v1/codex-auth`
 - `POST /v1/jobs`
 - `GET /v1/jobs/{id}`
 - `POST /v1/jobs/{id}/stop`
@@ -576,7 +645,7 @@ Routes:
 - `DELETE /v1/sessions/{session_id}/mssql/databases/{logical_name}`
 - `GET /healthz`
 
-`POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `repo_source`, optional `clone_branch`, optional `working_directory`, `resource_limits`, and sanitized `metadata`. Raw `env`, `environment`, and `environment_variables` request fields are rejected. If `repo_source` is present, it must start with a configured allowed Git source prefix.
+`POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `codex_turn`, optional `repo_source`, optional `clone_branch`, optional `working_directory`, `resource_limits`, and sanitized `metadata`. `codex_turn` is the structured prompt/auth-mode contract used by subscription execution; it never contains credentials. Raw `env`, `environment`, and `environment_variables` request fields are rejected. If `repo_source` is present, it must start with a configured allowed Git source prefix.
 
 This route list is an operational inventory, not a frozen wire schema. The authoritative request and response models are [`src/evander/worker/models.py`](../src/evander/worker/models.py), and route registration is authoritative in [`src/evander/worker/api.py`](../src/evander/worker/api.py). Client implementations should use those sources so route-specific models and newly added fields are not silently omitted.
 

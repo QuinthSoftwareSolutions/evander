@@ -317,6 +317,7 @@ class GatewayConfig(BaseModel):
     container_worker_job_timeout_seconds: float = Field(default=1800.0, gt=0)
     container_worker_request_timeout_seconds: float = Field(default=30.0, gt=0)
     container_worker_workspace_persistence: str = Field(default="session", min_length=1)
+    container_worker_codex_auth_mode: Literal["metered_api", "chatgpt_subscription"] = "metered_api"
     container_worker_git_allowed_from: str | None = None
     managed_git_commit_name: str | None = None
     managed_git_commit_email: str | None = None
@@ -694,6 +695,14 @@ class GatewayConfig(BaseModel):
             return value
         text = str(value).strip()
         return text or None
+
+    @field_validator("container_worker_codex_auth_mode", mode="before")
+    @classmethod
+    def normalize_container_worker_codex_auth_mode(cls, value: object) -> object:
+        from evander.codex_auth import normalize_codex_auth_mode
+
+        normalized = normalize_codex_auth_mode(value)
+        return normalized.value if normalized is not None else "metered_api"
 
     @field_validator("local_openai_api_key", "local_openai_provider_name", mode="before")
     @classmethod

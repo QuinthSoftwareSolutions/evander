@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from evander.container_worker_images import resolve_container_worker_image_selector
+from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.connectors.models import normalize_connector_grants
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
 from evander.directories import DirectoryStore
@@ -61,6 +62,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "labels": effect.labels,
             "model": effect.model,
             "model_provider_mode": effect.model_provider_mode,
+            "codex_auth_mode": effect.codex_auth_mode,
             "vm_user": effect.vm_user,
             "vm_image": effect.vm_image,
             "ttl_hours": effect.ttl_hours,
@@ -353,6 +355,13 @@ class AgentCreateEffectProvider(EffectProviderBase):
             or existing_agent_provider
             or default_agent_provider_for_config(config)
         )
+        codex_auth_mode = normalize_codex_auth_mode(
+            payload.get("codex_auth_mode")
+            if "codex_auth_mode" in payload
+            else getattr(existing_session, "codex_auth_mode", None)
+        )
+        if codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
+            raise ValueError("chatgpt_subscription is supported only for Codex agents")
         container_image_selection = _container_image_selection_for_create(
             selector=normalize_optional_string(payload.get("container_image")),
             config=config,
@@ -375,6 +384,18 @@ class AgentCreateEffectProvider(EffectProviderBase):
         model_provider_mode = normalize_model_provider_mode_override(
             payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
         )
+        effective_model_provider_mode = (
+            model_provider_mode
+            or normalize_model_provider_mode_override(
+                metadata.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+            )
+            or config.model_provider_mode
+        )
+        if (
+            codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+            and effective_model_provider_mode != "openai_public"
+        ):
+            raise ValueError("chatgpt_subscription requires the public OpenAI model provider mode")
         if model_provider_mode:
             metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
         requested_tools = as_string_list(payload.get("allowed_tools"))
@@ -428,6 +449,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             session_id=session_id,
             directory_path=directory_path,
             model=model,
+            codex_auth_mode=codex_auth_mode,
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=resolved_allowed_tools,
             connector_grants=connector_grants,

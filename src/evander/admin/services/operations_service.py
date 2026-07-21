@@ -267,6 +267,9 @@ class OperationsAdminService:
     def set_session_model(self, target: str, model: str):
         return self._session_admin.set_session_model(target, model)
 
+    def set_session_codex_auth_mode(self, target: str, mode: str | None):
+        return self._session_admin.set_session_codex_auth_mode(target, mode)
+
     def list_background_workers(self):
         return self._worker_control_admin.list_background_workers()
 

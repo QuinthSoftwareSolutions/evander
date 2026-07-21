@@ -14,6 +14,10 @@ const agentCreateShared = readFileSync(
   new URL("../src/features/agents/agentCreateShared.ts", import.meta.url),
   "utf8",
 );
+const codexAuthPanel = readFileSync(
+  new URL("../src/features/agents/CodexAuthPanel.tsx", import.meta.url),
+  "utf8",
+);
 const sessionGrantEditors = readFileSync(
   new URL("../src/features/communications/SessionGrantEditors.tsx", import.meta.url),
   "utf8",
@@ -98,8 +102,32 @@ test("create form state carries backend-aware provider and image selections", ()
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?model: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?ttlDuration: string;[\s\S]*?\};/);
   assert.match(page, /type AgentCreateFormState = \{[\s\S]*?vmImage: string;[\s\S]*?\};/);
+  assert.match(page, /type AgentCreateFormState = \{[\s\S]*?codexAuthMode: string;[\s\S]*?\};/);
   // emptyCreateForm must seed both image/provider fields so the modal opens with defaults.
   assert.match(page, /function emptyCreateForm\([\s\S]*?ttlDuration: "7d",[\s\S]*?model: "",[\s\S]*?agentProvider: "",[\s\S]*?modelProviderMode: "",[\s\S]*?vmImage: "",[\s\S]*?\}/);
+});
+
+test("container Codex usage can switch per agent without transporting credentials", () => {
+  const payloadSource = buildCreatePayloadSource();
+  assert.match(
+    payloadSource,
+    /codexAuthMode === "metered_api" \|\| codexAuthMode === "chatgpt_subscription"/,
+  );
+  assert.match(payloadSource, /payload\.codex_auth_mode = codexAuthMode/);
+  assert.match(
+    agentCreateDialog,
+    /showCreateCodexAuthMode =\s*createForm\.backend === "container_worker_vm"/,
+  );
+  assert.match(agentCreateDialog, /<option value="metered_api">Metered API<\/option>/);
+  assert.match(
+    agentCreateDialog,
+    /<option value="chatgpt_subscription">ChatGPT subscription<\/option>/,
+  );
+  assert.match(agentsPage, /buildPolicyPayload\([\s\S]*?includeCodexAuthMode = false/);
+  assert.match(agentsPage, /payload\.codex_auth_mode =/);
+  assert.doesNotMatch(codexAuthPanel, /accessToken|refreshToken|OPENAI_API_KEY/);
+  assert.match(codexAuthPanel, /\/api\/admin\/codex-auth\/device-login/);
+  assert.match(codexAuthPanel, /Worker ChatGPT subscription/);
 });
 
 test("create TTL duration accepts seconds through weeks and emits seconds", () => {

@@ -98,6 +98,11 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "container_worker_base_url": (
         "Base HTTP URL for the container worker service used when execution_backend is container_worker_vm."
     ),
+    "container_worker_codex_auth_mode": (
+        "Default Codex usage source for container-worker sessions. Metered API uses the existing "
+        "OpenAI relay; ChatGPT subscription uses the worker-owned account and fails closed when "
+        "that account is unavailable. A session override takes effect on its next turn."
+    ),
     "container_worker_default_image": (
         "Fallback runner container image used when a container session does not select an approved image alias. If the selector exactly matches the default image reference, it resolves here with no alias recorded."
     ),

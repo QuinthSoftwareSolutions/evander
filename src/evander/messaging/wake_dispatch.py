@@ -22,6 +22,7 @@ from evander.admin.services.issue_setup_helpers import (
 from evander.agent_control import AgentControlStore
 from evander.config import GatewayConfig
 from evander.effects.providers.agent_session import (
+    container_codex_turn_spec,
     container_prompt_command,
     container_worker_guest_gateway_url,
     container_worker_image_for_session,
@@ -694,17 +695,30 @@ class HostWakeDispatcher:
             return dispatch_record
 
         execution_id = safe_effect_execution_id("agent", session_id)
+        resolved_model = agent_model or str(getattr(session, "model", "") or "").strip()
+        mcp_gateway_url = gateway_url_with_session_context(
+            container_worker_guest_gateway_url(base_config),
+            session_id=session_id,
+            mcp_session_token=session_mcp_auth_token(session),
+        )
         command = container_prompt_command(
             prompt=prompt,
-            model=agent_model or str(getattr(session, "model", "") or "").strip(),
+            model=resolved_model,
             resume_thread_id=None,
             agent_provider=agent_provider,
             resume_mode=effective_resume_mode,
-            mcp_gateway_url=gateway_url_with_session_context(
-                container_worker_guest_gateway_url(base_config),
-                session_id=session_id,
-                mcp_session_token=session_mcp_auth_token(session),
-            ),
+            mcp_gateway_url=mcp_gateway_url,
+            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
+        )
+        codex_turn = container_codex_turn_spec(
+            prompt=prompt,
+            model=resolved_model,
+            resume_thread_id=None,
+            session=session,
+            config=base_config,
+            agent_provider=agent_provider,
+            resume_mode=effective_resume_mode,
+            mcp_gateway_url=mcp_gateway_url,
             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
         )
         try:
@@ -717,6 +731,7 @@ class HostWakeDispatcher:
                         directory_path=directory_path,
                         image=container_worker_image_for_session(session, base_config),
                         command=command,
+                        codex_turn=codex_turn,
                         metadata={
                             "source": dispatch_source,
                             "dispatch_id": dispatch_id,
@@ -726,6 +741,11 @@ class HostWakeDispatcher:
                                 agent_model or str(getattr(session, "model", "") or "").strip()
                             ),
                             "model_provider_mode": base_config.model_provider_mode,
+                            **(
+                                {"codex_auth_mode": codex_turn.auth_mode.value}
+                                if codex_turn is not None
+                                else {}
+                            ),
                         },
                     )
                 )

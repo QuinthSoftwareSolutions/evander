@@ -180,6 +180,10 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "evander_worker_mssql_seed_sidecar_enabled: false" in text
     assert "evander_worker_mssql_seed_sidecar_port: 11990" in text
     assert "vault_evander_worker_mssql_seed_sidecar_token" in text
+    assert "evander_worker_codex_auth_image" in text
+    assert "evander_worker_codex_egress_proxy_url" in text
+    assert "evander_worker_codex_egress_proxy_bind_host" in text
+    assert '"*.chatgpt.com"' in text
 
 
 def test_worker_defaults_derive_control_plane_identity_from_hostvars() -> None:

@@ -19,6 +19,7 @@ import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import { JsonObjectKeyValueEditor, StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
 import { AgentCreateDialog } from "./AgentCreateDialog";
+import { CodexAuthPanel } from "./CodexAuthPanel";
 import {
   createOperationIsActive,
   createOperationMessage,
@@ -138,6 +139,7 @@ type AgentPolicyFormState = {
   teamsChannels: string;
   emailMailboxes: string;
   emailFolders: string;
+  codexAuthMode: string;
 };
 
 type AgentSkillInstallFormState = {
@@ -200,6 +202,7 @@ function emptyPolicyForm(): AgentPolicyFormState {
     teamsChannels: "",
     emailMailboxes: "",
     emailFolders: "",
+    codexAuthMode: "",
   };
 }
 
@@ -726,6 +729,11 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
       ? null
       : hostStringList(rawPolicy, "communication_target_ids"),
     web_search_enabled: Boolean(rawPolicy.web_search_enabled),
+    codex_auth_mode:
+      rawPolicy.codex_auth_mode === "metered_api" ||
+      rawPolicy.codex_auth_mode === "chatgpt_subscription"
+        ? rawPolicy.codex_auth_mode
+        : null,
     allowed_script_names: hostStringList(rawPolicy, "allowed_script_names"),
     discord_channels: hostStringList(rawPolicy, "discord_channels"),
     discord_channel_allowlist: hostStringList(rawPolicy, "discord_channel_allowlist"),
@@ -741,6 +749,11 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
 function promptThreadIdForAgent(agent: AgentRecord | null): string {
   const threadId = sessionPolicyForAgent(agent)?.metadata.agent_thread_id;
   return typeof threadId === "string" ? threadId.trim() : "";
+}
+
+function agentUsesCodex(agent: AgentRecord): boolean {
+  const provider = sessionPolicyForAgent(agent)?.metadata.agent_provider;
+  return typeof provider !== "string" || !["claude", "anthropic"].includes(provider.trim().toLowerCase());
 }
 
 function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
@@ -765,10 +778,14 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     teamsChannels: formatList(policy?.teams_channel_allowlist),
     emailMailboxes: formatList(policy?.email_mailboxes),
     emailFolders: formatList(policy?.email_folders),
+    codexAuthMode: policy?.codex_auth_mode ?? "",
   };
 }
 
-function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {
+function buildPolicyPayload(
+  form: AgentPolicyFormState,
+  includeCodexAuthMode = false,
+): AgentPolicyUpdateRequest {
   const payload: AgentPolicyUpdateRequest = {
     model: optionalText(form.model),
     labels: form.labels,
@@ -780,6 +797,12 @@ function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateReques
     communication_target_ids: form.communicationTargetIds,
     email_mailbox_grants: form.emailMailboxGrants,
   };
+  if (includeCodexAuthMode) {
+    payload.codex_auth_mode =
+      form.codexAuthMode === "metered_api" || form.codexAuthMode === "chatgpt_subscription"
+        ? form.codexAuthMode
+        : null;
+  }
   if (form.communicationTargetIds === null) {
     payload.discord_channels = parseList(form.discordChannels);
     payload.teams_channel_allowlist = parseList(form.teamsChannels);
@@ -1729,7 +1752,12 @@ export function AgentsPage() {
         `/api/admin/agents/${encodeURIComponent(selectedAgent.agent_id)}?${query.toString()}`,
         {
           method: "PATCH",
-          body: JSON.stringify(buildPolicyPayload(editForm)),
+          body: JSON.stringify(
+            buildPolicyPayload(
+              editForm,
+              selectedAgent.backend === "container_worker_vm" && agentUsesCodex(selectedAgent),
+            ),
+          ),
         },
       );
       const message = `${selectedAgent.target_name}: ${payload.message}`;
@@ -2195,6 +2223,11 @@ export function AgentsPage() {
         {status ? <div className="callout success-callout">{status}</div> : null}
         {error ? <div className="callout error-callout">{error}</div> : null}
 
+        <CodexAuthPanel
+          directoryPath={selectedDirectoryPath}
+          privilegedUnlocked={privilegedUnlocked}
+        />
+
         {showCreateForm ? (
           <AgentCreateDialog
             directoryPath={selectedDirectoryPath}
@@ -2226,6 +2259,27 @@ export function AgentsPage() {
                       onChange={(event) => setEditForm((current) => ({ ...current, model: event.target.value }))}
                     />
                   </label>
+                  {selectedAgent.backend === "container_worker_vm" && agentUsesCodex(selectedAgent) ? (
+                    <label className="field-stack">
+                      <span>Codex usage</span>
+                      <select
+                        value={editForm.codexAuthMode}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            codexAuthMode: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">Directory default</option>
+                        <option value="metered_api">Metered API</option>
+                        <option value="chatgpt_subscription">ChatGPT subscription</option>
+                      </select>
+                      <span className="field-description">
+                        Applies on the next turn. Existing Codex thread history is preserved.
+                      </span>
+                    </label>
+                  ) : null}
                   <label className="field-stack">
                     <span>Renew TTL hours</span>
                     <input

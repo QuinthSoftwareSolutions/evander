@@ -78,6 +78,9 @@ class VmAgentContainerSessionPolicyMixin:
                 session.communication_file_require_approval_for_send
             ),
             "web_search_enabled": session.web_search_enabled,
+            "codex_auth_mode": (
+                session.codex_auth_mode.value if session.codex_auth_mode is not None else None
+            ),
             "metadata": dict(session.metadata),
             "labels": labels,
         }

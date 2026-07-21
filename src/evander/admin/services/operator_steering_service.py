@@ -49,6 +49,7 @@ class OperatorSteeringAdminService:
             AgentPromptEffectProvider,
         )
         from evander.effects.providers.agent_session import (
+            container_codex_turn_spec,
             container_prompt_command,
             container_worker_guest_gateway_url,
             container_worker_image_for_session,
@@ -192,10 +193,21 @@ class OperatorSteeringAdminService:
             else None
         )
         replacement_execution_id = safe_effect_execution_id("agent", session_id)
+        replacement_prompt = self._operator_steering_interrupt_prompt(message)
         command = container_prompt_command(
-            prompt=self._operator_steering_interrupt_prompt(message),
+            prompt=replacement_prompt,
             model=resolved_model,
             resume_thread_id=resume_thread_id,
+            agent_provider=agent_harness,
+            mcp_gateway_url=mcp_gateway_url,
+            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
+        )
+        codex_turn = container_codex_turn_spec(
+            prompt=replacement_prompt,
+            model=resolved_model,
+            resume_thread_id=resume_thread_id,
+            session=session,
+            config=effective_config,
             agent_provider=agent_harness,
             mcp_gateway_url=mcp_gateway_url,
             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
@@ -210,6 +222,7 @@ class OperatorSteeringAdminService:
                         directory_path=directory_path,
                         image=container_worker_image_for_session(session, effective_config),
                         command=command,
+                        codex_turn=codex_turn,
                         metadata={
                             "effect_type": str(record.effect_type or ""),
                             "dispatch_id": dispatch_id,
@@ -219,6 +232,11 @@ class OperatorSteeringAdminService:
                             "agent_provider": agent_harness,
                             "model": resolved_model,
                             "model_provider_mode": effective_config.model_provider_mode,
+                            **(
+                                {"codex_auth_mode": codex_turn.auth_mode.value}
+                                if codex_turn is not None
+                                else {}
+                            ),
                             **(
                                 {"created_by": str(created_by).strip()}
                                 if str(created_by or "").strip()

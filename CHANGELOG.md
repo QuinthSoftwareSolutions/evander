@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-21 - Switchable Codex Subscription Usage
+
+- Added per-directory defaults and per-session overrides for choosing metered API or ChatGPT
+  subscription usage on container-worker Codex turns, including Admin Web creation, policy edit,
+  account sign-in/status/logout controls, and next-turn switching that preserves thread history.
+- Added one worker-owned Codex auth broker as the sole durable `auth.json` writer, with exclusive
+  ownership locking, serialized/coalesced refresh, external in-memory job authentication, token
+  redaction, audit events, and fail-closed behavior with no metered fallback.
+- Added an allowlisted HTTPS CONNECT proxy for subscription traffic and Ansible worker settings;
+  job containers receive no account file, environment token, command-line token, or direct public
+  egress grant.
+
 ## 2026-07-21 - Structured Email Policy Configuration
 
 - Replaced the email-target auth-profile text field with a sending-mailbox selector populated from

@@ -312,6 +312,18 @@ catalog before writing and writes atomically to either
 The store intentionally excludes request and response text, so it is safe to
 inspect for operational attribution without exposing prompt content.
 
+## Switching Container Codex Usage Source
+
+Container-worker Codex sessions can use either `metered_api` or
+`chatgpt_subscription`. Set the inherited default with
+`container_worker_codex_auth_mode` in directory provider configuration, then override individual
+agents from the Admin Web create or policy editor. An override applies to the next turn and keeps
+the existing session and thread. Subscription mode requires a signed-in worker account; unlock
+privileged operations on the Agents page to complete device login or log out. Missing or expired
+subscription credentials fail the turn and never fall back to metered usage. The deployment and
+single-`auth.json` ownership requirements are in
+[`container-worker-backend.md`](container-worker-backend.md#codex-chatgpt-subscription-authentication).
+
 ## Operator Steering
 
 When inspecting a workflow run in Admin Web, agent links that include both a

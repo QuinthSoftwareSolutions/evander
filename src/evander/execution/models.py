@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from evander.codex_auth import CodexTurnSpec
+
 
 class ExecutionBackendKind(str, Enum):
     LIBVIRT_VM = "libvirt_vm"
@@ -29,6 +31,7 @@ class ExecutionSpec(BaseModel):
     directory_path: str = "root"
     vm_provider: str | None = None
     command: str | list[str] | None = None
+    codex_turn: CodexTurnSpec | None = None
     image: str | None = None
     repo_source: str | None = None
     clone_branch: str | None = None
@@ -71,6 +74,7 @@ class PreparedExecution(BaseModel):
     session_id: str | None = None
     directory_path: str = "root"
     command: str | list[str] | None = None
+    codex_turn: CodexTurnSpec | None = None
     image: str | None = None
     repo_source: str | None = None
     clone_branch: str | None = None
@@ -88,6 +92,7 @@ class ExecutionHandle(BaseModel):
     session_id: str | None = None
     directory_path: str = "root"
     command: str | list[str] | None = None
+    codex_turn: CodexTurnSpec | None = None
     image: str | None = None
     repo_source: str | None = None
     clone_branch: str | None = None

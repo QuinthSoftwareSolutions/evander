@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 from starlette.applications import Starlette
@@ -31,6 +32,7 @@ from evander.capacity_health import (
     collect_disk_usage,
     top_session_storage,
 )
+from evander.codex_auth import CodexAuthMode
 from evander.managed_sections import merge_managed_section
 from evander.session_artifacts import (
     open_relative_regular_file_no_follow,
@@ -39,6 +41,9 @@ from evander.session_artifacts import (
 from evander.git_ssh_authorized_keys import public_key_body_from_line
 
 from .docker_runtime import DockerContainerRuntime
+from .codex_auth_broker import CodexAuthBroker
+from .codex_subscription import CodexSubscriptionTurnRunner
+from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .models import (
     DEFAULT_WORKER_ROOT,
     WorkerFileWriteRequest,
@@ -141,6 +146,13 @@ class WorkerDaemon:
         mssql_sqlcmd_path: str = "sqlcmd",
         mssql_provisioner: WorkerMssqlProvisioner | None = None,
         storage_telemetry_ttl_seconds: float = _SESSION_STORAGE_TELEMETRY_TTL_SECONDS,
+        codex_auth_broker: CodexAuthBroker | None = None,
+        codex_auth_command: Sequence[str] | None = None,
+        codex_egress_proxy_url: str | None = None,
+        codex_egress_proxy: RestrictedCodexEgressProxy | None = None,
+        codex_egress_proxy_bind_host: str | None = None,
+        codex_egress_proxy_port: int = 11889,
+        codex_egress_allowed_hosts: Sequence[str] | None = None,
     ) -> None:
         self.runtime_dir = runtime_dir
         self.worker_root = worker_root
@@ -153,8 +165,35 @@ class WorkerDaemon:
             docker_network=docker_network,
             sandbox_profile=sandbox_profile,
             read_only_mounts=read_only_mounts,
+            codex_egress_proxy_url=codex_egress_proxy_url,
         )
         self.token = token if token is not None else os.environ.get("EVANDER_WORKER_TOKEN")
+        self._codex_auth_broker = codex_auth_broker
+        self._codex_auth_command = tuple(codex_auth_command or ("codex", "app-server", "--stdio"))
+        self._codex_auth_env = dict(os.environ)
+        if codex_egress_proxy_url:
+            self._codex_auth_env.update(
+                {
+                    "HTTPS_PROXY": codex_egress_proxy_url,
+                    "HTTP_PROXY": codex_egress_proxy_url,
+                    "NO_PROXY": "127.0.0.1,localhost",
+                }
+            )
+        self._codex_egress_proxy = codex_egress_proxy
+        if self._codex_egress_proxy is None and codex_egress_proxy_bind_host:
+            proxy_kwargs: dict[str, Any] = {
+                "host": codex_egress_proxy_bind_host,
+                "port": codex_egress_proxy_port,
+            }
+            if codex_egress_allowed_hosts is not None:
+                proxy_kwargs["allowed_hosts"] = codex_egress_allowed_hosts
+            self._codex_egress_proxy = RestrictedCodexEgressProxy(**proxy_kwargs)
+        if self._codex_egress_proxy is not None:
+            self._codex_egress_proxy.start()
+        self._codex_auth_init_lock = threading.Lock()
+        self._codex_subscription_runners: dict[str, CodexSubscriptionTurnRunner] = {}
+        self._codex_subscription_runners_lock = threading.Lock()
+        self._job_record_update_lock = threading.RLock()
         self.mssql = mssql_provisioner or WorkerMssqlProvisioner(
             enabled=mssql_enabled,
             store=WorkerMssqlStore(runtime_dir / "mssql-state.json"),
@@ -176,6 +215,7 @@ class WorkerDaemon:
         self._session_storage_telemetry_background_generation: int | None = None
         self._session_storage_telemetry_next_generation = 0
         self._session_storage_telemetry_applied_generation = 0
+        self._reconcile_orphaned_codex_subscription_jobs()
 
     def create_app(self) -> Starlette:
 
@@ -183,8 +223,78 @@ class WorkerDaemon:
 
         return build_worker_app(self)
 
+    def _reconcile_orphaned_codex_subscription_jobs(self) -> None:
+        for record in self.store.list_all_ordered():
+            if not _worker_job_uses_codex_subscription(record):
+                continue
+            if record.status not in {"created", "preparing", "starting", "running"}:
+                continue
+            marker = (
+                Path(record.agent_home_path) / ".evander" / "codex-turns" / f"{record.job_id}.exit"
+            )
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("1", encoding="utf-8")
+            record.status = "failed"
+            record.finished_at = now_utc()
+            record.error = (
+                "worker daemon restarted while controlling a Codex subscription turn; "
+                "the turn was failed closed"
+            )
+            metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
+            metadata["worker_terminal_kind"] = "infrastructure"
+            metadata["codex_subscription_exit_code"] = 1
+            record.metadata = sanitize_metadata(metadata)
+            self.store.put(record)
+
+    def close(self) -> None:
+        with self._codex_subscription_runners_lock:
+            runners = list(self._codex_subscription_runners.values())
+            self._codex_subscription_runners.clear()
+        for runner in runners:
+            runner.cancel()
+        if self._codex_auth_broker is not None:
+            self._codex_auth_broker.close()
+        if self._codex_egress_proxy is not None:
+            self._codex_egress_proxy.close()
+
+    @property
+    def codex_auth(self) -> CodexAuthBroker:
+        broker = self._codex_auth_broker
+        if broker is not None:
+            return broker
+        with self._codex_auth_init_lock:
+            broker = self._codex_auth_broker
+            if broker is None:
+                broker = CodexAuthBroker(
+                    auth_home=self.worker_root / "codex-auth",
+                    app_server_command=self._codex_auth_command,
+                    app_server_env=self._codex_auth_env,
+                )
+                self._codex_auth_broker = broker
+            return broker
+
+    def codex_auth_status(self) -> dict[str, Any]:
+        return self.codex_auth.status()
+
+    def start_codex_device_login(self) -> dict[str, Any]:
+        return self.codex_auth.start_device_login()
+
+    def codex_device_login_status(self, login_id: str) -> dict[str, Any]:
+        return self.codex_auth.device_login_status(login_id)
+
+    def cancel_codex_device_login(self, login_id: str) -> dict[str, Any]:
+        return self.codex_auth.cancel_device_login(login_id)
+
+    def logout_codex_auth(self) -> dict[str, Any]:
+        return self.codex_auth.logout()
+
     def start_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, request.session_id)
+        subscription_tokens = None
+        subscription_marker: Path | None = None
+        runtime_request = request
+        if _worker_request_uses_codex_subscription(request):
+            subscription_tokens = self.codex_auth.external_tokens()
         if request.repo_source:
             self._ensure_allowed_git_source(request.repo_source)
         self._sync_git_ssh_into_agent_home(
@@ -206,12 +316,37 @@ class WorkerDaemon:
             repo_root_path=str(paths.repo_root),
             artifacts_path=str(paths.artifacts),
             logs_path=str(paths.logs),
-            metadata=sanitize_metadata(request.metadata),
+            metadata=sanitize_metadata(
+                request.metadata
+                | (
+                    {"codex_auth_mode": CodexAuthMode.CHATGPT_SUBSCRIPTION.value}
+                    if subscription_tokens is not None
+                    else {}
+                )
+            ),
         )
         self._log_path(record).touch(exist_ok=True)
         self.store.put(record)
+        if subscription_tokens is not None:
+            subscription_marker = paths.agent_home / ".evander" / "codex-turns" / f"{job_id}.exit"
+            subscription_marker.parent.mkdir(parents=True, exist_ok=True)
+            subscription_marker.unlink(missing_ok=True)
+            runtime_request = request.model_copy(
+                update={
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        (
+                            f"while [ ! -f /home/agent/.evander/codex-turns/{job_id}.exit ]; "
+                            "do sleep 1; done; "
+                            f"code=$(cat /home/agent/.evander/codex-turns/{job_id}.exit); "
+                            f'rm -f /home/agent/.evander/codex-turns/{job_id}.exit; exit "$code"'
+                        ),
+                    ]
+                }
+            )
         try:
-            container_id = self.container_runtime.start_job(request, record, paths)
+            container_id = self.container_runtime.start_job(runtime_request, record, paths)
         except Exception as exc:
             record.status = "failed"
             record.finished_at = now_utc()
@@ -224,6 +359,31 @@ class WorkerDaemon:
         record.container_id = container_id
         record.status = "running"
         self.store.put(record)
+        if subscription_tokens is not None and subscription_marker is not None:
+            command_builder = getattr(self.container_runtime, "codex_app_server_command", None)
+            if not callable(command_builder):
+                self.container_runtime.stop_job(record)
+                record.status = "failed"
+                record.finished_at = now_utc()
+                record.error = "container runtime does not support Codex subscription turns"
+                self.store.put(record)
+                raise RuntimeError(
+                    "container runtime does not support Codex subscription app-server turns"
+                )
+            assert request.codex_turn is not None
+            runner = CodexSubscriptionTurnRunner(
+                command=command_builder(record, request.codex_turn),
+                turn=request.codex_turn,
+                cwd=request.working_directory or "/home/agent",
+                broker=self.codex_auth,
+                initial_tokens=subscription_tokens,
+                log_path=self._log_path(record),
+                finished_marker=subscription_marker,
+                metadata_callback=lambda update: self._merge_job_metadata(job_id, update),
+            )
+            with self._codex_subscription_runners_lock:
+                self._codex_subscription_runners[job_id] = runner
+            runner.start()
         logger.info(
             "worker_job_started job_id=%s session_id=%s container_id=%s",
             record.job_id,
@@ -261,6 +421,8 @@ class WorkerDaemon:
         if terminal and record.finished_at is None:
             record.finished_at = now_utc()
         if terminal:
+            with self._codex_subscription_runners_lock:
+                self._codex_subscription_runners.pop(record.job_id, None)
             log_text: str | None = None
             if _worker_job_uses_codex(record):
                 try:
@@ -273,10 +435,18 @@ class WorkerDaemon:
                         str(exc),
                     )
             self._refresh_codex_job_outcome(record, log_text=log_text)
-        self.store.put(record)
+        with self._job_record_update_lock:
+            latest = self.store.get(record.job_id)
+            if latest is not None:
+                record.metadata = sanitize_metadata(dict(latest.metadata) | dict(record.metadata))
+            self.store.put(record)
         return record
 
     def stop_job(self, record: WorkerJobRecord) -> WorkerJobRecord:
+        with self._codex_subscription_runners_lock:
+            runner = self._codex_subscription_runners.pop(record.job_id, None)
+        if runner is not None:
+            runner.cancel()
         self.container_runtime.stop_job(record)
         record.status = "stopped"
         record.finished_at = now_utc()
@@ -293,6 +463,10 @@ class WorkerDaemon:
             )
             return
         attempted_at = now_utc()
+        with self._codex_subscription_runners_lock:
+            runner = self._codex_subscription_runners.pop(record.job_id, None)
+        if runner is not None:
+            runner.cancel()
         try:
             self.container_runtime.remove_job(record)
         except subprocess.CalledProcessError as exc:
@@ -390,6 +564,11 @@ class WorkerDaemon:
 
     def _raw_logs(self, record: WorkerJobRecord, *, tail_lines: int | None = None) -> str:
         log_path = self._log_path(record)
+        if _worker_job_uses_codex_subscription(record):
+            text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+            if tail_lines is not None and tail_lines > 0:
+                return "\n".join(text.splitlines()[-tail_lines:]) + ("\n" if text else "")
+            return text
         try:
             try:
                 text = self.container_runtime.get_logs(record, tail_lines=tail_lines)
@@ -405,6 +584,16 @@ class WorkerDaemon:
         elif text:
             _merge_tail_log_snapshot(log_path, text)
         return text
+
+    def _merge_job_metadata(self, job_id: str, update: dict[str, Any]) -> None:
+        with self._job_record_update_lock:
+            record = self.store.get(job_id)
+            if record is None:
+                return
+            metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
+            metadata.update(update)
+            record.metadata = sanitize_metadata(metadata)
+            self.store.put(record)
 
     def _codex_session_log(
         self,
@@ -2307,6 +2496,18 @@ def _worker_job_uses_codex(record: WorkerJobRecord) -> bool:
             command_text,
         )
         is not None
+    )
+
+
+def _worker_request_uses_codex_subscription(request: WorkerJobRequest) -> bool:
+    turn = request.codex_turn
+    return turn is not None and turn.auth_mode == CodexAuthMode.CHATGPT_SUBSCRIPTION
+
+
+def _worker_job_uses_codex_subscription(record: WorkerJobRecord) -> bool:
+    metadata = record.metadata if isinstance(record.metadata, dict) else {}
+    return str(metadata.get("codex_auth_mode") or "").strip().casefold() == (
+        CodexAuthMode.CHATGPT_SUBSCRIPTION.value
     )
 
 
