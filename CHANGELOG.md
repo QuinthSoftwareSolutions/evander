@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-21 - Microsoft Graph Attachment Retrieval
+
+- Restored Graph message-detail and attachment-list retrieval by limiting attachment metadata
+  selections to properties supported by the base Microsoft Graph attachment type.
+- Resolved Graph's opaque message parent-folder IDs against configured mailbox folders before
+  enforcing session folder grants.
+
 ## 2026-07-21 - Scrollable Admin Detail Lists
 
 - Made card-list sidebars independently scrollable across Admin Web list/detail pages so operators

@@ -100,6 +100,7 @@ _SHARED_GRAPH_ACCESS_TOKEN_CACHE = GraphAccessTokenCache()
 
 class GraphEmailProvider:
     provider_name = "graph"
+    _attachment_metadata_select = "id,name,contentType,size,isInline,lastModifiedDateTime"
     _fallback_lookback_days = 7
     _dedupe_window_size = 512
     _large_attachment_threshold_bytes = 3 * 1024 * 1024
@@ -205,15 +206,22 @@ class GraphEmailProvider:
                         "id,subject,body,from,toRecipients,isRead,receivedDateTime,"
                         "conversationId,parentFolderId,hasAttachments"
                     ),
-                    "$expand": (
-                        "attachments($select=id,name,contentType,size,isInline,contentId,"
-                        "lastModifiedDateTime)"
-                    ),
+                    "$expand": f"attachments($select={self._attachment_metadata_select})",
                 },
             )
             payload = response.json()
+            policy_folder = self._policy_folder_from_parent(payload.get("parentFolderId"))
+            if policy_folder == "unknown":
+                policy_folder = self._resolve_policy_folder(
+                    client=client,
+                    parent_folder_id=payload.get("parentFolderId"),
+                )
 
-        return self._to_detail(mailbox_id=mailbox_id, payload=payload)
+        return self._to_detail(
+            mailbox_id=mailbox_id,
+            payload=payload,
+            policy_folder=policy_folder,
+        )
 
     def create_draft(
         self,
@@ -317,9 +325,7 @@ class GraphEmailProvider:
                 method="GET",
                 url=self._url(f"messages/{message_id}/attachments"),
                 headers=self._headers(),
-                params={
-                    "$select": "id,name,contentType,size,isInline,contentId,lastModifiedDateTime"
-                },
+                params={"$select": self._attachment_metadata_select},
             )
             payload = response.json()
         return [self._attachment_metadata(item) for item in payload.get("value", [])]
@@ -572,10 +578,20 @@ class GraphEmailProvider:
             },
         )
 
-    def _to_detail(self, *, mailbox_id: str, payload: dict[str, Any]) -> EmailMessageDetail:
+    def _to_detail(
+        self,
+        *,
+        mailbox_id: str,
+        payload: dict[str, Any],
+        policy_folder: str | None = None,
+    ) -> EmailMessageDetail:
         summary = self._to_summary(
             mailbox_id=mailbox_id,
-            folder=self._policy_folder_from_parent(payload.get("parentFolderId")),
+            folder=(
+                policy_folder
+                if policy_folder is not None
+                else self._policy_folder_from_parent(payload.get("parentFolderId"))
+            ),
             payload=payload,
         )
         body = payload.get("body") or {}
@@ -787,6 +803,26 @@ class GraphEmailProvider:
 
         for policy_folder in self.folder_mapping:
             if policy_folder.casefold() == folder_id.casefold():
+                return policy_folder
+
+        return "unknown"
+
+    def _resolve_policy_folder(self, *, client: httpx.Client, parent_folder_id: Any) -> str:
+        normalized_parent_folder_id = str(parent_folder_id or "").strip()
+        if not normalized_parent_folder_id:
+            return "unknown"
+
+        for policy_folder, provider_folder in self.folder_mapping.items():
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="resolve_folder",
+                method="GET",
+                url=self._url(f"mailFolders/{quote(str(provider_folder), safe='')}"),
+                headers=self._headers(),
+                params={"$select": "id"},
+            )
+            if str(response.json().get("id") or "") == normalized_parent_folder_id:
                 return policy_folder
 
         return "unknown"

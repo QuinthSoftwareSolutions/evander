@@ -725,6 +725,94 @@ def test_graph_detail_accepts_expanded_attachments_array() -> None:
     assert detail.attachments[0].filename == "report.pdf"
 
 
+def test_graph_get_message_selects_only_base_attachment_properties(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "secret-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["$expand"] == (
+            "attachments($select=id,name,contentType,size,isInline,lastModifiedDateTime)"
+        )
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg-1",
+                "receivedDateTime": "2026-03-20T10:00:00Z",
+                "parentFolderId": "Inbox",
+                "attachments": [],
+            },
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+    )
+
+    detail = provider.get_message("exec-graph", "msg-1")
+
+    assert detail.message_id == "msg-1"
+
+
+def test_graph_get_message_resolves_opaque_parent_folder_to_policy_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "secret-token")
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path.endswith("/messages/msg-1"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg-1",
+                    "receivedDateTime": "2026-03-20T10:00:00Z",
+                    "parentFolderId": "opaque-inbox-id",
+                    "attachments": [],
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/mailFolders/Inbox"):
+            assert request.url.params["$select"] == "id"
+            return httpx.Response(
+                200,
+                json={"id": "opaque-inbox-id"},
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    patch_provider_client(
+        monkeypatch,
+        "evander.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox", "drafts": "Drafts"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+    )
+
+    detail = provider.get_message("exec-graph", "msg-1")
+
+    assert detail.folder == "inbox"
+    assert requested_paths == [
+        "/v1.0/users/leader@example.com/messages/msg-1",
+        "/v1.0/users/leader@example.com/mailFolders/Inbox",
+    ]
+
+
 def test_gmail_retries_transient_503_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     attempts = {"count": 0}
 
@@ -1041,6 +1129,9 @@ def test_graph_list_and_download_file_attachment(monkeypatch: pytest.MonkeyPatch
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/messages/msg-1/attachments"):
+            assert request.url.params["$select"] == (
+                "id,name,contentType,size,isInline,lastModifiedDateTime"
+            )
             return httpx.Response(
                 200,
                 json={
