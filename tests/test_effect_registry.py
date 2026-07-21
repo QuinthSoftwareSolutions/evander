@@ -997,6 +997,7 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
             "discord-ops",
             "ops-email",
         ],
+        email_mailbox_grants=[{"mailbox_id": "default", "access": "read", "folders": []}],
         teams_channel_allowlist=["team-a/existing"],
         discord_channels=["111111111111111111"],
         email_mailboxes=["default"],
@@ -1027,6 +1028,8 @@ def test_agent_create_provider_maps_communication_target_ids_to_allowlists(tmp_p
     assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == ["teams-chat"]
     assert admin_service.create_vm_calls[0]["teams_user_allowlist"] == ["teams-user"]
     assert admin_service.create_vm_calls[0]["email_mailboxes"] == ["default"]
+    assert admin_service.create_vm_calls[0]["email_mailbox_grants"] is not None
+    assert admin_service.create_vm_calls[0]["email_mailbox_grants"][0].folders == []
     assert admin_service.create_vm_calls[0]["communication_target_ids"] == [
         "teams-channel",
         "teams-chat",

@@ -688,7 +688,11 @@ def _agent_email_mailbox_grants(
                 "effect:agent:create email_mailbox_grants contains unavailable mailbox "
                 f"{grant.mailbox_id!r} for directory {directory_path!r}"
             )
-        folders = list(grant.folders or mailbox.folder_allowlist_defaults)
+        folders = (
+            list(grant.folders)
+            if "folders" in grant.model_fields_set
+            else list(mailbox.folder_allowlist_defaults)
+        )
         allowed_folders = set(
             config.email_folder_allowlist_by_mailbox.get(
                 grant.mailbox_id, mailbox.folder_allowlist_defaults

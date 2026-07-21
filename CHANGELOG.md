@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-21 - Session Communication Grant Hardening
+
+- Made canonical communication-target IDs fail closed when their catalog entries are disabled or
+  deleted, while retaining raw destination resolution for legacy allowlists.
+- Preserved explicit empty mailbox-folder grants and limited mailbox defaults returned to Admin Web
+  to folders allowed by effective directory policy.
+
 ## 2026-07-20 - Session Communication And Mailbox Grants
 
 - Added durable, nullable session `communication_target_ids` and structured

@@ -461,6 +461,31 @@ class VmAgentCreateRequestMixin:
             for connector_id, connector in sorted(connector_config.connectors.items())
             if not connector.disabled
         ]
+        allowed_mailbox_ids = set(policy_config.email_mailbox_allowlist)
+        email_mailboxes: list[dict[str, object]] = []
+        for mailbox in provider_config.email_mailboxes:
+            if mailbox.mailbox_id not in allowed_mailbox_ids:
+                continue
+            allowed_folders = list(
+                policy_config.email_folder_allowlist_by_mailbox.get(
+                    mailbox.mailbox_id, mailbox.folder_allowlist_defaults
+                )
+            )
+            allowed_folder_set = set(allowed_folders)
+            email_mailboxes.append(
+                {
+                    "mailbox_id": mailbox.mailbox_id,
+                    "provider": mailbox.provider,
+                    "account_identifier": mailbox.account_identifier,
+                    "folders": allowed_folders,
+                    "default_folders": [
+                        folder
+                        for folder in mailbox.folder_allowlist_defaults
+                        if folder in allowed_folder_set
+                    ],
+                    "send_enabled": bool(policy_config.email_send_enabled),
+                }
+            )
         return {
             "directory_path": normalized_directory,
             "backends": ["libvirt_vm", "container_worker_vm"],
@@ -490,22 +515,7 @@ class VmAgentCreateRequestMixin:
                 option.model_dump(mode="json")
                 for option in self._agent_communication_target_options(normalized_directory)
             ],
-            "email_mailboxes": [
-                {
-                    "mailbox_id": mailbox.mailbox_id,
-                    "provider": mailbox.provider,
-                    "account_identifier": mailbox.account_identifier,
-                    "folders": list(
-                        policy_config.email_folder_allowlist_by_mailbox.get(
-                            mailbox.mailbox_id, mailbox.folder_allowlist_defaults
-                        )
-                    ),
-                    "default_folders": list(mailbox.folder_allowlist_defaults),
-                    "send_enabled": bool(policy_config.email_send_enabled),
-                }
-                for mailbox in provider_config.email_mailboxes
-                if mailbox.mailbox_id in set(policy_config.email_mailbox_allowlist)
-            ],
+            "email_mailboxes": email_mailboxes,
             "connectors": connectors,
             "libvirt": {
                 "default_template": vm_defaults.libvirt_vm_default_template,

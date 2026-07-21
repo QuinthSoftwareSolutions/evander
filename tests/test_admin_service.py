@@ -12761,9 +12761,7 @@ def test_update_session_policy_validates_canonical_communication_and_mailbox_gra
         "canonical-session",
         {
             "communication_target_ids": ["OPS-EMAIL"],
-            "email_mailbox_grants": [
-                {"mailbox_id": "default", "access": "read", "folders": ["inbox"]}
-            ],
+            "email_mailbox_grants": [{"mailbox_id": "default", "access": "read"}],
         },
     )
 
@@ -12773,7 +12771,20 @@ def test_update_session_policy_validates_canonical_communication_and_mailbox_gra
     assert updated.email_mailbox_grants is not None
     assert updated.email_mailbox_grants[0].access.value == "read"
     assert updated.email_mailbox_allowlist == ["default"]
-    assert updated.email_folder_allowlist_by_mailbox == {"default": ["inbox"]}
+    assert updated.email_folder_allowlist_by_mailbox == {"default": ["inbox", "drafts"]}
+
+    service.operations_admin.update_session_policy(
+        "canonical-session",
+        {
+            "email_mailbox_grants": [{"mailbox_id": "default", "access": "read", "folders": []}],
+        },
+    )
+
+    updated = service.runtime.session_repository.get_session("canonical-session")
+    assert updated is not None
+    assert updated.email_mailbox_grants is not None
+    assert updated.email_mailbox_grants[0].folders == []
+    assert updated.email_folder_allowlist_by_mailbox == {"default": []}
 
     with pytest.raises(ValueError, match="unknown target"):
         service.operations_admin.update_session_policy(

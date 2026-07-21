@@ -14471,6 +14471,15 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
         },
     )
     assert vm_write.ok is True
+    policy_write = service.operations_admin.write_directory_domain_config(
+        team_path,
+        "policy",
+        {
+            "email_mailbox_allowlist": ["default"],
+            "email_folder_allowlist_by_mailbox": {"default": ["inbox"]},
+        },
+    )
+    assert policy_write.ok is True
     communications_write = service.operations_admin.write_directory_domain_config(
         team_path,
         COMMUNICATION_TARGETS_DOMAIN,
@@ -14544,6 +14553,16 @@ def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: 
             "alias": "dotnet-playwright",
             "image_ref": "runner-dotnet-playwright:2026-06-05",
         },
+    ]
+    assert body["email_mailboxes"] == [
+        {
+            "mailbox_id": "default",
+            "provider": "json_store",
+            "account_identifier": "default",
+            "folders": ["inbox"],
+            "default_folders": ["inbox"],
+            "send_enabled": False,
+        }
     ]
     communication_targets = {target["value"]: target for target in body["communication_targets"]}
     assert set(communication_targets) == {
