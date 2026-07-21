@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from typing import Any, Callable, Protocol
 
 from .codex_app_server import CodexAppServerError, CodexAppServerProcess
@@ -85,6 +86,7 @@ class CodexAuthBroker:
         self._lock = threading.RLock()
         self._managed_client: CodexManagedAuthClient | None = None
         self._device_logins: dict[str, dict[str, Any]] = {}
+        self._login_notifications: SimpleQueue[dict[str, Any]] = SimpleQueue()
         self._lifecycle_file = (self.auth_home / ".broker.lock").open("a+")
         try:
             fcntl.flock(self._lifecycle_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -96,6 +98,7 @@ class CodexAuthBroker:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
+            self._drain_login_notifications_locked()
             account: dict[str, Any] | None = None
             error: str | None = None
             try:
@@ -127,6 +130,7 @@ class CodexAuthBroker:
 
     def start_device_login(self) -> dict[str, Any]:
         with self._lock:
+            self._drain_login_notifications_locked()
             client = self._ensure_client()
             result = client.request("account/login/start", {"type": "chatgptDeviceCode"})
             login_id = str(result.get("loginId") or "").strip()
@@ -142,10 +146,12 @@ class CodexAuthBroker:
                 "error": None,
             }
             self._device_logins[login_id] = record
+            self._drain_login_notifications_locked()
             return dict(record)
 
     def device_login_status(self, login_id: str) -> dict[str, Any]:
         with self._lock:
+            self._drain_login_notifications_locked()
             record = self._device_logins.get(str(login_id).strip())
             if record is None:
                 raise CodexAuthBrokerError("device login not found")
@@ -153,11 +159,15 @@ class CodexAuthBroker:
 
     def cancel_device_login(self, login_id: str) -> dict[str, Any]:
         with self._lock:
+            self._drain_login_notifications_locked()
             record = self._device_logins.get(str(login_id).strip())
             if record is None:
                 raise CodexAuthBrokerError("device login not found")
             self._ensure_client().request("account/login/cancel", {"loginId": login_id})
             record["status"] = "cancelled"
+            # Completion may race cancellation. Apply any notification that the
+            # app-server reader queued while the request was in flight last.
+            self._drain_login_notifications_locked()
             return dict(record)
 
     def logout(self) -> dict[str, Any]:
@@ -238,7 +248,19 @@ class CodexAuthBroker:
         login_id = str(params.get("loginId") or "").strip()
         if not login_id:
             return
-        with self._lock:
+        # This callback runs on the sole app-server reader. Never make that reader
+        # wait for a broker method that may itself be waiting for a protocol response.
+        self._login_notifications.put(dict(params))
+
+    def _drain_login_notifications_locked(self) -> None:
+        while True:
+            try:
+                params = self._login_notifications.get_nowait()
+            except Empty:
+                return
+            login_id = str(params.get("loginId") or "").strip()
+            if not login_id:
+                continue
             record = self._device_logins.setdefault(
                 login_id,
                 {

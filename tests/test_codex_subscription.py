@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import socket
+import threading
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from evander.codex_auth import CodexAuthMode, CodexTurnSpec
 from evander.worker.codex_auth_broker import CodexExternalAuthTokens
-from evander.worker.codex_egress_proxy import RestrictedCodexEgressProxy
-from evander.worker.codex_subscription import CodexSubscriptionTurnRunner
+from evander.worker.codex_egress_proxy import RestrictedCodexEgressProxy, _tunnel
+from evander.worker.codex_subscription import (
+    CodexSubscriptionTurnRunner,
+    write_completion_marker_no_follow,
+)
 
 
 class FakeBroker:
@@ -83,6 +89,21 @@ class FakeTurnProcess:
         self.running = False
 
 
+class ExitingTurnProcess(FakeTurnProcess):
+    def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        if method != "turn/start":
+            return super().request(method, params, timeout_seconds=timeout_seconds)
+        self.requests.append((method, dict(params or {})))
+        self.running = False
+        return {"turn": {"id": "turn-1", "status": "inProgress", "items": []}}
+
+
 def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(tmp_path: Path) -> None:
     FakeTurnProcess.instances.clear()
     broker = FakeBroker()
@@ -122,6 +143,7 @@ def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(tmp_pat
     resume = next(params for method, params in process.requests if method == "thread/resume")
     assert resume["threadId"] == "existing-thread"
     assert resume["modelProvider"] == "openai"
+    assert resume["sandbox"] == "danger-full-access"
     assert resume["config"]["mcp_servers"]["evander"]["url"].endswith("/mcp")
     assert metadata[-1]["codex_subscription_exit_code"] == 0
     assert all("access" not in str(entry).casefold() for entry in metadata)
@@ -137,3 +159,126 @@ def test_restricted_proxy_rejects_unlisted_connect_destination() -> None:
         assert response.startswith(b"HTTP/1.1 403")
     finally:
         proxy.close()
+
+
+def test_completion_marker_does_not_follow_agent_symlink(tmp_path: Path) -> None:
+    victim = tmp_path / "auth.json"
+    victim.write_text("keep-me", encoding="utf-8")
+    marker = tmp_path / "turn.exit"
+    marker.symlink_to(victim)
+
+    write_completion_marker_no_follow(marker, 0)
+
+    assert victim.read_text(encoding="utf-8") == "keep-me"
+    assert not marker.is_symlink()
+    assert marker.read_text(encoding="utf-8") == "0"
+
+
+def test_subscription_runner_fails_when_app_server_exits_before_completion(
+    tmp_path: Path,
+) -> None:
+    runner = CodexSubscriptionTurnRunner(
+        command=("codex", "app-server", "--stdio"),
+        turn=CodexTurnSpec(
+            auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            prompt="Continue the task",
+            model="gpt-5.4",
+        ),
+        cwd="/home/agent",
+        broker=FakeBroker(),  # type: ignore[arg-type]
+        initial_tokens=CodexExternalAuthTokens("access-secret", "account-1", "plus"),
+        log_path=tmp_path / "turn.log",
+        finished_marker=tmp_path / "turn.exit",
+        process_factory=ExitingTurnProcess,  # type: ignore[arg-type]
+    )
+
+    runner.run()
+
+    assert (tmp_path / "turn.exit").read_text(encoding="utf-8") == "1"
+    assert "exited before reporting turn completion" in (tmp_path / "turn.log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_subscription_runner_does_not_start_process_after_early_cancellation(
+    tmp_path: Path,
+) -> None:
+    factory_entered = threading.Event()
+    release_factory = threading.Event()
+    processes: list[FakeTurnProcess] = []
+
+    def process_factory(*args: Any, **kwargs: Any) -> FakeTurnProcess:
+        factory_entered.set()
+        assert release_factory.wait(timeout=2)
+        process = FakeTurnProcess(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    runner = CodexSubscriptionTurnRunner(
+        command=("codex", "app-server", "--stdio"),
+        turn=CodexTurnSpec(
+            auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            prompt="Continue the task",
+            model="gpt-5.4",
+        ),
+        cwd="/home/agent",
+        broker=FakeBroker(),  # type: ignore[arg-type]
+        initial_tokens=CodexExternalAuthTokens("access-secret", "account-1", "plus"),
+        log_path=tmp_path / "turn.log",
+        finished_marker=tmp_path / "turn.exit",
+        process_factory=process_factory,  # type: ignore[arg-type]
+    )
+
+    runner.start()
+    assert factory_entered.wait(timeout=2)
+    runner.cancel()
+    release_factory.set()
+
+    assert runner.join(timeout_seconds=2)
+    assert len(processes) == 1
+    assert processes[0].requests == []
+    assert not processes[0].running
+    assert (tmp_path / "turn.exit").read_text(encoding="utf-8") == "1"
+
+
+def test_restricted_proxy_expires_idle_tunnel_without_helper_threads() -> None:
+    client, client_peer = socket.socketpair()
+    upstream, upstream_peer = socket.socketpair()
+    thread = threading.Thread(
+        target=_tunnel,
+        args=(client, upstream),
+        kwargs={"idle_timeout_seconds": 0.1},
+    )
+    try:
+        thread.start()
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+    finally:
+        for connection in (client, client_peer, upstream, upstream_peer):
+            connection.close()
+
+
+def test_restricted_proxy_rejects_connections_over_the_host_thread_limit() -> None:
+    proxy = RestrictedCodexEgressProxy(
+        host="127.0.0.1",
+        port=0,
+        allowed_hosts=["api.openai.com"],
+        max_connections=1,
+    )
+    proxy.start()
+    server = proxy._server  # noqa: SLF001
+    assert server is not None
+    assert server._connection_slots.acquire(blocking=False)  # noqa: SLF001
+    request, peer = socket.socketpair()
+    try:
+        server.process_request(request, ("local", 0))
+        assert peer.recv(4096).startswith(b"HTTP/1.1 503")
+    finally:
+        server._connection_slots.release()  # noqa: SLF001
+        peer.close()
+        proxy.close()
+
+
+def test_restricted_proxy_rejects_non_positive_connection_limit() -> None:
+    with pytest.raises(ValueError, match="max_connections must be positive"):
+        RestrictedCodexEgressProxy(host="127.0.0.1", port=0, max_connections=0)

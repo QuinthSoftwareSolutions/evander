@@ -49,9 +49,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
-        allowed_contact_ids_provided = "allowed_contact_ids" in getattr(
-            effect, "model_fields_set", set()
-        )
+        effect_fields_set = getattr(effect, "model_fields_set", set())
+        allowed_contact_ids_provided = "allowed_contact_ids" in effect_fields_set
+        codex_auth_mode_provided = "codex_auth_mode" in effect_fields_set
         payload = {
             "provider": effect.provider,
             "agent_provider": effect.agent_provider,
@@ -62,7 +62,6 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "labels": effect.labels,
             "model": effect.model,
             "model_provider_mode": effect.model_provider_mode,
-            "codex_auth_mode": effect.codex_auth_mode,
             "vm_user": effect.vm_user,
             "vm_image": effect.vm_image,
             "ttl_hours": effect.ttl_hours,
@@ -98,12 +97,17 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "directory_path": effect.directory_path,
             "metadata": effect.metadata,
         }
+        if codex_auth_mode_provided:
+            payload["codex_auth_mode"] = effect.codex_auth_mode
         if resolved_config:
             resolved_payload = dict(resolved_config)
             if "allowed_contact_ids" in resolved_payload:
                 allowed_contact_ids_provided = True
+            if "codex_auth_mode" in resolved_payload:
+                codex_auth_mode_provided = True
             payload.update(resolved_payload)
         payload["_allowed_contact_ids_provided"] = allowed_contact_ids_provided
+        payload["_codex_auth_mode_provided"] = codex_auth_mode_provided
 
         directory_path = normalize_optional_string(payload.get("directory_path")) or str(
             context.metadata.get("directory_path") or "root"
@@ -357,7 +361,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         codex_auth_mode = normalize_codex_auth_mode(
             payload.get("codex_auth_mode")
-            if "codex_auth_mode" in payload
+            if payload.get("_codex_auth_mode_provided")
             else getattr(existing_session, "codex_auth_mode", None)
         )
         if codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
@@ -384,18 +388,6 @@ class AgentCreateEffectProvider(EffectProviderBase):
         model_provider_mode = normalize_model_provider_mode_override(
             payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
         )
-        effective_model_provider_mode = (
-            model_provider_mode
-            or normalize_model_provider_mode_override(
-                metadata.get(MODEL_PROVIDER_MODE_METADATA_KEY)
-            )
-            or config.model_provider_mode
-        )
-        if (
-            codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
-            and effective_model_provider_mode != "openai_public"
-        ):
-            raise ValueError("chatgpt_subscription requires the public OpenAI model provider mode")
         if model_provider_mode:
             metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
         requested_tools = as_string_list(payload.get("allowed_tools"))

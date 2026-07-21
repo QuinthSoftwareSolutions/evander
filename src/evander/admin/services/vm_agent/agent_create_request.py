@@ -252,14 +252,6 @@ class VmAgentCreateRequestMixin:
         requested_model_provider_mode = normalize_model_provider_mode_override(
             payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
         )
-        effective_model_provider_mode = (
-            requested_model_provider_mode or backend.config.model_provider_mode
-        )
-        if (
-            codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
-            and effective_model_provider_mode != "openai_public"
-        ):
-            raise ValueError("chatgpt_subscription requires the public OpenAI model provider mode")
         container_image_selection = resolve_container_worker_image_selector(
             self._agent_optional_string(payload, "container_image"),
             default_image=backend.config.container_worker_default_image,

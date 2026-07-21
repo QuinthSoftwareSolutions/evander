@@ -18,8 +18,8 @@ def codex_auth_routes(
     service: AdminRuntimeComponents,
     auth: AdminWebAuth,
 ) -> list[BaseRoute]:
-    def require_owner(
-        request: Request, directory_path: str
+    def require_worker_account_owner(
+        request: Request,
     ) -> tuple[str | None, JSONResponse | None]:
         try:
             auth.require(request)
@@ -28,7 +28,10 @@ def codex_auth_routes(
             auth.require_permission(
                 request,
                 ADMIN_OWNER_PERMISSION,
-                directory_path=directory_path,
+                # Codex auth is one shared account per worker, not a
+                # directory-scoped resource. Root ownership is the existing
+                # worker-wide authorization boundary.
+                directory_path="root",
             )
         except PermissionError as exc:
             return None, JSONResponse({"error": str(exc)}, status_code=403)
@@ -51,7 +54,7 @@ def codex_auth_routes(
         request: Request,
     ) -> tuple[str, str | None, ContainerWorkerClient] | JSONResponse:
         directory_path = str(request.query_params.get("directory_path") or "root").strip() or "root"
-        actor, error = require_owner(request, directory_path)
+        actor, error = require_worker_account_owner(request)
         if error is not None:
             return error
         try:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import select
 import socket
 import socketserver
 import threading
@@ -28,6 +29,8 @@ class RestrictedCodexEgressProxy:
         port: int,
         allowed_hosts: Iterable[str] = DEFAULT_CODEX_EGRESS_HOSTS,
         connect_timeout_seconds: float = 15.0,
+        tunnel_idle_timeout_seconds: float = 300.0,
+        max_connections: int = 64,
     ) -> None:
         self.host = str(host).strip()
         self.port = int(port)
@@ -39,6 +42,10 @@ class RestrictedCodexEgressProxy:
         if not self.allowed_hosts:
             raise ValueError("at least one Codex egress host must be allowed")
         self.connect_timeout_seconds = max(0.1, float(connect_timeout_seconds))
+        self.tunnel_idle_timeout_seconds = max(0.1, float(tunnel_idle_timeout_seconds))
+        self.max_connections = int(max_connections)
+        if self.max_connections <= 0:
+            raise ValueError("Codex egress proxy max_connections must be positive")
         self._server: _ThreadingTcpServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -56,7 +63,11 @@ class RestrictedCodexEgressProxy:
             def handle(self) -> None:
                 proxy._handle_connection(self.request)
 
-        server = _ThreadingTcpServer((self.host, self.port), Handler)
+        server = _ThreadingTcpServer(
+            (self.host, self.port),
+            Handler,
+            max_connections=self.max_connections,
+        )
         self._server = server
         self._thread = threading.Thread(
             target=server.serve_forever,
@@ -103,7 +114,11 @@ class RestrictedCodexEgressProxy:
             return
         try:
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            _tunnel(client, upstream)
+            _tunnel(
+                client,
+                upstream,
+                idle_timeout_seconds=self.tunnel_idle_timeout_seconds,
+            )
         finally:
             upstream.close()
 
@@ -122,6 +137,39 @@ class RestrictedCodexEgressProxy:
 class _ThreadingTcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler_class: type[socketserver.BaseRequestHandler],
+        *,
+        max_connections: int,
+    ) -> None:
+        self._connection_slots = threading.BoundedSemaphore(max_connections)
+        self.request_queue_size = max(5, min(max_connections, 128))
+        super().__init__(server_address, request_handler_class)
+
+    def process_request(self, request: socket.socket, client_address: object) -> None:
+        if not self._connection_slots.acquire(blocking=False):
+            try:
+                request.settimeout(1.0)
+                _send_response(request, 503, "proxy connection limit reached")
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._connection_slots.release()
+            raise
+
+    def process_request_thread(self, request: socket.socket, client_address: object) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_slots.release()
 
 
 def _normalize_allowed_host(value: object) -> str:
@@ -169,40 +217,32 @@ def _send_response(client: socket.socket, status: int, reason: str) -> None:
     )
 
 
-def _tunnel(client: socket.socket, upstream: socket.socket) -> None:
-    client.settimeout(None)
-    upstream.settimeout(None)
-    stopped = threading.Event()
+def _tunnel(
+    client: socket.socket,
+    upstream: socket.socket,
+    *,
+    idle_timeout_seconds: float,
+) -> None:
+    """Pump a tunnel on its bounded handler thread and expire inactive peers."""
 
-    def pump(source: socket.socket, destination: socket.socket) -> None:
-        try:
-            while not stopped.is_set():
+    timeout = max(0.1, float(idle_timeout_seconds))
+    client.settimeout(timeout)
+    upstream.settimeout(timeout)
+    peers = {client: upstream, upstream: client}
+    try:
+        while True:
+            readable, _, exceptional = select.select(
+                tuple(peers),
+                (),
+                tuple(peers),
+                timeout,
+            )
+            if exceptional or not readable:
+                return
+            for source in readable:
                 data = source.recv(65536)
                 if not data:
-                    break
-                destination.sendall(data)
-        except OSError:
-            pass
-        finally:
-            stopped.set()
-            try:
-                destination.shutdown(socket.SHUT_WR)
-            except OSError:
-                pass
-
-    client_to_upstream = threading.Thread(
-        target=pump,
-        args=(client, upstream),
-        name="evander-codex-proxy-upload",
-        daemon=True,
-    )
-    upstream_to_client = threading.Thread(
-        target=pump,
-        args=(upstream, client),
-        name="evander-codex-proxy-download",
-        daemon=True,
-    )
-    client_to_upstream.start()
-    upstream_to_client.start()
-    client_to_upstream.join()
-    upstream_to_client.join()
+                    return
+                peers[source].sendall(data)
+    except (OSError, ValueError):
+        return

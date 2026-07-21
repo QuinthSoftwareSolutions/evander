@@ -71,6 +71,34 @@ class FakeManagedClient:
         )
 
 
+class NotificationDuringCancelClient(FakeManagedClient):
+    def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        if method != "account/login/cancel":
+            return super().request(method, params, timeout_seconds=timeout_seconds)
+        notification_returned = threading.Event()
+
+        def notify_from_reader() -> None:
+            assert self.notification_handler is not None
+            self.notification_handler(
+                "account/login/completed",
+                {"loginId": "login-1", "success": True, "error": None},
+            )
+            notification_returned.set()
+
+        reader = threading.Thread(target=notify_from_reader)
+        reader.start()
+        if not notification_returned.wait(timeout=1):
+            raise AssertionError("app-server reader was blocked by the broker request lock")
+        reader.join(timeout=1)
+        return {}
+
+
 def test_broker_has_one_durable_auth_file_and_one_owner(tmp_path: Path) -> None:
     broker = CodexAuthBroker(auth_home=tmp_path / "codex-auth", client_factory=lambda *a, **k: None)
     try:
@@ -137,6 +165,25 @@ def test_device_login_exposes_only_operator_instructions_and_status(tmp_path: Pa
             "error": None,
         }
         clients[0].complete_login()
+        assert broker.device_login_status("login-1")["status"] == "completed"
+    finally:
+        broker.close()
+
+
+def test_login_notification_never_blocks_reader_behind_cancel_request(tmp_path: Path) -> None:
+    auth_home = tmp_path / "codex-auth"
+
+    def factory(*args: Any, **kwargs: Any) -> NotificationDuringCancelClient:
+        del args
+        return NotificationDuringCancelClient(auth_home / "auth.json", **kwargs)
+
+    broker = CodexAuthBroker(auth_home=auth_home, client_factory=factory)
+    try:
+        broker.start_device_login()
+
+        cancelled = broker.cancel_device_login("login-1")
+
+        assert cancelled["status"] == "completed"
         assert broker.device_login_status("login-1")["status"] == "completed"
     finally:
         broker.close()

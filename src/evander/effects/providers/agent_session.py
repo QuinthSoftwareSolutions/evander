@@ -16,6 +16,7 @@ from evander.codex_auth import (
     CodexAuthMode,
     CodexTurnSpec,
     effective_codex_auth_mode,
+    normalize_codex_auth_mode,
 )
 from evander.config import GatewayConfig
 from evander.directory_config import ContactDirectoryConfig
@@ -1068,11 +1069,26 @@ def container_codex_turn_spec(
     web_search_enabled: bool = False,
 ) -> CodexTurnSpec | None:
     provider = normalize_optional_string(agent_provider) or "codex"
-    auth_mode = effective_codex_auth_mode(session=session, config=config)
     if provider != "codex":
-        if auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION:
+        # Directory Codex defaults do not apply to other agent harnesses. A
+        # session-level value is an explicit override and remains invalid.
+        explicit_auth_mode = normalize_codex_auth_mode(
+            getattr(session, "codex_auth_mode", None) if session is not None else None
+        )
+        if explicit_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION:
             raise ValueError("chatgpt_subscription is supported only for Codex agents")
         return None
+    auth_mode = effective_codex_auth_mode(session=session, config=config)
+    metadata = getattr(session, "metadata", {}) if session is not None else {}
+    model_provider_mode = (
+        normalize_optional_string(metadata.get("model_provider_mode"))
+        if isinstance(metadata, Mapping)
+        else None
+    ) or normalize_optional_string(getattr(config, "model_provider_mode", None))
+    if model_provider_mode != "openai_public":
+        # Subscription tokens are valid only for the public OpenAI route. Keep
+        # local/Azure traffic on its configured private endpoint and API-key mode.
+        auth_mode = CodexAuthMode.METERED_API
     return CodexTurnSpec(
         auth_mode=auth_mode,
         prompt=prompt,

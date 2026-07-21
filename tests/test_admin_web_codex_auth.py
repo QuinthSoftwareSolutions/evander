@@ -103,7 +103,7 @@ def test_admin_codex_auth_routes_proxy_account_actions_without_tokens(monkeypatc
         "codex_subscription_logout",
     }
     assert "token" not in str(service.audit_events).casefold()
-    assert all(check[1] == "engineering" for check in auth.permission_checks)
+    assert all(check[1] == "root" for check in auth.permission_checks)
 
 
 def test_admin_codex_auth_requires_privileged_unlock(monkeypatch) -> None:  # noqa: ANN001

@@ -30,6 +30,18 @@
 - Added an allowlisted HTTPS CONNECT proxy for subscription traffic and Ansible worker settings;
   job containers receive no account file, environment token, command-line token, or direct public
   egress grant.
+- Hardened subscription completion and teardown with no-follow marker creation, immediate
+  app-server-exit detection, cancellation-safe runner joins, and notification handling that cannot
+  block the sole protocol reader.
+- Kept local and Azure OpenAI sessions on their configured private API-key routes whenever the
+  stored Codex preference is subscription auth, without rewriting that preference, and stopped
+  applying Codex defaults to Claude turns or clearing omitted per-session auth overrides during
+  workflow upserts.
+- Matched subscription turns to the existing container-owned Codex sandbox policy so managed Git,
+  package relays, and `/artifacts` remain available, while bounding restricted-proxy connections
+  and expiring idle tunnels to protect worker host resources.
+- Restricted worker-global subscription account management to root owners instead of accepting
+  ownership of any one directory that shares the worker.
 
 ## 2026-07-21 - Automatic Microsoft Graph Mailbox Tokens
 

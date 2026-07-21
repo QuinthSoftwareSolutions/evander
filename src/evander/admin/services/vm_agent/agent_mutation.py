@@ -200,19 +200,11 @@ class VmAgentMutationMixin:
             if selected_backend != "container_worker_vm":
                 raise ValueError("codex_auth_mode is supported only for container worker agents")
             codex_auth_mode = normalize_codex_auth_mode(body.get("codex_auth_mode"))
-            config = self.runtime.provider_config.resolve_for_session_id(session.session_id)
             agent_provider = (
                 str(session.metadata.get("agent_provider") or "codex").strip().casefold()
             )
             if codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
                 raise ValueError("chatgpt_subscription is supported only for Codex agents")
-            if (
-                codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
-                and config.model_provider_mode != "openai_public"
-            ):
-                raise ValueError(
-                    "chatgpt_subscription requires the public OpenAI model provider mode"
-                )
             update["codex_auth_mode"] = codex_auth_mode
 
         updated = session.model_copy(update=update)

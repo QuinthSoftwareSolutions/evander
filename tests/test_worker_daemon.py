@@ -2094,6 +2094,83 @@ def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
     assert runtime.removed == ["job-1"]
 
 
+def test_worker_waits_for_subscription_runner_before_removing_job_data(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    class OrderedRuntime(FakeContainerRuntime):
+        def remove_job(self, record: WorkerJobRecord) -> None:
+            events.append("container-remove")
+            super().remove_job(record)
+
+    class Runner:
+        def cancel_and_wait(self, *, timeout_seconds: float) -> None:
+            assert timeout_seconds == 40.0
+            events.append("runner-stopped")
+
+    runtime = OrderedRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="runner:latest",
+        command=["true"],
+        container_name="agent-worker-job-1",
+        status="running",
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    daemon.store.put(record)
+    daemon._codex_subscription_runners[record.job_id] = Runner()  # type: ignore[assignment]  # noqa: SLF001
+
+    daemon.remove_job(record)
+
+    assert events == ["runner-stopped", "container-remove"]
+
+
+def test_worker_keeps_subscription_runner_handle_when_shutdown_fails(tmp_path: Path) -> None:
+    class StuckRunner:
+        def cancel_and_wait(self, *, timeout_seconds: float) -> None:
+            del timeout_seconds
+            raise RuntimeError("runner still active")
+
+    runtime = FakeContainerRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="runner:latest",
+        command=["true"],
+        container_name="agent-worker-job-1",
+        status="running",
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    runner = StuckRunner()
+    daemon._codex_subscription_runners[record.job_id] = runner  # type: ignore[assignment]  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="runner still active"):
+        daemon.remove_job(record)
+
+    assert runtime.removed == []
+    assert daemon._codex_subscription_runners[record.job_id] is runner  # noqa: SLF001
+
+
 def test_worker_inspection_records_objective_command_exit_metadata(tmp_path: Path) -> None:
     runtime = FakeContainerRuntime()
     runtime.inspect_results["job-1"] = {"status": "failed", "exit_code": 9}

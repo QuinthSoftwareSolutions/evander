@@ -42,7 +42,7 @@ from evander.git_ssh_authorized_keys import public_key_body_from_line
 
 from .docker_runtime import DockerContainerRuntime
 from .codex_auth_broker import CodexAuthBroker
-from .codex_subscription import CodexSubscriptionTurnRunner
+from .codex_subscription import CodexSubscriptionTurnRunner, write_completion_marker_no_follow
 from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .models import (
     DEFAULT_WORKER_ROOT,
@@ -232,8 +232,7 @@ class WorkerDaemon:
             marker = (
                 Path(record.agent_home_path) / ".evander" / "codex-turns" / f"{record.job_id}.exit"
             )
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text("1", encoding="utf-8")
+            write_completion_marker_no_follow(marker, 1)
             record.status = "failed"
             record.finished_at = now_utc()
             record.error = (
@@ -252,6 +251,9 @@ class WorkerDaemon:
             self._codex_subscription_runners.clear()
         for runner in runners:
             runner.cancel()
+        for runner in runners:
+            if not runner.join(timeout_seconds=40.0):
+                logger.error("codex_subscription_runner_shutdown_timed_out")
         if self._codex_auth_broker is not None:
             self._codex_auth_broker.close()
         if self._codex_egress_proxy is not None:
@@ -383,7 +385,11 @@ class WorkerDaemon:
             )
             with self._codex_subscription_runners_lock:
                 self._codex_subscription_runners[job_id] = runner
-            runner.start()
+                try:
+                    runner.start()
+                except Exception:
+                    self._codex_subscription_runners.pop(job_id, None)
+                    raise
         logger.info(
             "worker_job_started job_id=%s session_id=%s container_id=%s",
             record.job_id,
@@ -421,8 +427,7 @@ class WorkerDaemon:
         if terminal and record.finished_at is None:
             record.finished_at = now_utc()
         if terminal:
-            with self._codex_subscription_runners_lock:
-                self._codex_subscription_runners.pop(record.job_id, None)
+            self._shutdown_codex_subscription_runner(record.job_id)
             log_text: str | None = None
             if _worker_job_uses_codex(record):
                 try:
@@ -443,10 +448,7 @@ class WorkerDaemon:
         return record
 
     def stop_job(self, record: WorkerJobRecord) -> WorkerJobRecord:
-        with self._codex_subscription_runners_lock:
-            runner = self._codex_subscription_runners.pop(record.job_id, None)
-        if runner is not None:
-            runner.cancel()
+        self._shutdown_codex_subscription_runner(record.job_id)
         self.container_runtime.stop_job(record)
         record.status = "stopped"
         record.finished_at = now_utc()
@@ -463,10 +465,7 @@ class WorkerDaemon:
             )
             return
         attempted_at = now_utc()
-        with self._codex_subscription_runners_lock:
-            runner = self._codex_subscription_runners.pop(record.job_id, None)
-        if runner is not None:
-            runner.cancel()
+        self._shutdown_codex_subscription_runner(record.job_id)
         try:
             self.container_runtime.remove_job(record)
         except subprocess.CalledProcessError as exc:
@@ -478,6 +477,18 @@ class WorkerDaemon:
             raise
         self._mark_job_cleanup_success(record, attempted_at=attempted_at)
         logger.info("worker_job_removed job_id=%s session_id=%s", record.job_id, record.session_id)
+
+    def _shutdown_codex_subscription_runner(self, job_id: str) -> None:
+        with self._codex_subscription_runners_lock:
+            runner = self._codex_subscription_runners.get(job_id)
+        if runner is None:
+            return
+        # Keep the lifecycle handle discoverable while waiting so a concurrent
+        # cleanup path cannot mistake an in-flight runner for an absent one.
+        runner.cancel_and_wait(timeout_seconds=40.0)
+        with self._codex_subscription_runners_lock:
+            if self._codex_subscription_runners.get(job_id) is runner:
+                self._codex_subscription_runners.pop(job_id, None)
 
     def get_logs(
         self,

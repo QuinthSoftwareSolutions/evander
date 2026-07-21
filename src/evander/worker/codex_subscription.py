@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import stat
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -49,26 +51,51 @@ class CodexSubscriptionTurnRunner:
         self._thread: threading.Thread | None = None
         self._log_lock = threading.Lock()
         self._metadata_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
 
     def start(self) -> None:
-        if self._thread is not None:
-            raise RuntimeError("Codex subscription turn runner was already started")
-        self._thread = threading.Thread(
-            target=self.run,
-            name="evander-codex-subscription-turn",
-            daemon=True,
-        )
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._thread is not None:
+                raise RuntimeError("Codex subscription turn runner was already started")
+            thread = threading.Thread(
+                target=self.run,
+                name="evander-codex-subscription-turn",
+                daemon=True,
+            )
+            self._thread = thread
+            try:
+                thread.start()
+            except Exception:
+                self._thread = None
+                raise
 
     def cancel(self) -> None:
         self._cancelled.set()
-        process = self._process
-        if process is not None:
-            process.close()
+        with self._lifecycle_lock:
+            process = self._process
+            if process is not None:
+                process.close()
+
+    def join(self, *, timeout_seconds: float | None = None) -> bool:
+        with self._lifecycle_lock:
+            thread = self._thread
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            return False
+        thread.join(timeout=None if timeout_seconds is None else max(0.0, timeout_seconds))
+        return not thread.is_alive()
+
+    def cancel_and_wait(self, *, timeout_seconds: float = 40.0) -> None:
+        self.cancel()
+        if not self.join(timeout_seconds=timeout_seconds):
+            raise RuntimeError("Codex subscription turn runner did not stop before cleanup")
 
     def run(self) -> None:
         exit_code = 1
         try:
+            if self._cancelled.is_set():
+                raise CodexAppServerError("Codex subscription turn was cancelled before startup")
             process = self._process_factory(
                 self.command,
                 server_request_handlers={
@@ -78,8 +105,15 @@ class CodexSubscriptionTurnRunner:
                 stderr_handler=self._handle_stderr,
                 request_timeout_seconds=30.0,
             )
-            self._process = process
-            process.start()
+            with self._lifecycle_lock:
+                self._process = process
+                if self._cancelled.is_set():
+                    raise CodexAppServerError(
+                        "Codex subscription turn was cancelled before startup"
+                    )
+                process.start()
+            if self._cancelled.is_set():
+                raise CodexAppServerError("Codex subscription turn was cancelled")
             process.request("account/login/start", self._tokens.app_server_login_params())
             self._thread_id = self._open_thread(process)
             self._append_log(f"session id: {self._thread_id}\n")
@@ -100,6 +134,10 @@ class CodexSubscriptionTurnRunner:
             while not self._cancelled.is_set():
                 if self._completed.wait(timeout=0.5):
                     break
+                if not process.running:
+                    raise CodexAppServerError(
+                        "Codex app-server exited before reporting turn completion"
+                    )
             if self._cancelled.is_set():
                 raise CodexAppServerError("Codex subscription turn was cancelled")
             turn = self._turn_result or {}
@@ -123,12 +161,24 @@ class CodexSubscriptionTurnRunner:
                 self._redact(str(exc)),
             )
         finally:
-            process = self._process
-            if process is not None:
-                process.close()
-            self.finished_marker.parent.mkdir(parents=True, exist_ok=True)
-            self.finished_marker.write_text(str(exit_code), encoding="utf-8")
-            self._publish_metadata(exit_code=exit_code)
+            with self._lifecycle_lock:
+                process = self._process
+                if process is not None:
+                    process.close()
+                    self._process = None
+            try:
+                write_completion_marker_no_follow(self.finished_marker, exit_code)
+            except OSError as exc:
+                self._append_log(
+                    "codex error: could not write the protected completion marker "
+                    f"({exc.__class__.__name__})\n"
+                )
+                logger.error(
+                    "codex_subscription_completion_marker_failed exception_class=%s",
+                    exc.__class__.__name__,
+                )
+            finally:
+                self._publish_metadata(exit_code=exit_code)
 
     def _open_thread(self, process: CodexAppServerProcess) -> str:
         thread_id = self.turn.resume_thread_id
@@ -153,7 +203,9 @@ class CodexSubscriptionTurnRunner:
             "model": self.turn.model,
             "modelProvider": "openai",
             "approvalPolicy": "never",
-            "sandbox": "workspace-write",
+            # Docker is the isolation boundary for worker jobs. Match metered Codex
+            # turns so managed Git/package access and the /artifacts mount remain usable.
+            "sandbox": "danger-full-access",
         }
         config: dict[str, Any] = {}
         if self.turn.mcp_gateway_url is not None:
@@ -247,3 +299,33 @@ def _turn_error_message(error: object) -> str | None:
         text = str(error).strip()
         return text or None
     return None
+
+
+def write_completion_marker_no_follow(path: Path, exit_code: int) -> None:
+    """Create a fresh regular marker without following an agent-created link."""
+
+    marker = Path(path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    last_error: OSError | None = None
+    for _attempt in range(3):
+        try:
+            descriptor = os.open(marker, flags, 0o600)
+        except FileExistsError as exc:
+            last_error = exc
+            # Removing a directory entry is safe for symlinks, hardlinks, and special
+            # files. O_EXCL then guarantees that the descriptor is for our new inode.
+            marker.unlink(missing_ok=True)
+            continue
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise OSError("completion marker is not a regular file")
+            payload = str(int(exit_code)).encode("ascii")
+            if os.write(descriptor, payload) != len(payload):
+                raise OSError("completion marker write was incomplete")
+            os.fsync(descriptor)
+            return
+        finally:
+            os.close(descriptor)
+    raise last_error or OSError("could not create completion marker without following links")
