@@ -22,6 +22,10 @@ const sessionGrantEditors = readFileSync(
   new URL("../src/features/communications/SessionGrantEditors.tsx", import.meta.url),
   "utf8",
 );
+const legacyCommunicationPolicy = readFileSync(
+  new URL("../src/features/communications/legacyCommunicationPolicy.ts", import.meta.url),
+  "utf8",
+);
 const page = [agentsPage, agentCreateDialog, agentCreateShared, sessionGrantEditors].join("\n");
 const types = readFileSync(
   new URL("../src/features/admin/types.ts", import.meta.url),
@@ -128,6 +132,10 @@ test("container Codex usage can switch per agent without transporting credential
   assert.doesNotMatch(codexAuthPanel, /accessToken|refreshToken|OPENAI_API_KEY/);
   assert.match(codexAuthPanel, /\/api\/admin\/codex-auth\/device-login/);
   assert.match(codexAuthPanel, /Worker ChatGPT subscription/);
+  assert.match(codexAuthPanel, /suffix\(login\.directoryPath\)/);
+  assert.match(codexAuthPanel, /const originDirectoryPath = login\.directoryPath;/);
+  assert.match(codexAuthPanel, /setLogin\(\{ \.\.\.payload, directoryPath: originDirectoryPath \}\);/);
+  assert.match(codexAuthPanel, /login\?\.status === "pending"/);
 });
 
 test("create TTL duration accepts seconds through weeks and emits seconds", () => {
@@ -205,7 +213,7 @@ test("create modal clears directory-scoped grants when the selected directory ch
   );
 });
 
-test("legacy agent conversion preserves every Teams grant kind", () => {
+test("legacy agent conversion uses the current complete communication policy", () => {
   const conversion = sourceBetweenIn(
     agentsPage,
     "function convertLegacyAgentCommunicationPolicy() {",
@@ -213,15 +221,31 @@ test("legacy agent conversion preserves every Teams grant kind", () => {
   );
 
   for (const field of [
-    "discord_channel_allowlist",
-    "teams_channel_allowlist",
-    "teams_chat_allowlist",
-    "teams_user_allowlist",
+    "discordChannels",
+    "teamsChannels",
+    "teamsChats",
+    "teamsUsers",
+    "emailMailboxes",
+    "emailFolderAllowlistByMailbox",
+    "allowedTools",
   ]) {
-    assert.match(conversion, new RegExp(`selectedAgentPolicy\\.${field}`));
+    assert.match(conversion, new RegExp(`current\\.${field}`));
   }
+  assert.doesNotMatch(conversion, /selectedAgentPolicy/);
+  assert.match(conversion, /legacyEmailMailboxAccess/);
   assert.match(agentsPage, /teams_chat_allowlist: hostStringList\(rawPolicy, "teams_chat_allowlist"\)/);
   assert.match(agentsPage, /teams_user_allowlist: hostStringList\(rawPolicy, "teams_user_allowlist"\)/);
+  assert.match(agentsPage, /email_folder_allowlist_by_mailbox: hostStringListMap/);
+  for (const tool of [
+    "email_create_draft",
+    "email_create_draft_with_attachments",
+    "email_send",
+    "email_send_with_attachments",
+    "email_send_approved",
+    "email_send_approved_with_attachments",
+  ]) {
+    assert.match(legacyCommunicationPolicy, new RegExp(`"${tool}"`));
+  }
 });
 
 test("create modal always posts the selected page directory", () => {

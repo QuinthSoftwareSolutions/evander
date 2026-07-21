@@ -21,6 +21,10 @@ type DeviceLogin = {
   error: string | null;
 };
 
+type TrackedDeviceLogin = DeviceLogin & {
+  directoryPath: string;
+};
+
 export function CodexAuthPanel({
   directoryPath,
   privilegedUnlocked,
@@ -29,12 +33,12 @@ export function CodexAuthPanel({
   privilegedUnlocked: boolean;
 }) {
   const [status, setStatus] = useState<CodexAuthStatus | null>(null);
-  const [login, setLogin] = useState<DeviceLogin | null>(null);
+  const [login, setLogin] = useState<TrackedDeviceLogin | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const suffix = useCallback(() => {
-    const query = new URLSearchParams({ directory_path: directoryPath || "root" });
+  const suffix = useCallback((targetDirectoryPath = directoryPath) => {
+    const query = new URLSearchParams({ directory_path: targetDirectoryPath || "root" });
     return `?${query.toString()}`;
   }, [directoryPath]);
 
@@ -63,10 +67,14 @@ export function CodexAuthPanel({
     if (!privilegedUnlocked || !login || login.status !== "pending") return;
     const timer = window.setInterval(() => {
       void fetchJson<DeviceLogin>(
-        `/api/admin/codex-auth/device-login/${encodeURIComponent(login.login_id)}${suffix()}`,
+        `/api/admin/codex-auth/device-login/${encodeURIComponent(login.login_id)}${suffix(login.directoryPath)}`,
       )
         .then((payload) => {
-          setLogin(payload);
+          setLogin((current) => (
+            current?.login_id === payload.login_id
+              ? { ...payload, directoryPath: current.directoryPath }
+              : current
+          ));
           if (payload.status === "completed") void refresh();
         })
         .catch((reason: unknown) => {
@@ -78,12 +86,13 @@ export function CodexAuthPanel({
 
   async function startLogin() {
     setLoading(true);
+    const originDirectoryPath = directoryPath || "root";
     try {
       const payload = await fetchJson<DeviceLogin>(
-        `/api/admin/codex-auth/device-login${suffix()}`,
+        `/api/admin/codex-auth/device-login${suffix(originDirectoryPath)}`,
         { method: "POST" },
       );
-      setLogin(payload);
+      setLogin({ ...payload, directoryPath: originDirectoryPath });
       setError(null);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -95,12 +104,13 @@ export function CodexAuthPanel({
   async function cancelLogin() {
     if (!login) return;
     setLoading(true);
+    const originDirectoryPath = login.directoryPath;
     try {
       const payload = await fetchJson<DeviceLogin>(
-        `/api/admin/codex-auth/device-login/${encodeURIComponent(login.login_id)}${suffix()}`,
+        `/api/admin/codex-auth/device-login/${encodeURIComponent(login.login_id)}${suffix(originDirectoryPath)}`,
         { method: "DELETE" },
       );
-      setLogin(payload);
+      setLogin({ ...payload, directoryPath: originDirectoryPath });
       setError(null);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -153,6 +163,7 @@ export function CodexAuthPanel({
         {login?.status === "pending" ? (
           <div className="callout">
             <p>Open the verification page and enter code <strong>{login.user_code}</strong>.</p>
+            <p className="muted-text">Worker directory: {login.directoryPath}</p>
             <div className="inline-actions compact-actions">
               {login.verification_url ? (
                 <a className="admin-action-button compact" href={login.verification_url} target="_blank" rel="noreferrer">
@@ -168,11 +179,11 @@ export function CodexAuthPanel({
         {login?.status === "failed" ? <div className="callout error-callout">{login.error ?? "Device login failed."}</div> : null}
         <div className="inline-actions compact-actions">
           {!status?.signed_in ? (
-            <button type="button" className="admin-action-button primary compact" onClick={() => void startLogin()} disabled={!privilegedUnlocked || loading}>
+            <button type="button" className="admin-action-button primary compact" onClick={() => void startLogin()} disabled={!privilegedUnlocked || loading || login?.status === "pending"}>
               Sign in with device code
             </button>
           ) : (
-            <button type="button" className="admin-action-button danger compact" onClick={() => void logout()} disabled={!privilegedUnlocked || loading}>
+            <button type="button" className="admin-action-button danger compact" onClick={() => void logout()} disabled={!privilegedUnlocked || loading || login?.status === "pending"}>
               Sign out
             </button>
           )}

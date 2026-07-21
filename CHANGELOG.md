@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-07-21 - Subscription Completion And Policy Conversion Hardening
+
+- Launched subscription turns through the image-owned `/usr/local/bin/codex` executable instead
+  of resolving `codex` through the persistent agent home's writable `PATH` entry.
+- Moved Codex subscription completion signals out of the persistent agent home and exposed them
+  to job containers through a worker-owned read-only mount, preventing forged success markers and
+  agent-created marker symlinks from blocking worker restart.
+- Rejected reuse of a staged Team Chat attachment after another message has claimed it while
+  preserving same-request idempotent replay.
+- Corrected legacy communication conversion to use current tool and form drafts, recognize every
+  email draft/send variant, preserve mailbox-specific folders, and keep device-login polling and
+  cancellation bound to the originating worker directory.
+
 ## 2026-07-21 - Bokio Customer And Supplier Reads
 
 - Added separately permissioned Bokio MCP tools for listing and retrieving customers and

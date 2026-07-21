@@ -52,6 +52,7 @@ import {
   CommunicationTargetCheckboxTable,
   EmailMailboxGrantEditor,
 } from "../communications/SessionGrantEditors";
+import { legacyEmailMailboxAccess } from "../communications/legacyCommunicationPolicy";
 
 type ActionLogEntry = {
   at: string;
@@ -137,8 +138,12 @@ type AgentPolicyFormState = {
   emailMailboxGrants: EmailMailboxGrant[] | null;
   discordChannels: string;
   teamsChannels: string;
+  teamsChats: string;
+  teamsUsers: string;
   emailMailboxes: string;
   emailFolders: string;
+  emailFolderAllowlistByMailbox: Record<string, string[]>;
+  emailSendEnabled: boolean;
   codexAuthMode: string;
 };
 
@@ -200,8 +205,12 @@ function emptyPolicyForm(): AgentPolicyFormState {
     emailMailboxGrants: null,
     discordChannels: "",
     teamsChannels: "",
+    teamsChats: "",
+    teamsUsers: "",
     emailMailboxes: "",
     emailFolders: "",
+    emailFolderAllowlistByMailbox: {},
+    emailSendEnabled: false,
     codexAuthMode: "",
   };
 }
@@ -440,6 +449,22 @@ function hostStringList(host: Record<string, unknown> | null | undefined, key: s
   const value = host?.[key];
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function hostStringListMap(
+  host: Record<string, unknown> | null | undefined,
+  key: string,
+): Record<string, string[]> {
+  const value = host?.[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, string[]> = {};
+  for (const [entryKey, entryValue] of Object.entries(value)) {
+    if (!Array.isArray(entryValue)) continue;
+    result[entryKey] = entryValue.filter(
+      (item): item is string => typeof item === "string" && item.trim().length > 0,
+    );
+  }
+  return result;
 }
 
 function hostExecutionList(
@@ -743,7 +768,12 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     metadata: hostRecord(rawPolicy, "metadata") ?? {},
     email_mailboxes: hostStringList(rawPolicy, "email_mailboxes"),
     email_folders: hostStringList(rawPolicy, "email_folders"),
+    email_folder_allowlist_by_mailbox: hostStringListMap(
+      rawPolicy,
+      "email_folder_allowlist_by_mailbox",
+    ),
     email_mailbox_grants: emailMailboxGrants(rawPolicy.email_mailbox_grants),
+    email_send_enabled: Boolean(rawPolicy.email_send_enabled),
     labels: Object.fromEntries(recordEntries(hostRecord(rawPolicy, "labels"))),
   };
 }
@@ -778,8 +808,16 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
       : policy.email_mailbox_grants.map((grant) => ({ ...grant, folders: dedupeStrings(grant.folders) })),
     discordChannels: formatList(policy?.discord_channel_allowlist.length ? policy.discord_channel_allowlist : policy?.discord_channels),
     teamsChannels: formatList(policy?.teams_channel_allowlist),
+    teamsChats: formatList(policy?.teams_chat_allowlist),
+    teamsUsers: formatList(policy?.teams_user_allowlist),
     emailMailboxes: formatList(policy?.email_mailboxes),
     emailFolders: formatList(policy?.email_folders),
+    emailFolderAllowlistByMailbox: Object.fromEntries(
+      Object.entries(policy?.email_folder_allowlist_by_mailbox ?? {}).map(
+        ([mailboxId, folders]) => [mailboxId, dedupeStrings(folders)],
+      ),
+    ),
+    emailSendEnabled: Boolean(policy?.email_send_enabled),
     codexAuthMode: policy?.codex_auth_mode ?? "",
   };
 }
@@ -808,10 +846,17 @@ function buildPolicyPayload(
   if (form.communicationTargetIds === null) {
     payload.discord_channels = parseList(form.discordChannels);
     payload.teams_channel_allowlist = parseList(form.teamsChannels);
+    payload.teams_chat_allowlist = parseList(form.teamsChats);
+    payload.teams_user_allowlist = parseList(form.teamsUsers);
   }
   if (form.emailMailboxGrants === null) {
     payload.email_mailboxes = parseList(form.emailMailboxes);
     payload.email_folders = parseList(form.emailFolders);
+    payload.email_folder_allowlist_by_mailbox = Object.fromEntries(
+      Object.entries(form.emailFolderAllowlistByMailbox).map(
+        ([mailboxId, folders]) => [mailboxId, dedupeStrings(folders)],
+      ),
+    );
   }
   if (form.ttlHours.trim()) {
     payload.ttl_hours = optionalNumber(form.ttlHours);
@@ -1664,26 +1709,37 @@ export function AgentsPage() {
   }
 
   function convertLegacyAgentCommunicationPolicy() {
-    if (!selectedAgentPolicy) return;
     setEditForm((current) => {
-      const canSend = selectedAgentPolicy.allowed_tools.includes("email_send");
-      const canDraft = canSend || selectedAgentPolicy.allowed_tools.includes("email_create_draft");
+      const allowedTools = parseList(current.allowedTools);
+      const fallbackFolders = parseList(current.emailFolders);
       return {
         ...current,
         communicationTargetIds: current.communicationTargetIds ?? dedupeStrings([
-          ...selectedAgentPolicy.discord_channel_allowlist,
-          ...selectedAgentPolicy.teams_channel_allowlist,
-          ...selectedAgentPolicy.teams_chat_allowlist,
-          ...selectedAgentPolicy.teams_user_allowlist,
+          ...parseList(current.discordChannels),
+          ...parseList(current.teamsChannels),
+          ...parseList(current.teamsChats),
+          ...parseList(current.teamsUsers),
         ]),
-        emailMailboxGrants: current.emailMailboxGrants ?? selectedAgentPolicy.email_mailboxes.map(
-          (mailboxId) => ({
-            mailbox_id: mailboxId,
-            access: canSend ? "send" : canDraft ? "draft" : "read",
-            folders: canDraft
-              ? dedupeStrings([...selectedAgentPolicy.email_folders, "drafts"])
-              : dedupeStrings(selectedAgentPolicy.email_folders),
-          }),
+        emailMailboxGrants: current.emailMailboxGrants ?? parseList(current.emailMailboxes).map(
+          (mailboxId) => {
+            const folders = dedupeStrings(
+              Object.prototype.hasOwnProperty.call(
+                current.emailFolderAllowlistByMailbox,
+                mailboxId,
+              )
+                ? current.emailFolderAllowlistByMailbox[mailboxId]
+                : fallbackFolders,
+            );
+            return {
+              mailbox_id: mailboxId,
+              access: legacyEmailMailboxAccess({
+                allowedTools,
+                folders,
+                emailSendEnabled: current.emailSendEnabled,
+              }),
+              folders,
+            };
+          },
         ),
       };
     });
@@ -2491,8 +2547,89 @@ export function AgentsPage() {
                   )}
                   {editForm.emailMailboxGrants === null ? (
                     <>
-                      <div className="field-stack"><span>Legacy email mailboxes</span><StringListEditor values={parseList(editForm.emailMailboxes)} onChange={(nextValues) => setEditForm((current) => ({ ...current, emailMailboxes: formatList(nextValues) }))} addLabel="Add mailbox" itemLabel="Mailbox" placeholder="ops" emptyState="No email mailboxes are allowlisted." /></div>
-                      <div className="field-stack"><span>Legacy email folders</span><StringListEditor values={parseList(editForm.emailFolders)} onChange={(nextValues) => setEditForm((current) => ({ ...current, emailFolders: formatList(nextValues) }))} addLabel="Add folder" itemLabel="Folder" placeholder="inbox" emptyState="No email folders are allowlisted." /></div>
+                      <div className="field-stack">
+                        <span>Legacy email mailboxes</span>
+                        <StringListEditor
+                          values={parseList(editForm.emailMailboxes)}
+                          onChange={(nextValues) => setEditForm((current) => {
+                            const mailboxIds = dedupeStrings(nextValues);
+                            const emailFolderAllowlistByMailbox = Object.fromEntries(
+                              Object.entries(current.emailFolderAllowlistByMailbox).filter(
+                                ([mailboxId]) => mailboxIds.includes(mailboxId),
+                              ),
+                            );
+                            const fallbackFolders = parseList(current.emailFolders);
+                            const emailFolders = dedupeStrings(
+                              mailboxIds.flatMap((mailboxId) => (
+                                Object.prototype.hasOwnProperty.call(
+                                  emailFolderAllowlistByMailbox,
+                                  mailboxId,
+                                )
+                                  ? emailFolderAllowlistByMailbox[mailboxId]
+                                  : fallbackFolders
+                              )),
+                            );
+                            return {
+                              ...current,
+                              emailMailboxes: formatList(mailboxIds),
+                              emailFolders: formatList(emailFolders),
+                              emailFolderAllowlistByMailbox,
+                            };
+                          })}
+                          addLabel="Add mailbox"
+                          itemLabel="Mailbox"
+                          placeholder="ops"
+                          emptyState="No email mailboxes are allowlisted."
+                        />
+                      </div>
+                      {Object.keys(editForm.emailFolderAllowlistByMailbox).length > 0 ? (
+                        <div className="field-stack wide-field">
+                          <span>Legacy email folders by mailbox</span>
+                          {parseList(editForm.emailMailboxes).map((mailboxId) => (
+                            <div className="field-stack" key={mailboxId}>
+                              <span>{mailboxId}</span>
+                              <StringListEditor
+                                values={
+                                  Object.prototype.hasOwnProperty.call(
+                                    editForm.emailFolderAllowlistByMailbox,
+                                    mailboxId,
+                                  )
+                                    ? editForm.emailFolderAllowlistByMailbox[mailboxId]
+                                    : parseList(editForm.emailFolders)
+                                }
+                                onChange={(nextValues) => setEditForm((current) => {
+                                  const emailFolderAllowlistByMailbox = {
+                                    ...current.emailFolderAllowlistByMailbox,
+                                    [mailboxId]: dedupeStrings(nextValues),
+                                  };
+                                  const fallbackFolders = parseList(current.emailFolders);
+                                  const emailFolders = dedupeStrings(
+                                    parseList(current.emailMailboxes).flatMap((currentMailboxId) => (
+                                      Object.prototype.hasOwnProperty.call(
+                                        emailFolderAllowlistByMailbox,
+                                        currentMailboxId,
+                                      )
+                                        ? emailFolderAllowlistByMailbox[currentMailboxId]
+                                        : fallbackFolders
+                                    )),
+                                  );
+                                  return {
+                                    ...current,
+                                    emailFolders: formatList(emailFolders),
+                                    emailFolderAllowlistByMailbox,
+                                  };
+                                })}
+                                addLabel="Add folder"
+                                itemLabel="Folder"
+                                placeholder="inbox"
+                                emptyState="No folders are allowlisted for this mailbox."
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="field-stack"><span>Legacy email folders</span><StringListEditor values={parseList(editForm.emailFolders)} onChange={(nextValues) => setEditForm((current) => ({ ...current, emailFolders: formatList(nextValues) }))} addLabel="Add folder" itemLabel="Folder" placeholder="inbox" emptyState="No email folders are allowlisted." /></div>
+                      )}
                     </>
                   ) : (
                     <div className="field-stack wide-field agent-communication-targets-field">

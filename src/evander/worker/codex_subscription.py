@@ -17,6 +17,9 @@ from .codex_auth_broker import CodexAuthBroker, CodexExternalAuthTokens
 
 logger = logging.getLogger(__name__)
 
+CODEX_COMPLETION_MARKER_CONTAINER_DIR = "/run/evander/codex-turns"
+CODEX_COMPLETION_MARKER_HOST_DIRNAME = "codex-turns"
+
 
 class CodexSubscriptionTurnRunner:
     """Drives one external-token Codex app-server turn inside a job container."""

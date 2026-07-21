@@ -171,6 +171,10 @@ def test_subscription_app_server_gets_only_restricted_proxy_configuration(
     assert not any("access_token" in value.casefold() for value in run_args + app_server_args)
     assert not any("auth.json" in value for value in run_args + app_server_args)
     assert not any(value.startswith("HTTPS_PROXY=") for value in run_args)
+    assert f"{paths.logs}/codex-turns:/run/evander/codex-turns:ro" in run_args
+    assert "/home/agent/.evander/codex-turns" not in " ".join(run_args)
+    assert app_server_args[-3:] == ["/usr/local/bin/codex", "app-server", "--stdio"]
+    assert "/home/agent/bin/codex" not in app_server_args
     assert "HTTPS_PROXY=http://172.18.0.1:11889" in app_server_args
     no_proxy = next(value for value in app_server_args if value.startswith("NO_PROXY="))
     assert "10.20.30.40" in no_proxy

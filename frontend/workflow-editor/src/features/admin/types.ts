@@ -369,9 +369,12 @@ export type AgentPolicyUpdateRequest = {
   discord_channels?: string[];
   discord_channel_allowlist?: string[];
   teams_channel_allowlist?: string[];
+  teams_chat_allowlist?: string[];
+  teams_user_allowlist?: string[];
   metadata?: Record<string, unknown>;
   email_mailboxes?: string[];
   email_folders?: string[];
+  email_folder_allowlist_by_mailbox?: Record<string, string[]>;
 };
 
 export type AgentSessionPolicy = {
@@ -393,7 +396,9 @@ export type AgentSessionPolicy = {
   metadata: Record<string, unknown>;
   email_mailboxes: string[];
   email_folders: string[];
+  email_folder_allowlist_by_mailbox: Record<string, string[]>;
   email_mailbox_grants: EmailMailboxGrant[] | null;
+  email_send_enabled: boolean;
   labels: Record<string, string>;
   web_search_enabled: boolean;
   codex_auth_mode: "metered_api" | "chatgpt_subscription" | null;

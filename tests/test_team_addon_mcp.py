@@ -36,6 +36,7 @@ from evander_team_addon.mcp import (
     TEAM_RETRY_RELEASE_GATE_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
+    TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_SUBMIT_DELIVERABLE_TOOL,
@@ -538,6 +539,65 @@ def test_concurrent_chat_reply_failure_does_not_delete_committed_attachment(
     assert sum(bool(result["success"]) for result in results) == 1
     committed = repo.read().chat_attachments[attachment_id]
     assert committed.message_id in repo.read().conversation_messages
+    assert storage.asset_path(attachment_id).read_bytes() == b"report"
+
+
+def test_staged_chat_attachment_cannot_be_claimed_by_a_second_message(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=[TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL],
+    )
+    _lease_planning_agents(repo)
+    TeamChatService(repo).create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    TeamChatAttachmentPolicyService(repo).set_override(
+        directory_path="root",
+        values={"agent_send_requires_approval": False},
+        updated_by="test",
+        expected_revision=repo.read().revision,
+    )
+    storage = TeamChatAttachmentStorage(context.config.runtime_dir)
+    staged = storage.stage_agent_file(
+        session_id="session-backend",
+        source_path="/home/agent/report.txt",
+        content=b"report",
+        filename="report.txt",
+        mime_type="text/plain",
+    )
+    server = create_server(context)
+    arguments = {
+        "session_id": "session-backend",
+        "recipient_operator_user_id": "operator@example.com",
+        "body": "Attached is the report.",
+        "attachment_ids": [staged.id],
+        "request_id": "send-report-1",
+    }
+
+    first = _call_tool(server, TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL, arguments)
+    replay = _call_tool(server, TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL, arguments)
+    second = _call_tool(
+        server,
+        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+        {**arguments, "request_id": "send-report-2"},
+    )
+
+    assert first["success"] is True
+    assert replay["success"] is True
+    assert replay["chat_message_id"] == first["chat_message_id"]
+    assert second["success"] is False
+    assert second["errors"][0]["code"] == "chat_attachment_already_claimed"
+    attachment_id = f"chatatt_{staged.id.removeprefix('chatstage_')}"
+    stored = repo.read()
+    assert stored.chat_attachments[attachment_id].message_id == first["chat_message_id"]
     assert storage.asset_path(attachment_id).read_bytes() == b"report"
 
 

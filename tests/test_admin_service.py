@@ -1309,6 +1309,11 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
             directory_path="root",
             allowed_tools=[],
             allowed_contact_ids=["ops"],
+            email_folder_allowlist_by_mailbox={
+                "primary": ["inbox"],
+                "archive": ["inbox", "archive"],
+            },
+            email_send_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={"labels": {"system": "chat_assistant"}},
         )
@@ -1341,6 +1346,11 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
     assert agents[0].host["inventory_error"] == "virsh: command not found"
     assert agents[0].host["session_policy"]["session_id"] == "assistant-shared"
     assert agents[0].host["session_policy"]["allowed_contact_ids"] == ["ops"]
+    assert agents[0].host["session_policy"]["email_folder_allowlist_by_mailbox"] == {
+        "primary": ["inbox"],
+        "archive": ["inbox", "archive"],
+    }
+    assert agents[0].host["session_policy"]["email_send_enabled"] is True
 
 
 def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(

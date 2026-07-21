@@ -16,6 +16,7 @@ import {
   CommunicationTargetCheckboxTable,
   EmailMailboxGrantEditor,
 } from "../communications/SessionGrantEditors";
+import { legacyEmailMailboxAccess } from "../communications/legacyCommunicationPolicy";
 import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
 import {
   canToggleWakeScheduleEnabled,
@@ -1668,9 +1669,6 @@ export function SessionsScreen() {
       ]);
     }
     if (policyDraft.emailMailboxGrants === null) {
-      const canSend = Boolean(selectedSession.email_send_enabled)
-        && (selectedSession.allowed_tools ?? []).includes("email_send");
-      const canDraft = canSend || (selectedSession.allowed_tools ?? []).includes("email_create_draft");
       next.emailMailboxGrants = (selectedSession.email_mailbox_allowlist ?? []).map((mailboxId) => {
         const configured = (selectedSession.email_mailbox_options ?? []).find(
           (option) => option.mailbox_id === mailboxId,
@@ -1683,8 +1681,12 @@ export function SessionsScreen() {
         );
         return {
           mailbox_id: mailboxId,
-          access: canSend ? "send" : canDraft ? "draft" : "read",
-          folders: canDraft ? dedupeStrings([...folders, "drafts"]) : folders,
+          access: legacyEmailMailboxAccess({
+            allowedTools: toolsDraft,
+            folders,
+            emailSendEnabled: Boolean(selectedSession.email_send_enabled),
+          }),
+          folders,
         };
       });
     }

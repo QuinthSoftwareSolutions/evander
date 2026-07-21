@@ -134,6 +134,7 @@ class TeamChatCommandService(TeamCommandExecutor):
                     message=f"message {source_message.id} has already been replied to",
                     correction_context={"message_id": source_message.id},
                 )
+            _require_unclaimed_chat_attachments(state, prepared_attachments)
             now = utc_now()
             source_message.status = "replied"
             source_message.error = None
@@ -269,6 +270,7 @@ class TeamChatCommandService(TeamCommandExecutor):
                         "operator_user_ids": sorted(known_operator_ids),
                     },
                 )
+            _require_unclaimed_chat_attachments(state, prepared_attachments)
             conversation = next(
                 (
                     item
@@ -372,3 +374,29 @@ def _chat_message_preview(body: str | None, attachment_count: int) -> str:
     if body:
         return _chat_preview(body)
     return f"Sent {attachment_count} attachment{'s' if attachment_count != 1 else ''}"
+
+
+def _require_unclaimed_chat_attachments(
+    state: TeamState,
+    attachments: Sequence[PreparedChatAttachment],
+) -> None:
+    claimed = [
+        state.chat_attachments[attachment.id]
+        for attachment in attachments
+        if attachment.id in state.chat_attachments
+    ]
+    if not claimed:
+        return
+    attachment_ids = sorted({attachment.id for attachment in claimed})
+    message_ids = sorted({attachment.message_id for attachment in claimed})
+    raise TeamCommandValidationError(
+        code="chat_attachment_already_claimed",
+        message=(
+            "Team Chat attachment is already assigned to another message: "
+            + ", ".join(attachment_ids)
+        ),
+        correction_context={
+            "attachment_ids": attachment_ids,
+            "message_ids": message_ids,
+        },
+    )

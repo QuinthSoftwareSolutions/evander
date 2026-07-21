@@ -6,6 +6,10 @@ const sessionsScreen = readFileSync(
   new URL("../src/features/sessions/SessionsScreen.tsx", import.meta.url),
   "utf8",
 );
+const legacyCommunicationPolicy = readFileSync(
+  new URL("../src/features/communications/legacyCommunicationPolicy.ts", import.meta.url),
+  "utf8",
+);
 
 function sourceBetween(startMarker, endMarker) {
   const start = sessionsScreen.indexOf(startMarker);
@@ -54,5 +58,17 @@ test("legacy session conversion preserves every Teams grant kind", () => {
     "teams_user_allowlist",
   ]) {
     assert.match(conversion, new RegExp(`selectedSession\\.${field}`));
+  }
+  assert.match(conversion, /allowedTools: toolsDraft/);
+  assert.doesNotMatch(conversion, /selectedSession\.allowed_tools/);
+  for (const tool of [
+    "email_create_draft",
+    "email_create_draft_with_attachments",
+    "email_send",
+    "email_send_with_attachments",
+    "email_send_approved",
+    "email_send_approved_with_attachments",
+  ]) {
+    assert.match(legacyCommunicationPolicy, new RegExp(`"${tool}"`));
   }
 });

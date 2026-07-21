@@ -53,6 +53,7 @@ class VmAgentMutationMixin:
             "web_search_enabled",
             "email_mailboxes",
             "email_folders",
+            "email_folder_allowlist_by_mailbox",
             "communication_target_ids",
             "email_mailbox_grants",
             "labels",
@@ -149,6 +150,26 @@ class VmAgentMutationMixin:
             )
         if "email_folders" in body:
             update["email_folder_allowlist"] = self._agent_string_list(body, "email_folders") or []
+        if "email_folder_allowlist_by_mailbox" in body:
+            raw_folder_map = body.get("email_folder_allowlist_by_mailbox")
+            if not isinstance(raw_folder_map, Mapping):
+                raise ValueError("email_folder_allowlist_by_mailbox must be an object")
+            folder_map: dict[str, list[str]] = {}
+            for raw_mailbox_id, raw_folders in raw_folder_map.items():
+                mailbox_id = str(raw_mailbox_id or "").strip()
+                if not mailbox_id:
+                    raise ValueError(
+                        "email_folder_allowlist_by_mailbox keys must be non-empty strings"
+                    )
+                if mailbox_id in folder_map:
+                    raise ValueError(
+                        "email_folder_allowlist_by_mailbox contains duplicate mailbox "
+                        f"{mailbox_id!r}"
+                    )
+                folder_map[mailbox_id] = (
+                    self._agent_string_list({"folders": raw_folders}, "folders") or []
+                )
+            update["email_folder_allowlist_by_mailbox"] = folder_map
         if "communication_target_ids" in body:
             communication_allowlists = _admin_agent_communication_allowlists(
                 body,

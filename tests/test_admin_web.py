@@ -15158,6 +15158,7 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
             "metadata": {"keep": "new-value"},
             "email_mailboxes": ["new-mailbox"],
             "email_folders": ["new-folder"],
+            "email_folder_allowlist_by_mailbox": {"new-mailbox": ["new-folder"]},
             "communication_file_receive_enabled": True,
             "communication_file_send_enabled": True,
             "communication_file_max_bytes": 8192,
@@ -15201,6 +15202,7 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
     assert updated.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
     assert updated.email_mailbox_allowlist == ["new-mailbox"]
     assert updated.email_folder_allowlist == ["new-folder"]
+    assert updated.email_folder_allowlist_by_mailbox == {"new-mailbox": ["new-folder"]}
     assert updated.communication_file_receive_enabled is True
     assert updated.communication_file_send_enabled is True
     assert updated.communication_file_max_bytes == 8192

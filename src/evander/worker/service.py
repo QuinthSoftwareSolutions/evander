@@ -42,7 +42,12 @@ from evander.git_ssh_authorized_keys import public_key_body_from_line
 
 from .docker_runtime import DockerContainerRuntime
 from .codex_auth_broker import CodexAuthBroker
-from .codex_subscription import CodexSubscriptionTurnRunner, write_completion_marker_no_follow
+from .codex_subscription import (
+    CODEX_COMPLETION_MARKER_CONTAINER_DIR,
+    CODEX_COMPLETION_MARKER_HOST_DIRNAME,
+    CodexSubscriptionTurnRunner,
+    write_completion_marker_no_follow,
+)
 from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .models import (
     DEFAULT_WORKER_ROOT,
@@ -229,15 +234,35 @@ class WorkerDaemon:
                 continue
             if record.status not in {"created", "preparing", "starting", "running"}:
                 continue
-            marker = (
-                Path(record.agent_home_path) / ".evander" / "codex-turns" / f"{record.job_id}.exit"
-            )
-            write_completion_marker_no_follow(marker, 1)
+            marker_error: OSError | ValueError | None = None
+            try:
+                marker = self._codex_subscription_completion_marker(record)
+                write_completion_marker_no_follow(marker, 1)
+            except (OSError, ValueError) as exc:
+                marker_error = exc
+                logger.error(
+                    "codex_subscription_orphan_marker_failed job_id=%s exception_class=%s",
+                    record.job_id,
+                    exc.__class__.__name__,
+                )
+                try:
+                    self.container_runtime.stop_job(record)
+                except Exception as stop_exc:  # noqa: BLE001 - daemon startup must continue.
+                    logger.warning(
+                        "codex_subscription_orphan_stop_failed job_id=%s exception_class=%s",
+                        record.job_id,
+                        stop_exc.__class__.__name__,
+                    )
             record.status = "failed"
             record.finished_at = now_utc()
             record.error = (
                 "worker daemon restarted while controlling a Codex subscription turn; "
                 "the turn was failed closed"
+                + (
+                    "; its protected completion signal could not be delivered"
+                    if marker_error is not None
+                    else ""
+                )
             )
             metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
             metadata["worker_terminal_kind"] = "infrastructure"
@@ -330,19 +355,21 @@ class WorkerDaemon:
         self._log_path(record).touch(exist_ok=True)
         self.store.put(record)
         if subscription_tokens is not None:
-            subscription_marker = paths.agent_home / ".evander" / "codex-turns" / f"{job_id}.exit"
+            subscription_marker = self._codex_subscription_completion_marker(record)
             subscription_marker.parent.mkdir(parents=True, exist_ok=True)
             subscription_marker.unlink(missing_ok=True)
+            container_marker = f"{CODEX_COMPLETION_MARKER_CONTAINER_DIR}/{job_id}.exit"
+            quoted_container_marker = shlex.quote(container_marker)
             runtime_request = request.model_copy(
                 update={
                     "command": [
                         "/bin/sh",
                         "-c",
                         (
-                            f"while [ ! -f /home/agent/.evander/codex-turns/{job_id}.exit ]; "
+                            f"while [ ! -f {quoted_container_marker} ]; "
                             "do sleep 1; done; "
-                            f"code=$(cat /home/agent/.evander/codex-turns/{job_id}.exit); "
-                            f'rm -f /home/agent/.evander/codex-turns/{job_id}.exit; exit "$code"'
+                            f"code=$(cat {quoted_container_marker}); "
+                            'exit "$code"'
                         ),
                     ]
                 }
@@ -428,6 +455,7 @@ class WorkerDaemon:
             record.finished_at = now_utc()
         if terminal:
             self._shutdown_codex_subscription_runner(record.job_id)
+            self._remove_codex_subscription_completion_marker(record)
             log_text: str | None = None
             if _worker_job_uses_codex(record):
                 try:
@@ -450,6 +478,7 @@ class WorkerDaemon:
     def stop_job(self, record: WorkerJobRecord) -> WorkerJobRecord:
         self._shutdown_codex_subscription_runner(record.job_id)
         self.container_runtime.stop_job(record)
+        self._remove_codex_subscription_completion_marker(record)
         record.status = "stopped"
         record.finished_at = now_utc()
         self.store.put(record)
@@ -475,6 +504,7 @@ class WorkerDaemon:
                 attempted_at=attempted_at,
             )
             raise
+        self._remove_codex_subscription_completion_marker(record)
         self._mark_job_cleanup_success(record, attempted_at=attempted_at)
         logger.info("worker_job_removed job_id=%s session_id=%s", record.job_id, record.session_id)
 
@@ -489,6 +519,40 @@ class WorkerDaemon:
         with self._codex_subscription_runners_lock:
             if self._codex_subscription_runners.get(job_id) is runner:
                 self._codex_subscription_runners.pop(job_id, None)
+
+    def _codex_subscription_completion_marker(self, record: WorkerJobRecord) -> Path:
+        normalized_job_id = validate_worker_component_id(record.job_id, field_name="job_id")
+        _session_id, sessions_root, session_root = WorkerSessionPaths.resolve_session_root(
+            self.worker_root,
+            record.session_id,
+        )
+        marker_dir = session_root / "logs" / CODEX_COMPLETION_MARKER_HOST_DIRNAME
+        marker = marker_dir / f"{normalized_job_id}.exit"
+        ensure_resolved_path_within(
+            base=sessions_root,
+            candidate=marker,
+            description="Codex completion marker path",
+        )
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        ensure_resolved_path_within(
+            base=sessions_root,
+            candidate=marker,
+            description="Codex completion marker path",
+        )
+        return marker
+
+    def _remove_codex_subscription_completion_marker(self, record: WorkerJobRecord) -> None:
+        if not _worker_job_uses_codex_subscription(record):
+            return
+        try:
+            self._codex_subscription_completion_marker(record).unlink(missing_ok=True)
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "codex_subscription_completion_marker_cleanup_failed "
+                "job_id=%s exception_class=%s",
+                record.job_id,
+                exc.__class__.__name__,
+            )
 
     def get_logs(
         self,

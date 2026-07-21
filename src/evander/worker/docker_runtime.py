@@ -10,6 +10,10 @@ from urllib.parse import urlsplit
 
 from evander.codex_auth import CodexTurnSpec
 
+from .codex_subscription import (
+    CODEX_COMPLETION_MARKER_CONTAINER_DIR,
+    CODEX_COMPLETION_MARKER_HOST_DIRNAME,
+)
 from .models import (
     WorkerJobRecord,
     WorkerJobRequest,
@@ -25,6 +29,9 @@ from .sandbox_profile import (
     validate_worker_read_only_mount,
     validate_worker_sandbox_profile,
 )
+
+
+_CODEX_IMAGE_BINARY = "/usr/local/bin/codex"
 
 
 class DockerContainerRuntime:
@@ -146,7 +153,7 @@ class DockerContainerRuntime:
             "-e",
             f"NO_PROXY={','.join(dict.fromkeys(no_proxy))}",
             record.container_id or record.container_name,
-            "codex",
+            _CODEX_IMAGE_BINARY,
             "app-server",
             "--stdio",
         )
@@ -167,6 +174,27 @@ class DockerContainerRuntime:
             validate_worker_read_only_mount(mount)
         paths.assert_contained()
         identity_mounts = self._container_identity_mounts(paths)
+        subscription_completion_mount: str | None = None
+        if (
+            request.codex_turn is not None
+            and request.codex_turn.auth_mode.value == "chatgpt_subscription"
+        ):
+            completion_dir = paths.logs / CODEX_COMPLETION_MARKER_HOST_DIRNAME
+            ensure_resolved_path_within(
+                base=paths.root,
+                candidate=completion_dir,
+                description="Codex completion marker directory",
+            )
+            completion_dir.mkdir(parents=True, exist_ok=True)
+            ensure_resolved_path_within(
+                base=paths.root,
+                candidate=completion_dir,
+                description="Codex completion marker directory",
+            )
+            reject_unsafe_mount(completion_dir, CODEX_COMPLETION_MARKER_CONTAINER_DIR)
+            subscription_completion_mount = (
+                f"{completion_dir}:{CODEX_COMPLETION_MARKER_CONTAINER_DIR}:ro"
+            )
 
         args = [
             self.docker_binary,
@@ -186,6 +214,8 @@ class DockerContainerRuntime:
         ]
         for mount in identity_mounts:
             args.extend(["-v", mount])
+        if subscription_completion_mount is not None:
+            args.extend(["-v", subscription_completion_mount])
         for mount in self.read_only_mounts:
             args.extend(["-v", mount.docker_volume_arg])
         for cap in self.sandbox_profile.cap_drop:
