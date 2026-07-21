@@ -10,14 +10,6 @@ export type WorkflowTargetVm = {
   vm_name: string;
 };
 
-export type WorkflowTargetSessionListResponse = {
-  items: WorkflowTargetSession[];
-};
-
-export type WorkflowTargetVmListResponse = {
-  items: WorkflowTargetVm[];
-};
-
 export type WorkflowTargetInventory = {
   sessions: WorkflowTargetSession[];
   vms: WorkflowTargetVm[];
@@ -33,25 +25,12 @@ export const EMPTY_WORKFLOW_TARGET_INVENTORY: WorkflowTargetInventory = {
   vms: [],
 };
 
-export function workflowTargetInventoryPaths(directoryPath: string): {
-  sessions: string;
-  vms: string;
-} {
+export function workflowTargetInventoryPath(directoryPath: string): string {
   const normalizedDirectoryPath = directoryPath.trim() || "root";
-  const sessionQuery = new URLSearchParams({
+  const query = new URLSearchParams({
     directory_path: normalizedDirectoryPath,
-    direct_only: "false",
-    include_expired: "true",
   });
-  const vmQuery = new URLSearchParams({
-    directory_path: normalizedDirectoryPath,
-    direct_only: "false",
-    include_inactive: "true",
-  });
-  return {
-    sessions: `/api/admin/sessions?${sessionQuery.toString()}`,
-    vms: `/api/admin/vms?${vmQuery.toString()}`,
-  };
+  return `/api/workflow-editor/target-catalog?${query.toString()}`;
 }
 
 function normalizedOption(value: unknown, expired = false): WorkflowTargetOption | null {
@@ -85,18 +64,4 @@ export function workflowTargetOptions(
   return Array.from(deduplicated.values()).sort((left, right) =>
     left.value.localeCompare(right.value),
   );
-}
-
-export function workflowTargetInventoryFromSettledResults(
-  sessionsResult: PromiseSettledResult<WorkflowTargetSessionListResponse>,
-  vmsResult: PromiseSettledResult<WorkflowTargetVmListResponse>,
-): WorkflowTargetInventory {
-  return {
-    sessions: sessionsResult.status === "fulfilled" && Array.isArray(sessionsResult.value.items)
-      ? sessionsResult.value.items
-      : [],
-    vms: vmsResult.status === "fulfilled" && Array.isArray(vmsResult.value.items)
-      ? vmsResult.value.items
-      : [],
-  };
 }

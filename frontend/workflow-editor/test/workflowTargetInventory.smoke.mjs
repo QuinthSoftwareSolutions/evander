@@ -208,24 +208,14 @@ test("workflow target suggestions preserve literal, binding, and template entry"
       await route.fulfill(jsonResponse({ ...body, validation_diagnostics: [] }));
       return;
     }
-    if (pathname === "/api/admin/sessions") {
+    if (pathname === "/api/workflow-editor/target-catalog") {
       inventoryRequests.push(url);
       await route.fulfill(jsonResponse({
-        items: [
+        sessions: [
           { session_id: "session-active", vm_id: "vm-active", is_expired: false },
           { session_id: "session-expired", vm_id: "vm-expired", is_expired: true },
         ],
-        counts: { total: 2, active: 1, expired: 1 },
-        status_ids: { active: ["session-active"], expired: ["session-expired"] },
-      }));
-      return;
-    }
-    if (pathname === "/api/admin/vms") {
-      inventoryRequests.push(url);
-      await route.fulfill(jsonResponse({
-        items: [{ vm_name: "vm-active" }, { vm_name: "vm-stopped" }],
-        directory_path: "root",
-        direct_only: false,
+        vms: [{ vm_name: "vm-active" }, { vm_name: "vm-stopped" }],
       }));
       return;
     }
@@ -272,13 +262,9 @@ test("workflow target suggestions preserve literal, binding, and template entry"
   await templateInput.fill("session-${{create-agent.session_id}}");
   assert.equal(await templateInput.inputValue(), "session-${{create-agent.session_id}}");
 
-  assert.equal(inventoryRequests.length, 2);
-  for (const requestUrl of inventoryRequests) {
-    assert.equal(requestUrl.searchParams.get("directory_path"), "root");
-    assert.equal(requestUrl.searchParams.get("direct_only"), "false");
-  }
-  assert.equal(inventoryRequests.find((url) => url.pathname.endsWith("/sessions"))?.searchParams.get("include_expired"), "true");
-  assert.equal(inventoryRequests.find((url) => url.pathname.endsWith("/vms"))?.searchParams.get("include_inactive"), "true");
+  assert.equal(inventoryRequests.length, 1);
+  assert.equal(inventoryRequests[0]?.pathname, "/api/workflow-editor/target-catalog");
+  assert.equal(inventoryRequests[0]?.searchParams.get("directory_path"), "root");
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });

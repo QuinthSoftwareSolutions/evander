@@ -51,6 +51,7 @@ from evander.admin.web.rbac import (
     OWNER_GROUP_ID,
     TEAM_CHATS_READ_ALL_PERMISSION,
     WORKFLOW_PACKS_MANAGE_PERMISSION,
+    WORKFLOW_MAINTAINER_GROUP_ID,
     WORKFLOWS_READ_PERMISSION,
     WORKFLOWS_WRITE_PERMISSION,
     WORKFLOW_RUNS_CONTROL_PERMISSION,
@@ -4109,6 +4110,76 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
     assert generate_denied.json()["error"] == "Permission required: workflows.write"
     assert save_denied.status_code == 403
     assert save_denied.json()["error"] == "Permission required: workflows.write"
+
+
+def test_admin_web_workflow_target_catalog_uses_workflow_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    service.directory_admin.create_child(parent="root", name="finance")
+    for session_id, vm_id, directory_path in (
+        ("ops-session", "ops-vm", "root/ops"),
+        ("finance-session", "finance-vm", "root/finance"),
+    ):
+        service.runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                vm_id=vm_id,
+                directory_path=directory_path,
+                allowed_tools=[],
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+
+    def list_vms(self, **kwargs):
+        del self
+        assert kwargs == {
+            "include_inactive": True,
+            "directory_path": "root/ops",
+            "direct_only": False,
+        }
+        return [
+            VmSummary(
+                vm_name="ops-vm",
+                directory_paths=["root/ops"],
+                power_state="running",
+                agent_state="idle",
+            )
+        ]
+
+    monkeypatch.setattr(
+        service.vm_agent_admin, "list_vms", MethodType(list_vms, service.vm_agent_admin)
+    )
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin", display_name="Owner")
+    store.upsert_user(login="maintainer@example.com", role="regular", display_name="Maintainer")
+    store.remove_user_group_assignment(
+        login="maintainer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="maintainer@example.com",
+        group_id=WORKFLOW_MAINTAINER_GROUP_ID,
+        directory_path="root/ops",
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(service)
+    client = TestClient(app)
+    _complete_azure_login(app, client, login="maintainer@example.com", display_name="Maintainer")
+
+    owner_only_sessions = client.get(
+        "/api/admin/sessions", params={"directory_path": "root/ops", "include_expired": "true"}
+    )
+    allowed = client.get("/api/workflow-editor/target-catalog?directory_path=root/ops")
+    denied = client.get("/api/workflow-editor/target-catalog?directory_path=root/finance")
+
+    assert owner_only_sessions.status_code == 403
+    assert allowed.status_code == 200
+    assert allowed.json() == {
+        "sessions": [{"session_id": "ops-session", "is_expired": False}],
+        "vms": [{"vm_name": "ops-vm"}],
+    }
+    assert denied.status_code == 403
 
 
 def test_admin_web_workflow_run_routes_enforce_directory_permissions(

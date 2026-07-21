@@ -73,12 +73,9 @@ import { hashQueryParam } from "./adminRouting";
 import { graphVisibleInDirectory } from "./workflowGraphDirectory";
 import {
   EMPTY_WORKFLOW_TARGET_INVENTORY,
-  workflowTargetInventoryFromSettledResults,
-  workflowTargetInventoryPaths,
+  workflowTargetInventoryPath,
   workflowTargetOptions,
   type WorkflowTargetInventory,
-  type WorkflowTargetSessionListResponse,
-  type WorkflowTargetVmListResponse,
 } from "./workflowTargetInventory";
 import {
   BindingParseError,
@@ -4588,19 +4585,16 @@ export default function App() {
       return;
     }
     setWorkflowTargetInventory(EMPTY_WORKFLOW_TARGET_INVENTORY);
-    const paths = workflowTargetInventoryPaths(directoryPath);
     let cancelled = false;
-    Promise.allSettled([
-      fetchJson<WorkflowTargetSessionListResponse>(paths.sessions),
-      fetchJson<WorkflowTargetVmListResponse>(paths.vms),
-    ]).then(([sessionsResult, vmsResult]) => {
-      if (cancelled) return;
-      const inventory = workflowTargetInventoryFromSettledResults(sessionsResult, vmsResult);
-      setWorkflowTargetInventory(inventory);
-      if (sessionsResult.status === "fulfilled" && vmsResult.status === "fulfilled") {
+    fetchJson<WorkflowTargetInventory>(workflowTargetInventoryPath(directoryPath))
+      .then((inventory) => {
+        if (cancelled) return;
+        setWorkflowTargetInventory(inventory);
         workflowTargetInventoryCacheRef.current.set(directoryPath, inventory);
-      }
-    });
+      })
+      .catch(() => {
+        if (!cancelled) setWorkflowTargetInventory(EMPTY_WORKFLOW_TARGET_INVENTORY);
+      });
     return () => {
       cancelled = true;
     };

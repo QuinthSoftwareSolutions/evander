@@ -6,6 +6,8 @@
   preserving free-form values, templates, and upstream-output bindings.
 - Included expired sessions in the directory-scoped suggestions with an `(expired)` label that
   does not alter the stored target ID.
+- Served suggestions from a workflow-authorized target catalog, so workflow operators and
+  maintainers no longer depend on the owner-only Sessions inventory route.
 
 ## 2026-07-21 - Session Communication Grant Hardening
 
