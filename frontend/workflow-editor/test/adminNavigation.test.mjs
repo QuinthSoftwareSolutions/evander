@@ -344,99 +344,6 @@ test("admin shell shows full section navigation on fresh load", async (t) => {
   assert.equal(await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY), "false");
 });
 
-test("admin shell groups every destination and exposes descriptions as tooltips", async (t) => {
-  const { address, page } = await createAdminPage(t);
-
-  await page.goto(`http://127.0.0.1:${address.port}/#agents`, {
-    waitUntil: "domcontentloaded",
-  });
-  await page.locator(".admin-shell").waitFor({ state: "visible" });
-
-  assert.deepEqual(
-    await page.locator(".admin-shell-nav-group-label").allTextContents(),
-    ["Overview", "Operations", "Automation", "Extensions", "Infrastructure", "Governance"],
-  );
-  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 18);
-  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab small').count(), 0);
-
-  await page.getByRole("button", { name: "Agents", exact: true }).hover();
-  await assert.doesNotReject(() => page.getByRole("tooltip").getByText("Active and historical execution targets.").waitFor({ state: "visible" }));
-});
-
-test("quick navigator filters destinations and supports keyboard navigation", async (t) => {
-  const { address, page } = await createAdminPage(t);
-
-  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, {
-    waitUntil: "domcontentloaded",
-  });
-  await page.locator(".admin-shell").waitFor({ state: "visible" });
-
-  await page.keyboard.press("Control+k");
-  await assert.doesNotReject(() => page.getByRole("dialog", { name: "Find a page" }).waitFor({ state: "visible" }));
-  const search = page.getByRole("searchbox", { name: "Search pages" });
-  assert.equal(await search.evaluate((element) => element === document.activeElement), true);
-  await search.press("ArrowUp");
-  assert.equal(await page.getByRole("option", { name: /Users & Groups/ }).getAttribute("aria-selected"), "true");
-  await search.press("ArrowDown");
-  assert.equal(await page.getByRole("option", { name: /Dashboard/ }).getAttribute("aria-selected"), "true");
-  await search.fill("managed codex");
-  assert.equal(await page.getByRole("option").count(), 1);
-  await assert.doesNotReject(() => page.getByRole("option", { name: /Skills/ }).getByText("Automation").waitFor({ state: "visible" }));
-  await search.press("Enter");
-  await page.waitForFunction(() => window.location.hash === "#skills");
-  await assert.doesNotReject(() => page.getByRole("heading", { name: "Skills", exact: true }).waitFor({ state: "visible" }));
-
-  await page.getByRole("button", { name: "Find page", exact: true }).click();
-  await page.getByRole("searchbox", { name: "Search pages" }).fill("definitely not a destination");
-  await assert.doesNotReject(() => page.getByText("No pages match “definitely not a destination”.").waitFor({ state: "visible" }));
-  await page.getByRole("searchbox", { name: "Search pages" }).press("Shift+Tab");
-  const closeButton = page.getByRole("button", { name: "Close page finder" });
-  assert.equal(await closeButton.evaluate((element) => element === document.activeElement), true);
-  await closeButton.press("Escape");
-  assert.equal(await page.getByRole("dialog", { name: "Find a page" }).count(), 0);
-});
-
-test("quick navigator includes dynamic add-on destinations in Extensions", async (t) => {
-  const { address, page } = await createAdminPage(t, {
-    addons: [
-      {
-        addon_id: "team-addon",
-        display_name: "Team Add-on",
-        tab_key: "addon:team-addon",
-        label: "Teams",
-        short_label: "Teams",
-        description: "Team-oriented add-on surface.",
-        api_base_path: "/api/addons/team-addon",
-        ui_path: "/addons/team-addon/",
-      },
-    ],
-  });
-
-  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, {
-    waitUntil: "domcontentloaded",
-  });
-  await page.locator(".admin-shell").waitFor({ state: "visible" });
-  await page.getByRole("button", { name: "Find page", exact: true }).click();
-  await page.getByRole("searchbox", { name: "Search pages" }).fill("Teams");
-
-  const option = page.getByRole("option", { name: /Teams/ });
-  await assert.doesNotReject(() => option.waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => option.getByText("Extensions").waitFor({ state: "visible" }));
-});
-
-test("quick navigator shortcut does not replace another open modal", async (t) => {
-  const { address, page } = await createAdminPage(t);
-
-  await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, {
-    waitUntil: "domcontentloaded",
-  });
-  await page.locator(".admin-shell").waitFor({ state: "visible" });
-  await page.getByRole("button", { name: "Choose directory", exact: true }).click();
-  await assert.doesNotReject(() => page.getByRole("dialog", { name: "Choose directory" }).waitFor({ state: "visible" }));
-  await page.keyboard.press("Control+k");
-  assert.equal(await page.getByRole("dialog", { name: "Find a page" }).count(), 0);
-});
-
 test("admin shell persisted collapsed navigation remains usable", async (t) => {
   const { address, page } = await createAdminPage(t);
   await page.addInitScript((storageKey) => window.localStorage.setItem(storageKey, "true"), WORKFLOW_SIDEBAR_STORAGE_KEY);
@@ -455,7 +362,6 @@ test("admin shell persisted collapsed navigation remains usable", async (t) => {
 
   const navTabs = page.locator('nav[aria-label="Admin sections"] .admin-shell-tab');
   assert.ok((await navTabs.count()) > 3);
-  assert.equal(await page.locator(".admin-shell-nav-group-label:visible").count(), 0);
   await assert.doesNotReject(() => page.getByRole("button", { name: "Agents", exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "Flow", exact: true }).waitFor({ state: "visible" }));
   assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab small:visible').count(), 0);
@@ -718,10 +624,8 @@ test("admin shell keeps mobile section access and dashboard content in the first
       `expected mobile section buttons when stored collapse state is ${storedCollapseState ?? "unset"}`,
     );
     assert.equal(await page.locator(".admin-shell-nav-header:visible").count(), 0);
-    assert.equal(await page.locator(".admin-shell-nav-group-label:visible").count(), 0);
     assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab small:visible').count(), 0);
 
-    await assert.doesNotReject(() => page.getByRole("button", { name: "Find page", exact: true }).waitFor({ state: "visible" }));
     for (const label of ["Ops", "Agents", "Flow"]) {
       await assert.doesNotReject(() => page.getByRole("button", { name: label, exact: true }).waitFor({ state: "visible" }));
     }

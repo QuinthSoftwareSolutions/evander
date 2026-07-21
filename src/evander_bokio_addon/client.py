@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from email.message import Message
 from pathlib import Path
 from typing import Any
+import json
 import mimetypes
 import os
 import re
@@ -14,6 +15,7 @@ import httpx
 
 DEFAULT_BOKIO_API_BASE_URL = "https://api.bokio.se/v1"
 MAX_BOKIO_DOWNLOAD_BYTES = 100 * 1024 * 1024
+MAX_BOKIO_ERROR_BODY_BYTES = 2 * 1024
 _UPLOAD_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".jpg": "image/jpeg",
@@ -178,9 +180,8 @@ class BokioClient:
                 self._request_url(path),
                 headers=self._request_headers(accept="application/octet-stream"),
             ) as response:
-                if response.status_code >= 400:
-                    response.read()
-                    raise self._api_error(response)
+                if response.status_code != 200:
+                    raise _download_response_error(response)
                 content_length = _optional_content_length(response.headers.get("content-length"))
                 if content_length is not None and content_length > bounded_max_bytes:
                     raise _download_too_large_error(
@@ -371,6 +372,33 @@ def _download_too_large_error(
         f"Bokio upload exceeds the {max_bytes}-byte download limit",
         status_code=response.status_code,
         payload={"byte_count": byte_count, "max_bytes": max_bytes},
+        plan_warning=response.headers.get("Bokio-Plan-Warning"),
+    )
+
+
+def _download_response_error(response: httpx.Response) -> BokioApiError:
+    prefix = bytearray()
+    for chunk in response.iter_bytes(chunk_size=MAX_BOKIO_ERROR_BODY_BYTES):
+        remaining = MAX_BOKIO_ERROR_BODY_BYTES - len(prefix)
+        prefix.extend(chunk[:remaining])
+        if len(prefix) >= MAX_BOKIO_ERROR_BODY_BYTES:
+            break
+    text = bytes(prefix).decode("utf-8", errors="replace")
+    try:
+        payload: Any = json.loads(text)
+    except json.JSONDecodeError:
+        payload = text
+    message = (
+        "Bokio API request failed"
+        if response.status_code >= 400
+        else f"Bokio upload download returned unexpected HTTP {response.status_code}"
+    )
+    if isinstance(payload, dict):
+        message = str(payload.get("message") or payload.get("error") or message)
+    return BokioApiError(
+        message,
+        status_code=response.status_code,
+        payload=payload,
         plan_warning=response.headers.get("Bokio-Plan-Warning"),
     )
 

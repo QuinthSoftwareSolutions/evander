@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  ADMIN_NAVIGATION_GROUPS,
-  TABS,
   addonTabsFromPayload,
   adminHash,
   currentTab,
@@ -87,34 +85,10 @@ test("admin hashes carry non-empty query parameters", () => {
 test("dashboard is the first visible tab and vms stay backend-gated", () => {
   assert.deepEqual(
     tabsForExecutionBackend("container_worker_vm").map((tab) => tab.key).slice(0, 2),
-    ["dashboard", "reports"],
+    ["dashboard", "agents"],
   );
   assert.equal(tabsForExecutionBackend("container_worker_vm").some((tab) => tab.key === "vms"), false);
   assert.equal(tabsForExecutionBackend("libvirt_vm").some((tab) => tab.key === "vms"), true);
-});
-
-test("built-in tabs belong to one ordered navigation group", () => {
-  assert.deepEqual(
-    ADMIN_NAVIGATION_GROUPS.map((group) => group.key),
-    ["overview", "operations", "automation", "extensions", "infrastructure", "governance"],
-  );
-  assert.equal(TABS.length, new Set(TABS.map((tab) => tab.key)).size);
-  assert.deepEqual(
-    Object.fromEntries(
-      ADMIN_NAVIGATION_GROUPS.map((group) => [
-        group.key,
-        TABS.filter((tab) => tab.group === group.key).map((tab) => tab.key),
-      ]),
-    ),
-    {
-      overview: ["dashboard", "reports"],
-      operations: ["agents", "sessions", "issues", "approvals", "artifacts"],
-      automation: ["workflow", "skills"],
-      extensions: ["addons", "connectors"],
-      infrastructure: ["vms", "workers"],
-      governance: ["tool-visibility", "mcp-tools", "tool-calls", "configuration", "users"],
-    },
-  );
 });
 
 test("add-on navigation payloads append dynamic admin tabs", () => {
@@ -138,7 +112,6 @@ test("add-on navigation payloads append dynamic admin tabs", () => {
   );
   assert.equal(addonTabs[0].addonId, "team-addon");
   assert.equal(addonTabs[0].uiPath, "/addons/team-addon/");
-  assert.equal(addonTabs[0].group, "extensions");
 });
 
 test("invalid add-on hashes and duplicate payloads are ignored", () => {

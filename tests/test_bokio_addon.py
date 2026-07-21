@@ -134,6 +134,34 @@ def test_bokio_client_download_rejects_oversized_upload(monkeypatch) -> None:
     assert exc_info.value.payload == {"byte_count": 9, "max_bytes": 8}
 
 
+def test_bokio_client_bounds_streamed_error_response_body(monkeypatch) -> None:
+    class OversizedErrorStream(httpx.SyncByteStream):
+        def __init__(self) -> None:
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            yield b"x" * 4096
+            self.iterations += 1
+            raise AssertionError("error body was read beyond the bounded prefix")
+
+    stream = OversizedErrorStream()
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, stream=stream)
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+
+    with pytest.raises(BokioApiError, match="Bokio API request failed") as exc_info:
+        BokioClient(settings_from_context()).download_upload("upload-1")
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.payload == "x" * 2048
+    assert stream.iterations == 1
+
+
 @pytest.mark.parametrize("upload_id", ["", "../journal-entries", "upload/other"])
 def test_bokio_client_rejects_non_opaque_upload_ids(monkeypatch, upload_id: str) -> None:
     monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
@@ -1094,6 +1122,36 @@ def test_bokio_mcp_oversized_download_leaves_no_artifact(
     server = _register_bokio_mcp(tmp_path, allowed_tools=["bokio_download_upload"])
 
     with pytest.raises(BokioApiError, match="8-byte download limit"):
+        server.tools["bokio_download_upload"](
+            upload_id="upload-1",
+            session_id="session-1",
+        )
+
+    artifact_root = tmp_path / "communication-artifacts"
+    assert not artifact_root.exists() or list(artifact_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("status_code", [206, 302])
+def test_bokio_mcp_non_200_download_leaves_no_artifact(
+    tmp_path: Path,
+    monkeypatch,
+    status_code: int,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/download"):
+            return httpx.Response(
+                status_code,
+                content=b"%PDF-1.7\npartial-or-redirect",
+                headers={"content-type": "application/pdf"},
+            )
+        return httpx.Response(200, json={"id": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(tmp_path, allowed_tools=["bokio_download_upload"])
+
+    with pytest.raises(BokioApiError, match=f"unexpected HTTP {status_code}"):
         server.tools["bokio_download_upload"](
             upload_id="upload-1",
             session_id="session-1",

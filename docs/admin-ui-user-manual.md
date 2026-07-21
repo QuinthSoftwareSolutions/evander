@@ -74,15 +74,8 @@ Every Admin UI section uses the same shell:
 
 - The header shows the active section, selected directory, current user, privilege lock state,
   theme toggle, directory chooser, and sign-out button when authentication is enabled.
-- The left navigation keeps every page one click away in permanently expanded **Overview**,
-  **Operations**, **Automation**, **Extensions**, **Infrastructure**, and **Governance** groups.
-  Compact icon rows show each page description on hover or keyboard focus.
-- Use **Find page** or press `Ctrl+K` / `Command+K` to search visible built-in and add-on pages by
-  page name, description, or group. Use Up/Down and Enter to open the selected result, or Escape to
-  close the finder.
-- The section toggle collapses the desktop navigation to icons and short labels. On smaller screens,
-  every page remains available in the horizontal navigation strip and **Find** opens the same page
-  finder.
+- The left navigation opens each major operator section. It can be collapsed to short labels with
+  the section toggle.
 - The selected directory is shared by directory-scoped views. It defaults to `root`.
 - Privileged operations are locked by default in the UI. Unlock before creating, deleting,
   starting, stopping, approving, denying, saving policy, or editing workflow state.

@@ -6945,14 +6945,6 @@ sudo ./scripts/install_systemd_units.sh
 
 Admin Web is the supported operator GUI. Its core areas answer different questions rather than presenting interchangeable views.
 
-The navigation keeps all areas visible in six permanently expanded groups: **Overview** contains
-Dashboard and Reports; **Operations** contains Agents, Sessions, Issues, Approvals, and Artifacts;
-**Automation** contains Workflow and Skills; **Extensions** contains Add-ons, Connectors, and
-add-on-contributed areas; **Infrastructure** contains VMs and Workers; and **Governance** contains
-Tool Visibility, MCP Tools, Tool Calls, Configuration, and Users & Groups. Use **Find page** or
-`Ctrl+K` / `Command+K` to search the currently visible built-in and add-on areas without changing
-their hash routes or directory scope.
-
 | Area | Operator question |
 |---|---|
 | Dashboard | Is the control plane broadly healthy, and what needs attention? |
