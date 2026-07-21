@@ -26,7 +26,11 @@ from .state import PreparedActionStore, upload_staging_dir
 GET_COMPANY_TOOL = "bokio_get_company"
 LIST_ACCOUNTS_TOOL = "bokio_list_accounts"
 LIST_JOURNAL_ENTRIES_TOOL = "bokio_list_journal_entries"
+LIST_CUSTOMERS_TOOL = "bokio_list_customers"
+GET_CUSTOMER_TOOL = "bokio_get_customer"
 LIST_INVOICES_TOOL = "bokio_list_invoices"
+LIST_SUPPLIERS_TOOL = "bokio_list_suppliers"
+GET_SUPPLIER_TOOL = "bokio_get_supplier"
 LIST_UPLOADS_TOOL = "bokio_list_uploads"
 GET_UPLOAD_TOOL = "bokio_get_upload"
 DOWNLOAD_UPLOAD_TOOL = "bokio_download_upload"
@@ -49,7 +53,11 @@ READ_TOOLS = (
     GET_COMPANY_TOOL,
     LIST_ACCOUNTS_TOOL,
     LIST_JOURNAL_ENTRIES_TOOL,
+    LIST_CUSTOMERS_TOOL,
+    GET_CUSTOMER_TOOL,
     LIST_INVOICES_TOOL,
+    LIST_SUPPLIERS_TOOL,
+    GET_SUPPLIER_TOOL,
     LIST_UPLOADS_TOOL,
     GET_UPLOAD_TOOL,
     LIST_EVIDENCE_TOOL,
@@ -85,7 +93,23 @@ MCP_TOOL_CATALOG = (
         "List journal entries",
         "List Bokio journal entries with optional paging and filtering.",
     ),
+    _catalog(
+        LIST_CUSTOMERS_TOOL,
+        "List customers",
+        "List Bokio customers with optional paging and filtering.",
+    ),
+    _catalog(GET_CUSTOMER_TOOL, "Get customer", "Read one Bokio customer."),
     _catalog(LIST_INVOICES_TOOL, "List invoices", "List Bokio customer invoices."),
+    _catalog(
+        LIST_SUPPLIERS_TOOL,
+        "List suppliers",
+        "List Bokio suppliers with optional paging and filtering. This API is in preview.",
+    ),
+    _catalog(
+        GET_SUPPLIER_TOOL,
+        "Get supplier",
+        "Read one Bokio supplier. This API is in preview.",
+    ),
     _catalog(
         LIST_UPLOADS_TOOL,
         "List uploads",
@@ -229,6 +253,38 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         }
 
     @server.tool(
+        name=LIST_CUSTOMERS_TOOL,
+        description="List Bokio customers with optional pagination and query filter.",
+    )
+    def bokio_list_customers(
+        page: int = 1,
+        page_size: int = 25,
+        query: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, LIST_CUSTOMERS_TOOL)
+        return {
+            "result": _client(context).list_customers(
+                page=page,
+                page_size=page_size,
+                query=query,
+            )
+        }
+
+    @server.tool(
+        name=GET_CUSTOMER_TOOL,
+        description="Read one Bokio customer by customer ID.",
+    )
+    def bokio_get_customer(
+        customer_id: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, GET_CUSTOMER_TOOL)
+        return {"result": _client(context).get_customer(customer_id)}
+
+    @server.tool(
         name=LIST_INVOICES_TOOL,
         description="List Bokio invoices with optional pagination and query filter.",
     )
@@ -243,6 +299,41 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
         return {
             "result": _client(context).list_invoices(page=page, page_size=page_size, query=query)
         }
+
+    @server.tool(
+        name=LIST_SUPPLIERS_TOOL,
+        description=(
+            "List Bokio suppliers with optional pagination and query filter. "
+            "The Bokio suppliers API is in preview."
+        ),
+    )
+    def bokio_list_suppliers(
+        page: int = 1,
+        page_size: int = 25,
+        query: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, LIST_SUPPLIERS_TOOL)
+        return {
+            "result": _client(context).list_suppliers(
+                page=page,
+                page_size=page_size,
+                query=query,
+            )
+        }
+
+    @server.tool(
+        name=GET_SUPPLIER_TOOL,
+        description="Read one Bokio supplier by supplier ID. The Bokio suppliers API is in preview.",
+    )
+    def bokio_get_supplier(
+        supplier_id: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, GET_SUPPLIER_TOOL)
+        return {"result": _client(context).get_supplier(supplier_id)}
 
     @server.tool(
         name=LIST_UPLOADS_TOOL,

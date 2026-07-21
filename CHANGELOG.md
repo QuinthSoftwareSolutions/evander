@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-21 - Bokio Customer And Supplier Reads
+
+- Added separately permissioned Bokio MCP tools for listing and retrieving customers and
+  suppliers, including bounded pagination, query filtering, and safe resource-ID handling.
+- Marked supplier tools as preview in the agent-facing catalog and documented the supported
+  customer and supplier query fields.
+
 ## 2026-07-21 - Microsoft Graph Attachment Retrieval
 
 - Restored Graph message-detail and attachment-list retrieval by limiting attachment metadata

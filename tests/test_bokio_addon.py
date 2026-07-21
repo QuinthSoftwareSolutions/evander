@@ -25,7 +25,12 @@ from evander_bokio_addon.client import (
     settings_from_context,
 )
 from evander_bokio_addon.evidence import BokioEvidenceError, BokioEvidenceStore
-from evander_bokio_addon.mcp import MCP_TOOL_NAMES, register_mcp_tools
+from evander_bokio_addon.mcp import (
+    MCP_TOOL_CATALOG,
+    MCP_TOOL_NAMES,
+    READ_TOOLS,
+    register_mcp_tools,
+)
 from evander_bokio_addon.operations import BokioOperationError, BokioOperationStore
 from evander_bokio_addon.providers import BokioCompanyQueryProvider
 from evander_bokio_addon.state import PreparedActionStore, upload_staging_dir
@@ -74,6 +79,86 @@ def test_bokio_client_normalizes_api_errors(monkeypatch) -> None:
     assert payload["status_code"] == 403
     assert payload["plan_warning"] == "plan warning"
     assert payload["payload"]["error"] == "price_plan_feature_required"
+
+
+def test_bokio_client_lists_and_gets_customers_and_suppliers(monkeypatch) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/customers/customer-1"):
+            return httpx.Response(200, json={"id": "customer-1", "name": "Customer AB"})
+        if request.url.path.endswith("/customers"):
+            return httpx.Response(
+                200,
+                json={"totalItems": 1, "items": [{"id": "customer-1"}]},
+            )
+        if request.url.path.endswith("/suppliers/supplier-1"):
+            return httpx.Response(200, json={"id": "supplier-1", "name": "Supplier AB"})
+        return httpx.Response(
+            200,
+            json={"totalItems": 1, "items": [{"id": "supplier-1"}]},
+        )
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    client = BokioClient(settings_from_context())
+
+    customers = client.list_customers(page=2, page_size=50, query="name~Customer")
+    customer = client.get_customer("customer-1")
+    suppliers = client.list_suppliers(page=0, page_size=999, query="orgNumber==556677-8899")
+    supplier = client.get_supplier("supplier-1")
+
+    assert customers["items"] == [{"id": "customer-1"}]
+    assert customer == {"id": "customer-1", "name": "Customer AB"}
+    assert suppliers["items"] == [{"id": "supplier-1"}]
+    assert supplier == {"id": "supplier-1", "name": "Supplier AB"}
+    assert [request.url.path for request in requests] == [
+        "/v1/companies/company-1/customers",
+        "/v1/companies/company-1/customers/customer-1",
+        "/v1/companies/company-1/suppliers",
+        "/v1/companies/company-1/suppliers/supplier-1",
+    ]
+    assert dict(requests[0].url.params) == {
+        "page": "2",
+        "pageSize": "50",
+        "query": "name~Customer",
+    }
+    assert dict(requests[2].url.params) == {
+        "page": "1",
+        "pageSize": "100",
+        "query": "orgNumber==556677-8899",
+    }
+
+
+@pytest.mark.parametrize(
+    ("method_name", "resource_id", "field_name"),
+    [
+        ("get_customer", "", "customer_id"),
+        ("get_customer", "../suppliers", "customer_id"),
+        ("get_customer", "customer/other", "customer_id"),
+        ("get_supplier", "", "supplier_id"),
+        ("get_supplier", "../customers", "supplier_id"),
+        ("get_supplier", "supplier/other", "supplier_id"),
+    ],
+)
+def test_bokio_client_rejects_non_opaque_customer_and_supplier_ids(
+    monkeypatch,
+    method_name: str,
+    resource_id: str,
+    field_name: str,
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("invalid resource ID must be rejected before the Bokio request")
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    client = BokioClient(settings_from_context())
+
+    with pytest.raises(ValueError, match=field_name):
+        getattr(client, method_name)(resource_id)
 
 
 def test_bokio_client_lists_gets_and_downloads_remote_uploads(monkeypatch) -> None:
@@ -977,6 +1062,111 @@ def test_bokio_mcp_read_tool_requires_session_tool_permission(
     assert result == {"result": {"companyInformation": {"name": "Example AB"}}}
     assert len(requests) == 1
     assert requests[0].headers["authorization"] == "Bearer secret-token"
+
+
+def test_bokio_customer_and_supplier_tools_are_cataloged_as_reads() -> None:
+    tool_names = {
+        "bokio_list_customers",
+        "bokio_get_customer",
+        "bokio_list_suppliers",
+        "bokio_get_supplier",
+    }
+
+    assert tool_names.issubset(READ_TOOLS)
+    assert tool_names.issubset(MCP_TOOL_NAMES)
+    assert tool_names.issubset({tool.name for tool in MCP_TOOL_CATALOG})
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("bokio_list_customers", {}),
+        ("bokio_get_customer", {"customer_id": "customer-1"}),
+        ("bokio_list_suppliers", {}),
+        ("bokio_get_supplier", {"supplier_id": "supplier-1"}),
+    ],
+)
+def test_bokio_customer_and_supplier_tools_require_exact_permission(
+    tmp_path: Path,
+    monkeypatch,
+    tool_name: str,
+    arguments: dict[str, str],
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("denied Bokio tool must not make an external request")
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(tmp_path, allowed_tools=[])
+
+    with pytest.raises(ToolError, match=tool_name):
+        server.tools[tool_name](**arguments, session_id="session-1")
+
+
+def test_bokio_mcp_lists_and_gets_customers_and_suppliers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        resource_id = request.url.path.rsplit("/", 1)[-1]
+        if resource_id == "customer-1":
+            return httpx.Response(200, json={"id": resource_id, "name": "Customer AB"})
+        if resource_id == "supplier-1":
+            return httpx.Response(200, json={"id": resource_id, "name": "Supplier AB"})
+        return httpx.Response(200, json={"totalItems": 1, "items": []})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=[
+            "bokio_list_customers",
+            "bokio_get_customer",
+            "bokio_list_suppliers",
+            "bokio_get_supplier",
+        ],
+    )
+
+    customers = server.tools["bokio_list_customers"](
+        page=2,
+        page_size=50,
+        query="type==company",
+        session_id="session-1",
+    )
+    customer = server.tools["bokio_get_customer"](
+        customer_id="customer-1",
+        session_id="session-1",
+    )
+    suppliers = server.tools["bokio_list_suppliers"](
+        page=3,
+        page_size=10,
+        query="name~Supplier",
+        session_id="session-1",
+    )
+    supplier = server.tools["bokio_get_supplier"](
+        supplier_id="supplier-1",
+        session_id="session-1",
+    )
+
+    assert customers == {"result": {"totalItems": 1, "items": []}}
+    assert customer == {"result": {"id": "customer-1", "name": "Customer AB"}}
+    assert suppliers == {"result": {"totalItems": 1, "items": []}}
+    assert supplier == {"result": {"id": "supplier-1", "name": "Supplier AB"}}
+    assert dict(requests[0].url.params) == {
+        "page": "2",
+        "pageSize": "50",
+        "query": "type==company",
+    }
+    assert dict(requests[2].url.params) == {
+        "page": "3",
+        "pageSize": "10",
+        "query": "name~Supplier",
+    }
 
 
 def test_bokio_mcp_lists_and_gets_remote_uploads_with_separate_permissions(

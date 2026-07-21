@@ -143,6 +143,19 @@ class BokioClient:
     def create_journal_entry(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post("/journal-entries", json=payload)
 
+    def list_customers(
+        self, *, page: int = 1, page_size: int = 25, query: str | None = None
+    ) -> Any:
+        return self.get("/customers", params=_page_params(page, page_size, query))
+
+    def get_customer(self, customer_id: str) -> Any:
+        normalized_id = _opaque_resource_id(
+            customer_id,
+            field_name="customer_id",
+            resource_name="customer",
+        )
+        return self.get(f"/customers/{normalized_id}")
+
     def list_invoices(self, *, page: int = 1, page_size: int = 25, query: str | None = None) -> Any:
         return self.get("/invoices", params=_page_params(page, page_size, query))
 
@@ -156,6 +169,19 @@ class BokioClient:
 
     def create_supplier_invoice(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post("/supplier-invoices", json=payload)
+
+    def list_suppliers(
+        self, *, page: int = 1, page_size: int = 25, query: str | None = None
+    ) -> Any:
+        return self.get("/suppliers", params=_page_params(page, page_size, query))
+
+    def get_supplier(self, supplier_id: str) -> Any:
+        normalized_id = _opaque_resource_id(
+            supplier_id,
+            field_name="supplier_id",
+            resource_name="supplier",
+        )
+        return self.get(f"/suppliers/{normalized_id}")
 
     def list_uploads(self, *, page: int = 1, page_size: int = 25, query: str | None = None) -> Any:
         return self.get("/uploads", params=_page_params(page, page_size, query))
@@ -327,9 +353,13 @@ def _required(value: str, field_name: str) -> str:
 
 
 def _opaque_upload_id(value: str) -> str:
-    normalized = _required(value, "upload_id")
+    return _opaque_resource_id(value, field_name="upload_id", resource_name="upload")
+
+
+def _opaque_resource_id(value: str, *, field_name: str, resource_name: str) -> str:
+    normalized = _required(value, field_name)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}", normalized):
-        raise ValueError("upload_id must be an opaque Bokio upload ID")
+        raise ValueError(f"{field_name} must be an opaque Bokio {resource_name} ID")
     return normalized
 
 

@@ -332,7 +332,14 @@ runtime state, guest images, or session manifests.
 The Bokio add-on is intentionally an assisted-bookkeeping layer:
 
 - Agents can inspect company information, accounts, journal entries, invoices,
-  supplier invoices, uploads, and prepared actions.
+  customers, suppliers, supplier invoices, uploads, and prepared actions.
+- `bokio_list_customers` and `bokio_list_suppliers` expose Bokio's paginated
+  customer and supplier directories, while `bokio_get_customer` and
+  `bokio_get_supplier` retrieve one record by its Bokio ID. Customer queries can
+  filter on `name`, `type`, `vatNumber`, `orgNumber`, and `modifiedDateTime`;
+  supplier queries can filter on `name`, `vatNumber`, and `orgNumber`. Each tool
+  requires its own session grant. Bokio currently marks the supplier API as
+  preview, so supplier response fields and behavior may change.
 - `bokio_list_uploads` queries documents already stored remotely in Bokio, with
   Bokio pagination and optional `description` or `journalEntryId` query filters.
   `bokio_get_upload` reads one remote upload's metadata, while
