@@ -2061,16 +2061,17 @@ class WorkerDaemon:
         required: bool,
     ) -> None:
         target_dir = paths.agent_home / ".ssh"
+        preserve_config = self._has_provisioned_git_key(paths, target_dir=target_dir)
+        existing_read_key = required and self._managed_regular_file_exists_no_follow(
+            target_dir / "evander-git", label="Git key"
+        )
         if (
             required
             and self._managed_regular_file_exists_no_follow(
                 target_dir / "config",
                 label="SSH config",
             )
-            and any(
-                self._managed_regular_file_exists_no_follow(target_dir / key_name, label="Git key")
-                for key_name in ("evander-git-write", "evander-git")
-            )
+            and (preserve_config or existing_read_key)
         ):
             return
         if self.git_ssh_source_dir is None:
@@ -2089,10 +2090,7 @@ class WorkerDaemon:
             return
         self._ensure_managed_ssh_dir(target_dir)
         for name in ("evander-git", "evander-git.pub", "config", "known_hosts"):
-            if name == "config" and self._managed_regular_file_exists_no_follow(
-                target_dir / "evander-git-write",
-                label="Git write private key",
-            ):
+            if name == "config" and preserve_config:
                 continue
             source = source_dir / name
             if not source.is_file():
@@ -2104,6 +2102,31 @@ class WorkerDaemon:
                 mode=0o644 if name.endswith(".pub") else 0o600,
                 label=f"SSH {name}",
             )
+
+    def _has_provisioned_git_key(
+        self,
+        paths: WorkerSessionPaths,
+        *,
+        target_dir: Path,
+    ) -> bool:
+        key_names = {"evander-git-write"}
+        metadata = self._read_session_metadata(paths)
+        git_keys = metadata.get("git_keys")
+        if isinstance(git_keys, dict):
+            for value in git_keys:
+                try:
+                    key_names.add(
+                        str(validate_worker_component_id(value, field_name="key_name"))
+                    )
+                except (TypeError, ValueError):
+                    continue
+        return any(
+            self._managed_regular_file_exists_no_follow(
+                target_dir / key_name,
+                label="Git key",
+            )
+            for key_name in key_names
+        )
 
     @staticmethod
     def _managed_regular_file_exists_no_follow(

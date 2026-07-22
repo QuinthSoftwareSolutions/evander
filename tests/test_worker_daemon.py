@@ -923,11 +923,20 @@ def test_worker_preserves_multiple_exact_repo_keys_and_revokes_one(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    ssh_source = tmp_path / "git-ssh"
+    ssh_source.mkdir()
+    (ssh_source / "evander-git").write_text("read key\n", encoding="utf-8")
+    (ssh_source / "evander-git.pub").write_text("read key pub\n", encoding="utf-8")
+    (ssh_source / "config").write_text(
+        "Host evander-git-host\n  IdentityFile ~/.ssh/evander-git\n",
+        encoding="utf-8",
+    )
     daemon = WorkerDaemon(
         runtime_dir=tmp_path / "runtime",
         worker_root=tmp_path / "worker-root",
         container_runtime=FakeContainerRuntime(),
         token="test-token",
+        git_ssh_source_dir=ssh_source,
     )
 
     def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -943,6 +952,7 @@ def test_worker_preserves_multiple_exact_repo_keys_and_revokes_one(
     monkeypatch.setattr(subprocess, "run", fake_run)
     daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1", metadata={}))
     for key_name, alias in (("evander-git-one", "git-one"), ("evander-git-two", "git-two")):
+        daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1", metadata={}))
         daemon.provision_git_write_key(
             "session-1",
             WorkerGitWriteKeyRequest(
@@ -956,6 +966,10 @@ def test_worker_preserves_multiple_exact_repo_keys_and_revokes_one(
 
     paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
     config_path = paths.agent_home / ".ssh" / "config"
+    assert "Host git-one" in config_path.read_text(encoding="utf-8")
+    assert "Host git-two" in config_path.read_text(encoding="utf-8")
+
+    daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1", metadata={}))
     assert "Host git-one" in config_path.read_text(encoding="utf-8")
     assert "Host git-two" in config_path.read_text(encoding="utf-8")
 

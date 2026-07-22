@@ -24,6 +24,8 @@ Environment:
   EVANDER_GIT_SESSION_ID    Session id allowed to push refs/heads/agents/<session-id>/...
                             Defaults to EVANDER_SESSION_ID from the guest session env.
   EVANDER_GIT_READ_ONLY     Set to 1 to force repo-scoped read-only Git SSH access.
+  EVANDER_GIT_REMOVE_LEGACY_KEY
+                            Set to 1 while replacing the pre-grant-model evander-git key.
   EVANDER_GIT_REQUIRE_WRITE_METADATA
                             Set to 1 to fail instead of installing read-only access
                             when EVANDER_GIT_REPO/session metadata is unavailable.
@@ -80,6 +82,14 @@ WRAPPER_PATH="${ROOT_DIR}/scripts/git_ssh_command_wrapper.sh"
 AUTHORIZED_KEYS_PATH="${GIT_USER_HOME}/.ssh/authorized_keys"
 GIT_AUTH_REPO_INPUT="${EVANDER_GIT_REPO:-${EVANDER_GIT_AUTH_REPO:-}}"
 GIT_SESSION_ID="${EVANDER_GIT_SESSION_ID:-${EVANDER_SESSION_ID:-}}"
+GIT_REMOVE_LEGACY_KEY="${EVANDER_GIT_REMOVE_LEGACY_KEY:-0}"
+case "${GIT_REMOVE_LEGACY_KEY}" in
+  0|1) ;;
+  *)
+    echo "EVANDER_GIT_REMOVE_LEGACY_KEY must be 0 or 1." >&2
+    exit 1
+    ;;
+esac
 SSH_OPTS=(
   -i "${SSH_KEY_PATH}"
 )
@@ -233,7 +243,7 @@ echo "Bootstrapping Git SSH into ${VM_USER}@${VM_IP}"
 
 GUEST_GIT_INFO="$(
   ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" \
-    "VM_NAME='${VM_NAME}' GIT_HOST='${GIT_HOST}' GIT_USER='${GIT_USER}' GIT_SSH_ALIAS='${GIT_SSH_ALIAS}' GIT_KEY_NAME='${GIT_KEY_NAME}' bash -s" <<'EOF'
+    "VM_NAME='${VM_NAME}' GIT_HOST='${GIT_HOST}' GIT_USER='${GIT_USER}' GIT_SSH_ALIAS='${GIT_SSH_ALIAS}' GIT_KEY_NAME='${GIT_KEY_NAME}' GIT_REMOVE_LEGACY_KEY='${GIT_REMOVE_LEGACY_KEY}' bash -s" <<'EOF'
 set -euo pipefail
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
@@ -242,6 +252,10 @@ KEY_PATH="$HOME/.ssh/${GIT_KEY_NAME}"
 CONFIG_PATH="$HOME/.ssh/config"
 KNOWN_HOSTS_PATH="$HOME/.ssh/known_hosts"
 
+if [[ "${GIT_REMOVE_LEGACY_KEY}" == "1" ]]; then
+  rm -f "$HOME/.ssh/evander-git" "$HOME/.ssh/evander-git.pub"
+fi
+
 if [[ ! -f "${KEY_PATH}" ]]; then
   ssh-keygen -q -t ed25519 -N "" -C "evander-git@${VM_NAME}" -f "${KEY_PATH}"
 fi
@@ -249,21 +263,29 @@ fi
 touch "${CONFIG_PATH}" "${KNOWN_HOSTS_PATH}"
 chmod 600 "${CONFIG_PATH}" "${KNOWN_HOSTS_PATH}"
 
-python3 - "${CONFIG_PATH}" "${GIT_KEY_NAME}" <<'PY'
+python3 - "${CONFIG_PATH}" "${GIT_KEY_NAME}" "${GIT_REMOVE_LEGACY_KEY}" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
 key_name = sys.argv[2]
+remove_legacy = sys.argv[3] == "1"
 text = path.read_text(encoding="utf-8") if path.exists() else ""
-begin = f"# BEGIN evander git grant {key_name}"
-end = f"# END evander git grant {key_name}"
-while begin in text and end in text:
-    start = text.index(begin)
-    stop = text.index(end, start) + len(end)
-    suffix = "\n" if stop < len(text) and text[stop] == "\n" else ""
-    text = text[:start].rstrip() + "\n"
-    text += text[stop + len(suffix):].lstrip("\n")
+markers = [(f"# BEGIN evander git grant {key_name}", f"# END evander git grant {key_name}")]
+if remove_legacy:
+    markers.extend(
+        [
+            ("# BEGIN evander git host", "# END evander git host"),
+            ("# BEGIN evander git write host", "# END evander git write host"),
+        ]
+    )
+for begin, end in markers:
+    while begin in text and end in text:
+        start = text.index(begin)
+        stop = text.index(end, start) + len(end)
+        suffix = "\n" if stop < len(text) and text[stop] == "\n" else ""
+        text = text[:start].rstrip() + "\n"
+        text += text[stop + len(suffix):].lstrip("\n")
 path.write_text(text, encoding="utf-8")
 PY
 

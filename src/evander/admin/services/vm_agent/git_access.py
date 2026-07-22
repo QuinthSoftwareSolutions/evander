@@ -65,26 +65,28 @@ class VmAgentGitAccessMixin:
         expected_backend = (
             "container_worker_vm" if self.is_container_session(session) else "libvirt_vm"
         )
-        if (
+        existing_matches = bool(
             existing_grant is not None
             and normalize_git_access_mode(existing_grant.get("access_mode")) == mode
             and normalize_git_access_lifetime(existing_grant.get("lifetime")) == "session"
             and str(existing_grant.get("execution_backend") or expected_backend) == expected_backend
-        ):
-            canonical_existing = dict(existing_grant) | {
-                "managed_repo_id": repo_id,
-                "access_mode": mode,
-                "lifetime": "session",
-                "execution_backend": expected_backend,
-            }
-            self._record_managed_git_grant(session.session_id, canonical_existing)
-            managed_git.bind(
-                repo_id,
-                kind="authorized_sessions",
-                binding_id=session.session_id,
+        )
+        if existing_grant is not None and existing_grant.get("legacy_metadata_key"):
+            self.revoke_managed_git_access(session.session_id, repo_id)
+        elif existing_matches and existing_grant is not None:
+            public_key_body = str(existing_grant.get("public_key_body") or "").strip()
+            authorized_keys_path = str(
+                existing_grant.get("authorized_keys_path") or ""
+            ).strip()
+            if not public_key_body or not authorized_keys_path:
+                raise RuntimeError(
+                    "Existing managed Git grant is missing credential reconciliation metadata"
+                )
+            remove_git_authorized_key_by_public_key_body(
+                authorized_keys_path=authorized_keys_path,
+                public_key_body=public_key_body,
             )
-            return public_managed_git_grant(canonical_existing)
-        if existing_grant is not None:
+        elif existing_grant is not None:
             self.revoke_managed_git_access(session.session_id, repo_id)
         bare_repo_path, managed_git_root = managed_git.resolve_internal_repository(
             repo_id,
@@ -155,7 +157,15 @@ class VmAgentGitAccessMixin:
                 authorized_keys_path=authorized_keys_path,
                 public_key_body=public_key_body,
             )
-        key_name = str(grant.get("key_name") or managed_git_key_name(repo_id)).strip()
+        key_name = str(grant.get("key_name") or "").strip()
+        if not key_name:
+            legacy_metadata_key = str(grant.get("legacy_metadata_key") or "").strip()
+            if legacy_metadata_key == "managed_git_access":
+                key_name = "evander-git"
+            elif legacy_metadata_key == "container_git_write_access":
+                key_name = "evander-git-write"
+            else:
+                key_name = managed_git_key_name(repo_id)
         if remove_guest_key:
             if self.is_container_session(session):
                 backend = self.container_worker_backend(
@@ -242,10 +252,16 @@ class VmAgentGitAccessMixin:
             git_access_lifetime=normalized_lifetime,
         )
         if hasattr(result, "model_dump"):
-            return dict(result.model_dump(mode="python"))
-        if isinstance(result, Mapping):
-            return dict(result)
-        raise RuntimeError("managed Git clone returned an invalid result")
+            payload = dict(result.model_dump(mode="python"))
+        elif isinstance(result, Mapping):
+            payload = dict(result)
+        else:
+            raise RuntimeError("managed Git clone returned an invalid result")
+        if payload.get("success") is False:
+            raise RuntimeError(
+                str(payload.get("message") or "managed Git clone did not complete")
+            )
+        return payload
 
     def _resolve_git_access_session(self, target: str):
         normalized = str(target or "").strip()
@@ -491,13 +507,17 @@ key_name = sys.argv[2]
 if not path.exists():
     raise SystemExit(0)
 text = path.read_text(encoding="utf-8")
-begin = f"# BEGIN evander git grant {{key_name}}"
-end = f"# END evander git grant {{key_name}}"
-while begin in text and end in text:
-    start = text.index(begin)
-    stop = text.index(end, start) + len(end)
-    suffix = "\n" if stop < len(text) and text[stop:stop + 1] == "\n" else ""
-    text = text[:start].rstrip() + "\n" + text[stop + len(suffix):].lstrip("\n")
+markers = [(f"# BEGIN evander git grant {{key_name}}", f"# END evander git grant {{key_name}}")]
+if key_name == "evander-git":
+    markers.append(("# BEGIN evander git host", "# END evander git host"))
+elif key_name == "evander-git-write":
+    markers.append(("# BEGIN evander git write host", "# END evander git write host"))
+for begin, end in markers:
+    while begin in text and end in text:
+        start = text.index(begin)
+        stop = text.index(end, start) + len(end)
+        suffix = "\n" if stop < len(text) and text[stop:stop + 1] == "\n" else ""
+        text = text[:start].rstrip() + "\n" + text[stop + len(suffix):].lstrip("\n")
 path.write_text(text, encoding="utf-8")
 PY
 """

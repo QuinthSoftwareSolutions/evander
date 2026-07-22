@@ -456,6 +456,32 @@ def test_clone_managed_repo_into_libvirt_agent_forwards_persistent_grant_options
     ]
 
 
+def test_clone_managed_repo_into_libvirt_agent_propagates_failed_action() -> None:
+    session = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-1",
+        vm_provider="libvirt_vm",
+        directory_path="root/team",
+        allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    sessions = FakeSessionsStore({"session-1": session})
+    service = VmAgentAdminService(_vm_agent_dependencies(FakeAdmin(sessions=sessions)))
+    service.clone_repo_into_vm = lambda **kwargs: VmActionResult(  # type: ignore[method-assign]
+        success=False,
+        vm_name="vm-1",
+        action="clone_repo_into_vm",
+        message="guest checkout failed",
+    )
+
+    with pytest.raises(RuntimeError, match="guest checkout failed"):
+        service.clone_managed_repo_into_agent(
+            "session-1",
+            "mr_11111111111111111111",
+            access_mode="read-only",
+        )
+
+
 def test_standalone_managed_git_grant_rejects_operation_lifetime() -> None:
     session = SessionManifest(
         session_id="session-1",
@@ -473,6 +499,100 @@ def test_standalone_managed_git_grant_rejects_operation_lifetime() -> None:
             "mr_11111111111111111111",
             lifetime="operation",
         )
+
+
+def test_matching_managed_git_grant_reconciles_after_partial_revocation(
+    tmp_path: Path,
+) -> None:
+    repo_id = "mr_11111111111111111111"
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text(
+        "ssh-ed25519 AAAAPreviousBody agent\n",
+        encoding="utf-8",
+    )
+    session = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-1",
+        vm_provider="libvirt_vm",
+        allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        metadata={
+            "managed_git_access_grants": {
+                repo_id: {
+                    "managed_repo_id": repo_id,
+                    "access_mode": "read-only",
+                    "lifetime": "session",
+                    "execution_backend": "libvirt_vm",
+                    "public_key_body": "AAAAPreviousBody",
+                    "authorized_keys_path": str(authorized_keys),
+                    "key_name": "evander-git-existing",
+                }
+            }
+        },
+    )
+    sessions = FakeSessionsStore({"session-1": session})
+
+    class ManagedGit:
+        def __init__(self) -> None:
+            self.binds: list[tuple[str, str, str]] = []
+
+        def clone_info(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+            return {"managed_repo_id": repo_id}
+
+        def resolve_internal_repository(self, *args: Any, **kwargs: Any):
+            return tmp_path / f"{repo_id}.git", tmp_path
+
+        def bind(self, managed_repo_id: str, *, kind: str, binding_id: str) -> None:
+            self.binds.append((managed_repo_id, kind, binding_id))
+
+    managed_git = ManagedGit()
+    service = VmAgentAdminService(
+        _vm_agent_dependencies(
+            FakeAdmin(sessions=sessions),
+            managed_git_admin=managed_git,
+        )
+    )
+    service._remove_vm_managed_git_key = (  # type: ignore[method-assign]
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("guest cleanup failed"))
+    )
+
+    with pytest.raises(RuntimeError, match="guest cleanup failed"):
+        service.revoke_managed_git_access("session-1", repo_id)
+
+    assert authorized_keys.read_text(encoding="utf-8") == ""
+    partially_revoked = sessions.get_session("session-1")
+    assert partially_revoked is not None
+    assert repo_id in partially_revoked.metadata["managed_git_access_grants"]
+
+    provision_calls: list[dict[str, Any]] = []
+
+    def provision(**kwargs: Any) -> dict[str, Any]:
+        provision_calls.append(dict(kwargs))
+        return {
+            "managed_repo_id": repo_id,
+            "access_mode": "read-only",
+            "lifetime": "session",
+            "execution_backend": "libvirt_vm",
+            "public_key_body": "AAAAReconciledBody",
+            "authorized_keys_path": str(authorized_keys),
+            "key_name": kwargs["key_name"],
+            "git_ssh_alias": kwargs["git_ssh_alias"],
+        }
+
+    service._grant_vm_managed_git_access = provision  # type: ignore[method-assign]
+
+    result = service.grant_managed_git_access("session-1", repo_id)
+
+    assert len(provision_calls) == 1
+    assert result["managed_repo_id"] == repo_id
+    assert result["access_mode"] == "read-only"
+    assert managed_git.binds == [(repo_id, "authorized_sessions", "session-1")]
+    stored = sessions.get_session("session-1")
+    assert stored is not None
+    assert (
+        stored.metadata["managed_git_access_grants"][repo_id]["public_key_body"]
+        == "AAAAReconciledBody"
+    )
 
 
 def test_managed_git_grant_rolls_back_exact_key_when_metadata_persist_fails(

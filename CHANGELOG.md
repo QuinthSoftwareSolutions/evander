@@ -10,6 +10,9 @@
   surfaces, including exact worker-key revocation that preserves unrelated repository grants.
 - Migrated legacy singular session Git metadata into the plural grant model and added focused
   multi-repository, lifecycle, migration, worker, and operator-surface coverage.
+- Preserved repository-specific worker SSH aliases across session preparation, revoked legacy VM
+  credentials before canonicalization, reconciled persisted grants against real credentials, and
+  propagated failed libvirt clone actions to operator surfaces.
 
 ## 2026-07-22 - Pull-Time Managed Git Refresh
 

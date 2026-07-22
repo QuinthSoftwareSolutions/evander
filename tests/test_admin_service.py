@@ -14493,6 +14493,74 @@ def test_clone_repo_into_vm_clones_managed_repo(tmp_path: Path, monkeypatch: Any
     )
 
 
+def test_clone_repo_into_vm_revokes_legacy_credential_before_canonicalizing(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    _stub_vm_managed_repository(service, monkeypatch)
+    captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text(
+        'command="legacy managed git" ssh-ed25519 AAAALegacyManagedKey agent\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_runs.append((cmd, kwargs.get("env")))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
+
+    service.vm_agent_admin.create_vm(vm_name="lab-vm", session_id="lab-session")
+    session = service.runtime.session_repository.get_session("lab-session")
+    assert session is not None
+    service.runtime.session_repository.upsert_session(
+        session.model_copy(
+            update={
+                "metadata": {
+                    **session.metadata,
+                    "managed_git_access": {
+                        "managed_repo_id": _MANAGED_REPO_ID,
+                        "access_mode": "write",
+                        "public_key_body": "AAAALegacyManagedKey",
+                        "authorized_keys_path": str(authorized_keys),
+                    },
+                }
+            }
+        )
+    )
+
+    result = service.vm_agent_admin.clone_repo_into_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        managed_repo_id=_MANAGED_REPO_ID,
+    )
+
+    assert result.success is True
+    assert authorized_keys.read_text(encoding="utf-8") == ""
+    bootstrap_env = next(
+        env for cmd, env in captured_runs if cmd[0].endswith("bootstrap_git_vm.sh")
+    )
+    assert bootstrap_env is not None
+    assert bootstrap_env["EVANDER_GIT_REMOVE_LEGACY_KEY"] == "1"
+    stored = service.runtime.session_repository.get_session("lab-session")
+    assert stored is not None
+    assert "managed_git_access" not in stored.metadata
+    assert _MANAGED_REPO_ID in stored.metadata["managed_git_access_grants"]
+
+
 def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

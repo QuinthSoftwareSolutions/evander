@@ -230,6 +230,30 @@ class VmAgentAdminSupport:
         normalized_access_lifetime = normalize_git_access_lifetime(git_access_lifetime)
         key_name = managed_git_key_name(remote_repo_name)
         git_ssh_alias = managed_git_ssh_alias(issue_setup.git_ssh_alias, remote_repo_name)
+        existing_session = self.runtime.session_repository.get_session(session_id)
+        existing_metadata = (
+            existing_session.metadata
+            if existing_session is not None and isinstance(existing_session.metadata, dict)
+            else {}
+        )
+        legacy_access = existing_metadata.get("managed_git_access")
+        replace_legacy_access = bool(
+            isinstance(legacy_access, dict)
+            and str(legacy_access.get("managed_repo_id") or "").strip() == remote_repo_name
+        )
+        if replace_legacy_access:
+            legacy_public_key_body = str(legacy_access.get("public_key_body") or "").strip()
+            legacy_authorized_keys_path = str(
+                legacy_access.get("authorized_keys_path") or ""
+            ).strip()
+            if not legacy_public_key_body or not legacy_authorized_keys_path:
+                raise RuntimeError(
+                    "Legacy managed Git access is missing credential revocation metadata"
+                )
+            remove_git_authorized_key_by_public_key_body(
+                authorized_keys_path=legacy_authorized_keys_path,
+                public_key_body=legacy_public_key_body,
+            )
         completed = process_helpers.run_subprocess(
             [str(bootstrap_git_script), vm_name, vm_user],
             capture_output=True,
@@ -244,6 +268,7 @@ class VmAgentAdminSupport:
                 "EVANDER_GIT_REPO": remote_repo_name,
                 "EVANDER_GIT_SESSION_ID": session_id,
                 "EVANDER_GIT_READ_ONLY": "1" if normalized_access_mode == "read-only" else "0",
+                "EVANDER_GIT_REMOVE_LEGACY_KEY": "1" if replace_legacy_access else "0",
             },
         )
         if completed.returncode != 0:
