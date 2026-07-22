@@ -1419,7 +1419,7 @@ function LoginScreen({
             <form className="admin-login-form" onSubmit={handleSubmit}>
               <label className="inspector-label">
                 <span>Username</span>
-                <input name="username" defaultValue="admin" autoComplete="username" />
+                <input name="username" autoComplete="username" />
               </label>
               <label className="inspector-label">
                 <span>Password</span>

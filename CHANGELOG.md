@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-07-22 - Empty Admin Login Username
+
+- Leave the Admin Web username field empty on the login page instead of pre-filling `admin`.
+
 ## 2026-07-21 - Subscription Completion And Policy Conversion Hardening
 
 - Launched subscription turns through the image-owned `/usr/local/bin/codex` executable instead
