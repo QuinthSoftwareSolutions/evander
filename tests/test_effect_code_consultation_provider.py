@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from evander.code_consultation_service import BoundCodeConsultationServiceFactory
 from evander.config import GatewayConfig
 from evander.consultations import (
     CONSULTATION_RESULT_TOKEN_PATH,
@@ -16,12 +17,12 @@ from evander.consultations import (
     utc_now,
     verify_consultation_token,
 )
-from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
-from evander.effects.providers.agent_create import AgentCreateEffectProvider
-from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.code_consultation import CodeConsultationEffectProvider
+from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.provider_models import CodeConsultationEffectDefinition
+from evander.orchestration.adapters.provider_factories import build_effect_provider_factory
+from evander.provider_config import ProviderConfigResolver
 
 
 def _record(config: GatewayConfig, *, directory_path: str = "root"):
@@ -58,8 +59,45 @@ def _record(config: GatewayConfig, *, directory_path: str = "root"):
     return store, record, token
 
 
-def _provider(config: GatewayConfig, *, operation: str, **fields):
-    provider = CodeConsultationEffectProvider()
+class _WorkerLifecycle:
+    def __init__(self, *, create=None, clone=None, destroy=None):
+        self._handlers = {"create": create, "clone": clone, "destroy": destroy}
+        self.calls = []
+
+    def create(self, definition):
+        return self._call("create", definition)
+
+    def clone(self, definition):
+        return self._call("clone", definition)
+
+    def destroy(self, definition):
+        return self._call("destroy", definition)
+
+    def _call(self, operation, definition):
+        self.calls.append((operation, definition))
+        handler = self._handlers[operation]
+        if handler is None:
+            raise AssertionError(operation)
+        return handler(definition) if callable(handler) else handler
+
+
+def _provider(
+    config: GatewayConfig,
+    *,
+    operation: str,
+    worker_lifecycle=None,
+    **fields,
+):
+    snapshot_port = SimpleNamespace(
+        release_snapshot_pin=lambda *_args, **_kwargs: {"released": True}
+    )
+    provider = CodeConsultationEffectProvider(
+        worker_lifecycle=worker_lifecycle,
+        service_factory=BoundCodeConsultationServiceFactory(
+            lambda: snapshot_port,
+            config=config,
+        ),
+    )
     provider.initialize(
         CodeConsultationEffectDefinition(
             id=f"consultation-{operation}",
@@ -72,36 +110,59 @@ def _provider(config: GatewayConfig, *, operation: str, **fields):
         EffectRuntimeContext(
             resolved_config=config,
             env={"AGENT_PROMPT_TOKEN_SECRET": "consultation-secret"},
-            admin_service=SimpleNamespace(
-                managed_git_admin=SimpleNamespace(
-                    release_snapshot_pin=lambda *_args, **_kwargs: {"released": True}
-                )
-            ),
         ),
     )
     return provider
 
 
+def test_effect_factory_wires_the_consultation_application_service(tmp_path) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    _record(config)
+    snapshot_port = SimpleNamespace(
+        release_snapshot_pin=lambda *_args, **_kwargs: {"released": True}
+    )
+    factory = build_effect_provider_factory(
+        runtime_dir=config.runtime_dir,
+        provider_config_resolver=ProviderConfigResolver(config),
+        effect_providers={
+            "effect:agent:code-consultation": CodeConsultationEffectProvider,
+        },
+        admin_runtime=SimpleNamespace(
+            config=config,
+            managed_git_admin=snapshot_port,
+        ),
+    )
+
+    provider = factory.build(
+        CodeConsultationEffectDefinition(
+            id="consultation-finalize",
+            display_name="Consultation finalize",
+            type="effect:agent:code-consultation",
+            consultation_id="consult-one",
+            operation="finalize",
+            outcome="completed",
+        ),
+        directory_path="root",
+    )
+
+    assert provider.runtime_context is not None
+    assert provider.runtime_context.code_consultation_service_factory is not None
+    assert provider._service().require_record("consult-one").consultation_id == "consult-one"
+
+
 def test_prepare_materializes_worker_clones_and_pins_snapshot(tmp_path, monkeypatch) -> None:
     config = GatewayConfig(runtime_dir=tmp_path)
     store, _record_before, token = _record(config)
-    calls = []
     token_files = []
-    provider = _provider(config, operation="prepare")
-
-    def execute_nested(provider_type, definition):
-        calls.append((provider_type, definition))
-        if provider_type is AgentCreateEffectProvider:
-            return {"success": True, "session_id": "consult-worker-one"}
-        if provider_type is AgentCloneRepoEffectProvider:
-            return {
-                "success": True,
-                "session_id": "consult-worker-one",
-                "target_dir": "/home/agent/repos/example",
-            }
-        raise AssertionError(provider_type)
-
-    monkeypatch.setattr(provider, "_execute_nested", execute_nested)
+    workers = _WorkerLifecycle(
+        create={"success": True, "session_id": "consult-worker-one"},
+        clone={
+            "success": True,
+            "session_id": "consult-worker-one",
+            "target_dir": "/home/agent/repos/example",
+        },
+    )
+    provider = _provider(config, operation="prepare", worker_lifecycle=workers)
     monkeypatch.setattr(
         provider,
         "_write_result_token",
@@ -114,15 +175,12 @@ def test_prepare_materializes_worker_clones_and_pins_snapshot(tmp_path, monkeypa
     assert token not in result["prompt"]
     assert CONSULTATION_RESULT_TOKEN_PATH in result["prompt"]
     assert token_files == ["consult-worker-one"]
-    assert [provider_type for provider_type, _definition in calls] == [
-        AgentCreateEffectProvider,
-        AgentCloneRepoEffectProvider,
-    ]
-    assert calls[0][1].allowed_tools == ["submit_codebase_consultation_result"]
-    assert calls[1][1].git_access_mode == "read-only"
-    assert calls[1][1].git_access_lifetime == "operation"
-    assert calls[1][1].pinned_ref == "refs/evander/consultations/consult-one"
-    assert calls[1][1].pinned_commit_sha == "a" * 40
+    assert [operation for operation, _definition in workers.calls] == ["create", "clone"]
+    assert workers.calls[0][1].allowed_tools == ["submit_codebase_consultation_result"]
+    assert workers.calls[1][1].git_access_mode == "read-only"
+    assert workers.calls[1][1].git_access_lifetime == "operation"
+    assert workers.calls[1][1].pinned_ref == "refs/evander/consultations/consult-one"
+    assert workers.calls[1][1].pinned_commit_sha == "a" * 40
     assert store.get("consult-one").status == "running"
 
 
@@ -136,15 +194,18 @@ def test_finalize_preserves_submitted_result_and_destroys_worker(tmp_path, monke
         token_hash=hash_consultation_token(token),
         result=CodeConsultationResult(answer="Answer", confidence=0.9),
     )
-    provider = _provider(config, operation="finalize", outcome="completed")
     destroyed = []
-
-    def execute_nested(provider_type, definition):
-        assert provider_type is AgentDestroyEffectProvider
-        destroyed.append(definition.session_id)
-        return {"success": True, "message": "destroyed"}
-
-    monkeypatch.setattr(provider, "_execute_nested", execute_nested)
+    workers = _WorkerLifecycle(
+        destroy=lambda definition: (
+            destroyed.append(definition.session_id) or {"success": True, "message": "destroyed"}
+        )
+    )
+    provider = _provider(
+        config,
+        operation="finalize",
+        outcome="completed",
+        worker_lifecycle=workers,
+    )
     result = provider.execute()
 
     assert result["status"] == "completed"
@@ -165,20 +226,19 @@ def test_timeout_cleans_up_worker_even_when_result_was_already_submitted(
         token_hash=hash_consultation_token(token),
         result=CodeConsultationResult(answer="Answer", confidence=0.9),
     )
+    destroyed = []
+    workers = _WorkerLifecycle(
+        destroy=lambda definition: (
+            destroyed.append(definition.session_id) or {"success": True, "message": "destroyed"}
+        )
+    )
     provider = _provider(
         config,
         operation="terminate",
         status="timed_out",
         reason="deadline exceeded",
+        worker_lifecycle=workers,
     )
-    destroyed = []
-
-    def execute_nested(provider_type, definition):
-        assert provider_type is AgentDestroyEffectProvider
-        destroyed.append(definition.session_id)
-        return {"success": True, "message": "destroyed"}
-
-    monkeypatch.setattr(provider, "_execute_nested", execute_nested)
     result = provider.execute()
 
     assert result["status"] == "completed"
@@ -205,22 +265,23 @@ def test_prepare_failure_cleans_up_and_releases_capacity(tmp_path, monkeypatch) 
         expires_at=utc_now() + timedelta(minutes=3),
         token_hash=hash_consultation_token("second-token"),
     )
-    provider = _provider(config, operation="prepare")
-
-    def execute_nested(provider_type, _definition):
-        if provider_type is AgentCreateEffectProvider:
-            return {"success": False, "message": "worker creation failed"}
-        if provider_type is AgentDestroyEffectProvider:
-            return {"success": True, "message": "already absent"}
-        raise AssertionError(provider_type)
-
-    monkeypatch.setattr(provider, "_execute_nested", execute_nested)
+    workers = _WorkerLifecycle(
+        create={"success": False, "message": "worker creation failed"},
+        destroy={"success": True, "message": "already absent"},
+    )
+    provider = _provider(config, operation="prepare", worker_lifecycle=workers)
 
     with pytest.raises(RuntimeError, match="worker creation failed"):
         provider.execute()
 
     assert store.get("consult-one").cleanup_status == "completed"
     assert store.get("consult-two").status == "provisioning"
+    events = InternalEventBus(internal_event_store_path(config.runtime_dir)).list_events()
+    assert [event.payload["consultation_id"] for event in events] == ["consult-two"]
+    assert events[0].source is not None
+    assert events[0].source.source_type == "workflow_effect"
+    assert events[0].source.source_name == "effect:agent:code-consultation"
+    assert events[0].source.node_id == "consultation-prepare"
 
 
 def test_prepare_retry_retries_failed_cleanup_and_releases_capacity(
@@ -245,23 +306,23 @@ def test_prepare_retry_retries_failed_cleanup_and_releases_capacity(
         expires_at=utc_now() + timedelta(minutes=3),
         token_hash=hash_consultation_token("second-token"),
     )
-    provider = _provider(config, operation="prepare")
     create_attempts = 0
     destroy_attempts = 0
 
-    def execute_nested(provider_type, _definition):
-        nonlocal create_attempts, destroy_attempts
-        if provider_type is AgentCreateEffectProvider:
-            create_attempts += 1
-            return {"success": False, "message": "worker creation failed"}
-        if provider_type is AgentDestroyEffectProvider:
-            destroy_attempts += 1
-            if destroy_attempts == 1:
-                return {"success": False, "message": "worker cleanup failed"}
-            return {"success": True, "message": "worker destroyed"}
-        raise AssertionError(provider_type)
+    def create_worker(_definition):
+        nonlocal create_attempts
+        create_attempts += 1
+        return {"success": False, "message": "worker creation failed"}
 
-    monkeypatch.setattr(provider, "_execute_nested", execute_nested)
+    def destroy_worker(_definition):
+        nonlocal destroy_attempts
+        destroy_attempts += 1
+        if destroy_attempts == 1:
+            return {"success": False, "message": "worker cleanup failed"}
+        return {"success": True, "message": "worker destroyed"}
+
+    workers = _WorkerLifecycle(create=create_worker, destroy=destroy_worker)
+    provider = _provider(config, operation="prepare", worker_lifecycle=workers)
 
     with pytest.raises(RuntimeError, match="cleanup also failed"):
         provider.execute()

@@ -4,6 +4,7 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from evander.code_consultation_service import CodeConsultationServiceFactoryPort
 from evander.events.models import (
     EffectDefinitionDiscriminated,
     EffectType,
@@ -62,6 +63,7 @@ class EffectProviderFactory:
         admin_adapter: object | None = None,
         gate_adapter: object | None = None,
         agent_prompt_activity: object | None = None,
+        code_consultation_service_factory: CodeConsultationServiceFactoryPort | None = None,
         env: Mapping[str, str] | None = None,
         secret_resolver: Callable[[str], str | None] | None = None,
         metadata: Mapping[str, Any] | None = None,
@@ -81,6 +83,7 @@ class EffectProviderFactory:
         )
         self._admin_adapter = self.admin_service
         self.agent_prompt_activity = agent_prompt_activity
+        self.code_consultation_service_factory = code_consultation_service_factory
         self.registry = registry or EffectProviderRegistry()
         self.env = env or dict(os.environ)
         self.secret_resolver = secret_resolver
@@ -123,6 +126,7 @@ class EffectProviderFactory:
             session_metadata_updater=self._provider_runtime_ports.session_metadata_updater,
             git_branch_promoter=self._provider_runtime_ports.git_branch_promoter,
             pull_request_creator=self._provider_runtime_ports.pull_request_creator,
+            code_consultation_service_factory=self.code_consultation_service_factory,
             admin_service=self._admin_adapter,
             env=self.env,
             secret_resolver=self.secret_resolver,

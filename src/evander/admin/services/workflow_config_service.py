@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from evander.addons import addon_mcp_tool_catalog_payloads, load_addons
+from evander.addons import LoadedAddonCatalog, addon_mcp_tool_catalog_payloads, load_addons
 from evander.admin.common import (
     _coerce_optional_datetime,
     _coerce_optional_string,
@@ -147,6 +147,7 @@ class WorkflowConfigAdminDependencies:
     admin_config_mutation_lock: Callable[[], ContextManager[None]]
     normalize_directory_reference: Callable[[str | None], str]
     workflow_reports_admin: Any | None = None
+    addon_catalog: LoadedAddonCatalog | None = None
 
 
 @dataclass(slots=True)
@@ -174,6 +175,7 @@ class WorkflowConfigAdminService:
         self._admin_config_mutation_lock = dependencies.admin_config_mutation_lock
         self._normalize_directory_reference = dependencies.normalize_directory_reference
         self._workflow_reports_admin = dependencies.workflow_reports_admin
+        self._addon_catalog = dependencies.addon_catalog
         history_runtime_dir = _resolve_path_setting(
             base_dir=self.project_dir,
             value=self.config.runtime_dir,
@@ -2196,7 +2198,9 @@ class WorkflowConfigAdminService:
         self, directory_path: str | None = None
     ) -> WorkflowEditorCatalogPayload:
         skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
-        addon_catalog = load_addons(self.config.addon_loader, base_dir=self.project_dir)
+        addon_catalog = self._addon_catalog or load_addons(
+            self.config.addon_loader, base_dir=self.project_dir
+        )
         tool_options = _tool_field_options(addon_mcp_tool_catalog_payloads(addon_catalog))
         communication_send_target_options = self._communication_send_target_options(directory_path)
         communication_notification_target_options = self._communication_notification_target_options(

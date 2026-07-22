@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from evander.issues.service import IssueService
 from evander.services import AzureDevOpsPrQueryProvider, PrQueryService
@@ -13,6 +14,37 @@ from .models import ADDON_ID
 from .repository import AdoActivityRepository
 
 PAGE_SIZE = 200
+
+type _ScopeName = Literal["work_items", "pr_comments", "pr_commits"]
+type _PageFetcher = Callable[[int], dict[str, Any]]
+type _PageFetcherFactory = Callable[[], _PageFetcher]
+type _RecordNormalizer = Callable[[Mapping[str, Any]], list[dict[str, Any]]]
+
+_SCOPE_NAMES: tuple[_ScopeName, ...] = ("work_items", "pr_comments", "pr_commits")
+
+
+@dataclass(frozen=True)
+class _SyncRequest:
+    since: datetime
+    until: datetime | None
+    directory_path: str
+    actor: str | None
+    project: str | None
+    repo: str | None
+    states: list[str]
+    types: list[str]
+    tags_any: list[str]
+    statuses: list[str]
+    include_system_comments: bool
+
+
+@dataclass(frozen=True)
+class _ScopeAdapter:
+    requires_repo: bool
+    sync_repo: str | None
+    sync_metadata: Mapping[str, Any]
+    page_fetcher_factory: _PageFetcherFactory
+    normalize_records: _RecordNormalizer
 
 
 class AdoActivityIndexService:
@@ -76,92 +108,49 @@ class AdoActivityIndexService:
             raise RuntimeError("ADO activity sync requires provider_config_resolver")
         normalized_scope = str(scope or "all").strip() or "all"
         scopes = _expand_scope(normalized_scope)
-        if repo is None and any(item in scopes for item in ("pr_comments", "pr_commits")):
+        request = _SyncRequest(
+            since=since,
+            until=until,
+            directory_path=directory_path,
+            actor=actor,
+            project=project,
+            repo=repo,
+            states=states or [],
+            types=types or [],
+            tags_any=tags_any or [],
+            statuses=statuses or [],
+            include_system_comments=include_system_comments,
+        )
+        adapters = self._scope_adapters(request)
+        if request.repo is None and any(adapters[item].requires_repo for item in scopes):
             raise ValueError("repo is required when syncing PR activity")
 
         totals = {"inserted": 0, "updated": 0, "records": 0}
         details: dict[str, Any] = {}
         sync_until = until or datetime.now(UTC)
-        if "work_items" in scopes:
-            result = self._sync_work_items(
-                since=since,
-                until=until,
-                directory_path=directory_path,
-                actor=actor,
-                project=project,
-                states=states or [],
-                types=types or [],
-                tags_any=tags_any or [],
-            )
-            details["work_items"] = result
+        for scope_name in scopes:
+            adapter = adapters[scope_name]
+            result = self._consume_pages(adapter)
+            details[scope_name] = result
             _merge_totals(totals, result)
             if result["complete"]:
                 self.repository.update_sync_state(
                     sync_key=_sync_key(
-                        directory_path=directory_path,
-                        scope="work_items",
-                        project=project,
-                        repo=None,
+                        directory_path=request.directory_path,
+                        scope=scope_name,
+                        project=request.project,
+                        repo=adapter.sync_repo,
                     ),
-                    directory_path=directory_path,
+                    directory_path=request.directory_path,
                     complete_through=sync_until,
-                    metadata={"actor": actor, "states": states or [], "types": types or []},
-                )
-        if "pr_comments" in scopes:
-            result = self._sync_pr_comments(
-                since=since,
-                until=until,
-                directory_path=directory_path,
-                actor=actor,
-                project=project,
-                repo=repo or "",
-                statuses=statuses or [],
-                include_system_comments=include_system_comments,
-            )
-            details["pr_comments"] = result
-            _merge_totals(totals, result)
-            if result["complete"]:
-                self.repository.update_sync_state(
-                    sync_key=_sync_key(
-                        directory_path=directory_path,
-                        scope="pr_comments",
-                        project=project,
-                        repo=repo,
-                    ),
-                    directory_path=directory_path,
-                    complete_through=sync_until,
-                    metadata={"actor": actor, "statuses": statuses or []},
-                )
-        if "pr_commits" in scopes:
-            result = self._sync_pr_commits(
-                since=since,
-                until=until,
-                directory_path=directory_path,
-                actor=actor,
-                project=project,
-                repo=repo or "",
-                statuses=statuses or [],
-            )
-            details["pr_commits"] = result
-            _merge_totals(totals, result)
-            if result["complete"]:
-                self.repository.update_sync_state(
-                    sync_key=_sync_key(
-                        directory_path=directory_path,
-                        scope="pr_commits",
-                        project=project,
-                        repo=repo,
-                    ),
-                    directory_path=directory_path,
-                    complete_through=sync_until,
-                    metadata={"actor": actor, "statuses": statuses or []},
+                    metadata=adapter.sync_metadata,
                 )
 
         return {
             "addon_id": ADDON_ID,
-            "directory_path": directory_path,
+            "directory_path": request.directory_path,
             "scope": normalized_scope,
-            "since": _iso(since),
+            "since": _iso(request.since),
             "until": _iso(sync_until),
             "inserted": totals["inserted"],
             "updated": totals["updated"],
@@ -169,137 +158,127 @@ class AdoActivityIndexService:
             "details": details,
         }
 
-    def _sync_work_items(
-        self,
-        *,
-        since: datetime,
-        until: datetime | None,
-        directory_path: str,
-        actor: str | None,
-        project: str | None,
-        states: list[str],
-        types: list[str],
-        tags_any: list[str],
-    ) -> dict[str, Any]:
+    def _scope_adapters(self, request: _SyncRequest) -> dict[_ScopeName, _ScopeAdapter]:
+        return {
+            "work_items": _ScopeAdapter(
+                requires_repo=False,
+                sync_repo=None,
+                sync_metadata={
+                    "actor": request.actor,
+                    "states": request.states,
+                    "types": request.types,
+                },
+                page_fetcher_factory=lambda: self._work_item_page_fetcher(request),
+                normalize_records=lambda payload: _normalize_work_item_records(
+                    payload,
+                    directory_path=request.directory_path,
+                ),
+            ),
+            "pr_comments": _ScopeAdapter(
+                requires_repo=True,
+                sync_repo=request.repo,
+                sync_metadata={"actor": request.actor, "statuses": request.statuses},
+                page_fetcher_factory=lambda: self._pr_comment_page_fetcher(request),
+                normalize_records=lambda payload: _normalize_pr_comment_records(
+                    payload,
+                    directory_path=request.directory_path,
+                ),
+            ),
+            "pr_commits": _ScopeAdapter(
+                requires_repo=True,
+                sync_repo=request.repo,
+                sync_metadata={"actor": request.actor, "statuses": request.statuses},
+                page_fetcher_factory=lambda: self._pr_commit_page_fetcher(request),
+                normalize_records=lambda payload: _normalize_pr_commit_records(
+                    payload,
+                    directory_path=request.directory_path,
+                ),
+            ),
+        }
+
+    def _consume_pages(self, adapter: _ScopeAdapter) -> dict[str, Any]:
+        fetch_page = adapter.page_fetcher_factory()
+        skip = 0
+        total = {"inserted": 0, "updated": 0, "records": 0}
+        complete = True
+        pages = 0
+        while True:
+            payload = fetch_page(skip)
+            records = adapter.normalize_records(payload)
+            counts = self.repository.upsert_records(records)
+            _merge_counts(total, counts, len(records))
+            pages += 1
+            paging = _mapping(payload.get("paging"))
+            next_skip = _next_skip(paging)
+            if next_skip is None:
+                complete = not bool(paging.get("has_more"))
+                break
+            skip = next_skip
+        return {**total, "pages": pages, "complete": complete}
+
+    def _work_item_page_fetcher(self, request: _SyncRequest) -> _PageFetcher:
         issue_service = IssueService(self.provider_config_resolver)
-        skip = 0
-        total = {"inserted": 0, "updated": 0, "records": 0}
-        complete = True
-        pages = 0
-        while True:
-            payload = issue_service.query_remote_work_item_activity(
+
+        def fetch_page(skip: int) -> dict[str, Any]:
+            return issue_service.query_remote_work_item_activity(
                 provider="azure_devops",
-                directory_path=directory_path,
-                project=project,
-                actor=actor,
-                since=since,
-                until=until,
+                directory_path=request.directory_path,
+                project=request.project,
+                actor=request.actor,
+                since=request.since,
+                until=request.until,
                 activity_types=["created", "changed", "commented"],
-                states=states,
-                types=types,
-                tags_any=tags_any,
+                states=request.states,
+                types=request.types,
+                tags_any=request.tags_any,
                 top=PAGE_SIZE,
                 skip=skip,
                 exhaustive=True,
                 max_candidates=1000,
             )
-            records = _normalize_work_item_records(payload, directory_path=directory_path)
-            counts = self.repository.upsert_records(records)
-            _merge_counts(total, counts, len(records))
-            pages += 1
-            paging = _mapping(payload.get("paging"))
-            next_skip = _next_skip(paging)
-            if next_skip is None:
-                complete = not bool(paging.get("has_more"))
-                break
-            skip = next_skip
-        return {**total, "pages": pages, "complete": complete}
 
-    def _sync_pr_comments(
-        self,
-        *,
-        since: datetime,
-        until: datetime | None,
-        directory_path: str,
-        actor: str | None,
-        project: str | None,
-        repo: str,
-        statuses: list[str],
-        include_system_comments: bool,
-    ) -> dict[str, Any]:
-        service = self._pr_query_service(directory_path)
-        skip = 0
-        total = {"inserted": 0, "updated": 0, "records": 0}
-        complete = True
-        pages = 0
-        while True:
+        return fetch_page
+
+    def _pr_comment_page_fetcher(self, request: _SyncRequest) -> _PageFetcher:
+        service = self._pr_query_service(request.directory_path)
+
+        def fetch_page(skip: int) -> dict[str, Any]:
             response = service.list_ado_pr_comment_activity(
-                repo=repo,
-                author=actor,
-                since=since,
-                until=until,
-                project=project,
-                statuses=statuses,
-                include_system_comments=include_system_comments,
+                repo=request.repo or "",
+                author=request.actor,
+                since=request.since,
+                until=request.until,
+                project=request.project,
+                statuses=request.statuses,
+                include_system_comments=request.include_system_comments,
                 top=PAGE_SIZE,
                 skip=skip,
                 exhaustive=True,
                 max_candidates=1000,
             )
-            payload = _model_payload(response)
-            records = _normalize_pr_comment_records(payload, directory_path=directory_path)
-            counts = self.repository.upsert_records(records)
-            _merge_counts(total, counts, len(records))
-            pages += 1
-            paging = _mapping(payload.get("paging"))
-            next_skip = _next_skip(paging)
-            if next_skip is None:
-                complete = not bool(paging.get("has_more"))
-                break
-            skip = next_skip
-        return {**total, "pages": pages, "complete": complete}
+            return _model_payload(response)
 
-    def _sync_pr_commits(
-        self,
-        *,
-        since: datetime,
-        until: datetime | None,
-        directory_path: str,
-        actor: str | None,
-        project: str | None,
-        repo: str,
-        statuses: list[str],
-    ) -> dict[str, Any]:
-        service = self._pr_query_service(directory_path)
-        skip = 0
-        total = {"inserted": 0, "updated": 0, "records": 0}
-        complete = True
-        pages = 0
-        while True:
+        return fetch_page
+
+    def _pr_commit_page_fetcher(self, request: _SyncRequest) -> _PageFetcher:
+        service = self._pr_query_service(request.directory_path)
+
+        def fetch_page(skip: int) -> dict[str, Any]:
             response = service.list_ado_pr_commit_activity(
-                repo=repo,
-                author=actor,
-                since=since,
-                until=until,
-                project=project,
-                statuses=statuses,
+                repo=request.repo or "",
+                author=request.actor,
+                since=request.since,
+                until=request.until,
+                project=request.project,
+                statuses=request.statuses,
                 top=PAGE_SIZE,
                 skip=skip,
                 exhaustive=True,
                 max_candidates=1000,
             )
-            payload = _model_payload(response)
-            records = _normalize_pr_commit_records(payload, directory_path=directory_path)
-            counts = self.repository.upsert_records(records)
-            _merge_counts(total, counts, len(records))
-            pages += 1
-            paging = _mapping(payload.get("paging"))
-            next_skip = _next_skip(paging)
-            if next_skip is None:
-                complete = not bool(paging.get("has_more"))
-                break
-            skip = next_skip
-        return {**total, "pages": pages, "complete": complete}
+            return _model_payload(response)
+
+        return fetch_page
 
     def _pr_query_service(self, directory_path: str) -> PrQueryService:
         resolve_for_directory = getattr(
@@ -461,12 +440,13 @@ def _normalize_pr_commit_records(
     return records
 
 
-def _expand_scope(scope: str) -> tuple[str, ...]:
+def _expand_scope(scope: str) -> tuple[_ScopeName, ...]:
     if scope == "all":
-        return ("work_items", "pr_comments", "pr_commits")
-    if scope not in {"work_items", "pr_comments", "pr_commits"}:
-        raise ValueError("scope must be one of: work_items, pr_comments, pr_commits, all")
-    return (scope,)
+        return _SCOPE_NAMES
+    for scope_name in _SCOPE_NAMES:
+        if scope == scope_name:
+            return (scope_name,)
+    raise ValueError("scope must be one of: work_items, pr_comments, pr_commits, all")
 
 
 def _work_item_kind(activity_type: str) -> str:

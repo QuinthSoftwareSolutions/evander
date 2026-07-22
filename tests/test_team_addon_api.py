@@ -2172,6 +2172,13 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     script = enabled.get("/addons/team-addon/team-ui.js")
     assert script.status_code == 200
     assert 'const API_BASE = "/api/addons/team-addon";' in script.text
+    assert "createTeamMailController" in script.text
+
+    mail_script = enabled.get("/addons/team-addon/team-mail.js")
+    assert mail_script.status_code == 200
+    assert "createTeamMailController" in mail_script.text
+    assert "/inbox?" in mail_script.text
+
     assert "renderWorkspaceDashboard" in script.text
     assert "data-team-link-view" in script.text
     assert "renderRuntimeOperations" in script.text

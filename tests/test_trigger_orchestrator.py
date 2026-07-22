@@ -1035,6 +1035,7 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
         return SimpleNamespace(
             provider_config_resolver=object(),
             provider_factory=provider_factory,
+            managed_git_maintenance=SimpleNamespace(preflight=lambda: None),
         )
 
     monkeypatch.setattr(

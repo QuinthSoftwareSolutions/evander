@@ -8925,6 +8925,14 @@ def test_apply_agent_action_review_rejected_returns_task_to_implementer(
     assert rework_item.payload["deliverable_id"] == "deliverable"
     assert rework_item.payload["supersedes_deliverable_id"] == "deliverable"
     assert rework_item.payload["findings"] == ["Needs rework."]
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == "team.agent.wake_requested"
+        and event["payload"]["agent_id"] == "backend"
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["reason"] == "inbox"
 
     _state, leases = _team_runtime_service(repo).lease_due_governance_managers(
         now=state.tasks["task"].state_entered_at + timedelta(minutes=1),

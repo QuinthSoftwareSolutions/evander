@@ -7,11 +7,7 @@ from starlette.routing import BaseRoute, Route
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.admin.web.shared import AdminWebAuth
-from evander.execution.container_worker_client import (
-    ContainerWorkerClient,
-    ContainerWorkerClientError,
-)
-from evander.models import AuditEvent
+from evander.execution.container_worker_client import ContainerWorkerClientError
 
 
 def codex_auth_routes(
@@ -38,62 +34,54 @@ def codex_auth_routes(
         session = auth.read_session(request) or {}
         return str(session.get("login") or "").strip() or None, None
 
-    def worker_client(directory_path: str) -> ContainerWorkerClient:
-        config = service.runtime.provider_config.resolve_for_directory(directory_path)
-        if not config.container_worker_base_url:
-            raise ValueError(
-                "container_worker_base_url is required to manage worker Codex authentication"
-            )
-        return ContainerWorkerClient(
-            base_url=config.container_worker_base_url,
-            token_env=config.container_worker_token_env,
-            timeout_seconds=config.container_worker_request_timeout_seconds,
-        )
-
     def request_context(
         request: Request,
-    ) -> tuple[str, str | None, ContainerWorkerClient] | JSONResponse:
+    ) -> tuple[str, str | None] | JSONResponse:
         directory_path = str(request.query_params.get("directory_path") or "root").strip() or "root"
         actor, error = require_worker_account_owner(request)
         if error is not None:
             return error
-        try:
-            client = worker_client(directory_path)
-        except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
-        return directory_path, actor, client
+        return directory_path, actor
 
     async def status(request: Request) -> JSONResponse:
         context = request_context(request)
         if isinstance(context, JSONResponse):
             return context
-        directory_path, _, client = context
+        directory_path, _ = context
         try:
-            payload = client.codex_auth_status()
+            payload = service.codex_auth_admin.status(directory_path)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         except ContainerWorkerClientError as exc:
             return JSONResponse({"error": str(exc)}, status_code=502)
-        return JSONResponse({"directory_path": directory_path, **payload})
+        return JSONResponse(payload)
 
     async def start_device_login(request: Request) -> JSONResponse:
         context = request_context(request)
         if isinstance(context, JSONResponse):
             return context
-        directory_path, actor, client = context
+        directory_path, actor = context
         try:
-            payload = client.start_codex_device_login()
+            payload = service.codex_auth_admin.start_device_login(
+                directory_path, actor_user_id=actor
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         except ContainerWorkerClientError as exc:
-            _audit(service, "codex_subscription_login_start", directory_path, actor, "error")
             return JSONResponse({"error": str(exc)}, status_code=502)
-        _audit(service, "codex_subscription_login_start", directory_path, actor, "allowed")
         return JSONResponse(payload, status_code=201)
 
     async def device_login_status(request: Request) -> JSONResponse:
         context = request_context(request)
         if isinstance(context, JSONResponse):
             return context
-        _, _, client = context
+        directory_path, _ = context
         try:
-            payload = client.codex_device_login_status(request.path_params["login_id"])
+            payload = service.codex_auth_admin.device_login_status(
+                directory_path, request.path_params["login_id"]
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         except ContainerWorkerClientError as exc:
             return JSONResponse({"error": str(exc)}, status_code=502)
         return JSONResponse(payload)
@@ -102,26 +90,30 @@ def codex_auth_routes(
         context = request_context(request)
         if isinstance(context, JSONResponse):
             return context
-        directory_path, actor, client = context
+        directory_path, actor = context
         try:
-            payload = client.cancel_codex_device_login(request.path_params["login_id"])
+            payload = service.codex_auth_admin.cancel_device_login(
+                directory_path,
+                request.path_params["login_id"],
+                actor_user_id=actor,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         except ContainerWorkerClientError as exc:
-            _audit(service, "codex_subscription_login_cancel", directory_path, actor, "error")
             return JSONResponse({"error": str(exc)}, status_code=502)
-        _audit(service, "codex_subscription_login_cancel", directory_path, actor, "allowed")
         return JSONResponse(payload)
 
     async def logout(request: Request) -> JSONResponse:
         context = request_context(request)
         if isinstance(context, JSONResponse):
             return context
-        directory_path, actor, client = context
+        directory_path, actor = context
         try:
-            payload = client.logout_codex_auth()
+            payload = service.codex_auth_admin.logout(directory_path, actor_user_id=actor)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         except ContainerWorkerClientError as exc:
-            _audit(service, "codex_subscription_logout", directory_path, actor, "error")
             return JSONResponse({"error": str(exc)}, status_code=502)
-        _audit(service, "codex_subscription_logout", directory_path, actor, "allowed")
         return JSONResponse(payload)
 
     return [
@@ -143,21 +135,3 @@ def codex_auth_routes(
         ),
         Route("/api/admin/codex-auth", logout, methods=["DELETE"]),
     ]
-
-
-def _audit(
-    service: AdminRuntimeComponents,
-    event_type: str,
-    directory_path: str,
-    actor_user_id: str | None,
-    decision: str,
-) -> None:
-    service.runtime.audit.log(
-        AuditEvent(
-            event_type=event_type,
-            directory_path=directory_path,
-            actor_user_id=actor_user_id,
-            provider="openai_chatgpt_subscription",
-            decision=decision,
-        )
-    )

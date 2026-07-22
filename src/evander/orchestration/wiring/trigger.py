@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from evander.admin.composition import build_admin_runtime
+from evander.admin.services.managed_git_runtime_service import ManagedGitMaintenancePort
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.provider_config import ProviderConfigResolver
 from evander.provider_profiles import resolve_provider_module_names
@@ -21,6 +23,7 @@ from ..adapters.provider_factories import build_trigger_provider_factory
 class TriggerProviderRuntimeWiring:
     provider_config_resolver: ProviderConfigResolver
     provider_factory: TriggerProviderFactory
+    managed_git_maintenance: ManagedGitMaintenancePort
 
 
 def build_trigger_provider_runtime_wiring(
@@ -45,11 +48,13 @@ def build_trigger_provider_runtime_wiring(
         addon_loader=worker_config.addon_loader,
         addon_base_dir=addon_base_dir if addon_base_dir is not None else config.runtime_dir.parent,
     )
+    admin_runtime = build_admin_runtime(config.runtime_dir)
     provider_factory = build_trigger_provider_factory(
         runtime_dir=config.runtime_dir,
         provider_config_resolver=resolver,
         trigger_providers=provider_catalog.trigger_providers,
         env=os.environ,
+        admin_runtime=admin_runtime,
     )
     provider_factory.metadata.update(
         {
@@ -60,6 +65,7 @@ def build_trigger_provider_runtime_wiring(
     return TriggerProviderRuntimeWiring(
         provider_config_resolver=resolver,
         provider_factory=provider_factory,
+        managed_git_maintenance=admin_runtime.managed_git_maintenance,
     )
 
 
@@ -69,6 +75,7 @@ class TriggerWorkerWiring:
     event_queue: TriggerEventQueue | SqliteTriggerEventQueue
     provider_factory: TriggerProviderFactory
     gate_cursor_repository: JsonGateCursorRepository
+    managed_git_maintenance: ManagedGitMaintenancePort
 
 
 def build_trigger_worker_wiring(
@@ -109,6 +116,7 @@ def build_trigger_worker_wiring(
         event_queue=event_queue,
         provider_factory=runtime_wiring.provider_factory,
         gate_cursor_repository=gate_cursor_repository,
+        managed_git_maintenance=runtime_wiring.managed_git_maintenance,
     )
 
 

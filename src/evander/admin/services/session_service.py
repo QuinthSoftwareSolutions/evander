@@ -8,9 +8,13 @@ from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
 from evander.admin.services.ports import DirectoryOwnershipPort
 from evander.admin.services.vm_agent.common_helpers import (
     _admin_agent_communication_allowlists,
-    _admin_agent_email_mailbox_grants,
     _revoke_managed_git_access_for_session,
     _resolve_session_approval_notification_target_ids,
+)
+from evander.connectors.grants import resolve_and_validate_connector_grants
+from evander.email.grants import (
+    email_mailbox_grant_policy_update,
+    validate_email_mailbox_grants,
 )
 from evander.models import (
     McpToolName,
@@ -248,35 +252,26 @@ class SessionAdminService:
                     }
                 )
         if "email_mailbox_grants" in payload:
-            grants = _admin_agent_email_mailbox_grants(
-                payload,
-                runtime=self._deps.runtime,
-                directory_path=manifest.directory_path,
-            )
-            update["email_mailbox_grants"] = grants
-            if grants is not None:
-                update["email_mailbox_allowlist"] = [grant.mailbox_id for grant in grants]
-                update["email_folder_allowlist_by_mailbox"] = {
-                    grant.mailbox_id: list(grant.folders) for grant in grants
-                }
-                update["email_folder_allowlist"] = sorted(
-                    {folder for grant in grants for folder in grant.folders}
-                )
-        if "connector_grants" in update:
-            connector_config = self._deps.runtime.provider_config.resolve_connectors_for_directory(
+            config = self._deps.runtime.provider_config.resolve_for_directory(
                 manifest.directory_path
             )
-            for connector_id, operation_names in update["connector_grants"].items():
-                connector = connector_config.connectors.get(connector_id)
-                if connector is None or connector.disabled:
-                    raise ValueError(f"unknown or disabled connector: {connector_id}")
-                for operation_name in operation_names:
-                    operation = connector.operations.get(operation_name)
-                    if operation is None or operation.disabled:
-                        raise ValueError(
-                            "unknown or disabled connector operation: "
-                            f"{connector_id}.{operation_name}"
-                        )
+            policy = self._deps.runtime.policy_config.resolve_for_directory(manifest.directory_path)
+            grants = validate_email_mailbox_grants(
+                update["email_mailbox_grants"],
+                mailboxes=config.email_mailboxes,
+                allowed_mailbox_ids=policy.email_mailbox_allowlist,
+                folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
+                email_send_enabled=policy.email_send_enabled,
+                directory_path=manifest.directory_path,
+            )
+            update.update(email_mailbox_grant_policy_update(grants))
+        if "connector_grants" in update:
+            update["connector_grants"] = resolve_and_validate_connector_grants(
+                self._deps.runtime.provider_config,
+                directory_path=manifest.directory_path,
+                session_id=manifest.session_id,
+                value=update["connector_grants"],
+            )
         if "approval_notification_target_ids" in update:
             update["approval_notification_target_ids"] = (
                 _resolve_session_approval_notification_target_ids(

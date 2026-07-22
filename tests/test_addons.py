@@ -66,6 +66,7 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     ) == {"addon_id": "team-addon", "module": "evander_team_addon"}
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/index.html").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.js").is_file()
+    assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-mail.js").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.css").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-org-flow.js").is_file()
     assert (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-org-flow.css").is_file()

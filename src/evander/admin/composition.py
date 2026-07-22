@@ -14,6 +14,7 @@ from uuid import uuid4
 import httpx
 
 from evander.agent_control import AgentControlStore
+from evander.addons import LoadedAddonCatalog, addon_mcp_tool_catalog_payloads, load_addons
 from evander.admin.directory import DirectoryAdminService
 from evander.admin.operations_helpers import PrivilegedHelperSession
 from evander.admin.payloads import AdminRevisionConflict
@@ -26,11 +27,19 @@ from evander.admin.services import (
     ArtifactAdminService,
     CapacityHealthAdminDependencies,
     CapacityHealthAdminService,
+    CodexAuthAdminDependencies,
+    CodexAuthAdminService,
+    ConnectorAdminDependencies,
+    ConnectorAdminService,
     DocumentationService,
     IssueGitAdminDependencies,
     IssueGitAdminService,
     IssueGitAdminSupport,
     ManagedGitAdminService,
+    ManagedGitMaintenanceService,
+    ManagedGitRefreshAuthorizationDependencies,
+    ManagedGitRefreshAuthorizationService,
+    ManagedGitRepositoryRefreshService,
     ModelUsageAdminDependencies,
     ModelUsageAdminService,
     OperatorSteeringAdminDependencies,
@@ -71,7 +80,8 @@ from evander.bootstrap import (
     resolve_runtime_dir,
 )
 from evander.communication_artifacts import CommunicationArtifactStore
-from evander.directory_config import DirectoryConfigStore
+from evander.connectors.service import ConnectorService, connector_registry_from_catalog
+from evander.directory_config import DirectoryConfigResolver, DirectoryConfigStore
 from evander.directories import DirectoryService, DirectoryStore
 from evander.host_config import DEFAULT_RUNTIME_DIR
 from evander.issues.service import IssueService
@@ -191,6 +201,7 @@ class AdminRuntimeComponents:
     project_dir: Path
     config: Any
     runtime: RuntimeContext
+    addon_catalog: LoadedAddonCatalog
     directory_store: DirectoryStore
     directory_config_store: DirectoryConfigStore
     tool_call_audit_index: ToolCallAuditIndex | None
@@ -216,6 +227,8 @@ class AdminRuntimeComponents:
     addon_admin: AddonAdminService
     skill_admin: SkillAdminService
     capacity_health_admin: CapacityHealthAdminService
+    connector_admin: ConnectorAdminService
+    codex_auth_admin: CodexAuthAdminService
     documentation_admin: DocumentationService
     model_usage_admin: ModelUsageAdminService
     operator_steering_admin: OperatorSteeringAdminService
@@ -227,6 +240,9 @@ class AdminRuntimeComponents:
     vm_agent_support: VmAgentAdminSupport
     issue_git_admin: IssueGitAdminService
     managed_git_admin: ManagedGitAdminService
+    managed_git_maintenance: ManagedGitMaintenanceService
+    managed_git_repository_refresh: ManagedGitRepositoryRefreshService
+    managed_git_refresh_authorization: ManagedGitRefreshAuthorizationService
     vm_agent_admin: VmAgentAdminService
     pr_integration_preflight_admin: PrIntegrationPreflightAdminService
     operations_admin: OperationsAdminService
@@ -367,6 +383,15 @@ def _build_admin_runtime_components(
         legacy_config_path=explicit_legacy,
     )
     runtime = build_runtime(config)
+    try:
+        addon_catalog = load_addons(config.addon_loader, base_dir=project_dir)
+    except Exception:
+        addon_catalog = LoadedAddonCatalog(registrations=(), loaded_addons=())
+    addon_tool_names = [item["value"] for item in addon_mcp_tool_catalog_payloads(addon_catalog)]
+    if addon_tool_names:
+        runtime.policy.set_extra_mcp_tool_names(
+            set(runtime.policy.extra_mcp_tool_names).union(addon_tool_names)
+        )
     tool_call_audit_index: ToolCallAuditIndex | None = ToolCallAuditIndex.for_audit_log(
         config.audit_log_path
     )
@@ -415,6 +440,20 @@ def _build_admin_runtime_components(
         runtime=runtime,
         project_dir=project_dir,
     )
+    managed_git_maintenance = ManagedGitMaintenanceService(managed_git_admin)
+    managed_git_repository_refresh = ManagedGitRepositoryRefreshService(managed_git_admin)
+    directory_service = DirectoryService(directory_store)
+    managed_git_refresh_authorization = ManagedGitRefreshAuthorizationService(
+        ManagedGitRefreshAuthorizationDependencies(
+            config=config,
+            directory_service=directory_service,
+            directory_config_resolver=DirectoryConfigResolver(
+                directory_service,
+                base_gateway_config=config,
+                config_store=directory_config_store,
+            ),
+        )
+    )
 
     issue_git_support = IssueGitAdminSupport(
         project_dir=project_dir,
@@ -460,6 +499,7 @@ def _build_admin_runtime_components(
             directory_admin=directory_admin,
             admin_config_mutation_lock=lambda: host.admin_config_mutation_lock(),
             normalize_directory_reference=normalize_directory_reference,
+            addon_catalog=addon_catalog,
         )
     )
     managed_git_admin.set_workflow_config_admin(workflow_config_admin)
@@ -590,6 +630,26 @@ def _build_admin_runtime_components(
             admin_config_mutation_lock_path
         ),
     )
+    connector_service = ConnectorService(
+        runtime_dir=config.runtime_dir,
+        provider_config=runtime.provider_config,
+        artifact_store_factory=lambda: CommunicationArtifactStore(config.runtime_dir),
+        registry=connector_registry_from_catalog(addon_catalog),
+    )
+    connector_admin = ConnectorAdminService(
+        ConnectorAdminDependencies(
+            operations_admin=operations_admin,
+            provider_config=runtime.provider_config,
+            audit=runtime.audit,
+            connector_service=connector_service,
+        )
+    )
+    codex_auth_admin = CodexAuthAdminService(
+        CodexAuthAdminDependencies(
+            provider_config=runtime.provider_config,
+            audit=runtime.audit,
+        )
+    )
     workflow_generation_admin = WorkflowGenerationAdminService(
         WorkflowGenerationAdminDependencies(
             config=config,
@@ -683,6 +743,7 @@ def _build_admin_runtime_components(
         project_dir=project_dir,
         config=config,
         runtime=runtime,
+        addon_catalog=addon_catalog,
         directory_store=directory_store,
         directory_config_store=directory_config_store,
         tool_call_audit_index=tool_call_audit_index,
@@ -708,6 +769,8 @@ def _build_admin_runtime_components(
         addon_admin=addon_admin,
         skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,
+        connector_admin=connector_admin,
+        codex_auth_admin=codex_auth_admin,
         documentation_admin=documentation_admin,
         model_usage_admin=model_usage_admin,
         operator_steering_admin=operator_steering_admin,
@@ -719,6 +782,9 @@ def _build_admin_runtime_components(
         vm_agent_support=vm_agent_support,
         issue_git_admin=issue_git_admin,
         managed_git_admin=managed_git_admin,
+        managed_git_maintenance=managed_git_maintenance,
+        managed_git_repository_refresh=managed_git_repository_refresh,
+        managed_git_refresh_authorization=managed_git_refresh_authorization,
         vm_agent_admin=vm_agent_admin,
         pr_integration_preflight_admin=pr_integration_preflight_admin,
         operations_admin=operations_admin,

@@ -14,6 +14,7 @@ import httpx
 from evander.addons import addon_storage_path
 
 from .client import BokioApiError, BokioConfigError
+from .durable_operations import SQLiteDurableOperationLedger
 from .execution_ownership import process_is_alive
 from .state import ADDON_ID
 
@@ -28,6 +29,11 @@ class BokioOperationStore:
     def __init__(self, runtime_dir: str | Path) -> None:
         self.database_path = addon_storage_path(runtime_dir, ADDON_ID, "operations.db")
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._ledger = SQLiteDurableOperationLedger(
+            self.database_path,
+            table="operations",
+            identity_columns=("session_id", "operation_kind", "operation_key"),
+        )
         self._initialize()
 
     def begin(
@@ -43,14 +49,8 @@ class BokioOperationStore:
         payload_json = json.dumps(normalized_payload, sort_keys=True, separators=(",", ":"))
         payload_digest = sha256(payload_json.encode("utf-8")).hexdigest()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """
-                SELECT * FROM operations
-                WHERE session_id = ? AND operation_kind = ? AND operation_key = ?
-                """,
-                identity,
-            ).fetchone()
+            self._ledger.begin_immediate(connection)
+            row = self._ledger.fetch_row(connection, identity)
             if row is not None:
                 operation = _operation_from_row(row)
                 if operation["payload_digest"] != payload_digest:
@@ -60,14 +60,19 @@ class BokioOperationStore:
                     )
                 return operation
             now = _now()
-            connection.execute(
-                """
-                INSERT INTO operations (
-                    session_id, operation_kind, operation_key, payload_json, payload_digest,
-                    status, attempt_count, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (*identity, payload_json, payload_digest, "pending", 0, now, now),
+            self._ledger.insert(
+                connection,
+                {
+                    "session_id": identity[0],
+                    "operation_kind": identity[1],
+                    "operation_key": identity[2],
+                    "payload_json": payload_json,
+                    "payload_digest": payload_digest,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
             return self._get_with_connection(connection, identity)
 
@@ -82,7 +87,7 @@ class BokioOperationStore:
     ) -> tuple[dict[str, Any], bool]:
         identity = _identity(session_id, operation_kind, operation_key)
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._ledger.begin_immediate(connection)
             operation = self._get_with_connection(connection, identity)
             status = str(operation["status"])
             if status == "succeeded":
@@ -125,16 +130,21 @@ class BokioOperationStore:
             if allowed_status is None:
                 raise BokioOperationError(f"Unsupported Bokio operation status: {status}")
             now = _now()
-            claimed = connection.execute(
-                """
-                UPDATE operations
-                SET status = ?, attempt_count = attempt_count + 1, error_json = NULL,
-                    result_json = NULL, completed_at = NULL, started_at = ?, updated_at = ?,
-                    execution_owner_pid = ?
-                WHERE session_id = ? AND operation_kind = ? AND operation_key = ? AND status = ?
-                """,
-                ("executing", now, now, os.getpid(), *identity, allowed_status),
-            ).rowcount
+            claimed = self._ledger.transition(
+                connection,
+                identity,
+                expected_status=allowed_status,
+                new_status="executing",
+                values={
+                    "error_json": None,
+                    "result_json": None,
+                    "completed_at": None,
+                    "started_at": now,
+                    "updated_at": now,
+                    "execution_owner_pid": os.getpid(),
+                },
+                increment_columns=("attempt_count",),
+            )
             current = self._get_with_connection(connection, identity)
             if claimed != 1:
                 if current["status"] == "succeeded":
@@ -209,24 +219,19 @@ class BokioOperationStore:
     ) -> dict[str, Any]:
         now = _now()
         with self._connect() as connection:
-            updated = connection.execute(
-                """
-                UPDATE operations
-                SET status = ?, result_json = ?, error_json = ?, completed_at = ?, updated_at = ?,
-                    execution_owner_pid = NULL
-                WHERE session_id = ? AND operation_kind = ? AND operation_key = ?
-                    AND status = ?
-                """,
-                (
-                    status,
-                    _json_dump(result),
-                    _json_dump(error),
-                    now,
-                    now,
-                    *identity,
-                    "executing",
-                ),
-            ).rowcount
+            updated = self._ledger.transition(
+                connection,
+                identity,
+                expected_status="executing",
+                new_status=status,
+                values={
+                    "result_json": _json_dump(result),
+                    "error_json": _json_dump(error),
+                    "completed_at": now,
+                    "updated_at": now,
+                    "execution_owner_pid": None,
+                },
+            )
             if updated != 1:
                 raise BokioOperationError("Bokio operation is not owned by this execution attempt")
             return self._get_with_connection(connection, identity)
@@ -259,24 +264,14 @@ class BokioOperationStore:
                 connection.execute("ALTER TABLE operations ADD COLUMN execution_owner_pid INTEGER")
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=30.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 30000")
-        connection.execute("PRAGMA journal_mode = WAL")
-        return connection
+        return self._ledger.connect()
 
     def _get_with_connection(
         self,
         connection: sqlite3.Connection,
         identity: tuple[str, str, str],
     ) -> dict[str, Any]:
-        row = connection.execute(
-            """
-            SELECT * FROM operations
-            WHERE session_id = ? AND operation_kind = ? AND operation_key = ?
-            """,
-            identity,
-        ).fetchone()
+        row = self._ledger.fetch_row(connection, identity)
         if row is None:
             raise BokioOperationError("Unknown Bokio operation")
         return _operation_from_row(row)

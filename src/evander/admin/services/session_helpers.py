@@ -15,6 +15,10 @@ from evander.approval_notification_targets import (
 )
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
 from evander.connectors.models import normalize_connector_grants
+from evander.email.grants import (
+    email_mailbox_grant_policy_update,
+    normalize_email_mailbox_grants,
+)
 from evander.models import (
     ApprovalGrantSettings,
     EmailMailboxAccess,
@@ -275,26 +279,6 @@ def normalize_plain_string_list(value: object, *, field_name: str) -> list[str]:
         seen.add(candidate)
         normalized.append(candidate)
     return normalized
-
-
-def normalize_email_mailbox_grants(value: object) -> list[EmailMailboxGrant] | None:
-    if value is None:
-        return None
-    if not isinstance(value, list):
-        raise ValueError("email_mailbox_grants must be a JSON array or null")
-    try:
-        grants = [EmailMailboxGrant.model_validate(item) for item in value]
-    except ValidationError as exc:
-        raise ValueError(f"invalid email_mailbox_grants: {exc}") from exc
-    mailbox_ids = [grant.mailbox_id for grant in grants]
-    duplicates = sorted(
-        mailbox_id for mailbox_id in set(mailbox_ids) if mailbox_ids.count(mailbox_id) > 1
-    )
-    if duplicates:
-        raise ValueError(
-            "email_mailbox_grants contains duplicate mailbox IDs: " + ", ".join(duplicates)
-        )
-    return grants
 
 
 def normalize_teams_channel_allowlist(value: object, *, field_name: str) -> list[str]:
@@ -632,15 +616,7 @@ def session_policy_update_from_payload(
             ]
     if "email_mailbox_grants" in payload:
         grants = normalize_email_mailbox_grants(payload.get("email_mailbox_grants"))
-        update["email_mailbox_grants"] = grants
-        if grants is not None:
-            update["email_mailbox_allowlist"] = [grant.mailbox_id for grant in grants]
-            update["email_folder_allowlist_by_mailbox"] = {
-                grant.mailbox_id: list(grant.folders) for grant in grants
-            }
-            update["email_folder_allowlist"] = sorted(
-                {folder for grant in grants for folder in grant.folders}
-            )
+        update.update(email_mailbox_grant_policy_update(grants))
     if "allowed_script_names" in payload:
         update["allowed_script_names"] = normalize_allowed_script_names(
             normalize_plain_string_list(

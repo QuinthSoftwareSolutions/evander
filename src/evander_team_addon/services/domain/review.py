@@ -8,7 +8,6 @@ from datetime import (
 from typing import Any
 from uuid import uuid4
 from ...models import (
-    AgentInboxItem,
     PersistentAgent,
     ReleaseGateFailure,
     ReviewCriterionResult,
@@ -17,7 +16,6 @@ from ...models import (
     ReviewProfileCriterion,
     ReviewRequest,
     TeamBlockerSourceKind,
-    TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
@@ -47,8 +45,7 @@ from .deliverables import (
     _deliverable_verification_payload,
 )
 from .manager_fallback import _manager_fallback_review_decision_guard_error
-from .wake import _append_agent_wake_requested_event_for_inbox_item
-from .work_due import _mark_agent_work_due
+from .review_handoff import queue_actionable_inbox_item
 
 
 def _review_profile_for_request(
@@ -269,25 +266,13 @@ def _apply_review_request(
                 for criterion in profile.criteria
             ],
         }
-    inbox_id = f"inbox-{uuid4().hex}"
-    item = AgentInboxItem(
-        id=inbox_id,
+    queue_actionable_inbox_item(
+        state,
         recipient_agent_id=reviewer_id,
         sender_agent_id=actor.id,
         task_id=deliverable.task_id,
-        item_type=TeamInboxItemType.STATUS_REQUEST,
-        response_requested=True,
         priority=TeamInboxPriority.NORMAL,
         payload=payload,
-        created_at=now,
-        updated_at=now,
-    )
-    state.inbox[inbox_id] = item
-    result["created_inbox_item_ids"].append(inbox_id)
-    _mark_agent_work_due(state, agent_id=reviewer_id, now=now)
-    _append_agent_wake_requested_event_for_inbox_item(
-        state,
-        item=item,
         result=result,
         now=now,
     )
@@ -748,14 +733,11 @@ def _cascade_review_decision(
         _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
         task.updated_at = now
         rework_agent_id = task.owner_agent_id
-        inbox_id = f"inbox-{uuid4().hex}"
-        item = AgentInboxItem(
-            id=inbox_id,
+        queue_actionable_inbox_item(
+            state,
             recipient_agent_id=rework_agent_id,
             sender_agent_id=review.reviewer_agent_id,
             task_id=task.id,
-            item_type=TeamInboxItemType.STATUS_REQUEST,
-            response_requested=True,
             priority=TeamInboxPriority.NORMAL,
             payload={
                 "kind": "review_rejected",
@@ -767,19 +749,7 @@ def _cascade_review_decision(
                 "findings": list(findings),
                 "artifact_refs": list(deliverable.artifact_refs),
             },
-        )
-        state.inbox[inbox_id] = item
-        if result is not None:
-            result["created_inbox_item_ids"].append(inbox_id)
-            _append_agent_wake_requested_event_for_inbox_item(
-                state,
-                item=item,
-                result=result,
-                now=now,
-            )
-        _mark_agent_work_due(
-            state,
-            agent_id=rework_agent_id,
+            result=result,
             now=now,
         )
     else:  # blocked

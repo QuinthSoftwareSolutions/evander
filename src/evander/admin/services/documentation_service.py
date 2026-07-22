@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 from typing import Any
@@ -11,7 +12,7 @@ _CURRENT_DOCUMENTATION_SECTIONS = {
     "Focused References": "focused",
 }
 _GENERATED_MANUAL_PATH = "docs/evander-user-manual.md"
-_EXCLUDED_MANUAL_CHAPTERS = {
+_AGENT_EXCLUDED_MANUAL_CHAPTERS = {
     "01-reading-paths.md",
     "27-design-history.md",
 }
@@ -210,16 +211,32 @@ class DocumentationService:
         return entries
 
     def _technical_manual_entries(self) -> list[DocumentationEntry]:
-        chapter_dir = self._project_dir / "docs" / "evander-user-manual" / "chapters"
+        manual_dir = self._project_dir / "docs" / "evander-user-manual"
+        chapter_dir = manual_dir / "chapters"
         if not chapter_dir.is_dir():
             raise FileNotFoundError(
                 f"technical manual chapter directory does not exist: {chapter_dir}"
             )
+        manifest_path = manual_dir / "book.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("parts"), list):
+            raise ValueError("technical manual book.json must contain a parts array")
+        chapter_names: list[str] = []
+        for part in manifest["parts"]:
+            if not isinstance(part, dict) or not isinstance(part.get("chapters"), list):
+                raise ValueError("every technical manual part must contain a chapters array")
+            for name in part["chapters"]:
+                if not isinstance(name, str) or not name.endswith(".md"):
+                    raise ValueError("technical manual chapter names must be Markdown filenames")
+                if name in chapter_names:
+                    raise ValueError(f"technical manual chapter is listed more than once: {name}")
+                chapter_names.append(name)
+
         entries: list[DocumentationEntry] = []
-        for candidate in sorted(chapter_dir.glob("*.md")):
-            if candidate.name in _EXCLUDED_MANUAL_CHAPTERS:
+        for name in chapter_names:
+            if name in _AGENT_EXCLUDED_MANUAL_CHAPTERS:
                 continue
-            validated = self._validated_document_path(candidate)
+            validated = self._validated_document_path(chapter_dir / name)
             entries.append(self._entry_from_path(validated, classification="technical_manual"))
         if not entries:
             raise ValueError("technical manual chapter catalog is empty")

@@ -2291,6 +2291,10 @@ def test_documentation_tools_are_available_to_an_explicitly_granted_agent(
         parents=True,
         exist_ok=True,
     )
+    (project_dir / "docs" / "evander-user-manual" / "book.json").write_text(
+        json.dumps({"parts": [{"chapters": ["02-detail.md"]}]}),
+        encoding="utf-8",
+    )
     (project_dir / "README.md").write_text("# Project\n\nRoot docs.\n", encoding="utf-8")
     (project_dir / "docs" / "README.md").write_text(
         """# Documentation Map

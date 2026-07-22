@@ -18,8 +18,8 @@ from evander.admin.services.vm_agent.common import (
     _sync_added_discord_session_cursors,
     timedelta,
 )
-from evander.connectors.models import normalize_connector_grants
 from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
+from evander.connectors.grants import resolve_and_validate_connector_grants
 
 
 class VmAgentMutationMixin:
@@ -85,21 +85,12 @@ class VmAgentMutationMixin:
                 self._agent_string_list(body, "allowed_tools") or []
             )
         if "connector_grants" in body:
-            connector_grants = normalize_connector_grants(body.get("connector_grants"))
-            connector_config = self.runtime.provider_config.resolve_connectors_for_directory(
-                session.directory_path
+            connector_grants = resolve_and_validate_connector_grants(
+                self.runtime.provider_config,
+                directory_path=session.directory_path,
+                session_id=session.session_id,
+                value=body.get("connector_grants"),
             )
-            for connector_id, operation_names in connector_grants.items():
-                connector = connector_config.connectors.get(connector_id)
-                if connector is None or connector.disabled:
-                    raise ValueError(f"unknown or disabled connector: {connector_id}")
-                for operation_name in operation_names:
-                    operation = connector.operations.get(operation_name)
-                    if operation is None or operation.disabled:
-                        raise ValueError(
-                            "unknown or disabled connector operation: "
-                            f"{connector_id}.{operation_name}"
-                        )
             update["connector_grants"] = connector_grants
         session_policy_fields = {
             key: body[key]
