@@ -250,6 +250,26 @@ def _command_deliverable_task_for_submission(
     return task
 
 
+def _validate_command_deliverable_has_acceptance_recipient(agent: PersistentAgent) -> None:
+    if agent.reports_to_agent_id is not None:
+        return
+    raise TeamCommandValidationError(
+        code="direct_superior_required",
+        message=(
+            f"agent {agent.id} cannot submit a deliverable for superior acceptance "
+            "because it has no direct superior; use team_submit_deliverable_for_review "
+            "for formal review or team_update_task state=finished for completion-only work"
+        ),
+        correction_context={
+            "caller_agent_id": agent.id,
+            "recommended_tools": [
+                "team_submit_deliverable_for_review",
+                "team_update_task",
+            ],
+        },
+    )
+
+
 def _command_deliverable_id(
     state: TeamState,
     *,

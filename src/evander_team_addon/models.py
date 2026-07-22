@@ -3752,33 +3752,30 @@ def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, An
     return payload
 
 
+def deliverable_requires_formal_review(deliverable: Deliverable) -> bool:
+    return bool(deliverable.review_request_ids) or any(
+        finding.state == "open" for finding in deliverable.carried_findings
+    )
+
+
 def _task_waiting_reason(state: TeamState, task: AgentTask) -> str | None:
     if task.state != TeamTaskState.WAITING_FOR_REVIEW:
         return None
-    deliverables = [
-        state.deliverables[deliverable_id]
-        for deliverable_id in task.deliverable_ids
-        if deliverable_id in state.deliverables
-        and state.deliverables[deliverable_id].superseded_by_deliverable_id is None
-    ]
-    active_review_states = {
-        TeamRecordState.PENDING,
-        TeamRecordState.IN_PROGRESS,
-        TeamRecordState.BLOCKED,
-    }
-    if any(
-        review_id in state.review_requests
-        and state.review_requests[review_id].state in active_review_states
-        for deliverable in deliverables
-        for review_id in deliverable.review_request_ids
-    ):
-        return "review"
     active_deliverable_states = {
         TeamRecordState.PENDING,
         TeamRecordState.IN_PROGRESS,
         TeamRecordState.BLOCKED,
     }
-    if any(deliverable.state in active_deliverable_states for deliverable in deliverables):
+    deliverables = [
+        state.deliverables[deliverable_id]
+        for deliverable_id in task.deliverable_ids
+        if deliverable_id in state.deliverables
+        and state.deliverables[deliverable_id].superseded_by_deliverable_id is None
+        and state.deliverables[deliverable_id].state in active_deliverable_states
+    ]
+    if any(deliverable_requires_formal_review(deliverable) for deliverable in deliverables):
+        return "review"
+    if deliverables:
         return "superior_acceptance"
     return None
 

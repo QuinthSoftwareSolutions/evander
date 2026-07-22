@@ -8,6 +8,8 @@
 - Kept the import target caller-bound and host-generated, preserved artifact-space read grants,
   and returned concrete imported file paths instead of treating deliverable metadata as file
   access.
+- Wired ordinary imports through the supported admin provider adapter so default libvirt Team
+  sessions have the session lookup, VM copy, and VM execution ports required to materialize files.
 
 ## 2026-07-23 - Team Task Completion and Review Semantics
 
@@ -15,8 +17,12 @@
   direct `finished` task completion instead of manufacturing deliverables for review.
 - Distinguished superior acceptance from formal review in derived task payloads and Team UI labels
   while preserving the existing persisted task-state contract.
-- Stopped manager fallback from treating deliverables on non-reviewing tasks as unassigned review
-  work, while retaining their artifacts and audit history.
+- Kept terminal formal-review history and unresolved carried findings classified as review work,
+  while excluding superior-acceptance-only deliverables from reviewer-routing gaps.
+- Required a direct superior before accepting a direct deliverable submission, preventing top-level
+  agents from leaving work waiting for an acceptance notice that cannot be delivered.
+- Split superior acceptance from formal review in Delivery grouping and filters, while retaining
+  deliverable artifacts and audit history.
 
 ## 2026-07-22 - Bokio Evidence Recovery and Teamless Chat Attachments
 

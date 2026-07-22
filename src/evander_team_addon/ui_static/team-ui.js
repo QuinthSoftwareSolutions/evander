@@ -294,6 +294,7 @@ const elements = {
 
 const deliveryStatusOrder = [
   "pending",
+  "waiting_for_acceptance",
   "waiting_for_review",
   "accepted",
   "rejected",
@@ -302,6 +303,7 @@ const deliveryStatusOrder = [
 const deliveryFilterOptions = new Set(["all", ...deliveryStatusOrder]);
 const deliveryStatusLabels = {
   pending: "Pending",
+  waiting_for_acceptance: "Waiting for acceptance",
   waiting_for_review: "Waiting for review",
   accepted: "Accepted",
   rejected: "Rejected",
@@ -12601,12 +12603,20 @@ function deriveDeliveryStatus(deliverable, task, reviews, releasePackages, gitPr
   if (deliverable.state === "rejected" || reviews.some((review) => review.state === "rejected")) {
     return "rejected";
   }
-  const reviewsPending = reviews.some((review) => review.state === "pending");
+  const reviewsPending = reviews.some(
+    (review) => review.state === "pending" || review.state === "in_progress",
+  );
   if (deliverable.state === "accepted" && reviews.every((review) => review.state === "accepted")) {
     return "accepted";
   }
-  if ((task && task.state === "waiting_for_review") || reviewsPending) {
+  if (
+    reviewsPending ||
+    (task && task.state === "waiting_for_review" && task.waiting_reason !== "superior_acceptance")
+  ) {
     return "waiting_for_review";
+  }
+  if (task && task.state === "waiting_for_review" && task.waiting_reason === "superior_acceptance") {
+    return "waiting_for_acceptance";
   }
   return "pending";
 }

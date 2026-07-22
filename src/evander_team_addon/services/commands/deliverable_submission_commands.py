@@ -18,6 +18,7 @@ from .deliverable_helpers import (
     _publish_command_deliverable_artifacts,
     _team_submit_deliverable_for_review_normalized_payload,
     _team_submit_deliverable_normalized_payload,
+    _validate_command_deliverable_has_acceptance_recipient,
     _validate_command_deliverable_submission_pre_publication,
 )
 from .executor import TeamCommandExecutor
@@ -117,6 +118,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 agent=agent,
                 task_id=normalized_deliverable["task_id"],
             )
+            _validate_command_deliverable_has_acceptance_recipient(agent)
             deliverable_id = _command_deliverable_id(
                 state,
                 deliverable=normalized_deliverable,

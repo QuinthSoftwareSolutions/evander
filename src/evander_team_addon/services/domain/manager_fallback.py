@@ -15,8 +15,8 @@ from ...models import (
     Team,
     TeamInboxItemState,
     TeamState,
-    TeamTaskState,
     agent_project_ids,
+    deliverable_requires_formal_review,
     task_payload_with_derived,
 )
 
@@ -314,6 +314,7 @@ def _manager_fallback_task_row(
         "priority": task.priority,
         "dependency_status": task_payload.get("dependency_status"),
         "blocked_by_task_ids": task_payload.get("blocked_by_task_ids") or [],
+        "waiting_reason": task_payload.get("waiting_reason"),
         "deliverable_ids": deliverable_ids,
         "review_request_ids": [review.id for review in reviews],
         "reviewer_agent_ids": sorted({review.reviewer_agent_id for review in reviews}),
@@ -580,7 +581,6 @@ def _manager_fallback_routing_gaps(
         for deliverable in visible_deliverables
         if _manager_fallback_deliverable_needs_review(
             deliverable,
-            task=tasks_by_id.get(deliverable.task_id),
             reviews=reviews_by_deliverable.get(deliverable.id, []),
         )
     ]
@@ -768,12 +768,13 @@ def _manager_fallback_review_decision_guard_error(
 def _manager_fallback_deliverable_needs_review(
     deliverable: Deliverable,
     *,
-    task: AgentTask | None,
     reviews: list[ReviewRequest],
 ) -> bool:
-    if task is not None and task.state == TeamTaskState.WAITING_FOR_REVIEW:
+    if not _is_active_deliverable_work(deliverable):
+        return False
+    if deliverable_requires_formal_review(deliverable):
         return True
-    return any(review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES for review in reviews)
+    return any(review.release_package_id is None for review in reviews)
 
 
 __all__ = [

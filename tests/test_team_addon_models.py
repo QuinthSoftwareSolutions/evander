@@ -36,6 +36,7 @@ from evander_team_addon.models import (
     ReleasePackage,
     ReleaseReviewRequirement,
     ReviewCriterionResult,
+    ReviewFindingRecord,
     ReviewProfile,
     ReviewProfileCriterion,
     ReviewRequest,
@@ -1005,8 +1006,25 @@ def test_team_state_payload_distinguishes_superior_acceptance_from_review() -> N
     payload = team_state_payload(state)
     assert payload["tasks"]["task"]["waiting_reason"] == "review"
 
+    state.review_requests["review"].state = TeamRecordState.ACCEPTED
+    payload = team_state_payload(state)
+    assert payload["tasks"]["task"]["waiting_reason"] == "review"
+
     state.deliverables["deliverable"].review_request_ids = []
     state.review_requests = {}
+    state.deliverables["deliverable"].carried_findings = [
+        ReviewFindingRecord(
+            id="finding",
+            source_review_request_id="review",
+            source_deliverable_id="deliverable-v1",
+            owner_review_profile_id="profile",
+            text="A matching formal reviewer must confirm the rework.",
+        )
+    ]
+    payload = team_state_payload(state)
+    assert payload["tasks"]["task"]["waiting_reason"] == "review"
+
+    state.deliverables["deliverable"].carried_findings = []
     payload = team_state_payload(state)
     assert payload["tasks"]["task"]["waiting_reason"] == "superior_acceptance"
 

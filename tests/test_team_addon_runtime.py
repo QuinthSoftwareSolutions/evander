@@ -2881,6 +2881,47 @@ def test_manager_fallback_does_not_route_finished_task_deliverable_for_review(
     assert "deliverable-feature" in prompt
 
 
+def test_manager_fallback_does_not_route_superior_acceptance_for_review(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _add_luke_reviewer(repo)
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "deliverable-for-acceptance",
+                    "task_id": "task",
+                    "summary": "Ready for the project lead to accept.",
+                }
+            ],
+        },
+    )
+    assert result["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
+
+    def _handle_all_inbox(state: TeamState) -> TeamState:
+        for item in state.inbox.values():
+            item.state = TeamInboxItemState.HANDLED
+        return state
+
+    repo.update(_handle_all_inbox)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    lease = next(lease for lease in leases if lease["agent"]["id"] == "manager")
+    context = _team_context_from_prompt(_build_prompt(lease))
+    fallback_summary = context["manager_fallback_summary"]
+    task = next(item for item in fallback_summary["open_work"] if item["id"] == "task")
+
+    assert task["waiting_reason"] == "superior_acceptance"
+    assert not any(
+        "deliverable-for-acceptance" in item.get("deliverable_ids", [])
+        for item in fallback_summary["routing_gaps"]
+    )
+
+
 @pytest.mark.parametrize("blocker", ["paused", "stand_down"])
 def test_manager_fallback_routing_gaps_skip_unwakeable_reviewers(
     tmp_path: Path,

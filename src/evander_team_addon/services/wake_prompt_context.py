@@ -692,6 +692,7 @@ def _compact_manager_task(item: Mapping[str, Any]) -> dict[str, Any]:
             "project_id",
             "priority",
             "dependency_status",
+            "waiting_reason",
         ),
     )
     row["title"] = _trim_text(item.get("title"), TITLE_LIMIT)

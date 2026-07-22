@@ -1962,6 +1962,39 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     }
 
 
+def test_submit_deliverable_command_requires_direct_superior_before_publication(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="manager-task", owner_agent_id="manager")
+    _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-manager")
+    published: list[dict[str, object]] = []
+
+    def publish(**kwargs: object) -> dict[str, object]:
+        published.append(dict(kwargs))
+        return {"artifact_ref": "artifact-space:/unexpected"}
+
+    state, result = _command_service(repo).submit_deliverable_command(
+        session_id="session-manager",
+        id="manager-deliverable",
+        task_id="manager-task",
+        summary="Top-level work cannot wait for a nonexistent superior.",
+        artifact_paths=["reports/manager.txt"],
+        request_id="request-manager-deliverable",
+        artifact_publisher=publish,
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "direct_superior_required"
+    assert result["errors"][0]["correction_context"]["recommended_tools"] == [
+        "team_submit_deliverable_for_review",
+        "team_update_task",
+    ]
+    assert published == []
+    assert state.deliverables == {}
+    assert state.tasks["manager-task"].state == TeamTaskState.PENDING
+
+
 def test_admin_service_creates_git_work_context_for_task_owner(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="task")
