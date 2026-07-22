@@ -934,6 +934,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_revoke_stand_down`
 - `team_submit_deliverable`
 - `team_submit_deliverable_for_review`
+- `team_import_artifact`
 - `team_request_review`
 - `team_decide_review`
 - `team_publish_review_branch`
@@ -1005,6 +1006,12 @@ Team mutation. Paths are checked for safety, publication is replay-idempotent,
 and Team state stores the resulting stable artifact references. If publication
 succeeds but the final mutation fails, operators should treat the published
 artifact as an orphan until it is linked by a replay or cleaned up intentionally.
+For ordinary task, status-request, question, or progress-report handoffs, the
+recipient can pass an `artifact-space:` ref to `team_import_artifact`. The tool
+checks that artifact space's read grant for the calling `team-agent:<id>`, selects
+the requested latest artifact version (`bundle` by default), and imports it into
+the caller's own `/artifacts/team-artifact-imports/<artifact>/<ref-version>`
+path. The caller cannot select another session or a host destination path.
 Reviewer wakes automatically import review-request artifact refs into
 `/artifacts/team-review-inputs/<review>/<deliverable>/<artifact>/<ref-version>`
 and surface successful imports or import errors in the Team context JSON.

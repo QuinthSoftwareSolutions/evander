@@ -2039,6 +2039,10 @@ def test_wake_due_agents_provider_does_not_import_review_artifacts_from_status_r
     assert "Review artifact handoff is through team_request_review" in str(
         guidance_files[-1]["content"]
     )
+    assert "call team_import_artifact with that ref" in str(guidance_files[-1]["content"])
+    assert "Never assume another agent's /home/agent or /artifacts path" in str(
+        guidance_files[-1]["content"]
+    )
     assert "do not pass local artifact paths through communication tools" in str(
         guidance_files[-1]["content"]
     )

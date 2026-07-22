@@ -92,6 +92,7 @@ from .mcp import (
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_GET_MY_IDENTITY_TOOL,
+    TEAM_IMPORT_ARTIFACT_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
@@ -187,7 +188,7 @@ from .services.memory_service import (
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 16
+TEAM_AGENT_GUIDANCE_VERSION = 17
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -4226,7 +4227,7 @@ def _prepare_review_artifacts_for_lease(
         artifact_ref = _required_text(request.get("artifact_ref"), "artifact_ref")
         try:
             artifact_space_path = _artifact_space_path_from_ref(artifact_ref)
-            _require_review_artifact_space_read(
+            _require_artifact_space_read(
                 artifact_state,
                 artifact_space_path=artifact_space_path,
                 subject=_required_text(request.get("subject"), "subject"),
@@ -4349,7 +4350,7 @@ def _artifact_space_path_from_ref(artifact_ref: str) -> str:
     return normalize_space_path(artifact_ref.removeprefix(_ARTIFACT_SPACE_REF_PREFIX))
 
 
-def _require_review_artifact_space_read(
+def _require_artifact_space_read(
     artifact_state: Any,
     *,
     artifact_space_path: str,
@@ -4362,6 +4363,93 @@ def _require_review_artifact_space_read(
         raise ArtifactSpacePermissionError(
             f"subject {subject or '<anonymous>'} cannot read artifact space {artifact_space_path}"
         )
+
+
+def _import_team_artifact_for_session(
+    context: Any,
+    *,
+    artifact_ref: str,
+    artifact_id: str,
+    session_id: str,
+    subject: str,
+) -> dict[str, Any]:
+    normalized_ref = _required_text(artifact_ref, "artifact_ref")
+    normalized_artifact_id = _required_text(artifact_id, "artifact_id")
+    normalized_session_id = _required_text(session_id, "session_id")
+    normalized_subject = _required_text(subject, "subject")
+    artifact_space_path = _artifact_space_path_from_ref(normalized_ref)
+    artifact_state = ArtifactSpaceStore(_runtime_dir(context)).read()
+    _require_artifact_space_read(
+        artifact_state,
+        artifact_space_path=artifact_space_path,
+        subject=normalized_subject,
+    )
+    versions = artifact_state.latest_versions_for_space(
+        artifact_space_path,
+        artifact_id=normalized_artifact_id,
+    )
+    if not versions:
+        raise ValueError(
+            "artifact space has no latest published version for "
+            f"artifact_id {normalized_artifact_id}: {artifact_space_path}"
+        )
+    version = versions[0]
+    destination_path = _team_artifact_import_destination_path(
+        artifact_space_path=artifact_space_path,
+        artifact_id=version.artifact_id,
+        artifact_space_version_id=version.id,
+    )
+    effect_hash = hashlib.sha256(
+        f"{normalized_session_id}\0{version.artifact_key}".encode("utf-8")
+    ).hexdigest()[:24]
+    provider = ArtifactImportPublishedEffectProvider()
+    provider.initialize(
+        ArtifactImportPublishedEffectDefinition(
+            id=f"team-artifact-import-{effect_hash}",
+            display_name="Import Team artifact",
+            type="effect:artifact:import-published",
+            session_id=normalized_session_id,
+            key=version.artifact_key,
+            destination_path=destination_path,
+            overwrite=True,
+        ),
+        context,
+    )
+    import_result = provider.execute()
+    relative_paths = [str(path) for path in import_result.get("imported_paths") or []]
+    return {
+        "artifact_ref": normalized_ref,
+        "artifact_space_path": artifact_space_path,
+        "artifact_id": version.artifact_id,
+        "artifact_key": version.artifact_key,
+        "artifact_space_version_id": version.id,
+        "artifact_space_version": version.version,
+        "destination_path": destination_path,
+        "artifact_path": f"/artifacts/{destination_path}",
+        "imported_paths": [f"/artifacts/{path.lstrip('/')}" for path in relative_paths],
+        "imported_relative_paths": relative_paths,
+        "imported_file_count": int(import_result.get("imported_file_count") or 0),
+        "source_byte_count": int(import_result.get("source_byte_count") or 0),
+        "archive_sha256": import_result.get("sha256"),
+    }
+
+
+def _team_artifact_import_destination_path(
+    *,
+    artifact_space_path: str,
+    artifact_id: str,
+    artifact_space_version_id: str,
+) -> str:
+    return "/".join(
+        [
+            "team-artifact-imports",
+            _artifact_space_path_segment(artifact_id, "artifact_id"),
+            _review_artifact_ref_version_segment(
+                artifact_space_path=artifact_space_path,
+                artifact_space_version_id=artifact_space_version_id,
+            ),
+        ]
+    )
 
 
 def _import_review_artifact_version(
@@ -4745,6 +4833,11 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         f"relative to /artifacts to {TEAM_SUBMIT_DELIVERABLE_TOOL} or "
         f"{TEAM_SUBMIT_DELIVERABLE_FOR_REVIEW_TOOL}. The Team runtime publishes "
         "only those paths and records artifact refs for reviewers.\n"
+        f"- An artifact-space ref is durable metadata, not a local file path. When "
+        "another agent hands you a published artifact for ordinary task work, call "
+        f"{TEAM_IMPORT_ARTIFACT_TOOL} with that ref to permission-check and import "
+        "its latest bundle into your own /artifacts tree. Never assume another "
+        "agent's /home/agent or /artifacts path exists in your session.\n"
         "- Git deliverables must include the runtime-provided branch_context_id. "
         "Do not invent branch names; submitted git_refs must match that context. "
         "Artifact-only, administrative, customer-service, and operations work do "

@@ -117,6 +117,7 @@ TEAM_LIST_CASES_TOOL = "team_list_cases"
 TEAM_GET_CASE_TOOL = "team_get_case"
 TEAM_LIST_DELIVERABLES_TOOL = "team_list_deliverables"
 TEAM_GET_DELIVERABLE_TOOL = "team_get_deliverable"
+TEAM_IMPORT_ARTIFACT_TOOL = "team_import_artifact"
 TEAM_LIST_REVIEW_REQUESTS_TOOL = "team_list_review_requests"
 TEAM_GET_REVIEW_REQUEST_TOOL = "team_get_review_request"
 TEAM_LIST_RELEASE_PACKAGES_TOOL = "team_list_release_packages"
@@ -181,6 +182,7 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_GET_CASE_TOOL,
     TEAM_LIST_DELIVERABLES_TOOL,
     TEAM_GET_DELIVERABLE_TOOL,
+    TEAM_IMPORT_ARTIFACT_TOOL,
     TEAM_LIST_REVIEW_REQUESTS_TOOL,
     TEAM_GET_REVIEW_REQUEST_TOOL,
     TEAM_LIST_RELEASE_PACKAGES_TOOL,
@@ -283,6 +285,12 @@ _MCP_TOOL_CATALOG_DESCRIPTIONS = {
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL: (
         "Stage one regular file from the current agent workspace for a Team Chat reply "
         "or proactive operator message. Returns a session-owned attachment_id."
+    ),
+    TEAM_IMPORT_ARTIFACT_TOOL: (
+        "Permission-check and import the latest published version of an artifact-space "
+        "reference into the calling Team agent's own /artifacts tree. Use this after "
+        "team_get_deliverable when another agent hands off an artifact in an ordinary "
+        "task, status request, question, or progress report."
     ),
 }
 MCP_TOOL_CATALOG = tuple(
@@ -2403,6 +2411,40 @@ def _register_read_tools(
         description="Get one visible Team deliverable.",
     )
 
+    def team_import_artifact(
+        artifact_ref: str,
+        artifact_id: str = "bundle",
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_IMPORT_ARTIFACT_TOOL,
+        )
+        from .providers import _import_team_artifact_for_session
+
+        try:
+            imported = _import_team_artifact_for_session(
+                _team_artifact_import_runtime_context(context, caller.session_id),
+                artifact_ref=artifact_ref,
+                artifact_id=artifact_id,
+                session_id=caller.session_id,
+                subject=f"team-agent:{caller.agent_id}",
+            )
+        except (FileNotFoundError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return team_mcp_success(
+            revision=caller.state.revision,
+            progress_made=False,
+            agent_id=caller.agent_id,
+            **imported,
+        )
+
+    server.add_tool(
+        team_import_artifact,
+        name=TEAM_IMPORT_ARTIFACT_TOOL,
+        description=_MCP_TOOL_CATALOG_DESCRIPTIONS[TEAM_IMPORT_ARTIFACT_TOOL],
+    )
+
     def team_list_review_requests(
         session_id: str | None = None,
         deliverable_id: str | None = None,
@@ -3055,6 +3097,19 @@ def _team_session_directory_path(context: AddonContext, session_id: str) -> str:
     get_session = getattr(repository, "get_session", None)
     session = get_session(session_id) if callable(get_session) else None
     return str(getattr(session, "directory_path", None) or "root")
+
+
+def _team_artifact_import_runtime_context(
+    context: AddonContext,
+    session_id: str,
+) -> EffectRuntimeContext:
+    runtime = context.service
+    return EffectRuntimeContext(
+        resolved_config=runtime.resolve_provider_config_for_session(session_id),
+        provider_config_resolver=getattr(runtime, "provider_config", None),
+        admin_service=runtime,
+        metadata={"directory_path": _team_session_directory_path(context, session_id)},
+    )
 
 
 def _read_team_chat_workspace_file(

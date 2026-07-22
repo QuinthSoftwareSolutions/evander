@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-23 - Team Artifact Handoffs
+
+- Added `team_import_artifact` so an active Team agent can permission-check an
+  `artifact-space:` reference and import its latest published bundle into that agent's own
+  `/artifacts/team-artifact-imports/...` tree during ordinary task and inbox handoffs.
+- Kept the import target caller-bound and host-generated, preserved artifact-space read grants,
+  and returned concrete imported file paths instead of treating deliverable metadata as file
+  access.
+
 ## 2026-07-23 - Team Task Completion and Review Semantics
 
 - Directed administrative, delegation, coordination, and acknowledgement-only Team work through

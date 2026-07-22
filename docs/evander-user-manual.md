@@ -5524,6 +5524,8 @@ If a reviewer cannot retrieve an artifact, that is an evidence-access problem. I
 >
 > Supplying a ref does not publish bytes. Paths are validated as safe relative paths, and host publication is replay-idempotent. Publication occurs before the final Team state transaction because it crosses service boundaries. If publication succeeds but the Team mutation fails, the artifact may be orphaned until the same command is replayed or an operator cleans it up deliberately.
 >
+> For an ordinary task or inbox handoff, the recipient can call <code>team_import_artifact</code> with an <code>artifact-space:</code> ref. The host checks the calling <code>team-agent:&lt;id&gt;</code> read grant and imports the latest requested artifact version into that caller's own <code>/artifacts/team-artifact-imports/...</code> tree. A path under another agent's <code>/home/agent</code> or <code>/artifacts</code> tree is never a shared path.
+>
 > Reviewer wakes import referenced review artifacts to a bounded path below:
 >
 > <code>/artifacts/team-review-inputs/&lt;review&gt;/&lt;deliverable&gt;/...</code>
@@ -5641,6 +5643,7 @@ The distinction operators should remember is that **seeing a review is not the s
 >
 > - <code>team_submit_deliverable</code>;
 > - <code>team_submit_deliverable_for_review</code>;
+> - <code>team_import_artifact</code> for permission-checked ordinary artifact handoffs;
 > - <code>team_request_review</code>;
 > - <code>team_decide_review</code>;
 > - delivery list/get tools;
@@ -5653,7 +5656,7 @@ The distinction operators should remember is that **seeing a review is not the s
 | Symptom or error | Meaning | Recovery |
 |---|---|---|
 | Artifact path rejected | The requested path escapes the allowed artifact root or has invalid shape. | Publish from a safe relative path below the session artifact root. |
-| Artifact ref exists but bytes are unavailable | Metadata was recorded without publication, or permission/version access failed. | Inspect the artifact-space record and reviewer import error. |
+| Artifact ref exists but bytes are unavailable | Metadata was recorded without publication, permission/version access failed, or an ordinary recipient has not imported it yet. | Inspect the artifact-space record; for ordinary handoffs call <code>team_import_artifact</code>, and for reviews inspect the reviewer import error. |
 | Git context mismatch | Agent/task/session/dispatch or derived branch does not match the submitted context. | Use the current task work context; never type an alternate branch. |
 | Reviewer cannot be assigned | Agent is inactive, cross-Team, or incompatible with the profile. | Select an active same-Team reviewer matching policy. |
 | Accepted decision rejected by validation | A required criterion is missing/failed or findings remain open. | Record complete criterion results and resolve only authorized findings. |
