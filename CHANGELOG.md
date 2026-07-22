@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-22 - Teamless Agent Chat Replies
+
+- Allowed active teamless persistent agents, including governance managers, to answer a human
+  operator during their active Team Chat dispatch.
+- Kept the exception limited to `team_reply_to_chat`; teamless agents remain unable to invoke
+  ordinary Team state mutations.
+
 ## 2026-07-22 - Hierarchical Team Blocker Escalation
 
 - Added durable Team blocker records and event history for explicit blockers and blocked tasks,

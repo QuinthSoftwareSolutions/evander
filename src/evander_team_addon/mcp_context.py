@@ -120,10 +120,13 @@ class TeamMcpContextResolver:
         session_id: str | None,
         tool_name: str,
     ) -> TeamMcpCallerContext:
-        caller = self.require_persistent_action_context(
-            session_id=session_id,
-            tool_name=tool_name,
-        )
+        caller = self.resolve(session_id=session_id, tool_name=tool_name)
+        if caller.agent is None:
+            raise ToolError(f"{tool_name} requires a persistent Team agent session")
+        if caller.agent.status != AgentStatus.ACTIVE:
+            raise ToolError(f"{tool_name} requires an active Team agent")
+        if caller.active_dispatch_id is None:
+            raise ToolError(f"{tool_name} requires an active Team dispatch lease")
         if caller.wake_reason != "team_chat":
             raise ToolError(f"{tool_name} requires an active Team Chat dispatch")
         return caller
