@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-22 - Team Chat Relative Runtime Attachment Delivery
+
+- Resolved Team Chat attachment source files and their private allowed source root to absolute
+  host paths before copying them into an agent workspace.
+- Added regression coverage for attachment delivery when the configured runtime directory is
+  relative to the control-plane project directory.
+
 ## 2026-07-22 - Evidence-Aware Bokio Prepared Journals
 
 - Added managed evidence IDs to prepared Bokio journal entries so the receipt or invoice is part

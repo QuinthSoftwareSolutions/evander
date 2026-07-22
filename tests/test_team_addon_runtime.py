@@ -2040,10 +2040,13 @@ def test_wake_due_agents_provider_does_not_import_review_artifacts_from_status_r
     )
 
 
-def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
+def test_wake_due_agents_provider_retries_queued_chat_attachment_from_relative_runtime(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo = _seed_team(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runtime_dir = Path("runtime")
+    repo = _seed_team(runtime_dir)
     now = datetime(2026, 1, 1, tzinfo=UTC)
 
     def _mark_backend_busy(state: TeamState) -> TeamState:
@@ -2061,7 +2064,7 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
         operator_display_name="Alice",
         expected_revision=repo.read().revision,
     )
-    prepared_attachment = TeamChatAttachmentStorage(tmp_path).prepare_upload(
+    prepared_attachment = TeamChatAttachmentStorage(runtime_dir).prepare_upload(
         content=b"runtime attachment",
         filename="operator-notes.txt",
         mime_type="text/plain",
@@ -2097,7 +2100,7 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
             limit=1,
         ),
         EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
+            resolved_config={"runtime_dir": str(runtime_dir)},
             agent_resumer=resumer,
             vm_file_copier=file_copier,
             session_lookup=session_store,
@@ -2170,11 +2173,12 @@ def test_wake_due_agents_provider_retries_queued_chat_before_regular_wake(
         for file in call.get("files") or []
         if file.get("destination_path", "").endswith("/01-operator-notes.txt")
     )
+    assert Path(attachment_copy["source_path"]).is_absolute()
     assert attachment_copy["source_path"].endswith(prepared_attachment.id)
     assert attachment_copy["destination_path"].startswith(
         f"/home/agent/team-chat-attachments/{message.id}/"
     )
-    reread = TeamStateRepository(tmp_path).read()
+    reread = TeamStateRepository(runtime_dir).read()
     assert reread.conversation_messages[message.id].status == "running"
     assert reread.agent_runtimes["backend"].active_dispatch_id == dispatch_id
     assert reread.agent_runtimes["backend"].wake_reason == "team_chat"
