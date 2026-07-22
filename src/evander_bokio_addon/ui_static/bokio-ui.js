@@ -188,6 +188,13 @@ function mutationButton(label, className, action) {
   return button;
 }
 
+function rejectionButton(action) {
+  return mutationButton("Reject", "danger", () => {
+    const reason = window.prompt("Why is this action being rejected?", "");
+    if (reason !== null) runActionMutation(action, "reject", { reason });
+  });
+}
+
 async function runActionMutation(action, suffix, payload = {}) {
   if (state.busy || !privilegedUnlocked) return;
   state.busy = true;
@@ -253,15 +260,18 @@ function renderActionDetail() {
   if (action.status === "pending_approval") {
     controls.append(
       mutationButton("Approve & execute", "primary", () => runActionMutation(action, "approve-and-execute")),
-      mutationButton("Reject", "danger", () => {
-        const reason = window.prompt("Why is this action being rejected?", "");
-        if (reason !== null) runActionMutation(action, "reject", { reason });
-      }),
+      rejectionButton(action),
     );
   } else if (action.status === "approved") {
-    controls.append(mutationButton("Execute", "primary", () => runActionMutation(action, "execute")));
+    controls.append(
+      mutationButton("Execute", "primary", () => runActionMutation(action, "execute")),
+      rejectionButton(action),
+    );
   } else if (action.status === "failed") {
-    controls.append(mutationButton("Retry", "primary", () => runActionMutation(action, "retry")));
+    controls.append(
+      mutationButton("Retry", "primary", () => runActionMutation(action, "retry")),
+      rejectionButton(action),
+    );
   } else if (action.status === "needs_attention" || action.status === "executing") {
     const recoveryLabel = action.status === "executing" ? "Confirm absent & recover" : "Confirm absent & retry";
     controls.append(mutationButton(recoveryLabel, "danger", () => {

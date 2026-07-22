@@ -402,8 +402,9 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   uploads use `uploads/scopes/admin`.
 - The Bokio Admin tab is the prepared-action review workspace. Pending actions
   use one atomic **Approve & execute** operation; approved legacy actions can be
-  executed separately. Definite failures expose **Retry**. Uncertain outcomes
-  expose **Confirm absent & retry** only after reconciliation, while a stranded
+  executed or rejected separately. Definite failures expose both **Retry** and
+  **Reject**, preserving their failure details and transition history. Uncertain
+  outcomes expose **Confirm absent & retry** only after reconciliation, while a stranded
   `executing` action uses **Confirm absent & recover** and still refuses to take
   over a live or unknown owner. Payload, result, error, source, and transition
   history remain visible. All Admin mutations require an Admin owner with

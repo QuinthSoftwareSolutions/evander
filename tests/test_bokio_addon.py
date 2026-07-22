@@ -1991,6 +1991,11 @@ def test_bokio_ui_tracks_live_privilege_and_executing_recovery_state() -> None:
     assert "setPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));" in ui_js
     assert 'action.status === "needs_attention" || action.status === "executing"' in ui_js
     assert 'runActionMutation(action, "retry", { confirm_not_created: true })' in ui_js
+    failed_controls = ui_js.split('} else if (action.status === "failed") {', 1)[1].split(
+        '} else if (action.status === "needs_attention"', 1
+    )[0]
+    assert 'mutationButton("Retry"' in failed_controls
+    assert "rejectionButton(action)" in failed_controls
 
 
 def test_bokio_workflow_provider_uses_full_gateway_provider_state(

@@ -130,7 +130,7 @@ class PreparedActionStore:
             status="rejected",
             timestamp_field="rejected_at",
             update={"rejection_reason": str(reason or "").strip() or None},
-            expected_statuses={"pending_approval", "approved"},
+            expected_statuses={"pending_approval", "approved", "failed"},
             detail="Rejected by operator",
         )
 

@@ -318,6 +318,36 @@ def test_bokio_admin_prepared_action_mutations_require_privileged_unlock(
     assert created.json()["action"]["status"] == "pending_approval"
 
 
+def test_bokio_admin_can_reject_a_failed_prepared_action(tmp_path: Path) -> None:
+    runtime = build_admin_runtime(_write_config(tmp_path, module_name="evander_bokio_addon"))
+    client = TestClient(create_app(runtime))
+    assert client.post("/api/admin/privileged/unlock").status_code == 200
+    created = client.post(
+        "/api/addons/bokio-addon/prepared-actions",
+        json={"kind": "supplier_invoice", "payload": {"supplierId": "supplier-1"}},
+    ).json()["action"]
+    store = PreparedActionStore(tmp_path / "runtime")
+    store.approve_action(created["action_id"])
+    store.mark_failed(created["action_id"], error={"message": "Validation failed"})
+
+    rejected = client.post(
+        f"/api/addons/bokio-addon/prepared-actions/{created['action_id']}/reject",
+        json={"reason": "Do not retry this action"},
+    )
+
+    assert rejected.status_code == 200
+    action = rejected.json()["action"]
+    assert action["status"] == "rejected"
+    assert action["rejection_reason"] == "Do not retry this action"
+    assert action["error"] == {"message": "Validation failed"}
+    assert [entry["status"] for entry in action["history"]] == [
+        "pending_approval",
+        "approved",
+        "failed",
+        "rejected",
+    ]
+
+
 def test_bokio_admin_recovers_an_interrupted_prepared_action(
     tmp_path: Path,
     monkeypatch,

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-22 - Bokio Failed Action Rejection
+
+- Allowed operators to reject failed prepared Bokio actions instead of requiring a retry, while
+  preserving the failed payload, error details, rejection reason, and transition history.
+- Exposed **Reject** alongside **Retry** in the Bokio review workspace and restored rejection for
+  approved actions in the same UI.
+
 ## 2026-07-22 - Teamless Agent Chat Replies
 
 - Allowed active teamless persistent agents, including governance managers, to answer a human
