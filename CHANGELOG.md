@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-22 - Managed Worker Deployment Checkout
+
+- Moved private worker deployment checkouts from the retired `git-remotes/evander-deploy.git`
+  mirror to the control plane's root-owned managed repository.
+- Scoped each worker's read-only SSH key to that exact managed repository and pinned deployments
+  under worker-specific `refs/evander/deploy/` refs.
+- Removed stale worker authorizations before managed-repository resolution so interrupted legacy
+  deployments cannot reintroduce path-based managed Git state.
+
 ## 2026-07-22 - Live Agent Documentation Tools
 
 - Added policy-gated tools to list, search, and read current host documentation without copying

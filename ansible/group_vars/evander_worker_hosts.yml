@@ -168,9 +168,8 @@ evander_worker_git_allowed_from: "{{ ansible_default_ipv4.address | default(ansi
 evander_worker_git_access_enabled: "{{ (evander_worker_git_ssh_source_dir | default('') | string | trim | length) > 0 }}"
 evander_worker_install_control_plane_git_authorized_key: "{{ (groups.get(evander_control_plane_group, []) | length) > 0 }}"
 evander_worker_repo_checkout_via_control_plane_git: "{{ evander_worker_install_control_plane_git_authorized_key }}"
-evander_worker_repo_mirror_name: "evander-deploy"
-evander_worker_repo_mirror_path: "{{ evander_control_plane_deploy_path }}/git-remotes/{{ evander_worker_repo_mirror_name }}.git"
-evander_worker_repo_checkout_url: "ssh://{{ evander_git_ssh_alias }}{{ evander_worker_repo_mirror_path }}"
+evander_worker_repo_managed_directory_path: "root"
+evander_worker_repo_deploy_ref: "refs/evander/deploy/{{ inventory_hostname }}"
 evander_worker_allowed_git_source_prefixes:
   - "ssh://{{ evander_git_ssh_alias }}{{ evander_git_root }}/"
 
