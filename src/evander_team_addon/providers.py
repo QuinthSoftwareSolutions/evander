@@ -2070,6 +2070,7 @@ def _copy_team_chat_attachments_for_dispatch(
             f"Team Chat operator-to-agent attachments are disabled for {directory_path}"
         )
     storage = TeamChatAttachmentStorage(repo.runtime_dir)
+    allowed_source_root = storage.assets_dir.resolve(strict=False)
     files: list[dict[str, Any]] = []
     payloads: list[dict[str, Any]] = []
     for index, attachment_id in enumerate(attachment_ids, start=1):
@@ -2079,6 +2080,7 @@ def _copy_team_chat_attachments_for_dispatch(
         source_path = storage.asset_path(attachment.id)
         if not source_path.is_file():
             raise FileNotFoundError(f"Team Chat attachment file is missing: {attachment.id}")
+        source_path = source_path.resolve(strict=True)
         destination_name = f"{index:02d}-{attachment.filename}"
         destination_path = f"/home/agent/team-chat-attachments/{message.id}/{destination_name}"
         files.append(
@@ -2107,7 +2109,7 @@ def _copy_team_chat_attachments_for_dispatch(
             type="effect:agent:copy-files",
             session_id=agent.session_id,
             vm_user="agent",
-            allowed_source_roots=[str(storage.assets_dir)],
+            allowed_source_roots=[str(allowed_source_root)],
             files=files,
         ),
         context,

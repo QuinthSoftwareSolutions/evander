@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026-07-22 - Bokio Evidence Recovery and Teamless Chat Attachments
+
+- Reopened evidence-bearing journal creation after an operator confirms an uncertain create is
+  absent, and kept definite Bokio create rejections failed and explicitly retryable.
+- Allowed active teamless agents to stage attachments during their Team Chat dispatch while
+  preserving the existing Team-assigned staging path for other active dispatches.
+
+## 2026-07-22 - Team Chat Relative Runtime Attachment Delivery
+
+- Resolved Team Chat attachment source files and their private allowed source root to absolute
+  host paths before copying them into an agent workspace.
+- Added regression coverage for attachment delivery when the configured runtime directory is
+  relative to the control-plane project directory.
+
+## 2026-07-22 - Evidence-Aware Bokio Prepared Journals
+
+- Added managed evidence IDs to prepared Bokio journal entries so the receipt or invoice is part
+  of the exact action an operator reviews and approves.
+- Routed approved evidence-bearing journals through the durable create-and-attach ledger, marking
+  the action executed only after all evidence is attached and resuming failed uploads without
+  recreating an already-created journal entry.
+- Exposed prepared evidence IDs and the final evidence result in the Bokio Admin review workspace.
+
+## 2026-07-22 - Bokio Failed Action Rejection
+
+- Allowed operators to reject failed prepared Bokio actions instead of requiring a retry, while
+  preserving the failed payload, error details, rejection reason, and transition history.
+- Exposed **Reject** alongside **Retry** in the Bokio review workspace and restored rejection for
+  approved actions in the same UI.
+
+## 2026-07-22 - Container Worker Managed Git Alias Validation
+
+- Allowed repository-specific managed Git SSH aliases through the worker's source policy when the
+  alias grant slot matches the managed repository named in the clone URL.
+- Kept SSH clone validation fail-closed for mismatched aliases, lookalike hosts, paths outside the
+  configured managed Git root, path traversal, credentials, query strings, and fragments.
+
+## 2026-07-22 - Teamless Agent Chat Replies
+
+- Allowed active teamless persistent agents, including governance managers, to answer a human
+  operator during their active Team Chat dispatch.
+- Kept the exception limited to `team_reply_to_chat`; teamless agents remain unable to invoke
+  ordinary Team state mutations.
+
 ## 2026-07-22 - Cross-Domain Service Boundary Refactoring
 
 - Extracted managed-Git worktree/lifecycle handling and code-consultation orchestration behind
