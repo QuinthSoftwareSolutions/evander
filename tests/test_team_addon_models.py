@@ -974,6 +974,7 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
         "blocked": 0,
         "open": 0,
     }
+    assert task["waiting_reason"] == "review"
 
     parent = payload["tasks"]["parent"]
     assert parent["child_task_ids"] == ["task"]
@@ -985,6 +986,7 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
         "blocked": 0,
         "open": 1,
     }
+    assert parent["waiting_reason"] is None
     assert {row["id"] for row in runtime_operations["agents"]} == {
         "lead",
         "manager",
@@ -995,6 +997,22 @@ def test_team_state_payload_includes_derived_task_fields() -> None:
         row["kind"] == "waiting_dependency_task" and row["id"] == "task"
         for row in runtime_operations["attention"]
     )
+
+
+def test_team_state_payload_distinguishes_superior_acceptance_from_review() -> None:
+    state = _valid_state()
+
+    payload = team_state_payload(state)
+    assert payload["tasks"]["task"]["waiting_reason"] == "review"
+
+    state.deliverables["deliverable"].review_request_ids = []
+    state.review_requests = {}
+    payload = team_state_payload(state)
+    assert payload["tasks"]["task"]["waiting_reason"] == "superior_acceptance"
+
+    state.tasks["task"].state = TeamTaskState.FINISHED
+    payload = team_state_payload(state)
+    assert payload["tasks"]["task"]["waiting_reason"] is None
 
 
 def test_team_state_payload_includes_agent_session_backend_health() -> None:

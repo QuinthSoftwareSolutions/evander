@@ -3163,6 +3163,7 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     )
     assert response.status_code == 200
     assert response.json()["tasks"]["task"]["state"] == "waiting_for_review"
+    assert response.json()["tasks"]["task"]["waiting_reason"] is None
 
     response = client.post(
         "/api/addons/team-addon/deliverables",
@@ -3177,6 +3178,7 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     )
     assert response.status_code == 201
     assert response.json()["tasks"]["task"]["deliverable_ids"] == ["deliverable"]
+    assert response.json()["tasks"]["task"]["waiting_reason"] == "superior_acceptance"
 
     response = client.post(
         "/api/addons/team-addon/review-requests",
@@ -3191,6 +3193,7 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     state = response.json()
     assert state["revision"] == 8
     assert state["deliverables"]["deliverable"]["review_request_ids"] == ["review"]
+    assert state["tasks"]["task"]["waiting_reason"] == "review"
     assert "runtime_operations" in state
     assert {row["id"] for row in state["runtime_operations"]["agents"]} == {
         "backend",

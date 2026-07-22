@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-23 - Team Task Completion and Review Semantics
+
+- Directed administrative, delegation, coordination, and acknowledgement-only Team work through
+  direct `finished` task completion instead of manufacturing deliverables for review.
+- Distinguished superior acceptance from formal review in derived task payloads and Team UI labels
+  while preserving the existing persisted task-state contract.
+- Stopped manager fallback from treating deliverables on non-reviewing tasks as unassigned review
+  work, while retaining their artifacts and audit history.
+
 ## 2026-07-22 - Bokio Evidence Recovery and Teamless Chat Attachments
 
 - Reopened evidence-bearing journal creation after an operator confirms an uncertain create is

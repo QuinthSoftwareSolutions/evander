@@ -1499,8 +1499,12 @@ def _register_slice7_tools(
         team_submit_deliverable,
         name=TEAM_SUBMIT_DELIVERABLE_TOOL,
         description=(
-            "Submit a deliverable for the caller's owned task. Publishes any "
-            "artifact_paths from /artifacts before recording state. Optional "
+            "Submit a work product that requires the caller's direct superior to "
+            "accept it. This always moves the task to waiting_for_review and sends "
+            "the superior a deliverable notice. Finish administrative, delegation, "
+            "coordination, or acknowledgement-only work with team_update_task "
+            "state=finished instead. Publishes any artifact_paths from /artifacts "
+            "before recording state. Optional "
             "verification records status passed, failed, partial, not_run, or "
             "unknown with a summary. Git deliverables must include "
             "branch_context_id; git_refs are provenance only and must match that "

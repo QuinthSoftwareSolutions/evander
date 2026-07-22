@@ -32,6 +32,7 @@ from .validators import _require_command_agent
 from ...models import (
     TeamState,
     _unique_text_list,
+    task_payload_with_derived,
 )
 from ..domain.common import (
     _optional_text,
@@ -162,6 +163,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     ],
                     "task_id": task.id,
                     "task_state": state.tasks[task.id].state.value,
+                    "waiting_reason": task_payload_with_derived(state, task)["waiting_reason"],
                     "intent_recorded": True,
                     "async_effect_pending": bool(created_inbox_ids),
                     "verification": normalized_deliverable.get("verification"),
@@ -334,6 +336,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     ],
                     "task_id": task.id,
                     "task_state": state.tasks[task.id].state.value,
+                    "waiting_reason": task_payload_with_derived(state, task)["waiting_reason"],
                     "intent_recorded": True,
                     "async_effect_pending": bool(created_inbox_ids),
                     "verification": normalized_deliverable.get("verification"),

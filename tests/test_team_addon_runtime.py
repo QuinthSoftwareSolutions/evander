@@ -1287,6 +1287,10 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert "task creation mandate in your wake prompt" in guidance
     assert "Core MCP surface:" in guidance
     assert "a superior may set state: finished on a subordinate non-terminal task" in guidance
+    assert "administrative, delegation, coordination, acknowledgement" in guidance
+    assert "do not manufacture a routing report deliverable" in guidance
+    assert "needs acceptance by your direct superior" in guidance
+    assert "This always moves the task to waiting_for_review" in guidance
     assert "Do not accept or reject someone else's task" in guidance
     assert "Use team_decide_review only for review requests assigned to you" in guidance
     assert "idle profile-eligible reviewer" in guidance
@@ -2805,7 +2809,7 @@ def test_manager_fallback_prompt_includes_team_context_for_handled_review_stall(
     assert len(prompt.encode("utf-8")) < 32_000
 
 
-def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
+def test_manager_fallback_does_not_route_finished_task_deliverable_for_review(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -2835,7 +2839,7 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
     assert result["success"] is True
 
     def _make_task_terminal_without_review(state: TeamState) -> TeamState:
-        state.tasks["task"].state = TeamTaskState.ACCEPTED
+        state.tasks["task"].state = TeamTaskState.FINISHED
         state.deliverables[
             "deliverable-feature"
         ].git_refs.feature_branch = "team/team/features/task-backend"
@@ -2857,7 +2861,7 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
     assert fallback_summary["summary_counts"]["open_task_count"] == 1
     assert fallback_summary["summary_counts"]["active_deliverable_count"] == 1
     work = {item["id"]: item for item in fallback_summary["open_work"]}
-    assert work["task"]["state"] == "accepted"
+    assert work["task"]["state"] == "finished"
     deliverables = {item["id"]: item for item in fallback_summary["deliverables"]}
     assert deliverables["deliverable-feature"]["state"] == "pending"
     assert deliverables["deliverable-feature"]["git_refs"] == {
@@ -2866,10 +2870,8 @@ def test_manager_fallback_prompt_includes_pending_deliverable_on_terminal_task(
         "feature_branch": "team/team/features/task-backend",
         "commit_sha": "feedface",
     }
-    assert any(
-        item["kind"] == "reviewer_without_assigned_review_work"
-        and item["agent"] == "luke"
-        and item["deliverable_ids"] == ["deliverable-feature"]
+    assert not any(
+        "deliverable-feature" in item.get("deliverable_ids", [])
         for item in fallback_summary["routing_gaps"]
     )
     assert "deliverable-feature" in prompt

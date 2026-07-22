@@ -14,7 +14,6 @@ from ...models import (
     ReviewRequest,
     Team,
     TeamInboxItemState,
-    TeamRecordState,
     TeamState,
     TeamTaskState,
     agent_project_ids,
@@ -582,6 +581,7 @@ def _manager_fallback_routing_gaps(
         if _manager_fallback_deliverable_needs_review(
             deliverable,
             task=tasks_by_id.get(deliverable.task_id),
+            reviews=reviews_by_deliverable.get(deliverable.id, []),
         )
     ]
     if not review_work:
@@ -769,14 +769,11 @@ def _manager_fallback_deliverable_needs_review(
     deliverable: Deliverable,
     *,
     task: AgentTask | None,
+    reviews: list[ReviewRequest],
 ) -> bool:
     if task is not None and task.state == TeamTaskState.WAITING_FOR_REVIEW:
         return True
-    return deliverable.state in {
-        TeamRecordState.PENDING,
-        TeamRecordState.IN_PROGRESS,
-        TeamRecordState.BLOCKED,
-    }
+    return any(review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES for review in reviews)
 
 
 __all__ = [

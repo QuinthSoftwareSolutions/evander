@@ -1944,6 +1944,8 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     }
     assert any("provenance only" in hint for hint in first["next_action_hints"])
     assert any("not_run" in hint for hint in first["next_action_hints"])
+    assert any("superior acceptance" in hint for hint in first["next_action_hints"])
+    assert first["waiting_reason"] == "superior_acceptance"
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_REVIEW
     assert state.agent_runtimes["backend"].active_dispatch_id == "dispatch-slice7"
     notices = [
@@ -2124,6 +2126,7 @@ def test_submit_deliverable_for_review_suppresses_superior_notice(
     assert result["success"] is True
     assert result["deliverable_id"] == "deliverable-1"
     assert result["created_review_request_ids"] == ["review-1"]
+    assert result["waiting_reason"] == "review"
     assert [
         item.id
         for item in state.inbox.values()
@@ -3502,6 +3505,38 @@ def test_repository_update_task_command_reports_cross_project_graph_context(
     }
     assert state.tasks["backend-task"].dependency_task_ids == []
     assert repo.read().tasks["backend-task"].dependency_task_ids == []
+
+
+def test_repository_update_task_command_owner_finishes_without_deliverable_notice(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-task")
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="follow-up-task",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Follow-up",
+        description="Starts after the administrative task is finished.",
+        created_by_agent_id="backend",
+        dependency_task_ids=["backend-task"],
+    )
+    _lease_agent_dispatch(repo, agent_id="backend")
+
+    state, result = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="backend-task",
+        state="finished",
+    )
+
+    assert result["success"] is True
+    assert state.tasks["backend-task"].state == TeamTaskState.FINISHED
+    assert state.dependency_status("follow-up-task") == "satisfied"
+    assert state.deliverables == {}
+    assert not any(
+        item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE for item in state.inbox.values()
+    )
 
 
 def test_repository_update_task_command_supervisor_finishes_subordinate_task(

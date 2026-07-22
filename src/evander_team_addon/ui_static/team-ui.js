@@ -20,7 +20,7 @@ const caseStatuses = [
 const taskBoardLanes = [
   { id: "planned", label: "Planned", states: ["pending"] },
   { id: "in-progress", label: "In Progress", states: ["in_progress", "blocked"] },
-  { id: "reviewing", label: "Reviewing", states: ["waiting_for_review"] },
+  { id: "reviewing", label: "Acceptance / Review", states: ["waiting_for_review"] },
   { id: "done", label: "Done", states: ["finished", "accepted"] },
 ];
 const taskBoardStateToLane = new Map(
@@ -4682,7 +4682,7 @@ function workspaceAttentionItems({
     items.push({
       title: task.title || task.id,
       meta: [
-        humanizeToken(task.state),
+        taskStateLabel(task),
         project ? project.name || project.id : text(task.project_id),
         owner ? agentLabel(owner) : text(task.owner_agent_id),
       ].filter(Boolean).join(" - "),
@@ -7528,7 +7528,7 @@ function renderMailReader() {
     </header>
     <div class="mail-reader-body">${escapeHtml(mailBody(item) || "No message body was recorded.")}</div>
     <div class="mail-reader-context">
-      ${task ? `<span>Task: ${escapeHtml(task.title)} (${escapeHtml(task.id)}) · ${escapeHtml(humanizeToken(task.state))}</span>` : ""}
+      ${task ? `<span>Task: ${escapeHtml(task.title)} (${escapeHtml(task.id)}) · ${escapeHtml(taskStateLabel(task))}</span>` : ""}
       <span>Message ID: ${escapeHtml(item.id)}</span>
       ${updated}
     </div>
@@ -8851,7 +8851,7 @@ function renderAgentOpenTasks(openTasks) {
     <ul class="inline-list">
       ${openTasks
         .map((task) => {
-          return `<li>${escapeHtml(task.title)} <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span></li>`;
+          return `<li>${escapeHtml(task.title)} <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span></li>`;
         })
         .join("")}
     </ul>
@@ -9484,7 +9484,7 @@ function agentWorkSnapshot(agentData) {
   const runtimeAttention = agentRuntimeAttentionRows(agentData.id);
   const activeAssignments = activeEphemeralAssignmentsForAgent(agentData.id);
   const primary = text(activitySummary?.headline) || text(activitySummary?.working_on) || (currentTask
-    ? `${currentTask.title} (${humanizeToken(currentTask.state)})`
+    ? `${currentTask.title} (${taskStateLabel(currentTask)})`
     : inboxItems[0]
       ? `${inboxItemLabels[inboxItems[0].item_type] || inboxItems[0].item_type}: ${inboxItemDetail(inboxItems[0]) || inboxItems[0].id}`
       : activeAssignments[0]
@@ -9496,7 +9496,7 @@ function agentWorkSnapshot(agentData) {
     waiting.push(summaryWaiting);
   }
   waitingTasks.slice(0, 2).forEach((task) => {
-    const label = `${task.title} (${humanizeToken(task.state)})`;
+    const label = `${task.title} (${taskStateLabel(task)})`;
     if (!waiting.includes(label)) {
       waiting.push(label);
     }
@@ -10363,7 +10363,7 @@ function renderCaseTaskLinks(item) {
   }
   const labels = taskIds.map((taskId) => {
     const task = state.tasks[taskId];
-    return task ? `${task.title} (${task.id}, ${humanizeToken(task.state)})` : taskId;
+    return task ? `${task.title} (${task.id}, ${taskStateLabel(task)})` : taskId;
   });
   return `<div class="meta-line">Tasks ${escapeHtml(labels.join(" - "))}</div>`;
 }
@@ -10600,7 +10600,7 @@ function renderTaskBoardCard(task) {
   const owner = state.agents[task.owner_agent_id] || null;
   const assignedTo = owner ? agentLabel(owner) : text(task.owner_agent_id);
   const blocked = isTaskBoardBlocked(task);
-  const stateLabel = blocked ? "Blocked" : humanizeToken(task.state);
+  const stateLabel = blocked ? "Blocked" : taskStateLabel(task);
   const laneEntered = taskBoardLaneEnteredText(task);
   return `
     <li class="task-board-card${blocked ? " task-board-card-blocked" : ""}">
@@ -10788,7 +10788,16 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
     detailBits.push(`${blockedTasks.length} blocked`);
   }
   if (waitingTasks.length) {
-    detailBits.push(`${waitingTasks.length} waiting review`);
+    const acceptanceCount = waitingTasks.filter(
+      (task) => task.waiting_reason === "superior_acceptance",
+    ).length;
+    const reviewCount = waitingTasks.length - acceptanceCount;
+    if (acceptanceCount) {
+      detailBits.push(`${acceptanceCount} waiting acceptance`);
+    }
+    if (reviewCount) {
+      detailBits.push(`${reviewCount} waiting review`);
+    }
   }
   if (hiddenCount > 0) {
     detailBits.push(`${hiddenCount} hidden`);
@@ -10923,7 +10932,7 @@ function renderTasks(tasks, { compact = false } = {}) {
                       <strong>${escapeHtml(task.title)}</strong>
                       <span>${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_agent_id)} - priority ${task.priority}</span>
                     </span>
-                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span>
+                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
                   </summary>
                   <div class="compact-record-body">
                     <div class="record-actions">
@@ -10950,7 +10959,7 @@ function renderTasks(tasks, { compact = false } = {}) {
                 <div class="task-line">
                   <strong>${escapeHtml(task.title)}</strong>
                   <div class="record-actions">
-                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span>
+                    <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
                     ${editButton("task", task.id)}
                   </div>
                 </div>
@@ -11843,7 +11852,7 @@ function renderTemplatePreview() {
               <li class="record-item">
                 <div class="record-line">
                   <strong>${escapeHtml(task.title)}</strong>
-                  <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(task.state)}</span>
+                  <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
                 </div>
                 <div class="meta-line">${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_role_key)} - creator ${escapeHtml(task.created_by_role_key)} - priority ${task.priority}</div>
                 ${dependencyLine}
@@ -12431,7 +12440,7 @@ function renderDeliveryRow(row) {
           <div>
             <div class="delivery-detail-label">Task</div>
             <div class="delivery-detail-value">
-              ${task ? `${escapeHtml(task.id)} - ${escapeHtml(task.title)} - ${escapeHtml(task.state)}` : "missing"}
+              ${task ? `${escapeHtml(task.id)} - ${escapeHtml(task.title)} - ${escapeHtml(taskStateLabel(task))}` : "missing"}
             </div>
           </div>
           <div>
@@ -12491,7 +12500,7 @@ function renderCompactDeliveryRow(row) {
           <div>
             <div class="delivery-detail-label">Task</div>
             <div class="delivery-detail-value">
-              ${task ? `${escapeHtml(task.id)} - ${escapeHtml(task.title)} - ${escapeHtml(task.state)}` : "missing"}
+              ${task ? `${escapeHtml(task.id)} - ${escapeHtml(task.title)} - ${escapeHtml(taskStateLabel(task))}` : "missing"}
             </div>
           </div>
           <div>
@@ -15693,6 +15702,16 @@ function optionsFromMap(map, preferredOrder = []) {
     return left[1].localeCompare(right[1]) || String(left[0]).localeCompare(String(right[0]));
   });
   return entries;
+}
+
+function taskStateLabel(task) {
+  if (!task || task.state !== "waiting_for_review") {
+    return humanizeToken(task?.state);
+  }
+  if (task.waiting_reason === "superior_acceptance") {
+    return "Waiting for acceptance";
+  }
+  return "Waiting for review";
 }
 
 function humanizeToken(value) {

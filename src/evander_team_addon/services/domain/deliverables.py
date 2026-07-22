@@ -107,9 +107,9 @@ def _deliverable_submission_next_action_hints(
         )
     elif created_inbox_ids:
         hints.append(
-            "A deliverable notice was sent to your superior; wait for review, "
-            "acceptance, or branch-promotion instructions before taking more "
-            "completion actions."
+            "The task is waiting_for_review for superior acceptance because a "
+            "deliverable notice was sent to your superior. Wait for acceptance "
+            "or branch-promotion instructions before taking more completion actions."
         )
     verification = _optional_mapping(deliverable.get("verification"), "verification")
     if verification is not None and verification.get("status") == "not_run":

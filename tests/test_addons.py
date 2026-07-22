@@ -76,6 +76,18 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     assert addon.mcp_tools is not None
 
 
+def test_team_addon_ui_distinguishes_acceptance_from_review_waiting() -> None:
+    source = (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'label: "Acceptance / Review"' in source
+    assert 'task.waiting_reason === "superior_acceptance"' in source
+    assert 'return "Waiting for acceptance"' in source
+    assert 'return "Waiting for review"' in source
+    assert "taskStateLabel(task)" in source
+
+
 def test_bundled_bokio_addon_packaging_contract_is_declared() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
