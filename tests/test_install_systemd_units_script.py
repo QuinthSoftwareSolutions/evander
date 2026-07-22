@@ -61,6 +61,7 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert "evander-didww-sip-bridge.service" in text
     assert "evander-admin-web.service" in text
     assert "evander-npm-audit-facade.service" in text
+    assert "evander-managed-git-refresh.service" in text
 
 
 def test_install_systemd_units_retires_legacy_agent_sandbox_units() -> None:
@@ -152,6 +153,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     scheduled_wake = (repo / "systemd" / "evander-scheduled-wake.service.template").read_text(
         encoding="utf-8"
     )
+    managed_git_refresh = (
+        repo / "systemd" / "evander-managed-git-refresh.service.template"
+    ).read_text(encoding="utf-8")
     teams_ingest = (repo / "systemd" / "evander-teams-ingest.service.template").read_text(
         encoding="utf-8"
     )
@@ -202,6 +206,14 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "--log-level ${SCHEDULED_WAKE_LOG_LEVEL}" in scheduled_wake
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-scheduled-wake" in scheduled_wake
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in scheduled_wake
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in managed_git_refresh
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/managed-git-refresh.env" in managed_git_refresh
+    assert "RuntimeDirectory=evander" in managed_git_refresh
+    assert "Group=__GIT_GROUP__" in managed_git_refresh
+    assert "RuntimeDirectoryMode=0750" in managed_git_refresh
+    assert "--allowed-uid __GIT_UID__" in managed_git_refresh
+    assert "--socket-path /run/evander/managed-git-refresh.sock" in managed_git_refresh
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-managed-git-refresh" in managed_git_refresh
     assert "Environment=TEAMS_INGEST_LOG_LEVEL=INFO" in teams_ingest
     assert "ExecStart=__PROJECT_DIR__/scripts/run_teams_ingest.sh" in teams_ingest
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in teams_ingest

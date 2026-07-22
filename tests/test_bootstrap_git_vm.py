@@ -157,6 +157,7 @@ def test_bootstrap_git_vm_atomically_replaces_existing_valid_guest_public_key_en
     assert 'command="old"' not in updated_authorized_keys
     assert updated_authorized_keys.count(public_key_body) == 1
     assert "command=" in updated_authorized_keys
+    assert "EVANDER_GIT_REFRESH_REQUIRED=1" in updated_authorized_keys
     assert "keep-me" in updated_authorized_keys
 
 

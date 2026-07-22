@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-22 - Pull-Time Managed Git Refresh
+
+- Added a host-owned Unix-socket refresh broker so managed clone, fetch, pull, `ls-remote`, and
+  archive reads refresh their exact authorized upstream before serving refs.
+- Made broker and upstream failures fail closed instead of silently serving stale managed refs,
+  while keeping provider credentials out of the restricted SSH wrapper.
+- Added generic systemd and Ansible lifecycle management for
+  `evander-managed-git-refresh.service`.
+
 ## 2026-07-22 - Managed Worker Deployment Checkout
 
 - Moved private worker deployment checkouts from the retired `git-remotes/evander-deploy.git`

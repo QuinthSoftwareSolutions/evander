@@ -17,6 +17,16 @@ if a file is absent. Runtime configuration comes from `runtime/host-config.json`
 `runtime/directory-config/root/...`, and secret values can also be supplied through the service
 manager environment or optional repo-root `secrets.env`.
 
+## `config/managed-git-refresh.env.example`
+
+| Parameter | Found in | Consumed by |
+|---|---|---|
+| `MANAGED_GIT_REFRESH_LOG_LEVEL` | `config/managed-git-refresh.env.example` | `evander-managed-git-refresh.service`; controls broker logging and defaults to `INFO`. |
+
+The broker listens on the host-local `/run/evander/managed-git-refresh.sock`. Restricted SSH reads
+use a 120-second request timeout and fail rather than serving cached refs when refresh cannot
+complete. Upstream Git credentials remain in the broker's host service environment.
+
 ## `config/gateway.env.example`
 
 | Parameter | Found in | Consumed by |

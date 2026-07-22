@@ -4,10 +4,12 @@ import base64
 import os
 from pathlib import Path
 import subprocess
+import threading
 
 import pytest
 
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.managed_git_refresh import _RefreshServer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -390,3 +392,103 @@ def test_wrapper_does_not_load_secrets_or_refresh_mirrors(tmp_path: Path) -> Non
     assert "mirror_issue_repo" not in wrapper_text
     assert "evander.mirrorSource" not in wrapper_text
     assert "EVANDER_SECRETS_ENV_FILE" not in wrapper_text
+
+
+def test_required_refresh_runs_before_managed_git_read(tmp_path: Path) -> None:
+    class FakeBroker:
+        def __init__(self) -> None:
+            self.requests: list[str] = []
+
+        def authorize_peer(self, _connection: object) -> None:
+            return None
+
+        def refresh(self, *, managed_repo_id: str) -> dict[str, str]:
+            self.requests.append(managed_repo_id)
+            return {"managed_repo_id": managed_repo_id, "refreshed_at": "now"}
+
+    git_root = tmp_path / "managed-git"
+    git_root.mkdir()
+    env = _base_env(git_root)
+    repo_id = "mr_0123456789abcdef0123"
+    repo = _create_managed_bare(git_root, repo_id)
+    worktree = _seed_worktree(tmp_path, env)
+    _git(worktree, "push", str(repo), "HEAD:refs/heads/main", env=env)
+    fake_ssh = tmp_path / "fake-ssh"
+    _write_fake_ssh(fake_ssh)
+    broker = FakeBroker()
+    socket_path = tmp_path / "refresh.sock"
+    server = _RefreshServer(socket_path, broker)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    read_env = _ssh_env(env, fake_ssh, repo=repo, access="read-only")
+    read_env.update(
+        {
+            "EVANDER_GIT_REFRESH_REQUIRED": "1",
+            "EVANDER_GIT_REFRESH_SOCKET": str(socket_path),
+        }
+    )
+
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", f"ssh://evander-git-host{repo}", "refs/heads/main"],
+            check=False,
+            text=True,
+            capture_output=True,
+            env=read_env,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr
+    assert broker.requests == [repo_id]
+
+
+def test_required_refresh_failure_refuses_stale_refs(tmp_path: Path) -> None:
+    git_root = tmp_path / "managed-git"
+    git_root.mkdir()
+    env = _base_env(git_root)
+    repo = _create_managed_bare(git_root, "mr_0123456789abcdef0123")
+    fake_ssh = tmp_path / "fake-ssh"
+    _write_fake_ssh(fake_ssh)
+    read_env = _ssh_env(env, fake_ssh, repo=repo, access="read-only")
+    read_env.update(
+        {
+            "EVANDER_GIT_REFRESH_REQUIRED": "1",
+            "EVANDER_GIT_REFRESH_SOCKET": str(tmp_path / "missing.sock"),
+        }
+    )
+
+    result = subprocess.run(
+        ["git", "ls-remote", f"ssh://evander-git-host{repo}"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=read_env,
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to serve stale managed Git refs" in result.stderr
+
+
+def test_managed_repository_read_requires_refresh_without_new_key_metadata(tmp_path: Path) -> None:
+    git_root = tmp_path / "managed-git"
+    git_root.mkdir()
+    env = _base_env(git_root)
+    repo = _create_managed_bare(git_root, "mr_0123456789abcdef0123")
+    fake_ssh = tmp_path / "fake-ssh"
+    _write_fake_ssh(fake_ssh)
+    read_env = _ssh_env(env, fake_ssh, repo=repo, access="read-only")
+    read_env["EVANDER_GIT_REFRESH_SOCKET"] = str(tmp_path / "missing.sock")
+
+    result = subprocess.run(
+        ["git", "ls-remote", f"ssh://evander-git-host{repo}"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=read_env,
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to serve stale managed Git refs" in result.stderr

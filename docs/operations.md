@@ -2746,6 +2746,7 @@ This creates:
 - `evander-discord-ingest.service`
 - `evander-discord-wake.service`
 - `evander-scheduled-wake.service`
+- `evander-managed-git-refresh.service`
 - `evander-teams-ingest.service`
 - `evander-teams-meeting-ingest.service`
 - `evander-effect-orchestrator.service`
@@ -2786,6 +2787,7 @@ sudo systemctl start evander-proxy-issue-sync.service
 sudo systemctl start evander-discord-ingest.service
 sudo systemctl start evander-discord-wake.service
 sudo systemctl start evander-scheduled-wake.service
+sudo systemctl start evander-managed-git-refresh.service
 sudo systemctl start evander-teams-ingest.service
 sudo systemctl start evander-teams-meeting-ingest.service
 sudo systemctl start evander-effect-orchestrator.service
@@ -2802,6 +2804,7 @@ sudo systemctl status evander-proxy-issue-sync.service
 sudo systemctl status evander-discord-ingest.service
 sudo systemctl status evander-discord-wake.service
 sudo systemctl status evander-scheduled-wake.service
+sudo systemctl status evander-managed-git-refresh.service
 sudo systemctl status evander-teams-ingest.service
 sudo systemctl status evander-teams-meeting-ingest.service
 sudo systemctl status evander-effect-orchestrator.service
@@ -2816,9 +2819,10 @@ users:
 ```bash
 systemctl show -p User evander-discord-wake.service
 systemctl show -p User evander-scheduled-wake.service
+systemctl show -p User evander-managed-git-refresh.service
 ```
 
-Both commands should report the operator account used for deployment, not an empty
+All three commands should report the operator account used for deployment, not an empty
 root/default user.
 
 ## Managed Git Repository Operations
@@ -2826,6 +2830,18 @@ root/default user.
 Managed Git is the supported code-transport path for both `libvirt_vm` and
 `container_worker_vm`. The control plane owns one bare repository per normalized upstream and
 owning directory boundary. Do not create an issue-numbered mirror or persistent trusted checkout.
+
+Managed clone, fetch, pull, `ls-remote`, and archive reads refresh the exact authorized repository
+through `evander-managed-git-refresh.service` before serving refs. A broker/upstream failure fails
+the read rather than silently serving stale refs. Diagnose with:
+
+```bash
+systemctl status evander-managed-git-refresh.service
+journalctl -u evander-managed-git-refresh.service --no-pager -n 100
+```
+
+`evander-cli git-repos refresh <managed-repo-id>` remains available for operator recovery, but is
+not a prerequisite for creating or using agents.
 
 ### Register and clone
 
@@ -2957,8 +2973,8 @@ signing, and interactive prompts disabled. Cleanup force-removes it and compare-
 the operation ref on success, failure, cancellation, and normal signals. Do not run agent-authored
 tests in this host worktree; use the VM/container isolation boundary.
 
-Run reconciliation, locked worktree pruning, and repository maintenance without a separate
-service:
+Run reconciliation, locked worktree pruning, and repository maintenance explicitly; the refresh
+broker does not perform worktree maintenance:
 
 ```bash
 evander-cli git-repos maintenance

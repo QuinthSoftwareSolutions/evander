@@ -209,6 +209,7 @@ Opening a port establishes a route. The service still applies its own session pr
 | `evander-discord-ingest.service` | Ingest Discord data. |
 | `evander-discord-wake.service` | Turn eligible Discord messages into agent wake activity. |
 | `evander-scheduled-wake.service` | Resume sessions whose scheduled wake is due. |
+| `evander-managed-git-refresh.service` | Refresh an authorized managed repository before clone, fetch, pull, or archive reads. |
 | `evander-teams-ingest.service` | Run `evander-cli teams-ingest` through `scripts/run_teams_ingest.sh`. |
 | `evander-teams-meeting-ingest.service` | Ingest configured Teams meeting media and events. |
 

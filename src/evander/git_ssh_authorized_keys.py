@@ -229,6 +229,7 @@ def _authorized_write_forced_command(
     return (
         f"EVANDER_GIT_ROOT_B64={_one_line_base64(str(git_root))}"
         " EVANDER_GIT_AUTH_ACCESS=write"
+        " EVANDER_GIT_REFRESH_REQUIRED=1"
         f" EVANDER_GIT_AUTH_REPO_B64={_one_line_base64(str(repo_path))}"
         f" EVANDER_GIT_AUTH_SESSION_ID_B64={_one_line_base64(session_id)}"
         f" EVANDER_GIT_AUTH_REF_PREFIX_B64={_one_line_base64(ref_prefix)}"
@@ -246,6 +247,7 @@ def _authorized_read_forced_command(
     return (
         f"EVANDER_GIT_ROOT_B64={_one_line_base64(str(git_root))}"
         " EVANDER_GIT_AUTH_ACCESS=read-only"
+        " EVANDER_GIT_REFRESH_REQUIRED=1"
         f" EVANDER_GIT_AUTH_REPO_B64={_one_line_base64(str(repo_path))}"
         f" {wrapper_path}"
     )

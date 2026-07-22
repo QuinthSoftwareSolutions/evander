@@ -41,6 +41,7 @@ def test_install_git_read_authorized_key_scopes_exact_repository(tmp_path) -> No
     assert "EVANDER_GIT_ROOT_B64=" in text
     assert "EVANDER_GIT_AUTH_ACCESS=read-only" in text
     assert "EVANDER_GIT_AUTH_REPO_B64=" in text
+    assert "EVANDER_GIT_REFRESH_REQUIRED=1" in text
     assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64=" not in text
     assert str(wrapper) in text
 
@@ -71,6 +72,7 @@ def test_install_git_write_authorized_key_scopes_repo_and_session(tmp_path) -> N
     assert 'from="10.2.1.4/32"' in text
     assert "EVANDER_GIT_AUTH_ACCESS=write" in text
     assert "EVANDER_GIT_AUTH_REPO_B64=" in text
+    assert "EVANDER_GIT_REFRESH_REQUIRED=1" in text
     assert "EVANDER_GIT_AUTH_SESSION_ID_B64=" in text
     assert "EVANDER_GIT_AUTH_REF_PREFIX_B64=" in text
     assert "EVANDER_GIT_AUTH_PR_NOTES_REF_B64=" in text

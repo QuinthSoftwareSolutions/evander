@@ -52,6 +52,14 @@ evander-cli git-repos show mr_0123456789abcdef0123 --directory-path root/acme/te
 evander-cli git-repos refresh mr_0123456789abcdef0123
 ```
 
+The explicit refresh command is an operator diagnostic and recovery surface. Normal managed Git
+reads do not require it: restricted SSH keys provisioned by Evander require the host-owned
+`evander-managed-git-refresh.service` to refresh the exact authorized repository before
+`git-upload-pack` or `git-upload-archive` serves refs. This covers clone, fetch, pull,
+`ls-remote`, and archive reads. If the broker or upstream is unavailable, the Git read fails with
+a stale-ref refusal instead of succeeding from an old mirror. The SSH wrapper never receives
+provider credentials and cannot request a different repository.
+
 The equivalent privileged Admin API is:
 
 - `GET /api/admin/git-repositories`
@@ -119,6 +127,12 @@ A refresh fetches into `refs/evander/refresh/<operation-id>/**`, then applies ca
 with one `git update-ref --stdin` transaction. It never prunes guest, review, Team, notes, or
 operation refs. Git remotes are not added or rewritten during operations because linked worktrees
 share repository configuration.
+
+Pull-time refresh requests travel over `/run/evander/managed-git-refresh.sock`. The broker accepts
+only same-host peer credentials and registry-backed `mr_<20-hex>` identifiers derived from the
+SSH key's already-validated exact repository path. Existing per-repository locks serialize
+overlapping refreshes. There is intentionally no freshness TTL: a successful read reflects an
+upstream fetch performed for that request.
 
 ## Pinned promotion, notes, and publication
 

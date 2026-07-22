@@ -603,6 +603,7 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert "git_ssh_command_wrapper.sh" in role
     assert "EVANDER_GIT_ROOT_B64={{ evander_git_root | b64encode }}" in role
     assert "EVANDER_GIT_AUTH_ACCESS=read-only" in role
+    assert "EVANDER_GIT_REFRESH_REQUIRED=1" in role
     assert "EVANDER_GIT_AUTH_REPO_B64={{ evander_worker_repo_managed_path | b64encode }}" in role
     assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64" not in role
     assert "scripts/create_git_remote.sh" not in role

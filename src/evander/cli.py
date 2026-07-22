@@ -2364,6 +2364,7 @@ def status(
             "evander-http-target-relay.service",
             "evander-discord-wake.service",
             "evander-scheduled-wake.service",
+            "evander-managed-git-refresh.service",
         ]
         unit_statuses = [_get_systemd_unit_state(unit) for unit in units]
         report["systemd_units"] = [asdict(unit_status) for unit_status in unit_statuses]

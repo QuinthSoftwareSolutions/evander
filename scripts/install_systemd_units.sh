@@ -53,6 +53,9 @@ elif [[ "$(id -u)" -eq 0 ]]; then
 else
   RUN_USER="${USER}"
 fi
+GIT_SERVICE_USER="${EVANDER_GIT_USER:-${RUN_USER}}"
+GIT_SERVICE_UID="$(id -u "${GIT_SERVICE_USER}")"
+GIT_SERVICE_GROUP="$(id -gn "${GIT_SERVICE_USER}")"
 PROJECT_DIR="${ROOT_DIR}"
 SYSTEMD_DIR="/etc/systemd/system"
 SECRETS_FILE="${ROOT_DIR}/secrets.env"
@@ -73,6 +76,7 @@ EVANDER_UNITS=(
   evander-discord-ingest.service
   evander-discord-wake.service
   evander-scheduled-wake.service
+  evander-managed-git-refresh.service
   evander-teams-ingest.service
   evander-teams-meeting-ingest.service
   evander-effect-orchestrator.service
@@ -432,6 +436,8 @@ render_unit() {
   sed \
     -e "s|__PROJECT_DIR__|${PROJECT_DIR}|g" \
     -e "s|__RUN_USER__|${RUN_USER}|g" \
+    -e "s|__GIT_UID__|${GIT_SERVICE_UID}|g" \
+    -e "s|__GIT_GROUP__|${GIT_SERVICE_GROUP}|g" \
     "${template}" > "${target}"
 }
 
@@ -557,6 +563,10 @@ render_unit \
   "${SYSTEMD_DIR}/evander-scheduled-wake.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/evander-managed-git-refresh.service.template" \
+  "${SYSTEMD_DIR}/evander-managed-git-refresh.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/evander-teams-ingest.service.template" \
   "${SYSTEMD_DIR}/evander-teams-ingest.service"
 
@@ -590,6 +600,7 @@ Installed systemd units:
   evander-discord-ingest.service
   evander-discord-wake.service
   evander-scheduled-wake.service
+  evander-managed-git-refresh.service
   evander-teams-ingest.service
   evander-teams-meeting-ingest.service
   evander-effect-orchestrator.service
@@ -619,6 +630,7 @@ Next steps:
      sudo systemctl start evander-discord-ingest.service
      sudo systemctl start evander-discord-wake.service
      sudo systemctl start evander-scheduled-wake.service
+     sudo systemctl start evander-managed-git-refresh.service
      sudo systemctl start evander-teams-ingest.service
      sudo systemctl start evander-teams-meeting-ingest.service
      sudo systemctl start evander-effect-orchestrator.service

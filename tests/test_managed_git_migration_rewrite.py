@@ -325,6 +325,7 @@ def test_apply_rewrites_directory_owned_authorized_key(
 
     auth_text = authorized_keys.read_text(encoding="utf-8")
     assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64=" not in auth_text
+    assert "EVANDER_GIT_REFRESH_REQUIRED=1" in auth_text
     assert _b64(tmp_path / "runtime" / "managed-git" / f"{repo_id}.git") in auth_text
     assert service.get_repository(repo_id)["bindings_by_kind"]["authorized_sessions"] == [
         "session-team-a"

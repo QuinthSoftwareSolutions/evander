@@ -213,6 +213,11 @@ evander-cli git-repos list --directory-path root/northstar-platform/mission-cont
 evander-cli git-repos show <managed-repo-id> --directory-path root/northstar-platform/mission-control
 ```
 
+Normal agent reads refresh automatically. The restricted SSH wrapper validates the exact
+repository, then asks `evander-managed-git-refresh.service` to fetch upstream before serving clone,
+fetch, pull, `ls-remote`, or archive data. If the broker or upstream is unavailable, the read fails
+instead of silently returning stale refs; the agent never receives upstream credentials.
+
 Clone it into an existing VM session without exposing the host path:
 
 ```bash

@@ -37,6 +37,8 @@
         unit: evander-discord-wake.service
       - key: scheduled_wake
         unit: evander-scheduled-wake.service
+      - key: managed_git_refresh
+        unit: evander-managed-git-refresh.service
       - key: teams_ingest
         unit: evander-teams-ingest.service
       - key: teams_meeting_ingest
@@ -65,6 +67,21 @@
     success_msg: "{{ item.unit }} remains installed without being enabled/running."
   loop: "{{ evander_verification_units }}"
   when: not (evander_services.get(item.key, false) | bool)
+
+- name: Inspect managed Git refresh broker socket
+  ansible.builtin.stat:
+    path: /run/evander/managed-git-refresh.sock
+  register: evander_managed_git_refresh_socket
+  when: evander_services.get('managed_git_refresh', false) | bool
+
+- name: Verify managed Git refresh broker socket is ready
+  ansible.builtin.assert:
+    that:
+      - evander_managed_git_refresh_socket.stat.exists
+      - evander_managed_git_refresh_socket.stat.issock
+    fail_msg: evander-managed-git-refresh.service is active but its broker socket is unavailable.
+    success_msg: Managed Git refresh broker socket is ready.
+  when: evander_services.get('managed_git_refresh', false) | bool
 
 - name: Verify managed Admin Web Caddy is active
   ansible.builtin.assert:

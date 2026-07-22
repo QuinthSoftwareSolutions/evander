@@ -5519,6 +5519,12 @@ class ManagedGitAdminService:
                 return f"{name}={base64.b64encode(replacement.encode()).decode('ascii')}"
 
             rewritten_line = _B64_ASSIGNMENT_PATTERN.sub(replace_assignment, line)
+            if "EVANDER_GIT_REFRESH_REQUIRED=" not in rewritten_line:
+                rewritten_line = rewritten_line.replace(
+                    " EVANDER_GIT_AUTH_REPO_B64=",
+                    " EVANDER_GIT_REFRESH_REQUIRED=1 EVANDER_GIT_AUTH_REPO_B64=",
+                    1,
+                )
             if has_prefix and "EVANDER_GIT_AUTH_REPO_PREFIX_B64" in rewritten_line:
                 raise ManagedGitConflictError(
                     f"Could not narrow prefix-scoped authorized key in {path}"

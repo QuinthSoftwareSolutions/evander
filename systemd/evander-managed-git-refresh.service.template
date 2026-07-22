@@ -1,0 +1,21 @@
+[Unit]
+Description=Evander Managed Git Refresh Broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__GIT_GROUP__
+WorkingDirectory=__PROJECT_DIR__
+Environment=MANAGED_GIT_REFRESH_LOG_LEVEL=INFO
+EnvironmentFile=-__PROJECT_DIR__/config/managed-git-refresh.env
+EnvironmentFile=-__PROJECT_DIR__/secrets.env
+RuntimeDirectory=evander
+RuntimeDirectoryMode=0750
+ExecStart=__PROJECT_DIR__/.venv/bin/evander-managed-git-refresh --log-level ${MANAGED_GIT_REFRESH_LOG_LEVEL} serve --runtime-dir __PROJECT_DIR__/runtime --socket-path /run/evander/managed-git-refresh.sock --allowed-uid __GIT_UID__
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
