@@ -2290,6 +2290,8 @@ def rebuild_audit_index(
         max_lines=max_lines,
         reset=reset,
     )
+    if result.complete:
+        index.rebuild_search_index_if_needed()
     if json_output:
         typer.echo(json.dumps(result.as_dict(), indent=2, sort_keys=True))
         return

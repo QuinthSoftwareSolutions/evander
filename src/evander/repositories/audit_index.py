@@ -13,8 +13,12 @@ from typing import Any, Iterator
 from evander.models import DirectoryPath
 from evander.repositories.orchestration_db import SQLITE_BUSY_TIMEOUT_MS
 
-AUDIT_INDEX_SCHEMA_VERSION = 1
+AUDIT_INDEX_SCHEMA_VERSION = 2
 DEFAULT_TAIL_IMPORT_MAX_LINES = 20_000
+
+_AUDIT_SEARCH_TABLE = "tool_call_audit_search"
+_AUDIT_SEARCH_READY_METADATA_KEY = "tool_call_audit_search_ready"
+_AUDIT_SEARCH_PROGRESS_METADATA_KEY = "tool_call_audit_search_backfill_row_id"
 
 _SENSITIVE_PAYLOAD_MARKERS: tuple[str, ...] = (
     "token",
@@ -134,6 +138,142 @@ def connect_audit_index_db(path: Path | str) -> sqlite3.Connection:
     return connection
 
 
+def _audit_search_table_exists(connection: sqlite3.Connection) -> bool:
+    return (
+        connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?
+            """,
+            (_AUDIT_SEARCH_TABLE,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _metadata_json_value(connection: sqlite3.Connection, key: str) -> Any:
+    row = connection.execute(
+        "SELECT value_json FROM audit_index_metadata WHERE key = ?",
+        (key,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return json.loads(str(row["value_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _set_metadata_json_value(
+    connection: sqlite3.Connection,
+    key: str,
+    value: Any,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO audit_index_metadata(key, value_json)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json
+        """,
+        (key, json.dumps(value, sort_keys=True)),
+    )
+
+
+def _audit_search_index_ready(connection: sqlite3.Connection) -> bool:
+    return _audit_search_table_exists(connection) and (
+        _metadata_json_value(connection, _AUDIT_SEARCH_READY_METADATA_KEY) is True
+    )
+
+
+def _ensure_audit_search_schema(connection: sqlite3.Connection) -> None:
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        table_existed = _audit_search_table_exists(connection)
+        connection.execute(
+            f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS {_AUDIT_SEARCH_TABLE} USING fts5(
+                search_text,
+                content='tool_call_audit_entries',
+                content_rowid='row_id',
+                tokenize='trigram',
+                detail='none',
+                columnsize=0
+            )
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS tool_call_audit_search_insert
+            AFTER INSERT ON tool_call_audit_entries
+            WHEN COALESCE(
+                (SELECT value_json FROM audit_index_metadata
+                 WHERE key = '{_AUDIT_SEARCH_READY_METADATA_KEY}'),
+                'false'
+            ) = 'true'
+            BEGIN
+                INSERT INTO {_AUDIT_SEARCH_TABLE}(rowid, search_text)
+                VALUES (new.row_id, new.search_text);
+            END
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS tool_call_audit_search_delete
+            AFTER DELETE ON tool_call_audit_entries
+            WHEN COALESCE(
+                (SELECT value_json FROM audit_index_metadata
+                 WHERE key = '{_AUDIT_SEARCH_READY_METADATA_KEY}'),
+                'false'
+            ) = 'true'
+            BEGIN
+                INSERT INTO {_AUDIT_SEARCH_TABLE}({_AUDIT_SEARCH_TABLE}, rowid, search_text)
+                VALUES ('delete', old.row_id, old.search_text);
+            END
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS tool_call_audit_search_update
+            AFTER UPDATE OF search_text ON tool_call_audit_entries
+            WHEN COALESCE(
+                (SELECT value_json FROM audit_index_metadata
+                 WHERE key = '{_AUDIT_SEARCH_READY_METADATA_KEY}'),
+                'false'
+            ) = 'true'
+            BEGIN
+                INSERT INTO {_AUDIT_SEARCH_TABLE}({_AUDIT_SEARCH_TABLE}, rowid, search_text)
+                VALUES ('delete', old.row_id, old.search_text);
+                INSERT INTO {_AUDIT_SEARCH_TABLE}(rowid, search_text)
+                VALUES (new.row_id, new.search_text);
+            END
+            """
+        )
+    except sqlite3.OperationalError:
+        connection.rollback()
+        # Keep the normalized SQLite read model usable on SQLite builds without
+        # FTS5/trigram support. Queries will retain the LIKE fallback.
+        return
+
+    ready_metadata = _metadata_json_value(connection, _AUDIT_SEARCH_READY_METADATA_KEY)
+    if not table_existed or not isinstance(ready_metadata, bool):
+        has_entries = (
+            connection.execute("SELECT 1 FROM tool_call_audit_entries LIMIT 1").fetchone()
+            is not None
+        )
+        _set_metadata_json_value(
+            connection,
+            _AUDIT_SEARCH_READY_METADATA_KEY,
+            not has_entries,
+        )
+        _set_metadata_json_value(
+            connection,
+            _AUDIT_SEARCH_PROGRESS_METADATA_KEY,
+            0,
+        )
+    connection.commit()
+
+
 def ensure_audit_index_schema(path: Path | str) -> None:
     with connect_audit_index_db(path) as connection:
         connection.executescript(
@@ -198,22 +338,19 @@ def ensure_audit_index_schema(path: Path | str) -> None:
                 ON tool_call_audit_entries(trace_id, created_at DESC, row_id DESC);
             """
         )
-        connection.execute(
-            """
-            INSERT OR IGNORE INTO audit_index_metadata(key, value_json)
-            VALUES (?, ?)
-            """,
-            (
+        _ensure_audit_search_schema(connection)
+        schema_metadata = _metadata_json_value(connection, "schema_version")
+        if not isinstance(schema_metadata, dict) or (
+            schema_metadata.get("version") != AUDIT_INDEX_SCHEMA_VERSION
+        ):
+            _set_metadata_json_value(
+                connection,
                 "schema_version",
-                json.dumps(
-                    {
-                        "version": AUDIT_INDEX_SCHEMA_VERSION,
-                        "applied_at": _datetime_to_storage(datetime.now(UTC)),
-                    },
-                    sort_keys=True,
-                ),
-            ),
-        )
+                {
+                    "version": AUDIT_INDEX_SCHEMA_VERSION,
+                    "applied_at": _datetime_to_storage(datetime.now(UTC)),
+                },
+            )
 
 
 class ToolCallAuditIndex:
@@ -226,6 +363,82 @@ class ToolCallAuditIndex:
 
     def ensure_schema(self) -> None:
         ensure_audit_index_schema(self.path)
+
+    def search_index_ready(self) -> bool:
+        self.ensure_schema()
+        with connect_audit_index_db(self.path) as connection:
+            return _audit_search_index_ready(connection)
+
+    def rebuild_search_index_if_needed(self) -> bool:
+        if self.search_index_ready():
+            return False
+        while not self.advance_search_index_backfill():
+            time.sleep(0.01)
+        return True
+
+    def advance_search_index_backfill(self, *, max_rows: int = 250) -> bool:
+        if max_rows < 1:
+            raise ValueError("max_rows must be positive")
+        self.ensure_schema()
+        with connect_audit_index_db(self.path) as connection:
+            if _audit_search_index_ready(connection):
+                return True
+            if not _audit_search_table_exists(connection):
+                return True
+            connection.execute("BEGIN IMMEDIATE")
+            raw_progress = _metadata_json_value(
+                connection,
+                _AUDIT_SEARCH_PROGRESS_METADATA_KEY,
+            )
+            progress_row_id = (
+                raw_progress
+                if isinstance(raw_progress, int) and not isinstance(raw_progress, bool)
+                else 0
+            )
+            rows = connection.execute(
+                """
+                SELECT row_id, search_text
+                FROM tool_call_audit_entries
+                WHERE row_id > ?
+                ORDER BY row_id
+                LIMIT ?
+                """,
+                (progress_row_id, max_rows),
+            ).fetchall()
+            if rows:
+                connection.executemany(
+                    f"INSERT INTO {_AUDIT_SEARCH_TABLE}(rowid, search_text) VALUES (?, ?)",
+                    ((int(row["row_id"]), str(row["search_text"])) for row in rows),
+                )
+                _set_metadata_json_value(
+                    connection,
+                    _AUDIT_SEARCH_PROGRESS_METADATA_KEY,
+                    int(rows[-1]["row_id"]),
+                )
+                return False
+            _set_metadata_json_value(
+                connection,
+                _AUDIT_SEARCH_READY_METADATA_KEY,
+                True,
+            )
+            return True
+
+    def _reset_search_index_with_connection(self, connection: sqlite3.Connection) -> None:
+        if not _audit_search_table_exists(connection):
+            return
+        _set_metadata_json_value(
+            connection,
+            _AUDIT_SEARCH_READY_METADATA_KEY,
+            False,
+        )
+        connection.execute(
+            f"INSERT INTO {_AUDIT_SEARCH_TABLE}({_AUDIT_SEARCH_TABLE}) VALUES ('delete-all')"
+        )
+        _set_metadata_json_value(
+            connection,
+            _AUDIT_SEARCH_PROGRESS_METADATA_KEY,
+            0,
+        )
 
     def index_payload(self, payload: dict[str, Any]) -> bool:
         self.ensure_schema()
@@ -303,6 +516,7 @@ class ToolCallAuditIndex:
         stat = source.stat()
         with connect_audit_index_db(self.path) as connection:
             if reset:
+                self._reset_search_index_with_connection(connection)
                 connection.execute("DELETE FROM tool_call_audit_entries")
                 connection.execute(
                     "DELETE FROM audit_import_sources WHERE source_path = ?",
@@ -420,23 +634,22 @@ class ToolCallAuditIndex:
         limit: int,
     ) -> ToolCallAuditIndexPage:
         self.ensure_schema()
-        where_sql, values = _build_query_filters(
-            session_id=session_id,
-            tool_name=tool_name,
-            status=status,
-            directory_path=directory_path,
-            direct_only=direct_only,
-            created_after=created_after,
-            created_before=created_before,
-            q=q,
-        )
-        where_clause = f"WHERE {' AND '.join(where_sql)}" if where_sql else ""
         with connect_audit_index_db(self.path) as connection:
-            matched_row = connection.execute(
-                f"SELECT COUNT(*) AS count FROM tool_call_audit_entries {where_clause}",
-                values,
-            ).fetchone()
-            matched = int(matched_row["count"]) if matched_row is not None else 0
+            normalized_query = str(q or "").strip().casefold()
+            where_sql, values = _build_query_filters(
+                session_id=session_id,
+                tool_name=tool_name,
+                status=status,
+                directory_path=directory_path,
+                direct_only=direct_only,
+                created_after=created_after,
+                created_before=created_before,
+                q=q,
+                use_full_text_search=(
+                    len(normalized_query) >= 3 and _audit_search_index_ready(connection)
+                ),
+            )
+            where_clause = f"WHERE {' AND '.join(where_sql)}" if where_sql else ""
             status_counts = {
                 str(row["status"] or "success"): int(row["count"])
                 for row in connection.execute(
@@ -449,6 +662,7 @@ class ToolCallAuditIndex:
                     values,
                 ).fetchall()
             }
+            matched = sum(status_counts.values())
             rows = connection.execute(
                 f"""
                 SELECT payload_json
@@ -775,6 +989,7 @@ def _build_query_filters(
     created_after: datetime | None,
     created_before: datetime | None,
     q: str | None,
+    use_full_text_search: bool = False,
 ) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     values: list[Any] = []
@@ -805,8 +1020,21 @@ def _build_query_filters(
         values.append(before_storage)
     normalized_query = str(q or "").strip().casefold()
     if normalized_query:
-        clauses.append("search_text LIKE ? ESCAPE '\\'")
-        values.append(f"%{_escape_like(normalized_query)}%")
+        if use_full_text_search and len(normalized_query) >= 3:
+            clauses.append(
+                f"(row_id IN (SELECT rowid FROM {_AUDIT_SEARCH_TABLE} "
+                f"WHERE {_AUDIT_SEARCH_TABLE} MATCH ?) "
+                "AND search_text LIKE ? ESCAPE '\\')"
+            )
+            values.extend(
+                [
+                    _trigram_match_query(normalized_query),
+                    f"%{_escape_like(normalized_query)}%",
+                ]
+            )
+        else:
+            clauses.append("search_text LIKE ? ESCAPE '\\'")
+            values.append(f"%{_escape_like(normalized_query)}%")
     return clauses, values
 
 
@@ -963,3 +1191,10 @@ def _safe_search_text(value: Any) -> str:
 
 def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _trigram_match_query(value: str) -> str:
+    trigrams = dict.fromkeys(value[index : index + 3] for index in range(len(value) - 2))
+    return " AND ".join(
+        f'"{trigram.replace(chr(34), chr(34) * 2)}"' for trigram in trigrams
+    )

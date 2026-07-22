@@ -94,6 +94,7 @@ _ADMIN_CONFIG_MUTATION_THREAD_LOCK = threading.RLock()
 _AUDIT_INDEX_BACKGROUND_IMPORT_MAX_LINES = 20_000
 _AUDIT_INDEX_BACKGROUND_IMPORT_MAX_SECONDS = 1.0
 _AUDIT_INDEX_BACKGROUND_IMPORT_SLEEP_SECONDS = 0.05
+_AUDIT_INDEX_BACKGROUND_SEARCH_MAX_ROWS = 250
 
 
 @contextmanager
@@ -122,8 +123,18 @@ def _start_tool_call_audit_index_import(
                     reset=False,
                 )
                 if index.import_is_complete(audit_log_path):
-                    return
+                    break
                 if not result.stopped_by_limit and result.lines_scanned == 0:
+                    return
+            except Exception:
+                return
+            time.sleep(_AUDIT_INDEX_BACKGROUND_IMPORT_SLEEP_SECONDS)
+
+        while True:
+            try:
+                if index.advance_search_index_backfill(
+                    max_rows=_AUDIT_INDEX_BACKGROUND_SEARCH_MAX_ROWS
+                ):
                     return
             except Exception:
                 return

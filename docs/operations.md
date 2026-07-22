@@ -434,7 +434,10 @@ and surfaces:
 - a Tool Calls tab for read-only inspection of the configured `audit_log_path`
   (`runtime/audit.jsonl` by default), with filtering by session, tool, status,
   directory/scope, and time range. The UI uses `runtime/audit.db` as an indexed
-  SQLite read model when available and falls back to JSONL when needed.
+  SQLite read model when available and falls back to JSONL when needed. Free-text
+  searches use a compact trigram index that is backfilled in short background batches
+  after an existing audit database is upgraded; the compatible SQLite scan remains
+  available until that backfill finishes.
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
 - Sessions policy controls for `approval_required_tools`, which lets operators require human

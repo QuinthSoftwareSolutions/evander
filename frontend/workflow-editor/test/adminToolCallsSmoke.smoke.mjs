@@ -595,9 +595,27 @@ test("tool calls default load uses recent mode and filtered reads stay exact", a
   assert.equal(refreshUrl.searchParams.get("q"), null);
 
   const filterSidebar = page.locator(".feature-sidebar");
+  await page.evaluate(() => {
+    window.__toolCallPollIntervals = 0;
+    const originalSetInterval = window.setInterval.bind(window);
+    window.setInterval = (handler, timeout, ...args) => {
+      if (timeout === 10_000) {
+        window.__toolCallPollIntervals += 1;
+      }
+      return originalSetInterval(handler, timeout, ...args);
+    };
+  });
+  const requestsBeforeSearch = toolCallRequests.length;
   const searchRequest = waitForToolCallRequest(page, (url) => url.searchParams.get("q") === "request-filter");
   await filterSidebar.getByLabel("Search").fill("request-filter");
+  await page.waitForTimeout(100);
+  assert.equal(toolCallRequests.length, requestsBeforeSearch, "free-text search should be debounced");
   assert.equal((await searchRequest).searchParams.get("recent_only"), null);
+  assert.equal(
+    await page.evaluate(() => window.__toolCallPollIntervals),
+    0,
+    "filtered audit searches should not create a polling interval",
+  );
 
   const searchClear = waitForToolCallRequest(page, (url) => url.searchParams.get("recent_only") === "true" && !url.searchParams.has("q"));
   await filterSidebar.getByLabel("Search").fill("");

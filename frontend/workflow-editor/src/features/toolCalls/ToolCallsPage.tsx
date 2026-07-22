@@ -128,6 +128,7 @@ type ApprovalPayloadDiagnostic = {
 };
 
 const POLL_INTERVAL_MS = 10_000;
+const SEARCH_DEBOUNCE_MS = 350;
 const DEFAULT_LIMIT = 100;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -795,6 +796,8 @@ export function ToolCallsPage() {
   useEffect(() => {
     let cancelled = false;
     let requestInFlight = false;
+    let intervalId: number | null = null;
+    let searchDebounceId: number | null = null;
     const controller = new AbortController();
 
     async function refresh() {
@@ -823,16 +826,31 @@ export function ToolCallsPage() {
       }
     }
 
-    void refresh();
-    const intervalId = window.setInterval(() => {
-      void refresh().catch(() => {});
-    }, POLL_INTERVAL_MS);
+    const startRefreshing = () => {
+      void refresh();
+      if (recentOnly) {
+        intervalId = window.setInterval(() => {
+          void refresh().catch(() => {});
+        }, POLL_INTERVAL_MS);
+      }
+    };
+
+    if (filters.query.trim()) {
+      searchDebounceId = window.setTimeout(startRefreshing, SEARCH_DEBOUNCE_MS);
+    } else {
+      startRefreshing();
+    }
     return () => {
       cancelled = true;
       controller.abort();
-      window.clearInterval(intervalId);
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+      }
+      if (searchDebounceId !== null) {
+        window.clearTimeout(searchDebounceId);
+      }
     };
-  }, [query]);
+  }, [filters.query, query, recentOnly]);
 
   useEffect(() => {
     if (items.length === 0) {

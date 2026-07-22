@@ -9,6 +9,16 @@
 - Added generic systemd and Ansible lifecycle management for
   `evander-managed-git-refresh.service`.
 
+## 2026-07-22 - Tool Call Audit Search Performance
+
+- Added a trigram full-text index for Tool Calls free-text searches while preserving the canonical
+  audit JSONL and the existing SQLite filtering fallback.
+- Migrated existing audit indexes through a storage-efficient batched background backfill after
+  JSONL import catches up, avoiding a large synchronous database rewrite or long write lock during
+  Admin Web startup.
+- Debounced free-text searches, stopped polling exact filtered result sets, and removed a redundant
+  aggregate scan from each indexed query.
+
 ## 2026-07-22 - Managed Worker Deployment Checkout
 
 - Moved private worker deployment checkouts from the retired `git-remotes/evander-deploy.git`
