@@ -585,6 +585,9 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     role = (ROOT / "ansible" / "roles" / "worker_git_access" / "tasks" / "main.yml").read_text(
         encoding="utf-8"
     )
+    defaults = (ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert worker.index("- role: host_prereqs") < worker.index("- role: worker_git_access")
     assert worker.index("- role: worker_git_access") < worker.index("- role: repo_checkout")
@@ -609,8 +612,18 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert "fetch\n      - --force" in role
     assert "evander_worker_repo_deploy_ref" in role
     assert "evander_control_plane_repo_revision_check.stdout" in role
-    assert "Use private control-plane mirror for worker repo checkout" in role
+    assert "Use private control-plane managed repository for worker repo checkout" in role
     assert 'evander_repo_url: "{{ evander_worker_repo_checkout_url }}"' in role
+    assert (
+        'evander_repo_refspec: "+{{ evander_worker_repo_deploy_ref }}:'
+        '{{ evander_worker_repo_checkout_ref }}"'
+        in role
+    )
+    assert (
+        'evander_worker_repo_checkout_ref: "refs/remotes/origin/evander-deploy/'
+        '{{ inventory_hostname }}"'
+        in defaults
+    )
     assert "Deploy the control plane first, then rerun ansible/worker.yml" in role
     assert "not the literal <control-plane-private-ip> placeholder" in role
 

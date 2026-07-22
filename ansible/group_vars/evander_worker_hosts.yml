@@ -170,6 +170,7 @@ evander_worker_install_control_plane_git_authorized_key: "{{ (groups.get(evander
 evander_worker_repo_checkout_via_control_plane_git: "{{ evander_worker_install_control_plane_git_authorized_key }}"
 evander_worker_repo_managed_directory_path: "root"
 evander_worker_repo_deploy_ref: "refs/evander/deploy/{{ inventory_hostname }}"
+evander_worker_repo_checkout_ref: "refs/remotes/origin/evander-deploy/{{ inventory_hostname }}"
 evander_worker_allowed_git_source_prefixes:
   - "ssh://{{ evander_git_ssh_alias }}{{ evander_git_root }}/"
 

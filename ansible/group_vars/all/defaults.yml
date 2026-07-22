@@ -2,6 +2,7 @@
 # Core deploy contract.
 evander_repo_url: "git@example.com:your-org/evander.git"
 evander_repo_version: "main"
+evander_repo_refspec: ""
 evander_repo_accept_newhostkey: true
 evander_repo_ssh_private_key: ""
 evander_repo_ssh_private_key_path: "/home/{{ evander_run_user }}/.ssh/evander-repo-deploy-key"

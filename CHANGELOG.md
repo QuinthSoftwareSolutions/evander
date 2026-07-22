@@ -6,6 +6,8 @@
   mirror to the control plane's root-owned managed repository.
 - Scoped each worker's read-only SSH key to that exact managed repository and pinned deployments
   under worker-specific `refs/evander/deploy/` refs.
+- Explicitly fetched each worker's private deployment ref before checking out its pinned commit
+  SHA so the object is present even though the ref is outside `refs/heads/`.
 - Removed stale worker authorizations before managed-repository resolution so interrupted legacy
   deployments cannot reintroduce path-based managed Git state.
 

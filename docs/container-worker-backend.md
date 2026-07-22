@@ -156,7 +156,8 @@ For Azure-style deployments that include `evander_hosts`, the worker playbook al
 restricted SSH before `repo_checkout` and checks out the deployment repo through the root-owned
 managed control-plane repository instead of talking to GitHub directly. Deploy the control plane
 first so the worker playbook can publish its exact requested revision to the repository's
-worker-specific `refs/evander/deploy/` ref. The playbook never recreates the retired
+worker-specific `refs/evander/deploy/` ref. The checkout explicitly fetches that private ref before
+checking out the requested commit SHA. The playbook never recreates the retired
 `git-remotes/evander-deploy.git` mirror.
 
 If the host Docker bridge cannot reach Ubuntu apt mirrors during the image build, run the same build

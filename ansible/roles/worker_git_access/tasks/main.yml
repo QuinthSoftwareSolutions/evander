@@ -202,7 +202,8 @@
   changed_when: (evander_worker_repo_managed_fetch.stderr | trim | length) > 0
   when: evander_worker_repo_checkout_via_control_plane_git | bool
 
-- name: Use private control-plane mirror for worker repo checkout
+- name: Use private control-plane managed repository for worker repo checkout
   ansible.builtin.set_fact:
     evander_repo_url: "{{ evander_worker_repo_checkout_url }}"
+    evander_repo_refspec: "+{{ evander_worker_repo_deploy_ref }}:{{ evander_worker_repo_checkout_ref }}"
   when: evander_worker_repo_checkout_via_control_plane_git | bool

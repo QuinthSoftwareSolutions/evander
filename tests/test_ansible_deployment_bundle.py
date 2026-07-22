@@ -718,6 +718,9 @@ def test_ansible_repo_checkout_supports_private_deploy_key() -> None:
     text = (repo / "ansible" / "roles" / "repo_checkout" / "tasks" / "main.yml").read_text(
         encoding="utf-8"
     )
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "Install repo deploy key" in text
     assert "no_log: true" in text
@@ -730,6 +733,9 @@ def test_ansible_repo_checkout_supports_private_deploy_key() -> None:
     assert "'clean', '-f', '-x', '--'" in text
     assert "key_file:" in text
     assert "evander_repo_ssh_private_key_path" in text
+    assert "refspec:" in text
+    assert "evander_repo_refspec" in text
+    assert 'evander_repo_refspec: ""' in defaults
     assert "accept_newhostkey:" in text
 
 
