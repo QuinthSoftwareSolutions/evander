@@ -232,9 +232,12 @@ def test_apply_rewrites_all_legacy_state_and_records_bindings(tmp_path: Path) ->
     metadata = session["metadata"]
     assert metadata["managed_repo_id"] == repo_id
     assert metadata["managed_git_remote_reconciliation_required"] is True
-    assert metadata["container_git_write_access"]["managed_repo_id"] == repo_id
-    assert "bare_repo_path" not in metadata["container_git_write_access"]
-    assert "authorized_repo_path" not in metadata["container_git_write_access"]
+    assert "container_git_write_access" not in metadata
+    migrated_grant = metadata["managed_git_access_grants"][repo_id]
+    assert migrated_grant["managed_repo_id"] == repo_id
+    assert migrated_grant["lifetime"] == "session"
+    assert "bare_repo_path" not in migrated_grant
+    assert "authorized_repo_path" not in migrated_grant
     team_git = json.loads((runtime / "addons" / "team-addon" / "state.json").read_text())[
         "projects"
     ]["project-7"]["git"]

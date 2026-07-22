@@ -69,6 +69,10 @@ The equivalent privileged Admin API is:
 - `DELETE /api/admin/git-repositories/{managed_repo_id}`
 - `POST /api/admin/git-repositories/maintenance`
 - `POST /api/admin/git-repositories/migrate`
+- `GET /api/admin/sessions/{session_id}/git-grants`
+- `PUT /api/admin/sessions/{session_id}/git-grants/{managed_repo_id}`
+- `POST /api/admin/sessions/{session_id}/git-grants/{managed_repo_id}/clone`
+- `DELETE /api/admin/sessions/{session_id}/git-grants/{managed_repo_id}`
 
 Mutations require directory-scoped `admin.owner` permission and unlocked privileged operations.
 Registration JSON contains `directory_path`, `repo_source`, optional `default_branch`, and optional
@@ -91,6 +95,37 @@ evander-cli clone-repo-into-vm vm-14084 \
 resolves the internal restricted-SSH URL; neither the upstream URL nor the host bare path is sent
 through workflow outputs. Container-worker clones follow the same path and
 do not create a second cache mirror.
+
+A persistent agent can hold grants for multiple repositories. Each `(session, managed_repo_id)`
+pair receives its own deterministic guest key name and SSH host alias, while the host forced
+command remains scoped to exactly that repository. Granting or revoking one repository does not
+replace another repository's key, SSH config block, metadata, or authorization.
+
+Use the session grant commands when access should exist independently of a clone:
+
+```bash
+evander-cli git-repos grants session-123
+evander-cli git-repos grant session-123 \
+  --managed-repo-id mr_0123456789abcdef0123 \
+  --access-mode read-only
+evander-cli git-repos revoke-grant session-123 \
+  --managed-repo-id mr_0123456789abcdef0123
+```
+
+Standalone grants are session-persistent. A read-only grant therefore supports repeated clone,
+fetch, pull, `ls-remote`, and archive operations until it is explicitly revoked or the session is
+destroyed. It does not permit pushes. To provision access and clone in one operation:
+
+```bash
+evander-cli git-repos clone-into-agent session-123 \
+  --managed-repo-id mr_0123456789abcdef0123 \
+  --access-mode read-only \
+  --lifetime session
+```
+
+Clone effects and `clone-into-agent` also accept `--lifetime operation`. That temporary form is
+removed after the clone finishes and is intended for disposable consultations. It is not a
+standalone grant and cannot be used for later refreshes.
 
 Writable sessions receive a dedicated SSH key. The forced command permits writes only to:
 
@@ -146,6 +181,8 @@ The managed Git workflow contracts are:
 |---|---|
 | `effect:git:ensure-managed-repo` | `directory_path`, transient `repo_source`; returns `managed_repo_id` |
 | `effect:vm:clone-repo` / `effect:agent:clone-repo` | `managed_repo_id` plus a session/VM selector |
+| `effect:agent:grant-repo-access` | session/VM selector, `managed_repo_id`, access mode; creates a session-persistent grant |
+| `effect:agent:revoke-repo-access` | session/VM selector and exact `managed_repo_id` |
 | `effect:git:promote-agent-branch` | `managed_repo_id`, `agent_branch`, `target_branch`, `expected_commit_sha` |
 | `query:git:pr-note` | `managed_repo_id`, exact `commit_sha`, `notes_ref` |
 | `effect:git:push-branch` / `effect:pr:create` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` |
@@ -243,7 +280,8 @@ evander-cli git-repos migrate --apply
 Apply creates the registry and managed bare repositories, refreshes canonical refs, imports
 preserved refs, and rewrites Team/session/issue/key/workflow bindings to managed IDs. Workflow pack
 updates use the revision/lock service and abort on a concurrent edit. Stopped VM and container
-sessions are marked for Git-remote reconciliation before their next wake.
+sessions are marked for Git-remote reconciliation before their next wake. Legacy singular session
+Git authorization metadata is rewritten into repository-keyed, session-persistent grants.
 
 Apply writes a manifest containing old/new mappings and verification hashes. Evander-owned old
 repositories and cache checkouts leave active routing but remain read-only rollback artifacts.

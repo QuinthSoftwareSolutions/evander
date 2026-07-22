@@ -71,6 +71,7 @@ from evander.models import (
 from evander.provider_config import ProviderConfigResolver
 from evander.pr_feedback import FeedbackEnvelope, PrFeedbackStore
 from evander.messaging.agent_prompt_store import AgentPromptRecord
+from evander.managed_git_grants import managed_git_ssh_alias
 from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.triggers.queue import TriggerEventQueue
 from evander.daemons.effect_orchestrator import (
@@ -14751,7 +14752,8 @@ def test_clone_repo_into_vm_keeps_managed_clone_url_internal(
     remote_script = captured_ssh_input[-1]
     assert 'CANONICAL_REMOTE_URL=""' in remote_script
     assert (
-        f'REMOTE_URL="ssh://evander-git-host/managed-git/{_MANAGED_REPO_ID}.git"' in remote_script
+        f'REMOTE_URL="ssh://{managed_git_ssh_alias("evander-git-host", _MANAGED_REPO_ID)}'
+        f'/managed-git/{_MANAGED_REPO_ID}.git"' in remote_script
     )
 
 

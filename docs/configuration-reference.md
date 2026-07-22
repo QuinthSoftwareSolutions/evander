@@ -1281,6 +1281,14 @@ Managed repository storage is rooted at `runtime/managed-git/`; the registry is
 `runtime/git-worktrees/`. These paths are control-plane internals and are not workflow or Team
 configuration fields.
 
+Session manifests store active exact-repository credentials under
+`metadata.managed_git_access_grants`, keyed by `managed_repo_id`. Each record contains only
+secret-free lifecycle and revocation metadata such as access mode, session/operation lifetime,
+backend, SSH alias, public-key body, and authorization path. Private keys remain inside the VM or
+worker session home. The older singular `managed_git_access` and `container_git_write_access`
+records are compatibility input and are canonicalized into the plural map when migrated or
+updated.
+
 Directory-scoped provider configuration controls upstream credentials and host commit identity.
 Configuration stores environment-variable names, never secret values:
 

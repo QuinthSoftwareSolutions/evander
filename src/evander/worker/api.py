@@ -153,6 +153,16 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
         return JSONResponse(record.model_dump(mode="json"))
 
+    async def revoke_session_git_key(request: Request) -> JSONResponse:
+        try:
+            record = daemon.revoke_git_key(
+                request.path_params["session_id"],
+                request.path_params["key_name"],
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(record.model_dump(mode="json"))
+
     async def write_session_files(request: Request) -> JSONResponse:
         try:
             payload = await request.json()
@@ -327,6 +337,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                 "/v1/sessions/{session_id}/git/write-key",
                 provision_session_git_write_key,
                 methods=["POST"],
+            ),
+            Route(
+                "/v1/sessions/{session_id}/git/keys/{key_name}",
+                revoke_session_git_key,
+                methods=["DELETE"],
             ),
             Route("/v1/sessions/{session_id}/files", write_session_files, methods=["POST"]),
             Route(

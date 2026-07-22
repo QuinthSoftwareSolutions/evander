@@ -1930,6 +1930,76 @@ def git_repos_maintenance(
     _echo_managed_git_json(result)
 
 
+@git_repos_app.command("grants", short_help="List managed repository grants for a session.")
+def git_repos_grants(
+    session_id: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    grants = build_admin_runtime(config).vm_agent_admin.list_managed_git_access(session_id)
+    _echo_managed_git_json({"session_id": session_id, "grants": grants})
+
+
+@git_repos_app.command("grant", short_help="Grant a session access to one managed repository.")
+def git_repos_grant(
+    session_id: str,
+    managed_repo_id: Annotated[str, typer.Option("--managed-repo-id")],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    access_mode: Annotated[
+        str,
+        typer.Option("--access-mode", help="read-only or write."),
+    ] = "read-only",
+) -> None:
+    grant = build_admin_runtime(config).vm_agent_admin.grant_managed_git_access(
+        session_id,
+        managed_repo_id,
+        access_mode=access_mode,
+        lifetime="session",
+    )
+    _echo_managed_git_json(grant)
+
+
+@git_repos_app.command("revoke-grant", short_help="Revoke one session repository grant.")
+def git_repos_revoke_grant(
+    session_id: str,
+    managed_repo_id: Annotated[str, typer.Option("--managed-repo-id")],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    result = build_admin_runtime(config).vm_agent_admin.revoke_managed_git_access(
+        session_id,
+        managed_repo_id,
+    )
+    _echo_managed_git_json(result)
+
+
+@git_repos_app.command(
+    "clone-into-agent",
+    short_help="Clone a managed repository and provision agent Git access.",
+)
+def git_repos_clone_into_agent(
+    session_id: str,
+    managed_repo_id: Annotated[str, typer.Option("--managed-repo-id")],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    access_mode: Annotated[
+        str,
+        typer.Option("--access-mode", help="read-only or write."),
+    ] = "read-only",
+    lifetime: Annotated[
+        str,
+        typer.Option(
+            "--lifetime",
+            help="session for repeat fetch/pull access, or operation for one-shot clone access.",
+        ),
+    ] = "session",
+) -> None:
+    result = build_admin_runtime(config).vm_agent_admin.clone_managed_repo_into_agent(
+        session_id,
+        managed_repo_id,
+        access_mode=access_mode,
+        lifetime=lifetime,
+    )
+    _echo_managed_git_json(result)
+
+
 @git_repos_app.command("migrate", short_help="Migrate legacy managed Git state explicitly.")
 def git_repos_migrate(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,

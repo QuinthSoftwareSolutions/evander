@@ -919,6 +919,56 @@ def test_worker_api_provisions_session_git_write_key(
     assert f"IdentityFile {paths.agent_home / '.ssh' / 'evander-git-write'}" in host_config_text
 
 
+def test_worker_preserves_multiple_exact_repo_keys_and_revokes_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        key_path = Path(args[-1])
+        key_path.write_text("private key\n", encoding="utf-8")
+        key_path.with_name(f"{key_path.name}.pub").write_text(
+            f"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI{key_path.name} worker\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1", metadata={}))
+    for key_name, alias in (("evander-git-one", "git-one"), ("evander-git-two", "git-two")):
+        daemon.provision_git_write_key(
+            "session-1",
+            WorkerGitWriteKeyRequest(
+                git_host="10.2.0.4",
+                git_user="agent",
+                git_ssh_alias=alias,
+                key_name=key_name,
+                alias_is_exact=True,
+            ),
+        )
+
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    config_path = paths.agent_home / ".ssh" / "config"
+    assert "Host git-one" in config_path.read_text(encoding="utf-8")
+    assert "Host git-two" in config_path.read_text(encoding="utf-8")
+
+    result = daemon.revoke_git_key("session-1", "evander-git-one")
+
+    config_text = config_path.read_text(encoding="utf-8")
+    assert result.removed is True
+    assert "Host git-one" not in config_text
+    assert "Host git-two" in config_text
+    assert not (paths.agent_home / ".ssh" / "evander-git-one").exists()
+    assert (paths.agent_home / ".ssh" / "evander-git-two").is_file()
+
+
 def test_worker_provisions_dotted_git_write_key_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

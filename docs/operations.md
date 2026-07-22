@@ -2880,6 +2880,37 @@ Use `effect:git:ensure-managed-repo` when a workflow receives a transient source
 issue import. Persist its `managed_repo_id`; do not persist the source as the managed workflow
 contract. Clone effects take the ID and let the control plane resolve the restricted internal URL.
 
+### Persistent agents and multiple repositories
+
+A persistent VM or container agent can hold independent access to several managed repositories.
+Granting a second repository creates a second exact-repository key and SSH alias; it does not
+replace the first grant.
+
+```bash
+evander-cli git-repos grants session-123
+evander-cli git-repos grant session-123 \
+  --managed-repo-id mr_0123456789abcdef0123 \
+  --access-mode read-only
+evander-cli git-repos clone-into-agent session-123 \
+  --managed-repo-id mr_0123456789abcdef0123 \
+  --access-mode read-only \
+  --lifetime session
+```
+
+Read-only standalone grants are session-persistent, so an existing checkout can continue to
+`git fetch` and `git pull`. Use `--lifetime operation` only with `clone-into-agent` or a clone
+effect when the credential must be removed immediately after a one-shot clone. Revoke exactly one
+repository without deleting checkout files or disturbing other grants:
+
+```bash
+evander-cli git-repos revoke-grant session-123 \
+  --managed-repo-id mr_0123456789abcdef0123
+```
+
+Admin Web exposes the same list, grant, grant-and-clone, and revoke actions on the session detail
+page. The workflow equivalents are `effect:agent:grant-repo-access`,
+`effect:agent:clone-repo`, and `effect:agent:revoke-repo-access`.
+
 The cloned guest repo receives `AGENTS.md`, the issue task file when applicable, a local coding
 branch, and the `git sync-base`, `git push-agent`, and `git agent-pr-note` helpers. Optional
 toolchain bootstraps remain separate:
@@ -2927,7 +2958,7 @@ branches and never prunes agent, review, Team, notes, or operation refs.
 
 ### Agent push and queue processing
 
-Writable guest keys are restricted to one managed repository, one
+Each writable guest key is restricted to one managed repository, one
 `refs/heads/agents/<session-id>/**` namespace, and the session PR-notes ref. A guest cannot write
 ordinary branches, host review/Team namespaces, tags, configuration, or hooks.
 

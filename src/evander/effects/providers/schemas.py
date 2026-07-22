@@ -13,6 +13,38 @@ from evander.effects.providers.agent_session import (
 )
 
 
+def _normalize_managed_git_access_mode(value: object, *, effect_type: str) -> ConfigValue | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and "${{" in value:
+        return value
+    normalized = str(value).strip().casefold().replace("_", "-")
+    if not normalized:
+        return None
+    if normalized in {"read-only", "readonly", "read"}:
+        return "read-only"
+    if normalized in {"write", "writable"}:
+        return "write"
+    raise ValueError(f"{effect_type} git_access_mode must be write or read-only")
+
+
+def _normalize_managed_git_access_lifetime(
+    value: object, *, effect_type: str
+) -> ConfigValue | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and "${{" in value:
+        return value
+    normalized = str(value).strip().casefold().replace("_", "-")
+    if not normalized:
+        return None
+    if normalized in {"session", "persistent"}:
+        return "session"
+    if normalized in {"operation", "temporary", "one-shot", "oneshot"}:
+        return "operation"
+    raise ValueError(f"{effect_type} git_access_lifetime must be session or operation")
+
+
 class EventEmitEffectDefinition(EffectDefinition):
     type: Literal["effect:event:emit"]
     event_type: ConfigValue
@@ -146,6 +178,8 @@ class VmCloneRepoEffectDefinition(EffectDefinition):
     managed_repo_id: ConfigValue
     clone_branch: ConfigValue | None = None
     vm_user: ConfigValue | None = None
+    git_access_mode: ConfigValue | None = None
+    git_access_lifetime: ConfigValue | None = None
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "VmCloneRepoEffectDefinition":
@@ -153,6 +187,16 @@ class VmCloneRepoEffectDefinition(EffectDefinition):
         if not any(value is not None for value in selectors):
             raise ValueError("effect:vm:clone-repo requires target, session_id, or vm_name")
         return self
+
+    @field_validator("git_access_mode", mode="before")
+    @classmethod
+    def normalize_git_access_mode(cls, value: object) -> ConfigValue | None:
+        return _normalize_managed_git_access_mode(value, effect_type="effect:vm:clone-repo")
+
+    @field_validator("git_access_lifetime", mode="before")
+    @classmethod
+    def normalize_git_access_lifetime(cls, value: object) -> ConfigValue | None:
+        return _normalize_managed_git_access_lifetime(value, effect_type="effect:vm:clone-repo")
 
 
 class VmBootstrapPythonEffectDefinition(EffectDefinition):
@@ -280,6 +324,7 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
     git_committer_name: ConfigValue | None = None
     git_committer_email: ConfigValue | None = None
     git_access_mode: ConfigValue | None = None
+    git_access_lifetime: ConfigValue | None = None
     pinned_ref: ConfigValue | None = None
     pinned_commit_sha: ConfigValue | None = None
 
@@ -297,18 +342,53 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
     @field_validator("git_access_mode", mode="before")
     @classmethod
     def normalize_git_access_mode(cls, value: object) -> ConfigValue | None:
-        if value is None:
-            return None
-        if isinstance(value, str) and "${{" in value:
-            return value
-        normalized = str(value).strip().casefold().replace("_", "-")
-        if not normalized:
-            return None
-        if normalized in {"read-only", "readonly", "read"}:
-            return "read-only"
-        if normalized in {"write", "writable"}:
-            return "write"
-        raise ValueError("effect:agent:clone-repo git_access_mode must be write or read-only")
+        return _normalize_managed_git_access_mode(value, effect_type="effect:agent:clone-repo")
+
+    @field_validator("git_access_lifetime", mode="before")
+    @classmethod
+    def normalize_git_access_lifetime(cls, value: object) -> ConfigValue | None:
+        return _normalize_managed_git_access_lifetime(value, effect_type="effect:agent:clone-repo")
+
+
+class AgentGrantRepoAccessEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:grant-repo-access"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    managed_repo_id: ConfigValue
+    git_access_mode: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "AgentGrantRepoAccessEffectDefinition":
+        if not any(value is not None for value in (self.target, self.session_id, self.vm_name)):
+            raise ValueError(
+                "effect:agent:grant-repo-access requires target, session_id, or vm_name"
+            )
+        return self
+
+    @field_validator("git_access_mode", mode="before")
+    @classmethod
+    def normalize_git_access_mode(cls, value: object) -> ConfigValue | None:
+        return _normalize_managed_git_access_mode(
+            value, effect_type="effect:agent:grant-repo-access"
+        )
+
+
+class AgentRevokeRepoAccessEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:revoke-repo-access"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    managed_repo_id: ConfigValue
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "AgentRevokeRepoAccessEffectDefinition":
+        if not any(value is not None for value in (self.target, self.session_id, self.vm_name)):
+            raise ValueError(
+                "effect:agent:revoke-repo-access requires target, session_id, or vm_name"
+            )
+        return self
 
 
 class AgentBootstrapFrontendEffectDefinition(EffectDefinition):

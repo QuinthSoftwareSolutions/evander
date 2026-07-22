@@ -615,6 +615,21 @@ ref. It cannot write host review/Team namespaces, tags, configuration, or hooks.
 sessions use the same managed bare repository rather than creating a separate cache mirror; set
 `git_access_mode` to `read-only` when write access is unnecessary.
 
+Persistent agents can hold independent grants for multiple managed repositories. Read-only grants
+remain installed for the session so existing checkouts can fetch and pull; each repository uses a
+separate key and SSH alias. Use the grant-and-clone CLI when adding a repo to an existing agent:
+
+```bash
+evander-cli git-repos clone-into-agent session-123 \
+  --managed-repo-id mr_0123456789abcdef0123 \
+  --access-mode read-only \
+  --lifetime session
+```
+
+`git-repos grants`, `git-repos grant`, and `git-repos revoke-grant` manage access without cloning.
+Operation-scoped access is available on clone operations for one-shot disposable work and is
+removed after cloning.
+
 Every Evander-provisioned managed Git read refreshes its exact repository through the host-owned
 `evander-managed-git-refresh.service` before refs are served. A failed upstream refresh fails the
 clone/fetch/pull instead of returning stale refs; agents never receive upstream credentials.

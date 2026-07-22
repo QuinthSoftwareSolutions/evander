@@ -704,6 +704,8 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:agent:create": "Create an agent session using the selected execution backend.",
     "effect:agent:destroy": "Destroy an agent session and its backend resources.",
     "effect:agent:clone-repo": "Clone a repository into an agent session workspace.",
+    "effect:agent:grant-repo-access": "Grant exact-repository Git access to an agent.",
+    "effect:agent:revoke-repo-access": "Revoke one agent repository grant.",
     "effect:agent:bootstrap-frontend": "Bootstrap frontend dependencies for an agent session.",
     "effect:agent:copy-files": "Copy rendered file content into an agent session workspace.",
     "effect:agent:prompt": "Dispatch a prompt to an agent session and wait for completion.",
@@ -1835,6 +1837,26 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             ),
             _field("clone_branch", "Clone branch", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
+            _field(
+                "git_access_mode",
+                "Git access mode",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("read-only", "Read only"),
+                    _field_option("write", "Write"),
+                ],
+            ),
+            _field(
+                "git_access_lifetime",
+                "Git access lifetime",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("session", "Session"),
+                    _field_option("operation", "Operation"),
+                ],
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -2275,16 +2297,26 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
                 description=(
-                    "Optional container-worker Git access mode. "
-                    "Use write for git push-agent or read-only for fetch-only sessions."
+                    "Use write for git push-agent or read-only for clone, fetch, and pull."
                 ),
+            ),
+            _field(
+                "git_access_lifetime",
+                "Git access lifetime",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("session", "Session"),
+                    _field_option("operation", "Operation"),
+                ],
+                description="Defaults to persistent session access.",
             ),
             _field(
                 "pinned_ref",
                 "Pinned ref",
                 "string",
                 bindable=True,
-                description="Optional ref to fetch before scoped read credentials are removed.",
+                description="Optional ref to fetch and verify before checkout.",
             ),
             _field(
                 "pinned_commit_sha",
@@ -2332,6 +2364,51 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "Optional committer.email for cloned repositories. "
                     "Set together with git_committer_name."
                 ),
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:grant-repo-access",
+        label="Agent grant repo access",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "managed_repo_id",
+                "Managed repository ID",
+                "string",
+                required=True,
+                bindable=True,
+            ),
+            _field(
+                "git_access_mode",
+                "Git access mode",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("read-only", "Read only"),
+                    _field_option("write", "Write"),
+                ],
+            ),
+            _field("vm_user", "VM user", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:revoke-repo-access",
+        label="Agent revoke repo access",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "managed_repo_id",
+                "Managed repository ID",
+                "string",
+                required=True,
+                bindable=True,
             ),
         ],
     ),

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-22 - Multi-Repository Agent Git Grants
+
+- Added first-class, repository-keyed read-only and write grants so one persistent VM or container
+  agent can access multiple managed repositories without replacing an earlier repository key.
+- Made read-only grants session-persistent by default for repeated clone, fetch, and pull, while
+  retaining explicit operation-scoped credentials for one-shot clone and consultation flows.
+- Added targeted grant, revoke, and grant-and-clone workflow, CLI, Admin API, and Admin Web
+  surfaces, including exact worker-key revocation that preserves unrelated repository grants.
+- Migrated legacy singular session Git metadata into the plural grant model and added focused
+  multi-repository, lifecycle, migration, worker, and operator-surface coverage.
+
 ## 2026-07-22 - Pull-Time Managed Git Refresh
 
 - Added a host-owned Unix-socket refresh broker so managed clone, fetch, pull, `ls-remote`, and

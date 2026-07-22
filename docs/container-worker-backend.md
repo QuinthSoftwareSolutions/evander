@@ -408,6 +408,8 @@ The worker API also exposes a session-preparation surface used by portable
 - `POST /v1/sessions` creates or reconciles durable session directories without starting a job.
 - `POST /v1/sessions/{session_id}/repo` clones a repo under `/home/agent/repos/<repo-name>`.
 - `POST /v1/sessions/{session_id}/files` writes files under `/home/agent`.
+- `DELETE /v1/sessions/{session_id}/git/keys/{key_name}` removes one repository key and its exact
+  SSH config block without changing other session Git grants.
 
 Those endpoints do not accept raw environment variables or secrets. Prompt and exec effects still
 use typed container jobs: the host builds an `ExecutionSpec.command`, starts the job, waits through
@@ -513,12 +515,18 @@ managed bare repository; the container path does not create a second cache mirro
 also persist only the managed ID, base-branch override, and release-branch policy.
 
 Clone jobs default to writable Git access. The control plane asks the worker daemon to generate a
-per-session SSH key, installs that public key on the control-plane Git user with a forced command
+per-session, per-repository SSH key, installs that public key on the control-plane Git user with a forced command
 scoped to the managed repository, `refs/heads/agents/<session-id>/...`, and that session's PR notes
 ref, then configures the repo-local `git push-agent` alias. Set `git_access_mode` to `read-only` on
 `effect:agent:clone-repo` when a container session should only fetch. Read-only authorization is
 still scoped to that managed repository and directory boundary; a worker key must not provide
 cross-directory repository access.
+
+Session-lifetime read-only credentials remain in the persistent agent home after the initial clone,
+so the checkout can fetch and pull later. One session can hold several repository grants because
+key files and SSH config blocks use repository-specific names. `git_access_lifetime: operation`
+removes only the affected key, config block, host authorization, and binding after cloning; it is
+used for disposable consultations. Exact revocation never removes an unrelated repository grant.
 
 `effect:agent:create` on `container_worker_vm` writes the session bootstrap files under
 `/home/agent`: `.evander/session.env`, shell profiles, Codex config in both supported
@@ -658,6 +666,7 @@ Routes:
 - `POST /v1/sessions/{session_id}/files`
 - `POST /v1/sessions/{session_id}/worktrees`
 - `POST /v1/sessions/{session_id}/git/write-key`
+- `DELETE /v1/sessions/{session_id}/git/keys/{key_name}`
 - `DELETE /v1/sessions/{session_id}`
 - `GET /v1/sessions/{session_id}/artifacts/{artifact_path:path}`
 - `POST /v1/sessions/{session_id}/mssql/databases`

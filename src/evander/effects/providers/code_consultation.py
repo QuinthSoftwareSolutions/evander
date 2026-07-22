@@ -127,6 +127,7 @@ class CodeConsultationEffectProvider(EffectProviderBase):
                     session_id=record.session_id,
                     managed_repo_id=record.managed_repo_id,
                     git_access_mode="read-only",
+                    git_access_lifetime="operation",
                     pinned_ref=consultation_snapshot_ref(record.consultation_id),
                     pinned_commit_sha=record.commit_sha,
                 ),

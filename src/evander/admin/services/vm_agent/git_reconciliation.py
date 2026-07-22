@@ -19,10 +19,13 @@ from evander.git_ssh_authorized_keys import (
     remove_git_authorized_keys_by_session_id,
 )
 from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
+from evander.managed_git_grants import (
+    managed_git_grants_from_metadata,
+    normalize_git_access_lifetime,
+)
 
 
 _RECONCILIATION_MARKER = "managed_git_remote_reconciliation_required"
-_GIT_ACCESS_METADATA_KEYS = ("container_git_write_access", "managed_git_access")
 
 
 class VmAgentManagedGitReconciliationMixin:
@@ -57,7 +60,7 @@ class VmAgentManagedGitReconciliationMixin:
                 if not bool(current_metadata.get(_RECONCILIATION_MARKER)):
                     return current
 
-                managed_repo_id, access_mode = self._managed_git_reconciliation_target(
+                targets = self._managed_git_reconciliation_targets(
                     current_metadata,
                     default_access_mode=(
                         "read-only" if backend == "container_worker_vm" else "write"
@@ -68,34 +71,37 @@ class VmAgentManagedGitReconciliationMixin:
                     metadata=current_metadata,
                 )
 
-                managed_git = self._deps.managed_git_admin
-                if managed_git is None:
-                    raise RuntimeError("managed Git service is not configured")
-                managed_git.unbind_all("authorized_sessions", normalized_session_id)
-
-                result = self._perform_managed_git_remote_reconciliation(
-                    session=current,
-                    session_id=normalized_session_id,
-                    managed_repo_id=managed_repo_id,
-                    access_mode=access_mode,
-                    backend=backend,
-                    vm_name=vm_name,
-                    vm_user=vm_user,
-                )
-                if not self._managed_git_reconciliation_succeeded(result):
-                    raise RuntimeError("managed Git setup did not complete")
+                for managed_repo_id, access_mode, lifetime in targets:
+                    result = self._perform_managed_git_remote_reconciliation(
+                        session=current,
+                        session_id=normalized_session_id,
+                        managed_repo_id=managed_repo_id,
+                        access_mode=access_mode,
+                        lifetime=lifetime,
+                        backend=backend,
+                        vm_name=vm_name,
+                        vm_user=vm_user,
+                    )
+                    if not self._managed_git_reconciliation_succeeded(result):
+                        raise RuntimeError(
+                            f"managed Git setup did not complete for {managed_repo_id}"
+                        )
 
                 refreshed = self._session_repository().get_session(normalized_session_id)
                 if refreshed is None:
                     raise RuntimeError("session no longer exists")
                 refreshed_metadata = self._session_metadata_mapping(refreshed)
-                if not self._has_reconciled_managed_git_access(
-                    refreshed_metadata,
-                    managed_repo_id=managed_repo_id,
-                    access_mode=access_mode,
-                    backend=backend,
-                ):
-                    raise RuntimeError("managed Git access verification failed")
+                for managed_repo_id, access_mode, lifetime in targets:
+                    if not self._has_reconciled_managed_git_access(
+                        refreshed_metadata,
+                        managed_repo_id=managed_repo_id,
+                        access_mode=access_mode,
+                        lifetime=lifetime,
+                        backend=backend,
+                    ):
+                        raise RuntimeError(
+                            f"managed Git access verification failed for {managed_repo_id}"
+                        )
 
                 cleared_metadata = dict(refreshed_metadata)
                 cleared_metadata.pop(_RECONCILIATION_MARKER, None)
@@ -149,6 +155,7 @@ class VmAgentManagedGitReconciliationMixin:
         session_id: str,
         managed_repo_id: str,
         access_mode: str,
+        lifetime: str,
         backend: str,
         vm_name: str | None,
         vm_user: str,
@@ -164,6 +171,8 @@ class VmAgentManagedGitReconciliationMixin:
                 managed_repo_id=managed_repo_id,
                 vm_user=vm_user,
                 directory_path=directory_path,
+                git_access_mode=access_mode,
+                git_access_lifetime=lifetime,
             )
 
         if backend != "container_worker_vm":
@@ -184,6 +193,7 @@ class VmAgentManagedGitReconciliationMixin:
                 managed_repo_id=managed_repo_id,
                 vm_user=vm_user,
                 git_access_mode=access_mode,
+                git_access_lifetime=lifetime,
             ),
             directory_path=directory_path,
         )
@@ -222,45 +232,35 @@ class VmAgentManagedGitReconciliationMixin:
             )
 
     @classmethod
-    def _managed_git_reconciliation_target(
+    def _managed_git_reconciliation_targets(
         cls,
         metadata: Mapping[str, Any],
         *,
         default_access_mode: str,
-    ) -> tuple[str, str]:
-        access_records = list(cls._managed_git_access_records(metadata))
-        access_repo_ids = {
-            str(access.get("managed_repo_id") or "").strip()
-            for access in access_records
-            if str(access.get("managed_repo_id") or "").strip()
-        }
-        repo_ids = access_repo_ids or cls._managed_repo_ids_in_metadata(metadata)
+    ) -> list[tuple[str, str, str]]:
+        grants = managed_git_grants_from_metadata(metadata)
+        if grants:
+            return [
+                (
+                    repo_id,
+                    cls._normalize_git_access_mode(grant.get("access_mode")),
+                    normalize_git_access_lifetime(grant.get("lifetime")),
+                )
+                for repo_id, grant in sorted(grants.items())
+                if normalize_git_access_lifetime(grant.get("lifetime")) == "session"
+            ]
+        repo_ids = cls._managed_repo_ids_in_metadata(metadata)
         if len(repo_ids) != 1:
-            raise RuntimeError("session does not identify exactly one managed repository")
-        managed_repo_id = next(iter(repo_ids))
-
-        modes = {
-            cls._normalize_git_access_mode(access.get("access_mode"))
-            for access in access_records
-            if str(access.get("managed_repo_id") or "").strip() == managed_repo_id
-        }
-        if len(modes) > 1:
-            raise RuntimeError("session has conflicting managed Git access modes")
-        return managed_repo_id, next(iter(modes), default_access_mode)
+            raise RuntimeError("session does not identify any unambiguous managed repository")
+        return [(next(iter(repo_ids)), default_access_mode, "session")]
 
     @classmethod
     def _managed_git_access_records(
         cls,
         value: object,
     ) -> Iterator[Mapping[str, Any]]:
-        if isinstance(value, Mapping):
-            for key, item in value.items():
-                if key in _GIT_ACCESS_METADATA_KEYS and isinstance(item, Mapping):
-                    yield item
-                yield from cls._managed_git_access_records(item)
-        elif isinstance(value, list):
-            for item in value:
-                yield from cls._managed_git_access_records(item)
+        metadata = value if isinstance(value, Mapping) else {}
+        yield from managed_git_grants_from_metadata(metadata).values()
 
     @classmethod
     def _managed_repo_ids_in_metadata(cls, value: object) -> set[str]:
@@ -307,19 +307,19 @@ class VmAgentManagedGitReconciliationMixin:
         *,
         managed_repo_id: str,
         access_mode: str,
+        lifetime: str,
         backend: str,
     ) -> bool:
-        expected_key = (
-            "container_git_write_access"
-            if backend == "container_worker_vm"
-            else "managed_git_access"
-        )
-        access = metadata.get(expected_key)
+        access = managed_git_grants_from_metadata(metadata).get(managed_repo_id)
         if not isinstance(access, Mapping):
             return False
         if str(access.get("managed_repo_id") or "").strip() != managed_repo_id:
             return False
         if cls._normalize_git_access_mode(access.get("access_mode")) != access_mode:
+            return False
+        if normalize_git_access_lifetime(access.get("lifetime")) != lifetime:
+            return False
+        if str(access.get("execution_backend") or backend).strip() != backend:
             return False
         return bool(
             str(access.get("public_key_body") or "").strip()

@@ -3964,6 +3964,8 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             "git_author_email": None,
             "git_committer_name": None,
             "git_committer_email": None,
+            "git_access_mode": "write",
+            "git_access_lifetime": "session",
         }
     ]
     project_repo = result["dispatches"][0]["project_repo"]

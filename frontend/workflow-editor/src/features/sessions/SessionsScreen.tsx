@@ -182,7 +182,27 @@ type WakeLedgerFilter = "all" | "pending" | "due" | "dispatching" | "queued" | "
 type SessionDetailResponse = {
   session: SessionRecord;
   wake_schedules: WakeSchedule[];
+  git_grants: ManagedGitGrant[];
   summary_json: Record<string, unknown>;
+};
+
+type ManagedGitGrant = {
+  managed_repo_id: string;
+  access_mode: "read-only" | "write";
+  lifetime: "session" | "operation";
+  execution_backend?: string;
+  git_ssh_alias?: string;
+  authorized_ref_prefix?: string;
+};
+
+type ManagedGitRepository = {
+  managed_repo_id: string;
+  display_name?: string;
+  directory_path?: string;
+};
+
+type ManagedGitRepositoryListResponse = {
+  repositories: ManagedGitRepository[];
 };
 
 type CatalogOption = {
@@ -1214,6 +1234,9 @@ export function SessionsScreen() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [approvalSettingsTool, setApprovalSettingsTool] = useState("");
+  const [gitGrantRepoId, setGitGrantRepoId] = useState("");
+  const [gitGrantAccessMode, setGitGrantAccessMode] = useState<"read-only" | "write">("read-only");
+  const [gitRepositories, setGitRepositories] = useState<ManagedGitRepository[]>([]);
 
   useEffect(() => {
     const syncDeepLink = () => {
@@ -1334,6 +1357,29 @@ export function SessionsScreen() {
       cancelled = true;
     };
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    const directoryPath = detail?.session.directory_path;
+    if (!directoryPath) {
+      setGitRepositories([]);
+      return;
+    }
+    let cancelled = false;
+    const query = new URLSearchParams({
+      directory_path: directoryPath,
+      include_descendants: "false",
+    });
+    fetchJson<ManagedGitRepositoryListResponse>(`/api/admin/git-repositories?${query.toString()}`)
+      .then((payload) => {
+        if (!cancelled) setGitRepositories(payload.repositories ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setGitRepositories([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.session.directory_path]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -1551,6 +1597,55 @@ export function SessionsScreen() {
     const payload = await fetchJson<SessionDetailResponse>(`/api/admin/sessions/${encodeURIComponent(sessionId)}`);
     setDetail(payload);
     return payload;
+  }
+
+  async function saveGitGrant(clone: boolean) {
+    if (!selectedSession || !gitGrantRepoId.trim()) return;
+    const repoId = gitGrantRepoId.trim();
+    setBusy(`${clone ? "git-clone" : "git-grant"}:${repoId}`);
+    setError(null);
+    setStatus(null);
+    try {
+      await fetchJson(
+        `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/git-grants/${encodeURIComponent(repoId)}${clone ? "/clone" : ""}`,
+        {
+          method: clone ? "POST" : "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ access_mode: gitGrantAccessMode, lifetime: "session" }),
+        },
+      );
+      await refreshSelectedSessionDetail(selectedSession.session_id);
+      setGitGrantRepoId("");
+      setStatus(
+        clone
+          ? `Cloned ${repoId} with persistent ${gitGrantAccessMode} access.`
+          : `Granted ${gitGrantAccessMode} access to ${repoId}.`,
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function revokeGitGrant(grant: ManagedGitGrant) {
+    if (!selectedSession) return;
+    if (!window.confirm(`Revoke ${selectedSession.session_id}'s access to ${grant.managed_repo_id}? The checkout will be retained.`)) return;
+    setBusy(`git-revoke:${grant.managed_repo_id}`);
+    setError(null);
+    setStatus(null);
+    try {
+      await fetchJson(
+        `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/git-grants/${encodeURIComponent(grant.managed_repo_id)}`,
+        { method: "DELETE" },
+      );
+      await refreshSelectedSessionDetail(selectedSession.session_id);
+      setStatus(`Revoked repository access for ${grant.managed_repo_id}.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function refreshSelectedSessionLedger(sessionId: string) {
@@ -2234,6 +2329,87 @@ export function SessionsScreen() {
                   <div><dt>Created</dt><dd>{formatTimestamp(selectedSession.created_at)}</dd></div>
                   <div><dt>Expires</dt><dd>{formatTimestamp(selectedSession.expires_at)}</dd></div>
                 </dl>
+              </div>
+            </article>
+            <article className="panel">
+              <div className="panel-header">
+                <h3>Repository access</h3>
+                <span className="panel-meta">{detail?.git_grants.length ?? 0} grants</span>
+              </div>
+              <div className="panel-body stack-layout">
+                {(detail?.git_grants ?? []).length > 0 ? (
+                  <div className="feature-list">
+                    {(detail?.git_grants ?? []).map((grant) => (
+                      <div className="feature-list-item" key={grant.managed_repo_id}>
+                        <div>
+                          <strong>{grant.managed_repo_id}</strong>
+                          <div className="panel-meta">
+                            {grant.access_mode} · {grant.lifetime} · {grant.execution_backend ?? "agent"}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="admin-shell-button admin-shell-button-muted"
+                          onClick={() => void revokeGitGrant(grant)}
+                          disabled={mutationLocked || busy === `git-revoke:${grant.managed_repo_id}`}
+                        >
+                          {busy === `git-revoke:${grant.managed_repo_id}` ? "Revoking…" : "Revoke"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-state">No managed repository grants.</div>
+                )}
+                <div className="feature-toolbar">
+                  <label className="field-stack">
+                    <span>Managed repository ID</span>
+                    <select
+                      value={gitGrantRepoId}
+                      onChange={(event) => setGitGrantRepoId(event.target.value)}
+                      disabled={mutationLocked}
+                    >
+                      <option value="">Select a repository</option>
+                      {gitRepositories.map((repository) => (
+                        <option key={repository.managed_repo_id} value={repository.managed_repo_id}>
+                          {repository.display_name
+                            ? `${repository.display_name} (${repository.managed_repo_id})`
+                            : repository.managed_repo_id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field-stack">
+                    <span>Access</span>
+                    <select
+                      value={gitGrantAccessMode}
+                      onChange={(event) => setGitGrantAccessMode(event.target.value as "read-only" | "write")}
+                      disabled={mutationLocked}
+                    >
+                      <option value="read-only">Read only</option>
+                      <option value="write">Write</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="admin-shell-button"
+                    onClick={() => void saveGitGrant(false)}
+                    disabled={mutationLocked || !gitGrantRepoId.trim() || busy?.startsWith("git-")}
+                  >
+                    Grant access
+                  </button>
+                  <button
+                    type="button"
+                    className="admin-shell-button"
+                    onClick={() => void saveGitGrant(true)}
+                    disabled={mutationLocked || !gitGrantRepoId.trim() || busy?.startsWith("git-")}
+                  >
+                    Grant and clone
+                  </button>
+                </div>
+                <p className="panel-meta">
+                  Read-only session grants support repeated clone, fetch, and pull. Revocation leaves existing checkout files in place.
+                </p>
               </div>
             </article>
             {selectedSession.container_lifecycle ? (

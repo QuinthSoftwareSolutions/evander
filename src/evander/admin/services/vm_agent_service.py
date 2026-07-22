@@ -13,6 +13,7 @@ from evander.admin.services.vm_agent.container_sessions import (
     VmAgentContainerSessionMixin,
 )
 from evander.admin.services.vm_agent.inventory import VmAgentInventoryMixin
+from evander.admin.services.vm_agent.git_access import VmAgentGitAccessMixin
 from evander.admin.services.vm_agent.vm_lifecycle import VmAgentLifecycleMixin
 
 
@@ -23,6 +24,7 @@ class VmAgentAdminService(
     VmAgentActionMixin,
     VmAgentChatAssistantMixin,
     VmAgentContainerBackendMixin,
+    VmAgentGitAccessMixin,
     VmAgentLifecycleMixin,
 ):
     def __init__(self, dependencies: VmAgentAdminDependencies) -> None:

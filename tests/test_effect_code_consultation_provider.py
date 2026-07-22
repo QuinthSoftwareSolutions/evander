@@ -120,6 +120,7 @@ def test_prepare_materializes_worker_clones_and_pins_snapshot(tmp_path, monkeypa
     ]
     assert calls[0][1].allowed_tools == ["submit_codebase_consultation_result"]
     assert calls[1][1].git_access_mode == "read-only"
+    assert calls[1][1].git_access_lifetime == "operation"
     assert calls[1][1].pinned_ref == "refs/evander/consultations/consult-one"
     assert calls[1][1].pinned_commit_sha == "a" * 40
     assert store.get("consult-one").status == "running"

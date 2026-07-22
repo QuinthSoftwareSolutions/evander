@@ -362,6 +362,85 @@ def test_git_repos_cli_exposes_repository_lifecycle_commands(monkeypatch) -> Non
     assert managed_git.calls[1][2] == {"directory_path": "root/team-a"}
 
 
+def test_git_repos_cli_exposes_agent_grant_revoke_and_clone_commands(monkeypatch) -> None:
+    from evander.cli import app
+
+    calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+    repo_id = "mr_11111111111111111111"
+
+    class VmAgentAdmin:
+        def list_managed_git_access(self, *args: Any, **kwargs: Any):
+            calls.append(("list", args, kwargs))
+            return [{"managed_repo_id": repo_id, "lifetime": "session"}]
+
+        def grant_managed_git_access(self, *args: Any, **kwargs: Any):
+            calls.append(("grant", args, kwargs))
+            return {"managed_repo_id": repo_id, "lifetime": "session"}
+
+        def revoke_managed_git_access(self, *args: Any, **kwargs: Any):
+            calls.append(("revoke", args, kwargs))
+            return {"managed_repo_id": repo_id, "revoked": True}
+
+        def clone_managed_repo_into_agent(self, *args: Any, **kwargs: Any):
+            calls.append(("clone", args, kwargs))
+            return {"managed_repo_id": repo_id, "target_dir": "/home/agent/repo"}
+
+    monkeypatch.setattr(
+        "evander.cli.build_admin_runtime",
+        lambda _config: SimpleNamespace(vm_agent_admin=VmAgentAdmin()),
+    )
+    runner = CliRunner()
+    results = [
+        runner.invoke(app, ["git-repos", "grants", "session-1"]),
+        runner.invoke(
+            app,
+            [
+                "git-repos",
+                "grant",
+                "session-1",
+                "--managed-repo-id",
+                repo_id,
+                "--access-mode",
+                "read-only",
+            ],
+        ),
+        runner.invoke(
+            app,
+            [
+                "git-repos",
+                "clone-into-agent",
+                "session-1",
+                "--managed-repo-id",
+                repo_id,
+                "--access-mode",
+                "read-only",
+                "--lifetime",
+                "session",
+            ],
+        ),
+        runner.invoke(
+            app,
+            ["git-repos", "revoke-grant", "session-1", "--managed-repo-id", repo_id],
+        ),
+    ]
+
+    assert all(result.exit_code == 0 for result in results), [result.output for result in results]
+    assert calls == [
+        ("list", ("session-1",), {}),
+        (
+            "grant",
+            ("session-1", repo_id),
+            {"access_mode": "read-only", "lifetime": "session"},
+        ),
+        (
+            "clone",
+            ("session-1", repo_id),
+            {"access_mode": "read-only", "lifetime": "session"},
+        ),
+        ("revoke", ("session-1", repo_id), {}),
+    ]
+
+
 def test_git_repos_cli_requires_exactly_one_migration_stage(monkeypatch) -> None:
     from evander.cli import app
 

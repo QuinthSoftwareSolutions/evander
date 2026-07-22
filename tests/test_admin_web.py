@@ -1932,12 +1932,26 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "clone_branch",
         "vm_user",
         "git_access_mode",
+        "git_access_lifetime",
         "pinned_ref",
         "pinned_commit_sha",
         "git_author_name",
         "git_author_email",
         "git_committer_name",
         "git_committer_email",
+    ]
+    grant_repo_access = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:agent:grant-repo-access"
+    )
+    assert [field["key"] for field in grant_repo_access["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "managed_repo_id",
+        "git_access_mode",
+        "vm_user",
     ]
     agent_bootstrap_frontend = next(
         node
@@ -1973,6 +1987,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "managed_repo_id",
         "clone_branch",
         "vm_user",
+        "git_access_mode",
+        "git_access_lifetime",
     ]
     vm_bootstrap_python = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:bootstrap-python"
@@ -10565,6 +10581,113 @@ def test_admin_web_session_reads_use_directory_owner_permission(
     assert finance_detail.status_code == 403
 
 
+def test_admin_web_session_managed_git_grant_and_clone_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    repo_id = "mr_11111111111111111111"
+    calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+    grant = {
+        "managed_repo_id": repo_id,
+        "access_mode": "read-only",
+        "lifetime": "session",
+        "execution_backend": "libvirt_vm",
+    }
+
+    def list_access(self, target: str):
+        calls.append(("list", (target,), {}))
+        return [grant]
+
+    def grant_access(self, *args, **kwargs):
+        calls.append(("grant", args, kwargs))
+        return grant
+
+    def revoke_access(self, *args, **kwargs):
+        calls.append(("revoke", args, kwargs))
+        return grant | {"revoked": True}
+
+    def clone_repo(self, *args, **kwargs):
+        calls.append(("clone", args, kwargs))
+        return {"success": True, "managed_repo_id": repo_id, "target_dir": "/home/agent/repo"}
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_managed_git_access",
+        MethodType(list_access, service.vm_agent_admin),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "grant_managed_git_access",
+        MethodType(grant_access, service.vm_agent_admin),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "revoke_managed_git_access",
+        MethodType(revoke_access, service.vm_agent_admin),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "clone_managed_repo_into_agent",
+        MethodType(clone_repo, service.vm_agent_admin),
+    )
+    client = TestClient(create_app(service))
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin-pass"},
+        ).status_code
+        == 200
+    )
+
+    listed = client.get("/api/admin/sessions/session-1/git-grants")
+    locked = client.put(
+        f"/api/admin/sessions/session-1/git-grants/{repo_id}",
+        json={"access_mode": "read-only"},
+    )
+    _unlock_privileged_operations(client)
+    granted = client.put(
+        f"/api/admin/sessions/session-1/git-grants/{repo_id}",
+        json={"access_mode": "read-only"},
+    )
+    cloned = client.post(
+        f"/api/admin/sessions/session-1/git-grants/{repo_id}/clone",
+        json={"access_mode": "read-only", "lifetime": "session"},
+    )
+    revoked = client.delete(f"/api/admin/sessions/session-1/git-grants/{repo_id}")
+
+    assert listed.status_code == 200
+    assert listed.json() == {"items": [grant]}
+    assert locked.status_code == 403
+    assert granted.json() == {"grant": grant}
+    assert cloned.json()["result"]["target_dir"] == "/home/agent/repo"
+    assert revoked.json()["revoked"] is True
+    assert (
+        "grant",
+        ("session-1", repo_id),
+        {"access_mode": "read-only", "lifetime": "session", "vm_user": "agent"},
+    ) in calls
+    assert (
+        "clone",
+        ("session-1", repo_id),
+        {"access_mode": "read-only", "lifetime": "session", "vm_user": "agent"},
+    ) in calls
+    assert ("revoke", ("session-1", repo_id), {}) in calls
+
+
 def test_admin_web_approval_reads_use_directory_owner_permission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -11330,8 +11453,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         assert section_keys
         assert len(section_keys) == len(set(section_keys))
         assert all(
-            section_key and section_key == section_key.casefold()
-            for section_key in section_keys
+            section_key and section_key == section_key.casefold() for section_key in section_keys
         )
     assert [section["key"] for section in people["sections"]] == [
         "contacts",

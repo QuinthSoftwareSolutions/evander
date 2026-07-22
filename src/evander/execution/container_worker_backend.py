@@ -11,6 +11,7 @@ from evander.worker.models import (
     WorkerFileWriteRecord,
     WorkerGitWriteKeyRecord,
     WorkerGitWriteKeyRequest,
+    WorkerGitKeyDeleteRecord,
     WorkerJobRequest,
     WorkerMssqlDatabaseDeleteRecord,
     WorkerMssqlDatabaseListRecord,
@@ -304,6 +305,8 @@ class ContainerWorkerVmExecutionBackend:
         git_host: str,
         git_user: str,
         git_ssh_alias: str,
+        key_name: str = "evander-git-write",
+        alias_is_exact: bool = False,
     ) -> WorkerGitWriteKeyRecord:
         return self.client.provision_git_write_key(
             session_id,
@@ -311,8 +314,13 @@ class ContainerWorkerVmExecutionBackend:
                 git_host=git_host,
                 git_user=git_user,
                 git_ssh_alias=git_ssh_alias,
+                key_name=key_name,
+                alias_is_exact=alias_is_exact,
             ),
         )
+
+    def revoke_git_key(self, *, session_id: str, key_name: str) -> WorkerGitKeyDeleteRecord:
+        return self.client.revoke_git_key(session_id, key_name)
 
     def write_files(
         self,

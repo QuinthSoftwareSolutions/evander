@@ -18,6 +18,7 @@ Environment:
   EVANDER_GIT_USER          Host user that owns the bare remotes.
   EVANDER_GIT_ROOT          Host directory containing bare remotes.
   EVANDER_GIT_SSH_ALIAS     Guest SSH host alias. Default: evander-git-host
+  EVANDER_GIT_KEY_NAME      Guest key filename. Default: evander-git
   EVANDER_GIT_ALLOWED_FROM  Source CIDR allowed in the host authorized_keys entry.
   EVANDER_GIT_REPO          Bare repo path or name under EVANDER_GIT_ROOT to allow access.
   EVANDER_GIT_SESSION_ID    Session id allowed to push refs/heads/agents/<session-id>/...
@@ -69,6 +70,11 @@ fi
 GIT_ROOT="${EVANDER_GIT_ROOT:-${ROOT_DIR}/runtime/managed-git}"
 GIT_ROOT_REAL="$(realpath -m -- "${GIT_ROOT}")"
 GIT_SSH_ALIAS="${EVANDER_GIT_SSH_ALIAS:-evander-git-host}"
+GIT_KEY_NAME="${EVANDER_GIT_KEY_NAME:-evander-git}"
+if [[ ! "${GIT_KEY_NAME}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "EVANDER_GIT_KEY_NAME contains unsupported characters." >&2
+  exit 1
+fi
 GIT_ALLOWED_FROM="${EVANDER_GIT_ALLOWED_FROM:-192.168.250.0/24}"
 WRAPPER_PATH="${ROOT_DIR}/scripts/git_ssh_command_wrapper.sh"
 AUTHORIZED_KEYS_PATH="${GIT_USER_HOME}/.ssh/authorized_keys"
@@ -227,12 +233,12 @@ echo "Bootstrapping Git SSH into ${VM_USER}@${VM_IP}"
 
 GUEST_GIT_INFO="$(
   ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" \
-    "VM_NAME='${VM_NAME}' GIT_HOST='${GIT_HOST}' GIT_USER='${GIT_USER}' GIT_SSH_ALIAS='${GIT_SSH_ALIAS}' bash -s" <<'EOF'
+    "VM_NAME='${VM_NAME}' GIT_HOST='${GIT_HOST}' GIT_USER='${GIT_USER}' GIT_SSH_ALIAS='${GIT_SSH_ALIAS}' GIT_KEY_NAME='${GIT_KEY_NAME}' bash -s" <<'EOF'
 set -euo pipefail
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 
-KEY_PATH="$HOME/.ssh/evander-git"
+KEY_PATH="$HOME/.ssh/${GIT_KEY_NAME}"
 CONFIG_PATH="$HOME/.ssh/config"
 KNOWN_HOSTS_PATH="$HOME/.ssh/known_hosts"
 
@@ -243,14 +249,15 @@ fi
 touch "${CONFIG_PATH}" "${KNOWN_HOSTS_PATH}"
 chmod 600 "${CONFIG_PATH}" "${KNOWN_HOSTS_PATH}"
 
-python3 - "${CONFIG_PATH}" <<'PY'
+python3 - "${CONFIG_PATH}" "${GIT_KEY_NAME}" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
+key_name = sys.argv[2]
 text = path.read_text(encoding="utf-8") if path.exists() else ""
-begin = "# BEGIN evander git host"
-end = "# END evander git host"
+begin = f"# BEGIN evander git grant {key_name}"
+end = f"# END evander git grant {key_name}"
 while begin in text and end in text:
     start = text.index(begin)
     stop = text.index(end, start) + len(end)
@@ -261,14 +268,14 @@ path.write_text(text, encoding="utf-8")
 PY
 
 cat >> "${CONFIG_PATH}" <<CONFIG
-# BEGIN evander git host
+# BEGIN evander git grant ${GIT_KEY_NAME}
 Host ${GIT_SSH_ALIAS}
   HostName ${GIT_HOST}
   User ${GIT_USER}
-  IdentityFile ~/.ssh/evander-git
+  IdentityFile ~/.ssh/${GIT_KEY_NAME}
   IdentitiesOnly yes
   StrictHostKeyChecking accept-new
-# END evander git host
+# END evander git grant ${GIT_KEY_NAME}
 CONFIG
 
 ssh-keyscan -H "${GIT_HOST}" >> "${KNOWN_HOSTS_PATH}" 2>/dev/null || true

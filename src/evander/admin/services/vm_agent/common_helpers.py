@@ -27,6 +27,10 @@ from evander.admin.services.vm_agent.common_models import (
     _ASSISTANT_AGENTS_TEMPLATE_NAME,
 )
 from evander.git_ssh_authorized_keys import remove_git_authorized_key_by_public_key_body
+from evander.managed_git_grants import (
+    LEGACY_MANAGED_GIT_GRANT_METADATA_KEYS,
+    managed_git_grants_from_metadata,
+)
 from evander.admin.services.session_helpers import normalize_email_mailbox_grants
 from evander.models import EmailMailboxAccess, EmailMailboxGrant
 
@@ -87,10 +91,18 @@ def _revoke_managed_git_access_for_session(
         return False
     metadata = session.metadata if isinstance(session.metadata, Mapping) else {}
     revoked = False
-    for metadata_key in ("container_git_write_access", "managed_git_access"):
-        git_access = metadata.get(metadata_key)
-        if not isinstance(git_access, Mapping):
-            continue
+    git_access_records = list(managed_git_grants_from_metadata(metadata).values())
+    # Some pre-managed-repository session records contain revocation metadata but
+    # no repository identity. They cannot become first-class grants, but teardown
+    # must still remove their host authorization.
+    for legacy_key in LEGACY_MANAGED_GIT_GRANT_METADATA_KEYS:
+        legacy_access = metadata.get(legacy_key)
+        if (
+            isinstance(legacy_access, Mapping)
+            and not str(legacy_access.get("managed_repo_id") or "").strip()
+        ):
+            git_access_records.append(dict(legacy_access))
+    for git_access in git_access_records:
         public_key_body = str(git_access.get("public_key_body") or "").strip()
         authorized_keys_path = str(git_access.get("authorized_keys_path") or "").strip()
         if not public_key_body or not authorized_keys_path:

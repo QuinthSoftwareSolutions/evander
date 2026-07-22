@@ -57,6 +57,7 @@ from .models import (
     WorkerJobRequest,
     WorkerGitWriteKeyRecord,
     WorkerGitWriteKeyRequest,
+    WorkerGitKeyDeleteRecord,
     WorkerDiskTelemetry,
     WorkerJobTelemetry,
     WorkerMssqlDatabaseDeleteRecord,
@@ -1124,33 +1125,62 @@ class WorkerDaemon:
         )
 
         config_path = ssh_dir / "config"
-        write_git_ssh_alias = _git_write_ssh_alias(request.git_ssh_alias)
-        self._write_git_write_ssh_config(
-            config_path=config_path,
-            read_git_ssh_alias=request.git_ssh_alias,
-            write_git_ssh_alias=write_git_ssh_alias,
-            git_host=request.git_host,
-            git_user=request.git_user,
-            read_identity_file="~/.ssh/evander-git",
-            identity_file=f"~/.ssh/{request.key_name}",
+        write_git_ssh_alias = (
+            request.git_ssh_alias
+            if request.alias_is_exact
+            else _git_write_ssh_alias(request.git_ssh_alias)
         )
-        self._write_git_write_ssh_config(
-            config_path=_host_git_ssh_config_path(paths.agent_home),
-            read_git_ssh_alias=request.git_ssh_alias,
-            write_git_ssh_alias=write_git_ssh_alias,
-            git_host=request.git_host,
-            git_user=request.git_user,
-            read_identity_file=str(ssh_dir / "evander-git"),
-            identity_file=str(key_path),
-        )
+        if request.alias_is_exact:
+            self._write_git_grant_ssh_config(
+                config_path=config_path,
+                key_name=request.key_name,
+                git_ssh_alias=write_git_ssh_alias,
+                git_host=request.git_host,
+                git_user=request.git_user,
+                identity_file=f"~/.ssh/{request.key_name}",
+            )
+            self._write_git_grant_ssh_config(
+                config_path=_host_git_ssh_config_path(paths.agent_home),
+                key_name=request.key_name,
+                git_ssh_alias=write_git_ssh_alias,
+                git_host=request.git_host,
+                git_user=request.git_user,
+                identity_file=str(key_path),
+            )
+        else:
+            self._write_git_write_ssh_config(
+                config_path=config_path,
+                read_git_ssh_alias=request.git_ssh_alias,
+                write_git_ssh_alias=write_git_ssh_alias,
+                git_host=request.git_host,
+                git_user=request.git_user,
+                read_identity_file="~/.ssh/evander-git",
+                identity_file=f"~/.ssh/{request.key_name}",
+            )
+            self._write_git_write_ssh_config(
+                config_path=_host_git_ssh_config_path(paths.agent_home),
+                read_git_ssh_alias=request.git_ssh_alias,
+                write_git_ssh_alias=write_git_ssh_alias,
+                git_host=request.git_host,
+                git_user=request.git_user,
+                read_identity_file=str(ssh_dir / "evander-git"),
+                identity_file=str(key_path),
+            )
         metadata = self._read_session_metadata(paths)
-        metadata["git_write_key"] = {
+        key_metadata = {
             "public_key_body": public_key_body_from_line(public_key),
             "key_path": str(key_path),
             "config_path": str(config_path),
             "git_ssh_alias": write_git_ssh_alias,
             "updated_at": now_utc().isoformat(),
         }
+        git_keys = metadata.get("git_keys")
+        if not isinstance(git_keys, dict):
+            git_keys = {}
+        git_keys[request.key_name] = key_metadata
+        metadata["git_keys"] = git_keys
+        if not request.alias_is_exact:
+            metadata["git_write_key"] = key_metadata
         self._write_session_metadata(paths, metadata)
         return WorkerGitWriteKeyRecord(
             session_id=paths.session_id,
@@ -1159,6 +1189,57 @@ class WorkerDaemon:
             key_path=str(key_path),
             config_path=str(config_path),
             git_ssh_alias=write_git_ssh_alias,
+        )
+
+    def revoke_git_key(self, session_id: str, key_name: str) -> WorkerGitKeyDeleteRecord:
+        normalized_key_name = str(
+            validate_worker_component_id(key_name, field_name="key_name")
+        )
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        ssh_dir = paths.agent_home / ".ssh"
+        key_path = ssh_dir / normalized_key_name
+        removed = False
+        for candidate, label in (
+            (key_path, "Git private key"),
+            (key_path.with_suffix(key_path.suffix + ".pub"), "Git public key"),
+        ):
+            try:
+                candidate_stat = candidate.lstat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(candidate_stat.st_mode):
+                raise ValueError(f"{label} must be a regular file")
+            candidate.unlink()
+            removed = True
+        for config_path in (
+            ssh_dir / "config",
+            _host_git_ssh_config_path(paths.agent_home),
+        ):
+            removed = (
+                self._remove_git_grant_ssh_config(
+                    config_path=config_path,
+                    key_name=normalized_key_name,
+                )
+                or removed
+            )
+        metadata = self._read_session_metadata(paths)
+        git_keys = metadata.get("git_keys")
+        if isinstance(git_keys, dict) and normalized_key_name in git_keys:
+            git_keys = dict(git_keys)
+            git_keys.pop(normalized_key_name, None)
+            if git_keys:
+                metadata["git_keys"] = git_keys
+            else:
+                metadata.pop("git_keys", None)
+            removed = True
+        legacy = metadata.get("git_write_key")
+        if isinstance(legacy, dict) and str(legacy.get("key_path") or "") == str(key_path):
+            metadata.pop("git_write_key", None)
+        self._write_session_metadata(paths, metadata)
+        return WorkerGitKeyDeleteRecord(
+            session_id=paths.session_id,
+            key_name=normalized_key_name,
+            removed=removed,
         )
 
     def write_files(
@@ -2288,6 +2369,74 @@ class WorkerDaemon:
             mode=0o600,
             label="SSH config",
         )
+
+    @classmethod
+    def _write_git_grant_ssh_config(
+        cls,
+        *,
+        config_path: Path,
+        key_name: str,
+        git_ssh_alias: str,
+        git_host: str,
+        git_user: str,
+        identity_file: str,
+    ) -> None:
+        cls._ensure_managed_ssh_dir(config_path.parent)
+        text = (
+            cls._read_managed_text_file_no_follow(config_path, label="SSH config")
+            if cls._managed_regular_file_exists_no_follow(config_path, label="SSH config")
+            else ""
+        )
+        text, _ = cls._without_git_grant_ssh_config(text, key_name=key_name)
+        block = "\n".join(
+            [
+                f"# BEGIN evander git grant {key_name}",
+                f"Host {git_ssh_alias}",
+                f"  HostName {git_host}",
+                f"  User {git_user}",
+                f"  IdentityFile {identity_file}",
+                "  IdentitiesOnly yes",
+                "  StrictHostKeyChecking accept-new",
+                f"# END evander git grant {key_name}",
+                "",
+            ]
+        )
+        text = block if not text.strip() else block + "\n" + text.strip() + "\n"
+        cls._write_managed_text_file_no_follow(
+            config_path,
+            text,
+            mode=0o600,
+            label="SSH config",
+        )
+
+    @classmethod
+    def _remove_git_grant_ssh_config(cls, *, config_path: Path, key_name: str) -> bool:
+        if not cls._managed_regular_file_exists_no_follow(config_path, label="SSH config"):
+            return False
+        text = cls._read_managed_text_file_no_follow(config_path, label="SSH config")
+        updated, removed = cls._without_git_grant_ssh_config(text, key_name=key_name)
+        if removed:
+            cls._write_managed_text_file_no_follow(
+                config_path,
+                updated,
+                mode=0o600,
+                label="SSH config",
+            )
+        return removed
+
+    @staticmethod
+    def _without_git_grant_ssh_config(text: str, *, key_name: str) -> tuple[str, bool]:
+        begin = f"# BEGIN evander git grant {key_name}"
+        end = f"# END evander git grant {key_name}"
+        result = str(text or "")
+        removed = False
+        while begin in result and end in result:
+            start = result.index(begin)
+            stop = result.index(end, start) + len(end)
+            suffix = "\n" if stop < len(result) and result[stop : stop + 1] == "\n" else ""
+            result = result[:start].rstrip() + "\n" + result[stop + len(suffix) :].lstrip("\n")
+            removed = True
+        return result, removed
 
     def _session_record(
         self,

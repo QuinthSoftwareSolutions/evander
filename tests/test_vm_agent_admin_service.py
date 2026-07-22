@@ -45,8 +45,12 @@ def test_admin_service_vm_agent_boundary_uses_public_ports() -> None:
         "delete_session",
         "install_admin_agent_skills",
         "list_agents",
+        "list_managed_git_access",
         "list_vms",
+        "clone_managed_repo_into_agent",
         "read_session_artifact_text",
+        "grant_managed_git_access",
+        "revoke_managed_git_access",
         "resume_agent",
         "run_admin_agent_action",
         "submit_admin_agent_create",
@@ -406,6 +410,131 @@ def _vm_agent_dependencies(admin: FakeAdmin, **overrides: Any) -> VmAgentAdminDe
         clone_repo_into_vm=lambda **kwargs: admin._clone_repo_into_vm(**kwargs),
         **overrides,
     )
+
+
+def test_clone_managed_repo_into_libvirt_agent_forwards_persistent_grant_options() -> None:
+    session = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-1",
+        vm_provider="libvirt_vm",
+        directory_path="root/team",
+        allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    sessions = FakeSessionsStore({"session-1": session})
+    service = VmAgentAdminService(_vm_agent_dependencies(FakeAdmin(sessions=sessions)))
+    calls: list[dict[str, Any]] = []
+
+    def clone_repo_into_vm(**kwargs: Any) -> VmActionResult:
+        calls.append(dict(kwargs))
+        return VmActionResult(
+            success=True,
+            vm_name="vm-1",
+            action="clone_repo_into_vm",
+            message="cloned",
+        )
+
+    service.clone_repo_into_vm = clone_repo_into_vm  # type: ignore[method-assign]
+
+    result = service.clone_managed_repo_into_agent(
+        "session-1",
+        "mr_11111111111111111111",
+        access_mode="read-only",
+    )
+
+    assert result["success"] is True
+    assert calls == [
+        {
+            "vm_name": "vm-1",
+            "session_id": "session-1",
+            "managed_repo_id": "mr_11111111111111111111",
+            "vm_user": "agent",
+            "directory_path": "root/team",
+            "git_access_mode": "read-only",
+            "git_access_lifetime": "session",
+        }
+    ]
+
+
+def test_standalone_managed_git_grant_rejects_operation_lifetime() -> None:
+    session = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-1",
+        vm_provider="libvirt_vm",
+        allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    sessions = FakeSessionsStore({"session-1": session})
+    service = VmAgentAdminService(_vm_agent_dependencies(FakeAdmin(sessions=sessions)))
+
+    with pytest.raises(ValueError, match="standalone repository grants must use session"):
+        service.grant_managed_git_access(
+            "session-1",
+            "mr_11111111111111111111",
+            lifetime="operation",
+        )
+
+
+def test_managed_git_grant_rolls_back_exact_key_when_metadata_persist_fails(
+    tmp_path: Path,
+) -> None:
+    repo_id = "mr_11111111111111111111"
+    session = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-1",
+        vm_provider="libvirt_vm",
+        allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    sessions = FakeSessionsStore({"session-1": session})
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text("ssh-ed25519 AAAAGrantBody test\n", encoding="utf-8")
+
+    class ManagedGit:
+        def __init__(self) -> None:
+            self.unbound: list[tuple[str, str, str]] = []
+
+        def clone_info(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+            return {"managed_repo_id": repo_id}
+
+        def resolve_internal_repository(self, *args: Any, **kwargs: Any):
+            return tmp_path / f"{repo_id}.git", tmp_path
+
+        def unbind(self, managed_repo_id: str, *, kind: str, binding_id: str):
+            self.unbound.append((managed_repo_id, kind, binding_id))
+
+    managed_git = ManagedGit()
+    service = VmAgentAdminService(
+        _vm_agent_dependencies(
+            FakeAdmin(sessions=sessions),
+            managed_git_admin=managed_git,
+        )
+    )
+    removed_guest_keys: list[dict[str, str]] = []
+    service._grant_vm_managed_git_access = lambda **kwargs: {  # type: ignore[method-assign]
+        "managed_repo_id": repo_id,
+        "access_mode": "read-only",
+        "lifetime": "session",
+        "execution_backend": "libvirt_vm",
+        "public_key_body": "AAAAGrantBody",
+        "authorized_keys_path": str(authorized_keys),
+        "key_name": "evander-git-test",
+    }
+    service._record_managed_git_grant = (  # type: ignore[method-assign]
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("persist failed"))
+    )
+    service._remove_vm_managed_git_key = (  # type: ignore[method-assign]
+        lambda **kwargs: removed_guest_keys.append(dict(kwargs))
+    )
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        service.grant_managed_git_access("session-1", repo_id)
+
+    assert authorized_keys.read_text(encoding="utf-8") == ""
+    assert removed_guest_keys == [
+        {"vm_name": "vm-1", "vm_user": "agent", "key_name": "evander-git-test"}
+    ]
+    assert managed_git.unbound == [(repo_id, "authorized_sessions", "session-1")]
 
 
 def test_vm_agent_admin_service_uses_explicit_ports_for_boundary_operations(
@@ -1518,11 +1647,7 @@ def test_resume_agent_reconciles_migrated_vm_git_access_before_dispatch(
     sessions = FakeSessionsStore({"session-1": manifest})
 
     class ManagedGit:
-        unbound: list[tuple[str, str]] = []
-
-        def unbind_all(self, kind: str, binding_id: str) -> list[str]:
-            self.unbound.append((kind, binding_id))
-            return []
+        pass
 
     managed_git = ManagedGit()
     admin = FakeAdmin(sessions=sessions)
@@ -1583,9 +1708,10 @@ def test_resume_agent_reconciles_migrated_vm_git_access_before_dispatch(
             "managed_repo_id": "mr_1234567890abcdef1234",
             "vm_user": "agent",
             "directory_path": "root/team",
+            "git_access_mode": "write",
+            "git_access_lifetime": "session",
         }
     ]
-    assert managed_git.unbound == [("authorized_sessions", "session-1")]
     assert session_marker not in authorized_keys.read_text(encoding="utf-8")
 
 

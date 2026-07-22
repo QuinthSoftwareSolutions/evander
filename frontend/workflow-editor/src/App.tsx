@@ -485,6 +485,8 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:agent:exec": "Run a shell command in an agent session.",
   "effect:agent:destroy": "Destroy an agent session and its backend target.",
   "effect:agent:clone-repo": "Clone a managed repository into an agent session.",
+  "effect:agent:grant-repo-access": "Grant persistent exact-repository Git access to an agent session.",
+  "effect:agent:revoke-repo-access": "Revoke one exact-repository Git grant from an agent session.",
   "effect:session:approve-mcp-tools-for-run": "Approve MCP tools for one agent session during this run.",
   "effect:session:revoke-mcp-tool-approval-lease": "Revoke an MCP tool approval lease for one agent session.",
   "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
@@ -1917,6 +1919,25 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       session_id: "session-id",
       managed_repo_id: "mr_00000000000000000000",
       clone_branch: "main",
+    };
+  }
+  if (kind === "effect" && type === "effect:agent:grant-repo-access") {
+    return {
+      id,
+      display_name: "Grant repo access",
+      type,
+      session_id: "session-id",
+      managed_repo_id: "mr_00000000000000000000",
+      git_access_mode: "read-only",
+    };
+  }
+  if (kind === "effect" && type === "effect:agent:revoke-repo-access") {
+    return {
+      id,
+      display_name: "Revoke repo access",
+      type,
+      session_id: "session-id",
+      managed_repo_id: "mr_00000000000000000000",
     };
   }
   if (kind === "effect" && type === "effect:semantic:ensure-collection") {
