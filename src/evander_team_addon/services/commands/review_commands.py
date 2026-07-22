@@ -309,6 +309,9 @@ class TeamReviewCommandService(TeamCommandExecutor):
                         "review_request_id": decided_id,
                         "decided_review_request_ids": [decided_id],
                         "created_inbox_item_ids": list(decision_result["created_inbox_item_ids"]),
+                        "created_blocker_ids": list(
+                            decision_result.get("created_blocker_ids") or []
+                        ),
                         "review": decided_review.model_dump(mode="json"),
                         "release_package": release.model_dump(mode="json"),
                         "release_package_id": release.id,
@@ -322,6 +325,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     },
                     created_domain_ids=[
                         decided_id,
+                        *list(decision_result.get("created_blocker_ids") or []),
                         *list(decision_result["created_inbox_item_ids"]),
                     ],
                 )
@@ -337,12 +341,20 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "task": task_payload_with_derived(command_state, task),
                     "deliverable_id": deliverable.id,
                     "task_id": task.id,
+                    "created_blocker_ids": list(
+                        decision_result.get("created_blocker_ids") or []
+                    ),
+                    "events": list(decision_result.get("events") or []),
                     "intent_recorded": True,
-                    "async_effect_pending": bool(decision_result["created_inbox_item_ids"]),
+                    "async_effect_pending": bool(
+                        decision_result["created_inbox_item_ids"]
+                        or decision_result.get("events")
+                    ),
                     "progress_made": True,
                 },
                 created_domain_ids=[
                     decided_id,
+                    *list(decision_result.get("created_blocker_ids") or []),
                     *list(decision_result["created_inbox_item_ids"]),
                 ],
             )

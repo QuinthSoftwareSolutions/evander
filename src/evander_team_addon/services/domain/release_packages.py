@@ -34,6 +34,7 @@ from .common import (
     _string_list,
     utc_now,
 )
+from .blockers import open_release_blocker
 from .git_common import (
     _emit_git_promotion_event,
     _managed_repo_fields,
@@ -819,6 +820,14 @@ def _queue_release_promotion_if_ready(
             f"project {release.project_id} has no git configuration for release promotion"
         )
         result["error"] = release.error
+        open_release_blocker(
+            state,
+            release_package_id=release.id,
+            summary=f"Release promotion blocked: {release.id}",
+            details=release.error,
+            reporter_agent_id=actor_agent_id,
+            result=result,
+        )
         return
     allowed_changed_paths, missing_manifest_ids = _release_allowed_changed_paths(
         state,
@@ -833,6 +842,14 @@ def _queue_release_promotion_if_ready(
             release.scope_validation.state = "blocked"
             release.scope_validation.validated_at = utc_now()
         result["error"] = release.error
+        open_release_blocker(
+            state,
+            release_package_id=release.id,
+            summary=f"Release promotion blocked: {release.id}",
+            details=release.error,
+            reporter_agent_id=actor_agent_id,
+            result=result,
+        )
         return
     target_release_branch = release.release_branch or release_branch(
         project.team_id,

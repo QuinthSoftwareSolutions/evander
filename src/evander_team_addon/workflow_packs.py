@@ -17,9 +17,11 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-cron",
                 "team-chat-message-queued",
                 "team-agent-wake-requested",
+                "team-governance-wake-requested",
                 "team-wake-due-agents",
                 "team-wake-queued-chat-message",
                 "team-wake-requested-agent",
+                "team-wake-requested-governance",
                 "team-wake-governance-managers",
                 "team-publish-outbox-events",
                 "team-publish-outbox-after-dispatch",
@@ -83,6 +85,12 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Team agent wake requested",
                 "type": "trigger:event",
                 "event_type": "team.agent.wake_requested",
+            },
+            {
+                "id": "team-governance-wake-requested",
+                "display_name": "Team governance wake requested",
+                "type": "trigger:event",
+                "event_type": "team.governance.wake_requested",
             },
             {
                 "id": "team-ephemeral-requested",
@@ -260,6 +268,19 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "display_name": "Wake governance managers",
                 "type": "effect:team:wake-governance-managers",
                 "limit": 10,
+                "lease_seconds": 900,
+                "wake_interval_seconds": 3600,
+                "cost_warning_ratio": 0.8,
+                "resume_mode": "same_context",
+            },
+            {
+                "id": "team-wake-requested-governance",
+                "display_name": "Wake requested governance manager",
+                "type": "effect:team:wake-governance-managers",
+                "governance_group_id": (
+                    "${{team-governance-wake-requested.payload.governance_group_id}}"
+                ),
+                "limit": 1,
                 "lease_seconds": 900,
                 "wake_interval_seconds": 3600,
                 "cost_warning_ratio": 0.8,
@@ -614,6 +635,10 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             {
                 "source_id": "team-agent-wake-requested",
                 "target_id": "team-wake-requested-agent",
+            },
+            {
+                "source_id": "team-governance-wake-requested",
+                "target_id": "team-wake-requested-governance",
             },
             {"source_id": "team-cron", "target_id": "team-wake-governance-managers"},
             {"source_id": "team-cron", "target_id": "team-publish-outbox-events"},

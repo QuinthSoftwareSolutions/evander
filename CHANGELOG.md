@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-07-22 - Hierarchical Team Blocker Escalation
+
+- Added durable Team blocker records and event history for explicit blockers and blocked tasks,
+  deliverables, reviews, release packages, and promotion or release failures.
+- Routed each blocker to the nearest available superior immediately, transferred accountability
+  one level after an owner dispatch without blocker-specific progress, and returned stalled
+  delegated work to its accountable owner before any further escalation.
+- Added terminal governance and operator routing, durable wake outbox handling for normal and
+  expired dispatches, unavailable-assignee reconciliation, and retained the periodic manager
+  fallback as a safety net.
+- Added MCP report, update, list, and detail tools plus wake context, API, runtime-attention, and
+  Team UI visibility for blocker ownership, delegation, route, and escalation depth.
+- Kept manual resolution available to active agents on the reporter-to-manager escalation line
+  after ownership transfers or terminal routing, excluded peers and temporary delegates, and
+  retained source-driven automatic resolution.
+- Added privileged, audited Admin API and Team UI resolution for blockers that have reached
+  governance or operator routing without allowing operators to preempt locally routed blockers.
+
 ## 2026-07-22 - Multi-Repository Agent Git Grants
 
 - Added first-class, repository-keyed read-only and write grants so one persistent VM or container

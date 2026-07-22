@@ -116,6 +116,8 @@ const teamStateCollectionKeys = [
   "review_profiles",
   "memories",
   "inbox",
+  "blockers",
+  "blocker_events",
   "action_records",
   "release_packages",
   "ephemeral_assignments",
@@ -210,6 +212,7 @@ const blockedWorkKinds = new Set([
   "failed_action_record",
   "failed_git_promotion",
   "blocked_release_package",
+  "team_blocker",
 ]);
 const ephemeralWorkKinds = new Set([
   "failed_ephemeral_assignment",
@@ -537,6 +540,8 @@ function emptyState() {
     review_requests: {},
     review_profiles: {},
     inbox: {},
+    blockers: {},
+    blocker_events: {},
     action_records: {},
     release_packages: {},
     ephemeral_assignments: {},
@@ -1791,6 +1796,28 @@ function bindRecordEditing() {
       return;
     }
 
+    const resolveBlockerButton = event.target.closest("[data-resolve-terminal-blocker-id]");
+    if (resolveBlockerButton) {
+      event.preventDefault();
+      if (!guardTeamMutation("resolve terminal blockers")) {
+        return;
+      }
+      const note = window.prompt(
+        "Why is this blocker resolved? Include the evidence or external change that cleared it.",
+        "The blocking condition has been verified as resolved.",
+      );
+      if (!text(note)) {
+        setStatus("A blocker resolution explanation is required.", "error");
+        return;
+      }
+      void resolveTerminalBlocker(
+        resolveBlockerButton,
+        resolveBlockerButton.dataset.resolveTerminalBlockerId,
+        text(note),
+      );
+      return;
+    }
+
     const governanceAgendaHandleButton = event.target.closest("[data-governance-agenda-handle-id]");
     if (governanceAgendaHandleButton) {
       event.preventDefault();
@@ -2182,6 +2209,7 @@ const lockedMutationControlSelectors = [
   ["[data-stand-down-agent-id]", "stand down agents"],
   ["[data-stand-down-revoke-agent-id]", "revoke stand-downs"],
   ["[data-dismiss-action-id]", "dismiss failed actions"],
+  ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-governance-agenda-handle-id]", "mark governance agenda handled"],
   ["[data-avatar-generate-agent-id]", "generate avatar previews"],
   ["[data-avatar-accept-agent-id]", "accept avatar previews"],
@@ -4713,6 +4741,8 @@ function workspaceRuntimeAttentionMeta(row) {
     row.state ? humanizeToken(row.state) : "",
     row.agent_id ? `agent ${row.agent_id}` : "",
     row.project_id ? `project ${row.project_id}` : "",
+    row.route ? `route ${humanizeToken(row.route)}` : "",
+    row.delegate_agent_id ? `delegate ${row.delegate_agent_id}` : "",
   ].filter(Boolean).join(" - ");
 }
 
@@ -5182,7 +5212,12 @@ function renderRuntimeAttentionRow(row) {
           >Dismiss</button>
         </div>
       `
-      : "";
+      : row.kind === "team_blocker" && row.blocker_id
+        ? renderTerminalBlockerResolveAction(
+            state.blockers?.[row.blocker_id],
+            "runtime-attention-actions",
+          )
+        : "";
   return `
     <li class="record-item runtime-item runtime-attention-item runtime-severity-${escapeHtml(row.severity || "info")}">
       <div class="record-line">
@@ -5221,7 +5256,12 @@ function renderCompactRuntimeAttentionRow(row) {
           >Dismiss</button>
         </div>
       `
-      : "";
+      : row.kind === "team_blocker" && row.blocker_id
+        ? renderTerminalBlockerResolveAction(
+            state.blockers?.[row.blocker_id],
+            "runtime-attention-actions",
+          )
+        : "";
   const summaryParts = [
     humanizeToken(row.kind || "attention"),
     row.agent_id ? `agent ${row.agent_id}` : "",
@@ -5404,6 +5444,11 @@ function runtimeReferenceParts(row) {
     ["assignment", row.assignment_id],
     ["promotion", row.promotion_id],
     ["release", row.release_package_id],
+    ["review", row.review_request_id],
+    ["blocker", row.blocker_id],
+    ["source", row.source_id],
+    ["owner", row.owner_agent_id],
+    ["delegate", row.delegate_agent_id],
     ["dispatch", row.dispatch_id],
     ["session", row.session_id],
   ];
@@ -10622,10 +10667,74 @@ function renderTaskBoardBlockerLine(task) {
   if (task.dependency_status === "blocked") {
     blockers.push("dependency blocked");
   }
+  const routedBlockers = activeBlockersForRecord("task", task.id, task.id);
+  routedBlockers.forEach((blocker) => blockers.push(blockerRoutingLabel(blocker)));
   if (!blockers.length) {
     return "";
   }
   return `<div class="task-board-card-blockers">${escapeHtml(blockers.join(" - "))}</div>`;
+}
+
+function activeBlockersForRecord(sourceKind, sourceId, taskId = null) {
+  return values(state.blockers)
+    .filter((blocker) => {
+      if (text(blocker.state) !== "open") {
+        return false;
+      }
+      if (text(blocker.source_kind) === sourceKind && text(blocker.source_id) === sourceId) {
+        return true;
+      }
+      return Boolean(taskId && text(blocker.task_id) === taskId);
+    })
+    .sort(byId);
+}
+
+function blockerRoutingLabel(blocker) {
+  const parts = [
+    `blocker ${text(blocker.id)}`,
+    blocker.owner_agent_id ? `owner ${text(blocker.owner_agent_id)}` : "",
+    blocker.delegate_agent_id ? `delegate ${text(blocker.delegate_agent_id)}` : "",
+    blocker.route ? `route ${humanizeToken(blocker.route)}` : "",
+    Number.isFinite(Number(blocker.escalation_depth))
+      ? `level ${Number(blocker.escalation_depth)}`
+      : "",
+  ].filter(Boolean);
+  return parts.join(" - ");
+}
+
+function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
+  if (
+    !blocker ||
+    text(blocker.state) !== "open" ||
+    !["governance", "operator"].includes(text(blocker.route))
+  ) {
+    return "";
+  }
+  return `
+    <div class="record-actions ${escapeAttr(extraClass)}">
+      <button
+        type="button"
+        class="record-action"
+        data-resolve-terminal-blocker-id="${escapeAttr(blocker.id)}"
+        ${lockedAttrs("resolve terminal blockers")}
+      >Resolve blocker</button>
+    </div>
+  `;
+}
+
+function renderRecordBlockers(sourceKind, sourceId, taskId = null) {
+  const blockers = activeBlockersForRecord(sourceKind, sourceId, taskId);
+  if (!blockers.length) {
+    return "";
+  }
+  return blockers
+    .map((blocker) => `
+      <div class="meta-line team-blocker-line">
+        <span>${escapeHtml(blockerRoutingLabel(blocker))}</span>
+        ${renderTerminalBlockerResolveAction(blocker)}
+      </div>
+    `)
+    .join("");
 }
 
 function planningTasksForProject(projectTasks) {
@@ -10871,6 +10980,9 @@ function renderTaskGraph(task) {
   if ((task.blocked_by_task_ids || []).length) {
     lines.push(`blocked by ${task.blocked_by_task_ids.join(", ")}`);
   }
+  activeBlockersForRecord("task", task.id, task.id).forEach((blocker) => {
+    lines.push(blockerRoutingLabel(blocker));
+  });
   if ((task.child_task_ids || []).length) {
     lines.push(`children ${task.child_task_ids.join(", ")}`);
   }
@@ -10911,6 +11023,7 @@ function renderDeliverables(deliverables, { compact = false } = {}) {
                   </summary>
                   <div class="compact-record-body">
                     <div class="meta-line">${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</div>
+                    ${renderRecordBlockers("deliverable", deliverable.id, deliverable.task_id)}
                     ${renderReviewSummary(deliverable.review_request_ids || [])}
                     ${renderArtifactRefs(deliverable.artifact_refs || [])}
                     ${renderGitRefs(deliverable.git_refs)}
@@ -10934,6 +11047,7 @@ function renderDeliverables(deliverables, { compact = false } = {}) {
                 <span class="state-pill ${escapeHtml(deliverable.state)}">${escapeHtml(deliverable.state)}</span>
               </div>
               <div class="meta-line">${escapeHtml(deliverable.id)} - task ${escapeHtml(deliverable.task_id)}</div>
+              ${renderRecordBlockers("deliverable", deliverable.id, deliverable.task_id)}
               ${renderReviewSummary(deliverable.review_request_ids || [])}
               ${renderArtifactRefs(deliverable.artifact_refs || [])}
               ${renderGitRefs(deliverable.git_refs)}
@@ -10973,6 +11087,7 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
               <div class="meta-line">Reviewer id ${escapeHtml(review.reviewer_agent_id)}${review.review_profile_id ? ` - profile ${escapeHtml(review.review_profile_id)}${profile?.name ? ` (${escapeHtml(profile.name)})` : ""}` : ""}${review.decision_at ? ` - decided ${escapeHtml(review.decision_at)}` : ""}</div>
               ${review.instructions ? `<div class="meta-line">Instructions: ${escapeHtml(review.instructions)}</div>` : ""}
               ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => escapeHtml(finding)).join("; ")}</div>` : ""}
+              ${renderRecordBlockers("review_request", review.id)}
               ${renderCriterionResults(review.criteria || [])}
               ${renderCarriedFindings(carriedFindings)}
               ${interactive ? renderReviewDecisionForm(review, profile, carriedFindings) : ""}
@@ -11406,6 +11521,7 @@ function renderReleases() {
               ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
               ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
               ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+              ${renderRecordBlockers("release_package", release.id)}
               ${renderReleasePolicyDetails(release)}
               ${renderReleaseGateAction(release)}
             </li>
@@ -11437,6 +11553,7 @@ function renderCompactRelease(release) {
           ${lines.length ? `<div class="meta-line">${escapeHtml(lines.join(" - "))}</div>` : ""}
           ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
           ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+          ${renderRecordBlockers("release_package", release.id)}
           ${renderReleasePolicyDetails(release)}
           ${renderReleaseGateAction(release)}
         </div>
@@ -12445,6 +12562,7 @@ function renderReleaseSummary(releasePackages) {
                 ${artifactText ? `<div class="meta-line">Artifact refs: ${artifactText}</div>` : ""}
                 ${release.published_at ? `<div class="meta-line">Published ${escapeHtml(release.published_at)}</div>` : ""}
                 ${release.error ? `<div class="meta-line">Error: ${escapeHtml(release.error)}</div>` : ""}
+                ${renderRecordBlockers("release_package", release.id)}
                 ${renderReleasePolicyDetails(release)}
               </li>
             `;
@@ -14331,6 +14449,59 @@ async function dismissActionRecordAttention(button, actionRecordId) {
     setStatus(`Dismissed failed action ${actionRecordId}.`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Dismiss failed.", "error");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function resolveTerminalBlocker(button, blockerId, note) {
+  if (!guardTeamMutation("resolve terminal blockers")) {
+    return;
+  }
+  const normalizedBlockerId = text(blockerId);
+  if (!normalizedBlockerId) {
+    setStatus("No blocker selected.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus(`Resolving blocker ${normalizedBlockerId}.`, "loading");
+  const endpoint = `/blockers/${encodeURIComponent(normalizedBlockerId)}/resolve`;
+  try {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Team-Addon-Response-Scope": "view",
+      },
+      body: JSON.stringify(
+        mutationBodyWithConflictMetadata(endpoint, "POST", { note }),
+      ),
+    });
+
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView({ preserveForms: true });
+      restoreFormDrafts(drafts);
+      const current = conflict.current_revision ?? state.revision;
+      setStatus(
+        `Revision conflict. Reloaded revision ${current}; verify the blocker and resolve again.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+
+    await applyMutationResultPayload(await response.json());
+    restoreFormDrafts(drafts);
+    setStatus(`Resolved blocker ${normalizedBlockerId}.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Blocker resolution failed.", "error");
   } finally {
     if (button.isConnected) {
       button.disabled = false;

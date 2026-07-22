@@ -47,6 +47,7 @@ from .services.read_service import TeamReadService
 from .services.commands import (
     TeamAgentControlCommandService,
     TeamAgentMessageCommandService,
+    TeamBlockerCommandService,
     TeamCaseCommandService,
     TeamChatCommandService,
     TeamDeliverableSubmissionCommandService,
@@ -80,6 +81,8 @@ TEAM_REPLY_TO_CHAT_TOOL = "team_reply_to_chat"
 TEAM_STAGE_CHAT_ATTACHMENT_TOOL = "team_stage_chat_attachment"
 TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL = "team_send_operator_chat_message"
 TEAM_ESCALATE_OPERATOR_TOOL = "team_escalate_operator"
+TEAM_REPORT_BLOCKER_TOOL = "team_report_blocker"
+TEAM_UPDATE_BLOCKER_TOOL = "team_update_blocker"
 TEAM_CREATE_CASE_TOOL = "team_create_case"
 TEAM_UPDATE_CASE_TOOL = "team_update_case"
 TEAM_CREATE_TASK_TOOL = "team_create_task"
@@ -108,6 +111,8 @@ TEAM_LIST_TASKS_TOOL = "team_list_tasks"
 TEAM_GET_TASK_TOOL = "team_get_task"
 TEAM_LIST_INBOX_TOOL = "team_list_inbox"
 TEAM_GET_INBOX_ITEM_TOOL = "team_get_inbox_item"
+TEAM_LIST_BLOCKERS_TOOL = "team_list_blockers"
+TEAM_GET_BLOCKER_TOOL = "team_get_blocker"
 TEAM_LIST_CASES_TOOL = "team_list_cases"
 TEAM_GET_CASE_TOOL = "team_get_case"
 TEAM_LIST_DELIVERABLES_TOOL = "team_list_deliverables"
@@ -135,6 +140,8 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
+    TEAM_REPORT_BLOCKER_TOOL,
+    TEAM_UPDATE_BLOCKER_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
@@ -168,6 +175,8 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_GET_TASK_TOOL,
     TEAM_LIST_INBOX_TOOL,
     TEAM_GET_INBOX_ITEM_TOOL,
+    TEAM_LIST_BLOCKERS_TOOL,
+    TEAM_GET_BLOCKER_TOOL,
     TEAM_LIST_CASES_TOOL,
     TEAM_GET_CASE_TOOL,
     TEAM_LIST_DELIVERABLES_TOOL,
@@ -195,6 +204,8 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
+    TEAM_REPORT_BLOCKER_TOOL,
+    TEAM_UPDATE_BLOCKER_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
@@ -235,6 +246,8 @@ MCP_TOOL_NAMES = (
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
+    TEAM_REPORT_BLOCKER_TOOL,
+    TEAM_UPDATE_BLOCKER_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
@@ -293,6 +306,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     agent_message_commands = TeamAgentMessageCommandService(repo)
     chat_commands = TeamChatCommandService(repo)
     operator_escalation_commands = TeamOperatorEscalationCommandService(repo)
+    blocker_commands = TeamBlockerCommandService(repo)
     case_commands = TeamCaseCommandService(repo)
     task_creation_commands = TeamTaskCreationCommandService(repo)
     task_update_commands = TeamTaskUpdateCommandService(repo)
@@ -402,6 +416,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         case_commands,
         task_creation_commands,
         task_update_commands,
+        blocker_commands,
         agent_control_commands,
         resolver,
         context,
@@ -992,6 +1007,7 @@ def _register_slice6_tools(
     case_commands: TeamCaseCommandService,
     task_creation_commands: TeamTaskCreationCommandService,
     task_update_commands: TeamTaskUpdateCommandService,
+    blocker_commands: TeamBlockerCommandService,
     agent_control_commands: TeamAgentControlCommandService,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
@@ -1233,6 +1249,97 @@ def _register_slice6_tools(
         team_update_task,
         name=TEAM_UPDATE_TASK_TOOL,
         description="Update a Team task without accepting or rejecting review work.",
+    )
+
+    def team_report_blocker(
+        source_kind: str,
+        source_id: str,
+        summary: str,
+        request_id: str,
+        details: str | None = None,
+        priority: str = "normal",
+        project_id: str | None = None,
+        task_id: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_REPORT_BLOCKER_TOOL,
+        )
+        try:
+            _state, result = blocker_commands.report_blocker_command(
+                session_id=caller.session_id,
+                source_kind=source_kind,
+                source_id=source_id,
+                summary=summary,
+                details=details,
+                priority=priority,
+                project_id=project_id,
+                task_id=task_id,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_report_blocker,
+        name=TEAM_REPORT_BLOCKER_TOOL,
+        description=(
+            "Report an explicit cannot-proceed condition and wake the nearest available "
+            "superior as its accountable owner."
+        ),
+    )
+
+    def team_update_blocker(
+        blocker_id: str,
+        action: str,
+        note: str,
+        request_id: str,
+        delegate_agent_id: str | None = None,
+        follow_up_seconds: int | None = None,
+        resolution_refs: list[str] | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_UPDATE_BLOCKER_TOOL,
+        )
+        try:
+            _state, result = blocker_commands.update_blocker_command(
+                session_id=caller.session_id,
+                blocker_id=blocker_id,
+                action=action,
+                note=note,
+                delegate_agent_id=delegate_agent_id,
+                follow_up_seconds=follow_up_seconds,
+                resolution_refs=resolution_refs,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_update_blocker,
+        name=TEAM_UPDATE_BLOCKER_TOOL,
+        description=(
+            "Record blocker progress, delegate locally, return delegated work, resolve, "
+            "or escalate one reporting level. Manual resolution is limited to active "
+            "agents on the blocker's reporter-to-manager escalation line."
+        ),
     )
 
     def team_update_goal(
@@ -2131,6 +2238,64 @@ def _register_read_tools(
         team_get_inbox_item,
         name=TEAM_GET_INBOX_ITEM_TOOL,
         description="Get one visible Team inbox item.",
+    )
+
+    def team_list_blockers(
+        session_id: str | None = None,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        owner_agent_id: str | None = None,
+        delegate_agent_id: str | None = None,
+        state: str | None = None,
+        source_kind: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_LIST_BLOCKERS_TOOL,
+        )
+        return _team_read_list_result(
+            _read_service(caller).list_blockers(
+                team_id=team_id,
+                project_id=project_id,
+                owner_agent_id=owner_agent_id,
+                delegate_agent_id=delegate_agent_id,
+                state=state,
+                source_kind=source_kind,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+            ),
+            caller=caller,
+        )
+
+    server.add_tool(
+        team_list_blockers,
+        name=TEAM_LIST_BLOCKERS_TOOL,
+        description="List visible Team blockers and their current routing state.",
+    )
+
+    def team_get_blocker(
+        blocker_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_BLOCKER_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_blocker(blocker_id),
+            caller=caller,
+            record_name="blocker",
+            record_id=blocker_id,
+        )
+
+    server.add_tool(
+        team_get_blocker,
+        name=TEAM_GET_BLOCKER_TOOL,
+        description="Get one visible Team blocker with its complete event history.",
     )
 
     def team_list_cases(

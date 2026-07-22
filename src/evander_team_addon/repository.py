@@ -22,6 +22,7 @@ from .persistence import (
 from .sqlite_store import (
     LEGACY_STATE_FILE,
     STATE_DB_FILE,
+    TeamStateSqliteCommandTransaction,
     TeamStateSqliteStore,
 )
 
@@ -75,6 +76,38 @@ class TeamStateRepository:
             return validated
 
         return self.store.update_object(_update)  # type: ignore[return-value]
+
+    def update_with_outbox(
+        self,
+        mutator: Callable[[TeamState], TeamState | None],
+        *,
+        outbox_records: Callable[[], Sequence[TeamOutboxRecord | Mapping[str, Any]]],
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        def _update(
+            payload: dict[str, Any],
+            tx: TeamStateSqliteCommandTransaction,
+        ) -> TeamState:
+            state = TeamState.model_validate(payload)
+            if expected_revision is not None and state.revision != expected_revision:
+                raise TeamStateConflictError(
+                    expected_revision=expected_revision,
+                    current_revision=state.revision,
+                )
+            next_state = mutator(state) or state
+            now = utc_now()
+            next_state = next_state.model_copy(
+                update={"revision": state.revision + 1, "updated_at": now},
+                deep=True,
+            )
+            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
+            payload.clear()
+            payload.update(validated.model_dump(mode="json"))
+            for record in outbox_records():
+                tx.enqueue_outbox_record(record)
+            return validated
+
+        return self.store.update_object_with_command_transaction(_update)
 
     def append_dispatch_activity(
         self,

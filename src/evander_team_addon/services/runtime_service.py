@@ -47,6 +47,12 @@ from .domain.chat import (
     _mark_chat_dispatch_message_replied_from_activity,
     _operator_chat_participant_payloads,
 )
+from .domain.blockers import (
+    assign_blockers_to_dispatch,
+    blockers_due_for_agent,
+    complete_blocker_dispatches,
+    reconcile_unavailable_blocker_assignments,
+)
 from .domain.common import (
     _decimal_or_zero,
     _ensure_utc,
@@ -92,6 +98,7 @@ from .domain.work_due import (
     _clear_low_priority_batch,
     _mark_agent_work_due,
 )
+from .commands.outbox import _team_event_outbox_records
 
 
 def utc_now() -> datetime:
@@ -270,13 +277,49 @@ class TeamRuntimeService:
         low_priority_threshold = max(0, int(low_priority_wake_after_cycles))
         blocked_teams = set(blocked_team_ids or set())
         leases: list[dict[str, Any]] = []
+        blocker_routing_events: list[dict[str, Any]] = []
         if normalized_limit == 0:
             return self._repository.read(), leases
 
         def _mutate(state_model: TeamState) -> TeamState:
+            availability_result: dict[str, Any] = {"events": [], "errors": []}
+            reconcile_unavailable_blocker_assignments(
+                state_model,
+                result=availability_result,
+                now=effective_now,
+            )
+            blocker_routing_events.extend(availability_result.get("events") or [])
             teams_with_open_work = _team_ids_with_open_work(state_model)
             teams_with_lease = set()
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
+                runtime = state_model.agent_runtimes.get(agent.id)
+                if runtime is not None:
+                    _clear_completed_chat_dispatch_lease(
+                        state_model,
+                        runtime,
+                        now=effective_now,
+                    )
+                    if (
+                        runtime.active_dispatch_id is not None
+                        and runtime.wake_leased_until is not None
+                        and _ensure_utc(runtime.wake_leased_until) <= effective_now
+                    ):
+                        expired_dispatch_id = runtime.active_dispatch_id
+                        expiry_result: dict[str, Any] = {"events": [], "errors": []}
+                        processed_blockers = complete_blocker_dispatches(
+                            state_model,
+                            agent_id=agent.id,
+                            dispatch_id=expired_dispatch_id,
+                            result=expiry_result,
+                            now=effective_now,
+                        )
+                        blocker_routing_events.extend(expiry_result.get("events") or [])
+                        if processed_blockers:
+                            runtime.no_progress_count += 1
+                        runtime.active_dispatch_id = None
+                        runtime.wake_leased_until = None
+                        runtime.wake_reason = None
+                        runtime.updated_at = effective_now
                 if agent.status != AgentStatus.ACTIVE or agent.team_id is None:
                     continue
                 if normalized_team_id is not None and agent.team_id != normalized_team_id:
@@ -285,13 +328,6 @@ class TeamRuntimeService:
                     continue
                 if _active_stand_downs_for_agent(state_model, agent.id):
                     continue
-                runtime = state_model.agent_runtimes.get(agent.id)
-                if runtime is not None:
-                    _clear_completed_chat_dispatch_lease(
-                        state_model,
-                        runtime,
-                        now=effective_now,
-                    )
                 if (
                     runtime is not None
                     and runtime.wake_leased_until is not None
@@ -334,6 +370,11 @@ class TeamRuntimeService:
                 active_tasks = _active_tasks_for_agent(state_model, agent.id)
                 pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
                 wake_inbox = _wakeable_inbox_items(pending_inbox)
+                due_blockers = blockers_due_for_agent(
+                    state_model,
+                    agent_id=agent.id,
+                    now=effective_now,
+                )
                 immediate_inbox = [
                     item for item in wake_inbox if item.priority != TeamInboxPriority.LOW
                 ]
@@ -351,7 +392,11 @@ class TeamRuntimeService:
                     state_model.dependency_status(task.id) == "satisfied" for task in wakeable_tasks
                 ) or any(state_model.subtask_counts(task.id)["open"] > 0 for task in wakeable_tasks)
                 wake_eligible = (
-                    rotation_pending or bool(wake_inbox) or bool(action_feedback) or task_work_ready
+                    rotation_pending
+                    or bool(wake_inbox)
+                    or bool(action_feedback)
+                    or bool(due_blockers)
+                    or task_work_ready
                 )
                 if not wake_eligible:
                     _clear_low_priority_batch(runtime)
@@ -365,6 +410,7 @@ class TeamRuntimeService:
                     rotation_pending
                     or bool(immediate_inbox)
                     or bool(action_feedback)
+                    or bool(due_blockers)
                     or (task_work_ready and due_by_time)
                 )
                 low_priority_wake_ready = False
@@ -383,6 +429,7 @@ class TeamRuntimeService:
                     not wake_inbox
                     and not rotation_pending
                     and not action_feedback
+                    and not due_blockers
                     and not due_by_time
                 ):
                     continue
@@ -394,6 +441,7 @@ class TeamRuntimeService:
                     and not wake_inbox
                     and not rotation_pending
                     and not action_feedback
+                    and not due_blockers
                 ):
                     continue
 
@@ -401,6 +449,8 @@ class TeamRuntimeService:
                 reason = (
                     "inbox"
                     if immediate_inbox
+                    else "blocker"
+                    if due_blockers
                     else "low_priority_inbox"
                     if low_priority_wake_ready
                     else "action_feedback"
@@ -427,6 +477,12 @@ class TeamRuntimeService:
                 runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
                 runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
                 runtime.updated_at = effective_now
+                assigned_blockers = assign_blockers_to_dispatch(
+                    state_model,
+                    agent_id=agent.id,
+                    dispatch_id=dispatch_id,
+                    now=effective_now,
+                )
                 leases.append(
                     {
                         "agent": _agent_payload(state_model, agent),
@@ -438,6 +494,7 @@ class TeamRuntimeService:
                         ],
                         "cases": _case_payloads_for_agent(state_model, agent.id),
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
+                        "blockers": assigned_blockers,
                         "release_packages": _release_package_payloads_for_agent(
                             state_model,
                             agent,
@@ -577,7 +634,25 @@ class TeamRuntimeService:
 
         if normalized_limit == 0:
             return self._repository.read(), []
-        state = self._repository.update(_mutate)
+        def _transaction(
+            payload: dict[str, Any],
+            tx: TeamStateSqliteCommandTransaction,
+        ) -> TeamState:
+            state_model = TeamState.model_validate(payload)
+            next_state = _mutate(state_model)
+            updated_at = utc_now()
+            next_state = next_state.model_copy(
+                update={"revision": state_model.revision + 1, "updated_at": updated_at},
+                deep=True,
+            )
+            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
+            payload.clear()
+            payload.update(validated.model_dump(mode="json"))
+            for record in _team_event_outbox_records(blocker_routing_events):
+                tx.enqueue_outbox_record(record)
+            return validated
+
+        state = self._repository.store.update_object_with_command_transaction(_transaction)
         return state, leases
 
     def lease_due_governance_managers(
@@ -918,6 +993,13 @@ class TeamRuntimeService:
                     if failed_id is not None:
                         result["failed_chat_message_ids"].append(failed_id)
 
+            complete_blocker_dispatches(
+                state,
+                agent_id=agent.id,
+                dispatch_id=normalized_dispatch_id,
+                result=result,
+                now=completed_at,
+            )
             runtime.active_dispatch_id = None
             runtime.wake_leased_until = None
             runtime.wake_reason = None
@@ -944,6 +1026,14 @@ class TeamRuntimeService:
                 completed_dispatch_id=normalized_dispatch_id,
                 progress_made=progress_made,
             )
+            stored_outbox_records = [
+                tx.enqueue_outbox_record(record)
+                for record in _team_event_outbox_records(result.get("events") or [])
+            ]
+            if stored_outbox_records:
+                result["outbox_record_ids"] = [
+                    record.id for record in stored_outbox_records
+                ]
 
             next_state = state.model_copy(
                 update={"revision": state.revision + 1, "updated_at": completed_at},

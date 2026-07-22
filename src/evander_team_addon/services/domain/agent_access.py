@@ -10,6 +10,7 @@ from ...models import (
     PersistentAgent,
     ReviewProfile,
     RolePermission,
+    TeamBlockerState,
     TeamInboxItemState,
     TeamRecordState,
     TeamRole,
@@ -118,6 +119,13 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
             continue
         if review.reviewer_agent_id == agent.id:
             blockers.append(f"reviews request {review.id}")
+    for blocker in state.blockers.values():
+        if blocker.state != TeamBlockerState.OPEN:
+            continue
+        if blocker.owner_agent_id == agent.id:
+            blockers.append(f"owns blocker {blocker.id}")
+        if blocker.delegate_agent_id == agent.id:
+            blockers.append(f"delegated blocker {blocker.id}")
     for item in state.inbox.values():
         if item.state != TeamInboxItemState.PENDING:
             continue

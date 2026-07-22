@@ -918,6 +918,8 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_create_task`
 - `team_create_tasks`
 - `team_update_task`
+- `team_report_blocker`
+- `team_update_blocker`
 - `team_update_goal`
 - `team_stand_down_agent`
 - `team_revoke_stand_down`
@@ -958,6 +960,36 @@ the whole tool call fails without partial handling.
 Async-intent tools may record durable intent while external work is still
 pending. Their result reports the recorded intent and pending effect state
 rather than claiming the external operation completed synchronously.
+
+`team_report_blocker` records a durable blocker for an explicit dependency or a
+blocked task, deliverable, review request, or release package. The nearest
+available superior becomes accountable and is woken immediately. An accountable
+dispatch that finishes without a blocker-specific progress event transfers the
+blocker up exactly one reporting level; unrelated Team activity does not suppress
+that transfer. `team_update_blocker` records progress, delegates to a direct
+subordinate, returns a delegate result, resolves the blocker, or explicitly
+escalates it. Delegation retains the superior as owner: a delegate result or
+stalled delegate dispatch wakes the owner, and only a later owner dispatch with
+no blocker-specific progress transfers accountability upward. A blocker with no
+remaining superior routes to the Team's governance group when configured, or to
+its operator communication target otherwise. The existing manager fallback
+remains a periodic recovery mechanism rather than the normal blocker route.
+
+Manual resolution remains available to every active Team agent on the blocker's
+structural escalation line, from its reporter through that reporter's superiors
+and Team manager. Ownership and terminal routing determine accountability and
+wake behavior; they do not revoke resolution authority from that line. Peers and
+temporary delegates are not added to the line. Automated blockers without a
+reporter use their first recorded owner as the line anchor. Source-owned state
+transitions may also auto-resolve a blocker without an agent-authored resolution.
+Once routing reaches governance or an operator, an unlocked Admin Web operator
+may also resolve it with a required audited explanation. That terminal authority
+is additive and does not remove resolution authority from the Team escalation line.
+
+Blockers and their event history are stored in Team SQLite, exposed through
+`team_list_blockers` and `team_get_blocker`, included in bounded wake context and
+runtime attention, and shown alongside blocked tasks, deliverables, reviews, and
+release packages in the Team UI.
 
 Deliverable tools publish `artifact_paths` host-side before recording the final
 Team mutation. Paths are checked for safety, publication is replay-idempotent,

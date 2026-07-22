@@ -47,6 +47,9 @@ from evander_team_addon.models import (
     ReleasePackage,
     ReleaseScopeValidation,
     TeamConversationMessage,
+    TeamBlockerEventType,
+    TeamBlockerRoute,
+    TeamBlockerState,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamOutboxRecord,
@@ -97,6 +100,13 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
         if route.path == "/release-packages/{release_package_id}/retry-gate"
     )
     assert retry_route.methods == {"POST"}
+
+    blocker_resolve_route = next(
+        route
+        for route in routes
+        if route.path == "/blockers/{blocker_id}/resolve"
+    )
+    assert blocker_resolve_route.methods == {"POST"}
 
 
 @pytest.fixture(autouse=True)
@@ -411,6 +421,42 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
 
     repo.update(_mutate)
     return repo
+
+
+def test_operator_api_resolves_terminal_blocker_with_audit_identity(tmp_path: Path) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    def _route_to_operator(state):
+        blocker = next(iter(state.blockers.values()))
+        blocker.route = TeamBlockerRoute.OPERATOR
+        blocker.terminal_reference_ids = ["escalation-api-test"]
+        return state
+
+    state = repo.update(_route_to_operator)
+    blocker = next(iter(state.blockers.values()))
+    client = _client(tmp_path)
+
+    response = client.post(
+        f"/api/addons/team-addon/blockers/{blocker.id}/resolve",
+        json={
+            "note": "Operator confirmed the external dependency recovered.",
+            "resolution_refs": ["incident-api-123"],
+            "expected_revision": state.revision,
+        },
+    )
+
+    assert response.status_code == 200
+    reread = repo.read()
+    assert reread.blockers[blocker.id].state == TeamBlockerState.RESOLVED
+    resolution_event = next(
+        event
+        for event in reread.blocker_events.values()
+        if event.blocker_id == blocker.id
+        and event.event_type == TeamBlockerEventType.RESOLVED
+    )
+    assert resolution_event.actor_agent_id is None
+    assert resolution_event.metadata["operator_actor_id"].startswith("operator:")
+    assert resolution_event.reference_ids == ["incident-api-123"]
 
 
 def _seed_long_chat_history(
@@ -1197,15 +1243,21 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
     people = client.get("/api/addons/team-addon/views/people")
     assert people.status_code == 200
     people_state = people.json()["data"]["state"]
-    assert set(people_state["inbox"]) == {"inbox-1", "escalation-1"}
+    assert {"inbox-1", "escalation-1"}.issubset(people_state["inbox"])
+    assert any(
+        item["payload"].get("kind") == "blocker_reported"
+        for item in people_state["inbox"].values()
+    )
     assert "action_records" not in people_state
 
     operations = client.get("/api/addons/team-addon/views/operations")
     assert operations.status_code == 200
     operations_state = operations.json()["data"]["state"]
-    assert set(operations_state["inbox"]) == {"inbox-1", "escalation-1"}
+    assert {"inbox-1", "escalation-1"}.issubset(operations_state["inbox"])
     assert set(operations_state["action_records"]) == {"action-1"}
-    assert set(operations_state["resource_tokens"]["inbox"]) == {"inbox-1", "escalation-1"}
+    assert set(operations_state["resource_tokens"]["inbox"]) == set(
+        operations_state["inbox"]
+    )
     assert set(operations_state["resource_tokens"]["action_records"]) == {"action-1"}
 
 
@@ -1244,11 +1296,19 @@ def test_team_addon_inbox_history_is_searchable_filterable_and_paginated(
     page = client.get("/api/addons/team-addon/inbox?agent_id=backend&limit=1")
     assert page.status_code == 200
     payload = page.json()
-    assert payload["total_count"] == 3
-    assert payload["state_counts"] == {"pending": 2, "handled": 1}
+    assert payload["total_count"] == 4
+    assert payload["state_counts"] == {"pending": 3, "handled": 1}
     assert payload["has_more"] is True
-    assert [item["id"] for item in payload["items"]] == ["handled-progress"]
-    item = payload["items"][0]
+    assert payload["items"][0]["payload"]["kind"] == "blocker_reported"
+
+    searched = client.get(
+        "/api/addons/team-addon/inbox",
+        params={"agent_id": "backend", "state": "handled", "q": "private follow-up"},
+    )
+    assert searched.status_code == 200
+    assert searched.json()["total_count"] == 1
+    item = searched.json()["items"][0]
+    assert item["id"] == "handled-progress"
     assert item["direction"] == "received"
     assert item["sender"]["id"] == "lead"
     assert item["recipient"]["id"] == "backend"
@@ -1259,14 +1319,6 @@ def test_team_addon_inbox_history_is_searchable_filterable_and_paginated(
         "state": "pending",
     }
     assert item["payload"]["message"] == "The deployment is ready for the private follow-up."
-
-    searched = client.get(
-        "/api/addons/team-addon/inbox",
-        params={"state": "handled", "q": "private follow-up"},
-    )
-    assert searched.status_code == 200
-    assert searched.json()["total_count"] == 1
-    assert searched.json()["items"][0]["id"] == "handled-progress"
 
     sent = client.get(
         "/api/addons/team-addon/inbox",
@@ -1398,10 +1450,10 @@ def test_team_addon_state_payload_windows_history_but_keeps_current_records(
     assert payload["conversation_messages_returned_count"] == 1
     assert payload["conversation_messages_windowed"] is True
     assert set(payload["conversation_messages"]) == {"msg-124"}
-    assert payload["inbox_total_count"] == 2
-    assert payload["inbox_returned_count"] == 2
+    assert payload["inbox_total_count"] == 3
+    assert payload["inbox_returned_count"] == 3
     assert payload["inbox_windowed"] is False
-    assert set(payload["inbox"]) == {"inbox-1", "escalation-1"}
+    assert {"inbox-1", "escalation-1"}.issubset(payload["inbox"])
     assert set(payload["action_records"]) == {"action-1"}
     assert set(payload["release_packages"]) == {"release-1"}
     assert set(payload["git_promotions"]) == {"promotion-1"}
@@ -1409,7 +1461,7 @@ def test_team_addon_state_payload_windows_history_but_keeps_current_records(
         "ephemeral-cleanup",
         "ephemeral-failed",
     }
-    assert set(payload["resource_tokens"]["inbox"]) == {"inbox-1", "escalation-1"}
+    assert set(payload["resource_tokens"]["inbox"]) == set(payload["inbox"])
     assert set(payload["resource_tokens"]["action_records"]) == {"action-1"}
 
 
@@ -2175,6 +2227,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "create-task-form:created_by_agent_id" in script.text
     assert "decorateFieldTooltips" in script.text
     assert "data-dismiss-action-id" in script.text
+    assert "data-resolve-terminal-blocker-id" in script.text
+    assert "resolveTerminalBlocker" in script.text
     assert "teamFetch(`${API_BASE}/costs?backfill=false`" in script.text
     assert "teamFetch(`${API_BASE}/costs/backfill`" in script.text
     assert "data-cost-backfill-refresh" in script.text
@@ -2528,10 +2582,12 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     assert backend["session_is_expired"] is True
     assert backend["session_expires_at"] == "2025-12-31T00:00:00+00:00"
 
-    attention = {row["kind"]: row for row in state["runtime_operations"]["attention"]}
+    attention_rows = state["runtime_operations"]["attention"]
+    attention = {row["kind"]: row for row in attention_rows}
     assert set(attention) == {
         "expired_agent_session",
         "blocked_task",
+        "team_blocker",
         "waiting_dependency_task",
         "pending_inbox_item",
         "pending_escalation",
@@ -2547,7 +2603,10 @@ def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     assert attention["blocked_task"]["state"] == "blocked"
     assert attention["waiting_dependency_task"]["id"] == "waiting-task"
     assert attention["waiting_dependency_task"]["dependency_status"] == "waiting"
-    assert attention["pending_inbox_item"]["inbox_item_id"] == "inbox-1"
+    assert any(
+        row["kind"] == "pending_inbox_item" and row["inbox_item_id"] == "inbox-1"
+        for row in attention_rows
+    )
     assert attention["pending_escalation"]["inbox_item_id"] == "escalation-1"
     assert attention["failed_action_record"]["dispatch_id"] == "dispatch-backend"
     assert attention["failed_action_record"]["error"] == "build failed"

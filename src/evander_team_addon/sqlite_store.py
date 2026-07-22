@@ -27,7 +27,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 26
+SQLITE_SCHEMA_VERSION = 27
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1174,6 +1174,8 @@ class TeamStateSqliteStore:
             "review_requests": {},
             "review_profiles": {},
             "inbox": {},
+            "blockers": {},
+            "blocker_events": {},
             "action_records": {},
             "memories": {},
             "conversations": {},
@@ -1203,6 +1205,8 @@ class TeamStateSqliteStore:
         self._read_review_profiles(connection, payload)
         self._read_review_requests(connection, payload)
         self._read_inbox(connection, payload)
+        self._read_blockers(connection, payload)
+        self._read_blocker_events(connection, payload)
         self._read_action_records(connection, payload)
         self._read_memories(connection, payload)
         self._read_conversations(connection, payload)
@@ -1235,6 +1239,8 @@ class TeamStateSqliteStore:
         self._write_review_profiles(connection, payload["review_profiles"])
         self._write_review_requests(connection, payload["review_requests"])
         self._write_inbox(connection, payload["inbox"])
+        self._write_blockers(connection, payload["blockers"])
+        self._write_blocker_events(connection, payload["blocker_events"])
         self._write_action_records(connection, payload["action_records"])
         self._write_memories(connection, payload["memories"])
         self._write_conversations(connection, payload["conversations"])
@@ -2352,6 +2358,120 @@ class TeamStateSqliteStore:
                     item.get("state", "pending"),
                     item["created_at"],
                     item["updated_at"],
+                ),
+            )
+
+    @staticmethod
+    def _read_blockers(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        for row in connection.execute("SELECT * FROM team_blockers ORDER BY id"):
+            payload["blockers"][row["id"]] = {
+                "id": row["id"],
+                "team_id": row["team_id"],
+                "project_id": row["project_id"],
+                "task_id": row["task_id"],
+                "source_kind": row["source_kind"],
+                "source_id": row["source_id"],
+                "reporter_agent_id": row["reporter_agent_id"],
+                "owner_agent_id": row["owner_agent_id"],
+                "delegate_agent_id": row["delegate_agent_id"],
+                "state": row["state"],
+                "route": row["route"],
+                "summary": row["summary"],
+                "details": row["details"],
+                "priority": row["priority"],
+                "escalation_depth": row["escalation_depth"],
+                "active_dispatch_id": row["active_dispatch_id"],
+                "follow_up_at": row["follow_up_at"],
+                "last_progress_at": row["last_progress_at"],
+                "terminal_reference_ids": _json_loads(row["terminal_reference_ids_json"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "resolved_at": row["resolved_at"],
+            }
+
+    @staticmethod
+    def _write_blockers(connection: sqlite3.Connection, blockers: dict[str, Any]) -> None:
+        for blocker in blockers.values():
+            connection.execute(
+                """
+                INSERT INTO team_blockers(
+                    id, team_id, project_id, task_id, source_kind, source_id,
+                    reporter_agent_id, owner_agent_id, delegate_agent_id, state, route,
+                    summary, details, priority, escalation_depth, active_dispatch_id,
+                    follow_up_at, last_progress_at, terminal_reference_ids_json,
+                    created_at, updated_at, resolved_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    blocker["id"],
+                    blocker["team_id"],
+                    blocker.get("project_id"),
+                    blocker.get("task_id"),
+                    blocker["source_kind"],
+                    blocker["source_id"],
+                    blocker.get("reporter_agent_id"),
+                    blocker.get("owner_agent_id"),
+                    blocker.get("delegate_agent_id"),
+                    blocker.get("state", "open"),
+                    blocker.get("route", "owned"),
+                    blocker["summary"],
+                    blocker.get("details", ""),
+                    blocker.get("priority", "normal"),
+                    blocker.get("escalation_depth", 0),
+                    blocker.get("active_dispatch_id"),
+                    blocker.get("follow_up_at"),
+                    blocker.get("last_progress_at"),
+                    _json_dumps(blocker.get("terminal_reference_ids", [])),
+                    blocker["created_at"],
+                    blocker["updated_at"],
+                    blocker.get("resolved_at"),
+                ),
+            )
+
+    @staticmethod
+    def _read_blocker_events(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        for row in connection.execute(
+            "SELECT * FROM team_blocker_events ORDER BY created_at, id"
+        ):
+            payload["blocker_events"][row["id"]] = {
+                "id": row["id"],
+                "blocker_id": row["blocker_id"],
+                "event_type": row["event_type"],
+                "actor_agent_id": row["actor_agent_id"],
+                "from_agent_id": row["from_agent_id"],
+                "to_agent_id": row["to_agent_id"],
+                "dispatch_id": row["dispatch_id"],
+                "note": row["note"],
+                "reference_ids": _json_loads(row["reference_ids_json"]),
+                "metadata": _json_loads(row["metadata_json"]),
+                "created_at": row["created_at"],
+            }
+
+    @staticmethod
+    def _write_blocker_events(connection: sqlite3.Connection, events: dict[str, Any]) -> None:
+        for event in events.values():
+            connection.execute(
+                """
+                INSERT INTO team_blocker_events(
+                    id, blocker_id, event_type, actor_agent_id, from_agent_id,
+                    to_agent_id, dispatch_id, note, reference_ids_json,
+                    metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event["id"],
+                    event["blocker_id"],
+                    event["event_type"],
+                    event.get("actor_agent_id"),
+                    event.get("from_agent_id"),
+                    event.get("to_agent_id"),
+                    event.get("dispatch_id"),
+                    event.get("note", ""),
+                    _json_dumps(event.get("reference_ids", [])),
+                    _json_dumps(event.get("metadata", {})),
+                    event["created_at"],
                 ),
             )
 
@@ -3574,6 +3694,8 @@ _STATE_TABLES = (
     "team_conversations",
     "team_memories",
     "team_action_records",
+    "team_blocker_events",
+    "team_blockers",
     "team_inbox",
     "team_review_requests",
     "team_review_profiles",
@@ -3997,6 +4119,59 @@ CREATE TABLE IF NOT EXISTS team_inbox (
 CREATE INDEX IF NOT EXISTS idx_team_inbox_recipient_state_created
     ON team_inbox(recipient_agent_id, state, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_team_inbox_task_state ON team_inbox(task_id, state, id);
+
+CREATE TABLE IF NOT EXISTS team_blockers (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    project_id TEXT,
+    task_id TEXT,
+    source_kind TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    reporter_agent_id TEXT,
+    owner_agent_id TEXT,
+    delegate_agent_id TEXT,
+    state TEXT NOT NULL,
+    route TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    details TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    escalation_depth INTEGER NOT NULL DEFAULT 0,
+    active_dispatch_id TEXT,
+    follow_up_at TEXT,
+    last_progress_at TEXT,
+    terminal_reference_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_blockers_open_source
+    ON team_blockers(team_id, source_kind, source_id) WHERE state = 'open';
+CREATE INDEX IF NOT EXISTS idx_team_blockers_owner_state
+    ON team_blockers(owner_agent_id, state, updated_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_blockers_delegate_state
+    ON team_blockers(delegate_agent_id, state, updated_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_blockers_dispatch_state
+    ON team_blockers(active_dispatch_id, state, id);
+CREATE INDEX IF NOT EXISTS idx_team_blockers_team_project_state
+    ON team_blockers(team_id, project_id, state, updated_at, id);
+
+CREATE TABLE IF NOT EXISTS team_blocker_events (
+    id TEXT PRIMARY KEY,
+    blocker_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    actor_agent_id TEXT,
+    from_agent_id TEXT,
+    to_agent_id TEXT,
+    dispatch_id TEXT,
+    note TEXT NOT NULL,
+    reference_ids_json TEXT NOT NULL DEFAULT '[]',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_blocker_events_blocker
+    ON team_blocker_events(blocker_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_blocker_events_dispatch
+    ON team_blocker_events(dispatch_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS team_action_records (
     id TEXT PRIMARY KEY,

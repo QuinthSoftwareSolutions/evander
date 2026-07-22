@@ -2,17 +2,20 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
 
 from ..repository import TeamStateRepository
 from ..models import (
-    AgentInboxItem,
     ReleasePackage,
+    TeamBlockerSourceKind,
     TeamInboxItemState,
-    TeamInboxItemType,
-    TeamInboxPriority,
     TeamRecordState,
     TeamState,
+)
+from .domain.blockers import (
+    active_blockers_for_source,
+    open_release_blocker,
+    resolve_active_blockers_for_source,
+    resolve_blocker,
 )
 from .domain.common import (
     _append_unique,
@@ -31,7 +34,6 @@ from .domain.git_promotion import (
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
     _normalized_release_deliverable_set,
-    _release_failure_recipient,
 )
 
 
@@ -216,6 +218,9 @@ class TeamGitReleaseService:
             "release_package_id": normalized_id,
             "state": None,
             "created_inbox_item_ids": [],
+            "created_blocker_ids": [],
+            "resolved_blocker_ids": [],
+            "events": [],
             "superseded_release_package_ids": [],
             "resolved_inbox_item_ids": [],
             "ignored_terminal_state": False,
@@ -242,6 +247,33 @@ class TeamGitReleaseService:
                     release.published_commit_sha = normalized_commit
                 release.published_at = now
                 release.error = None
+                for blocker in active_blockers_for_source(
+                    state_model,
+                    source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+                    source_id=release.id,
+                ):
+                    resolve_blocker(
+                        state_model,
+                        blocker=blocker,
+                        actor_agent_id=None,
+                        dispatch_id=None,
+                        note="Release package was published successfully.",
+                        reference_ids=[release.id],
+                        now=now,
+                    )
+                    result["resolved_blocker_ids"].append(blocker.id)
+                for review_id in release.review_request_ids:
+                    resolve_active_blockers_for_source(
+                        state_model,
+                        source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+                        source_id=review_id,
+                        actor_agent_id=None,
+                        dispatch_id=None,
+                        note="Release package was published successfully.",
+                        reference_ids=[release.id],
+                        result=result,
+                        now=now,
+                    )
                 deliverable_set = _normalized_release_deliverable_set(release.deliverable_ids)
                 if deliverable_set:
                     for candidate in state_model.release_packages.values():
@@ -266,28 +298,51 @@ class TeamGitReleaseService:
                                 now=now,
                             )
                         )
+                        for blocker in active_blockers_for_source(
+                            state_model,
+                            source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+                            source_id=candidate.id,
+                        ):
+                            resolve_blocker(
+                                state_model,
+                                blocker=blocker,
+                                actor_agent_id=None,
+                                dispatch_id=None,
+                                note=(
+                                    "Release package was superseded by successfully published "
+                                    f"package {release.id}."
+                                ),
+                                reference_ids=[release.id],
+                                now=now,
+                            )
+                            result["resolved_blocker_ids"].append(blocker.id)
+                        for review_id in candidate.review_request_ids:
+                            resolve_active_blockers_for_source(
+                                state_model,
+                                source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+                                source_id=review_id,
+                                actor_agent_id=None,
+                                dispatch_id=None,
+                                note=(
+                                    "Release review was superseded by successfully published "
+                                    f"package {release.id}."
+                                ),
+                                reference_ids=[release.id],
+                                result=result,
+                                now=now,
+                            )
             else:
                 release.state = TeamRecordState.BLOCKED
                 release.error = normalized_error or "release publication failed"
                 result["error"] = release.error
-                recipient_id = _release_failure_recipient(state_model, release)
-                if recipient_id is not None and recipient_id in state_model.agents:
-                    inbox_id = f"inbox-{uuid4().hex}"
-                    state_model.inbox[inbox_id] = AgentInboxItem(
-                        id=inbox_id,
-                        recipient_agent_id=recipient_id,
-                        sender_agent_id=None,
-                        item_type=TeamInboxItemType.PROGRESS_REPORT,
-                        response_requested=True,
-                        priority=TeamInboxPriority.NORMAL,
-                        payload={
-                            "kind": "release_publish_failed",
-                            "release_package_id": release.id,
-                            "project_id": release.project_id,
-                            "error": release.error,
-                        },
-                    )
-                    result["created_inbox_item_ids"].append(inbox_id)
+                open_release_blocker(
+                    state_model,
+                    release_package_id=release.id,
+                    summary=f"Release publication blocked: {release.id}",
+                    details=release.error,
+                    result=result,
+                    now=now,
+                )
             release.updated_at = now
             _recalculate_project_status(state_model, release.project_id)
             result["state"] = release.state.value

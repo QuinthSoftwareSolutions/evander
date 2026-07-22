@@ -43,6 +43,9 @@ from ..models import (
     ReviewRequest,
     RolePermission,
     Team,
+    TeamBlockerRoute,
+    TeamBlockerSourceKind,
+    TeamBlockerState,
     TeamCase,
     TeamCaseStatus,
     TeamInboxItemType,
@@ -78,6 +81,7 @@ from .domain.case_task import (
     _unlink_task_from_case,
     _validate_case_scope,
 )
+from .domain.blockers import active_blockers_for_source, open_or_get_blocker, resolve_blocker
 from .domain.common import (
     _NON_TERMINAL_TASK_STATES,
     _append_unique,
@@ -123,6 +127,7 @@ from .domain.review import (
     _review_profile_for_request,
 )
 from .domain.work_due import _mark_agent_work_due
+from .commands.outbox import _team_event_outbox_records
 
 
 def utc_now() -> datetime:
@@ -349,6 +354,65 @@ class TeamAdminService:
             return state
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
+
+    def resolve_terminal_blocker_as_operator(
+        self,
+        *,
+        blocker_id: str,
+        note: str,
+        operator_actor_id: str,
+        resolution_refs: list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_blocker_id = _required_text(blocker_id, "blocker_id")
+        normalized_note = _required_text(note, "note")
+        normalized_actor_id = _required_text(operator_actor_id, "operator_actor_id")
+        normalized_refs = _unique_text_list(resolution_refs or [], "resolution_refs")
+        result: dict[str, Any] = {
+            "success": False,
+            "blocker_id": normalized_blocker_id,
+            "operator_actor_id": normalized_actor_id,
+        }
+
+        def _mutate(state: TeamState) -> TeamState:
+            blocker = _require_present(
+                state.blockers,
+                normalized_blocker_id,
+                "blocker",
+            )
+            if blocker.state != TeamBlockerState.OPEN:
+                raise ValueError(f"blocker {blocker.id} is {blocker.state.value}")
+            if blocker.route not in {
+                TeamBlockerRoute.GOVERNANCE,
+                TeamBlockerRoute.OPERATOR,
+            }:
+                raise ValueError(
+                    f"blocker {blocker.id} is routed to {blocker.route.value}; "
+                    "operator resolution requires governance or operator routing"
+                )
+            route_before_resolution = blocker.route.value
+            event = resolve_blocker(
+                state,
+                blocker=blocker,
+                actor_agent_id=None,
+                dispatch_id=None,
+                note=normalized_note,
+                reference_ids=normalized_refs,
+                metadata={"operator_actor_id": normalized_actor_id},
+            )
+            result.update(
+                {
+                    "success": True,
+                    "event_id": event.id,
+                    "route_before_resolution": route_before_resolution,
+                }
+            )
+            return state
+
+        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        result["revision"] = state.revision
+        result["blocker"] = state.blockers[normalized_blocker_id].model_dump(mode="json")
+        return state, result
 
     def mark_action_feedback_delivered(
         self,
@@ -1963,6 +2027,7 @@ class TeamAdminService:
         normalized_project_id = _required_text(project_id, "project_id")
         effective_task_id: str | None = None
         created = False
+        blocker_result: dict[str, Any] = {"events": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
             nonlocal created, effective_task_id
@@ -2026,6 +2091,25 @@ class TeamAdminService:
                 created_at=now,
                 updated_at=now,
             )
+            if state == TeamTaskState.BLOCKED:
+                project = _require_present(
+                    state_model.projects,
+                    normalized_project_id,
+                    "project",
+                )
+                open_or_get_blocker(
+                    state_model,
+                    source_kind=TeamBlockerSourceKind.TASK,
+                    source_id=effective_task_id,
+                    summary=f"Task blocked: {normalized_title}",
+                    details=normalized_description,
+                    reporter_agent_id=normalized_owner_agent_id,
+                    team_id=project.team_id,
+                    project_id=project.id,
+                    task_id=effective_task_id,
+                    result=blocker_result,
+                    now=now,
+                )
             if normalized_case_id is not None:
                 _link_task_to_case(
                     state_model,
@@ -2043,7 +2127,13 @@ class TeamAdminService:
                 )
             return state_model
 
-        state_model = self._repository.update(_mutate, expected_revision=expected_revision)
+        state_model = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                blocker_result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
         if effective_task_id is None:
             raise RuntimeError("task mutation completed without resolving an effective task id")
         return state_model, effective_task_id, created
@@ -2064,10 +2154,12 @@ class TeamAdminService:
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_case_id = _optional_text(case_id)
+        blocker_result: dict[str, Any] = {"events": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, task_id, "task")
             now = utc_now()
+            previous_state = task.state
             if priority is not None:
                 task.priority = priority
             if state is not None:
@@ -2091,6 +2183,36 @@ class TeamAdminService:
             if dependency_task_ids is not None:
                 task.dependency_task_ids = dependency_task_ids
             task.updated_at = now
+            if previous_state != TeamTaskState.BLOCKED and task.state == TeamTaskState.BLOCKED:
+                project = _require_present(state_model.projects, task.project_id, "project")
+                open_or_get_blocker(
+                    state_model,
+                    source_kind=TeamBlockerSourceKind.TASK,
+                    source_id=task.id,
+                    summary=f"Task blocked: {task.title}",
+                    details=task.description,
+                    reporter_agent_id=task.owner_agent_id,
+                    team_id=project.team_id,
+                    project_id=project.id,
+                    task_id=task.id,
+                    result=blocker_result,
+                    now=now,
+                )
+            elif previous_state == TeamTaskState.BLOCKED and task.state != TeamTaskState.BLOCKED:
+                for blocker in active_blockers_for_source(
+                    state_model,
+                    source_kind=TeamBlockerSourceKind.TASK,
+                    source_id=task.id,
+                ):
+                    resolve_blocker(
+                        state_model,
+                        blocker=blocker,
+                        actor_agent_id=None,
+                        dispatch_id=None,
+                        note=f"Task moved to {task.state.value}.",
+                        reference_ids=[task.id],
+                        now=now,
+                    )
             if task.state in _NON_TERMINAL_TASK_STATES:
                 _mark_agent_work_due(
                     state_model,
@@ -2105,7 +2227,13 @@ class TeamAdminService:
                 )
             return state_model
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                blocker_result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
 
     def create_operator_directive(
         self,
@@ -2716,6 +2844,7 @@ class TeamAdminService:
         normalized_review_request_id = _optional_text(review_request_id)
         normalized_deliverable_id = _required_text(deliverable_id, "deliverable_id")
         normalized_reviewer_agent_id = _required_text(reviewer_agent_id, "reviewer_agent_id")
+        blocker_result: dict[str, Any] = {"events": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
             deliverable = _require_present(
@@ -2782,6 +2911,20 @@ class TeamAdminService:
                 deliverable.review_request_ids,
                 review.id,
             )
+            if state == TeamRecordState.BLOCKED:
+                open_or_get_blocker(
+                    state_model,
+                    source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+                    source_id=review.id,
+                    summary=f"Review {review.id} is blocked",
+                    details="; ".join(findings or []) or "Review was created in blocked state.",
+                    reporter_agent_id=reviewer.id,
+                    team_id=project.team_id,
+                    project_id=project.id,
+                    task_id=task.id,
+                    result=blocker_result,
+                    now=now,
+                )
             if state in {
                 TeamRecordState.PENDING,
                 TeamRecordState.IN_PROGRESS,
@@ -2796,7 +2939,13 @@ class TeamAdminService:
                     _recalculate_project_status(state_model, task.project_id)
             return state_model
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                blocker_result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
 
     def record_review_decision(
         self,
@@ -2820,6 +2969,7 @@ class TeamAdminService:
             else None
         )
         normalized_finding_resolutions = [dict(item) for item in (finding_resolutions or [])]
+        blocker_result: dict[str, Any] = {"events": [], "created_inbox_item_ids": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(state_model.review_requests, normalized_id, "review request")
@@ -2857,6 +3007,7 @@ class TeamAdminService:
                 decision_state=state,
                 findings=findings_list,
                 projects_to_recalc=projects_to_recalc,
+                result=blocker_result,
             )
             for project_id in sorted(projects_to_recalc):
                 _recalculate_project_status(state_model, project_id)
@@ -2867,7 +3018,13 @@ class TeamAdminService:
             )
             return state_model
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                blocker_result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
 
     def create_release_package(
         self,
@@ -2950,7 +3107,11 @@ class TeamAdminService:
             result["success"] = True
             return state_model
 
-        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
+            expected_revision=expected_revision,
+        )
         result["revision"] = state.revision
         return state, result
 
@@ -2998,7 +3159,11 @@ class TeamAdminService:
             result["success"] = True
             return state_model
 
-        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
+            expected_revision=expected_revision,
+        )
         result["revision"] = state.revision
         result["release_package"] = release_package_payload_with_derived(
             state,

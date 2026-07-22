@@ -182,6 +182,40 @@ class TeamInboxPriority(str, Enum):
     HIGH = "high"
 
 
+class TeamBlockerSourceKind(str, Enum):
+    REVIEW_REQUEST = "review_request"
+    TASK = "task"
+    DELIVERABLE = "deliverable"
+    RELEASE_PACKAGE = "release_package"
+    EXPLICIT = "explicit"
+
+
+class TeamBlockerState(str, Enum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
+class TeamBlockerRoute(str, Enum):
+    OWNED = "owned"
+    DELEGATED = "delegated"
+    GOVERNANCE = "governance"
+    OPERATOR = "operator"
+    ROUTING_FAILED = "routing_failed"
+    RESOLVED = "resolved"
+
+
+class TeamBlockerEventType(str, Enum):
+    REPORTED = "reported"
+    PROGRESS = "progress"
+    DELEGATED = "delegated"
+    DELEGATE_RESULT = "delegate_result"
+    DELEGATION_STALLED = "delegation_stalled"
+    OWNER_TRANSFERRED = "owner_transferred"
+    RESOLVED = "resolved"
+    TERMINAL_ROUTED = "terminal_routed"
+    ROUTING_FAILED = "routing_failed"
+
+
 class GovernanceAgendaItemType(str, Enum):
     OPERATOR_DIRECTIVE = "operator_directive"
     TEAM_ESCALATION = "team_escalation"
@@ -1235,6 +1269,126 @@ class AgentInboxItem(TeamModel):
         return _optional_text(value)
 
 
+class TeamBlocker(TeamModel):
+    id: str
+    team_id: str
+    project_id: str | None = None
+    task_id: str | None = None
+    source_kind: TeamBlockerSourceKind
+    source_id: str
+    reporter_agent_id: str | None = None
+    owner_agent_id: str | None = None
+    delegate_agent_id: str | None = None
+    state: TeamBlockerState = TeamBlockerState.OPEN
+    route: TeamBlockerRoute = TeamBlockerRoute.OWNED
+    summary: str
+    details: str = ""
+    priority: TeamInboxPriority = TeamInboxPriority.NORMAL
+    escalation_depth: int = Field(default=0, ge=0)
+    active_dispatch_id: str | None = None
+    follow_up_at: datetime | None = None
+    last_progress_at: datetime | None = None
+    terminal_reference_ids: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    resolved_at: datetime | None = None
+
+    @field_validator("id", "team_id", "source_id", "summary", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "project_id",
+        "task_id",
+        "reporter_agent_id",
+        "owner_agent_id",
+        "delegate_agent_id",
+        "active_dispatch_id",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("details", mode="before")
+    @classmethod
+    def _details(cls, value: object) -> str:
+        return _optional_text(value) or ""
+
+    @field_validator("terminal_reference_ids", mode="before")
+    @classmethod
+    def _terminal_reference_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "terminal_reference_ids")
+
+    @model_validator(mode="after")
+    def _validate_route(self) -> "TeamBlocker":
+        if self.route == TeamBlockerRoute.DELEGATED and self.delegate_agent_id is None:
+            raise ValueError("delegated blocker requires delegate_agent_id")
+        if self.route != TeamBlockerRoute.DELEGATED and self.delegate_agent_id is not None:
+            raise ValueError("non-delegated blocker cannot have delegate_agent_id")
+        if self.state == TeamBlockerState.RESOLVED:
+            if self.route != TeamBlockerRoute.RESOLVED:
+                raise ValueError("resolved blocker must use the resolved route")
+            if self.resolved_at is None:
+                raise ValueError("resolved blocker requires resolved_at")
+        elif self.route == TeamBlockerRoute.RESOLVED:
+            raise ValueError("open blocker cannot use the resolved route")
+        if self.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.DELEGATED}:
+            if self.owner_agent_id is None:
+                raise ValueError("locally routed blocker requires owner_agent_id")
+        return self
+
+
+class TeamBlockerEvent(TeamModel):
+    id: str
+    blocker_id: str
+    event_type: TeamBlockerEventType
+    actor_agent_id: str | None = None
+    from_agent_id: str | None = None
+    to_agent_id: str | None = None
+    dispatch_id: str | None = None
+    note: str = ""
+    reference_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", "blocker_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "actor_agent_id",
+        "from_agent_id",
+        "to_agent_id",
+        "dispatch_id",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def _note(cls, value: object) -> str:
+        return _optional_text(value) or ""
+
+    @field_validator("reference_ids", mode="before")
+    @classmethod
+    def _reference_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "reference_ids")
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("metadata must be a JSON object")
+        return dict(value)
+
+
 class AgentActionRecord(TeamModel):
     id: str
     agent_id: str
@@ -2150,6 +2304,8 @@ class TeamState(TeamModel):
     review_requests: dict[str, ReviewRequest] = Field(default_factory=dict)
     review_profiles: dict[str, ReviewProfile] = Field(default_factory=dict)
     inbox: dict[str, AgentInboxItem] = Field(default_factory=dict)
+    blockers: dict[str, TeamBlocker] = Field(default_factory=dict)
+    blocker_events: dict[str, TeamBlockerEvent] = Field(default_factory=dict)
     action_records: dict[str, AgentActionRecord] = Field(default_factory=dict)
     memories: dict[str, TeamMemoryRecord] = Field(default_factory=dict)
     conversations: dict[str, TeamConversation] = Field(default_factory=dict)
@@ -2343,6 +2499,7 @@ class TeamState(TeamModel):
         self._validate_review_profiles(errors)
         self._validate_reviews(errors)
         self._validate_inbox(errors)
+        self._validate_blockers(errors)
         self._validate_action_records(errors)
         self._validate_memories(errors)
         self._validate_conversations(errors)
@@ -2377,6 +2534,8 @@ class TeamState(TeamModel):
             "review_requests",
             "review_profiles",
             "inbox",
+            "blockers",
+            "blocker_events",
             "action_records",
             "memories",
             "conversations",
@@ -3101,6 +3260,86 @@ class TeamState(TeamModel):
                 )
             if item.task_id is not None and item.task_id not in self.tasks:
                 errors.append(f"inbox item {item.id} references missing task {item.task_id}")
+
+    def _validate_blockers(self, errors: list[str]) -> None:
+        open_sources: dict[tuple[str, TeamBlockerSourceKind, str], str] = {}
+        for blocker in self.blockers.values():
+            team = self.teams.get(blocker.team_id)
+            if team is None:
+                errors.append(f"blocker {blocker.id} references missing team {blocker.team_id}")
+            project = self.projects.get(blocker.project_id) if blocker.project_id else None
+            if blocker.project_id is not None and project is None:
+                errors.append(
+                    f"blocker {blocker.id} references missing project {blocker.project_id}"
+                )
+            elif project is not None and project.team_id != blocker.team_id:
+                errors.append(
+                    f"blocker {blocker.id} project {project.id} belongs to team {project.team_id}"
+                )
+            task = self.tasks.get(blocker.task_id) if blocker.task_id else None
+            if blocker.task_id is not None and task is None:
+                errors.append(f"blocker {blocker.id} references missing task {blocker.task_id}")
+            elif task is not None and blocker.project_id is not None:
+                if task.project_id != blocker.project_id:
+                    errors.append(
+                        f"blocker {blocker.id} task {task.id} belongs to project {task.project_id}"
+                    )
+            for field_name, agent_id in (
+                ("reporter", blocker.reporter_agent_id),
+                ("owner", blocker.owner_agent_id),
+                ("delegate", blocker.delegate_agent_id),
+            ):
+                if agent_id is None:
+                    continue
+                agent = self.agents.get(agent_id)
+                if agent is None:
+                    errors.append(
+                        f"blocker {blocker.id} references missing {field_name} {agent_id}"
+                    )
+                elif (
+                    blocker.state == TeamBlockerState.OPEN
+                    and field_name in {"owner", "delegate"}
+                    and agent.team_id != blocker.team_id
+                ):
+                    errors.append(
+                        f"blocker {blocker.id} {field_name} {agent.id} belongs to team "
+                        f"{agent.team_id}"
+                    )
+            source_exists = {
+                TeamBlockerSourceKind.REVIEW_REQUEST: blocker.source_id in self.review_requests,
+                TeamBlockerSourceKind.TASK: blocker.source_id in self.tasks,
+                TeamBlockerSourceKind.DELIVERABLE: blocker.source_id in self.deliverables,
+                TeamBlockerSourceKind.RELEASE_PACKAGE: blocker.source_id
+                in self.release_packages,
+                TeamBlockerSourceKind.EXPLICIT: True,
+            }[blocker.source_kind]
+            if not source_exists:
+                errors.append(
+                    f"blocker {blocker.id} references missing {blocker.source_kind.value} "
+                    f"{blocker.source_id}"
+                )
+            if blocker.state == TeamBlockerState.OPEN:
+                key = (blocker.team_id, blocker.source_kind, blocker.source_id)
+                if key in open_sources:
+                    errors.append(
+                        f"blockers {open_sources[key]} and {blocker.id} are both open for "
+                        f"{blocker.source_kind.value} {blocker.source_id}"
+                    )
+                open_sources[key] = blocker.id
+        for event in self.blocker_events.values():
+            if event.blocker_id not in self.blockers:
+                errors.append(
+                    f"blocker event {event.id} references missing blocker {event.blocker_id}"
+                )
+            for field_name, agent_id in (
+                ("actor", event.actor_agent_id),
+                ("from agent", event.from_agent_id),
+                ("to agent", event.to_agent_id),
+            ):
+                if agent_id is not None and agent_id not in self.agents:
+                    errors.append(
+                        f"blocker event {event.id} references missing {field_name} {agent_id}"
+                    )
 
     def _validate_action_records(self, errors: list[str]) -> None:
         for record in self.action_records.values():
@@ -4139,6 +4378,26 @@ def team_state_payload(
     payload["memories"] = {
         memory_id: _compact_memory_payload(memory) for memory_id, memory in state.memories.items()
     }
+    for blocker in state.blockers.values():
+        if blocker.state != TeamBlockerState.OPEN:
+            continue
+        collection_name = {
+            TeamBlockerSourceKind.TASK: "tasks",
+            TeamBlockerSourceKind.DELIVERABLE: "deliverables",
+            TeamBlockerSourceKind.REVIEW_REQUEST: "review_requests",
+            TeamBlockerSourceKind.RELEASE_PACKAGE: "release_packages",
+            TeamBlockerSourceKind.EXPLICIT: None,
+        }[blocker.source_kind]
+        if collection_name is not None:
+            source_payload = payload[collection_name].get(blocker.source_id)
+            if isinstance(source_payload, dict):
+                source_payload.setdefault("active_blocker_ids", []).append(blocker.id)
+        if blocker.task_id is not None:
+            task_payload = payload["tasks"].get(blocker.task_id)
+            if isinstance(task_payload, dict):
+                task_payload.setdefault("active_blocker_ids", [])
+                if blocker.id not in task_payload["active_blocker_ids"]:
+                    task_payload["active_blocker_ids"].append(blocker.id)
     payload["runtime_operations"] = runtime_operations_payload(
         state,
         now=now,
@@ -4617,6 +4876,11 @@ def _runtime_agent_wake_due(
     immediate_inbox = [item for item in wake_inbox if item.priority != TeamInboxPriority.LOW]
     low_priority_inbox = [item for item in wake_inbox if item.priority == TeamInboxPriority.LOW]
     action_feedback = _latest_undelivered_action_feedback_for_agent(state, agent.id)
+    due_blockers = _runtime_blockers_due_for_agent(
+        state,
+        agent_id=agent.id,
+        now=now,
+    )
     rotation_pending = runtime.context_rotation_pending
     active_tasks = [
         task
@@ -4626,11 +4890,17 @@ def _runtime_agent_wake_due(
     task_work_ready = any(
         state.dependency_status(task.id) == "satisfied" for task in active_tasks
     ) or any(state.subtask_counts(task.id)["open"] > 0 for task in active_tasks)
-    wake_eligible = rotation_pending or bool(wake_inbox) or bool(action_feedback) or task_work_ready
+    wake_eligible = (
+        rotation_pending
+        or bool(wake_inbox)
+        or bool(action_feedback)
+        or bool(due_blockers)
+        or task_work_ready
+    )
     if not wake_eligible:
         return False
     due_by_time = runtime.next_wake_at is None or _ensure_utc(runtime.next_wake_at) <= now
-    if rotation_pending or immediate_inbox or action_feedback:
+    if rotation_pending or immediate_inbox or action_feedback or due_blockers:
         return True
     if task_work_ready and due_by_time:
         if (
@@ -4643,6 +4913,39 @@ def _runtime_agent_wake_due(
     if low_priority_inbox:
         return _runtime_low_priority_batch_due(runtime)
     return False
+
+
+def _runtime_blockers_due_for_agent(
+    state: TeamState,
+    *,
+    agent_id: str,
+    now: datetime,
+) -> list[TeamBlocker]:
+    rows: list[TeamBlocker] = []
+    for blocker in state.blockers.values():
+        if blocker.state != TeamBlockerState.OPEN:
+            continue
+        assigned = (
+            blocker.route == TeamBlockerRoute.DELEGATED
+            and blocker.delegate_agent_id == agent_id
+        ) or (
+            blocker.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
+            and blocker.owner_agent_id == agent_id
+        )
+        if not assigned:
+            continue
+        has_pending_inbox = any(
+            item.recipient_agent_id == agent_id
+            and item.state == TeamInboxItemState.PENDING
+            and item.payload.get("blocker_id") == blocker.id
+            for item in state.inbox.values()
+        )
+        follow_up_due = (
+            blocker.follow_up_at is None or _ensure_utc(blocker.follow_up_at) <= now
+        )
+        if has_pending_inbox or follow_up_due:
+            rows.append(blocker)
+    return rows
 
 
 def _active_tasks_for_runtime_agent(state: TeamState, agent_id: str) -> list[AgentTask]:
@@ -4659,7 +4962,10 @@ def _active_tasks_for_runtime_agent(state: TeamState, agent_id: str) -> list[Age
 
 
 def _runtime_task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
-    return not _runtime_task_waits_on_active_deliverable_review(state, task)
+    return (
+        task.state != TeamTaskState.BLOCKED
+        and not _runtime_task_waits_on_active_deliverable_review(state, task)
+    )
 
 
 def _runtime_task_waits_on_active_deliverable_review(
@@ -4849,6 +5155,7 @@ def _runtime_attention_payload(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     rows.extend(_expired_session_rows(state, session_health or []))
+    rows.extend(_blocker_rows(state))
     rows.extend(_blocked_task_rows(state))
     rows.extend(_waiting_dependency_rows(state))
     rows.extend(_pending_inbox_rows(state))
@@ -4898,6 +5205,74 @@ def _expired_session_rows(
                 project_ids=project_ids,
                 session_id=session_id,
                 session_expires_at=health.get("expires_at"),
+            )
+        )
+    return rows
+
+
+def _blocker_rows(state: TeamState) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for blocker in sorted(state.blockers.values(), key=lambda item: (item.created_at, item.id)):
+        if blocker.state != TeamBlockerState.OPEN:
+            continue
+        deliverable_id: str | None = None
+        review_request_id: str | None = None
+        release_package_id: str | None = None
+        if blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+            deliverable_id = blocker.source_id
+        elif blocker.source_kind == TeamBlockerSourceKind.REVIEW_REQUEST:
+            review_request_id = blocker.source_id
+            review = state.review_requests.get(blocker.source_id)
+            if review is not None:
+                deliverable_id = review.deliverable_id
+                release_package_id = review.release_package_id
+        elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
+            release_package_id = blocker.source_id
+        detail_parts = [
+            f"source {blocker.source_kind.value} {blocker.source_id}",
+            f"route {blocker.route.value}",
+        ]
+        if blocker.owner_agent_id is not None:
+            detail_parts.append(f"owner {blocker.owner_agent_id}")
+        if blocker.delegate_agent_id is not None:
+            detail_parts.append(f"delegate {blocker.delegate_agent_id}")
+        detail_parts.append(f"level {blocker.escalation_depth}")
+        if blocker.details:
+            detail_parts.append(blocker.details)
+        rows.append(
+            _runtime_row(
+                id=blocker.id,
+                kind="team_blocker",
+                severity=(
+                    "critical"
+                    if blocker.route
+                    in {
+                        TeamBlockerRoute.GOVERNANCE,
+                        TeamBlockerRoute.OPERATOR,
+                        TeamBlockerRoute.ROUTING_FAILED,
+                    }
+                    or blocker.priority == TeamInboxPriority.HIGH
+                    else "warning"
+                ),
+                title=blocker.summary,
+                detail="; ".join(detail_parts),
+                state=blocker.state.value,
+                team_id=blocker.team_id,
+                agent_id=blocker.owner_agent_id,
+                project_id=blocker.project_id,
+                task_id=blocker.task_id,
+                deliverable_id=deliverable_id,
+                review_request_id=review_request_id,
+                release_package_id=release_package_id,
+                blocker_id=blocker.id,
+                source_kind=blocker.source_kind.value,
+                source_id=blocker.source_id,
+                owner_agent_id=blocker.owner_agent_id,
+                delegate_agent_id=blocker.delegate_agent_id,
+                route=blocker.route.value,
+                escalation_depth=blocker.escalation_depth,
+                active_dispatch_id=blocker.active_dispatch_id,
+                follow_up_at=_json_datetime(blocker.follow_up_at),
             )
         )
     return rows
@@ -5142,6 +5517,16 @@ def _runtime_row(**row: Any) -> dict[str, Any]:
         "assignment_id": None,
         "promotion_id": None,
         "release_package_id": None,
+        "review_request_id": None,
+        "blocker_id": None,
+        "source_kind": None,
+        "source_id": None,
+        "owner_agent_id": None,
+        "delegate_agent_id": None,
+        "route": None,
+        "escalation_depth": None,
+        "active_dispatch_id": None,
+        "follow_up_at": None,
         "dispatch_id": None,
         "session_id": None,
         "project_ids": [],

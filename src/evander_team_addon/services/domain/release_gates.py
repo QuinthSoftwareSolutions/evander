@@ -14,12 +14,14 @@ from ...models import (
     ReleaseVerificationCommandResult,
     ReleaseVerificationRun,
     ReviewRequest,
+    TeamBlockerSourceKind,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
 )
 from .common import _append_unique, _required_text, utc_now
+from .blockers import open_release_blocker, resolve_active_blockers_for_source
 from .wake import _append_agent_wake_requested_event_for_inbox_item
 from .work_due import _mark_agent_work_due
 
@@ -230,6 +232,7 @@ def record_release_verification_result(
             )
         else:
             _block_release_gate(
+                state,
                 release,
                 stage="verification",
                 kind=("timeout" if normalized_failure_kind == "timeout" else "infrastructure"),
@@ -484,6 +487,16 @@ def retry_release_gate(
         state.release_verification_runs[run.id] = run
         release.verification_run_ids = _append_unique(release.verification_run_ids, run.id)
         _recompute_release_state_after_gate_retry(state, release)
+        resolve_active_blockers_for_source(
+            state,
+            source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+            source_id=release.id,
+            actor_agent_id=None,
+            dispatch_id=None,
+            note=f"Verification retry {run.id} was scheduled.",
+            reference_ids=[run.id],
+            result=result,
+        )
         _append_verification_requested_event(result, release=release, run=run)
         result.setdefault("release_verification_run_ids", []).append(run.id)
         result["retried_gate_id"] = current.id
@@ -538,6 +551,26 @@ def retry_release_gate(
     state.review_requests[review.id] = review
     release.review_request_ids = _append_unique(release.review_request_ids, review.id)
     _recompute_release_state_after_gate_retry(state, release)
+    resolve_active_blockers_for_source(
+        state,
+        source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+        source_id=current.id,
+        actor_agent_id=None,
+        dispatch_id=None,
+        note=f"Review retry {review.id} was scheduled.",
+        reference_ids=[review.id],
+        result=result,
+    )
+    resolve_active_blockers_for_source(
+        state,
+        source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+        source_id=release.id,
+        actor_agent_id=None,
+        dispatch_id=None,
+        note=f"Review retry {review.id} was scheduled.",
+        reference_ids=[review.id],
+        result=result,
+    )
     item = AgentInboxItem(
         id=f"inbox-{uuid4().hex}",
         recipient_agent_id=reviewer.id,
@@ -785,6 +818,7 @@ def _verification_run_id(
 
 
 def _block_release_gate(
+    state: TeamState,
     release: ReleasePackage,
     *,
     stage: str,
@@ -803,6 +837,14 @@ def _block_release_gate(
     release.error = error
     release.updated_at = utc_now()
     result["error"] = error
+    open_release_blocker(
+        state,
+        release_package_id=release.id,
+        summary=f"Release {release.id} gate is blocked",
+        details=error,
+        result=result,
+        now=release.updated_at,
+    )
 
 
 def _reject_release(

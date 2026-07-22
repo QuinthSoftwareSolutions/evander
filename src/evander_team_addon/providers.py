@@ -97,6 +97,7 @@ from .mcp import (
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
+    TEAM_REPORT_BLOCKER_TOOL,
     TEAM_REJECT_EPHEMERAL_RESULT_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
     TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL,
@@ -113,6 +114,7 @@ from .mcp import (
     TEAM_SUBMIT_DELIVERABLE_TOOL,
     TEAM_UPDATE_CASE_TOOL,
     TEAM_UPDATE_FEATURE_BRANCH_TOOL,
+    TEAM_UPDATE_BLOCKER_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_UPDATE_TASK_TOOL,
 )
@@ -185,7 +187,7 @@ from .services.memory_service import (
 from .services.wake_prompt_context import build_compact_wake_context
 from .services.runtime_service import TeamRuntimeService
 
-TEAM_AGENT_GUIDANCE_VERSION = 15
+TEAM_AGENT_GUIDANCE_VERSION = 16
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -3498,6 +3500,9 @@ class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
                 "expected_revision": exc.expected_revision,
                 "current_revision": exc.current_revision,
             }
+        published_event_ids = _publish_team_events(self.runtime_context, result.get("events"))
+        if published_event_ids:
+            result["published_event_ids"] = published_event_ids
         return result
 
 
@@ -4790,6 +4795,16 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "FYI updates that can be batched, normal for ordinary coordination, and "
         "high only for urgent blockers. Low-priority inbox may be delivered with "
         "other work instead of waking the recipient immediately.\n"
+        f"- Use {TEAM_REPORT_BLOCKER_TOOL} when you cannot proceed. A blocker is "
+        "durably assigned to the nearest available superior; do not rely on a "
+        "prose-only progress report for escalation.\n"
+        f"- If you own a blocker, use {TEAM_UPDATE_BLOCKER_TOOL} to record progress, "
+        "delegate to a direct subordinate, or escalate it. Any active agent on the "
+        "blocker's reporter-to-manager escalation line may resolve it. Delegation "
+        "does not transfer accountability: the superior remains owner, and a "
+        "delegate result or stalled attempt returns attention to that owner.\n"
+        "- A blocker dispatch that ends without blocker-specific progress transfers "
+        "one reporting level. Unrelated Team actions do not count as blocker progress.\n"
         "- Team Chat messages are direct conversations with human operators, not "
         f"agent-to-agent inbox items. Use {TEAM_REPLY_TO_CHAT_TOOL} only during a "
         f"Team Chat wake. Use {TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} only for "
@@ -4949,6 +4964,17 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         if lease.get("reason") == "manager_fallback"
         else ""
     )
+    blocker_section = (
+        "Blocker accountability for this wake:\n"
+        "- Team context JSON.blockers contains blockers assigned to this dispatch.\n"
+        f"- Use {TEAM_UPDATE_BLOCKER_TOOL} during this dispatch to record concrete "
+        "progress, delegate, return delegated work, resolve when you are on the "
+        "reporter-to-manager escalation line, or escalate.\n"
+        "- Finishing without a blocker-specific update is treated as one failed "
+        "attempt: owner work transfers upward; delegated work returns to its owner.\n\n"
+        if context.get("blockers")
+        else ""
+    )
     context_json = json.dumps(context, sort_keys=True, indent=2)
     return (
         "Continue your assigned team-agent work.\n"
@@ -4974,6 +5000,7 @@ def _build_prompt(lease: Mapping[str, Any]) -> str:
         f"{review_artifact_section}"
         f"{git_release_sequence_section}"
         f"{manager_fallback_section}"
+        f"{blocker_section}"
         f"Team context JSON:\n{context_json}\n\n"
         "MCP action surface:\n"
         "- Call the appropriate Team MCP tool for each state change, handoff, "
