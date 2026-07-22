@@ -7,6 +7,13 @@
 - Exposed **Reject** alongside **Retry** in the Bokio review workspace and restored rejection for
   approved actions in the same UI.
 
+## 2026-07-22 - Container Worker Managed Git Alias Validation
+
+- Allowed repository-specific managed Git SSH aliases through the worker's source policy when the
+  alias grant slot matches the managed repository named in the clone URL.
+- Kept SSH clone validation fail-closed for mismatched aliases, lookalike hosts, paths outside the
+  configured managed Git root, path traversal, credentials, query strings, and fragments.
+
 ## 2026-07-22 - Teamless Agent Chat Replies
 
 - Allowed active teamless persistent agents, including governance managers, to answer a human
