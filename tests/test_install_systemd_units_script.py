@@ -208,10 +208,16 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in scheduled_wake
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in managed_git_refresh
     assert "EnvironmentFile=-__PROJECT_DIR__/config/managed-git-refresh.env" in managed_git_refresh
+    assert "Environment=EVANDER_GIT_USER=__GIT_USER__" in managed_git_refresh
+    assert "Environment=MANAGED_GIT_REFRESH_MAX_CONCURRENT_REQUESTS=8" in managed_git_refresh
     assert "RuntimeDirectory=evander" in managed_git_refresh
     assert "Group=__GIT_GROUP__" in managed_git_refresh
-    assert "RuntimeDirectoryMode=0750" in managed_git_refresh
-    assert "--allowed-uid __GIT_UID__" in managed_git_refresh
+    assert "RuntimeDirectoryMode=0755" in managed_git_refresh
+    assert "--allowed-uid" not in managed_git_refresh
+    assert (
+        "--max-concurrent-requests ${MANAGED_GIT_REFRESH_MAX_CONCURRENT_REQUESTS}"
+        in managed_git_refresh
+    )
     assert "--socket-path /run/evander/managed-git-refresh.sock" in managed_git_refresh
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-managed-git-refresh" in managed_git_refresh
     assert "Environment=TEAMS_INGEST_LOG_LEVEL=INFO" in teams_ingest

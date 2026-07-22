@@ -9,11 +9,13 @@ User=__RUN_USER__
 Group=__GIT_GROUP__
 WorkingDirectory=__PROJECT_DIR__
 Environment=MANAGED_GIT_REFRESH_LOG_LEVEL=INFO
+Environment=MANAGED_GIT_REFRESH_MAX_CONCURRENT_REQUESTS=8
+Environment=EVANDER_GIT_USER=__GIT_USER__
 EnvironmentFile=-__PROJECT_DIR__/config/managed-git-refresh.env
 EnvironmentFile=-__PROJECT_DIR__/secrets.env
 RuntimeDirectory=evander
-RuntimeDirectoryMode=0750
-ExecStart=__PROJECT_DIR__/.venv/bin/evander-managed-git-refresh --log-level ${MANAGED_GIT_REFRESH_LOG_LEVEL} serve --runtime-dir __PROJECT_DIR__/runtime --socket-path /run/evander/managed-git-refresh.sock --allowed-uid __GIT_UID__
+RuntimeDirectoryMode=0755
+ExecStart=__PROJECT_DIR__/.venv/bin/evander-managed-git-refresh --log-level ${MANAGED_GIT_REFRESH_LOG_LEVEL} serve --runtime-dir __PROJECT_DIR__/runtime --socket-path /run/evander/managed-git-refresh.sock --max-concurrent-requests ${MANAGED_GIT_REFRESH_MAX_CONCURRENT_REQUESTS}
 Restart=on-failure
 RestartSec=5
 

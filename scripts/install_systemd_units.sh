@@ -54,7 +54,6 @@ else
   RUN_USER="${USER}"
 fi
 GIT_SERVICE_USER="${EVANDER_GIT_USER:-${RUN_USER}}"
-GIT_SERVICE_UID="$(id -u "${GIT_SERVICE_USER}")"
 GIT_SERVICE_GROUP="$(id -gn "${GIT_SERVICE_USER}")"
 PROJECT_DIR="${ROOT_DIR}"
 SYSTEMD_DIR="/etc/systemd/system"
@@ -436,7 +435,7 @@ render_unit() {
   sed \
     -e "s|__PROJECT_DIR__|${PROJECT_DIR}|g" \
     -e "s|__RUN_USER__|${RUN_USER}|g" \
-    -e "s|__GIT_UID__|${GIT_SERVICE_UID}|g" \
+    -e "s|__GIT_USER__|${GIT_SERVICE_USER}|g" \
     -e "s|__GIT_GROUP__|${GIT_SERVICE_GROUP}|g" \
     "${template}" > "${target}"
 }

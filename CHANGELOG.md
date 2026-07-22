@@ -8,6 +8,8 @@
   while keeping provider credentials out of the restricted SSH wrapper.
 - Added generic systemd and Ansible lifecycle management for
   `evander-managed-git-refresh.service`.
+- Made guided setup start the broker with its secret drop-in, bounded concurrent request handling,
+  coalesced overlapping repository refreshes, and authorized all effective directory Git users.
 
 ## 2026-07-22 - Tool Call Audit Search Performance
 

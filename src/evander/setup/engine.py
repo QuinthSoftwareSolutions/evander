@@ -92,6 +92,7 @@ ESSENTIAL_SERVICES = [
     "evander-openai-relay.service",
     "evander-nuget-relay.service",
     "evander-http-target-relay.service",
+    "evander-managed-git-refresh.service",
     "evander-trigger-orchestrator.service",
     "evander-effect-orchestrator.service",
 ]
