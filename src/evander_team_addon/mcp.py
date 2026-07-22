@@ -3103,11 +3103,18 @@ def _team_artifact_import_runtime_context(
     context: AddonContext,
     session_id: str,
 ) -> EffectRuntimeContext:
+    from evander.admin.composition import build_admin_runtime
+    from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
+
     runtime = context.service
+    admin_service = AdminRuntimeProviderAdapter(build_admin_runtime(context.runtime_dir))
     return EffectRuntimeContext(
         resolved_config=runtime.resolve_provider_config_for_session(session_id),
         provider_config_resolver=getattr(runtime, "provider_config", None),
-        admin_service=runtime,
+        admin_service=admin_service,
+        session_lookup=admin_service,
+        vm_executor=admin_service,
+        vm_file_copier=admin_service,
         metadata={"directory_path": _team_session_directory_path(context, session_id)},
     )
 

@@ -11,10 +11,10 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.addons import AddonLoaderConfig
+from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
 from evander.artifact_spaces import ArtifactSpaceStore
 from evander.config import GatewayConfig
 from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
-from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.gateway import create_server
 from evander.models import SessionManifest, tool_name_value
 from evander.policy import PolicyError
@@ -518,6 +518,13 @@ def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient
         tmp_path,
         allowed_tools=[TEAM_GET_DELIVERABLE_TOOL, TEAM_IMPORT_ARTIFACT_TOOL],
     )
+    recipient_session = context.session_repository.get_session("session-alpha-dev")
+    assert recipient_session is not None
+    context.session_repository.upsert_session(
+        recipient_session.model_copy(
+            update={"vm_id": "vm-alpha-dev", "vm_provider": "libvirt_vm"}
+        )
+    )
     repo = _seed_read_tool_state(context.config.runtime_dir)
     artifact_space_path = "/teams/alpha/projects/alpha-project/deliverables/1930-export"
     artifact_ref = f"artifact-space:{artifact_space_path}"
@@ -571,25 +578,27 @@ def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient
     expected_destination = (
         f"team-artifact-imports/bundle/ref-{ref_hash}-{artifact_version.id}"
     )
-    copy_effects: list[dict[str, Any]] = []
-    exec_effects: list[dict[str, Any]] = []
+    copy_requests: list[dict[str, Any]] = []
+    exec_requests: list[dict[str, Any]] = []
 
-    def fake_copy(self: AgentCopyFilesEffectProvider, *, resolved_config=None):
-        del resolved_config
-        effect = self.effect_definition
-        copy_effects.append(effect.model_dump(mode="json", exclude_none=True))  # type: ignore[union-attr]
+    def fake_vm_copy_files(
+        self: AdminRuntimeProviderAdapter,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        copy_requests.append(dict(kwargs))
         return {
             "success": True,
-            "session_id": str(effect.session_id),  # type: ignore[union-attr]
-            "execution_backend": "container_worker_vm",
+            "message": "copied",
+            "vm_name": str(kwargs["target"]),
             "copied_count": 1,
-            "copied_paths": [str(effect.files[0].destination_path)],  # type: ignore[union-attr]
+            "copied_paths": [str(kwargs["files"][0]["destination_path"])],
         }
 
-    def fake_exec(self: AgentExecEffectProvider, *, resolved_config=None):
-        del resolved_config
-        effect = self.effect_definition
-        exec_effects.append(effect.model_dump(mode="json", exclude_none=True))  # type: ignore[union-attr]
+    def fake_vm_exec(
+        self: AdminRuntimeProviderAdapter,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        exec_requests.append(dict(kwargs))
         payload = {
             "success": True,
             "artifacts_root": "/artifacts",
@@ -601,8 +610,9 @@ def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient
         }
         return {
             "success": True,
-            "session_id": str(effect.session_id),  # type: ignore[union-attr]
-            "execution_backend": "container_worker_vm",
+            "message": "imported",
+            "vm_name": str(kwargs["target"]),
+            "exit_code": 0,
             "stdout": (
                 "__EVANDER_ARTIFACT_EFFECT_JSON_BEGIN__\n"
                 f"{json.dumps(payload, sort_keys=True)}\n"
@@ -610,8 +620,8 @@ def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient
             ),
         }
 
-    monkeypatch.setattr(AgentCopyFilesEffectProvider, "execute", fake_copy)
-    monkeypatch.setattr(AgentExecEffectProvider, "execute", fake_exec)
+    monkeypatch.setattr(AdminRuntimeProviderAdapter, "vm_copy_files", fake_vm_copy_files)
+    monkeypatch.setattr(AdminRuntimeProviderAdapter, "vm_exec", fake_vm_exec)
     server = create_server(context)
     before_revision = repo.read().revision
 
@@ -638,12 +648,12 @@ def test_team_import_artifact_materializes_ordinary_status_handoff_for_recipient
     ]
     assert result["imported_file_count"] == 1
     assert result["archive_sha256"] == artifact_record.sha256
-    assert copy_effects[0]["session_id"] == "session-alpha-dev"
-    assert copy_effects[0]["files"][0]["source_path"] == str(
+    assert copy_requests[0]["target"] == "vm-alpha-dev"
+    assert copy_requests[0]["files"][0]["source_path"] == str(
         published_store.get(artifact_key).blob_path
     )
-    assert exec_effects[0]["session_id"] == "session-alpha-dev"
-    assert expected_destination in exec_effects[0]["command"]
+    assert exec_requests[0]["target"] == "vm-alpha-dev"
+    assert expected_destination in exec_requests[0]["command"]
     assert repo.read().revision == before_revision
 
 
