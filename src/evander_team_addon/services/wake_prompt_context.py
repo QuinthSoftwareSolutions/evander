@@ -16,6 +16,7 @@ MAX_SUBORDINATE_IDS = 20
 MAX_SUBORDINATES = 12
 MAX_TASKS = 10
 MAX_INBOX = 10
+MAX_BLOCKERS = 8
 MAX_CASES = 8
 MAX_RELEASE_PACKAGES = 8
 MAX_RUNTIME_ATTENTION = 10
@@ -79,6 +80,18 @@ def build_compact_wake_context(lease: Mapping[str, Any]) -> dict[str, Any]:
         omitted_counts,
         "inbox",
     )
+
+    blockers = sorted(
+        (_compact_blocker(row) for row in _mapping_rows(lease.get("blockers"))),
+        key=lambda row: (_sort_text(row.get("created_at")), _sort_text(row.get("id"))),
+    )
+    if blockers:
+        context["blockers"] = _limited_rows(
+            blockers,
+            MAX_BLOCKERS,
+            omitted_counts,
+            "blockers",
+        )
 
     if _optional_text(lease.get("reason")) == "action_feedback":
         action_feedback = sorted(
@@ -418,6 +431,16 @@ def _compact_runtime_attention(row: Mapping[str, Any]) -> dict[str, Any]:
             "assignment_id",
             "promotion_id",
             "release_package_id",
+            "review_request_id",
+            "blocker_id",
+            "source_kind",
+            "source_id",
+            "owner_agent_id",
+            "delegate_agent_id",
+            "route",
+            "escalation_depth",
+            "active_dispatch_id",
+            "follow_up_at",
             "session_id",
             "session_expires_at",
             "item_type",
@@ -446,6 +469,37 @@ def _compact_runtime_attention(row: Mapping[str, Any]) -> dict[str, Any]:
             if len(values) > ID_LIST_LIMIT:
                 compact[f"{key}_omitted_count"] = len(values) - ID_LIST_LIMIT
     return compact
+
+
+def _compact_blocker(blocker: Mapping[str, Any]) -> dict[str, Any]:
+    row = _compact_fields(
+        blocker,
+        (
+            "id",
+            "team_id",
+            "project_id",
+            "task_id",
+            "source_kind",
+            "source_id",
+            "reporter_agent_id",
+            "owner_agent_id",
+            "delegate_agent_id",
+            "state",
+            "route",
+            "priority",
+            "escalation_depth",
+            "active_dispatch_id",
+            "follow_up_at",
+            "last_progress_at",
+            "created_at",
+            "updated_at",
+        ),
+    )
+    for key in ("summary", "details"):
+        value = _optional_text(blocker.get(key))
+        if value is not None:
+            row[key] = _trim_text(value)
+    return row
 
 
 def _compact_action_feedback(row: Mapping[str, Any]) -> dict[str, Any]:

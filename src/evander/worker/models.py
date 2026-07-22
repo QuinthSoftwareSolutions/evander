@@ -364,6 +364,7 @@ class WorkerGitWriteKeyRequest(BaseModel):
     git_user: str
     git_ssh_alias: str
     key_name: str = "evander-git-write"
+    alias_is_exact: bool = False
 
     @field_validator("git_host", "git_user", "git_ssh_alias", mode="before")
     @classmethod
@@ -390,6 +391,14 @@ class WorkerGitWriteKeyRecord(BaseModel):
     key_path: str
     config_path: str
     git_ssh_alias: str
+
+
+class WorkerGitKeyDeleteRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    key_name: str
+    removed: bool
 
 
 class WorkerFileWrite(BaseModel):

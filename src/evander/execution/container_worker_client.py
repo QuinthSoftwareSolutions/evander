@@ -15,6 +15,7 @@ from evander.worker.models import (
     WorkerFileWriteRecord,
     WorkerGitWriteKeyRecord,
     WorkerGitWriteKeyRequest,
+    WorkerGitKeyDeleteRecord,
     WorkerJobRecord,
     WorkerJobRequest,
     WorkerMssqlDatabaseDeleteRecord,
@@ -155,6 +156,15 @@ class ContainerWorkerClient:
         )
         return WorkerGitWriteKeyRecord.model_validate(
             self._json_dict(response, operation="provision git write key")
+        )
+
+    def revoke_git_key(self, session_id: str, key_name: str) -> WorkerGitKeyDeleteRecord:
+        response = self._request(
+            "DELETE",
+            f"/v1/sessions/{quote(session_id, safe='')}/git/keys/{quote(key_name, safe='')}",
+        )
+        return WorkerGitKeyDeleteRecord.model_validate(
+            self._json_dict(response, operation="revoke git key")
         )
 
     def write_files(

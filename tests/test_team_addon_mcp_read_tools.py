@@ -93,6 +93,8 @@ TEAM_LIST_RUNTIME_ATTENTION_TOOL = getattr(
     "TEAM_LIST_RUNTIME_ATTENTION_TOOL",
     "team_list_runtime_attention",
 )
+TEAM_LIST_BLOCKERS_TOOL = getattr(team_mcp, "TEAM_LIST_BLOCKERS_TOOL", "team_list_blockers")
+TEAM_GET_BLOCKER_TOOL = getattr(team_mcp, "TEAM_GET_BLOCKER_TOOL", "team_get_blocker")
 TEAM_SEARCH_MEMORY_TOOL = getattr(team_mcp, "TEAM_SEARCH_MEMORY_TOOL", "team_search_memory")
 
 EXPECTED_READ_TOOL_NAMES = (
@@ -114,6 +116,8 @@ EXPECTED_READ_TOOL_NAMES = (
     TEAM_LIST_PROJECTS_TOOL,
     TEAM_GET_PROJECT_TOOL,
     TEAM_LIST_RUNTIME_ATTENTION_TOOL,
+    TEAM_LIST_BLOCKERS_TOOL,
+    TEAM_GET_BLOCKER_TOOL,
     TEAM_SEARCH_MEMORY_TOOL,
 )
 
@@ -409,6 +413,11 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
     repo = _seed_read_tool_state(context.config.runtime_dir)
     server = create_server(context)
     before_revision = repo.read().revision
+    alpha_blocker_id = next(
+        blocker.id
+        for blocker in repo.read().blockers.values()
+        if blocker.source_id == "alpha-task-c"
+    )
 
     assert repo.read().agent_runtimes["alpha-dev"].active_dispatch_id is None
 
@@ -421,6 +430,7 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         (TEAM_LIST_RELEASE_PACKAGES_TOOL, {}, "alpha-release"),
         (TEAM_LIST_AGENTS_TOOL, {}, "alpha-dev"),
         (TEAM_LIST_PROJECTS_TOOL, {}, "alpha-project"),
+        (TEAM_LIST_BLOCKERS_TOOL, {}, alpha_blocker_id),
     ]
     for tool_name, arguments, expected_id in list_calls:
         result = _call_tool(
@@ -475,6 +485,7 @@ def test_team_addon_read_tools_do_not_require_active_dispatch_lease(
         (TEAM_GET_AGENT_TOOL, {"agent_id": "alpha-dev"}, "alpha-dev"),
         (TEAM_GET_MY_IDENTITY_TOOL, {}, "alpha-dev"),
         (TEAM_GET_PROJECT_TOOL, {"project_id": "alpha-project"}, "alpha-project"),
+        (TEAM_GET_BLOCKER_TOOL, {"blocker_id": alpha_blocker_id}, alpha_blocker_id),
     ]
     for tool_name, arguments, expected_id in get_calls:
         result = _call_tool(
@@ -796,8 +807,12 @@ def test_team_addon_read_tool_lists_are_compact_and_paginated(
         {"session_id": "session-alpha-dev", "limit": 10},
     )
     _assert_read_success(inbox_result)
-    assert len(_items(inbox_result)) == 1
-    inbox_row = _items(inbox_result)[0]
+    assert len(_items(inbox_result)) == 2
+    inbox_row = next(row for row in _items(inbox_result) if row["id"] == "alpha-inbox")
     assert {"id", "item_type", "state", "priority", "recipient_agent_id"}.issubset(inbox_row)
     assert inbox_row["id"] == "alpha-inbox"
     assert "payload" not in inbox_row
+    blocker_row = next(
+        row for row in _items(inbox_result) if row["item_type"] == "status_request"
+    )
+    assert blocker_row["message"] == "Task blocked: Alpha task c"

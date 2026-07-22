@@ -16,6 +16,7 @@ from ...models import (
     ReviewProfile,
     ReviewProfileCriterion,
     ReviewRequest,
+    TeamBlockerSourceKind,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamRecordState,
@@ -28,6 +29,7 @@ from .agent_access import (
     _is_team_manager,
     _supervises,
 )
+from .blockers import open_or_get_blocker
 from .common import (
     _MANAGER_FALLBACK_PENDING_REVIEW_STATES,
     _append_unique,
@@ -784,6 +786,20 @@ def _cascade_review_decision(
         deliverable.state = TeamRecordState.BLOCKED
         _set_task_state(task, TeamTaskState.BLOCKED, now=now)
         task.updated_at = now
+        reviewer = _require_present(state.agents, review.reviewer_agent_id, "reviewer")
+        open_or_get_blocker(
+            state,
+            source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+            source_id=review.id,
+            summary=f"Review {review.id} is blocked",
+            details="; ".join(findings) or "Reviewer cannot complete the review.",
+            reporter_agent_id=reviewer.id,
+            team_id=reviewer.team_id,
+            project_id=task.project_id,
+            task_id=task.id,
+            result=result,
+            now=now,
+        )
     projects_to_recalc.add(task.project_id)
 
 
@@ -841,6 +857,19 @@ def _cascade_release_review_decision(
             message=release.error,
         )
         release.updated_at = utc_now()
+        reviewer = _require_present(state.agents, review.reviewer_agent_id, "reviewer")
+        open_or_get_blocker(
+            state,
+            source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+            source_id=review.id,
+            summary=f"Release review {review.id} is blocked",
+            details=release.error or "Reviewer cannot complete the release review.",
+            reporter_agent_id=reviewer.id,
+            team_id=reviewer.team_id,
+            project_id=release.project_id,
+            result=result,
+            now=release.updated_at,
+        )
         projects_to_recalc.add(release.project_id)
         return
 

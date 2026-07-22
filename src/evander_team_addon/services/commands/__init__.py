@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .agent_control_commands import TeamAgentControlCommandService
 from .agent_message_commands import TeamAgentMessageCommandService
+from .blocker_commands import TeamBlockerCommandService
 from .case_commands import TeamCaseCommandService
 from .chat_commands import TeamChatCommandService
 from .deliverable_submission_commands import TeamDeliverableSubmissionCommandService
@@ -26,6 +27,7 @@ from .types import (
 __all__ = [
     "TeamAgentControlCommandService",
     "TeamAgentMessageCommandService",
+    "TeamBlockerCommandService",
     "TeamCaseCommandService",
     "TeamChatCommandService",
     "TeamCommandApplyResult",

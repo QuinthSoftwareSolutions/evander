@@ -872,6 +872,7 @@ Opening a port establishes a route. The service still applies its own session pr
 | `evander-discord-ingest.service` | Ingest Discord data. |
 | `evander-discord-wake.service` | Turn eligible Discord messages into agent wake activity. |
 | `evander-scheduled-wake.service` | Resume sessions whose scheduled wake is due. |
+| `evander-managed-git-refresh.service` | Refresh an authorized managed repository before clone, fetch, pull, or archive reads. |
 | `evander-teams-ingest.service` | Run `evander-cli teams-ingest` through `scripts/run_teams_ingest.sh`. |
 | `evander-teams-meeting-ingest.service` | Ingest configured Teams meeting media and events. |
 
@@ -3157,6 +3158,11 @@ evander-cli git-repos register \
 evander-cli git-repos list --directory-path root/northstar-platform/mission-control
 evander-cli git-repos show <managed-repo-id> --directory-path root/northstar-platform/mission-control
 ```
+
+Normal agent reads refresh automatically. The restricted SSH wrapper validates the exact
+repository, then asks `evander-managed-git-refresh.service` to fetch upstream before serving clone,
+fetch, pull, `ls-remote`, or archive data. If the broker or upstream is unavailable, the read fails
+instead of silently returning stale refs; the agent never receives upstream credentials.
 
 Clone it into an existing VM session without exposing the host path:
 
@@ -7138,6 +7144,7 @@ The trigger worker illustrates why the distinction matters: its persistent unit 
 | `evander-discord-ingest.service` | `evander-discord-ingest` | Ingests allowlisted Discord commands/messages | Discord is configured |
 | `evander-discord-wake.service` | `evander-discord-wake` | Turns eligible Discord inbox activity into wakes | Discord wake is enabled |
 | `evander-scheduled-wake.service` | `evander-scheduled-wake` | Resumes sessions whose scheduled wake is due | Scheduled work is enabled |
+| `evander-managed-git-refresh.service` | `evander-managed-git-refresh` | Refreshes the exact authorized managed repository before Git reads | Agents clone, fetch, or pull managed repositories |
 | `evander-teams-ingest.service` | `evander-cli teams-ingest` via its runner script | Ingests Microsoft Teams messages | Teams is configured |
 | `evander-teams-meeting-ingest.service` | `evander-teams-meeting-ingest` | Ingests queued meeting transcript and speech-status events | Meeting integration is configured |
 | `evander-trigger-orchestrator.service` | `evander-cli trigger-orchestrator` | Polls trigger providers, validates/deduplicates, and publishes durable trigger events | Workflow triggers are enabled |

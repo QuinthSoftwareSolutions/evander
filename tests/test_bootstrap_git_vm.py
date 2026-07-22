@@ -75,6 +75,18 @@ printf 'SESSION_ID=session-1\\n'
     return fake_bin
 
 
+def _make_fake_ssh_execute_guest_script(fake_bin: Path) -> None:
+    (fake_bin / "ssh").write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+guest_command="${!#}"
+HOME="${EVANDER_TEST_GUEST_HOME}" bash -c "${guest_command}"
+""",
+        encoding="utf-8",
+    )
+    os.chmod(fake_bin / "ssh", 0o755)
+
+
 def _bootstrap_env(tmp_path: Path, home: Path, public_key: str, fake_bin: Path) -> dict[str, str]:
     private_key = tmp_path / "host-key"
     private_key.write_text("not used by fake ssh\n", encoding="utf-8")
@@ -157,7 +169,70 @@ def test_bootstrap_git_vm_atomically_replaces_existing_valid_guest_public_key_en
     assert 'command="old"' not in updated_authorized_keys
     assert updated_authorized_keys.count(public_key_body) == 1
     assert "command=" in updated_authorized_keys
+    assert "EVANDER_GIT_REFRESH_REQUIRED=1" in updated_authorized_keys
     assert "keep-me" in updated_authorized_keys
+
+
+def test_bootstrap_git_vm_removes_legacy_guest_key_and_config_block(
+    tmp_path: Path,
+) -> None:
+    _, bootstrap_script = _copy_bootstrap_sandbox(tmp_path)
+    host_home = tmp_path / "host-home"
+    (host_home / ".ssh").mkdir(parents=True)
+    guest_home = tmp_path / "guest-home"
+    guest_ssh = guest_home / ".ssh"
+    guest_ssh.mkdir(parents=True)
+    legacy_key = guest_ssh / "evander-git"
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(legacy_key)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    (guest_ssh / "config").write_text(
+        "\n".join(
+            [
+                "# BEGIN evander git host",
+                "Host evander-git-host",
+                "  IdentityFile ~/.ssh/evander-git",
+                "# END evander git host",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_bin = _write_fake_bin(tmp_path)
+    _make_fake_ssh_execute_guest_script(fake_bin)
+    env = _bootstrap_env(
+        tmp_path,
+        host_home,
+        "ssh-ed25519 unused",
+        fake_bin,
+    )
+    env.update(
+        {
+            "EVANDER_TEST_GUEST_HOME": str(guest_home),
+            "EVANDER_GIT_KEY_NAME": "evander-git-repository",
+            "EVANDER_GIT_REMOVE_LEGACY_KEY": "1",
+        }
+    )
+
+    result = subprocess.run(
+        [str(bootstrap_script), "vm-test"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not legacy_key.exists()
+    assert not legacy_key.with_suffix(".pub").exists()
+    assert (guest_ssh / "evander-git-repository").is_file()
+    config_text = (guest_ssh / "config").read_text(encoding="utf-8")
+    assert "# BEGIN evander git host" not in config_text
+    assert "IdentityFile ~/.ssh/evander-git\n" not in config_text
+    assert "# BEGIN evander git grant evander-git-repository" in config_text
 
 
 def test_bootstrap_git_vm_does_not_embed_configured_secrets_env_file(tmp_path: Path) -> None:

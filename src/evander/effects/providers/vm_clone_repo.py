@@ -5,6 +5,7 @@ from typing import Any
 
 from evander.events.provider_models import VmCloneRepoEffectDefinition
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.managed_git_grants import normalize_git_access_lifetime, normalize_git_access_mode
 
 from .base import EffectProviderBase
 from .vm_targeting import VmTargetingMixin
@@ -20,6 +21,8 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
             "managed_repo_id": effect.managed_repo_id,
             "clone_branch": effect.clone_branch,
             "vm_user": effect.vm_user,
+            "git_access_mode": effect.git_access_mode,
+            "git_access_lifetime": effect.git_access_lifetime,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -40,6 +43,10 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
             clone_branch=self._normalize_optional_string(payload.get("clone_branch")),
             vm_user=self._normalize_optional_string(payload.get("vm_user")) or "agent",
             directory_path=str(context.metadata.get("directory_path") or "root"),
+            git_access_mode=normalize_git_access_mode(payload.get("git_access_mode")),
+            git_access_lifetime=normalize_git_access_lifetime(
+                payload.get("git_access_lifetime")
+            ),
         )
         return {
             "success": bool(result.success),
@@ -55,6 +62,10 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
                 "effect:vm:clone-repo requires managed_repo_id",
             ),
             "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
+            "git_access_mode": normalize_git_access_mode(payload.get("git_access_mode")),
+            "git_access_lifetime": normalize_git_access_lifetime(
+                payload.get("git_access_lifetime")
+            ),
         }
 
     def _effect(self) -> VmCloneRepoEffectDefinition:

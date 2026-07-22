@@ -17,6 +17,19 @@ if a file is absent. Runtime configuration comes from `runtime/host-config.json`
 `runtime/directory-config/root/...`, and secret values can also be supplied through the service
 manager environment or optional repo-root `secrets.env`.
 
+## `config/managed-git-refresh.env.example`
+
+| Parameter | Found in | Consumed by |
+|---|---|---|
+| `MANAGED_GIT_REFRESH_LOG_LEVEL` | `config/managed-git-refresh.env.example` | `evander-managed-git-refresh.service`; controls broker logging and defaults to `INFO`. |
+| `MANAGED_GIT_REFRESH_MAX_CONCURRENT_REQUESTS` | `config/managed-git-refresh.env.example` | `evander-managed-git-refresh.service`; bounds simultaneous refresh handlers and defaults to `8`. |
+
+The broker listens on the host-local `/run/evander/managed-git-refresh.sock`. Restricted SSH reads
+use a 120-second request timeout and fail rather than serving cached refs when refresh cannot
+complete. Simultaneous reads for one managed repository share a single upstream refresh. Socket
+clients are authorized from their host peer UID against every effective directory-scoped
+`issue_setup.git_user`; upstream Git credentials remain in the broker's host service environment.
+
 ## `config/gateway.env.example`
 
 | Parameter | Found in | Consumed by |
@@ -1267,6 +1280,14 @@ Managed repository storage is rooted at `runtime/managed-git/`; the registry is
 `runtime/managed-git-repositories.json` and operation worktrees live under
 `runtime/git-worktrees/`. These paths are control-plane internals and are not workflow or Team
 configuration fields.
+
+Session manifests store active exact-repository credentials under
+`metadata.managed_git_access_grants`, keyed by `managed_repo_id`. Each record contains only
+secret-free lifecycle and revocation metadata such as access mode, session/operation lifetime,
+backend, SSH alias, public-key body, and authorization path. Private keys remain inside the VM or
+worker session home. The older singular `managed_git_access` and `container_git_write_access`
+records are compatibility input and are canonicalized into the plural map when migrated or
+updated.
 
 Directory-scoped provider configuration controls upstream credentials and host commit identity.
 Configuration stores environment-variable names, never secret values:

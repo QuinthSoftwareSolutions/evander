@@ -267,6 +267,7 @@ sudo systemctl start evander-ado-worker.service
 sudo systemctl start evander-proxy-issue-sync.service
 sudo systemctl start evander-discord-wake.service
 sudo systemctl start evander-scheduled-wake.service
+sudo systemctl start evander-managed-git-refresh.service
 ```
 
 For fresh-host Ubuntu 24.04 deployment paths that wrap this same repo-native flow with Ansible,
@@ -613,6 +614,25 @@ a dedicated SSH key that can update only `refs/heads/agents/<session-id>/**` and
 ref. It cannot write host review/Team namespaces, tags, configuration, or hooks. Container-worker
 sessions use the same managed bare repository rather than creating a separate cache mirror; set
 `git_access_mode` to `read-only` when write access is unnecessary.
+
+Persistent agents can hold independent grants for multiple managed repositories. Read-only grants
+remain installed for the session so existing checkouts can fetch and pull; each repository uses a
+separate key and SSH alias. Use the grant-and-clone CLI when adding a repo to an existing agent:
+
+```bash
+evander-cli git-repos clone-into-agent session-123 \
+  --managed-repo-id mr_0123456789abcdef0123 \
+  --access-mode read-only \
+  --lifetime session
+```
+
+`git-repos grants`, `git-repos grant`, and `git-repos revoke-grant` manage access without cloning.
+Operation-scoped access is available on clone operations for one-shot disposable work and is
+removed after cloning.
+
+Every Evander-provisioned managed Git read refreshes its exact repository through the host-owned
+`evander-managed-git-refresh.service` before refs are served. A failed upstream refresh fails the
+clone/fetch/pull instead of returning stale refs; agents never receive upstream credentials.
 
 Guest repositories include `git sync-base`, `git push-agent`, and `git agent-pr-note`. Agent
 pushes enter the quarantined session namespace. The post-receive hook only enqueues a structured
@@ -1184,6 +1204,7 @@ Example `get_pull_request` result shape (Azure DevOps):
 
 - Discord wake service logs: `journalctl -u evander-discord-wake.service`.
 - Scheduled wake service logs: `journalctl -u evander-scheduled-wake.service`.
+- Managed Git refresh logs: `journalctl -u evander-managed-git-refresh.service`.
 - Host runtime: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`,
   `runtime/host-agent-control-state.json`, `runtime/audit.jsonl`.
 - Healthy pattern:

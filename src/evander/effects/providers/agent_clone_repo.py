@@ -18,6 +18,15 @@ from evander.git_ssh_authorized_keys import (
     install_git_write_authorized_key,
     remove_git_authorized_key_by_public_key_body,
 )
+from evander.managed_git_grants import (
+    managed_git_grants_from_metadata,
+    managed_git_key_name,
+    managed_git_ssh_alias,
+    normalize_git_access_lifetime,
+    public_managed_git_grant,
+    remove_managed_git_grant_metadata,
+    upsert_managed_git_grant_metadata,
+)
 
 from .agent_session import (
     container_shell_preamble,
@@ -61,6 +70,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "git_committer_name": effect.git_committer_name,
             "git_committer_email": effect.git_committer_email,
             "git_access_mode": effect.git_access_mode,
+            "git_access_lifetime": effect.git_access_lifetime,
             "pinned_ref": effect.pinned_ref,
             "pinned_commit_sha": effect.pinned_commit_sha,
         }
@@ -132,6 +142,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         )
         container_job_timeout_seconds = float(config.container_worker_job_timeout_seconds)
         git_access_mode = normalize_git_access_mode(payload.get("git_access_mode"))
+        git_access_lifetime = normalize_git_access_lifetime(payload.get("git_access_lifetime"))
         access_metadata: dict[str, object] | None = None
         clone_source = clone_url
         if _remote_url_requires_git_ssh(clone_url):
@@ -156,6 +167,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 bare_repo_path=bare_repo_path,
                 managed_git_root=managed_git_root,
                 access_mode=git_access_mode,
+                lifetime=git_access_lifetime,
             )
             clone_source = _container_git_remote_url_with_ssh_alias(
                 clone_url,
@@ -198,6 +210,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                     ),
                     clone_branch=clone_branch,
                     git_access_mode=git_access_mode,
+                    git_access_lifetime=git_access_lifetime,
                     pinned_ref=pinned_ref,
                     pinned_commit_sha=pinned_commit_sha,
                     git_author_identity=git_author_identity,
@@ -211,6 +224,22 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                     kind="sessions",
                     binding_id=session_id,
                 )
+            if access_metadata is not None and git_access_lifetime == "operation":
+                cleanup_failures = self._rollback_container_git_access(
+                    backend=backend,
+                    config=config,
+                    context=context,
+                    session=session,
+                    session_id=session_id,
+                    directory_path=session_directory_path,
+                    access_metadata=access_metadata,
+                    timeout_seconds=container_job_timeout_seconds,
+                )
+                if cleanup_failures:
+                    raise RuntimeError(
+                        "Temporary container Git access cleanup was incomplete: "
+                        + ", ".join(cleanup_failures)
+                    )
         except BaseException as exc:
             if access_metadata is not None:
                 try:
@@ -251,7 +280,13 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "managed_repo_id": managed_repo_id,
             "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
             "git_access_mode": git_access_mode,
-            "git_write_access": _public_git_access_metadata(write_access_metadata),
+            "git_access_lifetime": git_access_lifetime,
+            "git_access": _public_git_access_metadata(
+                access_metadata if git_access_lifetime == "session" else None
+            ),
+            "git_write_access": _public_git_access_metadata(
+                write_access_metadata if git_access_lifetime == "session" else None
+            ),
             "execution_backend": "container_worker_vm",
             "vm_name": None,
         }
@@ -298,6 +333,10 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 session_id=session_id,
                 directory_path=directory_path,
                 timeout_seconds=timeout_seconds,
+                key_name=required_string(
+                    access_metadata.get("key_name"),
+                    "container Git access key_name is missing",
+                ),
             )
         except Exception:
             failures.append("worker key removal failed")
@@ -310,6 +349,10 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 metadata_cleared = _clear_session_git_access_metadata(
                     context,
                     session_id,
+                    managed_repo_id=required_string(
+                        access_metadata.get("managed_repo_id"),
+                        "container Git access managed_repo_id is missing",
+                    ),
                     expected_public_key_body=public_key_body,
                 )
             except Exception:
@@ -320,10 +363,17 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 failures.append("session Git access metadata changed during cleanup")
 
         if host_access_revoked and worker_key_files_removed and metadata_cleared:
-            unbind = getattr(context.admin_service, "unbind_managed_git_repositories", None)
+            unbind = getattr(context.admin_service, "unbind_managed_git_repository", None)
             if callable(unbind):
                 try:
-                    unbind(kind="authorized_sessions", binding_id=session_id)
+                    unbind(
+                        managed_repo_id=required_string(
+                            access_metadata.get("managed_repo_id"),
+                            "container Git access managed_repo_id is missing",
+                        ),
+                        kind="authorized_sessions",
+                        binding_id=session_id,
+                    )
                 except Exception:
                     failures.append("authorized session binding cleanup failed")
             else:
@@ -370,16 +420,21 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         bare_repo_path: Path,
         managed_git_root: Path,
         access_mode: str,
+        lifetime: str,
     ) -> dict[str, object]:
         provision_git_write_key = getattr(backend, "provision_git_write_key", None)
         if not callable(provision_git_write_key):
             raise RuntimeError("container worker backend does not support session Git write keys")
-        _remove_session_git_write_access(context, session_id)
+        _remove_existing_repo_host_authorization(context, session_id, managed_repo_id)
+        key_name = managed_git_key_name(managed_repo_id)
+        git_ssh_alias = managed_git_ssh_alias(issue_setup.git_ssh_alias, managed_repo_id)
         key_record = provision_git_write_key(
             session_id=session_id,
             git_host=issue_setup.git_host,
             git_user=issue_setup.git_user,
-            git_ssh_alias=issue_setup.git_ssh_alias,
+            git_ssh_alias=git_ssh_alias,
+            key_name=key_name,
+            alias_is_exact=True,
         )
         project_dir = Path(getattr(context.admin_service, "project_dir", Path.cwd()))
         allowed_from = container_worker_git_allowed_from(config)
@@ -405,8 +460,11 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "git_user": issue_setup.git_user,
             "authorized_keys_path": str(installed.authorized_keys_path),
             "access_mode": access_mode,
+            "lifetime": lifetime,
+            "execution_backend": "container_worker_vm",
             "allowed_from": installed.allowed_from,
             "git_ssh_alias": str(key_record.git_ssh_alias),
+            "key_name": key_name,
         }
         if access_mode == "write":
             metadata.update(
@@ -416,7 +474,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 }
             )
         try:
-            _record_session_git_write_access(context, session_id, metadata)
+            _record_session_git_access(context, session_id, metadata)
             bind_repository = getattr(context.admin_service, "bind_managed_git_repository", None)
             if callable(bind_repository):
                 bind_repository(
@@ -441,13 +499,18 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         session_id: str,
         directory_path: str,
         timeout_seconds: float,
+        key_name: str,
     ) -> None:
+        revoke_git_key = getattr(backend, "revoke_git_key", None)
+        if callable(revoke_git_key):
+            revoke_git_key(session_id=session_id, key_name=key_name)
+            return
         execution_id = safe_effect_execution_id("clone-git-cleanup", session_id)
         command = (
             container_shell_preamble().rstrip()
             + "\n"
-            + 'rm -f "$HOME/.ssh/evander-git-write" '
-            + '"$HOME/.ssh/evander-git-write.pub" "$HOME/.ssh/config"\n'
+            + f'rm -f "$HOME/.ssh/{shlex.quote(key_name)}" '
+            + f'"$HOME/.ssh/{shlex.quote(key_name)}.pub"\n'
         )
         handle = backend.start(
             backend.prepare(
@@ -505,6 +568,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         push_remote_url: str | None,
         clone_branch: str | None,
         git_access_mode: str,
+        git_access_lifetime: str,
         pinned_ref: str | None,
         pinned_commit_sha: str | None,
         git_author_identity: GitIdentity | None,
@@ -520,6 +584,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             push_remote_url=push_remote_url,
             clone_branch=clone_branch,
             git_access_mode=git_access_mode,
+            git_access_lifetime=git_access_lifetime,
             pinned_ref=pinned_ref,
             pinned_commit_sha=pinned_commit_sha,
             git_author_identity=git_author_identity,
@@ -592,6 +657,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         push_remote_url: str | None = None,
         clone_branch: str | None,
         git_access_mode: str = "write",
+        git_access_lifetime: str = "session",
         pinned_ref: str | None = None,
         pinned_commit_sha: str | None = None,
         git_identity: GitIdentity | None = None,
@@ -602,6 +668,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             git_author_identity = git_identity
         canonical_remote_url = repo_source.strip() if _is_remote_git_source(repo_source) else ""
         normalized_git_access_mode = normalize_git_access_mode(git_access_mode)
+        normalized_git_access_lifetime = normalize_git_access_lifetime(git_access_lifetime)
         if normalized_git_access_mode != "write":
             push_remote_url = None
         elif push_remote_url is None:
@@ -618,6 +685,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             f"BRANCH_SUFFIX={shlex.quote(session_id)}",
             f"PR_NOTES_REF={shlex.quote(pr_notes_ref)}",
             f"GIT_ACCESS_MODE={shlex.quote(normalized_git_access_mode)}",
+            f"GIT_ACCESS_LIFETIME={shlex.quote(normalized_git_access_lifetime)}",
             f"PINNED_REF={shlex.quote(pinned_ref or '')}",
             f"PINNED_COMMIT_SHA={shlex.quote(pinned_commit_sha or '')}",
             "WORK_BRANCH=work",
@@ -638,7 +706,6 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "  git remote remove agent >/dev/null 2>&1 || true",
             "  git config --unset-all alias.push-agent >/dev/null 2>&1 || true",
             '  git config evander.pushAgentAvailable "false"',
-            '  rm -f "$HOME/.ssh/evander-git-write" "$HOME/.ssh/evander-git-write.pub" "$HOME/.ssh/config"',
             "fi",
             f"git config user.name {shlex.quote(git_user_identity.name)}",
             f"git config user.email {shlex.quote(git_user_identity.email)}",
@@ -654,6 +721,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             'git config evander.branchSuffix "$BRANCH_SUFFIX"',
             'git config evander.prNotesRef "$PR_NOTES_REF"',
             'git config evander.gitAccessMode "$GIT_ACCESS_MODE"',
+            'git config evander.gitAccessLifetime "$GIT_ACCESS_LIFETIME"',
         ]
         if clone_branch:
             lines.insert(9, f"CLONE_BRANCH={shlex.quote(clone_branch)}")
@@ -722,6 +790,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             git_committer_email=(
                 git_committer_identity.email if git_committer_identity is not None else None
             ),
+            git_access_mode=normalize_git_access_mode(payload.get("git_access_mode")),
+            git_access_lifetime=normalize_git_access_lifetime(payload.get("git_access_lifetime")),
         )
         return {
             "success": bool(result.success),
@@ -734,6 +804,10 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                 "effect:agent:clone-repo requires managed_repo_id",
             ),
             "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
+            "git_access_mode": normalize_git_access_mode(payload.get("git_access_mode")),
+            "git_access_lifetime": normalize_git_access_lifetime(
+                payload.get("git_access_lifetime")
+            ),
             "execution_backend": execution_backend,
             "vm_name": result.vm_name or vm_name,
         }
@@ -834,17 +908,7 @@ def _public_git_access_metadata(
 ) -> dict[str, object] | None:
     if metadata is None:
         return None
-    return {
-        key: metadata[key]
-        for key in (
-            "managed_repo_id",
-            "authorized_ref_prefix",
-            "authorized_pr_notes_ref",
-            "allowed_from",
-            "git_ssh_alias",
-        )
-        if key in metadata
-    }
+    return public_managed_git_grant(metadata)
 
 
 def normalize_git_access_mode(value: object) -> str:
@@ -891,18 +955,26 @@ def _remote_url_requires_git_ssh(remote_url: str) -> bool:
     return bool(normalized.startswith("git@") or "@" in normalized.partition(":")[0])
 
 
-def _record_session_git_write_access(
+def _record_session_git_access(
     context: Any,
     session_id: str,
     metadata: dict[str, object],
 ) -> None:
-    patch = {"container_git_write_access": metadata}
     update_target = getattr(context, "session_metadata_updater", None)
     update_fn = getattr(update_target, "session_update_metadata", None)
     update_error: Exception | None = None
     if callable(update_fn):
         try:
-            update_fn(target=session_id, metadata=patch)
+            # The session metadata updater performs a deep merge, so send the
+            # repository-keyed entry instead of replacing unrelated grants.
+            update_fn(
+                target=session_id,
+                metadata={
+                    "managed_git_access_grants": {
+                        str(metadata["managed_repo_id"]): metadata,
+                    }
+                },
+            )
             return
         except Exception as exc:
             update_error = exc
@@ -920,7 +992,7 @@ def _record_session_git_write_access(
     current_metadata = getattr(session, "metadata", {})
     if not isinstance(current_metadata, dict):
         current_metadata = {}
-    updated_metadata = {**current_metadata, **patch}
+    updated_metadata = upsert_managed_git_grant_metadata(current_metadata, metadata)
     upsert_session(session.model_copy(update={"metadata": updated_metadata}))
 
 
@@ -928,6 +1000,7 @@ def _clear_session_git_access_metadata(
     context: Any,
     session_id: str,
     *,
+    managed_repo_id: str,
     expected_public_key_body: str,
 ) -> bool:
     runtime = getattr(getattr(context, "admin_service", None), "runtime", None)
@@ -942,16 +1015,13 @@ def _clear_session_git_access_metadata(
     current_metadata = getattr(session, "metadata", {})
     if not isinstance(current_metadata, dict):
         return True
-    git_access = current_metadata.get("container_git_write_access")
-    if git_access is None:
-        return True
-    if not isinstance(git_access, Mapping):
+    updated_metadata, removed = remove_managed_git_grant_metadata(
+        current_metadata,
+        managed_repo_id,
+        expected_public_key_body=expected_public_key_body,
+    )
+    if not removed and managed_repo_id in managed_git_grants_from_metadata(current_metadata):
         return False
-    current_public_key_body = normalize_optional_string(git_access.get("public_key_body"))
-    if current_public_key_body != expected_public_key_body:
-        return False
-    updated_metadata = dict(current_metadata)
-    updated_metadata.pop("container_git_write_access", None)
     upsert_session(session.model_copy(update={"metadata": updated_metadata}))
     return True
 
@@ -959,6 +1029,7 @@ def _clear_session_git_access_metadata(
 def _remove_session_git_write_access(
     context: Any,
     session_id: str,
+    managed_repo_id: str | None = None,
 ) -> None:
     runtime = getattr(getattr(context, "admin_service", None), "runtime", None)
     repository = getattr(runtime, "session_repository", None)
@@ -972,22 +1043,57 @@ def _remove_session_git_write_access(
     current_metadata = getattr(session, "metadata", {})
     if not isinstance(current_metadata, dict):
         return
-    git_access = current_metadata.get("container_git_write_access")
-    if not isinstance(git_access, dict):
+    grants = managed_git_grants_from_metadata(current_metadata)
+    selected = (
+        {managed_repo_id: grants[managed_repo_id]}
+        if managed_repo_id and managed_repo_id in grants
+        else grants
+    )
+    updated_metadata = dict(current_metadata)
+    unbind = getattr(context.admin_service, "unbind_managed_git_repository", None)
+    for repo_id, git_access in selected.items():
+        public_key_body = normalize_optional_string(git_access.get("public_key_body"))
+        authorized_keys_path = normalize_optional_string(git_access.get("authorized_keys_path"))
+        if public_key_body and authorized_keys_path:
+            remove_git_authorized_key_by_public_key_body(
+                authorized_keys_path=authorized_keys_path,
+                public_key_body=public_key_body,
+            )
+        if callable(unbind):
+            unbind(
+                managed_repo_id=repo_id,
+                kind="authorized_sessions",
+                binding_id=session_id,
+            )
+        updated_metadata, _ = remove_managed_git_grant_metadata(updated_metadata, repo_id)
+    upsert_session(session.model_copy(update={"metadata": updated_metadata}))
+
+
+def _remove_existing_repo_host_authorization(
+    context: Any,
+    session_id: str,
+    managed_repo_id: str,
+) -> None:
+    runtime = getattr(getattr(context, "admin_service", None), "runtime", None)
+    repository = getattr(runtime, "session_repository", None)
+    get_session = getattr(repository, "get_session", None)
+    if not callable(get_session):
         return
-    public_key_body = normalize_optional_string(git_access.get("public_key_body"))
-    git_user = normalize_optional_string(git_access.get("git_user"))
-    if public_key_body and git_user:
+    session = get_session(session_id)
+    metadata = getattr(session, "metadata", {}) if session is not None else {}
+    grant = managed_git_grants_from_metadata(metadata).get(managed_repo_id)
+    if not isinstance(grant, Mapping):
+        return
+    public_key_body = normalize_optional_string(grant.get("public_key_body"))
+    authorized_keys_path = normalize_optional_string(grant.get("authorized_keys_path"))
+    git_user = normalize_optional_string(grant.get("git_user"))
+    if not authorized_keys_path and git_user:
+        authorized_keys_path = str(authorized_keys_path_for_user(git_user))
+    if public_key_body and authorized_keys_path:
         remove_git_authorized_key_by_public_key_body(
-            authorized_keys_path=authorized_keys_path_for_user(git_user),
+            authorized_keys_path=authorized_keys_path,
             public_key_body=public_key_body,
         )
-    unbind = getattr(context.admin_service, "unbind_managed_git_repositories", None)
-    if callable(unbind):
-        unbind(kind="authorized_sessions", binding_id=session_id)
-    updated_metadata = dict(current_metadata)
-    updated_metadata.pop("container_git_write_access", None)
-    upsert_session(session.model_copy(update={"metadata": updated_metadata}))
 
 
 def _git_author_identity_from_payload(payload: Mapping[str, Any]) -> GitIdentity | None:

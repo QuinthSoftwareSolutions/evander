@@ -7,6 +7,7 @@
   changed_when: false
   environment:
     SUDO_USER: "{{ evander_run_user }}"
+    EVANDER_GIT_USER: "{{ evander_git_user | default(evander_run_user) }}"
     EVANDER_SERVICE_PROFILE: "{{ evander_service_profile }}"
 
 - name: Install repo-native systemd units
@@ -16,4 +17,5 @@
     chdir: "{{ evander_deploy_path }}"
   environment:
     SUDO_USER: "{{ evander_run_user }}"
+    EVANDER_GIT_USER: "{{ evander_git_user | default(evander_run_user) }}"
     EVANDER_SERVICE_PROFILE: "{{ evander_service_profile }}"

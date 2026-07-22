@@ -148,6 +148,7 @@ The current install script renders and enables:
 - `evander-discord-ingest.service`
 - `evander-discord-wake.service`
 - `evander-scheduled-wake.service`
+- `evander-managed-git-refresh.service`
 - `evander-teams-ingest.service`
 - `evander-teams-meeting-ingest.service`
 - `evander-effect-orchestrator.service`
@@ -167,6 +168,7 @@ Before install/start, populate the required local config and secret files for th
 - optional `config/discord-ingest/config.json`
 - optional `config/discord-wake/config.json`
 - optional `config/scheduled-wake/config.json`
+- optional `config/managed-git-refresh.env`
 - `config/trigger-orchestrator/config.json`
 - optional `config/teams-ingest/config.json`
 - optional `config/teams-meeting-ingest/config.json`

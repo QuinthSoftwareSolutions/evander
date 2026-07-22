@@ -139,6 +139,8 @@ TEAM_STATE_COLLECTION_KEYS = (
     "review_requests",
     "review_profiles",
     "inbox",
+    "blockers",
+    "blocker_events",
     "action_records",
     "memories",
     "release_packages",
@@ -158,6 +160,8 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "stand_downs",
         "tasks",
         "inbox",
+        "blockers",
+        "blocker_events",
         "action_records",
     },
     "delivery": {
@@ -169,6 +173,8 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "deliverables",
         "review_requests",
         "review_profiles",
+        "blockers",
+        "blocker_events",
         "release_packages",
         "git_promotions",
     },
@@ -181,9 +187,19 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "deliverables",
         "review_profiles",
         "release_packages",
+        "blockers",
+        "blocker_events",
         "cases",
     },
-    "task-board": {"teams", "projects", "agents", "tasks", "cases"},
+    "task-board": {
+        "teams",
+        "projects",
+        "agents",
+        "tasks",
+        "cases",
+        "blockers",
+        "blocker_events",
+    },
     "cases": {"teams", "projects", "agents", "cases", "tasks"},
     "people": {
         "teams",
@@ -202,6 +218,8 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "governance_runtimes",
         "projects",
         "agents",
+        "blockers",
+        "blocker_events",
     },
     "planning": {"teams", "projects", "agents", "tasks", "deliverables"},
     "timeline": {
@@ -215,6 +233,8 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "review_requests",
         "review_profiles",
         "release_packages",
+        "blockers",
+        "blocker_events",
         "inbox",
         "action_records",
         "ephemeral_assignments",
@@ -247,6 +267,8 @@ TEAM_VIEW_COLLECTIONS["workspace"] = {
     "review_requests",
     "inbox",
     "release_packages",
+    "blockers",
+    "blocker_events",
     "git_promotions",
 }
 TEAM_VIEW_COLLECTIONS["chat"] = {"agents"}
@@ -267,12 +289,15 @@ TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "action_records",
     "memories",
     "release_packages",
+    "blockers",
     "stand_downs",
 )
 TEAM_STATE_HISTORY_COLLECTIONS = (
     "inbox",
     "action_records",
     "release_packages",
+    "blockers",
+    "blocker_events",
     "ephemeral_assignments",
     "git_promotions",
     "conversation_messages",
@@ -2037,6 +2062,22 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
         return _state_response(request, state, rebased_from_revision=rebased_from_revision)
 
+    async def resolve_terminal_blocker(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        blocker_id = request.path_params["blocker_id"]
+        state, result = admin_service.resolve_terminal_blocker_as_operator(
+            blocker_id=blocker_id,
+            note=_required(payload, "note"),
+            resolution_refs=_optional_string_list(payload, "resolution_refs"),
+            operator_actor_id=_operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        return _state_response(
+            request,
+            state,
+            extra={"resolved_blocker": result["blocker"]},
+        )
+
     async def create_review_profile(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         criteria = [
@@ -2564,6 +2605,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route(
             "/action-records/{action_record_id}/dismiss",
             dismiss_action_record,
+            methods=["POST"],
+        ),
+        route(
+            "/blockers/{blocker_id}/resolve",
+            resolve_terminal_blocker,
             methods=["POST"],
         ),
         route("/review-profiles", create_review_profile, methods=["POST"]),
@@ -3162,6 +3208,17 @@ def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:
         ids_by_collection["action_records"] = {
             record.id for record in current_failed_action_records(state)
         }
+        open_blocker_ids = {
+            blocker.id
+            for blocker in state.blockers.values()
+            if blocker.state.value == "open"
+        }
+        ids_by_collection["blockers"] = open_blocker_ids
+        ids_by_collection["blocker_events"] = {
+            event.id
+            for event in state.blocker_events.values()
+            if event.blocker_id in open_blocker_ids
+        }
     return ids_by_collection
 
 
@@ -3406,6 +3463,8 @@ def _state_history_item_is_current(collection: str, item: Any) -> bool:
         return _record_state_value(item) != TeamInboxItemState.HANDLED.value
     if collection == "release_packages":
         return _record_state_value(item) != TeamRecordState.ACCEPTED.value
+    if collection == "blockers":
+        return _record_state_value(item) == "open"
     if collection == "ephemeral_assignments":
         return _record_state_value(item) not in {
             "accepted",

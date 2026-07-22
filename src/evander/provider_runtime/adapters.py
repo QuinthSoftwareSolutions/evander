@@ -136,6 +136,30 @@ class AdminRuntimeProviderAdapter:
             **kwargs,
         )
 
+    def list_managed_git_access(self, *args: Any, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._vm_agent_method("list_managed_git_access"),
+            "list_managed_git_access",
+            *args,
+            **kwargs,
+        )
+
+    def grant_managed_git_access(self, *args: Any, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._vm_agent_method("grant_managed_git_access"),
+            "grant_managed_git_access",
+            *args,
+            **kwargs,
+        )
+
+    def revoke_managed_git_access(self, *args: Any, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._vm_agent_method("revoke_managed_git_access"),
+            "revoke_managed_git_access",
+            *args,
+            **kwargs,
+        )
+
     def ensure_managed_git_repository(self, **kwargs: Any) -> Any:
         return self._call_required(
             self._managed_git_method("register_repository"),
@@ -161,6 +185,13 @@ class AdminRuntimeProviderAdapter:
         return self._call_required(
             self._managed_git_method("unbind_all"),
             "unbind_all_managed_git_repositories",
+            **kwargs,
+        )
+
+    def unbind_managed_git_repository(self, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._managed_git_method("unbind"),
+            "unbind_managed_git_repository",
             **kwargs,
         )
 

@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 from evander.git_ssh_authorized_keys import remove_git_authorized_key_by_public_key_body
+from evander.managed_git_grants import (
+    managed_git_key_name,
+    managed_git_ssh_alias,
+    normalize_git_access_lifetime,
+    normalize_git_access_mode,
+    upsert_managed_git_grant_metadata,
+)
 
 from evander.admin.services.vm_agent.common_imports import (
     dataclass,
@@ -215,23 +222,38 @@ class VmAgentAdminSupport:
         git_author_email: str | None = None,
         git_committer_name: str | None = None,
         git_committer_email: str | None = None,
+        git_access_mode: str = "write",
+        git_access_lifetime: str = "session",
     ) -> str:
         bootstrap_git_script = self.project_dir / "scripts" / "bootstrap_git_vm.sh"
+        normalized_access_mode = normalize_git_access_mode(git_access_mode)
+        normalized_access_lifetime = normalize_git_access_lifetime(git_access_lifetime)
+        key_name = managed_git_key_name(remote_repo_name)
+        git_ssh_alias = managed_git_ssh_alias(issue_setup.git_ssh_alias, remote_repo_name)
         existing_session = self.runtime.session_repository.get_session(session_id)
         existing_metadata = (
             existing_session.metadata
             if existing_session is not None and isinstance(existing_session.metadata, dict)
             else {}
         )
-        existing_access = existing_metadata.get("managed_git_access")
-        if isinstance(existing_access, dict):
-            old_key_body = str(existing_access.get("public_key_body") or "").strip()
-            old_keys_path = str(existing_access.get("authorized_keys_path") or "").strip()
-            if old_key_body and old_keys_path:
-                remove_git_authorized_key_by_public_key_body(
-                    authorized_keys_path=old_keys_path,
-                    public_key_body=old_key_body,
+        legacy_access = existing_metadata.get("managed_git_access")
+        replace_legacy_access = bool(
+            isinstance(legacy_access, dict)
+            and str(legacy_access.get("managed_repo_id") or "").strip() == remote_repo_name
+        )
+        if replace_legacy_access:
+            legacy_public_key_body = str(legacy_access.get("public_key_body") or "").strip()
+            legacy_authorized_keys_path = str(
+                legacy_access.get("authorized_keys_path") or ""
+            ).strip()
+            if not legacy_public_key_body or not legacy_authorized_keys_path:
+                raise RuntimeError(
+                    "Legacy managed Git access is missing credential revocation metadata"
                 )
+            remove_git_authorized_key_by_public_key_body(
+                authorized_keys_path=legacy_authorized_keys_path,
+                public_key_body=legacy_public_key_body,
+            )
         completed = process_helpers.run_subprocess(
             [str(bootstrap_git_script), vm_name, vm_user],
             capture_output=True,
@@ -241,9 +263,12 @@ class VmAgentAdminSupport:
                 "EVANDER_GIT_ROOT": remote_git_root,
                 "EVANDER_GIT_HOST": issue_setup.git_host,
                 "EVANDER_GIT_USER": issue_setup.git_user,
-                "EVANDER_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
+                "EVANDER_GIT_SSH_ALIAS": git_ssh_alias,
+                "EVANDER_GIT_KEY_NAME": key_name,
                 "EVANDER_GIT_REPO": remote_repo_name,
                 "EVANDER_GIT_SESSION_ID": session_id,
+                "EVANDER_GIT_READ_ONLY": "1" if normalized_access_mode == "read-only" else "0",
+                "EVANDER_GIT_REMOVE_LEGACY_KEY": "1" if replace_legacy_access else "0",
             },
         )
         if completed.returncode != 0:
@@ -289,15 +314,19 @@ class VmAgentAdminSupport:
             session_repository.upsert_session(
                 session.model_copy(
                     update={
-                        "metadata": {
-                            **current_metadata,
-                            "managed_git_access": {
+                        "metadata": upsert_managed_git_grant_metadata(
+                            current_metadata,
+                            {
                                 "managed_repo_id": remote_repo_name,
                                 "access_mode": access_mode,
+                                "lifetime": normalized_access_lifetime,
+                                "execution_backend": "libvirt_vm",
                                 "public_key_body": public_key_body,
                                 "authorized_keys_path": authorized_keys_path,
+                                "git_ssh_alias": git_ssh_alias,
+                                "key_name": key_name,
                             },
-                        }
+                        )
                     }
                 )
             )
@@ -313,7 +342,7 @@ class VmAgentAdminSupport:
         if not vm_ip or ssh_private_key_path is None:
             raise RuntimeError(f"Unable to resolve SSH access for {vm_name}")
 
-        remote_url = f"ssh://{issue_setup.git_ssh_alias}{remote_git_root}/{remote_repo_name}.git"
+        remote_url = f"ssh://{git_ssh_alias}{remote_git_root}/{remote_repo_name}.git"
         pr_notes_ref = agent_pr_notes_ref_for_session(session_id)
         canonical_remote_url = ""
         guest_repo_root = f"/home/{vm_user}/{repo_name}"
@@ -372,6 +401,8 @@ GIT_AUTHOR_NAME={shlex.quote(normalized_author_name)}
 GIT_AUTHOR_EMAIL={shlex.quote(normalized_author_email)}
 GIT_COMMITTER_NAME={shlex.quote(normalized_committer_name)}
 GIT_COMMITTER_EMAIL={shlex.quote(normalized_committer_email)}
+GIT_ACCESS_MODE={shlex.quote(normalized_access_mode)}
+GIT_ACCESS_LIFETIME={shlex.quote(normalized_access_lifetime)}
 AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
 AGENT_PUSH_HELPER_B64="{agent_push_helper_b64}"
 SYNC_BASE_HELPER_B64="{sync_base_helper_b64}"
@@ -394,10 +425,14 @@ if [[ -n "${{CANONICAL_REMOTE_URL}}" ]]; then
     git -C "${{TARGET_DIR}}" remote add origin "${{CANONICAL_REMOTE_URL}}"
   fi
   git -C "${{TARGET_DIR}}" config "url.${{REMOTE_URL}}.insteadOf" "${{CANONICAL_REMOTE_URL}}"
-  if git -C "${{TARGET_DIR}}" remote get-url agent >/dev/null 2>&1; then
-    git -C "${{TARGET_DIR}}" remote set-url agent "${{REMOTE_URL}}"
+  if [[ "${{GIT_ACCESS_MODE}}" == "write" ]]; then
+    if git -C "${{TARGET_DIR}}" remote get-url agent >/dev/null 2>&1; then
+      git -C "${{TARGET_DIR}}" remote set-url agent "${{REMOTE_URL}}"
+    else
+      git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+    fi
   else
-    git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+    git -C "${{TARGET_DIR}}" remote remove agent >/dev/null 2>&1 || true
   fi
 else
   if git -C "${{TARGET_DIR}}" remote get-url origin >/dev/null 2>&1; then
@@ -405,10 +440,14 @@ else
   else
     git -C "${{TARGET_DIR}}" remote add origin "${{REMOTE_URL}}"
   fi
-  if git -C "${{TARGET_DIR}}" remote get-url agent >/dev/null 2>&1; then
-    git -C "${{TARGET_DIR}}" remote set-url agent "${{REMOTE_URL}}"
+  if [[ "${{GIT_ACCESS_MODE}}" == "write" ]]; then
+    if git -C "${{TARGET_DIR}}" remote get-url agent >/dev/null 2>&1; then
+      git -C "${{TARGET_DIR}}" remote set-url agent "${{REMOTE_URL}}"
+    else
+      git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+    fi
   else
-    git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+    git -C "${{TARGET_DIR}}" remote remove agent >/dev/null 2>&1 || true
   fi
 fi
 git -C "${{TARGET_DIR}}" config user.name "${{GIT_USER_NAME}}"
@@ -442,6 +481,8 @@ else
 fi
 git -C "${{TARGET_DIR}}" config evander.sessionId "${{SESSION_ID}}"
 git -C "${{TARGET_DIR}}" config evander.prNotesRef "${{PR_NOTES_REF}}"
+git -C "${{TARGET_DIR}}" config evander.gitAccessMode "${{GIT_ACCESS_MODE}}"
+git -C "${{TARGET_DIR}}" config evander.gitAccessLifetime "${{GIT_ACCESS_LIFETIME}}"
 {issue_config_line}{branch_suffix_line}{git_identity_config_line}install -d -m 0755 "${{TARGET_DIR}}/.evander/bin"
 python3 - "${{TARGET_DIR}}/.evander/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}" <<'PY'
 import base64
@@ -475,7 +516,13 @@ target_path.write_bytes(base64.b64decode(sys.argv[2]))
 os.chmod(target_path, 0o755)
 PY
 git -C "${{TARGET_DIR}}" config alias.agent-pr-note '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.evander/bin/agent-pr-note" "$@"; }}; f'
-git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.evander/bin/push-agent" "$@"; }}; f'
+if [[ "${{GIT_ACCESS_MODE}}" == "write" ]]; then
+  git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.evander/bin/push-agent" "$@"; }}; f'
+  git -C "${{TARGET_DIR}}" config evander.pushAgentAvailable true
+else
+  git -C "${{TARGET_DIR}}" config --unset-all alias.push-agent >/dev/null 2>&1 || true
+  git -C "${{TARGET_DIR}}" config evander.pushAgentAvailable false
+fi
 git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.evander/bin/sync-base" "$@"; }}; f'
 """
         ssh_result = process_helpers.run_subprocess(

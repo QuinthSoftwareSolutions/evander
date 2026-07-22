@@ -18,11 +18,14 @@ Environment:
   EVANDER_GIT_USER          Host user that owns the bare remotes.
   EVANDER_GIT_ROOT          Host directory containing bare remotes.
   EVANDER_GIT_SSH_ALIAS     Guest SSH host alias. Default: evander-git-host
+  EVANDER_GIT_KEY_NAME      Guest key filename. Default: evander-git
   EVANDER_GIT_ALLOWED_FROM  Source CIDR allowed in the host authorized_keys entry.
   EVANDER_GIT_REPO          Bare repo path or name under EVANDER_GIT_ROOT to allow access.
   EVANDER_GIT_SESSION_ID    Session id allowed to push refs/heads/agents/<session-id>/...
                             Defaults to EVANDER_SESSION_ID from the guest session env.
   EVANDER_GIT_READ_ONLY     Set to 1 to force repo-scoped read-only Git SSH access.
+  EVANDER_GIT_REMOVE_LEGACY_KEY
+                            Set to 1 while replacing the pre-grant-model evander-git key.
   EVANDER_GIT_REQUIRE_WRITE_METADATA
                             Set to 1 to fail instead of installing read-only access
                             when EVANDER_GIT_REPO/session metadata is unavailable.
@@ -69,11 +72,24 @@ fi
 GIT_ROOT="${EVANDER_GIT_ROOT:-${ROOT_DIR}/runtime/managed-git}"
 GIT_ROOT_REAL="$(realpath -m -- "${GIT_ROOT}")"
 GIT_SSH_ALIAS="${EVANDER_GIT_SSH_ALIAS:-evander-git-host}"
+GIT_KEY_NAME="${EVANDER_GIT_KEY_NAME:-evander-git}"
+if [[ ! "${GIT_KEY_NAME}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "EVANDER_GIT_KEY_NAME contains unsupported characters." >&2
+  exit 1
+fi
 GIT_ALLOWED_FROM="${EVANDER_GIT_ALLOWED_FROM:-192.168.250.0/24}"
 WRAPPER_PATH="${ROOT_DIR}/scripts/git_ssh_command_wrapper.sh"
 AUTHORIZED_KEYS_PATH="${GIT_USER_HOME}/.ssh/authorized_keys"
 GIT_AUTH_REPO_INPUT="${EVANDER_GIT_REPO:-${EVANDER_GIT_AUTH_REPO:-}}"
 GIT_SESSION_ID="${EVANDER_GIT_SESSION_ID:-${EVANDER_SESSION_ID:-}}"
+GIT_REMOVE_LEGACY_KEY="${EVANDER_GIT_REMOVE_LEGACY_KEY:-0}"
+case "${GIT_REMOVE_LEGACY_KEY}" in
+  0|1) ;;
+  *)
+    echo "EVANDER_GIT_REMOVE_LEGACY_KEY must be 0 or 1." >&2
+    exit 1
+    ;;
+esac
 SSH_OPTS=(
   -i "${SSH_KEY_PATH}"
 )
@@ -227,14 +243,18 @@ echo "Bootstrapping Git SSH into ${VM_USER}@${VM_IP}"
 
 GUEST_GIT_INFO="$(
   ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" \
-    "VM_NAME='${VM_NAME}' GIT_HOST='${GIT_HOST}' GIT_USER='${GIT_USER}' GIT_SSH_ALIAS='${GIT_SSH_ALIAS}' bash -s" <<'EOF'
+    "VM_NAME='${VM_NAME}' GIT_HOST='${GIT_HOST}' GIT_USER='${GIT_USER}' GIT_SSH_ALIAS='${GIT_SSH_ALIAS}' GIT_KEY_NAME='${GIT_KEY_NAME}' GIT_REMOVE_LEGACY_KEY='${GIT_REMOVE_LEGACY_KEY}' bash -s" <<'EOF'
 set -euo pipefail
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 
-KEY_PATH="$HOME/.ssh/evander-git"
+KEY_PATH="$HOME/.ssh/${GIT_KEY_NAME}"
 CONFIG_PATH="$HOME/.ssh/config"
 KNOWN_HOSTS_PATH="$HOME/.ssh/known_hosts"
+
+if [[ "${GIT_REMOVE_LEGACY_KEY}" == "1" ]]; then
+  rm -f "$HOME/.ssh/evander-git" "$HOME/.ssh/evander-git.pub"
+fi
 
 if [[ ! -f "${KEY_PATH}" ]]; then
   ssh-keygen -q -t ed25519 -N "" -C "evander-git@${VM_NAME}" -f "${KEY_PATH}"
@@ -243,32 +263,41 @@ fi
 touch "${CONFIG_PATH}" "${KNOWN_HOSTS_PATH}"
 chmod 600 "${CONFIG_PATH}" "${KNOWN_HOSTS_PATH}"
 
-python3 - "${CONFIG_PATH}" <<'PY'
+python3 - "${CONFIG_PATH}" "${GIT_KEY_NAME}" "${GIT_REMOVE_LEGACY_KEY}" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
+key_name = sys.argv[2]
+remove_legacy = sys.argv[3] == "1"
 text = path.read_text(encoding="utf-8") if path.exists() else ""
-begin = "# BEGIN evander git host"
-end = "# END evander git host"
-while begin in text and end in text:
-    start = text.index(begin)
-    stop = text.index(end, start) + len(end)
-    suffix = "\n" if stop < len(text) and text[stop] == "\n" else ""
-    text = text[:start].rstrip() + "\n"
-    text += text[stop + len(suffix):].lstrip("\n")
+markers = [(f"# BEGIN evander git grant {key_name}", f"# END evander git grant {key_name}")]
+if remove_legacy:
+    markers.extend(
+        [
+            ("# BEGIN evander git host", "# END evander git host"),
+            ("# BEGIN evander git write host", "# END evander git write host"),
+        ]
+    )
+for begin, end in markers:
+    while begin in text and end in text:
+        start = text.index(begin)
+        stop = text.index(end, start) + len(end)
+        suffix = "\n" if stop < len(text) and text[stop] == "\n" else ""
+        text = text[:start].rstrip() + "\n"
+        text += text[stop + len(suffix):].lstrip("\n")
 path.write_text(text, encoding="utf-8")
 PY
 
 cat >> "${CONFIG_PATH}" <<CONFIG
-# BEGIN evander git host
+# BEGIN evander git grant ${GIT_KEY_NAME}
 Host ${GIT_SSH_ALIAS}
   HostName ${GIT_HOST}
   User ${GIT_USER}
-  IdentityFile ~/.ssh/evander-git
+  IdentityFile ~/.ssh/${GIT_KEY_NAME}
   IdentitiesOnly yes
   StrictHostKeyChecking accept-new
-# END evander git host
+# END evander git grant ${GIT_KEY_NAME}
 CONFIG
 
 ssh-keyscan -H "${GIT_HOST}" >> "${KNOWN_HOSTS_PATH}" 2>/dev/null || true
@@ -356,6 +385,7 @@ fi
 if [[ "${AUTH_ACCESS}" == "write" ]]; then
   FORCED_COMMAND="EVANDER_GIT_ROOT_B64=$(one_line_base64 "${GIT_ROOT_REAL}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_ACCESS=write"
+  FORCED_COMMAND+=" EVANDER_GIT_REFRESH_REQUIRED=1"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_REPO_B64=$(one_line_base64 "${AUTH_REPO_REAL}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_SESSION_ID_B64=$(one_line_base64 "${GIT_SESSION_ID}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_REF_PREFIX_B64=$(one_line_base64 "${AUTH_REF_PREFIX}")"
@@ -364,6 +394,7 @@ if [[ "${AUTH_ACCESS}" == "write" ]]; then
 else
   FORCED_COMMAND="EVANDER_GIT_ROOT_B64=$(one_line_base64 "${GIT_ROOT_REAL}")"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_ACCESS=read-only"
+  FORCED_COMMAND+=" EVANDER_GIT_REFRESH_REQUIRED=1"
   FORCED_COMMAND+=" EVANDER_GIT_AUTH_REPO_B64=$(one_line_base64 "${AUTH_REPO_REAL}")"
   FORCED_COMMAND+=" ${WRAPPER_PATH}"
 fi

@@ -232,9 +232,12 @@ def test_apply_rewrites_all_legacy_state_and_records_bindings(tmp_path: Path) ->
     metadata = session["metadata"]
     assert metadata["managed_repo_id"] == repo_id
     assert metadata["managed_git_remote_reconciliation_required"] is True
-    assert metadata["container_git_write_access"]["managed_repo_id"] == repo_id
-    assert "bare_repo_path" not in metadata["container_git_write_access"]
-    assert "authorized_repo_path" not in metadata["container_git_write_access"]
+    assert "container_git_write_access" not in metadata
+    migrated_grant = metadata["managed_git_access_grants"][repo_id]
+    assert migrated_grant["managed_repo_id"] == repo_id
+    assert migrated_grant["lifetime"] == "session"
+    assert "bare_repo_path" not in migrated_grant
+    assert "authorized_repo_path" not in migrated_grant
     team_git = json.loads((runtime / "addons" / "team-addon" / "state.json").read_text())[
         "projects"
     ]["project-7"]["git"]
@@ -325,6 +328,7 @@ def test_apply_rewrites_directory_owned_authorized_key(
 
     auth_text = authorized_keys.read_text(encoding="utf-8")
     assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64=" not in auth_text
+    assert "EVANDER_GIT_REFRESH_REQUIRED=1" in auth_text
     assert _b64(tmp_path / "runtime" / "managed-git" / f"{repo_id}.git") in auth_text
     assert service.get_repository(repo_id)["bindings_by_kind"]["authorized_sessions"] == [
         "session-team-a"

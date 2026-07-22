@@ -503,6 +503,7 @@ evander_services:
   discord_ingest: true
   discord_wake: true
   scheduled_wake: true
+  managed_git_refresh: true
   teams_ingest: true
   teams_meeting_ingest: true
   effect_orchestrator: true

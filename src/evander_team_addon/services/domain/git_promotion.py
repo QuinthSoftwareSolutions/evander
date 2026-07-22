@@ -9,7 +9,6 @@ from ...git_naming import (
     validate_branch_name,
 )
 from ...models import (
-    AgentInboxItem,
     Deliverable,
     DeliverableGitRefs,
     DeliverableReviewManifest,
@@ -17,8 +16,7 @@ from ...models import (
     GitPromotionRecord,
     PersistentAgent,
     ReleasePackage,
-    TeamInboxItemType,
-    TeamInboxPriority,
+    TeamBlockerSourceKind,
     TeamRecordState,
     TeamState,
     project_lead_agent_id,
@@ -35,6 +33,12 @@ from .common import (
     _required_text,
     _string_list,
     utc_now,
+)
+from .blockers import (
+    open_deliverable_blocker,
+    open_or_get_blocker,
+    open_release_blocker,
+    resolve_active_blockers_for_source,
 )
 from .git_common import (
     GIT_PROMOTION_EVENT_TYPE,
@@ -532,6 +536,33 @@ def _attach_promotion_success(
         if promotion.deliverable_id is not None
         else None
     )
+    if deliverable is not None and deliverable.state == TeamRecordState.BLOCKED:
+        resolved_deliverable_blocker_ids = resolve_active_blockers_for_source(
+            state,
+            source_kind=TeamBlockerSourceKind.DELIVERABLE,
+            source_id=deliverable.id,
+            actor_agent_id=promotion.actor_agent_id,
+            dispatch_id=None,
+            note=f"Git promotion {promotion.id} succeeded.",
+            reference_ids=[promotion.id],
+            result=result,
+        )
+        if resolved_deliverable_blocker_ids:
+            deliverable.state = (
+                TeamRecordState.PENDING
+                if kind == "review"
+                else TeamRecordState.ACCEPTED
+            )
+    resolve_active_blockers_for_source(
+        state,
+        source_kind=TeamBlockerSourceKind.EXPLICIT,
+        source_id=promotion.id,
+        actor_agent_id=promotion.actor_agent_id,
+        dispatch_id=None,
+        note=f"Git promotion {promotion.id} succeeded.",
+        reference_ids=[promotion.id],
+        result=result,
+    )
     if deliverable is not None:
         refs = deliverable.git_refs
         if kind == "review":
@@ -590,7 +621,12 @@ def _attach_promotion_success(
     if release is not None:
         if release.state == TeamRecordState.REJECTED:
             return
-        _clear_recovered_release_block(state, release=release, promotion=promotion)
+        _clear_recovered_release_block(
+            state,
+            release=release,
+            promotion=promotion,
+            result=result,
+        )
         release.git_promotion_record_ids = _append_unique(
             release.git_promotion_record_ids,
             promotion.id,
@@ -607,6 +643,14 @@ def _attach_promotion_success(
                 release.state = TeamRecordState.BLOCKED
                 release.error = "release consolidation did not return a candidate commit SHA"
                 result["error"] = release.error
+                open_release_blocker(
+                    state,
+                    release_package_id=release.id,
+                    summary=f"Release promotion blocked: {release.id}",
+                    details=release.error,
+                    reporter_agent_id=promotion.actor_agent_id,
+                    result=result,
+                )
                 return
             raw_base_commit = promotion.outputs.get("base_commit_sha")
             if isinstance(raw_base_commit, str) and raw_base_commit.strip():
@@ -643,6 +687,7 @@ def _clear_recovered_release_block(
     *,
     release: ReleasePackage,
     promotion: GitPromotionRecord,
+    result: dict[str, Any],
 ) -> None:
     if release.state != TeamRecordState.BLOCKED:
         return
@@ -669,6 +714,16 @@ def _clear_recovered_release_block(
     release.state = TeamRecordState.PENDING
     release.error = None
     release.updated_at = utc_now()
+    resolve_active_blockers_for_source(
+        state,
+        source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+        source_id=release.id,
+        actor_agent_id=promotion.actor_agent_id,
+        dispatch_id=None,
+        note=f"Git promotion {promotion.id} recovered the release.",
+        reference_ids=[promotion.id],
+        result=result,
+    )
 
 
 def _queue_canonical_push_after_release_success(
@@ -683,6 +738,14 @@ def _queue_canonical_push_after_release_success(
         release.state = TeamRecordState.BLOCKED
         release.error = "release candidate has not passed all configured approval gates"
         result["error"] = release.error
+        open_release_blocker(
+            state,
+            release_package_id=release.id,
+            summary=f"Canonical release push blocked: {release.id}",
+            details=release.error,
+            reporter_agent_id=release_promotion.actor_agent_id,
+            result=result,
+        )
         return
     if release_promotion.commit_sha != approved_commit_sha:
         release.state = TeamRecordState.BLOCKED
@@ -691,6 +754,14 @@ def _queue_canonical_push_after_release_success(
             f"approved candidate {approved_commit_sha}"
         )
         result["error"] = release.error
+        open_release_blocker(
+            state,
+            release_package_id=release.id,
+            summary=f"Canonical release push blocked: {release.id}",
+            details=release.error,
+            reporter_agent_id=release_promotion.actor_agent_id,
+            result=result,
+        )
         return
     if release.policy_version >= 2 and (
         release.scope_validation is None or release.scope_validation.state != "passed"
@@ -698,6 +769,14 @@ def _queue_canonical_push_after_release_success(
         release.state = TeamRecordState.BLOCKED
         release.error = "release scope validation did not pass"
         result["error"] = release.error
+        open_release_blocker(
+            state,
+            release_package_id=release.id,
+            summary=f"Canonical release push blocked: {release.id}",
+            details=release.error,
+            reporter_agent_id=release_promotion.actor_agent_id,
+            result=result,
+        )
         return
     project = state.projects.get(release_promotion.project_id)
     git = project.git if project is not None else None
@@ -708,6 +787,14 @@ def _queue_canonical_push_after_release_success(
             "for canonical release push"
         )
         result["error"] = release.error
+        open_release_blocker(
+            state,
+            release_package_id=release.id,
+            summary=f"Canonical release push blocked: {release.id}",
+            details=release.error,
+            reporter_agent_id=release_promotion.actor_agent_id,
+            result=result,
+        )
         return
 
     source_branch = release.release_branch or release_promotion.target_branch
@@ -801,32 +888,41 @@ def _attach_promotion_failure(
                 "unexpected_paths",
             )
             release.scope_validation.validated_at = utc_now()
-    recipient_id = _promotion_failure_recipient(state, promotion)
-    if recipient_id is not None and recipient_id in state.agents:
-        inbox_id = f"inbox-{uuid4().hex}"
-        state.inbox[inbox_id] = AgentInboxItem(
-            id=inbox_id,
-            recipient_agent_id=recipient_id,
-            sender_agent_id=None,
-            task_id=(
-                promotion.task_id
-                if promotion.task_id is not None and promotion.task_id in state.tasks
-                else None
-            ),
-            item_type=TeamInboxItemType.PROGRESS_REPORT,
-            response_requested=True,
-            priority=TeamInboxPriority.NORMAL,
-            payload={
-                "kind": "git_promotion_failed",
-                "promotion_id": promotion.id,
-                "promotion_kind": promotion.promotion_kind,
-                "project_id": promotion.project_id,
-                "source_branch": promotion.source_branch,
-                "target_branch": promotion.target_branch,
-                "error": promotion.error,
-            },
+    details = promotion.error or f"{promotion.promotion_kind} promotion failed"
+    if release is not None:
+        open_release_blocker(
+            state,
+            release_package_id=release.id,
+            summary=f"Release {release.id} promotion failed",
+            details=details,
+            reporter_agent_id=promotion.actor_agent_id,
+            result=result,
         )
-        result["created_inbox_item_ids"].append(inbox_id)
+    if deliverable is not None:
+        open_deliverable_blocker(
+            state,
+            deliverable_id=deliverable.id,
+            summary=f"Deliverable {deliverable.id} promotion failed",
+            details=details,
+            reporter_agent_id=promotion.actor_agent_id,
+            result=result,
+        )
+    if release is None and deliverable is None:
+        project = state.projects.get(promotion.project_id)
+        actor = state.agents.get(promotion.actor_agent_id)
+        if project is not None and actor is not None:
+            open_or_get_blocker(
+                state,
+                source_kind=TeamBlockerSourceKind.EXPLICIT,
+                source_id=promotion.id,
+                summary=f"Git promotion failed: {promotion.id}",
+                details=details,
+                reporter_agent_id=actor.id,
+                team_id=project.team_id,
+                project_id=project.id,
+                task_id=promotion.task_id,
+                result=result,
+            )
 
 
 def _promotion_failure_recipient(

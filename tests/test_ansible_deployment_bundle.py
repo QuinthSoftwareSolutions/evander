@@ -842,12 +842,14 @@ def test_ansible_manages_current_optional_systemd_units() -> None:
 
     assert "didww_sip_bridge: true" in defaults
     assert "teams_meeting_ingest: true" in defaults
+    assert "managed_git_refresh: true" in defaults
     assert "evander_didww_sip_bridge_env" in defaults
     assert "evander_teams_meeting_ingest_config" in defaults
     assert "config/teams-meeting-ingest" in runtime_bootstrap
     for key, unit in [
         ("didww_sip_bridge", "evander-didww-sip-bridge.service"),
         ("teams_meeting_ingest", "evander-teams-meeting-ingest.service"),
+        ("managed_git_refresh", "evander-managed-git-refresh.service"),
     ]:
         assert f"key: {key}" in runtime
         assert f"unit: {unit}" in runtime
@@ -855,6 +857,8 @@ def test_ansible_manages_current_optional_systemd_units() -> None:
         assert f"unit: {unit}" in verification
     assert "evander_services.get(item.key, false) | bool" in runtime
     assert "evander_services[item.key]" not in runtime
+    assert "Inspect managed Git refresh broker socket" in verification
+    assert "/run/evander/managed-git-refresh.sock" in verification
 
 
 def test_ansible_env_template_shell_quotes_values() -> None:

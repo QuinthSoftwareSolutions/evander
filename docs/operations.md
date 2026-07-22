@@ -434,7 +434,10 @@ and surfaces:
 - a Tool Calls tab for read-only inspection of the configured `audit_log_path`
   (`runtime/audit.jsonl` by default), with filtering by session, tool, status,
   directory/scope, and time range. The UI uses `runtime/audit.db` as an indexed
-  SQLite read model when available and falls back to JSONL when needed.
+  SQLite read model when available and falls back to JSONL when needed. Free-text
+  searches use a compact trigram index that is backfilled in short background batches
+  after an existing audit database is upgraded; the compatible SQLite scan remains
+  available until that backfill finishes.
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
 - Sessions policy controls for `approval_required_tools`, which lets operators require human
@@ -2746,6 +2749,7 @@ This creates:
 - `evander-discord-ingest.service`
 - `evander-discord-wake.service`
 - `evander-scheduled-wake.service`
+- `evander-managed-git-refresh.service`
 - `evander-teams-ingest.service`
 - `evander-teams-meeting-ingest.service`
 - `evander-effect-orchestrator.service`
@@ -2786,6 +2790,7 @@ sudo systemctl start evander-proxy-issue-sync.service
 sudo systemctl start evander-discord-ingest.service
 sudo systemctl start evander-discord-wake.service
 sudo systemctl start evander-scheduled-wake.service
+sudo systemctl start evander-managed-git-refresh.service
 sudo systemctl start evander-teams-ingest.service
 sudo systemctl start evander-teams-meeting-ingest.service
 sudo systemctl start evander-effect-orchestrator.service
@@ -2802,6 +2807,7 @@ sudo systemctl status evander-proxy-issue-sync.service
 sudo systemctl status evander-discord-ingest.service
 sudo systemctl status evander-discord-wake.service
 sudo systemctl status evander-scheduled-wake.service
+sudo systemctl status evander-managed-git-refresh.service
 sudo systemctl status evander-teams-ingest.service
 sudo systemctl status evander-teams-meeting-ingest.service
 sudo systemctl status evander-effect-orchestrator.service
@@ -2816,9 +2822,10 @@ users:
 ```bash
 systemctl show -p User evander-discord-wake.service
 systemctl show -p User evander-scheduled-wake.service
+systemctl show -p User evander-managed-git-refresh.service
 ```
 
-Both commands should report the operator account used for deployment, not an empty
+All three commands should report the operator account used for deployment, not an empty
 root/default user.
 
 ## Managed Git Repository Operations
@@ -2826,6 +2833,18 @@ root/default user.
 Managed Git is the supported code-transport path for both `libvirt_vm` and
 `container_worker_vm`. The control plane owns one bare repository per normalized upstream and
 owning directory boundary. Do not create an issue-numbered mirror or persistent trusted checkout.
+
+Managed clone, fetch, pull, `ls-remote`, and archive reads refresh the exact authorized repository
+through `evander-managed-git-refresh.service` before serving refs. A broker/upstream failure fails
+the read rather than silently serving stale refs. Diagnose with:
+
+```bash
+systemctl status evander-managed-git-refresh.service
+journalctl -u evander-managed-git-refresh.service --no-pager -n 100
+```
+
+`evander-cli git-repos refresh <managed-repo-id>` remains available for operator recovery, but is
+not a prerequisite for creating or using agents.
 
 ### Register and clone
 
@@ -2860,6 +2879,37 @@ otherwise modify that checkout.
 Use `effect:git:ensure-managed-repo` when a workflow receives a transient source during project or
 issue import. Persist its `managed_repo_id`; do not persist the source as the managed workflow
 contract. Clone effects take the ID and let the control plane resolve the restricted internal URL.
+
+### Persistent agents and multiple repositories
+
+A persistent VM or container agent can hold independent access to several managed repositories.
+Granting a second repository creates a second exact-repository key and SSH alias; it does not
+replace the first grant.
+
+```bash
+evander-cli git-repos grants session-123
+evander-cli git-repos grant session-123 \
+  --managed-repo-id mr_0123456789abcdef0123 \
+  --access-mode read-only
+evander-cli git-repos clone-into-agent session-123 \
+  --managed-repo-id mr_0123456789abcdef0123 \
+  --access-mode read-only \
+  --lifetime session
+```
+
+Read-only standalone grants are session-persistent, so an existing checkout can continue to
+`git fetch` and `git pull`. Use `--lifetime operation` only with `clone-into-agent` or a clone
+effect when the credential must be removed immediately after a one-shot clone. Revoke exactly one
+repository without deleting checkout files or disturbing other grants:
+
+```bash
+evander-cli git-repos revoke-grant session-123 \
+  --managed-repo-id mr_0123456789abcdef0123
+```
+
+Admin Web exposes the same list, grant, grant-and-clone, and revoke actions on the session detail
+page. The workflow equivalents are `effect:agent:grant-repo-access`,
+`effect:agent:clone-repo`, and `effect:agent:revoke-repo-access`.
 
 The cloned guest repo receives `AGENTS.md`, the issue task file when applicable, a local coding
 branch, and the `git sync-base`, `git push-agent`, and `git agent-pr-note` helpers. Optional
@@ -2908,7 +2958,7 @@ branches and never prunes agent, review, Team, notes, or operation refs.
 
 ### Agent push and queue processing
 
-Writable guest keys are restricted to one managed repository, one
+Each writable guest key is restricted to one managed repository, one
 `refs/heads/agents/<session-id>/**` namespace, and the session PR-notes ref. A guest cannot write
 ordinary branches, host review/Team namespaces, tags, configuration, or hooks.
 
@@ -2957,8 +3007,8 @@ signing, and interactive prompts disabled. Cleanup force-removes it and compare-
 the operation ref on success, failure, cancellation, and normal signals. Do not run agent-authored
 tests in this host worktree; use the VM/container isolation boundary.
 
-Run reconciliation, locked worktree pruning, and repository maintenance without a separate
-service:
+Run reconciliation, locked worktree pruning, and repository maintenance explicitly; the refresh
+broker does not perform worktree maintenance:
 
 ```bash
 evander-cli git-repos maintenance

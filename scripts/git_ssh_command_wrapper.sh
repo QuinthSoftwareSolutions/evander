@@ -124,6 +124,25 @@ case "${ORIGINAL_COMMAND}" in
         exit 1
         ;;
     esac
+    REFRESH_REQUIRED="${EVANDER_GIT_REFRESH_REQUIRED:-}"
+    if [[ -z "${REFRESH_REQUIRED}" && "${REPO_REAL##*/}" =~ ^mr_[0-9a-f]{20}\.git$ ]]; then
+      REFRESH_REQUIRED=1
+    fi
+    if [[ "${REFRESH_REQUIRED}" == "1" ]]; then
+      REFRESH_PYTHON="${ROOT_DIR}/.venv/bin/python"
+      if [[ ! -x "${REFRESH_PYTHON}" ]]; then
+        echo "Managed Git refresh client is unavailable: ${REFRESH_PYTHON}" >&2
+        exit 1
+      fi
+      if ! "${REFRESH_PYTHON}" -m evander.managed_git_refresh refresh \
+        --socket-path "${EVANDER_GIT_REFRESH_SOCKET:-/run/evander/managed-git-refresh.sock}" \
+        --git-root "${ROOT_REAL}" \
+        --repository-path "${REPO_REAL}" \
+        --timeout-seconds "${EVANDER_GIT_REFRESH_TIMEOUT_SECONDS:-120}"; then
+        echo "Refusing to serve stale managed Git refs." >&2
+        exit 1
+      fi
+    fi
     ;;
   git-receive-pack\ *)
     if [[ "${AUTH_ACCESS}" != "write" ]]; then

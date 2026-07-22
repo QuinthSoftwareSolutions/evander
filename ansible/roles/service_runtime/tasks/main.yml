@@ -28,6 +28,8 @@
         unit: evander-discord-wake.service
       - key: scheduled_wake
         unit: evander-scheduled-wake.service
+      - key: managed_git_refresh
+        unit: evander-managed-git-refresh.service
       - key: teams_ingest
         unit: evander-teams-ingest.service
       - key: teams_meeting_ingest

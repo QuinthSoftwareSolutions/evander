@@ -3415,11 +3415,16 @@ remains workflow-owned.</td>
 <td>Resume sessions whose scheduled wake is due.</td>
 </tr>
 <tr class="even">
+<td><code>evander-managed-git-refresh.service</code></td>
+<td>Refresh an authorized managed repository before clone, fetch, pull,
+or archive reads.</td>
+</tr>
+<tr class="odd">
 <td><code>evander-teams-ingest.service</code></td>
 <td>Run <code>evander-cli teams-ingest</code> through
 <code>scripts/run_teams_ingest.sh</code>.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-teams-meeting-ingest.service</code></td>
 <td>Ingest configured Teams meeting media and events.</td>
 </tr>
@@ -7314,6 +7319,13 @@ value in provider configuration.</p>
 <span id="cb44-4"><a href="#cb44-4" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb44-5"><a href="#cb44-5" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos list <span class="at">--directory-path</span> root/northstar-platform/mission-control</span>
 <span id="cb44-6"><a href="#cb44-6" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos show <span class="op">&lt;</span>managed-repo-id<span class="op">&gt;</span> --directory-path root/northstar-platform/mission-control</span></code></pre></div>
+<p>Normal agent reads refresh automatically. The restricted SSH wrapper
+validates the exact repository, then asks
+<code>evander-managed-git-refresh.service</code> to fetch upstream
+before serving clone, fetch, pull, <code>ls-remote</code>, or archive
+data. If the broker or upstream is unavailable, the read fails instead
+of silently returning stale refs; the agent never receives upstream
+credentials.</p>
 <p>Clone it into an existing VM session without exposing the host
 path:</p>
 <div class="sourceCode" id="cb45"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb45-1"><a href="#cb45-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> clone-repo-into-vm <span class="op">&lt;</span>vm-name<span class="op">&gt;</span> <span class="dt">\</span></span>
@@ -14752,25 +14764,32 @@ workflow-owned</td>
 <td>Scheduled work is enabled</td>
 </tr>
 <tr class="even">
+<td><code>evander-managed-git-refresh.service</code></td>
+<td><code>evander-managed-git-refresh</code></td>
+<td>Refreshes the exact authorized managed repository before Git
+reads</td>
+<td>Agents clone, fetch, or pull managed repositories</td>
+</tr>
+<tr class="odd">
 <td><code>evander-teams-ingest.service</code></td>
 <td><code>evander-cli teams-ingest</code> via its runner script</td>
 <td>Ingests Microsoft Teams messages</td>
 <td>Teams is configured</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-teams-meeting-ingest.service</code></td>
 <td><code>evander-teams-meeting-ingest</code></td>
 <td>Ingests queued meeting transcript and speech-status events</td>
 <td>Meeting integration is configured</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-trigger-orchestrator.service</code></td>
 <td><code>evander-cli trigger-orchestrator</code></td>
 <td>Polls trigger providers, validates/deduplicates, and publishes
 durable trigger events</td>
 <td>Workflow triggers are enabled</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-effect-orchestrator.service</code></td>
 <td><code>evander-effect-orchestrator</code></td>
 <td>Traverses downstream workflow nodes and executes gates, queries, and

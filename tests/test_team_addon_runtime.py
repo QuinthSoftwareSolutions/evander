@@ -323,6 +323,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "team-agent-run-completed",
         "team-chat-message-queued",
         "team-agent-wake-requested",
+        "team-governance-wake-requested",
         "team-ephemeral-requested",
         "team-operator-escalation",
         "team-git-promotion-requested",
@@ -3964,6 +3965,8 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             "git_author_email": None,
             "git_committer_name": None,
             "git_committer_email": None,
+            "git_access_mode": "write",
+            "git_access_lifetime": "session",
         }
     ]
     project_repo = result["dispatches"][0]["project_repo"]
@@ -5818,6 +5821,9 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert triggers["team-chat-message-queued"]["event_type"] == ("team.chat.message_queued")
     assert triggers["team-agent-wake-requested"]["type"] == "trigger:event"
     assert triggers["team-agent-wake-requested"]["event_type"] == ("team.agent.wake_requested")
+    assert triggers["team-governance-wake-requested"]["event_type"] == (
+        "team.governance.wake_requested"
+    )
     assert effects["team-wake-queued-chat-message"]["type"] == ("effect:team:wake-due-agents")
     assert effects["team-wake-queued-chat-message"]["agent_id"] == (
         "${{team-chat-message-queued.payload.agent_id}}"
@@ -5829,6 +5835,12 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     )
     assert effects["team-wake-requested-agent"]["limit"] == 1
     assert effects["team-wake-requested-agent"]["respect_wake_interval"] is False
+    assert effects["team-wake-requested-governance"]["type"] == (
+        "effect:team:wake-governance-managers"
+    )
+    assert effects["team-wake-requested-governance"]["governance_group_id"] == (
+        "${{team-governance-wake-requested.payload.governance_group_id}}"
+    )
 
     notify = effects["team-notify-operator"]
     assert notify["type"] == "effect:communication:send-message"
@@ -5841,6 +5853,10 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert ("team-operator-escalation", "team-notify-operator") in edges
     assert ("team-chat-message-queued", "team-wake-queued-chat-message") in edges
     assert ("team-agent-wake-requested", "team-wake-requested-agent") in edges
+    assert (
+        "team-governance-wake-requested",
+        "team-wake-requested-governance",
+    ) in edges
 
 
 def test_team_event_publisher_schedules_delayed_wake_events(tmp_path: Path) -> None:

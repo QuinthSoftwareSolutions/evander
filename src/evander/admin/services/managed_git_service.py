@@ -30,6 +30,10 @@ from evander.admin.payloads import AdminRevisionConflict
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 from evander.consultations import consultation_snapshot_ref
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
+from evander.managed_git_grants import (
+    LEGACY_MANAGED_GIT_GRANT_METADATA_KEYS,
+    MANAGED_GIT_GRANTS_METADATA_KEY,
+)
 from evander.models import DirectoryPath, ToolName
 from evander.pr_tracking import PrMapStore
 from evander.repositories.session_manifests import JsonSessionManifestRepository
@@ -3631,7 +3635,11 @@ class ManagedGitAdminService:
                 if not isinstance(metadata, dict):
                     return False
                 if kind == "authorized_sessions" and not any(
-                    key in metadata for key in ("container_git_write_access", "managed_git_access")
+                    key in metadata
+                    for key in (
+                        MANAGED_GIT_GRANTS_METADATA_KEY,
+                        *LEGACY_MANAGED_GIT_GRANT_METADATA_KEYS,
+                    )
                 ):
                     return False
                 return self._nested_value_contains_managed_repo_id(metadata, repo_id)
@@ -5079,17 +5087,47 @@ class ManagedGitAdminService:
                 legacy_fields = self._legacy_field_paths(
                     metadata, include_repo_path=True, include_repo_source=True
                 )
-                if not legacy_fields:
+                has_singular_grant = isinstance(metadata, dict) and any(
+                    isinstance(metadata.get(key), dict)
+                    for key in LEGACY_MANAGED_GIT_GRANT_METADATA_KEYS
+                )
+                if not legacy_fields and not has_singular_grant:
                     continue
                 directory = str(raw_session.get("directory_path") or "root")
-                rewritten_metadata, repo_ids = self._rewrite_nested_session_metadata(
-                    metadata,
-                    directory_path=directory,
-                    mapping_records=mapping_records,
-                    context=f"session {session_key}.metadata",
-                )
+                if legacy_fields:
+                    rewritten_metadata, repo_ids = self._rewrite_nested_session_metadata(
+                        metadata,
+                        directory_path=directory,
+                        mapping_records=mapping_records,
+                        context=f"session {session_key}.metadata",
+                    )
+                else:
+                    rewritten_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+                    repo_ids = set()
                 if not isinstance(rewritten_metadata, dict):
                     rewritten_metadata = {}
+                top_level_repo_id = str(rewritten_metadata.get("managed_repo_id") or "").strip()
+                for legacy_key in LEGACY_MANAGED_GIT_GRANT_METADATA_KEYS:
+                    legacy_grant = rewritten_metadata.get(legacy_key)
+                    if not isinstance(legacy_grant, dict):
+                        continue
+                    grant_repo_id = str(
+                        legacy_grant.get("managed_repo_id") or top_level_repo_id
+                    ).strip()
+                    if not grant_repo_id:
+                        raise ManagedGitConflictError(
+                            f"Session {session_key} has a Git grant without managed_repo_id"
+                        )
+                    canonical_grant = dict(legacy_grant)
+                    canonical_grant["managed_repo_id"] = grant_repo_id
+                    canonical_grant.setdefault("lifetime", "session")
+                    grants = rewritten_metadata.get(MANAGED_GIT_GRANTS_METADATA_KEY)
+                    if not isinstance(grants, dict):
+                        grants = {}
+                    grants[grant_repo_id] = canonical_grant
+                    rewritten_metadata[MANAGED_GIT_GRANTS_METADATA_KEY] = grants
+                    rewritten_metadata.pop(legacy_key, None)
+                    repo_ids.add(grant_repo_id)
                 if len(repo_ids) == 1:
                     rewritten_metadata["managed_repo_id"] = next(iter(repo_ids))
                 rewritten_metadata["managed_git_remote_reconciliation_required"] = True
@@ -5519,6 +5557,12 @@ class ManagedGitAdminService:
                 return f"{name}={base64.b64encode(replacement.encode()).decode('ascii')}"
 
             rewritten_line = _B64_ASSIGNMENT_PATTERN.sub(replace_assignment, line)
+            if "EVANDER_GIT_REFRESH_REQUIRED=" not in rewritten_line:
+                rewritten_line = rewritten_line.replace(
+                    " EVANDER_GIT_AUTH_REPO_B64=",
+                    " EVANDER_GIT_REFRESH_REQUIRED=1 EVANDER_GIT_AUTH_REPO_B64=",
+                    1,
+                )
             if has_prefix and "EVANDER_GIT_AUTH_REPO_PREFIX_B64" in rewritten_line:
                 raise ManagedGitConflictError(
                     f"Could not narrow prefix-scoped authorized key in {path}"

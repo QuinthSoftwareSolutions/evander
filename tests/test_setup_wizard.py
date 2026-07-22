@@ -704,6 +704,36 @@ def test_setup_launch_starts_local_worker_for_same_host_container(
 
     assert local_worker_installs == [state]
     assert ["sudo", "systemctl", "restart", "evander-worker-daemon.service"] in run_calls
+    assert ["sudo", "systemctl", "start", "evander-managed-git-refresh.service"] in run_calls
+
+
+def test_setup_secret_dropins_include_managed_git_refresh_broker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.secret_file = str(tmp_path / "local-secrets.env")
+    Path(state.secret_file).write_text("AZURE_DEVOPS_PR_PAT=test\n", encoding="utf-8")
+    run_calls: list[list[str]] = []
+
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(setup_engine, "_grant_secret_file_git_access", lambda *_args: None)
+
+    def fake_run(args, **_kwargs):
+        run_calls.append(args)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(setup_engine.subprocess, "run", fake_run)
+
+    manager._install_secret_dropins(state)
+
+    assert any(
+        call[-1]
+        == "/etc/systemd/system/evander-managed-git-refresh.service.d/20-evander-setup-secrets.conf"
+        for call in run_calls
+        if call[:3] == ["sudo", "install", "-m"]
+    )
 
 
 def test_setup_tui_omits_nonfunctional_setup_profile_choice(tmp_path: Path, monkeypatch) -> None:

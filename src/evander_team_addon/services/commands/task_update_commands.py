@@ -19,6 +19,7 @@ from .work_item_helpers import (
     _team_record_state_value,
 )
 from ...models import (
+    TeamBlockerSourceKind,
     TeamRecordState,
     TeamState,
     TeamTaskState,
@@ -35,6 +36,7 @@ from ..domain.case_task import (
     _task_graph_edit_error,
     _task_owner_reassignment_error,
 )
+from ..domain.blockers import active_blockers_for_source, open_or_get_blocker, resolve_blocker
 from ..domain.common import (
     DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
     _MCP_TASK_UPDATE_STATE_VALUES,
@@ -234,6 +236,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     )
             changed = False
             now = utc_now()
+            previous_task_state = task.state
             if next_state is not None:
                 changed = _set_task_state(task, next_state, now=now) or changed
             if has_priority:
@@ -283,7 +286,51 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 "task_id": task.id,
                 "updated_task_ids": [task.id] if changed else [],
                 "progress_made": changed,
+                "created_blocker_ids": [],
+                "created_inbox_item_ids": [],
+                "events": [],
             }
+            blocker_domain_ids: list[str] = []
+            if (
+                changed
+                and previous_task_state != TeamTaskState.BLOCKED
+                and task.state == TeamTaskState.BLOCKED
+            ):
+                blocker, created = open_or_get_blocker(
+                    state_model,
+                    source_kind=TeamBlockerSourceKind.TASK,
+                    source_id=task.id,
+                    summary=f"Task {task.id} is blocked",
+                    details=task.description,
+                    reporter_agent_id=agent.id,
+                    team_id=agent.team_id,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    result=response_payload,
+                    now=now,
+                )
+                if created:
+                    blocker_domain_ids.append(blocker.id)
+            elif (
+                changed
+                and previous_task_state == TeamTaskState.BLOCKED
+                and task.state != TeamTaskState.BLOCKED
+            ):
+                for blocker in active_blockers_for_source(
+                    state_model,
+                    source_kind=TeamBlockerSourceKind.TASK,
+                    source_id=task.id,
+                ):
+                    event = resolve_blocker(
+                        state_model,
+                        blocker=blocker,
+                        actor_agent_id=agent.id,
+                        dispatch_id=resolved.dispatch_id,
+                        note=f"Task moved from blocked to {task.state.value}.",
+                        reference_ids=[task.id],
+                        now=now,
+                    )
+                    blocker_domain_ids.extend([blocker.id, event.id])
             if changed and task.state in _NON_TERMINAL_TASK_STATES:
                 _append_agent_wake_requested_event(
                     state_model,
@@ -295,7 +342,15 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 )
             return TeamCommandApplyResult(
                 response_payload=response_payload,
-                created_domain_ids=[task.id] if changed else [],
+                created_domain_ids=(
+                    [
+                        task.id,
+                        *blocker_domain_ids,
+                        *response_payload["created_inbox_item_ids"],
+                    ]
+                    if changed
+                    else []
+                ),
             )
 
         return self._execute_team_command(

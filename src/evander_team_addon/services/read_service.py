@@ -12,6 +12,8 @@ from ..models import (
     ReleasePackage,
     ReviewRequest,
     TeamCase,
+    TeamBlocker,
+    TeamBlockerState,
     TeamInboxItemState,
     TeamRecordState,
     TeamState,
@@ -96,6 +98,54 @@ class TeamReadService:
         if item is None or not self._inbox_visible(item):
             return None
         return _without_none(item.model_dump(mode="json"))
+
+    def list_blockers(
+        self,
+        *,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        owner_agent_id: str | None = None,
+        delegate_agent_id: str | None = None,
+        state: str | None = None,
+        source_kind: str | None = None,
+        limit: int = _DEFAULT_LIMIT,
+        cursor: str | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        blockers = [
+            blocker
+            for blocker in self._state.blockers.values()
+            if self._blocker_visible(blocker)
+            and _matches(team_id, blocker.team_id)
+            and _matches(project_id, blocker.project_id)
+            and _matches(owner_agent_id, blocker.owner_agent_id)
+            and _matches(delegate_agent_id, blocker.delegate_agent_id)
+            and _matches_enum(state, blocker.state)
+            and _matches_enum(source_kind, blocker.source_kind)
+        ]
+        rows = [
+            self._blocker_row(blocker)
+            for blocker in sorted(blockers, key=_blocker_sort_key)
+        ]
+        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+
+    def get_blocker(self, blocker_id: str) -> dict[str, Any] | None:
+        blocker = self._state.blockers.get(_text(blocker_id))
+        if blocker is None or not self._blocker_visible(blocker):
+            return None
+        payload = blocker.model_dump(mode="json")
+        payload["events"] = [
+            event.model_dump(mode="json")
+            for event in sorted(
+                (
+                    event
+                    for event in self._state.blocker_events.values()
+                    if event.blocker_id == blocker.id
+                ),
+                key=lambda event: (event.created_at, event.id),
+            )
+        ]
+        return _without_none(payload)
 
     def list_cases(
         self,
@@ -412,6 +462,24 @@ class TeamReadService:
             or (task is not None and self._task_visible(task))
         )
 
+    def _blocker_visible(self, blocker: TeamBlocker) -> bool:
+        if blocker.team_id in self._managed_team_ids:
+            return True
+        if blocker.project_id is not None and self._project_visible(blocker.project_id):
+            return True
+        if blocker.task_id is not None:
+            task = self._state.tasks.get(blocker.task_id)
+            if task is not None and self._task_visible(task):
+                return True
+        return any(
+            self._agent_visible(agent_id)
+            for agent_id in (
+                blocker.reporter_agent_id,
+                blocker.owner_agent_id,
+                blocker.delegate_agent_id,
+            )
+        )
+
     def _deliverable_visible(self, deliverable: Deliverable) -> bool:
         task = self._state.tasks.get(deliverable.task_id)
         return self._agent_visible(deliverable.producer_agent_id) or (
@@ -527,6 +595,37 @@ class TeamReadService:
                 ),
                 "created_at": _json_value(item.created_at),
                 "updated_at": _json_value(item.updated_at),
+            }
+        )
+
+    def _blocker_row(self, blocker: TeamBlocker) -> dict[str, Any]:
+        event_count = sum(
+            1 for event in self._state.blocker_events.values() if event.blocker_id == blocker.id
+        )
+        return _without_none(
+            {
+                "id": blocker.id,
+                "team_id": blocker.team_id,
+                "project_id": blocker.project_id,
+                "task_id": blocker.task_id,
+                "source_kind": blocker.source_kind.value,
+                "source_id": blocker.source_id,
+                "summary": _compact_text(blocker.summary, 180),
+                "details": _compact_text(blocker.details, 240),
+                "priority": blocker.priority.value,
+                "state": blocker.state.value,
+                "route": blocker.route.value,
+                "reporter_agent_id": blocker.reporter_agent_id,
+                "owner_agent_id": blocker.owner_agent_id,
+                "delegate_agent_id": blocker.delegate_agent_id,
+                "escalation_depth": blocker.escalation_depth,
+                "active_dispatch_id": blocker.active_dispatch_id,
+                "follow_up_at": _json_value(blocker.follow_up_at),
+                "last_progress_at": _json_value(blocker.last_progress_at),
+                "event_count": event_count,
+                "created_at": _json_value(blocker.created_at),
+                "updated_at": _json_value(blocker.updated_at),
+                "resolved_at": _json_value(blocker.resolved_at),
             }
         )
 
@@ -787,6 +886,14 @@ class TeamReadService:
                 "inbox_item_id": _maybe_text(row.get("inbox_item_id")),
                 "deliverable_id": _maybe_text(row.get("deliverable_id")),
                 "release_package_id": _maybe_text(row.get("release_package_id")),
+                "review_request_id": _maybe_text(row.get("review_request_id")),
+                "blocker_id": _maybe_text(row.get("blocker_id")),
+                "source_kind": _maybe_text(row.get("source_kind")),
+                "source_id": _maybe_text(row.get("source_id")),
+                "owner_agent_id": _maybe_text(row.get("owner_agent_id")),
+                "delegate_agent_id": _maybe_text(row.get("delegate_agent_id")),
+                "route": _maybe_text(row.get("route")),
+                "escalation_depth": row.get("escalation_depth"),
                 "blocked_by_task_ids": _sequence(row.get("blocked_by_task_ids")),
             }
         )
@@ -853,6 +960,17 @@ def _task_sort_key(task: AgentTask) -> tuple[int, int, str, str]:
 def _inbox_sort_key(item: AgentInboxItem) -> tuple[int, str, str]:
     priority = {"high": 0, "normal": 1, "low": 2}.get(item.priority.value, 9)
     return (priority, _json_value(item.created_at) or "", item.id)
+
+
+def _blocker_sort_key(blocker: TeamBlocker) -> tuple[int, int, str, str]:
+    terminal = blocker.state == TeamBlockerState.RESOLVED
+    priority = {"high": 0, "normal": 1, "low": 2}.get(blocker.priority.value, 9)
+    return (
+        1 if terminal else 0,
+        priority,
+        _json_value(blocker.updated_at) or "",
+        blocker.id,
+    )
 
 
 def _case_sort_key(case: TeamCase) -> tuple[int, str, str]:

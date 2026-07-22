@@ -1,5 +1,60 @@
 # Changelog
 
+## 2026-07-22 - Hierarchical Team Blocker Escalation
+
+- Added durable Team blocker records and event history for explicit blockers and blocked tasks,
+  deliverables, reviews, release packages, and promotion or release failures.
+- Routed each blocker to the nearest available superior immediately, transferred accountability
+  one level after an owner dispatch without blocker-specific progress, and returned stalled
+  delegated work to its accountable owner before any further escalation.
+- Added terminal governance and operator routing, durable wake outbox handling for normal and
+  expired dispatches, unavailable-assignee reconciliation, and retained the periodic manager
+  fallback as a safety net.
+- Added MCP report, update, list, and detail tools plus wake context, API, runtime-attention, and
+  Team UI visibility for blocker ownership, delegation, route, and escalation depth.
+- Kept manual resolution available to active agents on the reporter-to-manager escalation line
+  after ownership transfers or terminal routing, excluded peers and temporary delegates, and
+  retained source-driven automatic resolution.
+- Added privileged, audited Admin API and Team UI resolution for blockers that have reached
+  governance or operator routing without allowing operators to preempt locally routed blockers.
+
+## 2026-07-22 - Multi-Repository Agent Git Grants
+
+- Added first-class, repository-keyed read-only and write grants so one persistent VM or container
+  agent can access multiple managed repositories without replacing an earlier repository key.
+- Made read-only grants session-persistent by default for repeated clone, fetch, and pull, while
+  retaining explicit operation-scoped credentials for one-shot clone and consultation flows.
+- Added targeted grant, revoke, and grant-and-clone workflow, CLI, Admin API, and Admin Web
+  surfaces, including exact worker-key revocation that preserves unrelated repository grants.
+- Migrated legacy singular session Git metadata into the plural grant model and added focused
+  multi-repository, lifecycle, migration, worker, and operator-surface coverage.
+- Preserved repository-specific worker SSH aliases across session preparation, revoked legacy VM
+  credentials before canonicalization, reconciled persisted grants against real credentials, and
+  propagated failed libvirt clone actions to operator surfaces.
+
+## 2026-07-22 - Pull-Time Managed Git Refresh
+
+- Added a host-owned Unix-socket refresh broker so managed clone, fetch, pull, `ls-remote`, and
+  archive reads refresh their exact authorized upstream before serving refs.
+- Made broker and upstream failures fail closed instead of silently serving stale managed refs,
+  while keeping provider credentials out of the restricted SSH wrapper.
+- Added generic systemd and Ansible lifecycle management for
+  `evander-managed-git-refresh.service`.
+- Made guided setup start the broker with its secret drop-in, bounded concurrent request handling,
+  coalesced overlapping repository refreshes, and authorized all effective directory Git users.
+
+## 2026-07-22 - Tool Call Audit Search Performance
+
+- Added a trigram full-text index for Tool Calls free-text searches while preserving the canonical
+  audit JSONL and the existing SQLite filtering fallback.
+- Migrated existing audit indexes through a storage-efficient batched background backfill after
+  JSONL import catches up, avoiding a large synchronous database rewrite or long write lock during
+  Admin Web startup.
+- Debounced free-text searches, stopped polling exact filtered result sets, and removed a redundant
+  aggregate scan from each indexed query.
+- Cached successful schema initialization per audit-index instance so steady-state reads do not
+  re-enter migrations or acquire SQLite write locks.
+
 ## 2026-07-22 - Managed Worker Deployment Checkout
 
 - Moved private worker deployment checkouts from the retired `git-remotes/evander-deploy.git`

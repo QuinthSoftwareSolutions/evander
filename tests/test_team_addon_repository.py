@@ -41,6 +41,9 @@ from evander_team_addon.models import (
     RolePermission,
     TeamDispatchActivity,
     TeamDispatchActivityStatus,
+    TeamBlockerEventType,
+    TeamBlockerRoute,
+    TeamBlockerState,
     TeamIdempotencyRecord,
     TeamInboxItemState,
     TeamInboxPriority,
@@ -59,6 +62,7 @@ from evander_team_addon.repository import (
     TeamStateRepository,
 )
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from evander_team_addon.services.domain.blockers import open_or_get_blocker
 from evander_team_addon.services.domain.common import DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
 from evander_team_addon.services.domain.ephemeral import (
     EPHEMERAL_COMPLETED_EVENT_TYPE,
@@ -78,6 +82,7 @@ from evander_team_addon.services.runtime_service import TeamRuntimeService
 from evander_team_addon.services.commands import (
     TeamAgentControlCommandService,
     TeamAgentMessageCommandService,
+    TeamBlockerCommandService,
     TeamCaseCommandService,
     TeamChatCommandService,
     TeamCommandApplyResult,
@@ -118,6 +123,7 @@ class _TeamCommandTestHarness(
     TeamTaskCreationCommandService,
     TeamTaskUpdateCommandService,
     TeamAgentControlCommandService,
+    TeamBlockerCommandService,
     TeamGovernanceCommandService,
     TeamMemoryCommandService,
     TeamDeliverableSubmissionCommandService,
@@ -316,6 +322,36 @@ def _lease_agent_dispatch(
         return state
 
     repo.update(_lease)
+
+
+def _report_explicit_blocker(
+    repo: TeamStateRepository,
+    *,
+    reporter_agent_id: str,
+    reporter_session_id: str,
+    source_id: str,
+) -> str:
+    dispatch_id = f"dispatch-report-{source_id}"
+    _lease_agent_dispatch(
+        repo,
+        agent_id=reporter_agent_id,
+        dispatch_id=dispatch_id,
+    )
+    _state, result = _command_service(repo).report_blocker_command(
+        session_id=reporter_session_id,
+        source_kind="explicit",
+        source_id=source_id,
+        summary=f"Blocked on {source_id}",
+        details="A local decision or dependency is required.",
+        project_id="project",
+        request_id=f"request-report-{source_id}",
+    )
+    assert result["success"] is True
+    _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id=reporter_session_id,
+        dispatch_id=dispatch_id,
+    )
+    return result["blocker_id"]
 
 
 def _register_release_operator(
@@ -2191,6 +2227,499 @@ def test_repository_finalize_agent_dispatch_without_activity_counts_no_progress(
     assert runtime.no_progress_count == 3
     assert runtime.last_progress_at is None
     assert state.action_records == {}
+
+
+def test_blocker_owner_no_progress_transfers_despite_unrelated_progress(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id="dependency-a",
+    )
+    _state, leases = _team_runtime_service(repo).lease_due_agents(agent_id="backend")
+    assert len(leases) == 1
+    dispatch_id = leases[0]["dispatch_id"]
+    assert [row["id"] for row in leases[0]["blockers"]] == [blocker_id]
+    repo.append_dispatch_activity(
+        TeamDispatchActivity(
+            id="activity-unrelated-progress",
+            tool_name="team_update_task",
+            caller_session_id="session-backend",
+            caller_identity="agent:backend",
+            agent_id="backend",
+            dispatch_id=dispatch_id,
+            status=TeamDispatchActivityStatus.SUCCESS,
+            progress_classification="progress",
+        )
+    )
+
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=dispatch_id,
+    )
+
+    blocker = state.blockers[blocker_id]
+    assert result["progress_made"] is True
+    assert blocker.owner_agent_id == "lead"
+    assert blocker.route == TeamBlockerRoute.OWNED
+    assert blocker.escalation_depth == 1
+    assert any(
+        event.blocker_id == blocker_id
+        and event.event_type == TeamBlockerEventType.OWNER_TRANSFERRED
+        and event.from_agent_id == "backend"
+        and event.to_agent_id == "lead"
+        for event in state.blocker_events.values()
+    )
+
+
+def test_blocker_specific_progress_keeps_owner_and_sets_follow_up(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id="dependency-b",
+    )
+    _state, leases = _team_runtime_service(repo).lease_due_agents(agent_id="backend")
+    dispatch_id = leases[0]["dispatch_id"]
+
+    _state, update_result = _command_service(repo).update_blocker_command(
+        session_id="session-backend",
+        blocker_id=blocker_id,
+        action="progress",
+        note="Requested the missing decision.",
+        follow_up_seconds=300,
+        request_id="request-blocker-progress",
+    )
+    assert update_result["success"] is True
+    state, _result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=dispatch_id,
+    )
+
+    blocker = state.blockers[blocker_id]
+    assert blocker.owner_agent_id == "backend"
+    assert blocker.route == TeamBlockerRoute.OWNED
+    assert blocker.escalation_depth == 0
+    assert blocker.follow_up_at is not None
+    assert not any(
+        event.blocker_id == blocker_id
+        and event.event_type == TeamBlockerEventType.OWNER_TRANSFERRED
+        for event in state.blocker_events.values()
+    )
+
+
+@pytest.mark.parametrize(
+    ("resolver_agent_id", "resolver_session_id"),
+    [
+        ("worker", "session-worker"),
+        ("backend", "session-backend"),
+        ("lead", "session-lead"),
+        ("manager", "session-manager"),
+    ],
+)
+def test_manual_blocker_resolve_allows_reporter_to_root_escalation_line(
+    tmp_path: Path,
+    resolver_agent_id: str,
+    resolver_session_id: str,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id=f"resolve-by-{resolver_agent_id}",
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id=resolver_agent_id,
+        dispatch_id=f"dispatch-resolve-{resolver_agent_id}",
+    )
+
+    state, result = _command_service(repo).update_blocker_command(
+        session_id=resolver_session_id,
+        blocker_id=blocker_id,
+        action="resolve",
+        note=f"{resolver_agent_id} verified the dependency is available.",
+        resolution_refs=[f"evidence-{resolver_agent_id}"],
+        request_id=f"request-resolve-{resolver_agent_id}",
+    )
+
+    blocker = state.blockers[blocker_id]
+    assert result["success"] is True
+    assert blocker.state == TeamBlockerState.RESOLVED
+    assert blocker.route == TeamBlockerRoute.RESOLVED
+    assert any(
+        event.blocker_id == blocker_id
+        and event.event_type == TeamBlockerEventType.RESOLVED
+        and event.actor_agent_id == resolver_agent_id
+        for event in state.blocker_events.values()
+    )
+
+
+def test_manual_blocker_resolve_rejects_peer_even_when_delegated(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _team_admin_service(repo).register_agent(
+        agent_id="peer",
+        team_id="team",
+        project_id="project",
+        role_id="project__worker",
+        session_id="session-peer",
+        reports_to_agent_id="backend",
+        display_name="Peer Agent",
+        expected_revision=repo.read().revision,
+    )
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id="peer-resolution-denied",
+    )
+    _state, owner_leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend"
+    )
+    owner_dispatch_id = owner_leases[0]["dispatch_id"]
+    _state, delegated = _command_service(repo).update_blocker_command(
+        session_id="session-backend",
+        blocker_id=blocker_id,
+        action="delegate",
+        delegate_agent_id="peer",
+        note="Check whether the dependency is available.",
+        request_id="request-delegate-to-peer",
+    )
+    assert delegated["success"] is True
+    _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=owner_dispatch_id,
+    )
+    _state, peer_leases = _team_runtime_service(repo).lease_due_agents(agent_id="peer")
+    assert len(peer_leases) == 1
+
+    state, result = _command_service(repo).update_blocker_command(
+        session_id="session-peer",
+        blocker_id=blocker_id,
+        action="resolve",
+        note="Peer believes the dependency is available.",
+        request_id="request-peer-resolve",
+    )
+
+    blocker = state.blockers[blocker_id]
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "blocker_resolution_line_required"
+    assert blocker.state == TeamBlockerState.OPEN
+    assert blocker.route == TeamBlockerRoute.DELEGATED
+    assert blocker.owner_agent_id == "backend"
+    assert blocker.delegate_agent_id == "peer"
+
+
+def test_automated_blocker_resolution_line_stays_anchored_to_first_owner(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _open_automated_blocker(state):
+        open_or_get_blocker(
+            state,
+            source_kind="explicit",
+            source_id="automated-dependency",
+            summary="Automated dependency failed",
+            details="The source transition could not continue.",
+            initial_owner_agent_id="backend",
+            team_id="team",
+            project_id="project",
+        )
+
+    state = repo.update(_open_automated_blocker)
+    blocker = next(
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.source_id == "automated-dependency"
+    )
+    _state, owner_leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend"
+    )
+    state, _result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=owner_leases[0]["dispatch_id"],
+    )
+    assert state.blockers[blocker.id].owner_agent_id == "lead"
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-resolve-automated-blocker",
+    )
+    state, resolved = _command_service(repo).update_blocker_command(
+        session_id="session-backend",
+        blocker_id=blocker.id,
+        action="resolve",
+        note="The first owner verified the automated dependency recovered.",
+        request_id="request-resolve-automated-blocker",
+    )
+
+    assert resolved["success"] is True
+    assert state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
+
+
+def test_delegation_stall_returns_to_owner_before_next_level_transfer(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id="dependency-c",
+    )
+    _state, owner_leases = _team_runtime_service(repo).lease_due_agents(agent_id="backend")
+    owner_dispatch_id = owner_leases[0]["dispatch_id"]
+    _state, delegate_result = _command_service(repo).update_blocker_command(
+        session_id="session-backend",
+        blocker_id=blocker_id,
+        action="delegate",
+        delegate_agent_id="worker",
+        note="Check the dependency locally.",
+        request_id="request-blocker-delegate",
+    )
+    assert delegate_result["success"] is True
+    _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=owner_dispatch_id,
+    )
+
+    _state, delegate_leases = _team_runtime_service(repo).lease_due_agents(agent_id="worker")
+    delegate_dispatch_id = delegate_leases[0]["dispatch_id"]
+    state, _result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-worker",
+        dispatch_id=delegate_dispatch_id,
+    )
+    blocker = state.blockers[blocker_id]
+    assert blocker.owner_agent_id == "backend"
+    assert blocker.delegate_agent_id is None
+    assert blocker.route == TeamBlockerRoute.OWNED
+    assert not any(
+        item.recipient_agent_id == "worker"
+        and item.state == TeamInboxItemState.PENDING
+        and item.payload.get("blocker_id") == blocker_id
+        for item in state.inbox.values()
+    )
+
+    _state, returned_owner_leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend"
+    )
+    returned_dispatch_id = returned_owner_leases[0]["dispatch_id"]
+    state, _result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=returned_dispatch_id,
+    )
+    assert state.blockers[blocker_id].owner_agent_id == "lead"
+    event_types = [
+        event.event_type
+        for event in sorted(
+            state.blocker_events.values(),
+            key=lambda item: (item.created_at, item.id),
+        )
+        if event.blocker_id == blocker_id
+    ]
+    assert TeamBlockerEventType.DELEGATED in event_types
+    assert TeamBlockerEventType.DELEGATION_STALLED in event_types
+    assert event_types[-1] == TeamBlockerEventType.OWNER_TRANSFERRED
+
+
+def test_expired_top_owner_blocker_routes_to_governance_and_persists_event(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        escalate_to_governance=True,
+        expected_revision=repo.read().revision,
+    )
+    admin.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="lead",
+        reporter_session_id="session-lead",
+        source_id="dependency-governance",
+    )
+    base_time = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="manager",
+        now=base_time,
+        lease_seconds=60,
+    )
+    assert len(leases) == 1
+    assert leases[0]["blockers"][0]["id"] == blocker_id
+
+    state, later_leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        now=base_time + timedelta(seconds=61),
+    )
+
+    assert later_leases == []
+    blocker = state.blockers[blocker_id]
+    assert blocker.route == TeamBlockerRoute.GOVERNANCE
+    assert blocker.terminal_reference_ids
+    assert not any(
+        item.recipient_agent_id == "manager"
+        and item.state == TeamInboxItemState.PENDING
+        and item.payload.get("blocker_id") == blocker_id
+        for item in state.inbox.values()
+    )
+    assert any(
+        record.intent_type == "team.governance.wake_requested"
+        and record.payload["payload"]["blocker_id"] == blocker_id
+        for record in repo.list_outbox_records()
+    )
+
+    agenda_id = blocker.terminal_reference_ids[0]
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-governance-blocker-resolve",
+    )
+    state, resolved = _command_service(repo).update_blocker_command(
+        session_id="session-lead",
+        blocker_id=blocker_id,
+        action="resolve",
+        note="Dependency recovered before governance action.",
+        resolution_refs=["recovery-evidence"],
+        request_id="request-governance-blocker-resolve",
+    )
+    assert resolved["success"] is True
+    assert state.governance_agenda[agenda_id].state == GovernanceAgendaItemState.HANDLED
+    assert state.blockers[blocker_id].terminal_reference_ids == [agenda_id]
+
+
+def test_top_owner_no_progress_routes_to_operator_and_persists_event(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _team_admin_service(repo).update_team(
+        team_id="team",
+        operator_communication_target_id="operator-target",
+        set_operator_communication_target_id=True,
+        expected_revision=repo.read().revision,
+    )
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="lead",
+        reporter_session_id="session-lead",
+        source_id="dependency-operator",
+    )
+    _state, leases = _team_runtime_service(repo).lease_due_agents(agent_id="manager")
+    dispatch_id = leases[0]["dispatch_id"]
+
+    state, _result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id=dispatch_id,
+    )
+
+    blocker = state.blockers[blocker_id]
+    assert blocker.route == TeamBlockerRoute.OPERATOR
+    assert blocker.terminal_reference_ids
+    assert not any(
+        item.recipient_agent_id == "manager"
+        and item.state == TeamInboxItemState.PENDING
+        and item.payload.get("blocker_id") == blocker_id
+        for item in state.inbox.values()
+    )
+    assert any(
+        record.intent_type == "team.operator.escalation_requested"
+        and record.payload["payload"]["blocker_id"] == blocker_id
+        and record.payload["payload"]["communication_target_id"] == "operator-target"
+        for record in repo.list_outbox_records()
+    )
+
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-operator-blocker-resolve",
+    )
+    state, resolved = _command_service(repo).update_blocker_command(
+        session_id="session-lead",
+        blocker_id=blocker_id,
+        action="resolve",
+        note="The reporting line fixed the dependency after operator escalation.",
+        resolution_refs=["operator-route-recovery-evidence"],
+        request_id="request-operator-blocker-resolve",
+    )
+    assert resolved["success"] is True
+    assert state.blockers[blocker_id].state == TeamBlockerState.RESOLVED
+    assert state.blockers[blocker_id].route == TeamBlockerRoute.RESOLVED
+
+
+def test_operator_can_resolve_terminal_blocker_with_audited_reason(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _team_admin_service(repo).update_team(
+        team_id="team",
+        operator_communication_target_id="operator-target",
+        set_operator_communication_target_id=True,
+        expected_revision=repo.read().revision,
+    )
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="lead",
+        reporter_session_id="session-lead",
+        source_id="operator-resolution",
+    )
+    _state, leases = _team_runtime_service(repo).lease_due_agents(agent_id="manager")
+    state, _result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id=leases[0]["dispatch_id"],
+    )
+    assert state.blockers[blocker_id].route == TeamBlockerRoute.OPERATOR
+
+    state, resolved = _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+        blocker_id=blocker_id,
+        note="Operator verified the external dependency was restored.",
+        operator_actor_id="operator:admin",
+        resolution_refs=["incident-123"],
+        expected_revision=state.revision,
+    )
+
+    assert resolved["success"] is True
+    assert resolved["route_before_resolution"] == TeamBlockerRoute.OPERATOR.value
+    assert state.blockers[blocker_id].state == TeamBlockerState.RESOLVED
+    assert any(
+        event.id == resolved["event_id"]
+        and event.event_type == TeamBlockerEventType.RESOLVED
+        and event.actor_agent_id is None
+        and event.metadata["operator_actor_id"] == "operator:admin"
+        and event.reference_ids == ["incident-123"]
+        for event in state.blocker_events.values()
+    )
+
+
+def test_operator_cannot_resolve_locally_routed_blocker(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id="local-resolution-only",
+    )
+
+    with pytest.raises(ValueError, match="operator resolution requires"):
+        _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+            blocker_id=blocker_id,
+            note="Operator should not preempt the local escalation line.",
+            operator_actor_id="operator:admin",
+            expected_revision=repo.read().revision,
+        )
+
+    assert repo.read().blockers[blocker_id].state == TeamBlockerState.OPEN
 
 
 def test_repository_finalize_agent_dispatch_note_only_is_context_not_progress(
@@ -8699,6 +9228,19 @@ def test_apply_agent_action_review_blocked_blocks_all(tmp_path: Path) -> None:
     assert state.deliverables["deliverable"].state == TeamRecordState.BLOCKED
     assert state.tasks["task"].state == TeamTaskState.BLOCKED
     assert state.projects["project"].status == ProjectStatus.BLOCKED
+    blocker = next(
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.source_id == "review-1"
+    )
+    assert blocker.source_kind.value == "review_request"
+    assert blocker.owner_agent_id == "backend"
+    assert any(
+        item.recipient_agent_id == "backend"
+        and item.state == TeamInboxItemState.PENDING
+        and item.payload.get("blocker_id") == blocker.id
+        for item in state.inbox.values()
+    )
 
 
 def test_apply_agent_action_goal_update_permission(tmp_path: Path) -> None:
@@ -10658,6 +11200,12 @@ def test_blocked_release_review_retry_creates_linked_review_for_same_candidate(
     assert release.state == TeamRecordState.BLOCKED
     assert release.gate_failure is not None
     assert release.gate_failure.kind == "blocked"
+    review_blocker = next(
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.source_id == first_review_id
+    )
+    assert review_blocker.state == TeamBlockerState.OPEN
 
     state, overwritten = _team_agent_action_service(repo).apply_agent_action(
         action={
@@ -10695,6 +11243,15 @@ def test_blocked_release_review_retry_creates_linked_review_for_same_candidate(
     assert second_review.state == TeamRecordState.PENDING
     assert second_review.retry_reason == "Reviewer environment has been repaired."
     assert second_review.retry_requested_by == "operator:release-admin"
+    assert review_blocker.id in retried["resolved_blocker_ids"]
+    assert state.blockers[review_blocker.id].state == TeamBlockerState.RESOLVED
+    assert state.blockers[review_blocker.id].route == TeamBlockerRoute.RESOLVED
+    assert any(
+        event.blocker_id == review_blocker.id
+        and event.event_type == TeamBlockerEventType.RESOLVED
+        and event.actor_agent_id is None
+        for event in state.blocker_events.values()
+    )
     inbox = state.inbox[retried["created_inbox_item_ids"][0]]
     assert inbox.payload["supersedes_review_request_id"] == first_review_id
     assert inbox.payload["release_manifest"]["candidate_commit_sha"] == "candidate-sha"

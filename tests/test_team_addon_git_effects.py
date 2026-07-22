@@ -225,9 +225,12 @@ def test_record_git_promotion_failure_blocks_and_notifies(tmp_path: Path) -> Non
     notice = state.inbox[inbox_id]
     # backend reports to lead, so the failure notice goes upward to lead.
     assert notice.recipient_agent_id == "lead"
-    assert notice.item_type == TeamInboxItemType.PROGRESS_REPORT
-    assert notice.payload["kind"] == "git_promotion_failed"
-    assert notice.payload["promotion_id"] == "promotion-1"
+    assert notice.item_type == TeamInboxItemType.STATUS_REQUEST
+    assert notice.payload["kind"] == "blocker_reported"
+    blocker = state.blockers[notice.payload["blocker_id"]]
+    assert blocker.source_kind.value == "deliverable"
+    assert blocker.source_id == "deliverable-1"
+    assert blocker.owner_agent_id == "lead"
 
 
 def test_record_release_promotion_success_publishes_canonical_push(
@@ -364,8 +367,11 @@ def test_record_canonical_promotion_failure_blocks_release(
     assert release.error == "push rejected"
     notice = state.inbox[result["created_inbox_item_ids"][0]]
     assert notice.recipient_agent_id == "manager"
-    assert notice.payload["kind"] == "git_promotion_failed"
-    assert notice.payload["promotion_kind"] == "canonical_push"
+    assert notice.payload["kind"] == "blocker_reported"
+    blocker = state.blockers[notice.payload["blocker_id"]]
+    assert blocker.source_kind.value == "release_package"
+    assert blocker.source_id == "release-1"
+    assert blocker.owner_agent_id == "manager"
 
 
 def _seed_release(repo: TeamStateRepository) -> None:
@@ -824,7 +830,12 @@ def test_mark_release_published_failure_notifies_lead(tmp_path: Path) -> None:
     assert release.error == "push rejected"
     notice = state.inbox[result["created_inbox_item_ids"][0]]
     assert notice.recipient_agent_id == "lead"
-    assert notice.payload["kind"] == "release_publish_failed"
+    assert notice.item_type == TeamInboxItemType.STATUS_REQUEST
+    assert notice.payload["kind"] == "blocker_reported"
+    blocker = state.blockers[notice.payload["blocker_id"]]
+    assert blocker.source_kind.value == "release_package"
+    assert blocker.source_id == "release-1"
+    assert blocker.owner_agent_id == "lead"
 
 
 # --- managed Git delegation effects -----------------------------------------

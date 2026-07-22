@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from evander.admin.services.vm_agent.common import (
     VmActionResult,
-    _revoke_managed_git_access_for_session,
     _source_project_dir,
     os,
     process_helpers,
     vm_helpers,
+)
+from evander.managed_git_grants import (
+    managed_git_grants_from_metadata,
+    normalize_git_access_lifetime,
+    normalize_git_access_mode,
 )
 
 
@@ -24,6 +28,8 @@ class VmAgentBootstrapMixin:
         git_author_email: str | None = None,
         git_committer_name: str | None = None,
         git_committer_email: str | None = None,
+        git_access_mode: str = "write",
+        git_access_lifetime: str = "session",
     ) -> VmActionResult:
         resolved_vm_name = vm_name.strip()
         if not resolved_vm_name:
@@ -43,6 +49,8 @@ class VmAgentBootstrapMixin:
                 message="managed_repo_id is required.",
             )
         normalized_clone_branch = clone_branch.strip() if clone_branch else ""
+        normalized_access_mode = normalize_git_access_mode(git_access_mode)
+        normalized_access_lifetime = normalize_git_access_lifetime(git_access_lifetime)
 
         resolved_session_id, session, normalized_directory_path, error_result = (
             self._resolve_vm_operation_context(
@@ -95,18 +103,20 @@ class VmAgentBootstrapMixin:
                 git_author_email=git_author_email,
                 git_committer_name=git_committer_name,
                 git_committer_email=git_committer_email,
+                git_access_mode=normalized_access_mode,
+                git_access_lifetime=normalized_access_lifetime,
             )
             refreshed_session = self._session_repository().get_session(resolved_session_id)
             access_metadata = (
-                refreshed_session.metadata.get("managed_git_access")
+                managed_git_grants_from_metadata(refreshed_session.metadata).get(
+                    normalized_managed_repo_id
+                )
                 if refreshed_session is not None and isinstance(refreshed_session.metadata, dict)
                 else None
             )
-            managed_git.unbind_all("authorized_sessions", resolved_session_id)
             if (
                 isinstance(access_metadata, dict)
                 and access_metadata.get("managed_repo_id") == normalized_managed_repo_id
-                and access_metadata.get("access_mode") == "write"
             ):
                 managed_git.bind(
                     normalized_managed_repo_id,
@@ -118,17 +128,23 @@ class VmAgentBootstrapMixin:
                 kind="sessions",
                 binding_id=resolved_session_id,
             )
+            if normalized_access_lifetime == "operation":
+                self.revoke_managed_git_access(
+                    resolved_session_id,
+                    normalized_managed_repo_id,
+                    remove_guest_key=True,
+                )
         except Exception as exc:
             failed_session = self._session_repository().get_session(resolved_session_id)
-            _revoke_managed_git_access_for_session(failed_session)
-            if managed_git is not None:
-                managed_git.unbind_all("authorized_sessions", resolved_session_id)
-            if failed_session is not None and isinstance(failed_session.metadata, dict):
-                cleaned_metadata = dict(failed_session.metadata)
-                if cleaned_metadata.pop("managed_git_access", None) is not None:
-                    self._session_repository().upsert_session(
-                        failed_session.model_copy(update={"metadata": cleaned_metadata})
+            if failed_session is not None:
+                try:
+                    self.revoke_managed_git_access(
+                        resolved_session_id,
+                        normalized_managed_repo_id,
+                        remove_guest_key=True,
                     )
+                except Exception:
+                    pass
             return VmActionResult(
                 success=False,
                 vm_name=resolved_vm_name,

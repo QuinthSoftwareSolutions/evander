@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
@@ -705,6 +708,181 @@ def test_audit_index_directory_prefix_escapes_like_wildcards(tmp_path: Path) -> 
     ]
 
 
+def test_audit_index_migrates_existing_rows_to_trigram_search_in_background(
+    tmp_path: Path,
+) -> None:
+    index = ToolCallAuditIndex(tmp_path / "runtime" / "audit.db")
+    payload = {
+        "event_type": "tool_call",
+        "session_id": "session-search",
+        "directory_path": "root/team",
+        "tool_name": "assistant_read_status",
+        "request_id": "alpha-fragment-123",
+        "decision": "allowed",
+        "created_at": "2026-05-18T10:00:00+00:00",
+    }
+    assert index.index_payload(payload) is True
+    assert index.search_index_ready() is True
+
+    with sqlite3.connect(index.path) as connection:
+        connection.executescript(
+            """
+            DROP TRIGGER tool_call_audit_search_update;
+            DROP TRIGGER tool_call_audit_search_delete;
+            DROP TRIGGER tool_call_audit_search_insert;
+            DROP TABLE tool_call_audit_search;
+            DELETE FROM audit_index_metadata
+            WHERE key = 'tool_call_audit_search_ready';
+            """
+        )
+
+    index.ensure_schema(force=True)
+
+    assert index.search_index_ready() is False
+    fallback_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root/team",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q="ha-frag",
+        limit=10,
+    )
+    assert fallback_page.matched == 1
+
+    assert index.advance_search_index_backfill(max_rows=1) is False
+    assert index.search_index_ready() is False
+    assert index.index_payload(
+        {
+            **payload,
+            "request_id": "bravo-fragment-456",
+            "created_at": "2026-05-18T10:01:00+00:00",
+        }
+    )
+    assert index.rebuild_search_index_if_needed() is True
+    assert index.search_index_ready() is True
+    indexed_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root/team",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q="ha-frag",
+        limit=10,
+    )
+    assert indexed_page.matched == 1
+    assert indexed_page.payloads[0]["request_id"] == "alpha-fragment-123"
+    concurrently_appended_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root/team",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q="vo-frag",
+        limit=10,
+    )
+    assert concurrently_appended_page.matched == 1
+    assert concurrently_appended_page.payloads[0]["request_id"] == "bravo-fragment-456"
+    assert index.rebuild_search_index_if_needed() is False
+
+    with sqlite3.connect(index.path) as connection:
+        search_schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'tool_call_audit_search'"
+        ).fetchone()[0]
+    assert "detail='none'" in search_schema
+    assert "columnsize=0" in search_schema
+
+
+def test_audit_index_steady_state_reads_do_not_reenter_schema_migration(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from evander.repositories import audit_index as audit_index_module
+
+    index = ToolCallAuditIndex(tmp_path / "runtime" / "audit.db")
+    assert index.index_payload(
+        {
+            "event_type": "tool_call",
+            "directory_path": "root",
+            "tool_name": "sample_tool",
+            "decision": "allowed",
+            "created_at": "2026-05-18T10:00:00+00:00",
+        }
+    )
+
+    def fail_if_schema_migration_reentered(path):
+        raise AssertionError(f"steady-state read reentered schema migration for {path}")
+
+    monkeypatch.setattr(
+        audit_index_module,
+        "ensure_audit_index_schema",
+        fail_if_schema_migration_reentered,
+    )
+
+    assert index.search_index_ready() is True
+    page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q=None,
+        limit=10,
+    )
+    assert page.matched == 1
+
+
+def test_audit_index_trigram_search_keeps_substring_and_literal_quote_semantics(
+    tmp_path: Path,
+) -> None:
+    index = ToolCallAuditIndex(tmp_path / "runtime" / "audit.db")
+    assert index.index_payload(
+        {
+            "event_type": "tool_call",
+            "directory_path": "root",
+            "tool_name": "sample_tool",
+            "request_id": 'request-"quoted"-value',
+            "decision": "allowed",
+            "created_at": "2026-05-18T10:00:00+00:00",
+        }
+    )
+
+    substring_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q="est-\"quoted\"-val",
+        limit=10,
+    )
+    short_query_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root",
+        direct_only=True,
+        created_after=None,
+        created_before=None,
+        q="qu",
+        limit=10,
+    )
+
+    assert index.search_index_ready() is True
+    assert substring_page.matched == 1
+    assert short_query_page.matched == 1
+
+
 def test_admin_service_date_window_uses_index_without_full_jsonl_scan(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     entries = [
@@ -799,6 +977,30 @@ def test_build_admin_runtime_starts_background_import_without_tail_import(
 
     assert service.tool_call_audit_index is not None
     assert started == [(service.tool_call_audit_index, service.config.audit_log_path)]
+
+
+def test_background_audit_import_rebuilds_search_index_after_catching_up(
+    tmp_path: Path,
+) -> None:
+    rebuilt = threading.Event()
+
+    class FakeAuditIndex:
+        def import_from_jsonl(self, *args, **kwargs):
+            return SimpleNamespace(stopped_by_limit=False, lines_scanned=0)
+
+        def import_is_complete(self, audit_log_path):
+            return True
+
+        def advance_search_index_backfill(self, **kwargs):
+            rebuilt.set()
+            return True
+
+    admin_composition._start_tool_call_audit_index_import(
+        FakeAuditIndex(),
+        tmp_path / "runtime" / "audit.jsonl",
+    )
+
+    assert rebuilt.wait(timeout=1.0)
 
 
 def test_admin_web_dashboard_tool_calls_reads_index_only_when_jsonl_has_unindexed_entries(

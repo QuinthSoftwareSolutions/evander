@@ -48,9 +48,7 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.DOCUMENTATION_SEARCH: (
         "Search current project documentation using case-insensitive literal text."
     ),
-    ToolName.DOCUMENTATION_READ: (
-        "Read a bounded line range from current project documentation."
-    ),
+    ToolName.DOCUMENTATION_READ: ("Read a bounded line range from current project documentation."),
     ToolName.LIST_CONNECTORS: (
         "List connector operations explicitly granted to the current agent session."
     ),
@@ -1040,9 +1038,91 @@ def session_approval_routes(
             {
                 "session": _session_payload(service, summary, policy_cache=policy_summary_cache),
                 "wake_schedules": [_wake_schedule_payload(item) for item in wake_schedules],
+                "git_grants": service.vm_agent_admin.list_managed_git_access(session_id),
                 "summary_json": _iso(summary.model_dump(mode="json")),
             }
         )
+
+    async def list_session_git_grants(request: Request) -> JSONResponse:
+        session_id = request.path_params.get("session_id", "")
+        summary, load_error = _session_summary_or_error(session_id)
+        if load_error is not None:
+            return load_error
+        assert summary is not None
+        auth_error = _owner_read_error(request, directory_path=summary.directory_path)
+        if auth_error is not None:
+            return auth_error
+        return JSONResponse({"items": service.vm_agent_admin.list_managed_git_access(session_id)})
+
+    async def put_session_git_grant(request: Request) -> JSONResponse:
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object.")
+        try:
+            grant = service.vm_agent_admin.grant_managed_git_access(
+                session_id,
+                request.path_params.get("managed_repo_id", ""),
+                access_mode=str(payload.get("access_mode") or "read-only"),
+                lifetime="session",
+                vm_user=str(payload.get("vm_user") or "agent"),
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except RuntimeError as exc:
+            return json_error(str(exc), status_code=409)
+        return JSONResponse({"grant": grant})
+
+    async def delete_session_git_grant(request: Request) -> JSONResponse:
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
+        try:
+            result = service.vm_agent_admin.revoke_managed_git_access(
+                session_id,
+                request.path_params.get("managed_repo_id", ""),
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except RuntimeError as exc:
+            return json_error(str(exc), status_code=409)
+        return JSONResponse(result)
+
+    async def clone_session_managed_repo(request: Request) -> JSONResponse:
+        session_id = request.path_params.get("session_id", "")
+        _, auth_error = _authorize_session_mutation(request, session_id)
+        if auth_error is not None:
+            return auth_error
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object.")
+        try:
+            result = service.vm_agent_admin.clone_managed_repo_into_agent(
+                session_id,
+                request.path_params.get("managed_repo_id", ""),
+                access_mode=str(payload.get("access_mode") or "read-only"),
+                lifetime=str(payload.get("lifetime") or "session"),
+                vm_user=str(payload.get("vm_user") or "agent"),
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except RuntimeError as exc:
+            return json_error(str(exc), status_code=409)
+        return JSONResponse({"result": result})
 
     async def renew_session(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
@@ -1491,6 +1571,26 @@ def session_approval_routes(
             methods=["GET"],
         ),
         Route("/api/admin/sessions/{session_id:str}", get_session_detail, methods=["GET"]),
+        Route(
+            "/api/admin/sessions/{session_id:str}/git-grants",
+            list_session_git_grants,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/sessions/{session_id:str}/git-grants/{managed_repo_id:str}",
+            put_session_git_grant,
+            methods=["PUT"],
+        ),
+        Route(
+            "/api/admin/sessions/{session_id:str}/git-grants/{managed_repo_id:str}/clone",
+            clone_session_managed_repo,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/sessions/{session_id:str}/git-grants/{managed_repo_id:str}",
+            delete_session_git_grant,
+            methods=["DELETE"],
+        ),
         Route("/api/admin/sessions/{session_id:str}", update_session_policy, methods=["PATCH"]),
         Route("/api/admin/sessions/{session_id:str}/renew", renew_session, methods=["POST"]),
         Route("/api/admin/sessions/{session_id:str}/revoke", revoke_session, methods=["POST"]),

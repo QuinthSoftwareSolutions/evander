@@ -515,6 +515,12 @@ Common tasks:
 The audit view is read-only. Use it as the evidence trail for operator decisions and incident
 review.
 
+The unfiltered recent view refreshes automatically. Free-text input is debounced, and filtered
+full-history results remain stable until a filter changes or you select **Refresh**, avoiding
+repeated expensive reads while an operator is still typing. Free-text searches of three or more
+characters use the audit database's trigram index when ready; shorter searches and indexes still
+being migrated retain the compatible scan fallback.
+
 ## Configuration
 
 The Configuration tab edits directory-scoped policy and runtime-global admin settings.

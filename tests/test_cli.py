@@ -35,6 +35,7 @@ from evander.models import (
     VmSummary,
 )
 from evander.messaging.teams_auth import InvalidClientConfigurationError
+from evander.repositories.audit_index import ToolCallAuditIndex
 
 UTC = timezone.utc
 
@@ -4618,6 +4619,7 @@ def test_rebuild_audit_index_cli_imports_tool_call_jsonl(tmp_path: Path) -> None
     with sqlite3.connect(runtime_dir / "audit.db") as connection:
         count = connection.execute("SELECT COUNT(*) FROM tool_call_audit_entries").fetchone()[0]
     assert count == 1
+    assert ToolCallAuditIndex(runtime_dir / "audit.db").search_index_ready() is True
 
 
 def test_status_json_reports_healthy_state(tmp_path: Path, monkeypatch) -> None:
