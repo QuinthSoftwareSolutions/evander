@@ -92,6 +92,7 @@ function actionSearchText(action) {
     action.status,
     action.source,
     action.note,
+    JSON.stringify(action.evidence_ids || []),
     JSON.stringify(action.payload || {}),
   ].join(" ").toLowerCase();
 }
@@ -240,6 +241,13 @@ function renderActionDetail() {
     warning.textContent = "Execution creates the payment in Bokio, but a signatory must still approve it with BankID.";
     els.actionDetail.append(warning);
   }
+  const evidenceIds = Array.isArray(action.evidence_ids) ? action.evidence_ids : [];
+  if (evidenceIds.length) {
+    const evidenceNotice = document.createElement("div");
+    evidenceNotice.className = "notice info inline";
+    evidenceNotice.textContent = `Execution will attach ${evidenceIds.length} managed evidence ${evidenceIds.length === 1 ? "file" : "files"} to the journal entry.`;
+    els.actionDetail.append(evidenceNotice);
+  }
   if (action.status === "needs_attention" || action.status === "executing") {
     const warning = document.createElement("div");
     warning.className = "notice danger inline";
@@ -284,7 +292,11 @@ function renderActionDetail() {
   if (controls.childElementCount) els.actionDetail.append(controls);
 
   appendJsonSection(els.actionDetail, "Prepared payload", action.payload || {});
+  if (evidenceIds.length) {
+    appendJsonSection(els.actionDetail, "Managed evidence IDs", evidenceIds);
+  }
   appendJsonSection(els.actionDetail, "Bokio result", action.result, "success-section");
+  appendJsonSection(els.actionDetail, "Evidence result", action.evidence_result, "success-section");
   appendJsonSection(els.actionDetail, "Failure details", action.error, "error-section");
 
   const historySection = document.createElement("section");

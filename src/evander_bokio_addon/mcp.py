@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from hashlib import sha256
-import json
 from typing import Any
 
 from mcp.server.fastmcp import Context
@@ -14,7 +12,12 @@ from evander.policy import PolicyError
 
 from .api import _execute_prepared_action
 from .client import BokioClient
-from .evidence import BokioEvidenceError, BokioEvidenceStore, validate_evidence_id
+from .evidence import (
+    BokioEvidenceStore,
+    attach_evidence as _attach_evidence,
+    create_journal_entry_with_evidence as _create_journal_entry_with_evidence,
+    normalize_stored_evidence_ids,
+)
 from .operations import (
     BokioOperationStore,
     bokio_error_payload,
@@ -147,7 +150,7 @@ MCP_TOOL_CATALOG = (
     _catalog(
         PREPARE_JOURNAL_ENTRY_TOOL,
         "Prepare journal entry",
-        "Prepare a local Bokio journal-entry action for operator review.",
+        "Prepare a local Bokio journal-entry and managed-evidence action for operator review.",
     ),
     _catalog(
         CREATE_APPROVED_JOURNAL_ENTRY_TOOL,
@@ -561,10 +564,14 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
 
     @server.tool(
         name=PREPARE_JOURNAL_ENTRY_TOOL,
-        description="Create a local prepared Bokio journal entry action for human approval.",
+        description=(
+            "Create a local prepared Bokio journal entry action, including any managed "
+            "evidence IDs, for human approval."
+        ),
     )
     def bokio_prepare_journal_entry(
         payload: dict[str, Any],
+        evidence_ids: list[str] | None = None,
         note: str | None = None,
         session_id: str | None = None,
         ctx: Context | None = None,
@@ -574,6 +581,7 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
             context,
             kind="journal_entry",
             payload=payload,
+            evidence_ids=evidence_ids,
             source=resolved_session_id,
             note=note,
         )
@@ -720,151 +728,23 @@ def _evidence_store(context: AddonContext) -> BokioEvidenceStore:
     return BokioEvidenceStore(context.runtime_dir)
 
 
-def _attach_evidence(
-    context: AddonContext,
-    *,
-    evidence_id: str,
-    journal_entry_id: str,
-    description: str | None,
-    retry_if_failed: bool = False,
-) -> dict[str, Any]:
-    store = _evidence_store(context)
-    normalized_evidence_id = validate_evidence_id(evidence_id)
-    association = store.begin_association(
-        evidence_id=normalized_evidence_id,
-        journal_entry_id=journal_entry_id,
-        retry_if_failed=retry_if_failed,
-    )
-    if association["status"] == "attached":
-        return {**association, "idempotent": True}
-    try:
-        evidence = store.get_file(normalized_evidence_id)
-        result = _client(context).upload_document(
-            file_path=evidence.blob_path,
-            allowed_roots=[store.blob_root],
-            description=description,
-            journal_entry_id=journal_entry_id,
-        )
-    except Exception as exc:
-        store.mark_association_failed(
-            evidence_id=normalized_evidence_id,
-            journal_entry_id=journal_entry_id,
-            error=exc,
-        )
-        raise
-    return store.mark_association_attached(
-        evidence_id=normalized_evidence_id,
-        journal_entry_id=journal_entry_id,
-        bokio_result=result,
-    )
-
-
-def _create_journal_entry_with_evidence(
-    context: AddonContext,
-    *,
-    payload: dict[str, Any],
-    evidence_ids: list[str],
-    operation_key: str | None,
-    retry_if_failed: bool,
-) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise ToolError("payload must be a JSON object")
-    normalized_evidence_ids = [validate_evidence_id(item) for item in evidence_ids]
-    generated_key = sha256(
-        json.dumps(
-            {"payload": payload, "evidence_ids": normalized_evidence_ids},
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
-    store = _evidence_store(context)
-    operation = store.begin_journal_entry_operation(
-        operation_key=str(operation_key or generated_key),
-        payload=payload,
-        evidence_ids=normalized_evidence_ids,
-    )
-    if operation["status"] == "completed":
-        return {**operation, "idempotent": True}
-    if operation["status"] == "needs_attention":
-        operation = store.resume_journal_entry_operation(
-            operation_key=operation["operation_key"],
-            retry_if_failed=retry_if_failed,
-        )
-    if operation["status"] == "pending_create":
-        client = _client(context)
-        operation, claimed = store.claim_journal_entry_creation(
-            operation_key=operation["operation_key"]
-        )
-        if claimed:
-            try:
-                created = client.create_journal_entry(payload)
-                journal_entry_id = str(created.get("id") or "").strip()
-                if not journal_entry_id:
-                    raise BokioEvidenceError(
-                        "Bokio journal-entry create response did not include an ID"
-                    )
-                operation = store.mark_journal_entry_created(
-                    operation_key=operation["operation_key"],
-                    journal_entry_id=journal_entry_id,
-                    result=created,
-                )
-            except Exception as exc:
-                store.mark_journal_entry_operation_needs_attention(
-                    operation_key=operation["operation_key"],
-                    error=exc,
-                    expected_status="creating",
-                )
-                raise
-    if operation["status"] == "completed":
-        return {**operation, "idempotent": True}
-    if operation["status"] == "creating":
-        raise BokioEvidenceError(
-            "Bokio journal-entry creation is already in flight or its outcome is unknown; "
-            "inspect Bokio before retrying"
-        )
-    if operation["status"] == "needs_attention":
-        operation = store.resume_journal_entry_operation(
-            operation_key=operation["operation_key"],
-            retry_if_failed=retry_if_failed,
-        )
-    journal_entry_id = str(operation.get("journal_entry_id") or "").strip()
-    if not journal_entry_id:
-        raise BokioEvidenceError("Bokio journal-entry operation is missing its created entry ID")
-    try:
-        associations = [
-            _attach_evidence(
-                context,
-                evidence_id=evidence_id,
-                journal_entry_id=journal_entry_id,
-                description=None,
-                retry_if_failed=retry_if_failed,
-            )
-            for evidence_id in normalized_evidence_ids
-        ]
-    except Exception as exc:
-        store.mark_journal_entry_operation_needs_attention(
-            operation_key=operation["operation_key"],
-            error=exc,
-            expected_status="pending_evidence",
-        )
-        raise
-    operation = store.mark_journal_entry_operation_completed(
-        operation_key=operation["operation_key"]
-    )
-    return {**operation, "associations": associations}
-
-
 def _prepare_action(
     context: AddonContext,
     *,
     kind: str,
     payload: dict[str, Any],
+    evidence_ids: list[str] | None = None,
     source: str,
     note: str | None,
 ) -> dict[str, Any]:
+    normalized_evidence_ids = normalize_stored_evidence_ids(
+        context.runtime_dir,
+        evidence_ids,
+    )
     action = PreparedActionStore(context.runtime_dir).create_action(
         kind=kind,
         payload=payload,
+        evidence_ids=normalized_evidence_ids,
         source=source,
         note=note,
     )

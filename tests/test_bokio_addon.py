@@ -1397,14 +1397,25 @@ def test_bokio_mcp_prepare_tool_requires_session_tool_permission(tmp_path: Path)
         allowed_root,
         allowed_tools=["bokio_prepare_journal_entry"],
     )
+    evidence, _created = BokioEvidenceStore(allowed_root).ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm-receipt",
+        mime_type="application/pdf",
+    )
     result = allowed_server.tools["bokio_prepare_journal_entry"](
         payload={"title": "Receipt", "items": []},
+        evidence_ids=[evidence["evidence_id"]],
         session_id="session-1",
     )
 
     assert result["action"]["kind"] == "journal_entry"
     assert result["action"]["source"] == "session-1"
-    assert PreparedActionStore(allowed_root).list_actions()[0]["source"] == "session-1"
+    assert result["action"]["evidence_ids"] == [evidence["evidence_id"]]
+    stored = PreparedActionStore(allowed_root).list_actions()[0]
+    assert stored["source"] == "session-1"
+    assert stored["evidence_operation_key"] == f"prepared-action:{stored['action_id']}"
 
 
 def test_bokio_mcp_upload_tool_requires_policy_before_client_access(
@@ -1989,6 +2000,8 @@ def test_bokio_ui_tracks_live_privilege_and_executing_recovery_state() -> None:
     assert 'let privilegedUnlocked = pageParams.get("privileged_unlocked") === "true";' in ui_js
     assert 'data.type !== "admin-privileged-operations"' in ui_js
     assert "setPrivilegedUnlocked(Boolean(data.privileged_operations?.unlocked));" in ui_js
+    assert 'appendJsonSection(els.actionDetail, "Managed evidence IDs", evidenceIds);' in ui_js
+    assert 'appendJsonSection(els.actionDetail, "Evidence result"' in ui_js
     assert 'action.status === "needs_attention" || action.status === "executing"' in ui_js
     assert 'runActionMutation(action, "retry", { confirm_not_created: true })' in ui_js
     failed_controls = ui_js.split('} else if (action.status === "failed") {', 1)[1].split(
@@ -2058,6 +2071,13 @@ def test_prepared_action_store_transitions_without_secrets(tmp_path) -> None:
     )
     assert "secret-token" not in state_text
     assert json.loads(state_text)["actions"][action["action_id"]]["payload"]["title"] == "Receipt"
+
+    with pytest.raises(ValueError, match="only for prepared journal entries"):
+        store.create_action(
+            kind="supplier_invoice",
+            payload={"supplierId": "supplier-1"},
+            evidence_ids=["bokio_evidence_0123456789abcdef0123456789abcdef"],
+        )
 
 
 def _install_transport(monkeypatch, handler) -> None:

@@ -24,6 +24,7 @@ from evander.admin.services.addon_admin_service import (
 )
 from evander.admin.web.app import create_app
 from evander.host_config import HostConfig, save_host_config
+from evander_bokio_addon.evidence import BokioEvidenceStore
 from evander_bokio_addon.state import PreparedActionStore
 
 
@@ -253,18 +254,14 @@ def test_admin_web_exposes_enabled_addon_routes_and_navigation(tmp_path: Path, m
 def test_admin_web_merges_enabled_addon_tools_into_session_and_policy_catalogs(
     tmp_path: Path,
 ) -> None:
-    runtime = build_admin_runtime(
-        _write_config(tmp_path, module_name="evander_bokio_addon")
-    )
+    runtime = build_admin_runtime(_write_config(tmp_path, module_name="evander_bokio_addon"))
     client = TestClient(create_app(runtime))
 
     session_catalog = client.get("/api/admin/sessions/catalog")
     mcp_catalog = client.get("/api/admin/mcp-tools?directory_path=root")
 
     assert session_catalog.status_code == 200
-    session_tools = {
-        item["value"]: item for item in session_catalog.json()["tool_options"]
-    }
+    session_tools = {item["value"]: item for item in session_catalog.json()["tool_options"]}
     assert session_tools["bokio_create_supplier_invoice"] == {
         "value": "bokio_create_supplier_invoice",
         "label": "Create supplier invoice",
@@ -293,11 +290,7 @@ def test_bokio_admin_prepared_action_mutations_require_privileged_unlock(
     tmp_path: Path,
 ) -> None:
     client = TestClient(
-        create_app(
-            build_admin_runtime(
-                _write_config(tmp_path, module_name="evander_bokio_addon")
-            )
-        )
+        create_app(build_admin_runtime(_write_config(tmp_path, module_name="evander_bokio_addon")))
     )
 
     assert client.get("/api/addons/bokio-addon/prepared-actions").status_code == 200
@@ -345,6 +338,79 @@ def test_bokio_admin_can_reject_a_failed_prepared_action(tmp_path: Path) -> None
         "approved",
         "failed",
         "rejected",
+    ]
+
+
+def test_bokio_admin_prepared_journal_attaches_evidence_without_recreating_entry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = build_admin_runtime(_write_config(tmp_path, module_name="evander_bokio_addon"))
+    client = TestClient(create_app(runtime))
+    assert client.post("/api/admin/privileged/unlock").status_code == 200
+    evidence, _created = BokioEvidenceStore(tmp_path / "runtime").ingest_bytes(
+        content=b"%PDF-1.7\nreceipt",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm-receipt",
+        mime_type="application/pdf",
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/journal-entries"):
+            return httpx.Response(200, json={"id": "journal-entry-1"})
+        if sum(item.url.path.endswith("/uploads") for item in requests) == 1:
+            return httpx.Response(503, json={"message": "temporarily unavailable"})
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(handler)
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", factory)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    created = client.post(
+        "/api/addons/bokio-addon/prepared-actions",
+        json={
+            "kind": "journal_entry",
+            "payload": {"title": "Receipt", "items": []},
+            "evidence_ids": [evidence["evidence_id"]],
+        },
+    ).json()["action"]
+
+    first = client.post(
+        f"/api/addons/bokio-addon/prepared-actions/{created['action_id']}/approve-and-execute"
+    )
+
+    assert first.status_code == 503
+    failed = PreparedActionStore(tmp_path / "runtime").get_action(created["action_id"])
+    assert failed is not None
+    assert failed["status"] == "failed"
+    assert failed["error"]["journal_entry_created"] is True
+    assert failed["error"]["evidence_operation"]["journal_entry_id"] == "journal-entry-1"
+
+    retried = client.post(
+        f"/api/addons/bokio-addon/prepared-actions/{created['action_id']}/retry",
+        json={},
+    )
+
+    assert retried.status_code == 200
+    result = retried.json()["result"]
+    assert result["action"]["status"] == "executed"
+    assert result["action"]["result"] == {"id": "journal-entry-1"}
+    assert result["action"]["evidence_ids"] == [evidence["evidence_id"]]
+    assert result["action"]["evidence_result"]["status"] == "completed"
+    assert result["evidence_operation"]["associations"][0]["status"] == "attached"
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "journal-entries",
+        "uploads",
+        "uploads",
     ]
 
 

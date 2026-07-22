@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-22 - Evidence-Aware Bokio Prepared Journals
+
+- Added managed evidence IDs to prepared Bokio journal entries so the receipt or invoice is part
+  of the exact action an operator reviews and approves.
+- Routed approved evidence-bearing journals through the durable create-and-attach ledger, marking
+  the action executed only after all evidence is attached and resuming failed uploads without
+  recreating an already-created journal entry.
+- Exposed prepared evidence IDs and the final evidence result in the Bokio Admin review workspace.
+
 ## 2026-07-22 - Bokio Failed Action Rejection
 
 - Allowed operators to reject failed prepared Bokio actions instead of requiring a retry, while

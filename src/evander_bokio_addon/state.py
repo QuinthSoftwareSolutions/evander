@@ -76,14 +76,24 @@ class PreparedActionStore:
         *,
         kind: str,
         payload: dict[str, Any],
+        evidence_ids: list[str] | None = None,
         source: str = "agent",
         note: str | None = None,
     ) -> dict[str, Any]:
         action_id = f"bokio_action_{uuid4().hex[:16]}"
+        normalized_kind = _required(kind, "kind")
+        normalized_evidence_ids = _evidence_ids(evidence_ids)
+        if normalized_evidence_ids and normalized_kind != "journal_entry":
+            raise ValueError("evidence_ids are supported only for prepared journal entries")
         action = {
             "action_id": action_id,
-            "kind": _required(kind, "kind"),
+            "kind": normalized_kind,
             "payload": dict(payload),
+            "evidence_ids": normalized_evidence_ids,
+            "evidence_operation_key": (
+                f"prepared-action:{action_id}" if normalized_evidence_ids else None
+            ),
+            "evidence_result": None,
             "source": str(source or "agent").strip() or "agent",
             "note": str(note or "").strip() or None,
             "status": "pending_approval",
@@ -213,24 +223,41 @@ class PreparedActionStore:
             raise ValueError(f"Unknown Bokio prepared action: {normalized}") from exc
         return dict(action), bool(claimed)
 
-    def mark_executed(self, action_id: str, *, result: Any) -> dict[str, Any]:
+    def mark_executed(
+        self,
+        action_id: str,
+        *,
+        result: Any,
+        evidence_result: Any | None = None,
+    ) -> dict[str, Any]:
         return self._transition(
             action_id,
             status="executed",
             timestamp_field="executed_at",
-            update={"result": result, "error": None, "execution_owner_pid": None},
+            update={
+                "result": result,
+                "evidence_result": evidence_result,
+                "error": None,
+                "execution_owner_pid": None,
+            },
             expected_statuses={"approved", "executing"},
             detail="Bokio action executed",
         )
 
-    def mark_failed(self, action_id: str, *, error: Any) -> dict[str, Any]:
+    def mark_failed(
+        self,
+        action_id: str,
+        *,
+        error: Any,
+        detail: str = "Execution failed before a successful Bokio result",
+    ) -> dict[str, Any]:
         return self._transition(
             action_id,
             status="failed",
             timestamp_field="executed_at",
             update={"error": error, "execution_owner_pid": None},
             expected_statuses={"approved", "executing"},
-            detail="Execution failed before a successful Bokio result",
+            detail=detail,
         )
 
     def mark_needs_attention(self, action_id: str, *, error: Any) -> dict[str, Any]:
@@ -299,6 +326,19 @@ def _required(value: str, field_name: str) -> str:
     normalized = str(value or "").strip()
     if not normalized:
         raise ValueError(f"{field_name} is required")
+    return normalized
+
+
+def _evidence_ids(values: list[str] | None) -> list[str]:
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise ValueError("evidence_ids must be a JSON array")
+    normalized = [str(value or "").strip() for value in values]
+    if any(not value for value in normalized):
+        raise ValueError("evidence_ids must contain non-empty strings")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("evidence_ids must not contain duplicates")
     return normalized
 
 
